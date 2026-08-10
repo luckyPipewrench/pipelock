@@ -56,12 +56,40 @@ func TestSnapshotBudgetSourceMapsForwardRows(t *testing.T) {
 	if row.Agent != "agent-alpha" || !row.ForwardConfigured || row.RequestCount != 7 || row.UniqueDomainCount != 2 {
 		t.Fatalf("unexpected mapped row: %+v", row)
 	}
+	// Completeness: every field declared on AgentBudgetView must be mapped by
+	// the snapshot source. A zero value cannot stand in for "unmapped" here: a
+	// zero usage count is valid in a fresh window and a zero maximum is valid
+	// for an unlimited budget, so a zero-value heuristic would report correctly
+	// mapped rows as incomplete. Instead each declared field is compared to an
+	// explicit expectation, and a field with no expectation fails the test so
+	// that adding a field to the view forces a decision about populating it.
+	wantFields := map[string]any{
+		"Agent":             "agent-alpha",
+		"ForwardConfigured": true,
+		"RequestCount":      7,
+		"ByteCount":         int64(4096),
+		"UniqueDomainCount": 2,
+		"WindowStart":       now.Add(-time.Hour),
+		"MaxRequests":       100,
+		"MaxBytes":          int64(1 << 20),
+		"MaxUniqueDomains":  10,
+		"WindowMinutes":     60,
+	}
 	value := reflect.ValueOf(row)
 	typeOfRow := value.Type()
 	for i := range value.NumField() {
-		if value.Field(i).IsZero() {
-			t.Errorf("declared budget field %s was not populated", typeOfRow.Field(i).Name)
+		name := typeOfRow.Field(i).Name
+		want, ok := wantFields[name]
+		if !ok {
+			t.Errorf("declared budget field %s has no expectation: map it in the snapshot source and assert it here, or remove it from the view", name)
+			continue
 		}
+		if got := value.Field(i).Interface(); !reflect.DeepEqual(got, want) {
+			t.Errorf("declared budget field %s = %v, want %v", name, got, want)
+		}
+	}
+	if len(wantFields) != value.NumField() {
+		t.Errorf("expectation count %d != declared field count %d", len(wantFields), value.NumField())
 	}
 	fresh, ok := source.BudgetFreshness()
 	if !ok || fresh.ProducedAt != now || fresh.Stale {

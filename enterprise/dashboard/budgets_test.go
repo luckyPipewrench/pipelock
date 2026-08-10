@@ -180,7 +180,17 @@ func TestBudgets_RendersOnlyPopulatedForwardBudgetFields(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Forward proxy", "Requests (used / limit)", "7 / 100"} {
+	// Every populated forward field is asserted by label AND rendered value.
+	// Checking only the request count would let a regression that drops the
+	// byte, unique-domain or window output pass unnoticed.
+	for _, want := range []string{
+		"Forward proxy",
+		"Requests (used / limit)", "7 / 100",
+		"Bytes (used / limit)", "4096 / 1048576",
+		"Unique domains (used / limit)", "2 / 10",
+		"Window", "60 min rolling",
+		"Window started", "2026-07-10T12:00:00Z",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("budget body missing populated forward field %q", want)
 		}

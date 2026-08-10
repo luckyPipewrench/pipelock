@@ -37,7 +37,7 @@ audit, and metadata-versus-raw redaction model.
 | Evidence | `/` and `/session/...` | `agents` | `dashboard:evidence:read` | Per-session receipt scorecard, timeline, and decision explanation from the configured recorder directory. |
 | Exemptions | `/exemptions` | `agents` | `dashboard:exemptions:read` | Read-only exemption inventory from `--config`, with lifecycle metadata overlaid from `--exemption-store` when configured. |
 | Agents | `/agents` and `/agent/...` | `agents` | `dashboard:agents:read` | Cross-session agent grouping and bounded scorecard rollups; absence means no loaded receipts, not proof the agent was idle. |
-| Budgets | `/budgets` | `agents` | `dashboard:budgets:read` | Counts-only per-agent budget pressure from `--runtime-snapshot-file` or the default runtime snapshot. |
+| Budgets | `/budgets` | `agents` | `dashboard:budgets:read` | Counts-only per-agent forward-proxy budget pressure from `--runtime-snapshot-file` or the default runtime snapshot. MCP denial-of-wallet counters are not included. |
 | Trust & Keys | `/trust-keys` | `agents` | `dashboard:trust_keys:read` | Trusted-key provenance, receipt blast radius, revocation status where verifiable, and local/Rekor anchor consistency. |
 | Fleet | `/fleet` | `fleet` | `dashboard:fleet:read` | Enrolled follower runtime and signed applied-state status from the configured Conductor read source. |
 | Workbench | `/workbench` | `fleet` | `dashboard:signed_action:read` | Prepare, dry-run, and replay guidance for signed Conductor actions; no write path. |

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -55,8 +56,12 @@ func TestSnapshotBudgetSourceMapsForwardRows(t *testing.T) {
 	if row.Agent != "agent-alpha" || !row.ForwardConfigured || row.RequestCount != 7 || row.UniqueDomainCount != 2 {
 		t.Fatalf("unexpected mapped row: %+v", row)
 	}
-	if row.DoWConfigured || row.ActiveSessions != 0 || len(row.Sessions) != 0 {
-		t.Fatalf("DoW fields should stay empty in this PR: %+v", row)
+	value := reflect.ValueOf(row)
+	typeOfRow := value.Type()
+	for i := range value.NumField() {
+		if value.Field(i).IsZero() {
+			t.Errorf("declared budget field %s was not populated", typeOfRow.Field(i).Name)
+		}
 	}
 	fresh, ok := source.BudgetFreshness()
 	if !ok || fresh.ProducedAt != now || fresh.Stale {

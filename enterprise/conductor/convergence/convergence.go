@@ -682,9 +682,6 @@ func batchReceivedAtCurrent(receivedAt, now time.Time, staleAfter time.Duration)
 	if !batchTimestampPlausible(receivedAt, now) {
 		return false
 	}
-	if staleAfter <= 0 {
-		staleAfter = 5 * time.Minute
-	}
 	return now.Sub(receivedAt) <= evidenceStaleWindow(staleAfter)
 }
 

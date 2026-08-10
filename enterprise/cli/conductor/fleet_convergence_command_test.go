@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -40,7 +41,9 @@ type convergenceCommandServer struct {
 	followersBody   string
 	auditStatus     map[string]int
 	auditBody       map[string]string
-	auditDelay      time.Duration
+	auditBarrierAt  int
+	auditBarrierHit chan struct{}
+	auditRelease    chan struct{}
 
 	mu             sync.Mutex
 	requests       int
@@ -89,16 +92,21 @@ func (s *convergenceCommandServer) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		if s.activeAudit > s.maxActiveAudit {
 			s.maxActiveAudit = s.activeAudit
 		}
-		delay := s.auditDelay
+		barrierAt := s.auditBarrierAt
+		barrierHit := s.auditBarrierHit
+		release := s.auditRelease
+		if barrierAt > 0 && barrierHit != nil && s.activeAudit == barrierAt {
+			close(barrierHit)
+		}
 		s.mu.Unlock()
 		defer func() {
 			s.mu.Lock()
 			s.activeAudit--
 			s.mu.Unlock()
 		}()
-		if delay > 0 {
+		if release != nil {
 			select {
-			case <-time.After(delay):
+			case <-release:
 			case <-r.Context().Done():
 				return
 			}
@@ -346,7 +354,19 @@ func TestRunFleetConvergence_FailsClosedOnClientAndAPIErrors(t *testing.T) {
 }
 
 func TestFetchExpectedLatestBatches_BoundsConcurrencyAndHonorsCancellation(t *testing.T) {
-	server := &convergenceCommandServer{auditDelay: 20 * time.Millisecond}
+	release := make(chan struct{})
+	server := &convergenceCommandServer{
+		auditBarrierAt:  maxConcurrentAuditBatchReads,
+		auditBarrierHit: make(chan struct{}),
+		auditRelease:    release,
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
 	clientOpts := newTestClientServer(t, convergenceTestToken, server)
 	client, err := newConductorClient(clientOpts)
 	if err != nil {
@@ -354,14 +374,25 @@ func TestFetchExpectedLatestBatches_BoundsConcurrencyAndHonorsCancellation(t *te
 	}
 	replicas := 1
 	inventory := receiptProducerInventory{OrgID: convergenceTestOrg, FleetID: convergenceTestFleet}
-	for range 2 * maxConcurrentAuditBatchReads {
-		inventory.Producers = append(inventory.Producers, receiptProducerIntent{InstanceID: "current", DesiredReplicas: &replicas})
+	for index := range 2 * maxConcurrentAuditBatchReads {
+		inventory.Producers = append(inventory.Producers, receiptProducerIntent{InstanceID: fmt.Sprintf("current-%d", index), DesiredReplicas: &replicas})
 	}
-	if _, err := fetchExpectedLatestBatches(context.Background(), client, inventory); err != nil {
+	result := make(chan error, 1)
+	go func() {
+		_, err := fetchExpectedLatestBatches(context.Background(), client, inventory)
+		result <- err
+	}()
+	select {
+	case <-server.auditBarrierHit:
+	case <-time.After(time.Second):
+		t.Fatal("audit reads did not reach the concurrency barrier")
+	}
+	if got := server.maxConcurrentAuditRequests(); got != maxConcurrentAuditBatchReads {
+		t.Fatalf("maximum concurrent audit requests = %d, want %d", got, maxConcurrentAuditBatchReads)
+	}
+	close(release)
+	if err := <-result; err != nil {
 		t.Fatalf("fetch batches: %v", err)
-	}
-	if got := server.maxConcurrentAuditRequests(); got > maxConcurrentAuditBatchReads || got < 2 {
-		t.Fatalf("maximum concurrent audit requests = %d, want 2 through %d", got, maxConcurrentAuditBatchReads)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())

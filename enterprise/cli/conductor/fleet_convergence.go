@@ -306,8 +306,6 @@ func fetchConvergenceFollowers(ctx context.Context, client *conductorClient, inv
 }
 
 func fetchExpectedLatestBatches(ctx context.Context, client *conductorClient, inventory receiptProducerInventory) ([]controlplane.AuditBatchSummary, error) {
-	ctx, cancel := context.WithTimeout(ctx, clientHTTPTimeout)
-	defer cancel()
 	producers := make([]receiptProducerIntent, 0, len(inventory.Producers))
 	for _, producer := range inventory.Producers {
 		if producer.Excluded || *producer.DesiredReplicas == 0 {
@@ -333,7 +331,9 @@ func fetchExpectedLatestBatches(ctx context.Context, client *conductorClient, in
 			for index := range jobs {
 				producer := producers[index]
 				params := map[string]string{"org_id": inventory.OrgID, "fleet_id": inventory.FleetID, "instance_id": producer.InstanceID, "limit": "1"}
-				body, err := client.getJSON(ctx, controlplane.AuditBatchesPath+encodeQuery(params))
+				requestCtx, cancel := context.WithTimeout(ctx, clientHTTPTimeout)
+				body, err := client.getJSON(requestCtx, controlplane.AuditBatchesPath+encodeQuery(params))
+				cancel()
 				if err != nil {
 					results[index].err = fmt.Errorf("read latest audit batch for %q: %w", producer.InstanceID, err)
 					continue

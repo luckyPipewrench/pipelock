@@ -788,6 +788,13 @@ fields in the same report; they do not change the delivery exit status while a
 recent batch is still arriving. `--require-current=false` is for collecting a
 diagnostic snapshot while an operator works the alert.
 
+Inventory validation happens before the delivery-health check. The command
+rejects invalid entries, including duplicate producer IDs, missing replica
+counts, and unexplained local-only exceptions, rather than treating them as
+healthy. Delivery health then treats a missing, stale, or implausibly
+future-dated accepted batch as alerting. A recent timestamp is required, but it
+does not turn an invalid inventory into healthy delivery evidence.
+
 ## 14. Remove a follower
 
 `pipelock conductor follower remove` decommissions one exact follower identity.

@@ -31,6 +31,7 @@ const (
 
 const (
 	mcpReceiptLayerA2A           = "mcp_a2a_scanning"
+	mcpReceiptLayerAirlock       = "mcp_airlock"
 	mcpReceiptLayerChain         = "mcp_chain_detection"
 	mcpReceiptLayerDoW           = "mcp_denial_of_wallet"
 	mcpReceiptLayerInput         = "mcp_input_scanning"
@@ -450,6 +451,8 @@ func pickAttribution(eval MCPInputEvaluation) (layer, pattern, severity string) 
 	switch eval.BlockingGate {
 	case blockingGateA2ABody:
 		return mcpReceiptLayerA2A, firstNonEmpty(eval.A2AResult.Reason, blockingGateA2ABody), config.SeverityHigh
+	case blockingGateAirlockHard, blockingGateAirlockMissing:
+		return mcpReceiptLayerAirlock, firstNonEmpty(eval.AirlockReason, mcpAirlockHardReason), config.SeverityHigh
 	case blockingGateDoW:
 		return mcpReceiptLayerDoW, firstNonEmpty(eval.DoWReason, blockingGateDoW), config.SeverityHigh
 	case blockingGateFrozenTool:

@@ -946,7 +946,11 @@ Key-free evidence capture:
 			}
 			if cfg.SessionProfiling.Enabled {
 				mcpMetrics = metrics.New()
-				sm := proxy.NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, mcpMetrics)
+				smOpts := proxy.SessionManagerOptions{Logger: auditLogger}
+				if cfg.Airlock.Enabled {
+					smOpts.AirlockCfg = &cfg.Airlock
+				}
+				sm := proxy.NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, mcpMetrics, smOpts)
 				if cfg.BehavioralBaseline.Enabled {
 					if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
 						return fmt.Errorf("behavioral baseline: %w", err)
@@ -1246,7 +1250,7 @@ Key-free evidence capture:
 						InputCfg: inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
 						ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
-						CEE: cee, Store: store, Baseline: baselineChecker, AdaptiveCfgFn: adaptiveFn, Metrics: mcpMetrics,
+						CEE: cee, Store: store, Baseline: baselineChecker, AdaptiveCfgFn: adaptiveFn, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,
 						ConfigHash: captureConfigHash, Profile: captureProfile,
 						AddressProtectionAgent: captureProfile,
 						RedirectRT:             buildRedirectRT(cfg),
@@ -1299,6 +1303,7 @@ Key-free evidence capture:
 						KillSwitch: ks, ChainMatcher: chainMatcher,
 						CEE: cee, Store: store, Baseline: baselineChecker,
 						AdaptiveCfg:            adaptiveCfg,
+						AirlockCfg:             &cfg.Airlock,
 						ConfigHash:             captureConfigHash,
 						Profile:                captureProfile,
 						AddressProtectionAgent: captureProfile,
@@ -1350,7 +1355,7 @@ Key-free evidence capture:
 					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store, Baseline: baselineChecker,
-					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					AdaptiveCfg: adaptiveCfg, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,
 					ConfigHash: captureConfigHash, Profile: captureProfile,
 					AddressProtectionAgent: captureProfile,
 					RedirectRT:             buildRedirectRT(cfg),
@@ -1528,7 +1533,7 @@ Key-free evidence capture:
 					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store, Baseline: baselineChecker,
-					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					AdaptiveCfg: adaptiveCfg, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,
 					ConfigHash: captureConfigHash, Profile: captureProfile,
 					AddressProtectionAgent: captureProfile,
 					RedirectRT:             buildRedirectRT(cfg),
@@ -1659,7 +1664,7 @@ Key-free evidence capture:
 				InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 				KillSwitch: ks, ChainMatcher: chainMatcher,
 				CEE: cee, Store: store, Baseline: baselineChecker,
-				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+				AdaptiveCfg: adaptiveCfg, AirlockCfg: &cfg.Airlock, Metrics: mcpMetrics,
 				ConfigHash: captureConfigHash, Profile: captureProfile,
 				AddressProtectionAgent: captureProfile,
 				RedirectRT:             buildRedirectRT(cfg),

@@ -374,7 +374,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 			if adaptiveCfg != nil && adaptiveCfg.Enabled {
-				decide.RecordSignal(rec, session.SignalBlock, decide.EscalationParams{
+				recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
 					Threshold:     adaptiveCfg.EscalationThreshold,
 					Metrics:       m,
 					ConsoleWriter: logW,
@@ -544,7 +544,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					_ = emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionBlock)
 					// Signal: tool poisoning blocked.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
-						decide.RecordSignal(rec, session.SignalBlock, decide.EscalationParams{
+						recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
 							Threshold:     adaptiveCfg.EscalationThreshold,
 							Metrics:       m,
 							ConsoleWriter: logW,
@@ -566,7 +566,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				// warn: logged above, record near-miss and fall through to general handling.
 				if adaptiveCfg != nil && adaptiveCfg.Enabled {
-					decide.RecordSignal(rec, session.SignalNearMiss, decide.EscalationParams{
+					recordMCPAdaptiveSignal(opts, rec, session.SignalNearMiss, decide.EscalationParams{
 						Threshold:     adaptiveCfg.EscalationThreshold,
 						Metrics:       m,
 						ConsoleWriter: logW,
@@ -813,12 +813,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			switch effectiveAction {
 			case config.ActionBlock:
-				decide.RecordSignal(rec, session.SignalBlock, ep)
+				recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, ep)
 			case config.ActionStrip:
-				decide.RecordSignal(rec, session.SignalStrip, ep)
+				recordMCPAdaptiveSignal(opts, rec, session.SignalStrip, ep)
 			default:
 				// Warn/ask: near-miss signal (injection detected but not blocked).
-				decide.RecordSignal(rec, session.SignalNearMiss, ep)
+				recordMCPAdaptiveSignal(opts, rec, session.SignalNearMiss, ep)
 			}
 		}
 

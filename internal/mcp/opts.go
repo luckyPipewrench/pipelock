@@ -124,6 +124,8 @@ type MCPProxyOpts struct {
 	BaselineFn    func() session.BaselineChecker
 	AdaptiveCfg   *config.AdaptiveEnforcement
 	AdaptiveCfgFn AdaptiveConfigFunc // hot-reload aware; used by listener proxy. Nil = use static AdaptiveCfg.
+	AirlockCfg    *config.Airlock
+	AirlockCfgFn  func() *config.Airlock
 	TaintCfg      *config.TaintConfig
 	TaintCfgFn    func() *config.TaintConfig
 	// TaintExternalSource marks responses from this MCP transport as external
@@ -475,6 +477,13 @@ func (o MCPProxyOpts) adaptiveCfg() *config.AdaptiveEnforcement {
 		return o.AdaptiveCfgFn()
 	}
 	return o.AdaptiveCfg
+}
+
+func (o MCPProxyOpts) airlockCfg() *config.Airlock {
+	if o.AirlockCfgFn != nil {
+		return o.AirlockCfgFn()
+	}
+	return o.AirlockCfg
 }
 
 func (o MCPProxyOpts) baselineChecker() session.BaselineChecker {

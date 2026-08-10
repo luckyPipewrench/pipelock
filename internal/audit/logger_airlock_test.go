@@ -122,6 +122,32 @@ func TestLogAirlockDeny(t *testing.T) {
 	}
 }
 
+func TestLogAirlockDenyReason(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "airlock_deny_reason.log")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogAirlockDenyReason(testAirlockSession, "hard", "mcp", "tools/call", "hard airlock blocks MCP tools/call", testClientIP, testReqID)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["event"] != string(EventAirlockDeny) {
+		t.Fatalf("event = %v, want %s", entry["event"], EventAirlockDeny)
+	}
+	if entry["reason"] != "hard airlock blocks MCP tools/call" {
+		t.Fatalf("reason = %v, want MCP hard-airlock reason", entry["reason"])
+	}
+	if entry["remediation_hint"] == "" {
+		t.Fatal("remediation_hint is empty")
+	}
+}
+
 func TestLogAirlockDeescalate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

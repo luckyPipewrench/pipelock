@@ -167,6 +167,18 @@ func (s *SessionState) Airlock() *AirlockState {
 	return &s.airlock
 }
 
+// AirlockTier exposes the live session-wide containment tier to transports
+// through session.AirlockTierProvider without importing proxy internals.
+func (s *SessionState) AirlockTier() string {
+	return s.airlock.Tier()
+}
+
+// EscalateAirlock raises this session's containment tier from an adaptive
+// transport signal while preserving the airlock transition provenance.
+func (s *SessionState) EscalateAirlock(tier, trigger string) (changed bool, from, to string) {
+	return s.airlock.SetTierWithProvenance(tier, trigger, airlockSourceTriggers)
+}
+
 // maxAdaptiveScopes bounds the per-session destination-scope cardinality.
 // Each scope holds its own adaptive lane and airlock (mutex + cancel slice),
 // so an agent that touches an unbounded number of distinct hosts must not be

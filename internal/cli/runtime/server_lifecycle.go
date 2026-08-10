@@ -882,6 +882,13 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 			return nil
 		})
+		mcpAirlockFn := func() *config.Airlock {
+			c := s.proxy.CurrentConfig()
+			if c != nil && c.Airlock.Enabled {
+				return &c.Airlock
+			}
+			return nil
+		}
 		mcpConfigHashFn := func() string {
 			c := s.proxy.CurrentConfig()
 			if c == nil {
@@ -953,6 +960,7 @@ func (s *Server) Start(ctx context.Context) error {
 				Store:                        mcpStore,
 				BaselineFn:                   s.proxy.SessionBaselineChecker,
 				AdaptiveCfgFn:                mcpAdaptiveFn,
+				AirlockCfgFn:                 mcpAirlockFn,
 				Metrics:                      s.metrics,
 				RedirectRTFn:                 mcpRedirectRTFn,
 				CaptureObs:                   mcpCaptureObs,

@@ -1837,12 +1837,22 @@ func (l *Logger) LogAirlockEnter(sessionKey, tier, trigger, clientIP, requestID 
 
 // LogAirlockDeny logs a request denied by airlock enforcement.
 func (l *Logger) LogAirlockDeny(sessionKey, tier, transport, method, clientIP, requestID string) {
+	l.LogAirlockDenyReason(sessionKey, tier, transport, method, "", clientIP, requestID)
+}
+
+// LogAirlockDenyReason logs an airlock denial with a transport-specific reason.
+func (l *Logger) LogAirlockDenyReason(sessionKey, tier, transport, method, reason, clientIP, requestID string) {
+	hintReason := reason
+	if hintReason == "" {
+		hintReason = tier
+	}
 	e := newLogEntry(l.zl.Warn(), EventAirlockDeny).
 		str("session", sessionKey).
 		str("tier", tier).
 		str("transport", transport).
 		str("method", method).
-		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, tier)).
+		optStr("reason", reason).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, hintReason)).
 		optStr("client_ip", clientIP).
 		optStr("request_id", requestID)
 	e.msg("airlock denied request")

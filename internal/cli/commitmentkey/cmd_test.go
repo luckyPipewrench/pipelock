@@ -202,7 +202,7 @@ func TestCommandDenialBranches(t *testing.T) {
 		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", missingMarker}, wantAudit: true},
 		{name: "retire without loss acceptance", operation: "retire", args: []string{"retire", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1"}, wantAudit: true},
 		{name: "retire missing required flags before keyring access", operation: "retire", args: []string{"retire", "--keyring", missingMarker, "--accept-loss", "--allow-unaudited"}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch" not set`, wantAuditText: `required flag(s) "key-id, epoch" not set`},
-		{name: "retire requires explicit unaudited break glass", operation: "retire", args: []string{"retire", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1", "--accept-loss"}, wantAudit: true, wantErr: "--allow-unaudited is required to retire without a durable audit sink", wantAuditText: "--allow-unaudited is required to retire without a durable audit sink"},
+		{name: "retire requires explicit unaudited break glass", operation: "retire", args: []string{"retire", "--keyring", missingMarker, "--key-id", activeIDMarker, "--epoch", "1", "--accept-loss"}, wantAudit: true, wantErr: "--allow-unaudited is required to retire without a durable audit sink", wantAuditText: "--allow-unaudited is required to retire without a durable audit sink"},
 		{name: "backup missing required flag before keyring access", operation: "backup", args: []string{"backup", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "out" not set`, wantAuditText: `required flag(s) "out" not set`},
 		{name: "restore missing required flag before keyring access", operation: "restore", args: []string{"restore", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "from" not set`, wantAuditText: `required flag(s) "from" not set`},
 		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", keyringMarker, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
@@ -477,19 +477,25 @@ func mustLoadMetadata(t *testing.T, path string) domkey.Metadata {
 
 type testFileSnapshot struct {
 	data   []byte
+	mode   os.FileMode
 	exists bool
 }
 
 func snapshotTestFile(t *testing.T, path string) testFileSnapshot {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Clean(path))
+	cleanPath := filepath.Clean(path)
+	info, err := os.Stat(cleanPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return testFileSnapshot{}
 	}
 	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	return testFileSnapshot{data: data, exists: true}
+	return testFileSnapshot{data: data, mode: info.Mode().Perm(), exists: true}
 }
 
 func assertTestFileSnapshot(t *testing.T, path string, want testFileSnapshot) {
@@ -497,6 +503,9 @@ func assertTestFileSnapshot(t *testing.T, path string, want testFileSnapshot) {
 	got := snapshotTestFile(t, path)
 	if got.exists != want.exists {
 		t.Fatalf("file existence for %s = %t, want %t", path, got.exists, want.exists)
+	}
+	if got.exists && got.mode != want.mode {
+		t.Fatalf("file permissions for %s = %04o, want %04o", path, got.mode, want.mode)
 	}
 	if !bytes.Equal(got.data, want.data) {
 		t.Fatalf("file contents changed for %s", path)

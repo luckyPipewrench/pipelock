@@ -18,7 +18,7 @@ jobs:
   # Pipelock scans the PR diff before anything else runs. If the scan
   # finds credential leaks, injection patterns, or security misconfigs,
   # all downstream jobs are skipped — no compromised code executes.
-  security-scan:
+  security-scan-real:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -74,7 +74,7 @@ jobs:
             sdk/conformance/testdata/aarp-corpus/
 
   test-oss:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: ubuntu-latest
     name: test-oss (${{ matrix.go-version }}, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -132,7 +132,7 @@ jobs:
           exit "$test_status"
 
   test-enterprise:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: ubuntu-latest
     name: test-enterprise (${{ matrix.go-version }}, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -231,7 +231,7 @@ jobs:
           fail_ci_if_error: false
 
   test-subprocess-coverage:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -283,7 +283,7 @@ jobs:
           test "${{ needs.test-subprocess-coverage.result }}" = "success"
 
   test-macos:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
@@ -316,7 +316,7 @@ jobs:
   # builds _test.go files. The scoped run below compiles that package so the
   # break cannot return silently.
   test-windows:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -358,7 +358,7 @@ jobs:
   # then compile the same contracts for WASI and AIX so build-tag gaps cannot
   # silently remove their implementations.
   test-unsupported-filesystems:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -386,7 +386,7 @@ jobs:
           GOOS=aix GOARCH=ppc64 go test -c -o /tmp/license-aix.test ./internal/license
 
   lint:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -439,7 +439,7 @@ jobs:
         run: make reproducible-build-check
 
   helm:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -456,7 +456,7 @@ jobs:
         run: bash scripts/check-helm-chart.sh
 
   govulncheck:
-    needs: [security-scan]
+    needs: [security-scan-real]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

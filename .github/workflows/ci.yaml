@@ -18,43 +18,88 @@ jobs:
   # Pipelock scans the PR diff before anything else runs. If the scan
   # finds credential leaks, injection patterns, or security misconfigs,
   # all downstream jobs are skipped — no compromised code executes.
+  # Pipelock scans the PR diff before anything else runs. If the scan finds
+  # credential leaks, all downstream jobs are skipped, so no compromised code
+  # executes.
+  #
+  # The scanner is BUILT FROM THE DEFAULT BRANCH rather than downloaded as a
+  # release. A released binary is frozen at the last tag, so a scanner fix on
+  # main did not reach this gate until the next release shipped. That was not
+  # theoretical: the whole-file-deletion hunk fix in #1145 sat on main while the
+  # released binary rejected every deletion-bearing pull request with
+  # "unverifiable input: content outside unified diff hunks" and surfaced it as
+  # "Secrets detected in PR diff" with no secret present.
+  #
+  # Building from origin/main rather than from the pull request head also means
+  # a pull request cannot supply the scanner that inspects it.
   security-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Pipelock Scan
-        uses: luckyPipewrench/pipelock@9d2e37d296359c38e599525a0424cdc189a812e1 # v3.0.0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          scan-diff: 'true'
-          fail-on-findings: 'true'
-          test-vectors: 'false'
-          exclude-paths: |
-            internal/scanner/scanner_test.go
-            internal/scanner/scan_env_test.go
-            internal/scanner/text_dlp_test.go
-            internal/scanner/validate_test.go
-            internal/proxy/intercept_test.go
-            internal/proxy/session_api.go
-            internal/cli/support/bundle_test.go
-            enterprise/licenseservice/*_test.go
-            test/secureiqlab/
-            README.md
-            assets/demo.cast
-            scripts/pr-review.py
-            docs/attacks-blocked.md
-            docs/bypass-resistance.md
-            docs/configuration.md
-            docs/scan-api.md
-            docs/guides/deployment-recipes.md
-            docs/guides/tls-interception.md
-            docs/guides/zed.md
-            examples/demo-readme.sh
-            sdk/conformance/testdata/aarp-corpus/
+          go-version: '1.26'
+          cache: false
+
+      - name: Build scanner from origin/main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin main
+          main_sha=$(git rev-parse FETCH_HEAD)
+          echo "building scanner from origin/main ${main_sha}"
+          build_tree="${RUNNER_TEMP}/trusted-main"
+          git worktree add --detach "${build_tree}" "${main_sha}"
+          ( cd "${build_tree}" && go build -o "${RUNNER_TEMP}/pipelock" ./cmd/pipelock )
+          "${RUNNER_TEMP}/pipelock" --version
+
+      - name: Verify diff generation
+        # Run the generator's tests from the TRUSTED worktree, not the pull
+        # request checkout. A pull request that supplied its own copy of these
+        # scripts could emit an empty diff and pass a scan that read nothing.
+        run: bash "${RUNNER_TEMP}/trusted-main/scripts/test-generate-trusted-diff.sh" "${RUNNER_TEMP}/pipelock"
+
+      - name: Scan the diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          merge_base=$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")
+          diff_file="${RUNNER_TEMP}/pr.diff"
+          # Added-line scope for normal text, full new-side blob only where
+          # attributes or Git's binary heuristic hide the patch.
+          bash "${RUNNER_TEMP}/trusted-main/scripts/generate-trusted-diff.sh" \
+            "${merge_base}" "${HEAD_SHA}" "${diff_file}"
+
+          "${RUNNER_TEMP}/pipelock" git scan-diff \
+            --exclude internal/scanner/scanner_test.go \ \
+            --exclude internal/scanner/scan_env_test.go \ \
+            --exclude internal/scanner/text_dlp_test.go \ \
+            --exclude internal/scanner/validate_test.go \ \
+            --exclude internal/proxy/intercept_test.go \ \
+            --exclude internal/proxy/session_api.go \ \
+            --exclude internal/cli/support/bundle_test.go \ \
+            --exclude 'enterprise/licenseservice/*_test.go' \ \
+            --exclude test/secureiqlab/ \ \
+            --exclude README.md \ \
+            --exclude assets/demo.cast \ \
+            --exclude scripts/pr-review.py \ \
+            --exclude docs/attacks-blocked.md \ \
+            --exclude docs/bypass-resistance.md \ \
+            --exclude docs/configuration.md \ \
+            --exclude docs/scan-api.md \ \
+            --exclude docs/guides/deployment-recipes.md \ \
+            --exclude docs/guides/tls-interception.md \ \
+            --exclude docs/guides/zed.md \ \
+            --exclude examples/demo-readme.sh \ \
+            --exclude sdk/conformance/testdata/aarp-corpus/ \ \
+            < "${diff_file}"
 
   test-oss:
     needs: [security-scan]

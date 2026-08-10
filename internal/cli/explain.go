@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
@@ -571,16 +572,7 @@ func explainHost(rawURL string) string {
 }
 
 func explainHostIsIPLiteral(host string) bool {
-	if host == "" {
-		return false
-	}
-	// net/url strips brackets from IPv6 literals in Hostname(); a colon in the
-	// bare hostname therefore signals an IPv6 literal.
-	if strings.Contains(host, ":") {
-		return true
-	}
-	// Dotted-quad IPv4 literal: four numeric octets, no letters.
-	return strings.Count(host, ".") == 3 && !strings.ContainsAny(host, "abcdefghijklmnopqrstuvwxyz")
+	return destination.ParseIPLiteral(host) != nil
 }
 
 // explainTargetView reports which component of the URL the blocking scanner

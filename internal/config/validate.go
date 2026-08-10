@@ -29,6 +29,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/datalabel"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -2751,7 +2752,7 @@ func (c *Config) validateEmit() error {
 		allowed := false
 		for _, entry := range c.Emit.Forwarder.DestinationAllowlist {
 			normalized := canonicalForwarderHost(entry)
-			if normalized == "" || (parseForwarderIPLiteral(normalized) == nil && strings.ContainsAny(normalized, "*/:@[]%")) {
+			if normalized == "" || (destination.ParseIPLiteral(normalized) == nil && strings.ContainsAny(normalized, "*/:@[]%")) {
 				return fmt.Errorf("invalid emit.forwarder.destination_allowlist entry %q: exact hostnames only", entry)
 			}
 			allowed = allowed || normalized == host
@@ -2789,7 +2790,7 @@ func forwarderHostIsLoopback(host string) bool {
 	if host == "localhost" {
 		return true
 	}
-	if ip := parseForwarderIPLiteral(host); ip != nil {
+	if ip := destination.ParseIPLiteral(host); ip != nil {
 		return ip.IsLoopback()
 	}
 	return false
@@ -2799,122 +2800,10 @@ func forwarderHostIsLoopback(host string) bool {
 // mirroring the scanner's IP-literal canonicalization on the config side so
 // validation and runtime agree on what a given host resolves to.
 func canonicalForwarderHost(host string) string {
-	if ip := parseForwarderIPLiteral(host); ip != nil {
+	if ip := destination.ParseIPLiteral(host); ip != nil {
 		return ip.String()
 	}
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-}
-
-// parseForwarderIPLiteral mirrors scanner.ParseIPLiteral without importing the
-// scanner package (scanner depends on config). Keeping config-side allowlist
-// equality canonical prevents validation/runtime drift for encoded IPv4 forms.
-// The mirror is asserted by TestParseForwarderIPLiteralMirrorsScannerInetAton;
-// any form added to the scanner's parseAlternativeIP needs a case there and a
-// branch here, or an allowlist entry canonicalizes differently at validation
-// time than at runtime.
-func parseForwarderIPLiteral(host string) net.IP {
-	host = strings.TrimSpace(host)
-	if zone := strings.IndexByte(host, '%'); zone >= 0 {
-		host = host[:zone]
-	}
-	host = strings.TrimSuffix(host, ".")
-	if ip := net.ParseIP(host); ip != nil {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			return ipv4
-		}
-		return ip
-	}
-	if strings.Contains(host, ".") {
-		parts := strings.Split(host, ".")
-		if len(parts) < 2 || len(parts) > net.IPv4len {
-			return nil
-		}
-		// Short inet_aton forms, which the scanner accepts and net.ParseIP does
-		// not: A.B packs B into the low 24 bits, A.B.C packs C into the low 16.
-		// Config must agree with the scanner here or an allowlist entry
-		// canonicalizes one way at validation and another at runtime, so a host
-		// validates as one address and is matched as a different one. Unlike the
-		// four-component case below there is no non-standard-notation
-		// requirement, because plain decimal short forms are already unreachable
-		// through net.ParseIP.
-		if len(parts) < net.IPv4len {
-			widths := []int{8, 24}
-			if len(parts) == 3 {
-				widths = []int{8, 8, 16}
-			}
-			values := make([]uint64, len(parts))
-			for i, part := range parts {
-				value, ok := parseForwarderInetAtonComponent(part, widths[i])
-				if !ok {
-					return nil
-				}
-				values[i] = value
-			}
-			packed := values[0] << 24
-			if len(values) == 2 {
-				packed |= values[1]
-			} else {
-				packed |= values[1]<<16 | values[2]
-			}
-			return net.IPv4(byte(packed>>24&0xFF), byte(packed>>16&0xFF), byte(packed>>8&0xFF), byte(packed&0xFF)).To4()
-		}
-		octets := make([]byte, net.IPv4len)
-		nonstandard := false
-		for i, part := range parts {
-			value, ok := parseForwarderInetAtonComponent(part, 8)
-			if !ok {
-				return nil
-			}
-			// #nosec G115 -- parseForwarderInetAtonComponent(part, 8) proves value fits in one octet.
-			octets[i] = byte(value)
-			nonstandard = nonstandard || strings.HasPrefix(part, "0x") || strings.HasPrefix(part, "0X") ||
-				(len(part) > 1 && part[0] == '0' && part != "0")
-		}
-		if !nonstandard {
-			return nil
-		}
-		return net.IPv4(octets[0], octets[1], octets[2], octets[3]).To4()
-	}
-	value, ok := parseForwarderInetAtonComponent(host, 32)
-	if !ok {
-		return nil
-	}
-	// #nosec G115 -- parseForwarderInetAtonComponent(host, 32) proves value fits in one IPv4 word.
-	return net.IPv4(byte(value>>24), byte(value>>16&0xFF), byte(value>>8&0xFF), byte(value&0xFF)).To4()
-}
-
-func parseForwarderInetAtonComponent(component string, bits int) (uint64, bool) {
-	if component == "" {
-		return 0, false
-	}
-
-	base := 10
-	digits := component
-	if len(component) > 1 && component[0] == '0' {
-		base = 8
-		digits = component[1:]
-		if len(component) > 2 && (component[1] == 'x' || component[1] == 'X') {
-			base = 16
-			digits = component[2:]
-		}
-	}
-	if digits == "" {
-		return 0, false
-	}
-	for _, digit := range digits {
-		valid := digit >= '0' && digit <= '9'
-		switch base {
-		case 8:
-			valid = digit >= '0' && digit <= '7'
-		case 16:
-			valid = valid || digit >= 'a' && digit <= 'f' || digit >= 'A' && digit <= 'F'
-		}
-		if !valid {
-			return 0, false
-		}
-	}
-	value, err := strconv.ParseUint(digits, base, bits)
-	return value, err == nil
 }
 
 func validateEmitFilterValues(name string, values []string) error {

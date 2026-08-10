@@ -187,7 +187,7 @@ func TestCore_BlockCannotBeOverriddenByMainScanner(t *testing.T) {
 }
 
 // TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled exercises the core SSRF
-// floor via the shared IP-literal parser (parseAlternativeIP / ParseIPLiteral).
+// floor via the shared IP-literal parser (destination.ParseIPLiteral).
 // Transport wiring is covered separately: fetch, forward proxy, CONNECT, and
 // WebSocket in proxy.TestLegacyIPv4LiteralBlockedAtTransportEntryPoints; MCP
 // stdio resources/read input in TestScanRequest_ResourcesReadHTTPURIUsesURLPolicy;

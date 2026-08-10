@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -888,7 +887,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	// form. Without this, 0x7f000001 bypasses a blocklist entry for 127.0.0.1.
 	// Also update parsed.Host so downstream consumers (checkDLP, checkEntropy,
 	// exempt_domains matching) all see the canonical form.
-	if altIP := parseAlternativeIP(hostname); altIP != nil {
+	if altIP := destination.ParseIPLiteral(hostname); altIP != nil && altIP.To4() != nil && net.ParseIP(hostname) == nil {
 		hostname = altIP.String()
 		port := parsed.Port()
 		if port != "" {
@@ -1028,121 +1027,6 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	}
 
 	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0, SSRFResolvedIPs: ssrfResult.SSRFResolvedIPs}
-}
-
-// parseAlternativeIP decodes non-standard IP address notations that
-// net.ParseIP does not handle: hex (0x7f000001), octal (0177.0.0.1),
-// decimal integer (2130706433), and mixed-radix inet_aton notation.
-// Attackers use these to bypass SSRF checks that only recognize
-// standard dotted-decimal. Returns nil if the hostname is not an
-// alternative IP notation.
-func parseAlternativeIP(hostname string) net.IP {
-	hostname = strings.TrimSpace(hostname)
-	if hostname == "" {
-		return nil
-	}
-
-	// Dotted inet_aton notation. Two components are A.B, where A is 8 bits
-	// and B is 24 bits. Three components are A.B.C, where A and B are 8 bits
-	// and C is 16 bits. Four components are four 8-bit octets.
-	if strings.Contains(hostname, ".") {
-		parts := strings.Split(hostname, ".")
-		if len(parts) < 2 || len(parts) > net.IPv4len {
-			return nil
-		}
-		if len(parts) < net.IPv4len {
-			widths := []int{8, 24}
-			if len(parts) == 3 {
-				widths = []int{8, 8, 16}
-			}
-			values := make([]uint64, len(parts))
-			for i, part := range parts {
-				value, ok := parseInetAtonComponent(part, widths[i])
-				if !ok {
-					return nil
-				}
-				values[i] = value
-			}
-
-			packed := values[0] << 24
-			if len(values) == 2 {
-				packed |= values[1]
-			} else {
-				packed |= values[1]<<16 | values[2]
-			}
-			// #nosec G115 -- component bit limits above prove packed fits exactly in 32 bits.
-			return net.IPv4(byte(packed>>24), byte(packed>>16), byte(packed>>8), byte(packed))
-		}
-
-		octets := make([]byte, net.IPv4len)
-		for i, part := range parts {
-			val, ok := parseInetAtonComponent(part, 8)
-			if !ok {
-				return nil
-			}
-			octets[i] = byte(val & 0xFF)
-		}
-		// Only return if at least one octet used non-standard notation.
-		// Standard dotted-decimal is already handled by net.ParseIP.
-		hasNonStandard := false
-		for _, part := range parts {
-			if strings.HasPrefix(part, "0x") || strings.HasPrefix(part, "0X") ||
-				(len(part) > 1 && part[0] == '0' && part != "0") {
-				hasNonStandard = true
-				break
-			}
-		}
-		if !hasNonStandard {
-			return nil
-		}
-		return net.IPv4(octets[0], octets[1], octets[2], octets[3])
-	}
-
-	// Single integer notation: hex (0x7f000001), octal (017700000001),
-	// or decimal (2130706433). Represents the full 32-bit IPv4 address.
-	val, ok := parseInetAtonComponent(hostname, 32)
-	if !ok {
-		return nil
-	}
-	return net.IPv4(byte(val>>24&0xFF), byte(val>>16&0xFF), byte(val>>8&0xFF), byte(val&0xFF))
-}
-
-// parseInetAtonComponent parses one component using inet_aton's historical
-// radix rules: decimal by default, octal after a leading zero, and hexadecimal
-// after 0x. The explicit grammar rejects signs, separators, and trailing junk
-// so ordinary hostnames cannot become IP literals by partial parsing.
-func parseInetAtonComponent(component string, bits int) (uint64, bool) {
-	if component == "" {
-		return 0, false
-	}
-
-	base := 10
-	digits := component
-	if len(component) > 1 && component[0] == '0' {
-		base = 8
-		digits = component[1:]
-		if len(component) > 2 && (component[1] == 'x' || component[1] == 'X') {
-			base = 16
-			digits = component[2:]
-		}
-	}
-	if digits == "" {
-		return 0, false
-	}
-	for _, digit := range digits {
-		valid := digit >= '0' && digit <= '9'
-		switch base {
-		case 8:
-			valid = digit >= '0' && digit <= '7'
-		case 16:
-			valid = valid || digit >= 'a' && digit <= 'f' || digit >= 'A' && digit <= 'F'
-		}
-		if !valid {
-			return 0, false
-		}
-	}
-	value, err := strconv.ParseUint(digits, base, bits)
-	return value, err == nil
 }
 
 // ParseIPLiteral parses a standard or alternative IP literal into the scanner's
@@ -3075,7 +2959,7 @@ func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
 	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(u.Hostname())), ".")
 	ip := net.ParseIP(host)
 	if ip == nil {
-		ip = parseAlternativeIP(host)
+		ip = destination.ParseIPLiteral(host)
 	}
 	if ip != nil {
 		scannerLabel := ScannerSSRF
@@ -3123,7 +3007,7 @@ func isLowRiskDatabaseURIHost(host string, threshold float64) bool {
 	if host == "" {
 		return false
 	}
-	if net.ParseIP(host) != nil || parseAlternativeIP(host) != nil {
+	if destination.ParseIPLiteral(host) != nil {
 		return false
 	}
 	switch host {

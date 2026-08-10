@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -341,6 +342,11 @@ func TestValidateRejectsMalformedLifecycleState(t *testing.T) {
 		t.Fatalf("rotate fixture: %v", err)
 	}
 	retiredAt := time.Unix(1_700_000_100, 0).UTC()
+	wantError := map[string]string{
+		"duplicate key id":        "duplicate key ID",
+		"duplicate epoch":         "duplicate epoch",
+		"retired epoch not older": "retired key",
+	}
 	mutations := map[string]func(*Keyring){
 		"missing active metadata": func(k *Keyring) { k.Epoch = 0 },
 		"short key id":            func(k *Keyring) { k.Keys[0].KeyID = "ck_short" },
@@ -378,8 +384,12 @@ func TestValidateRejectsMalformedLifecycleState(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			keyring := cloneKeyring(base)
 			mutate(keyring)
-			if err := keyring.Validate(); !errors.Is(err, ErrInvalidKeyring) {
+			err := keyring.Validate()
+			if !errors.Is(err, ErrInvalidKeyring) {
 				t.Fatalf("Validate error = %v, want ErrInvalidKeyring", err)
+			}
+			if want := wantError[name]; want != "" && !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate error = %q, want substring %q", err, want)
 			}
 		})
 	}
@@ -390,8 +400,12 @@ func TestValidateRejectsMalformedLifecycleState(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			keyring := cloneKeyring(retired)
 			mutate(keyring)
-			if err := keyring.Validate(); !errors.Is(err, ErrInvalidKeyring) {
+			err := keyring.Validate()
+			if !errors.Is(err, ErrInvalidKeyring) {
 				t.Fatalf("Validate error = %v, want ErrInvalidKeyring", err)
+			}
+			if want := wantError[name]; want != "" && !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate error = %q, want substring %q", err, want)
 			}
 		})
 	}

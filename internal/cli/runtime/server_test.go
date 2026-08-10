@@ -1429,6 +1429,14 @@ func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 			t.Fatalf("Start error = %v, want zero-armed file-sentry failure", err)
 		}
 	case <-time.After(5 * time.Second):
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown after unexpected startup: %v", err)
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return after Shutdown")
+		}
 		t.Fatal("Start continued despite zero file-sentry coverage")
 	}
 }
@@ -1479,6 +1487,14 @@ func TestServer_StartFileSentryBestEffortRejectsRequiredPathFailure(t *testing.T
 			t.Fatalf("Start error = %v, want required file-sentry failure", err)
 		}
 	case <-time.After(5 * time.Second):
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown after unexpected startup: %v", err)
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return after Shutdown")
+		}
 		t.Fatal("Start continued despite required file-sentry coverage failure")
 	}
 }
@@ -1513,6 +1529,14 @@ func TestServer_StartFileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *t
 			t.Fatalf("Start error = %v, want required duplicate file-sentry failure", err)
 		}
 	case <-time.After(5 * time.Second):
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown after unexpected startup: %v", err)
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return after Shutdown")
+		}
 		t.Fatal("Start continued despite normalized required duplicate coverage failure")
 	}
 }

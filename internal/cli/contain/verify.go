@@ -339,6 +339,14 @@ func allProbes() []probe {
 
 func probesForEnv(env *probeEnv) []probe {
 	probes := allProbes()
+	if !env.verifyRunningImage {
+		for i := range probes {
+			if probes[i].name == "binary_integrity_pin" {
+				probes[i].desc = "deployed pipelock binary matches TOFU pin; running-service image is not verified"
+				break
+			}
+		}
+	}
 	if len(env.workspacePaths) > 0 {
 		probes = append(probes, probe{13, "workspace_access", "pipelock-agent can read configured workspace paths", probeWorkspaceAccess})
 	}
@@ -526,11 +534,12 @@ func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string)
 }
 
 // probeBinaryIntegrity reads the integrity pin written at install time and
-// confirms all three identities agree: the deployed install path, the
+// normally confirms all three identities agree: the deployed install path, the
 // effective systemd ExecStart path, and the executable mapped by the service's
-// current MainPID. Skipped when the needed host state is unavailable to the
-// caller (for example, /proc access requires root); it never reports a pass
-// without all three checks.
+// current MainPID. In enforcement-only mode it checks the deployed path and pin
+// only, and reports that running-service image verification was not performed.
+// Running-image checks skip when the needed host state is unavailable to the
+// caller (for example, /proc access requires root).
 //
 // This is still trust-on-first-use drift detection. It does not survive an
 // attacker able to rewrite the binary, pin, unit, and running process as root.
@@ -567,7 +576,7 @@ func probeBinaryIntegrity(ctx context.Context, env *probeEnv) (string, string) {
 			shortHash(pinned), shortHash(got))
 	}
 	if !env.verifyRunningImage {
-		return statusPass, binaryIntegrityDetail(env, target, pinned)
+		return statusPass, fmt.Sprintf("deployed %s (running service image not verified)", binaryIntegrityDetail(env, target, pinned))
 	}
 
 	// The installed pathname alone is not the running service identity. An
@@ -804,11 +813,13 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	previousVerifyRunningImage := env.verifyRunningImage
+	// Mode policy is per invocation. Callers can share a probe environment in
+	// tests and embedders, so never toggle a field on their environment while a
+	// verification is running.
+	runEnv := *env
 	if opts.enforcementOnly {
-		env.verifyRunningImage = false
+		runEnv.verifyRunningImage = false
 	}
-	defer func() { env.verifyRunningImage = previousVerifyRunningImage }()
 
 	w := cmd.OutOrStdout()
 	var textWriter *errorTrackingWriter
@@ -829,14 +840,14 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 		}
 	}
 
-	probes := probesForEnv(env)
+	probes := probesForEnv(&runEnv)
 	if opts.enforcementOnly {
 		probes = enforcementProbes(probes)
 	}
 	var passN, failN, skipN, unknownN int
 
 	for _, p := range probes {
-		status, detail := p.fn(ctx, env)
+		status, detail := p.fn(ctx, &runEnv)
 		switch status {
 		case statusPass:
 			passN++

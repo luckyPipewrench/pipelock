@@ -22,6 +22,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2880,6 +2881,120 @@ func TestRunVerify_EnforcementOnlySkipsProxyLiveness(t *testing.T) {
 	}
 	if !strings.Contains(out, "10 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing enforcement-only aggregate: %q", out)
+	}
+	if !strings.Contains(out, "probe 10: deployed pipelock binary matches TOFU pin; running-service image is not verified") ||
+		!strings.Contains(out, "running service image not verified") {
+		t.Errorf("enforcement-only probe 10 did not describe its limited evidence: %q", out)
+	}
+	if strings.Contains(out, "deployed and running pipelock binary match TOFU pin") {
+		t.Errorf("enforcement-only probe 10 claimed running-image verification: %q", out)
+	}
+}
+
+func TestRunVerify_EnforcementOnlyJSONReportsLimitedBinaryEvidence(t *testing.T) {
+	env := allPassEnv(t)
+	cmd := newVerifyCmd(t)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := runVerify(cmd, env, verifyOpts{enforcementOnly: true, jsonOutput: true}); err != nil {
+		t.Fatalf("runVerify returned err: %v", err)
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec probeRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue // The aggregate record has a different JSON shape.
+		}
+		if rec.Name != "binary_integrity_pin" {
+			continue
+		}
+		if rec.Status != statusPass || !strings.Contains(rec.Detail, "running service image not verified") {
+			t.Fatalf("binary-integrity JSON record = %+v, want deployed-only pass evidence", rec)
+		}
+		return
+	}
+	t.Fatalf("binary-integrity JSON record missing from %q", buf.String())
+}
+
+func TestRunVerify_ConcurrentModesKeepRunningImagePolicyIsolated(t *testing.T) {
+	env := allPassEnv(t)
+	originalRun := env.runCmd
+
+	enforcementAtBarrier := make(chan struct{})
+	runtimeImageChecks := make(chan struct{}, 2)
+	releaseEnforcement := make(chan struct{})
+	var barrierOnce sync.Once
+	var releaseOnce sync.Once
+	unblockEnforcement := func() { releaseOnce.Do(func() { close(releaseEnforcement) }) }
+	t.Cleanup(unblockEnforcement)
+
+	var counterMu sync.Mutex
+	var counter uint64
+	env.dropCounter = func(_ context.Context, runEnv *probeEnv) (uint64, error) {
+		if !runEnv.verifyRunningImage {
+			barrierOnce.Do(func() {
+				close(enforcementAtBarrier)
+				<-releaseEnforcement
+			})
+		}
+		counterMu.Lock()
+		defer counterMu.Unlock()
+		counter++
+		return counter, nil
+	}
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == testSystemctl && containsArg(args, "--property=ExecStart") && containsArg(args, "--value") {
+			runtimeImageChecks <- struct{}{}
+		}
+		return originalRun(ctx, name, args...)
+	}
+
+	type verifyResult struct {
+		err error
+		out string
+	}
+	run := func(opts verifyOpts) <-chan verifyResult {
+		result := make(chan verifyResult, 1)
+		go func() {
+			cmd := newVerifyCmd(t)
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			result <- verifyResult{err: runVerify(cmd, env, opts), out: buf.String()}
+		}()
+		return result
+	}
+
+	enforcement := run(verifyOpts{enforcementOnly: true})
+	select {
+	case <-enforcementAtBarrier:
+	case <-time.After(time.Second):
+		t.Fatal("enforcement-only verification did not reach the barrier")
+	}
+
+	normal := run(verifyOpts{})
+	select {
+	case <-runtimeImageChecks:
+	case <-time.After(time.Second):
+		unblockEnforcement()
+		normalResult := <-normal
+		enforcementResult := <-enforcement
+		t.Fatalf("normal verification skipped its running-image check while enforcement-only was active: normal=%+v enforcement=%+v", normalResult, enforcementResult)
+	}
+
+	normalResult := <-normal
+	unblockEnforcement()
+	enforcementResult := <-enforcement
+	if normalResult.err != nil || enforcementResult.err != nil {
+		t.Fatalf("concurrent verification errors: normal=%+v enforcement=%+v", normalResult, enforcementResult)
+	}
+	select {
+	case <-runtimeImageChecks:
+		t.Fatal("enforcement-only verification ran the running-image check")
+	default:
+	}
+	if !env.verifyRunningImage {
+		t.Fatal("runVerify mutated the caller-owned running-image policy")
 	}
 }
 

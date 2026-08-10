@@ -90,14 +90,13 @@
       {{ else if .SourceUnavailable }}
         <div class="empty">Budget pressure proves only mediated per-agent budget consumption from the configured budget snapshot source. A budget source is configured, but its snapshot is missing, invalid, oversized, future-dated, or stale. Fix the configured <code>--runtime-snapshot-file</code> or refresh the default <code>--receipt-dir/dashboard/runtime-snapshot.json</code> snapshot.</div>
       {{ else if not .Agents }}
-        <div class="empty">Budget pressure proves only mediated per-agent budget consumption from the configured budget snapshot source. The source is connected, but the loaded snapshot has no agents with configured forward-proxy budgets or live MCP sessions. Configure agent budgets or create live MCP sessions in the runtime that writes <code>--runtime-snapshot-file</code>.</div>
+        <div class="empty">Budget pressure proves only mediated per-agent budget consumption from the configured budget snapshot source. The source is connected, but the loaded snapshot has no agents with configured forward-proxy budgets. Configure agent budgets in the runtime that writes <code>--runtime-snapshot-file</code>.</div>
       {{ else }}
         {{ range .Agents }}
           <div class="agent">
             <div class="agent-head">
               <span class="agent-name">{{ .Agent }}</span>
               {{ if .ForwardConfigured }}<span class="tag">forward budget</span>{{ end }}
-              {{ if .DoWConfigured }}<span class="tag">MCP denial-of-wallet</span>{{ end }}
             </div>
             <div class="cols">
               <div class="col">
@@ -112,39 +111,6 @@
                   </table>
                 {{ else }}
                   <p class="none">No forward-proxy budget configured.</p>
-                {{ end }}
-              </div>
-              <div class="col">
-                <h3>MCP denial-of-wallet</h3>
-                {{ if .DoWConfigured }}
-                  <table class="metric">
-                    <tr><td>Active sessions</td><td>{{ .ActiveSessions }}</td></tr>
-                    <tr><td>Tool calls (sum / per-session limit)</td><td>{{ .ToolCallsDisplay }}</td></tr>
-                    <tr><td>In flight (sum / per-session limit)</td><td>{{ .InflightDisplay }}</td></tr>
-                    <tr><td>Wall-clock limit (min/session)</td><td>{{ if gt .MaxWallClockMinutes 0 }}{{ .MaxWallClockMinutes }}{{ else }}unlimited{{ end }}</td></tr>
-                  </table>
-                  {{ if .Sessions }}
-                    <div class="sessions">
-                      <table>
-                        <thead><tr><th>Session</th><th>Tool calls</th><th>In flight</th><th>Started</th></tr></thead>
-                        <tbody>
-                          {{ range .Sessions }}
-                            <tr>
-                              <td><code>{{ .SessionIDDisplay }}</code></td>
-                              <td>{{ .TotalToolCalls }}</td>
-                              <td>{{ .Inflight }}</td>
-                              <td>{{ .StartedAtDisplay }}</td>
-                            </tr>
-                          {{ end }}
-                        </tbody>
-                      </table>
-                    </div>
-                    {{ if .SessionsTruncated }}
-                      <p class="note">Session rows truncated to the first {{ len .Sessions }} sessions for this agent.</p>
-                    {{ end }}
-                  {{ end }}
-                {{ else }}
-                  <p class="none">No live MCP sessions.</p>
                 {{ end }}
               </div>
             </div>

@@ -80,19 +80,9 @@ jobs:
             --exclude internal/scanner/text_dlp_test.go \ \
             --exclude internal/scanner/validate_test.go \ \
             --exclude internal/proxy/intercept_test.go \ \
-            --exclude internal/proxy/forward_test.go \ \
-            --exclude internal/proxy/adaptive_escalation_test.go \ \
-            --exclude internal/proxy/adaptive_coverage_test.go \ \
-            --exclude internal/proxy/allowlist_scoring_test.go \ \
             --exclude internal/proxy/session_api.go \ \
-            --exclude internal/cli/session/resolver.go \ \
-            --exclude internal/gitprotect/diffscan_test.go \ \
-            --exclude internal/config/config_test.go \ \
-            --exclude internal/cli/test.go \ \
-            --exclude internal/cli/license_test.go \ \
             --exclude internal/cli/support/bundle_test.go \ \
             --exclude 'enterprise/licenseservice/*_test.go' \ \
-            --exclude 'configs/*.yaml' \ \
             --exclude test/secureiqlab/ \ \
             --exclude README.md \ \
             --exclude assets/demo.cast \ \
@@ -105,13 +95,6 @@ jobs:
             --exclude docs/guides/tls-interception.md \ \
             --exclude docs/guides/zed.md \ \
             --exclude examples/demo-readme.sh \ \
-            --exclude examples/sample-events.jsonl \ \
-            --exclude examples/quickstart/ \ \
-            --exclude internal/contract/testdata/golden/ \ \
-            --exclude internal/contract/testdata/invalid/ \ \
-            --exclude internal/signing/testdata/golden/ \ \
-            --exclude internal/cli/hermes/testdata/hermes_e2e_driver.py \ \
-            --exclude internal/cli/hermes/hermes_e2e_test.go \ \
             --exclude sdk/conformance/testdata/aarp-corpus/ \ \
             < "${diff_file}"
 

@@ -115,16 +115,48 @@ func TestNewWithIdentifierEntropyDefersFailure(t *testing.T) {
 	}
 }
 
+func TestNewWithIdentifierEntropyDefersNilEntropyFailure(t *testing.T) {
+	var stream bytes.Buffer
+	logger, err := NewWithIdentifierEntropy(IdentifierEntropyLoggerOpts{
+		Format:         "json",
+		Output:         "stdout",
+		IncludeBlocked: true,
+		Stream:         &stream,
+	})
+	if err != nil {
+		t.Fatalf("construct logger with nil entropy: %v", err)
+	}
+	ctx, err := NewMCPLogContext("MCP", "safe-tool", "configured-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogBlocked(ctx.WithDoWAttribution("raw-subject", "agent"), scannerpkg.ScannerDenialOfWallet, "limit exceeded")
+	if !strings.Contains(stream.String(), `"method":"audit_identifier_redaction"`) {
+		t.Fatalf("nil entropy failure not surfaced: %s", stream.String())
+	}
+	if strings.Contains(stream.String(), "raw-subject") || strings.Contains(stream.String(), `"subject_discriminator"`) {
+		t.Fatalf("nil entropy failure leaked subject data: %s", stream.String())
+	}
+}
+
 func TestNewLoggerDefersIdentifierEntropyFailureAndRecovers(t *testing.T) {
 	wantErr := errors.New("entropy unavailable")
 	var stream bytes.Buffer
 	calls := 0
-	logger, err := newLogger("json", "stdout", "", false, true, &stream, func() (*identifierRedactor, error) {
-		calls++
-		if calls == 1 {
-			return nil, wantErr
-		}
-		return newIdentifierRedactorWithSalt([]byte("recovered-test-entropy")), nil
+	logger, err := newLogger(loggerOpts{
+		IdentifierEntropyLoggerOpts: IdentifierEntropyLoggerOpts{
+			Format:         "json",
+			Output:         "stdout",
+			IncludeBlocked: true,
+			Stream:         &stream,
+		},
+		identifierSource: func() (*identifierRedactor, error) {
+			calls++
+			if calls == 1 {
+				return nil, wantErr
+			}
+			return newIdentifierRedactorWithSalt([]byte("recovered-test-entropy")), nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("newLogger error = %v, want logger availability", err)

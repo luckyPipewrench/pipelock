@@ -13,7 +13,6 @@ import (
 const (
 	dowSubjectKeyDefault   = "_default"
 	dowSubjectTrustDefault = "default"
-	metricAgentDefault     = "_default"
 	dowAuditFallbackTarget = "invalid-mcp-resource"
 )
 
@@ -31,7 +30,7 @@ func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.Lo
 func resolvedDoWAttribution(opts MCPProxyOpts) (string, DoWAttribution) {
 	agent := identitykey.CEESafeAgent(opts.DoWSubjectAgent, opts.DoWSubjectAgentAuth)
 	if agent == "" {
-		agent = metricAgentDefault
+		agent = metrics.DoWAgentDefault
 	}
 	attribution := opts.DoWAttribution
 	if attribution.SubjectKey == "" {

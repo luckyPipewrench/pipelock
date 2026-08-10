@@ -587,7 +587,17 @@ type Logger struct {
 
 // New creates a new audit logger. The caller should call Close when done.
 func New(format, output, filePath string, includeAllowed, includeBlocked bool) (*Logger, error) {
-	return newLogger(format, output, filePath, includeAllowed, includeBlocked, os.Stdout, sharedIdentifierRedactor)
+	return newLogger(loggerOpts{
+		IdentifierEntropyLoggerOpts: IdentifierEntropyLoggerOpts{
+			Format:         format,
+			Output:         output,
+			FilePath:       filePath,
+			IncludeAllowed: includeAllowed,
+			IncludeBlocked: includeBlocked,
+			Stream:         os.Stdout,
+		},
+		identifierSource: sharedIdentifierRedactor,
+	})
 }
 
 // NewWithStream creates an audit logger whose stream output uses stream rather
@@ -595,7 +605,17 @@ func New(format, output, filePath string, includeAllowed, includeBlocked bool) (
 // stdio, use this to send local audit records to stderr without corrupting the
 // protocol stream.
 func NewWithStream(format, output, filePath string, includeAllowed, includeBlocked bool, stream io.Writer) (*Logger, error) {
-	return newLogger(format, output, filePath, includeAllowed, includeBlocked, stream, sharedIdentifierRedactor)
+	return newLogger(loggerOpts{
+		IdentifierEntropyLoggerOpts: IdentifierEntropyLoggerOpts{
+			Format:         format,
+			Output:         output,
+			FilePath:       filePath,
+			IncludeAllowed: includeAllowed,
+			IncludeBlocked: includeBlocked,
+			Stream:         stream,
+		},
+		identifierSource: sharedIdentifierRedactor,
+	})
 }
 
 // IdentifierEntropyLoggerOpts configures an audit logger with an explicit
@@ -613,33 +633,39 @@ type IdentifierEntropyLoggerOpts struct {
 // NewWithIdentifierEntropy is NewWithStream with an explicit entropy source.
 // Production loggers use the process-wide cryptographic source instead.
 func NewWithIdentifierEntropy(opts IdentifierEntropyLoggerOpts) (*Logger, error) {
-	return newLogger(opts.Format, opts.Output, opts.FilePath, opts.IncludeAllowed, opts.IncludeBlocked, opts.Stream, func() (*identifierRedactor, error) {
-		return newIdentifierRedactorFrom(opts.Entropy)
+	return newLogger(loggerOpts{
+		IdentifierEntropyLoggerOpts: opts,
+		identifierSource: func() (*identifierRedactor, error) {
+			if opts.Entropy == nil {
+				return nil, errors.New("initialize audit identifier redaction: entropy reader is nil")
+			}
+			return newIdentifierRedactorFrom(opts.Entropy)
+		},
 	})
 }
 
-func newLogger(
-	format, output, filePath string,
-	includeAllowed, includeBlocked bool,
-	stream io.Writer,
-	identifierSource func() (*identifierRedactor, error),
-) (*Logger, error) {
-	if stream == nil {
+type loggerOpts struct {
+	IdentifierEntropyLoggerOpts
+	identifierSource func() (*identifierRedactor, error)
+}
+
+func newLogger(opts loggerOpts) (*Logger, error) {
+	if opts.Stream == nil {
 		return nil, errors.New("create audit logger: stream writer is nil")
 	}
 	var writers []io.Writer
 
-	if output == "stdout" || output == "both" {
-		if format == "text" {
-			writers = append(writers, zerolog.ConsoleWriter{Out: stream, TimeFormat: time.RFC3339})
+	if opts.Output == "stdout" || opts.Output == "both" {
+		if opts.Format == "text" {
+			writers = append(writers, zerolog.ConsoleWriter{Out: opts.Stream, TimeFormat: time.RFC3339})
 		} else {
-			writers = append(writers, stream)
+			writers = append(writers, opts.Stream)
 		}
 	}
 
 	var fileHandle *os.File
-	if output == "file" || output == "both" {
-		f, err := os.OpenFile(filepath.Clean(filePath), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if opts.Output == "file" || opts.Output == "both" {
+		f, err := os.OpenFile(filepath.Clean(opts.FilePath), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, err
 		}
@@ -648,7 +674,7 @@ func newLogger(
 	}
 
 	if len(writers) == 0 {
-		writers = append(writers, stream)
+		writers = append(writers, opts.Stream)
 	}
 
 	var w io.Writer
@@ -665,10 +691,10 @@ func newLogger(
 
 	return &Logger{
 		zl:                 zl,
-		includeAllowed:     includeAllowed,
-		includeBlocked:     includeBlocked,
+		includeAllowed:     opts.IncludeAllowed,
+		includeBlocked:     opts.IncludeBlocked,
 		fileHandle:         fileHandle,
-		identifierRedactor: newLazyIdentifierRedactor(identifierSource),
+		identifierRedactor: newLazyIdentifierRedactor(opts.identifierSource),
 	}, nil
 }
 

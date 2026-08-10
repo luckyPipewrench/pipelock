@@ -55,8 +55,8 @@ func TestResolvedDoWAttributionDoesNotTrustSelfDeclaredAgent(t *testing.T) {
 		DoWSubjectAgent:     "self-declared-agent",
 		DoWSubjectAgentAuth: envelope.ActorAuthSelfDeclared,
 	})
-	if agent != metricAgentDefault {
-		t.Fatalf("resolved agent = %q, want %q", agent, metricAgentDefault)
+	if agent != metrics.DoWAgentDefault {
+		t.Fatalf("resolved agent = %q, want %q", agent, metrics.DoWAgentDefault)
 	}
 	if attribution.SubjectKey != dowSubjectKeyDefault || attribution.Trust != dowSubjectTrustDefault {
 		t.Fatalf("default attribution = %+v, want subject=%q trust=%q", attribution, dowSubjectKeyDefault, dowSubjectTrustDefault)

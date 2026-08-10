@@ -730,6 +730,34 @@ func TestMcpProxyCmd_EntropyFailureDoesNotStopServing(t *testing.T) {
 	})
 }
 
+func TestMcpProxyCmd_AuditLoggerConstructionFailure(t *testing.T) {
+	wantErr := errors.New("audit logger unavailable")
+	calls := 0
+	newAuditLogger := func(string, string, string, bool, bool, io.Writer) (*audit.Logger, error) {
+		calls++
+		return nil, wantErr
+	}
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{
+		"proxy",
+		"--config", configPath,
+		"--env", "PIPELOCK_TEST_MCP_HELPER=1",
+		"--",
+		os.Args[0],
+		"-test.run=TestMCPRuntimeHelperProcess$",
+	}
+	_, _, err := runMCPProxyCommandWithInputAndCommand(t, args, "", mcpCmdWithAuditLoggerFactory(newAuditLogger))
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "create MCP audit logger") {
+		t.Fatalf("audit logger construction error = %v, want wrapped %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Fatalf("audit logger factory calls = %d, want 1", calls)
+	}
+}
+
 type failingRuntimeEntropyReader struct{}
 
 func (failingRuntimeEntropyReader) Read([]byte) (int, error) {

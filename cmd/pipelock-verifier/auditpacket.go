@@ -218,6 +218,24 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, chainErr)
 	}
 	report.ChainCheck = chainStatusLabel(chainResult)
+	if !chainResult.Valid {
+		if len(chainReceipts) == 0 {
+			// Empty evidence has no chain whose integrity can be assessed, but it
+			// does have a useful completeness verdict for compatibility with the
+			// cross-language verifier contract.
+			lifecycle := completeness.Analyze(chainReceipts, chainResult)
+			report.LifecycleStatus = lifecycle.Status
+			report.LifecycleReason = lifecycle.Reason
+			report.LifecycleAssessment = lifecycleAssessed
+			report.LifecycleAssessmentReason = ""
+		}
+		// Completeness findings describe a chain whose integrity has already
+		// passed. Do not relabel a concrete signature, hash, trust, or sequence
+		// rejection as a lifecycle failure.
+		report.Errors = append(report.Errors, fmt.Sprintf("chain: %s", chainResult.Error))
+		emitReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("packet chain rejected at seq %d: %s", chainResult.BrokenAtSeq, chainResult.Error))
+	}
 	lifecycle := completeness.Analyze(chainReceipts, chainResult)
 	report.LifecycleStatus = lifecycle.Status
 	report.LifecycleReason = lifecycle.Reason

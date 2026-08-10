@@ -306,7 +306,13 @@ fn audit_packet_reports_chain_failure_reason() {
     assert_eq!(report.lifecycle_assessment, "assessed");
     assert_eq!(report.lifecycle_status.as_deref(), Some("BROKEN"));
     assert_eq!(report.lifecycle_reason.as_deref(), Some("chain_broken"));
-    assert!(has_error(&report.errors, "chain_prev_hash mismatch"));
+    assert!(report.errors.as_ref().is_some_and(|errors| errors
+        .iter()
+        .any(|error| error.starts_with("chain: ") && error.contains("chain_prev_hash mismatch"))));
+    assert!(report.errors.as_ref().is_some_and(|errors| errors
+        .iter()
+        .any(|error| error.starts_with("cross-check: ")
+            && error.contains("chain_prev_hash mismatch"))));
 }
 
 #[test]

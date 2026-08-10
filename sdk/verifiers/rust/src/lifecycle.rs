@@ -241,7 +241,10 @@ fn increment(values: &mut HashMap<String, u64>, key: &str) {
 
 fn assess_run(state: &RunState) -> LifecycleReport {
     if !state.opened {
-        return report("UNVERIFIED", "no_open");
+        // An observed run nonce without its own session_open contradicts the
+        // transcript. UNVERIFIED/no_open is reserved for the chain verifier's
+        // explicit, integrity-proven lifecycle_missing_open failure kind above.
+        return report("BROKEN", "chain_broken");
     }
     if state.outcomes.iter().any(|(action_id, outcomes)| {
         *outcomes > 0 && state.intents.get(action_id).unwrap_or(&0) == &0

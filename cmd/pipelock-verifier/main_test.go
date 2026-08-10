@@ -406,6 +406,66 @@ func TestAuditPacketRejectsLifecycleBrokenChain(t *testing.T) {
 	}
 }
 
+func TestAuditPacketPreservesChainFailureInsteadOfRelabelingItAsLifecycle(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	evidence := filepath.Join(dir, "evidence.jsonl")
+	raw, err := os.ReadFile(filepath.Clean(evidence))
+	if err != nil {
+		t.Fatalf("read evidence: %v", err)
+	}
+	// Flip one signature nibble after the packet is written. The recorder
+	// envelope and signature encoding remain valid, so this reaches
+	// cryptographic signature verification rather than the parser.
+	const signaturePrefix = `"signature":"ed25519:`
+	signatureOffset := bytes.Index(raw, []byte(signaturePrefix))
+	if signatureOffset < 0 {
+		t.Fatal("signature prefix not found in evidence")
+	}
+	tampered := append([]byte(nil), raw...)
+	signatureOffset += len(signaturePrefix)
+	if tampered[signatureOffset] == '0' {
+		tampered[signatureOffset] = '1'
+	} else {
+		tampered[signatureOffset] = '0'
+	}
+	if err := os.WriteFile(evidence, tampered, 0o600); err != nil {
+		t.Fatalf("write tampered evidence: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = runAuditPacket(&stdout, &stderr, dir, auditPacketOptions{
+		signerKey:  fix.keyHex,
+		jsonOutput: true,
+	})
+	code := exitCodeFor(err)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("tampered packet code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout.String(), stderr.String())
+	}
+	var report auditPacketReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.ChainCheck != statusFail || report.Valid {
+		t.Fatalf("tampered chain report = %+v, want failed chain and invalid packet", report)
+	}
+	errorsText := strings.Join(report.Errors, "\n")
+	if !strings.Contains(errorsText, "signature verification failed") ||
+		strings.Contains(errorsText, "lifecycle:") {
+		t.Fatalf("chain failure must preserve signature detail without lifecycle label: %q", errorsText)
+	}
+	if report.LifecycleAssessment != lifecycleNotAssessed || report.LifecycleStatus != "" || report.LifecycleReason != "" {
+		t.Fatalf("invalid chain must not receive lifecycle assessment: %+v", report)
+	}
+	if err == nil || !strings.Contains(err.Error(), "packet chain rejected") ||
+		!strings.Contains(err.Error(), "signature verification failed") ||
+		strings.Contains(err.Error(), "packet lifecycle broken") {
+		t.Fatalf("terminal error must preserve chain failure without lifecycle label: %v", err)
+	}
+}
+
 func TestAuditPacket_ValidVerdictRequiresExternalTrustAnchor(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 2)

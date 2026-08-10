@@ -95,6 +95,10 @@ type runState struct {
 	// firstOutcomeSeq records the first outcome for each action so a
 	// terminal outcome-without-intent finding can retain the failing receipt.
 	firstOutcomeSeq map[string]uint64
+	// firstOutcomeIndex is the receipt's position in the supplied chain. Chain
+	// sequence numbers restart at a key transition, so this is the stable way
+	// to select the first orphan outcome across segments.
+	firstOutcomeIndex map[string]int
 
 	lastBeat uint64
 	sawBeat  bool
@@ -170,9 +174,10 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 				Reason:              ReasonBoundedClosed,
 				DurabilityMonotonic: true,
 			},
-			intents:         make(map[string]int),
-			outcomes:        make(map[string]int),
-			firstOutcomeSeq: make(map[string]uint64),
+			intents:           make(map[string]int),
+			outcomes:          make(map[string]int),
+			firstOutcomeSeq:   make(map[string]uint64),
+			firstOutcomeIndex: make(map[string]int),
 		}
 		states[runNonce] = st
 		order = append(order, runNonce)
@@ -234,7 +239,7 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		}
 		if runNonce != "" || ar.SessionControl != nil {
 			st := getRun(runNonce)
-			if violation := applyRecord(st, ar, ctx); violation != "" {
+			if violation := applyRecordAt(st, ar, ctx, i); violation != "" {
 				markStructural(st, violation, ar.ChainSeq, i)
 			}
 			updateLifecycleState(lifecycle, ar)
@@ -254,20 +259,24 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		st := states[runNonce]
 		finalizeRun(st)
 		if st.report.Status == StatusBroken && !structuralBrokenAtSeqSet {
-			var firstOrphanSeq uint64
+			var firstOrphan observedRecord
 			foundOrphan := false
 			for actionID := range st.outcomes {
 				if st.intents[actionID] != 0 {
 					continue
 				}
-				seq := st.firstOutcomeSeq[actionID]
-				if !foundOrphan || seq < firstOrphanSeq {
-					firstOrphanSeq = seq
+				orphan := observedRecord{
+					seq:   st.firstOutcomeSeq[actionID],
+					index: st.firstOutcomeIndex[actionID],
+				}
+				if !foundOrphan || orphan.index < firstOrphan.index {
+					firstOrphan = orphan
 					foundOrphan = true
 				}
 			}
 			if foundOrphan {
-				report.BrokenAtSeq = firstOrphanSeq
+				report.BrokenAtSeq = firstOrphan.seq
+				report.BrokenAtIndex = firstOrphan.index
 				structuralBrokenAtSeqSet = true
 			}
 		}
@@ -280,10 +289,10 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	}
 	if report.Status == StatusBroken {
 		report.Error = firstBrokenRunError(report.Runs, chainResult.Error)
-		if report.BrokenAtSeq == 0 {
+		if !structuralBrokenAtSeqSet {
 			report.BrokenAtSeq = chainResult.BrokenAtSeq
+			report.BrokenAtIndex = chainResult.BrokenAtIndex
 		}
-		report.BrokenAtIndex = chainResult.BrokenAtIndex
 		return report
 	}
 	if !chainResult.Valid {
@@ -377,6 +386,10 @@ func markStructuralViolation(st *runState, violation string) {
 }
 
 func applyRecord(st *runState, ar receipt.ActionRecord, ctx recordContext) string {
+	return applyRecordAt(st, ar, ctx, -1)
+}
+
+func applyRecordAt(st *runState, ar receipt.ActionRecord, ctx recordContext, index int) string {
 	if st.report.Closed {
 		return "record observed after session_close"
 	}
@@ -391,8 +404,14 @@ func applyRecord(st *runState, ar receipt.ActionRecord, ctx recordContext) strin
 		if st.firstOutcomeSeq == nil {
 			st.firstOutcomeSeq = make(map[string]uint64)
 		}
+		if st.firstOutcomeIndex == nil {
+			st.firstOutcomeIndex = make(map[string]int)
+		}
 		if _, ok := st.firstOutcomeSeq[ar.ActionID]; !ok {
 			st.firstOutcomeSeq[ar.ActionID] = ar.ChainSeq
+			if index >= 0 {
+				st.firstOutcomeIndex[ar.ActionID] = index
+			}
 		}
 	}
 

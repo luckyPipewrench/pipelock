@@ -139,15 +139,6 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
     report.lifecycle_reason = Some(lifecycle.reason);
     report.lifecycle_assessment = "assessed".to_string();
     report.lifecycle_assessment_reason = None;
-    let cross_errors = cross_check(&packet, &chain, &receipts);
-    if !cross_errors.is_empty() {
-        report.cross_check = "fail".to_string();
-        for err in cross_errors {
-            push_error(&mut report, format!("cross-check: {err}"));
-        }
-        return Ok(report);
-    }
-    report.cross_check = "pass".to_string();
     if !chain.valid {
         push_error(
             &mut report,
@@ -157,6 +148,15 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
             ),
         );
     }
+    let cross_errors = cross_check(&packet, &chain, &receipts);
+    if !cross_errors.is_empty() {
+        report.cross_check = "fail".to_string();
+        for err in cross_errors {
+            push_error(&mut report, format!("cross-check: {err}"));
+        }
+        return Ok(report);
+    }
+    report.cross_check = "pass".to_string();
     report.valid = chain.valid && !lifecycle_broken && trust_verdict(&packet, opts);
     if lifecycle_broken {
         push_error(&mut report, format!("lifecycle: {lifecycle_reason}"));

@@ -671,6 +671,9 @@ func TestAnalyzeLifecycleChainRejectsActionsOutsideOpenedRun(t *testing.T) {
 			if run.StructuralViolation != tc.wantViolation {
 				t.Fatalf("structural_violation = %q, want %q: %#v", run.StructuralViolation, tc.wantViolation, run)
 			}
+			if name == "pre_open_action" && report.BrokenAtIndex != 0 {
+				t.Fatalf("pre-open action broken_at_index = %d, want index 0 preserved: %#v", report.BrokenAtIndex, report)
+			}
 		})
 	}
 }
@@ -995,6 +998,9 @@ func TestAnalyzeOutcomeWithoutIntentIsBroken(t *testing.T) {
 	}
 	if report.BrokenAtSeq != chain[1].ActionRecord.ChainSeq {
 		t.Fatalf("broken_at_seq = %d, want orphan outcome seq %d", report.BrokenAtSeq, chain[1].ActionRecord.ChainSeq)
+	}
+	if report.BrokenAtIndex != 1 {
+		t.Fatalf("broken_at_index = %d, want first orphan outcome index 1", report.BrokenAtIndex)
 	}
 }
 

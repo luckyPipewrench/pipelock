@@ -204,7 +204,10 @@ function increment(values: Map<string, number>, key: string): void {
 }
 
 function assessRun(state: RunState): LifecycleReport {
-  if (!state.opened) return { status: unverified, reason: "no_open" };
+  // An observed run nonce without its own session_open contradicts the
+  // transcript. UNVERIFIED/no_open is reserved for the chain verifier's
+  // explicit, integrity-proven lifecycle_missing_open failure kind above.
+  if (!state.opened) return { status: broken, reason: "chain_broken" };
   for (const [actionID, outcomes] of state.outcomes) {
     if ((state.intents.get(actionID) ?? 0) === 0 && outcomes > 0)
       return { status: broken, reason: "chain_broken" };

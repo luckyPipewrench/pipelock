@@ -55,6 +55,37 @@
       }
     },
     {
+      "name": "opened_run_a_plus_unopened_run_b",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-opened-a",
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-opened-a",
+                "open_nonce": "open-a"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-unopened-b",
+            "decision_phase": "intent",
+            "action_id": "action-b"
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "BROKEN",
+        "reason": "chain_broken"
+      }
+    },
+    {
       "name": "bounded_closed",
       "receipts": [
         {

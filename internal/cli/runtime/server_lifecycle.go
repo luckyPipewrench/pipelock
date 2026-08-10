@@ -884,6 +884,9 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 			return nil
 		})
+		mcpAirlockFn := func() *config.Airlock {
+			return mcpAirlockConfigFor(s.proxy.CurrentConfig())
+		}
 		mcpConfigHashFn := func() string {
 			c := s.proxy.CurrentConfig()
 			if c == nil {
@@ -955,6 +958,7 @@ func (s *Server) Start(ctx context.Context) error {
 				Store:                        mcpStore,
 				BaselineFn:                   s.proxy.SessionBaselineChecker,
 				AdaptiveCfgFn:                mcpAdaptiveFn,
+				AirlockCfgFn:                 mcpAirlockFn,
 				Metrics:                      s.metrics,
 				RedirectRTFn:                 mcpRedirectRTFn,
 				CaptureObs:                   mcpCaptureObs,
@@ -1200,4 +1204,15 @@ func (s *Server) Start(ctx context.Context) error {
 	s.logger.LogShutdown("signal received")
 	_, _ = fmt.Fprintln(s.opts.Stderr, "\nPipelock stopped.")
 	return nil
+}
+
+// mcpAirlockConfigFor returns the live airlock configuration the MCP listener
+// should enforce against, or nil when airlock is absent or disabled. Returning
+// nil is what lets the MCP gate distinguish "airlock is off, allow" from
+// "airlock is on but this session's tier is unknown", which must fail closed.
+func mcpAirlockConfigFor(c *config.Config) *config.Airlock {
+	if c == nil || !c.Airlock.Enabled {
+		return nil
+	}
+	return &c.Airlock
 }

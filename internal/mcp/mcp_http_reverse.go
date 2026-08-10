@@ -214,6 +214,8 @@ func RunHTTPListenerProxy(
 		ChainMatcher:              opts.chainMatcher(),
 		ChainMatcherFn:            opts.ChainMatcherFn,
 		Store:                     opts.Store,
+		AirlockCfg:                opts.airlockCfg(),
+		AirlockCfgFn:              opts.AirlockCfgFn,
 		Baseline:                  opts.Baseline,
 		BaselineFn:                opts.BaselineFn,
 		AuditLogger:               opts.AuditLogger,
@@ -627,7 +629,7 @@ func RunHTTPListenerProxy(
 			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 				return
 			}
-			decide.RecordSignal(reqRec, sig, decide.EscalationParams{
+			recordMCPAdaptiveSignal(requestBaseOpts, reqRec, sig, decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
 				Logger:        opts.AuditLogger,
 				Metrics:       opts.Metrics,
@@ -1185,6 +1187,14 @@ func RunHTTPListenerProxy(
 		// Input scanning: DLP, injection, policy, chain detection.
 		scanOpts := requestBaseOpts
 		scanOpts.Rec = reqRec
+		if requireStateToken && !stateBound {
+			if airlockCfg := scanOpts.airlockCfg(); airlockCfg != nil && airlockCfg.Enabled {
+				// A headerless request has no authenticated partition from which
+				// to read the caller's tier. Leave the recorder unavailable so the
+				// shared tools/call gate fails closed with its explicit reason.
+				scanOpts.Rec = nil
+			}
+		}
 		scanOpts.BaselineRec = baselineRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
 		scanOpts.AdaptiveCfgFn = nil
@@ -1758,6 +1768,9 @@ func listenerHasStatefulControls(opts MCPProxyOpts) bool {
 	}
 	if opts.Store == nil {
 		return false
+	}
+	if airlockCfg := opts.airlockCfg(); airlockCfg != nil && airlockCfg.Enabled {
+		return true
 	}
 	if adaptiveCfg := opts.adaptiveCfg(); adaptiveCfg != nil && adaptiveCfg.Enabled {
 		return true

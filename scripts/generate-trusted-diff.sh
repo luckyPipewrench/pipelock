@@ -35,6 +35,8 @@ path_file="$tmp_dir/paths"
 draft="$tmp_dir/diff"
 blob_file="$tmp_dir/blob"
 header_file="$tmp_dir/header"
+path_diff="$tmp_dir/path.diff"
+scan_diff="$tmp_dir/scan.diff"
 
 # Bound the path inventory while preserving git's exit status. A repository
 # can classify content as binary through .gitattributes, but name-only output
@@ -72,6 +74,69 @@ while IFS= read -r -d '' path; do
 	object_type=$(git cat-file -t "$object") || fail "cannot read changed object: ${path}"
 	[[ "$object_type" == "blob" ]] || fail "changed path is not a scannable blob: ${path} (${object_type})"
 
+	# Preserve added-line scope whenever Git can produce a textual patch. This
+	# keeps pre-existing findings outside the pull request from blocking an
+	# unrelated edit. Bound each patch as it is generated so the temporary file
+	# cannot grow past the remaining scan budget.
+	current_bytes=$(wc -c < "$draft")
+	remaining_bytes=$((max_bytes - current_bytes))
+	set +e
+	git -c diff.external= -c core.attributesFile=/dev/null \
+		diff --no-textconv --no-ext-diff --no-renames --unified=0 \
+		"$merge_base" "$head" -- "$path" |
+		head -c "$((remaining_bytes + 1))" > "$path_diff"
+	statuses=("${PIPESTATUS[@]}")
+	set -e
+
+	path_diff_bytes=$(wc -c < "$path_diff")
+	if [[ "${statuses[1]}" -ne 0 ]]; then
+		fail "could not bound textual diff for changed path: ${path}"
+	fi
+	if [[ "${statuses[0]}" -ne 0 ]]; then
+		if [[ "${statuses[0]}" -ne 141 || "$path_diff_bytes" -le "$remaining_bytes" ]]; then
+			fail "git diff failed for changed path: ${path} (exit ${statuses[0]})"
+		fi
+	fi
+	if [[ "$path_diff_bytes" -gt "$remaining_bytes" ]]; then
+		fail "generated scan input exceeds the ${max_bytes}-byte scan limit"
+	fi
+
+	if grep -a -q '^@@ ' "$path_diff"; then
+		# Separate added content from patch control lines with one space. Without
+		# this encoding, source beginning with "++ b/" becomes "+++ b/" and can
+		# impersonate a file header to the diff scanner.
+		set +e
+		awk '
+			/^diff --git / { in_hunk = 0 }
+			/^@@ / { in_hunk = 1 }
+			in_hunk && /^\+/ { print "+ " substr($0, 2); next }
+			{ print }
+		' "$path_diff" |
+			head -c "$((remaining_bytes + 1))" > "$scan_diff"
+		statuses=("${PIPESTATUS[@]}")
+		set -e
+
+		scan_diff_bytes=$(wc -c < "$scan_diff")
+		if [[ "${statuses[1]}" -ne 0 ]]; then
+			fail "could not bound encoded textual diff for changed path: ${path}"
+		fi
+		if [[ "${statuses[0]}" -ne 0 ]]; then
+			if [[ "${statuses[0]}" -ne 141 || "$scan_diff_bytes" -le "$remaining_bytes" ]]; then
+				fail "could not encode textual diff for changed path: ${path} (exit ${statuses[0]})"
+			fi
+		fi
+		if [[ "$scan_diff_bytes" -gt "$remaining_bytes" ]]; then
+			fail "generated scan input exceeds the ${max_bytes}-byte scan limit"
+		fi
+
+		cat "$scan_diff" >> "$draft"
+		continue
+	fi
+
+	# Git emits no usable hunks for binary-classified content and paths hidden
+	# by attributes such as -diff. Only those paths fall back to a synthetic
+	# full-blob patch, closing the binary bypass without broadening normal text
+	# changes to historical file content.
 	blob_size=$(git cat-file -s "$object") || fail "cannot size changed blob: ${path}"
 	[[ "$blob_size" =~ ^[0-9]+$ ]] || fail "invalid blob size for changed path: ${path}"
 	[[ "$blob_size" -le "$max_bytes" ]] || fail "changed blob exceeds the ${max_bytes}-byte scan limit: ${path}"
@@ -119,4 +184,4 @@ while IFS= read -r -d '' path; do
 done < "$path_file"
 
 mv -- "$draft" "$output"
-printf 'raw changed-blob diff bytes: %s\n' "$(wc -c < "$output")"
+printf 'trusted diff bytes: %s\n' "$(wc -c < "$output")"

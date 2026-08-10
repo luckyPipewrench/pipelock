@@ -59,6 +59,33 @@ assert_scan_blocks() {
 
 token="AKIA$(printf 'A%.0s' {1..16})"
 
+existing_repo="$tmp_dir/existing-credential"
+init_repo "$existing_repo"
+printf 'docs example\n%s\n' "$token" > "$existing_repo/doc.md"
+commit_all "$existing_repo"
+printf 'one more line\n' >> "$existing_repo/doc.md"
+commit_all "$existing_repo"
+existing_base=$(git -C "$existing_repo" rev-parse HEAD^)
+existing_head=$(git -C "$existing_repo" rev-parse HEAD)
+(
+	cd "$existing_repo"
+	bash "$generator" "$existing_base" "$existing_head" "$tmp_dir/existing.diff"
+)
+"$pipelock_bin" git scan-diff < "$tmp_dir/existing.diff" > "$tmp_dir/existing.scan" 2>&1 ||
+	fail "untouched credential blocked an unrelated edit: $(< "$tmp_dir/existing.scan")"
+grep -q '^+ one more line$' "$tmp_dir/existing.diff" || fail "ordinary text diff omitted the added line"
+if grep -q "^+ .*${token}" "$tmp_dir/existing.diff"; then
+	fail "ordinary text diff included an untouched credential"
+fi
+
+text_repo="$tmp_dir/new-text-credential"
+init_repo "$text_repo"
+printf 'ordinary content\n' > "$text_repo/notes.txt"
+commit_all "$text_repo"
+printf 'credential=%s\n' "$token" >> "$text_repo/notes.txt"
+commit_all "$text_repo"
+assert_scan_blocks "$text_repo" new_text_credential
+
 attr_repo="$tmp_dir/attributes"
 init_repo "$attr_repo"
 printf 'secret.txt -diff\n' > "$attr_repo/.gitattributes"

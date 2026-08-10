@@ -82,11 +82,10 @@ jobs:
           set -euo pipefail
           merge_base=$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")
           diff_file="${RUNNER_TEMP}/pr.diff"
-          # Scan every changed new-side blob in full. Normal textual diffs can
-          # hide content behind repository .gitattributes or Git's NUL-byte
-          # binary heuristic. The generator rejects unscannable objects and
-          # bounds both its path inventory and output before scanner input is
-          # accepted.
+          # Keep normal text findings scoped to added lines. Fall back to the
+          # full new-side blob when attributes or Git's binary heuristic hide
+          # the patch. The generator rejects unscannable objects and bounds its
+          # path inventory and output before scanner input is accepted.
           bash scripts/generate-trusted-diff.sh \
             "${merge_base}" "${HEAD_SHA}" "${diff_file}" 52428800
 

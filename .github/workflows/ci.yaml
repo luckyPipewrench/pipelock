@@ -39,19 +39,9 @@ jobs:
             internal/scanner/text_dlp_test.go
             internal/scanner/validate_test.go
             internal/proxy/intercept_test.go
-            internal/proxy/forward_test.go
-            internal/proxy/adaptive_escalation_test.go
-            internal/proxy/adaptive_coverage_test.go
-            internal/proxy/allowlist_scoring_test.go
             internal/proxy/session_api.go
-            internal/cli/session/resolver.go
-            internal/gitprotect/diffscan_test.go
-            internal/config/config_test.go
-            internal/cli/test.go
-            internal/cli/license_test.go
             internal/cli/support/bundle_test.go
             enterprise/licenseservice/*_test.go
-            configs/*.yaml
             test/secureiqlab/
             README.md
             assets/demo.cast
@@ -64,13 +54,6 @@ jobs:
             docs/guides/tls-interception.md
             docs/guides/zed.md
             examples/demo-readme.sh
-            examples/sample-events.jsonl
-            examples/quickstart/
-            internal/contract/testdata/golden/
-            internal/contract/testdata/invalid/
-            internal/signing/testdata/golden/
-            internal/cli/hermes/testdata/hermes_e2e_driver.py
-            internal/cli/hermes/hermes_e2e_test.go
             sdk/conformance/testdata/aarp-corpus/
 
   test-oss:

@@ -27,9 +27,9 @@ type DLPScanner interface {
 // Watcher monitors directories for file writes and scans content for secrets.
 type Watcher interface {
 	// Arm installs watches on all configured directories synchronously.
-	// Must be called before launching the child process. Returns an error
-	// only if a required:true entry cannot be installed; non-required
-	// failures are recorded via DegradedPaths and the onError callback.
+	// Must be called before launching the child process. Best-effort mode
+	// continues with accessible paths but reports every skipped subtree;
+	// strict mode, required paths, and zero armed paths return an error.
 	Arm() error
 	// Start processes filesystem events. Blocks until ctx is cancelled.
 	// Call Arm() first to install watches.
@@ -41,10 +41,12 @@ type Watcher interface {
 	// channels; agent findings on this lane remain enforcement-relevant in
 	// block mode. Single-probe diagnostics cannot saturate the normal buffer.
 	OverflowFindings() <-chan Finding
-	// DegradedPaths returns the configured watch_paths entries whose Arm()
-	// install failed and whose entry was not marked required:true. Empty
-	// when the watcher is fully armed. Safe to call concurrently.
+	// DegradedPaths returns the root or descendant subtrees Arm() could not
+	// monitor. Empty when the watcher is fully armed. Safe to call concurrently.
 	DegradedPaths() []DegradedPath
+	// DegradedPathCount returns all failed roots/subtrees from the latest Arm,
+	// including samples omitted from DegradedPaths to bound diagnostics.
+	DegradedPathCount() int
 	// Close stops the watcher and releases resources.
 	Close() error
 }

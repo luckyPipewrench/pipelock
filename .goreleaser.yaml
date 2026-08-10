@@ -187,7 +187,7 @@ brews:
 
 dockers:
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-amd64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -205,7 +205,7 @@ dockers:
     dockerfile: Dockerfile.goreleaser
 
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-arm64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -226,7 +226,7 @@ dockers:
   # Init container image for K8s sidecar deployments (MCP stdio wrapping).
   # Alpine-based so `cp` is available for copying the binary to shared volumes.
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-amd64"
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-amd64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -244,7 +244,7 @@ dockers:
     dockerfile: Dockerfile.init
 
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-arm64"
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-arm64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -265,7 +265,7 @@ dockers:
   # License service: webhook handler for Polar subscription events.
   # Alpine-based (needs writable fs for SQLite + audit ledger).
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-amd64"
+      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-amd64"
     ids: [license-service]
     use: buildx
     build_flag_templates:
@@ -283,7 +283,7 @@ dockers:
     dockerfile: Dockerfile.license-service
 
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-arm64"
+      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-arm64"
     ids: [license-service]
     use: buildx
     build_flag_templates:
@@ -302,32 +302,17 @@ dockers:
     dockerfile: Dockerfile.license-service
 
 docker_manifests:
-  - name_template: "ghcr.io/luckypipewrench/pipelock:{{ .Version }}"
+  - name_template: "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging"
     image_templates:
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-amd64"
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-arm64"
 
-  - name_template: "ghcr.io/luckypipewrench/pipelock:latest"
+  - name_template: "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging"
     image_templates:
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-amd64"
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-arm64"
 
-  - name_template: "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}"
+  - name_template: "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging"
     image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-amd64"
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-arm64"
-
-  - name_template: "ghcr.io/luckypipewrench/pipelock-init:latest"
-    image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-amd64"
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-arm64"
-
-  - name_template: "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-amd64"
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-arm64"
-
-  - name_template: "ghcr.io/luckypipewrench/pipelock-license-service:latest"
-    image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-amd64"
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-arm64"
+      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-amd64"
+      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-arm64"

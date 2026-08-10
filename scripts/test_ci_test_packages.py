@@ -108,8 +108,8 @@ class TestPackageSharding(unittest.TestCase):
         workflow = (root / ".github/workflows/release.yaml").read_text(encoding="utf-8")
         goreleaser = (root / ".goreleaser.yaml").read_text(encoding="utf-8")
 
-        version_match = re.search(r"^\s*cosign-release:\s*['\"]v(\d+)\.", workflow, re.MULTILINE)
-        self.assertIsNotNone(version_match, "release workflow cosign version not found")
+        version_match = re.search(r"^\s*COSIGN_VERSION:\s*v(\d+)\.", workflow, re.MULTILINE)
+        self.assertIsNotNone(version_match, "release workflow COSIGN_VERSION not found")
 
         uses_legacy_outputs = (
             "--output-certificate=" in goreleaser and "--output-signature=" in goreleaser

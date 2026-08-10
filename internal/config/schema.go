@@ -223,18 +223,12 @@ type TrustedKey struct {
 }
 
 // WatchPath is a single file_sentry watch entry. YAML accepts either a bare
-// string ("/foo") for legacy/default behavior, or a mapping
-// ({path: "/foo", required: true}) when the operator wants to opt that path
-// into hard-fail-on-arm semantics.
+// string ("/foo") for the default behavior, or a mapping
+// ({path: "/foo", required: true}) when the operator wants Arm() to return
+// an error for a skipped subtree beneath that root in best-effort mode.
 //
-// Required=false (the default) means a failure to install the watch (missing
-// path, permission denied, inotify exhaustion on that specific subtree) is
-// recorded as degraded health but does not abort startup. Other paths still
-// arm. This is the soft-fail path operators get for free.
-//
-// Required=true means the watch MUST install. If Arm() cannot install it,
-// startup fails closed. Use this for paths whose monitoring is part of the
-// security boundary (e.g. credential stores under your control).
+// Required=true makes Arm() return an error when it cannot watch the root or
+// any of its descendants, even when best_effort is set.
 type WatchPath struct {
 	Path     string `yaml:"path"`
 	Required bool   `yaml:"required"`
@@ -245,7 +239,7 @@ type WatchPath struct {
 // the MCP tool call path. Applies to subprocess MCP mode only.
 type FileSentry struct {
 	Enabled        bool        `yaml:"enabled"`
-	BestEffort     bool        `yaml:"best_effort"` // degrade gracefully when watch setup fails (e.g. inotify exhaustion)
+	BestEffort     bool        `yaml:"best_effort"` // keep accessible paths armed when a root or subtree cannot be watched
 	WatchPaths     []WatchPath `yaml:"watch_paths"`
 	ScanContent    *bool       `yaml:"scan_content"`    // nil = default true
 	IgnorePatterns []string    `yaml:"ignore_patterns"` // glob patterns to skip

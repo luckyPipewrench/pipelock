@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1281,7 +1282,7 @@ func TestServer_StartArmsFileSentry(t *testing.T) {
 	}()
 
 	waitForServerCancel(t, s)
-	waitForServerOutput(t, buf, "file sentry watching 1 path(s)")
+	waitForServerOutput(t, buf, "file sentry watching 1 configured path(s)")
 
 	proof := filepath.Join(watchDir, "file-sentry-run-proof.txt")
 	content := strings.Join([]string{"AKIA", "IOSFODNN7", "EXAMPLE"}, "")
@@ -1315,6 +1316,7 @@ func TestServer_StartReportsArmedWatchCount(t *testing.T) {
 		"mode: balanced",
 		"file_sentry:",
 		"  enabled: true",
+		"  best_effort: true",
 		"  watch_paths:",
 		"    - " + strconv.Quote(watchDir),
 		"    - " + strconv.Quote(missing),
@@ -1336,10 +1338,10 @@ func TestServer_StartReportsArmedWatchCount(t *testing.T) {
 	}()
 
 	waitForServerCancel(t, s)
-	// One of the two configured paths is non-required and cannot arm, so the
-	// startup line must report 1 of 2 armed with the degraded count.
-	waitForServerOutput(t, buf, "file sentry watching 1 of 2 path(s)")
-	if out := buf.String(); !strings.Contains(out, "1 degraded/unarmed") {
+	// One configured root remains armed while the missing root is reported as
+	// a skipped subtree. Do not claim an invented root count from that data.
+	waitForServerOutput(t, buf, "file sentry watching 2 configured path(s)")
+	if out := buf.String(); !strings.Contains(out, "1 skipped/unarmed subtree(s)") {
 		t.Fatalf("startup missing degraded/unarmed count:\n%s", out)
 	}
 
@@ -1353,6 +1355,189 @@ func TestServer_StartReportsArmedWatchCount(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Start did not return within 5s of Shutdown")
+	}
+}
+
+func TestServer_StartFailsWhenFileSentryArmsNoPaths(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nonexistent-zero-armed")
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"file_sentry:",
+		"  enabled: true",
+		"  watch_paths:",
+		"    - " + strconv.Quote(missing),
+		"  scan_content: true",
+		"",
+	}, "\n"))
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start(context.Background())
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "no watch paths armed") {
+			t.Fatalf("Start error = %v, want zero-armed file-sentry failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown after unexpected startup: %v", err)
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return after Shutdown")
+		}
+		t.Fatal("Start continued even though file sentry armed no paths")
+	}
+}
+
+func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nonexistent-best-effort")
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"file_sentry:",
+		"  enabled: true",
+		"  best_effort: true",
+		"  watch_paths:",
+		"    - " + strconv.Quote(missing),
+		"  scan_content: true",
+		"",
+	}, "\n"))
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start(context.Background())
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "no watch paths armed") {
+			t.Fatalf("Start error = %v, want zero-armed file-sentry failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown after unexpected startup: %v", err)
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return after Shutdown")
+		}
+		t.Fatal("Start continued despite zero file-sentry coverage")
+	}
+}
+
+func TestServer_StartFileSentryBestEffortRejectsInitializationFailure(t *testing.T) {
+	failFileSentryWatcher(t, errors.New("watcher setup failed"))
+	cfg := config.Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.BestEffort = true
+	cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: t.TempDir()}}
+	s, _ := newTestServer(t, nil)
+
+	if _, err := s.startFileSentry(context.Background(), cfg, func() {}); err == nil || !strings.Contains(err.Error(), "file sentry init failed") {
+		t.Fatalf("startFileSentry error = %v, want initialization failure", err)
+	}
+}
+
+func TestServer_StartFileSentryBestEffortRejectsRequiredPathFailure(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-required")
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"file_sentry:",
+		"  enabled: true",
+		"  best_effort: true",
+		"  watch_paths:",
+		"    - " + strconv.Quote(watchDir),
+		"    - path: " + strconv.Quote(missing),
+		"      required: true",
+		"  scan_content: true",
+		"",
+	}, "\n"))
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start(context.Background())
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
+			t.Fatalf("Start error = %v, want required file-sentry failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown after unexpected startup: %v", err)
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return after Shutdown")
+		}
+		t.Fatal("Start continued despite required file-sentry coverage failure")
+	}
+}
+
+func TestServer_StartFileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-required-duplicate")
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"file_sentry:",
+		"  enabled: true",
+		"  best_effort: true",
+		"  watch_paths:",
+		"    - " + strconv.Quote(watchDir),
+		"    - " + strconv.Quote(missing),
+		"    - path: " + strconv.Quote(missing+string(filepath.Separator)),
+		"      required: true",
+		"  scan_content: true",
+		"",
+	}, "\n"))
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Start(context.Background()) }()
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
+			t.Fatalf("Start error = %v, want required duplicate file-sentry failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown after unexpected startup: %v", err)
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return after Shutdown")
+		}
+		t.Fatal("Start continued despite normalized required duplicate coverage failure")
 	}
 }
 

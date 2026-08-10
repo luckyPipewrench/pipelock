@@ -946,10 +946,7 @@ Key-free evidence capture:
 			}
 			if cfg.SessionProfiling.Enabled {
 				mcpMetrics = metrics.New()
-				smOpts := proxy.SessionManagerOptions{Logger: auditLogger}
-				if cfg.Airlock.Enabled {
-					smOpts.AirlockCfg = &cfg.Airlock
-				}
+				smOpts := mcpSessionManagerOptions(cfg, auditLogger)
 				sm := proxy.NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, mcpMetrics, smOpts)
 				if cfg.BehavioralBaseline.Enabled {
 					if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
@@ -1716,4 +1713,16 @@ Key-free evidence capture:
 	cmd.Flags().BoolVar(&sandboxBestEffort, "sandbox-best-effort", false, "degrade gracefully when namespace isolation is unavailable (implies --sandbox)")
 	cmd.Flags().StringVar(&sandboxWorkspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	return cmd
+}
+
+// mcpSessionManagerOptions builds the session-manager options for the
+// standalone `pipelock mcp proxy` runtime. Attaching the airlock config is what
+// lets that runtime raise and read a per-session airlock tier; without it the
+// tier stays none and hard-tier MCP containment can never engage.
+func mcpSessionManagerOptions(cfg *config.Config, auditLogger *audit.Logger) proxy.SessionManagerOptions {
+	opts := proxy.SessionManagerOptions{Logger: auditLogger}
+	if cfg != nil && cfg.Airlock.Enabled {
+		opts.AirlockCfg = &cfg.Airlock
+	}
+	return opts
 }

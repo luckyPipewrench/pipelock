@@ -701,7 +701,14 @@ func ForwardScannedInput(
 			airlockMsg := fmt.Sprintf("pipelock: input line %d: %s: %q", lineNum, blockMessage, enforcementTarget)
 			_, _ = fmt.Fprintln(logW, airlockMsg)
 			if auditLogger != nil {
-				auditLogger.LogAirlockDenyReason("default", eval.AirlockTier, "mcp", methodToolsCall, eval.AirlockReason, "", canonicalID(verdict.ID))
+				auditLogger.LogAirlockDenyReason(audit.AirlockDenyOptions{
+					SessionKey: "default",
+					Tier:       eval.AirlockTier,
+					Transport:  firstNonEmpty(opts.Transport, transportMCPStdio),
+					Method:     methodToolsCall,
+					Reason:     eval.AirlockReason,
+					RequestID:  canonicalID(verdict.ID),
+				})
 			}
 			if m != nil {
 				m.RecordAirlockDenial(eval.AirlockTier, "mcp", methodToolsCall)
@@ -712,6 +719,7 @@ func ForwardScannedInput(
 				LogMessage:     airlockMsg,
 				ErrorCode:      -32001,
 				ErrorMessage:   blockMessage,
+				ErrorData:      mcpBlockReasonData(blockreason.AirlockActive),
 			}
 			_ = emitToolReceipt(config.ActionBlock)
 			continue

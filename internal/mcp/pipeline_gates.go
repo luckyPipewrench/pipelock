@@ -49,6 +49,8 @@ const (
 	mcpAirlockDrainReason       = "drain airlock blocks MCP tools/call"
 	mcpAirlockUnavailableReason = "airlock tier unavailable for MCP tools/call"
 	mcpAirlockInvalidReason     = "invalid airlock tier blocks MCP tools/call"
+	mcpAirlockTierUnavailable   = "unavailable"
+	mcpAirlockTierInvalid       = "invalid"
 )
 
 const (
@@ -107,8 +109,8 @@ type MCPInputEvaluation struct {
 	// because content scan is the first gate.
 	ContentVerdict InputVerdict
 
-	// AirlockTier is populated when the live per-client hard-tier gate
-	// contains a tools/call request.
+	// AirlockTier is the bounded tier or synthetic state used for audit and
+	// metrics attribution when the airlock gate contains a tools/call request.
 	AirlockTier string
 	// AirlockReason distinguishes a hard-tier denial from a fail-closed
 	// denial when an enabled airlock's per-session tier is unavailable.
@@ -204,13 +206,16 @@ func applyMCPAirlockGate(opts MCPProxyOpts, eval *MCPInputEvaluation, method str
 	if method != methodToolsCall {
 		return false
 	}
+	if cfg := opts.airlockCfg(); cfg != nil && !cfg.Enabled {
+		return false
+	}
 	tier, available := session.AirlockTier(opts.Rec)
 	if !available {
 		cfg := opts.airlockCfg()
 		if cfg == nil || !cfg.Enabled {
 			return false
 		}
-		eval.AirlockTier = "unavailable"
+		eval.AirlockTier = mcpAirlockTierUnavailable
 		eval.AirlockReason = mcpAirlockUnavailableReason
 		eval.BlockingGate = blockingGateAirlockMissing
 		return true
@@ -223,8 +228,8 @@ func applyMCPAirlockGate(opts MCPProxyOpts, eval *MCPInputEvaluation, method str
 	case config.AirlockTierDrain:
 		eval.AirlockReason = mcpAirlockDrainReason
 	default:
-		eval.AirlockTier = tier
-		eval.AirlockReason = mcpAirlockInvalidReason
+		eval.AirlockTier = mcpAirlockTierInvalid
+		eval.AirlockReason = fmt.Sprintf("%s: %q", mcpAirlockInvalidReason, tier)
 		eval.BlockingGate = blockingGateAirlockMissing
 		return true
 	}
@@ -238,7 +243,7 @@ func mcpAirlockBlockMessage(eval MCPInputEvaluation) string {
 		return "pipelock: tool call blocked by drain airlock"
 	}
 	if eval.BlockingGate == blockingGateAirlockMissing {
-		if eval.AirlockReason == mcpAirlockInvalidReason {
+		if eval.AirlockTier == mcpAirlockTierInvalid {
 			return "pipelock: tool call blocked because the airlock tier is invalid"
 		}
 		return "pipelock: tool call blocked because the airlock tier is unavailable"

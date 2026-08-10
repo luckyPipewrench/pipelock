@@ -44,8 +44,7 @@ func TestMCPAirlockConfigFor(t *testing.T) {
 		if got.Triggers.OnCritical != config.AirlockTierHard {
 			t.Fatalf("OnCritical = %q, want %q", got.Triggers.OnCritical, config.AirlockTierHard)
 		}
-		// The pointer must alias the live config so a hot reload is observed
-		// rather than a copy frozen at listener construction.
+		// The pointer aliases the loaded config rather than an unnecessary copy.
 		if got != &cfg.Airlock {
 			t.Fatal("returned airlock config is a copy, not the live config")
 		}

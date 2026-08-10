@@ -31,7 +31,8 @@ func recordMCPAdaptiveSignal(opts MCPProxyOpts, rec session.Recorder, sig sessio
 
 	tier := ""
 	trigger := ""
-	switch session.EscalationLabel(rec.EscalationLevel()) {
+	level := session.EscalationLabel(rec.EscalationLevel())
+	switch level {
 	case "elevated":
 		tier = cfg.Triggers.OnElevated
 		trigger = mcpAirlockTriggerElevated
@@ -48,7 +49,7 @@ func recordMCPAdaptiveSignal(opts MCPProxyOpts, rec session.Recorder, sig sessio
 
 	if changed, from, to := session.EscalateAirlock(rec, tier, trigger); changed {
 		if p.Logger != nil {
-			p.Logger.LogAirlockEnter(p.Session, to, "adaptive_"+session.EscalationLabel(rec.EscalationLevel()), p.ClientIP, p.RequestID)
+			p.Logger.LogAirlockEnter(p.Session, to, "adaptive_"+level, p.ClientIP, p.RequestID)
 		}
 		if p.Metrics != nil {
 			p.Metrics.RecordAirlockTransition(from, to, "adaptive")

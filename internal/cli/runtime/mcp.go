@@ -1716,9 +1716,8 @@ Key-free evidence capture:
 }
 
 // mcpSessionManagerOptions builds the session-manager options for the
-// standalone `pipelock mcp proxy` runtime. Attaching the airlock config is what
-// lets that runtime raise and read a per-session airlock tier; without it the
-// tier stays none and hard-tier MCP containment can never engage.
+// single-load standalone `pipelock mcp proxy` runtime. The command does not
+// reload configuration; it attaches airlock state only when enabled at startup.
 func mcpSessionManagerOptions(cfg *config.Config, auditLogger *audit.Logger) proxy.SessionManagerOptions {
 	opts := proxy.SessionManagerOptions{Logger: auditLogger}
 	if cfg != nil && cfg.Airlock.Enabled {

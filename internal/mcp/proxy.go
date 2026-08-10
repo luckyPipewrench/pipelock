@@ -376,8 +376,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if adaptiveCfg != nil && adaptiveCfg.Enabled {
 				recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
 					Threshold:     adaptiveCfg.EscalationThreshold,
+					Logger:        opts.AuditLogger,
 					Metrics:       m,
 					ConsoleWriter: logW,
+					Session:       firstNonEmpty(opts.ServerName, "default"),
 				})
 			}
 			resp := blockMediaPolicyResponse(rpcID, mediaResult.BlockReason)
@@ -546,8 +548,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
 						recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
 							Threshold:     adaptiveCfg.EscalationThreshold,
+							Logger:        opts.AuditLogger,
 							Metrics:       m,
 							ConsoleWriter: logW,
+							Session:       firstNonEmpty(opts.ServerName, "default"),
 						})
 					}
 					resp := blockResponseReason(toolResult.RPCID, "tool poisoning detected in tools/list")
@@ -568,8 +572,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				if adaptiveCfg != nil && adaptiveCfg.Enabled {
 					recordMCPAdaptiveSignal(opts, rec, session.SignalNearMiss, decide.EscalationParams{
 						Threshold:     adaptiveCfg.EscalationThreshold,
+						Logger:        opts.AuditLogger,
 						Metrics:       m,
 						ConsoleWriter: logW,
+						Session:       firstNonEmpty(opts.ServerName, "default"),
 					})
 				}
 			}
@@ -808,8 +814,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if adaptiveCfg != nil && adaptiveCfg.Enabled {
 			ep := decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
+				Logger:        opts.AuditLogger,
 				Metrics:       m,
 				ConsoleWriter: logW,
+				Session:       firstNonEmpty(opts.ServerName, "default"),
 			}
 			switch effectiveAction {
 			case config.ActionBlock:

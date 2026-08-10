@@ -442,7 +442,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "%s: %q\n", blockMessage, enforcementTarget)
 		if auditLogger != nil {
 			warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
-			auditLogger.LogAirlockDenyReason(auditSessionKey, eval.AirlockTier, "mcp", methodToolsCall, eval.AirlockReason, warnCtx.ClientIP, canonicalID(verdict.ID))
+			auditLogger.LogAirlockDenyReason(audit.AirlockDenyOptions{
+				SessionKey:      auditSessionKey,
+				Tier:            eval.AirlockTier,
+				Transport:       firstNonEmpty(opts.Transport, transportMCPHTTP),
+				Method:          methodToolsCall,
+				Reason:          eval.AirlockReason,
+				ClientIP:        warnCtx.ClientIP,
+				RequestID:       canonicalID(verdict.ID),
+				HTTPCorrelation: true,
+			})
 		}
 		if m != nil {
 			m.RecordAirlockDenial(eval.AirlockTier, "mcp", methodToolsCall)
@@ -454,6 +463,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			LogMessage:     "blocked (airlock)",
 			ErrorCode:      -32001,
 			ErrorMessage:   blockMessage,
+			ErrorData:      mcpBlockReasonData(blockreason.AirlockActive),
 		}
 		return result
 	case blockingGateDoW:

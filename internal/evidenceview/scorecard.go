@@ -84,14 +84,20 @@ func ComputeScorecard(receipts []receipt.Receipt, trustedKeys map[string]Trusted
 	}
 
 	anchoredState, anchoredChip, anchoredDetail, anchoredSub := anchorState(sessionID)
+	scorecard := Scorecard{
+		Authentic:    authentic,
+		Untampered:   untamperedLine(chain, len(receipts)),
+		Anchored:     Line{State: anchoredState, Chip: anchoredChip, Detail: anchoredDetail, Sub: anchoredSub},
+		Completeness: completenessLine(chain, receipts),
+	}
+	if lifecycle := completeness.Analyze(receipts, chain); chain.Valid && lifecycle.Status == completeness.StatusBroken {
+		detail := fmt.Sprintf("Lifecycle evidence is broken (%s); this session cannot be treated as authenticated or untampered.", lifecycle.Reason)
+		scorecard.Authentic = Line{State: StateFail, Chip: "Lifecycle broken", Detail: detail}
+		scorecard.Untampered = Line{State: StateFail, Chip: "Lifecycle broken", Detail: detail}
+	}
 	return scorecardResult{
-		Scorecard: Scorecard{
-			Authentic:    authentic,
-			Untampered:   untamperedLine(chain, len(receipts)),
-			Anchored:     Line{State: anchoredState, Chip: anchoredChip, Detail: anchoredDetail, Sub: anchoredSub},
-			Completeness: completenessLine(chain, receipts),
-		},
-		Chain: chain,
+		Scorecard: scorecard,
+		Chain:     chain,
 	}
 }
 
@@ -245,6 +251,22 @@ func completenessLine(chain receipt.ChainResult, receipts []receipt.Receipt) Lin
 			lifecycle.Status,
 			lifecycle.Reason,
 		)
+	}
+	if !chain.Valid {
+		return Line{
+			State:  StateFail,
+			Chip:   chipChainBroken,
+			Detail: detail,
+			Sub:    "Chain integrity verification failed; lifecycle evidence cannot be assessed.",
+		}
+	}
+	if lifecycle.Status == completeness.StatusBroken {
+		return Line{
+			State:  StateFail,
+			Chip:   "Lifecycle broken",
+			Detail: detail,
+			Sub:    "Lifecycle evidence is structurally inconsistent; do not treat this session as authenticated or untampered.",
+		}
 	}
 	return Line{
 		State:  StateLimited,

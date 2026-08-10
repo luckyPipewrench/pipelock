@@ -382,6 +382,31 @@ test("g1 rotated close receipt_count invalid fixture is rejected", async () => {
   assert.match(result.error ?? "", /session_close receipt_count mismatch/u);
 });
 
+test("chain CLI rejects a lifecycle-broken but signature-valid chain", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["dist/src/cli.js", "chain", g1ValidChain, "--key", trustedKeys().split(",")[0]!, "--json"],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as { valid: boolean; error?: string };
+  assert.equal(report.valid, false);
+  assert.match(report.error ?? "", /lifecycle: chain_broken/u);
+});
+
+test("chain CLI preserves a chain trust failure over lifecycle assessment", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["dist/src/cli.js", "chain", g1ValidChain, "--key", "00".repeat(32), "--json"],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as { valid: boolean; error?: string };
+  assert.equal(report.valid, false);
+  assert.match(report.error ?? "", /not in the trusted set/u);
+  assert.doesNotMatch(report.error ?? "", /lifecycle:/u);
+});
+
 test("g1 plain action after close fixture is rejected", async () => {
   const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
     .public_key_hex;
@@ -410,7 +435,21 @@ test("g1 close without open fixture is rejected", async () => {
     .public_key_hex;
   const result = await verifyChain(extractReceipts(g1CloseWithoutOpen), key);
   assert.equal(result.valid, false);
+  assert.equal(result.integrity_verified, true);
+  assert.equal(result.failure_kind, "lifecycle_missing_open");
   assert.match(result.error ?? "", /first receipt is not a matching session_open/u);
+});
+
+test("endorsement verification does not skip root trust after lifecycle-only failure", async () => {
+  const result = await verifyChainWithEndorsements(
+    extractReceipts(g1CloseWithoutOpen),
+    "0".repeat(64),
+    { sessionID: "conformance-session", endorsements: [] },
+  );
+
+  assert.equal(result.valid, false);
+  assert.notEqual(result.failure_kind, "lifecycle_missing_open");
+  assert.match(result.error ?? "", /genesis signer key is not in the trusted root set/u);
 });
 
 test("g1 new session after close fixture verifies", async () => {
@@ -439,6 +478,120 @@ test("g1 session_control missing record run_nonce is rejected with valid signatu
   assert.equal(result.valid, false);
   assert.equal(result.broken_at_seq, 3);
   assert.match(result.error ?? "", /session_control receipt missing run_nonce/u);
+});
+
+test("signed malformed lifecycle controls fail closed through the chain CLI", async () => {
+  type ControlCase = {
+    name: string;
+    mutate: (receipts: Receipt[]) => void;
+    directError?: RegExp;
+    cliError: RegExp;
+  };
+  const cases: ControlCase[] = [
+    {
+      name: "missing heartbeat payload",
+      mutate: (receipts) => {
+        delete (receipts[3]!.action_record!.session_control as Record<string, unknown>)[
+          "heartbeat"
+        ];
+      },
+      directError: /session_control must carry exactly one payload/u,
+      cliError: /session_control must carry exactly one payload/u,
+    },
+    {
+      name: "null heartbeat payload",
+      mutate: (receipts) => {
+        (receipts[3]!.action_record!.session_control as Record<string, unknown>)["heartbeat"] =
+          null;
+      },
+      directError: /session_control must carry exactly one payload/u,
+      cliError: /session_control must carry exactly one payload/u,
+    },
+    {
+      name: "missing close payload",
+      mutate: (receipts) => {
+        delete (receipts[4]!.action_record!.session_control as Record<string, unknown>)["close"];
+      },
+      directError: /session_control must carry exactly one payload/u,
+      cliError: /session_control must carry exactly one payload/u,
+    },
+    {
+      name: "null close payload",
+      mutate: (receipts) => {
+        (receipts[4]!.action_record!.session_control as Record<string, unknown>)["close"] = null;
+      },
+      directError: /session_control must carry exactly one payload/u,
+      cliError: /session_control must carry exactly one payload/u,
+    },
+    {
+      name: "heartbeat run_nonce mismatch",
+      mutate: (receipts) => {
+        const heartbeat = (receipts[3]!.action_record!.session_control as Record<string, unknown>)[
+          "heartbeat"
+        ] as Record<string, unknown>;
+        heartbeat["run_nonce"] = "other-run";
+      },
+      directError: /session_control run_nonce mismatch/u,
+      cliError: /session_control run_nonce mismatch/u,
+    },
+    {
+      name: "close run_nonce mismatch",
+      mutate: (receipts) => {
+        const close = (receipts[4]!.action_record!.session_control as Record<string, unknown>)[
+          "close"
+        ] as Record<string, unknown>;
+        close["run_nonce"] = "other-run";
+      },
+      directError: /session_control run_nonce mismatch/u,
+      cliError: /session_control run_nonce mismatch/u,
+    },
+    {
+      name: "missing beat with malformed durability counter",
+      mutate: (receipts) => {
+        const heartbeat = (receipts[3]!.action_record!.session_control as Record<string, unknown>)[
+          "heartbeat"
+        ] as Record<string, unknown>;
+        delete heartbeat["beat"];
+        heartbeat["fsync_errors_gated"] = "malformed-counter";
+      },
+      cliError: /lifecycle: chain_broken/u,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-signed-control-"));
+    try {
+      const entries = readEntries(g1ValidChain);
+      const receipts = entries.map((entry) => entry.detail as Receipt);
+      testCase.mutate(receipts);
+      await resignG1Tail(receipts, 3);
+      const file = join(dir, "evidence.jsonl");
+      writeFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, {
+        mode: 0o600,
+      });
+
+      const direct = await verifyChain(extractReceipts(file), trustedKeys().split(",")[0]!);
+      if (testCase.directError === undefined) {
+        assert.equal(direct.valid, true, `${testCase.name}: ${direct.error}`);
+      } else {
+        assert.equal(direct.valid, false, `${testCase.name} unexpectedly verified`);
+        assert.match(direct.error ?? "", testCase.directError, testCase.name);
+        assert.doesNotMatch(direct.error ?? "", /signature/u, testCase.name);
+      }
+
+      const cli = spawnSync(
+        process.execPath,
+        ["dist/src/cli.js", "chain", file, "--key", trustedKeys().split(",")[0]!, "--json"],
+        { encoding: "utf8", timeout: 10_000 },
+      );
+      assert.equal(cli.status, 1, `${testCase.name}: ${cli.stderr}`);
+      const report = JSON.parse(cli.stdout) as { valid: boolean; error?: string };
+      assert.equal(report.valid, false, testCase.name);
+      assert.match(report.error ?? "", testCase.cliError, testCase.name);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 });
 
 test("g1 signed field tampering is rejected", async () => {
@@ -914,6 +1067,24 @@ async function signActionReceiptWithTestKey(receipt: Receipt): Promise<void> {
     seed_hex: string;
   };
   await signActionReceiptWithKey(receipt, keyInfo.seed_hex, keyInfo.public_key_hex);
+}
+
+async function resignG1Tail(receipts: Receipt[], start: number): Promise<void> {
+  let previousHash = receiptHash(receipts[start - 1]!);
+  for (let i = start; i < receipts.length; i++) {
+    const receipt = receipts[i]!;
+    const record = receipt.action_record!;
+    record.chain_prev_hash = previousHash;
+    const control = record.session_control as Record<string, unknown> | undefined;
+    if (control?.["kind"] === "session_close") {
+      const close = control["close"];
+      if (typeof close === "object" && close !== null && !Array.isArray(close)) {
+        (close as Record<string, unknown>)["root_hash"] = previousHash;
+      }
+    }
+    await signActionReceiptWithTestKey(receipt);
+    previousHash = receiptHash(receipt);
+  }
 }
 
 async function signActionReceiptWithKey(

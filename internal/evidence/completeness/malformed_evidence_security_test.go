@@ -412,7 +412,7 @@ func TestLifecycleOnlyIntegrityWarningIsPreserved(t *testing.T) {
 		IntegrityVerified: true,
 		Error:             "lifecycle verifier warning",
 	})
-	if report.Status != StatusLimited || report.Reason != ReasonAbnormalEnd {
+	if report.Status != StatusUnverified || report.Reason != ReasonNoOpen {
 		t.Fatalf("continued lifecycle analysis = %s/%s: %#v", report.Status, report.Reason, report)
 	}
 	if report.Error != "lifecycle verifier warning" {

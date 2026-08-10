@@ -29,6 +29,25 @@ export async function verifyChain(
   expectedKeyHex = "",
   options: VerifyChainOptions = {},
 ): Promise<ChainResult> {
+  const result = await verifyChainInternal(receipts, expectedKeyHex, options, false);
+  if (result.failure_kind !== "lifecycle_missing_open") return result;
+  const integrity = await verifyChainInternal(receipts, expectedKeyHex, options, true);
+  if (!integrity.valid) return integrity;
+  return {
+    ...result,
+    integrity_verified: true,
+    receipt_count: integrity.receipt_count,
+    final_seq: integrity.final_seq,
+    root_hash: integrity.root_hash,
+  };
+}
+
+async function verifyChainInternal(
+  receipts: Receipt[],
+  expectedKeyHex: string,
+  options: VerifyChainOptions,
+  skipLifecycle: boolean,
+): Promise<ChainResult> {
   if (receipts.length === 0) {
     return broken(0, "empty chain");
   }
@@ -111,23 +130,31 @@ export async function verifyChain(
       return broken(seq, `seq gap: expected ${expectedSeq}, got ${seq}`);
     }
     state.segmentReceiptCount++;
-    const closedRunResult = validateClosedRun(receipt, seq, state);
-    if (closedRunResult !== undefined) return closedRunResult;
-    const sessionControlResult = validateSessionControlState(receipt, seq, i, state);
-    if (sessionControlResult !== undefined) return sessionControlResult;
-    const open = sessionOpen(receipt);
-    if (open !== undefined) {
-      state.activeRunNonce = typeof open["run_nonce"] === "string" ? open["run_nonce"] : undefined;
-      state.activeOpenNonce =
-        typeof open["open_nonce"] === "string" ? open["open_nonce"] : undefined;
-      if (state.activeRunNonce !== undefined) {
-        state.openedRuns.add(state.activeRunNonce);
-        state.closedRuns.delete(state.activeRunNonce);
+    if (!skipLifecycle) {
+      const closedRunResult = validateClosedRun(receipt, seq, state);
+      if (closedRunResult !== undefined) {
+        if (closedRunResult.error?.includes("first receipt is not a matching session_open")) {
+          closedRunResult.failure_kind = "lifecycle_missing_open";
+        }
+        return closedRunResult;
       }
-    } else if (sessionClose(receipt) !== undefined) {
-      if (state.activeRunNonce !== undefined) state.closedRuns.add(state.activeRunNonce);
-      state.activeRunNonce = undefined;
-      state.activeOpenNonce = undefined;
+      const sessionControlResult = validateSessionControlState(receipt, seq, i, state);
+      if (sessionControlResult !== undefined) return sessionControlResult;
+      const open = sessionOpen(receipt);
+      if (open !== undefined) {
+        state.activeRunNonce =
+          typeof open["run_nonce"] === "string" ? open["run_nonce"] : undefined;
+        state.activeOpenNonce =
+          typeof open["open_nonce"] === "string" ? open["open_nonce"] : undefined;
+        if (state.activeRunNonce !== undefined) {
+          state.openedRuns.add(state.activeRunNonce);
+          state.closedRuns.delete(state.activeRunNonce);
+        }
+      } else if (sessionClose(receipt) !== undefined) {
+        if (state.activeRunNonce !== undefined) state.closedRuns.add(state.activeRunNonce);
+        state.activeRunNonce = undefined;
+        state.activeOpenNonce = undefined;
+      }
     }
     state.prevHash = receiptHash(receipt);
     state.priorSegmentSeq = seq;
@@ -510,7 +537,11 @@ function unpinnedChainResult(seq: number): ChainResult {
   return broken(seq, unpinnedReceiptBanner);
 }
 
-function broken(seq: number, error: string): ChainResult {
+function broken(
+  seq: number,
+  error: string,
+  failureKind?: ChainResult["failure_kind"],
+): ChainResult {
   return {
     valid: false,
     receipt_count: 0,
@@ -518,6 +549,7 @@ function broken(seq: number, error: string): ChainResult {
     root_hash: "",
     broken_at_seq: seq,
     error,
+    failure_kind: failureKind,
   };
 }
 

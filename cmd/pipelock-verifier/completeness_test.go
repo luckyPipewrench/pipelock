@@ -238,7 +238,24 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 	})
 
-	t.Run("lifecycle_no_open_exits_nonzero", func(t *testing.T) {
+	t.Run("empty_chain_is_unverified_and_exits_nonzero", func(t *testing.T) {
+		t.Parallel()
+		f := newCompletenessFixture(t)
+		path := writeCompletenessJSONL(t, nil)
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", f.keyHex, path)
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+		}
+		report := parseCompletenessReport(t, stdout)
+		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoReceipts {
+			t.Fatalf("report=%s/%s, want UNVERIFIED/no_receipts", report.Status, report.Reason)
+		}
+		if report.SignaturesVerified {
+			t.Fatalf("empty chain claimed signatures_verified: %#v", report)
+		}
+	})
+
+	t.Run("integrity_verified_no_open_is_unverified_and_exits_nonzero", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
 		path := writeCompletenessJSONL(t, []receipt.Receipt{
@@ -250,8 +267,8 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 		}
 		report := parseCompletenessReport(t, stdout)
-		if report.Status != completeness.StatusBroken || report.Reason != completeness.ReasonChainBroken {
-			t.Fatalf("report=%s/%s, want BROKEN/chain_broken", report.Status, report.Reason)
+		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoOpen {
+			t.Fatalf("report=%s/%s, want UNVERIFIED/no_open", report.Status, report.Reason)
 		}
 		if !report.SignaturesVerified {
 			t.Fatalf("signatures_verified=false, want true for signed malformed lifecycle: %#v", report)
@@ -280,7 +297,7 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 	})
 
-	t.Run("broken_no_open_without_key_stays_nonzero_with_unpinned_flag", func(t *testing.T) {
+	t.Run("unverified_no_open_remains_nonzero_with_unpinned_opt_in", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
 		path := writeCompletenessJSONL(t, []receipt.Receipt{
@@ -301,8 +318,8 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 			t.Fatalf("allow-unpinned code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 		}
 		report = parseCompletenessReport(t, stdout)
-		if report.Status != completeness.StatusBroken || report.Reason != completeness.ReasonChainBroken || !report.Unpinned {
-			t.Fatalf("allow-unpinned report=%s/%s unpinned=%t, want BROKEN/chain_broken unpinned", report.Status, report.Reason, report.Unpinned)
+		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoOpen || !report.Unpinned {
+			t.Fatalf("allow-unpinned report=%s/%s unpinned=%t, want UNVERIFIED/no_open unpinned", report.Status, report.Reason, report.Unpinned)
 		}
 	})
 
@@ -671,6 +688,63 @@ func TestChainCLIShowsCompletenessReasonForATailDroppedChain(t *testing.T) {
 	droppedLine := scorecardLine(t, droppedOut)
 	if closedLine == droppedLine {
 		t.Fatalf("a bounded chain and a tail-dropped one print the same completeness line: %s", closedLine)
+	}
+}
+
+func TestChainCLIRejectsLifecycleBrokenChain(t *testing.T) {
+	t.Parallel()
+	fixture := newCompletenessFixture(t)
+	path := writeChainRecorderJSONL(t, []receipt.Receipt{
+		fixture.open("run-chain-broken", "open-chain-broken"),
+		fixture.outcome("run-chain-broken", "outcome-without-intent"),
+	})
+
+	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("lifecycle-broken chain code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+	}
+	var report chainReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if report.Valid || report.Scorecard == nil {
+		t.Fatalf("lifecycle-broken chain accepted or omitted scorecard: %+v", report)
+	}
+	if report.Scorecard.Authentic.Status != "FAIL" || report.Scorecard.Untampered.Status != "FAIL" {
+		t.Fatalf("lifecycle-broken scorecard left a pass: %+v", report.Scorecard)
+	}
+	if !strings.Contains(report.Error, "lifecycle: chain_broken") {
+		t.Fatalf("missing lifecycle error: %q", report.Error)
+	}
+	if report.BrokenAtSeq == 0 {
+		t.Fatalf("lifecycle break sequence omitted: %+v", report)
+	}
+	if report.Scorecard.Untampered.BrokenAtSeq != report.BrokenAtSeq {
+		t.Fatalf("scorecard break sequence = %d, want lifecycle break sequence %d: %+v",
+			report.Scorecard.Untampered.BrokenAtSeq, report.BrokenAtSeq, report.Scorecard.Untampered)
+	}
+}
+
+func TestChainCLIPreservesIntegrityFailureInsteadOfRelabelingItAsLifecycle(t *testing.T) {
+	t.Parallel()
+	fixture := newCompletenessFixture(t)
+	chain := []receipt.Receipt{
+		fixture.open("run-integrity-broken", "open-integrity-broken"),
+		fixture.close("run-integrity-broken", "open-integrity-broken"),
+	}
+	chain[1].ActionRecord.Target = "https://api.vendor.example/forged"
+	path := writeChainRecorderJSONL(t, chain)
+
+	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("integrity-broken chain code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+	}
+	var report chainReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout)
+	}
+	if strings.Contains(report.Error, "lifecycle:") || !strings.Contains(report.Error, "signature") {
+		t.Fatalf("integrity error relabeled as lifecycle: %q", report.Error)
 	}
 }
 

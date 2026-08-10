@@ -8,13 +8,14 @@ use pipelock_verifier_rs::canonical::{canonicalize_action_record, canonicalize_j
 use pipelock_verifier_rs::chain::{
     compute_session_open_genesis, receipt_hash, verify_chain, verify_chain_with_options,
 };
-use pipelock_verifier_rs::recorder::extract_receipts;
+use pipelock_verifier_rs::recorder::{extract_receipts, read_entries};
 use pipelock_verifier_rs::rotation::{
     load_rotation_endorsement_file, verify_chain_with_endorsements, verify_rotation_endorsement,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TempFixture(std::path::PathBuf);
@@ -78,6 +79,53 @@ fn g1_go_generated_chain_verifies_with_pinned_key() {
     assert!(result.valid, "{:?}", result.error);
     assert_eq!(result.receipt_count, 5);
     assert_eq!(result.final_seq, 4);
+}
+
+#[test]
+fn chain_cli_rejects_a_lifecycle_broken_but_signature_valid_chain() {
+    let root = common::repo_root();
+    let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+        .args([
+            "chain",
+            root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")
+                .to_str()
+                .unwrap(),
+            "--key",
+            &conformance_key(),
+            "--json",
+        ])
+        .output()
+        .expect("run chain CLI");
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    let report: Value = serde_json::from_slice(&output.stdout).expect("chain JSON report");
+    assert_eq!(report["valid"], Value::Bool(false));
+    assert!(report["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("lifecycle: chain_broken"));
+}
+
+#[test]
+fn chain_cli_preserves_a_chain_trust_failure_over_lifecycle_assessment() {
+    let root = common::repo_root();
+    let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+        .args([
+            "chain",
+            root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")
+                .to_str()
+                .unwrap(),
+            "--key",
+            &"00".repeat(32),
+            "--json",
+        ])
+        .output()
+        .expect("run chain CLI");
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    let report: Value = serde_json::from_slice(&output.stdout).expect("chain JSON report");
+    assert_eq!(report["valid"], Value::Bool(false));
+    let error = report["error"].as_str().unwrap_or("");
+    assert!(error.contains("not in the trusted set"), "{error}");
+    assert!(!error.contains("lifecycle:"), "{error}");
 }
 
 #[test]
@@ -498,10 +546,37 @@ fn g1_close_without_open_fixture_is_rejected() {
     let key = conformance_key();
     let result = verify_chain(&receipts, &key);
     assert!(!result.valid);
+    assert!(result.integrity_verified);
+    assert_eq!(
+        result.failure_kind.as_deref(),
+        Some("lifecycle_missing_open")
+    );
     assert!(result
         .error
         .unwrap_or_default()
         .contains("first receipt is not a matching session_open"));
+}
+
+#[test]
+fn endorsement_verification_does_not_skip_root_trust_after_lifecycle_only_failure() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-close-without-open.jsonl"))
+            .unwrap();
+
+    let result =
+        verify_chain_with_endorsements(&receipts, "conformance-session", &[], &"0".repeat(64));
+
+    assert!(!result.valid);
+    assert_ne!(
+        result.failure_kind.as_deref(),
+        Some("lifecycle_missing_open"),
+        "failed endorsement verification must not preserve a lifecycle-only failure kind"
+    );
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("genesis signer key is not in the trusted root set"));
 }
 
 #[test]
@@ -586,6 +661,142 @@ fn g1_session_control_missing_record_run_nonce_is_rejected_with_valid_signature(
         .error
         .unwrap_or_default()
         .contains("session_control receipt missing run_nonce"));
+}
+
+#[test]
+fn signed_malformed_lifecycle_controls_fail_closed_through_the_chain_cli() {
+    type ControlCase = (
+        &'static str,
+        fn(&mut [Value]),
+        Option<&'static str>,
+        &'static str,
+    );
+    let cases: &[ControlCase] = &[
+        (
+            "missing heartbeat payload",
+            |receipts| {
+                receipts[3]["action_record"]["session_control"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("heartbeat");
+            },
+            Some("session_control must carry exactly one payload"),
+            "session_control must carry exactly one payload",
+        ),
+        (
+            "null heartbeat payload",
+            |receipts| {
+                receipts[3]["action_record"]["session_control"]["heartbeat"] = Value::Null;
+            },
+            Some("session_control must carry exactly one payload"),
+            "session_control must carry exactly one payload",
+        ),
+        (
+            "missing close payload",
+            |receipts| {
+                receipts[4]["action_record"]["session_control"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("close");
+            },
+            Some("session_control must carry exactly one payload"),
+            "session_control must carry exactly one payload",
+        ),
+        (
+            "null close payload",
+            |receipts| {
+                receipts[4]["action_record"]["session_control"]["close"] = Value::Null;
+            },
+            Some("session_control must carry exactly one payload"),
+            "session_control must carry exactly one payload",
+        ),
+        (
+            "heartbeat run_nonce mismatch",
+            |receipts| {
+                receipts[3]["action_record"]["session_control"]["heartbeat"]["run_nonce"] =
+                    json!("other-run");
+            },
+            Some("session_control run_nonce mismatch"),
+            "session_control run_nonce mismatch",
+        ),
+        (
+            "close run_nonce mismatch",
+            |receipts| {
+                receipts[4]["action_record"]["session_control"]["close"]["run_nonce"] =
+                    json!("other-run");
+            },
+            Some("session_control run_nonce mismatch"),
+            "session_control run_nonce mismatch",
+        ),
+        (
+            "missing beat with malformed durability counter",
+            |receipts| {
+                let heartbeat = receipts[3]["action_record"]["session_control"]["heartbeat"]
+                    .as_object_mut()
+                    .unwrap();
+                heartbeat.remove("beat");
+                heartbeat.insert("fsync_errors_gated".to_string(), json!("malformed-counter"));
+            },
+            None,
+            "lifecycle: chain_broken",
+        ),
+    ];
+    let root = common::repo_root();
+    let key = conformance_key();
+    for (name, mutate, direct_error, cli_error) in cases {
+        let mut entries =
+            read_entries(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+        let mut receipts = entries
+            .iter()
+            .map(|entry| entry["detail"].clone())
+            .collect::<Vec<_>>();
+        mutate(&mut receipts);
+        resign_g1_tail(&mut receipts, 3);
+        for (entry, receipt) in entries.iter_mut().zip(receipts.iter()) {
+            entry["detail"] = receipt.clone();
+        }
+        let fixture = TempFixture(recorder_fixture_path("signed-malformed-control"));
+        fs::write(
+            &fixture.0,
+            format!(
+                "{}\n",
+                entries
+                    .iter()
+                    .map(serde_json::Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+
+        let direct = verify_chain(&extract_receipts(&fixture.0).unwrap(), &key);
+        if let Some(expected) = direct_error {
+            assert!(!direct.valid, "{name} unexpectedly verified");
+            let error = direct.error.unwrap_or_default();
+            assert!(error.contains(expected), "{name}: {error}");
+            assert!(!error.contains("signature"), "{name}: {error}");
+        } else {
+            assert!(direct.valid, "{name}: {:?}", direct.error);
+        }
+
+        let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+            .args([
+                "chain",
+                fixture.0.to_str().unwrap(),
+                "--key",
+                &key,
+                "--json",
+            ])
+            .output()
+            .expect("run chain CLI");
+        assert_eq!(output.status.code(), Some(1), "{name}: {output:?}");
+        let report: Value = serde_json::from_slice(&output.stdout).expect("chain JSON report");
+        assert_eq!(report["valid"], Value::Bool(false), "{name}");
+        assert!(
+            report["error"].as_str().unwrap_or("").contains(cli_error),
+            "{name}: {report}"
+        );
+    }
 }
 
 #[test]
@@ -1009,6 +1220,21 @@ fn sign_evidence_receipt(receipt: &mut Value) {
 
 fn sign_action_receipt_with_conformance_key(receipt: &mut Value) {
     sign_action_receipt_with_conformance_key_fields(receipt, "seed_hex", "public_key_hex");
+}
+
+fn resign_g1_tail(receipts: &mut [Value], start: usize) {
+    let mut previous_hash = receipt_hash(&receipts[start - 1]);
+    for receipt in &mut receipts[start..] {
+        receipt["action_record"]["chain_prev_hash"] = json!(previous_hash);
+        if receipt["action_record"]["session_control"]["kind"] == "session_close"
+            && receipt["action_record"]["session_control"]["close"].is_object()
+        {
+            receipt["action_record"]["session_control"]["close"]["root_hash"] =
+                json!(previous_hash);
+        }
+        sign_action_receipt_with_conformance_key(receipt);
+        previous_hash = receipt_hash(receipt);
+    }
 }
 
 fn sign_action_receipt_with_conformance_key_fields(

@@ -158,6 +158,21 @@ func TestMcpProxyCmd_FileSentryBestEffortRejectsRequiredPathFailure(t *testing.T
 	}
 }
 
+func TestMcpProxyCmd_FileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-required-duplicate")
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configBody := fmt.Sprintf("mode: balanced\nfile_sentry:\n  enabled: true\n  best_effort: true\n  watch_paths:\n    - %q\n    - %q\n    - path: %q\n      required: true\n  scan_content: true\n", watchDir, missing, missing+string(filepath.Separator))
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
+		t.Fatalf("mcp proxy error = %v, want required duplicate file-sentry failure; stderr:\n%s", err, stderr)
+	}
+}
+
 func TestMCPReceiptParityOpts(t *testing.T) {
 	r := &receipt.Emitter{}
 	v2 := &proxydecision.Emitter{}

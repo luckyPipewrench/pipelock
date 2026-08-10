@@ -44,6 +44,9 @@ type Watcher interface {
 	// DegradedPaths returns the root or descendant subtrees Arm() could not
 	// monitor. Empty when the watcher is fully armed. Safe to call concurrently.
 	DegradedPaths() []DegradedPath
+	// DegradedPathCount returns all failed roots/subtrees from the latest Arm,
+	// including samples omitted from DegradedPaths to bound diagnostics.
+	DegradedPathCount() int
 	// Close stops the watcher and releases resources.
 	Close() error
 }

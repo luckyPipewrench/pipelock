@@ -1637,15 +1637,7 @@ Key-free evidence capture:
 						_ = watcher.Close()
 						waitConsumer()
 					}()
-					configuredPaths := len(cfg.FileSentry.WatchPaths)
-					degradedPaths := len(watcher.DegradedPaths())
-					if degradedPaths > 0 {
-						_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d configured path(s) (action=%s; %d skipped/unarmed subtree(s))\n",
-							configuredPaths, cfg.FileSentry.Action, degradedPaths)
-					} else {
-						_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d configured path(s) (action=%s)\n",
-							configuredPaths, cfg.FileSentry.Action)
-					}
+					reportFileSentryCoverage(logW, len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action, watcher.DegradedPathCount())
 
 					// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
 					// Starts the file sentry event loop AFTER the child PID is registered,

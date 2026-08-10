@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -86,20 +87,21 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 	// Report skipped subtrees explicitly. A recursive root can have multiple
 	// inaccessible descendants, so subtracting DegradedPaths from configured
 	// roots would invent an inaccurate count.
-	configuredPaths := len(cfg.FileSentry.WatchPaths)
-	degradedPaths := len(watcher.DegradedPaths())
-	if degradedPaths > 0 {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d configured path(s) (action=%s; %d skipped/unarmed subtree(s))\n",
-			configuredPaths, cfg.FileSentry.Action, degradedPaths)
-	} else {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d configured path(s) (action=%s)\n",
-			configuredPaths, cfg.FileSentry.Action)
-	}
+	reportFileSentryCoverage(s.opts.Stderr, len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action, watcher.DegradedPathCount())
 
 	return func() {
 		_ = watcher.Close()
 		waitConsumer()
 	}, nil
+}
+
+func reportFileSentryCoverage(w io.Writer, configuredPaths int, action string, degradedPaths int) {
+	if degradedPaths > 0 {
+		_, _ = fmt.Fprintf(w, "pipelock: file sentry watching %d configured path(s) (action=%s; %d skipped/unarmed subtree(s))\n",
+			configuredPaths, action, degradedPaths)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "pipelock: file sentry watching %d configured path(s) (action=%s)\n", configuredPaths, action)
 }
 
 func fileSentryArmErrorMustFailClosed(err error) bool {

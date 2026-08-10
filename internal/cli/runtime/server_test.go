@@ -1469,6 +1469,40 @@ func TestServer_StartFileSentryBestEffortRejectsRequiredPathFailure(t *testing.T
 	}
 }
 
+func TestServer_StartFileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *testing.T) {
+	watchDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nonexistent-required-duplicate")
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"file_sentry:",
+		"  enabled: true",
+		"  best_effort: true",
+		"  watch_paths:",
+		"    - " + strconv.Quote(watchDir),
+		"    - " + strconv.Quote(missing),
+		"    - path: " + strconv.Quote(missing+string(filepath.Separator)),
+		"      required: true",
+		"  scan_content: true",
+		"",
+	}, "\n"))
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Start(context.Background()) }()
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
+			t.Fatalf("Start error = %v, want required duplicate file-sentry failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start continued despite normalized required duplicate coverage failure")
+	}
+}
+
 func TestServer_StateHelpers(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 

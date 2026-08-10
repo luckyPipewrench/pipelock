@@ -1962,6 +1962,125 @@ func TestWatcher_ArmDeduplicatesConfiguredRoots(t *testing.T) {
 	}
 }
 
+func TestWatcher_ArmDuplicateRootMergesRequiredCoverage(t *testing.T) {
+	healthy := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "missing")
+	cfg := &config.FileSentry{
+		Enabled:    true,
+		BestEffort: true,
+		WatchPaths: []config.WatchPath{
+			{Path: healthy},
+			{Path: missing},
+			{Path: missing + string(filepath.Separator), Required: true},
+		},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	armErr := w.Arm()
+	if !errors.Is(armErr, ErrRequiredWatchPath) {
+		t.Fatalf("Arm error = %v, want ErrRequiredWatchPath for normalized required duplicate", armErr)
+	}
+	if errors.Is(armErr, ErrNoWatchPaths) {
+		t.Fatalf("Arm error = %v, healthy sibling should remain armed", armErr)
+	}
+}
+
+func TestWatcher_ArmBoundsFailureDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	for i := range maxArmDiagnosticSamples + 1 {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("failed-%d", i)), 0o750); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+	}
+	var callbacks atomic.Int32
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		BestEffort:  true,
+		WatchPaths:  []config.WatchPath{{Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, func(error) { callbacks.Add(1) })
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	fw := w.(*fsWatcher)
+	addWatch := fw.addWatch
+	fw.addWatch = func(path string) error {
+		if path != root {
+			return fs.ErrPermission
+		}
+		return addWatch(path)
+	}
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm best_effort: %v", err)
+	}
+	if got := len(w.DegradedPaths()); got != maxArmDiagnosticSamples {
+		t.Fatalf("DegradedPaths length = %d, want bounded %d", got, maxArmDiagnosticSamples)
+	}
+	if got, want := w.DegradedPathCount(), maxArmDiagnosticSamples+1; got != want {
+		t.Fatalf("DegradedPathCount = %d, want %d", got, want)
+	}
+	if got, want := callbacks.Load(), int32(maxArmDiagnosticSamples+1); got != want {
+		t.Fatalf("onError calls = %d, want %d sampled plus aggregate", got, want)
+	}
+}
+
+func TestWatcher_RearmAfterRemovedRootRegistersNewBackendWatch(t *testing.T) {
+	rootParent := t.TempDir()
+	root := filepath.Join(rootParent, "watch-root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	cfg := &config.FileSentry{Enabled: true, WatchPaths: []config.WatchPath{{Path: root}}, ScanContent: ptrBool(true)}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	if err := w.Arm(); err != nil {
+		t.Fatalf("initial Arm: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startErr := make(chan error, 1)
+	go func() { startErr <- w.Start(ctx) }()
+
+	if err := os.Remove(root); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	fw := w.(*fsWatcher)
+	testwait.For(t, filesentryPositiveBackstop, func() bool {
+		fw.mu.Lock()
+		defer fw.mu.Unlock()
+		_, watched := fw.watchedPaths[root]
+		return !watched
+	}, "removed root cleared from cached watch registrations")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("recreate root: %v", err)
+	}
+	if err := w.Arm(); err != nil {
+		t.Fatalf("re-arm recreated root: %v", err)
+	}
+	watchList := make(map[string]struct{})
+	for _, path := range fw.watcher.WatchList() {
+		watchList[path] = struct{}{}
+	}
+	if _, ok := watchList[root]; !ok {
+		t.Fatalf("recreated root missing backend watch: %#v", watchList)
+	}
+	cancel()
+	if err := <-startErr; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+}
+
 func TestWatcher_AddDirectoryDoesNotDuplicateAnArmedWatch(t *testing.T) {
 	root := t.TempDir()
 	cfg := &config.FileSentry{

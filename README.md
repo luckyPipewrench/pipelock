@@ -635,6 +635,7 @@ Full docs directory: [docs/](docs/)
 | [False Positive Tuning](docs/false-positive-tuning.md) | Identifying, suppressing, and tuning scanner findings |
 | [Scan API](docs/scan-api.md) | Evaluation endpoint for programmatic scanning |
 | [Deployment Recipes](docs/guides/deployment-recipes.md) | Docker Compose, K8s sidecar, iptables, macOS PF |
+| [Kubernetes Image Upgrades](docs/guides/kubernetes-image-upgrades.md) | Digest-pinned releases, live image-ID checks, and rollback |
 | [`pipelock doctor`](docs/cli/doctor.md) | Configured-vs-enforceable deployment diagnostics for proxy, TLS, MCP, file_sentry, telemetry, and containment signals |
 | [`pipelock dashboard`](docs/cli/dashboard.md) | Operator dashboard setup: auth modes, RBAC permissions, evidence, exemptions, budgets, trust and keys, fleet views, backup/restore, and coverage certificates |
 | [`pipelock verify-install`](docs/cli/verify-install.md) | Deterministic scanning, local proof, and direct-egress smoke checks |

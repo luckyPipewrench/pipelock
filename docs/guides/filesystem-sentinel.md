@@ -20,11 +20,12 @@ File sentry detects writes; it does not intercept them. The write reaches disk b
 ```yaml
 file_sentry:
   enabled: true
+  best_effort: false        # false: fail startup on any skipped subtree
   action: warn               # warn (default) or block
   watch_paths:
-    - "/workspace"           # optional by default; degraded if unavailable
+    - "/workspace"           # strict by default
     - path: "/tmp/agent-output"
-      required: true         # startup fails if this watch cannot be installed
+      required: true         # remains strict when best_effort is true
   scan_content: true
   max_file_bytes: 0           # 0 = built-in 10 MiB default
   ignore_patterns:
@@ -48,12 +49,12 @@ Each entry can be either a bare string or a mapping:
 
 ```yaml
 watch_paths:
-  - "/workspace"             # required:false
+  - "/workspace"             # strict by default
   - path: "/var/agent-secrets"
     required: true
 ```
 
-Bare string entries default to `required: false`. If a non-required watch cannot be installed, pipelock logs a degraded path and continues arming the remaining paths. Use `required: true` for directories whose monitoring is part of the security boundary; startup fails closed if that watch cannot be installed. Unknown mapping fields are rejected so typos do not silently disable the hard-fail opt-in.
+Setup is strict by default. If Pipelock cannot watch any configured root or descendant subtree, it reports every skipped subtree and fails startup. Set `best_effort: true` to keep accessible siblings armed while reporting the gaps. Startup still fails if no directory can be armed. Use `required: true` for a root that must stay strict while best-effort is enabled. Root symlinks are rejected and child symlinks are not followed. Unknown mapping fields are rejected so typos do not silently change the requested behavior.
 
 ### Ignore Patterns
 

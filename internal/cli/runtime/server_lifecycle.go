@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,6 +32,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+var newFileSentryWatcher = filesentry.NewWatcher
+
 func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel context.CancelFunc) (func(), error) {
 	if cfg == nil || !cfg.FileSentry.Enabled {
 		return func() {}, nil
@@ -39,7 +42,7 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 	onErr := func(err error) {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: [file_sentry] %v\n", err)
 	}
-	watcher, err := filesentry.NewWatcher(&cfg.FileSentry, liveFileSentryScanner{
+	watcher, err := newFileSentryWatcher(&cfg.FileSentry, liveFileSentryScanner{
 		load: func() *scanner.Scanner {
 			if s.proxy == nil {
 				return nil
@@ -48,16 +51,12 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		},
 	}, nil, onErr)
 	if err != nil {
-		if cfg.FileSentry.BestEffort {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry init failed (best_effort: continuing without file monitoring): %v\n", err)
-			return func() {}, nil
-		}
 		return nil, fmt.Errorf("file sentry init failed (feature is enabled): %w", err)
 	}
 
 	if err := watcher.Arm(); err != nil {
 		_ = watcher.Close()
-		if cfg.FileSentry.BestEffort {
+		if cfg.FileSentry.BestEffort && !fileSentryArmErrorMustFailClosed(err) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", err)
 			return func() {}, nil
 		}
@@ -83,25 +82,28 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		}
 	}()
 
-	// Report the count of paths that actually ARMED, not the configured count.
-	// A non-required watch_path that failed to install is recorded in
-	// DegradedPaths() and is NOT being watched; printing the configured count
-	// would falsely assure the operator that every path is covered.
-	configuredPaths := len(cfg.FileSentry.WatchPaths)
-	degradedPaths := len(watcher.DegradedPaths())
-	armedPaths := configuredPaths - degradedPaths
-	if degradedPaths > 0 {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d of %d path(s) (action=%s; %d degraded/unarmed)\n",
-			armedPaths, configuredPaths, cfg.FileSentry.Action, degradedPaths)
-	} else {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d path(s) (action=%s)\n",
-			armedPaths, cfg.FileSentry.Action)
-	}
+	// Report skipped subtrees explicitly. A recursive root can have multiple
+	// inaccessible descendants, so subtracting DegradedPaths from configured
+	// roots would invent an inaccurate count.
+	reportFileSentryCoverage(s.opts.Stderr, len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action, watcher.DegradedPathCount())
 
 	return func() {
 		_ = watcher.Close()
 		waitConsumer()
 	}, nil
+}
+
+func reportFileSentryCoverage(w io.Writer, configuredPaths int, action string, degradedPaths int) {
+	if degradedPaths > 0 {
+		_, _ = fmt.Fprintf(w, "pipelock: file sentry watching %d configured path(s) (action=%s; %d skipped/unarmed subtree(s))\n",
+			configuredPaths, action, degradedPaths)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "pipelock: file sentry watching %d configured path(s) (action=%s)\n", configuredPaths, action)
+}
+
+func fileSentryArmErrorMustFailClosed(err error) bool {
+	return errors.Is(err, filesentry.ErrNoWatchPaths) || errors.Is(err, filesentry.ErrRequiredWatchPath)
 }
 
 // startupSummaryLine renders the one-line startup diagnostic. fetchAddr is the

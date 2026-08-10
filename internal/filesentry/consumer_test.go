@@ -29,7 +29,9 @@ func (s *stubWatcher) OverflowFindings() <-chan Finding {
 	return s.overflow
 }
 func (s *stubWatcher) DegradedPaths() []DegradedPath { return nil }
-func (s *stubWatcher) Close() error                  { return nil }
+
+func (s *stubWatcher) DegradedPathCount() int { return 0 }
+func (s *stubWatcher) Close() error           { return nil }
 
 // makeWatcher seeds a buffered channel with the given findings and closes
 // it. The returned Watcher emits each finding once and then terminates,

@@ -1593,19 +1593,15 @@ Key-free evidence capture:
 				onErr := func(err error) {
 					_, _ = fmt.Fprintf(logW, "pipelock: [file_sentry] %v\n", err)
 				}
-				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin, onErr)
+				watcher, watchErr := newFileSentryWatcher(&cfg.FileSentry, sc, lin, onErr)
 				if watchErr != nil {
-					if cfg.FileSentry.BestEffort {
-						_, _ = fmt.Fprintf(logW, "pipelock: file sentry init failed (best_effort: continuing without file monitoring): %v\n", watchErr)
-					} else {
-						return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
-					}
+					return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
 				}
 				// Arm synchronously before child launch.
 				if watcher != nil {
 					if armErr := watcher.Arm(); armErr != nil {
 						_ = watcher.Close()
-						if cfg.FileSentry.BestEffort {
+						if cfg.FileSentry.BestEffort && !fileSentryArmErrorMustFailClosed(armErr) {
 							_, _ = fmt.Fprintf(logW, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", armErr)
 							watcher = nil
 						} else {
@@ -1637,8 +1633,7 @@ Key-free evidence capture:
 						_ = watcher.Close()
 						waitConsumer()
 					}()
-					_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s) (action=%s)\n",
-						len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action)
+					reportFileSentryCoverage(logW, len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action, watcher.DegradedPathCount())
 
 					// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
 					// Starts the file sentry event loop AFTER the child PID is registered,

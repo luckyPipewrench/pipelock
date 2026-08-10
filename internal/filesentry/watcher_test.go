@@ -5,7 +5,9 @@ package filesentry
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1527,10 +1529,9 @@ done:
 }
 
 func TestWatcher_PermissionDeniedSubdir(t *testing.T) {
-	// Arm should fail closed when a subdirectory under a required:true
-	// watch path is unreadable. Required:true preserves the historical
-	// hard-fail; the non-required variant is covered separately and is
-	// expected to soft-fail (degraded) on the same input.
+	// Arm should fail closed when a subdirectory under a strict watch path is
+	// unreadable. This physical-permission variant complements the deterministic
+	// best-effort and strict sibling tests below.
 	dir := t.TempDir()
 	if os.Geteuid() == 0 {
 		t.Skip("chmod 000 does not restrict root")
@@ -1604,9 +1605,8 @@ func TestWatcher_StartReturnsOnClose(t *testing.T) {
 }
 
 func TestWatcher_ArmNonexistentPath(t *testing.T) {
-	// Required:true preserves the historical "Arm errors on missing path"
-	// semantic that operators got automatically before per-path opt-in.
-	// The soft-fail behavior for required:false is covered separately.
+	// Strict mode rejects a missing root. The best-effort zero-coverage case is
+	// covered separately.
 	cfg := &config.FileSentry{
 		Enabled:     true,
 		WatchPaths:  []config.WatchPath{{Path: "/nonexistent/path/that/does/not/exist", Required: true}},
@@ -1630,14 +1630,13 @@ func TestWatcher_ArmNonexistentPath(t *testing.T) {
 	}
 }
 
-// TestWatcher_ArmNonexistentPathSoftFail verifies that a non-required
-// watch path that cannot install is recorded as degraded rather than
-// aborting Arm(). This is the per-path soft-fail semantic that prevents
-// one missing or transiently-unreadable aux path from crash-looping the
-// proxy. The required:true variant is covered by TestWatcher_ArmNonexistentPath.
-func TestWatcher_ArmNonexistentPathSoftFail(t *testing.T) {
+// TestWatcher_ArmBestEffortStillRejectsZeroCoverage verifies that
+// best-effort means partial coverage is allowed, not that the runtime is
+// allowed to proceed while monitoring nothing.
+func TestWatcher_ArmBestEffortStillRejectsZeroCoverage(t *testing.T) {
 	cfg := &config.FileSentry{
 		Enabled:     true,
+		BestEffort:  true,
 		WatchPaths:  []config.WatchPath{{Path: "/nonexistent/path/that/does/not/exist"}},
 		ScanContent: ptrBool(true),
 	}
@@ -1656,8 +1655,12 @@ func TestWatcher_ArmNonexistentPathSoftFail(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 
-	if err := w.Arm(); err != nil {
-		t.Fatalf("Arm: non-required path should soft-fail, got error: %v", err)
+	armErr := w.Arm()
+	if armErr == nil {
+		t.Fatal("Arm: zero successfully armed paths must fail even in best_effort mode")
+	}
+	if !errors.Is(armErr, ErrNoWatchPaths) {
+		t.Fatalf("Arm error = %v, want errors.Is(ErrNoWatchPaths)", armErr)
 	}
 	degraded := w.DegradedPaths()
 	if len(degraded) != 1 {
@@ -1674,14 +1677,42 @@ func TestWatcher_ArmNonexistentPathSoftFail(t *testing.T) {
 	}
 }
 
-// TestWatcher_ArmMixedPathsArmsTheArmable verifies that an Arm() with a
-// healthy path AND a non-required missing path arms the healthy one and
-// records the missing one as degraded - neither failing the whole proxy
-// nor silently swallowing the missing path.
+func TestWatcher_ArmRejectsEmptyCoverage(t *testing.T) {
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	if armErr := w.Arm(); !errors.Is(armErr, ErrNoWatchPaths) {
+		t.Fatalf("Arm error = %v, want errors.Is(ErrNoWatchPaths)", armErr)
+	}
+}
+
+func TestRecursiveAddResultErrorJoinsSkippedSubtrees(t *testing.T) {
+	result := recursiveAddResult{skipped: []skippedSubtree{
+		{path: "first", cause: fs.ErrPermission},
+		{path: "second", cause: fs.ErrNotExist},
+	}}
+	if err := result.err(); !errors.Is(err, fs.ErrPermission) || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("recursive result error = %v, want both skipped causes", err)
+	}
+	if err := (recursiveAddResult{}).err(); err != nil {
+		t.Fatalf("empty recursive result error = %v, want nil", err)
+	}
+}
+
+// TestWatcher_ArmMixedPathsArmsTheArmable verifies that best-effort Arm()
+// keeps a healthy path armed while reporting a missing auxiliary path.
 func TestWatcher_ArmMixedPathsArmsTheArmable(t *testing.T) {
 	healthy := t.TempDir()
 	cfg := &config.FileSentry{
-		Enabled: true,
+		Enabled:    true,
+		BestEffort: true,
 		WatchPaths: []config.WatchPath{
 			{Path: healthy},
 			{Path: "/nonexistent/aux"},
@@ -1732,6 +1763,373 @@ func TestWatcher_ArmMixedPathsArmsTheArmable(t *testing.T) {
 		}
 	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout waiting for finding from healthy path (was it actually armed?)")
+	}
+}
+
+func TestWatcher_ArmBestEffortSkipsUnreadableSiblingsAndKeepsAccessiblePaths(t *testing.T) {
+	root := t.TempDir()
+	accessible := filepath.Join(root, "accessible")
+	skippedA := filepath.Join(root, "skipped-a")
+	skippedB := filepath.Join(root, "skipped-b")
+	for _, path := range []string{accessible, skippedA, skippedB} {
+		if err := os.Mkdir(path, 0o750); err != nil {
+			t.Fatalf("Mkdir %q: %v", path, err)
+		}
+	}
+	symlink := filepath.Join(root, "outside-link")
+	if err := os.Symlink(t.TempDir(), symlink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		BestEffort:  true,
+		WatchPaths:  []config.WatchPath{{Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	var reported []string
+	w, err := NewWatcher(cfg, nil, nil, func(err error) { reported = append(reported, err.Error()) })
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	fw := w.(*fsWatcher)
+	addWatch := fw.addWatch
+	addCalls := make(map[string]int)
+	fw.addWatch = func(path string) error {
+		addCalls[path]++
+		if path == skippedA || path == skippedB {
+			return fs.ErrPermission
+		}
+		return addWatch(path)
+	}
+
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm best_effort: %v", err)
+	}
+	degraded := w.DegradedPaths()
+	if len(degraded) != 2 {
+		t.Fatalf("degraded paths = %#v, want both skipped siblings", degraded)
+	}
+	for _, path := range []string{skippedA, skippedB} {
+		found := false
+		for _, degradedPath := range degraded {
+			if degradedPath.Path == path && strings.Contains(degradedPath.Error, "permission denied") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing reported skipped subtree %q in %#v", path, degraded)
+		}
+	}
+	if len(reported) != 2 {
+		t.Errorf("onError reports = %d, want every skipped subtree", len(reported))
+	}
+
+	watchList := make(map[string]struct{})
+	for _, path := range fw.watcher.WatchList() {
+		watchList[path] = struct{}{}
+	}
+	for _, path := range []string{root, accessible} {
+		if _, ok := watchList[path]; !ok {
+			t.Errorf("accessible path %q was not armed; watch list = %#v", path, watchList)
+		}
+	}
+	for _, path := range []string{skippedA, skippedB, symlink} {
+		if _, ok := watchList[path]; ok {
+			t.Errorf("untrusted or failed path %q must not be watched", path)
+		}
+	}
+}
+
+func TestWatcher_ArmStrictFailsAfterArmingAccessibleSiblings(t *testing.T) {
+	root := t.TempDir()
+	accessible := filepath.Join(root, "accessible")
+	skipped := filepath.Join(root, "skipped")
+	for _, path := range []string{accessible, skipped} {
+		if err := os.Mkdir(path, 0o750); err != nil {
+			t.Fatalf("Mkdir %q: %v", path, err)
+		}
+	}
+
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	fw := w.(*fsWatcher)
+	addWatch := fw.addWatch
+	fw.addWatch = func(path string) error {
+		if path == skipped {
+			return fs.ErrPermission
+		}
+		return addWatch(path)
+	}
+
+	if err := w.Arm(); err == nil {
+		t.Fatal("Arm strict: expected incomplete coverage to fail closed")
+	}
+	watchList := make(map[string]struct{})
+	for _, path := range fw.watcher.WatchList() {
+		watchList[path] = struct{}{}
+	}
+	if _, ok := watchList[accessible]; !ok {
+		t.Errorf("strict Arm stopped before accessible sibling was armed; watch list = %#v", watchList)
+	}
+	if degraded := w.DegradedPaths(); len(degraded) != 1 || degraded[0].Path != skipped {
+		t.Errorf("strict Arm degradation = %#v, want skipped subtree %q", degraded, skipped)
+	}
+}
+
+func TestWatcher_ArmRequiredWatchPathHasTypedErrorSignal(t *testing.T) {
+	root := t.TempDir()
+	accessible := filepath.Join(root, "accessible")
+	skipped := filepath.Join(root, "skipped")
+	for _, path := range []string{accessible, skipped} {
+		if err := os.Mkdir(path, 0o750); err != nil {
+			t.Fatalf("Mkdir %q: %v", path, err)
+		}
+	}
+
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		BestEffort:  true,
+		WatchPaths:  []config.WatchPath{{Path: root, Required: true}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	fw := w.(*fsWatcher)
+	addWatch := fw.addWatch
+	fw.addWatch = func(path string) error {
+		if path == skipped {
+			return fs.ErrPermission
+		}
+		return addWatch(path)
+	}
+
+	armErr := w.Arm()
+	if !errors.Is(armErr, ErrRequiredWatchPath) {
+		t.Fatalf("Arm error = %v, want errors.Is(ErrRequiredWatchPath)", armErr)
+	}
+	if errors.Is(armErr, ErrNoWatchPaths) {
+		t.Fatalf("Arm error = %v, accessible sibling means ErrNoWatchPaths must be false", armErr)
+	}
+}
+
+func TestWatcher_ArmDeduplicatesConfiguredRoots(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatalf("Mkdir child: %v", err)
+	}
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: root}, {Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	fw := w.(*fsWatcher)
+	addWatch := fw.addWatch
+	addCalls := make(map[string]int)
+	fw.addWatch = func(path string) error {
+		addCalls[path]++
+		return addWatch(path)
+	}
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm: %v", err)
+	}
+	for _, path := range []string{root, child} {
+		if addCalls[path] != 1 {
+			t.Errorf("watch add calls for %q = %d, want 1", path, addCalls[path])
+		}
+	}
+}
+
+func TestWatcher_ArmDuplicateRootMergesRequiredCoverage(t *testing.T) {
+	healthy := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "missing")
+	cfg := &config.FileSentry{
+		Enabled:    true,
+		BestEffort: true,
+		WatchPaths: []config.WatchPath{
+			{Path: healthy},
+			{Path: missing},
+			{Path: missing + string(filepath.Separator), Required: true},
+		},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	armErr := w.Arm()
+	if !errors.Is(armErr, ErrRequiredWatchPath) {
+		t.Fatalf("Arm error = %v, want ErrRequiredWatchPath for normalized required duplicate", armErr)
+	}
+	if errors.Is(armErr, ErrNoWatchPaths) {
+		t.Fatalf("Arm error = %v, healthy sibling should remain armed", armErr)
+	}
+}
+
+func TestWatcher_ArmBoundsFailureDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	for i := range maxArmDiagnosticSamples + 1 {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("failed-%d", i)), 0o750); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+	}
+	var callbacks atomic.Int32
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		BestEffort:  true,
+		WatchPaths:  []config.WatchPath{{Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, func(error) { callbacks.Add(1) })
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	fw := w.(*fsWatcher)
+	addWatch := fw.addWatch
+	fw.addWatch = func(path string) error {
+		if path != root {
+			return fs.ErrPermission
+		}
+		return addWatch(path)
+	}
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm best_effort: %v", err)
+	}
+	if got := len(w.DegradedPaths()); got != maxArmDiagnosticSamples {
+		t.Fatalf("DegradedPaths length = %d, want bounded %d", got, maxArmDiagnosticSamples)
+	}
+	if got, want := w.DegradedPathCount(), maxArmDiagnosticSamples+1; got != want {
+		t.Fatalf("DegradedPathCount = %d, want %d", got, want)
+	}
+	if got, want := callbacks.Load(), int32(maxArmDiagnosticSamples+1); got != want {
+		t.Fatalf("onError calls = %d, want %d sampled plus aggregate", got, want)
+	}
+}
+
+func TestWatcher_RearmAfterRemovedRootRegistersNewBackendWatch(t *testing.T) {
+	rootParent := t.TempDir()
+	root := filepath.Join(rootParent, "watch-root")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	cfg := &config.FileSentry{Enabled: true, WatchPaths: []config.WatchPath{{Path: root}}, ScanContent: ptrBool(true)}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	if err := w.Arm(); err != nil {
+		t.Fatalf("initial Arm: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startErr := make(chan error, 1)
+	go func() { startErr <- w.Start(ctx) }()
+
+	if err := os.Remove(root); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	fw := w.(*fsWatcher)
+	testwait.For(t, filesentryPositiveBackstop, func() bool {
+		fw.mu.Lock()
+		defer fw.mu.Unlock()
+		_, watched := fw.watchedPaths[root]
+		return !watched
+	}, "removed root cleared from cached watch registrations")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatalf("recreate root: %v", err)
+	}
+	if err := w.Arm(); err != nil {
+		t.Fatalf("re-arm recreated root: %v", err)
+	}
+	watchList := make(map[string]struct{})
+	for _, path := range fw.watcher.WatchList() {
+		watchList[path] = struct{}{}
+	}
+	if _, ok := watchList[root]; !ok {
+		t.Fatalf("recreated root missing backend watch: %#v", watchList)
+	}
+	cancel()
+	if err := <-startErr; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+}
+
+func TestWatcher_AddDirectoryDoesNotDuplicateAnArmedWatch(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm: %v", err)
+	}
+
+	added, err := w.(*fsWatcher).addDirectory(root)
+	if err != nil {
+		t.Fatalf("addDirectory: %v", err)
+	}
+	if added {
+		t.Fatal("addDirectory added an already armed watch")
+	}
+}
+
+func TestWatcher_ArmRejectsSymlinkRoot(t *testing.T) {
+	target := t.TempDir()
+	root := filepath.Join(t.TempDir(), "watch-root-link")
+	if err := os.Symlink(target, root); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		BestEffort:  true,
+		WatchPaths:  []config.WatchPath{{Path: root}},
+		ScanContent: ptrBool(true),
+	}
+	w, err := NewWatcher(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	if err := w.Arm(); err == nil {
+		t.Fatal("Arm: symlink root must fail rather than silently monitoring nothing")
+	}
+	degraded := w.DegradedPaths()
+	if len(degraded) != 1 || degraded[0].Path != root || !strings.Contains(degraded[0].Error, "symlink") {
+		t.Errorf("symlink degradation = %#v", degraded)
 	}
 }
 

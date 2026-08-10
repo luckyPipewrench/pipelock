@@ -62,7 +62,7 @@ echo "release-ready gate: version=$VER"
 # exactly the shards accepted by ci_test_packages.py. Ordinary CI and release CI
 # are separate workflow surfaces; keeping this assertion in the preflight stops
 # a stale release-only shard name before the tag workflow fans out.
-(cd "$REPO_ROOT" && python3 -m unittest scripts.test_ci_test_packages)
+(cd "$REPO_ROOT" && python3 -m unittest scripts.test_ci_test_packages scripts.test_release_artifacts)
 
 # 1. CHANGELOG: a "## [<ver>] - <YYYY-MM-DD>" heading must exist with a real date.
 # Match the version LITERALLY (grep -F) so metacharacters in a version string

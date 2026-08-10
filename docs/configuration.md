@@ -2237,9 +2237,10 @@ Real-time filesystem monitoring for agent subprocesses. Detects secrets written 
 ```yaml
 file_sentry:
   enabled: false
+  best_effort: false             # false: fail startup on any skipped subtree
   watch_paths:
-    - "."                         # required:false; degraded if unavailable
-    - path: "/var/agent-secrets"  # required:true; startup fails if unavailable
+    - "."                         # strict by default
+    - path: "/var/agent-secrets"  # remains strict even with best_effort: true
       required: true
   scan_content: true
   max_file_bytes: 0             # 0 = built-in 10 MiB default
@@ -2253,13 +2254,14 @@ file_sentry:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable filesystem monitoring. Opt-in. |
-| `watch_paths` | `[]` | Directories to monitor recursively. Relative paths are resolved against the config file directory (not CWD). Required when enabled. Entries may be bare strings or `{path, required}` mappings. Bare strings default to `required: false`. |
+| `best_effort` | `false` | Keep accessible directories armed when a configured root or descendant cannot be watched. Startup still fails if no directory can be armed. |
+| `watch_paths` | `[]` | Directories to monitor recursively. Relative paths are resolved against the config file directory (not CWD). Required when enabled. Entries may be bare strings or `{path, required}` mappings. `required: true` keeps that root strict even when `best_effort` is enabled. |
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `max_file_bytes` | `0` | Max watched-file bytes to read for content scanning. `0` uses the built-in 10 MiB default; negative values are rejected. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
 | `action` | `warn` | Enforcement response when an agent-attributed write matches a DLP pattern. `warn` logs the finding + records a metric (current default). `block` additionally cancels the proxy context so the MCP child terminates, preventing the agent from continuing after a detected leak. Non-agent writes (editor saves, build output) never trigger the block path. |
 
-When a `watch_paths` entry is `required: false`, startup records a degraded path and continues if that watch cannot be installed. Set `required: true` on paths that are part of the security boundary; startup fails closed if those watches cannot be installed. Unknown fields in mapping entries are rejected so typos such as `require: true` do not silently disable the hard-fail opt-in.
+File sentry setup is strict by default: any root or descendant subtree that cannot be watched fails startup after Pipelock reports every skipped subtree. Set `best_effort: true` to keep accessible siblings armed while reporting each skipped root or subtree. Startup still fails when nothing can be armed. `required: true` keeps a configured root strict even in best-effort mode. Root symlinks are rejected and child symlinks are not followed. Unknown fields in mapping entries are rejected so typos such as `require: true` do not silently change the requested behavior.
 
 Findings are reported as stderr warnings and Prometheus metrics (`pipelock_file_sentry_findings_total`). Structured audit log emission (`file_sentry_dlp` event type) is defined but not yet wired to the webhook/syslog pipeline. On Linux, process lineage tracking attributes file writes to the agent's process tree via `PR_SET_CHILD_SUBREAPER` and `/proc` walking.
 

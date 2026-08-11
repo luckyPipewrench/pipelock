@@ -62,6 +62,10 @@ const scopedIPC = llsys.ScopeAbstractUnixSocket | llsys.ScopeSignal
 // The returned record is the only permitted source of truth about what
 // happened; a nil error alone does not mean enforced.
 func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
+	return p.apply(llsys.LandlockGetABIVersion)
+}
+
+func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord, error) {
 	record := EnforcementRecord{
 		State:            EnforcementRefused,
 		Mechanism:        "landlock",
@@ -70,7 +74,7 @@ func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 		Outcomes:         p.Outcomes(),
 	}
 
-	abi, err := llsys.LandlockGetABIVersion()
+	abi, err := getABI()
 	if err != nil {
 		record.Reason = fmt.Sprintf("landlock is unavailable: %v", err)
 		return record, fmt.Errorf("%w: %w", ErrLandlockUnavailable, err)

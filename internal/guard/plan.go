@@ -23,6 +23,8 @@ type grant struct {
 	refusal string
 }
 
+type floorEvaluator func(string, config.GuardAccess) (config.GuardFloorDecision, error)
+
 // planManifests flattens the manifests a profile selects into a deduplicated,
 // deterministically ordered grant list, with the compiled floor applied.
 //
@@ -33,6 +35,10 @@ type grant struct {
 // require this layer to rank access kinds, which is the sort of implicit
 // precedence that later reads as a policy decision nobody made.
 func planManifests(cfg *config.Config, profileName string) ([]grant, error) {
+	return planManifestsWithFloor(cfg, profileName, config.ExplainGuardPathFloor)
+}
+
+func planManifestsWithFloor(cfg *config.Config, profileName string, explainFloor floorEvaluator) ([]grant, error) {
 	var selected *config.GuardProfile
 	for i := range cfg.Guard.Profiles {
 		if cfg.Guard.Profiles[i].Name == profileName {
@@ -63,7 +69,7 @@ func planManifests(cfg *config.Config, profileName string) ([]grant, error) {
 		if access.IsWrite() {
 			floorAccess = config.GuardAccessWrite
 		}
-		decision, err := config.ExplainGuardPathFloor(path, floorAccess)
+		decision, err := explainFloor(path, floorAccess)
 		if err != nil {
 			return fmt.Errorf("evaluating compiled floor for %q: %w", path, err)
 		}

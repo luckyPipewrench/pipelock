@@ -148,7 +148,10 @@ func Prepare(cfg *config.Config, profileName string, uid int) (*PreparedManifest
 	if err != nil {
 		return nil, err
 	}
+	return prepareGrants(grants, uid, config.ExplainGuardPathFloor)
+}
 
+func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*PreparedManifest, error) {
 	prepared := &PreparedManifest{
 		rules:    make([]preparedRule, 0, len(grants)),
 		outcomes: make([]PathOutcome, 0, len(grants)),
@@ -181,7 +184,7 @@ func Prepare(cfg *config.Config, profileName string, uid int) (*PreparedManifest
 		}
 		outcome.ResolvedPath = resolved
 
-		if refusal := floorRefusal(resolved, g.access); refusal != "" {
+		if refusal := floorRefusal(resolved, g.access, explainFloor); refusal != "" {
 			outcome.State = StateRefused
 			outcome.Reason = "resolved target refused by compiled floor: " + refusal
 			prepared.outcomes = append(prepared.outcomes, outcome)
@@ -209,12 +212,12 @@ func Prepare(cfg *config.Config, profileName string, uid int) (*PreparedManifest
 }
 
 // floorRefusal re-runs the compiled floor and returns its reason, or "".
-func floorRefusal(path string, access AccessKind) string {
+func floorRefusal(path string, access AccessKind, explainFloor floorEvaluator) string {
 	floorAccess := config.GuardAccessRead
 	if access.IsWrite() {
 		floorAccess = config.GuardAccessWrite
 	}
-	decision, err := config.ExplainGuardPathFloor(path, floorAccess)
+	decision, err := explainFloor(path, floorAccess)
 	if err != nil {
 		// An unevaluable path is refused rather than allowed. The floor not
 		// producing an answer is not the same as the floor saying yes.
@@ -290,8 +293,12 @@ func createLeaf(resolved string, uid int) (int, PathState, string) {
 	// clear bits. So the created directory is at most 0o750 and can never be
 	// group- or world-writable, with no follow-up chmod and therefore no window
 	// between creation and hardening.
-	if err := unix.Mkdirat(parentFD, leaf, 0o750); err != nil && !errors.Is(err, unix.EEXIST) {
-		return -1, StateWithheld, fmt.Sprintf("creating %q: %v", resolved, err)
+	created := true
+	if err := unix.Mkdirat(parentFD, leaf, 0o750); err != nil {
+		if !errors.Is(err, unix.EEXIST) {
+			return -1, StateWithheld, fmt.Sprintf("creating %q: %v", resolved, err)
+		}
+		created = false
 	}
 
 	fd, err := openatNoSymlinks(parentFD, leaf, true)
@@ -302,7 +309,10 @@ func createLeaf(resolved string, uid int) (int, PathState, string) {
 		_ = unix.Close(fd)
 		return -1, StateRefused, reason
 	}
-	return fd, StateCreated, ""
+	if created {
+		return fd, StateCreated, ""
+	}
+	return fd, StateGranted, ""
 }
 
 // openNoSymlinks opens an absolute path with no symlink traversal at all.

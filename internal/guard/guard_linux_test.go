@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
+	"golang.org/x/sys/unix"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/guard"
@@ -120,6 +121,180 @@ func TestPrepare_RerunIsIdempotent(t *testing.T) {
 	body, err := os.ReadFile(filepath.Clean(payload))
 	if err != nil || string(body) != "important" {
 		t.Fatalf("existing content not preserved: body=%q err=%v", body, err)
+	}
+}
+
+func TestPrepare_EmptyManifestIsACompleteDenyAllPolicy(t *testing.T) {
+	cfg := newConfig(t, config.GuardManifest{Name: "m"})
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+	if !prepared.Complete() {
+		t.Fatal("empty manifest must be complete: it declares no path that could be withheld")
+	}
+	if outcomes := prepared.Outcomes(); len(outcomes) != 0 {
+		t.Fatalf("outcomes = %+v, want no declared paths", outcomes)
+	}
+}
+
+func TestPrepare_ProfileSelectingNoManifestsIsACompleteDenyAllPolicy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Guard.Profiles = []config.GuardProfile{{Name: "agent"}}
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+	if !prepared.Complete() {
+		t.Fatal("profile with no manifests must be complete: it declares no path that could be withheld")
+	}
+	if outcomes := prepared.Outcomes(); len(outcomes) != 0 {
+		t.Fatalf("outcomes = %+v, want no declared paths", outcomes)
+	}
+}
+
+func TestPrepare_ResolvesSymlinkedAncestorBeforePinning(t *testing.T) {
+	root := t.TempDir()
+	realRoot := filepath.Join(root, "real")
+	state := filepath.Join(realRoot, "state")
+	if err := os.Mkdir(realRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(state, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(realRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	declared := filepath.Join(alias, "state")
+
+	cfg := newConfig(t, config.GuardManifest{Name: "m", ReadWriteDirectories: []string{declared}})
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+	got := outcomeFor(t, prepared, declared)
+	if got.State != guard.StateGranted {
+		t.Fatalf("state = %q (%s), want granted", got.State, got.Reason)
+	}
+	if got.ResolvedPath != state {
+		t.Fatalf("resolved path = %q, want %q", got.ResolvedPath, state)
+	}
+}
+
+func TestPrepare_CombinesSamePathAcrossSelectedManifests(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	if err := os.Mkdir(state, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Guard = config.Guard{
+		Profiles: []config.GuardProfile{{Name: "agent", Manifests: []string{"read", "write"}}},
+		Manifests: []config.GuardManifest{
+			{Name: "read", ReadOnlyDirectories: []string{state}},
+			{Name: "write", ReadWriteDirectories: []string{state}},
+		},
+	}
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+	if !prepared.Complete() {
+		t.Fatalf("outcomes = %+v, want a complete manifest", prepared.Outcomes())
+	}
+	seen := make(map[guard.AccessKind]bool)
+	for _, outcome := range prepared.Outcomes() {
+		if outcome.DeclaredPath == state && outcome.State == guard.StateGranted {
+			seen[outcome.Access] = true
+		}
+	}
+	if !seen[guard.AccessReadDirectory] || !seen[guard.AccessWriteDirectory] {
+		t.Fatalf("outcomes = %+v, want read and write grants for the declared union", prepared.Outcomes())
+	}
+}
+
+func TestPrepare_RefusesUnsafeWritableOwnershipAndMode(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	if err := os.Mkdir(state, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := newConfig(t, config.GuardManifest{Name: "m", ReadWriteDirectories: []string{state}})
+
+	wrongOwner, err := guard.Prepare(cfg, "agent", os.Getuid()+1)
+	if err != nil {
+		t.Fatalf("Prepare with wrong uid: %v", err)
+	}
+	defer func() { _ = wrongOwner.Close() }()
+	if got := outcomeFor(t, wrongOwner, state); got.State != guard.StateRefused || !strings.Contains(got.Reason, "owned") {
+		t.Fatalf("ownership outcome = %+v, want refused ownership", got)
+	}
+
+	//nolint:gosec // Test must create the unsafe mode Guard is required to refuse.
+	if err := os.Chmod(state, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	sharedMode, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		t.Fatalf("Prepare with group-writable mode: %v", err)
+	}
+	defer func() { _ = sharedMode.Close() }()
+	if got := outcomeFor(t, sharedMode, state); got.State != guard.StateRefused || !strings.Contains(got.Reason, "group- or world-writable") {
+		t.Fatalf("mode outcome = %+v, want refused shared mode", got)
+	}
+}
+
+func TestPrepare_AllowsReadablePathOnReadOnlyMount(t *testing.T) {
+	const readOnlyMount = "/sys"
+	var fs unix.Statfs_t
+	if err := unix.Statfs(readOnlyMount, &fs); err != nil {
+		t.Skipf("cannot stat %s: %v", readOnlyMount, err)
+	}
+	if fs.Flags&unix.ST_RDONLY == 0 {
+		t.Skipf("%s is not a read-only mount on this host", readOnlyMount)
+	}
+
+	cfg := newConfig(t, config.GuardManifest{Name: "m", ReadOnlyDirectories: []string{readOnlyMount}})
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+	if got := outcomeFor(t, prepared, readOnlyMount); got.State != guard.StateGranted {
+		t.Fatalf("outcome = %+v, want read-only mount granted", got)
+	}
+}
+
+func TestPrepare_CreatesWritableLeafOnNoexecMount(t *testing.T) {
+	const noexecMount = "/dev/shm"
+	var fs unix.Statfs_t
+	if err := unix.Statfs(noexecMount, &fs); err != nil {
+		t.Skipf("cannot stat %s: %v", noexecMount, err)
+	}
+	if fs.Flags&unix.ST_NOEXEC == 0 {
+		t.Skipf("%s is not a noexec mount on this host", noexecMount)
+	}
+	root, err := os.MkdirTemp(noexecMount, "guard-noexec-")
+	if err != nil {
+		t.Skipf("cannot create test root on %s: %v", noexecMount, err)
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+	state := filepath.Join(root, "state")
+
+	cfg := newConfig(t, config.GuardManifest{Name: "m", ReadWriteDirectories: []string{state}})
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+	if got := outcomeFor(t, prepared, state); got.State != guard.StateCreated {
+		t.Fatalf("outcome = %+v, want created on noexec mount", got)
 	}
 }
 
@@ -264,18 +439,23 @@ func TestEnforcement_RealBoundary(t *testing.T) {
 	abiOrSkip(t)
 
 	for _, scenario := range []struct {
-		name string
-		want string
+		name  string
+		wants []string
 	}{
-		{"granted-write", "granted write: OK"},
-		{"ungranted-read", "ungranted read: DENIED"},
-		{"socket-connect", "socket connect: DENIED"},
-		{"other-thread", "other-thread read: DENIED"},
+		{"granted-write", []string{"granted write: OK"}},
+		{"ungranted-read", []string{"ungranted read: DENIED"}},
+		{"socket-connect", []string{"socket connect: DENIED"}},
+		{"other-thread", []string{"other-thread read: DENIED"}},
+		{"symlink-repoint", []string{"granted write: OK", "repointed alias write: DENIED"}},
+		{"empty-manifest", []string{"ungranted read: DENIED"}},
+		{"zero-manifests", []string{"ungranted read: DENIED"}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			out := runScenario(t, scenario.name)
-			if !strings.Contains(out, scenario.want) {
-				t.Fatalf("scenario %s output %q, want %q", scenario.name, out, scenario.want)
+			for _, want := range scenario.wants {
+				if !strings.Contains(out, want) {
+					t.Fatalf("scenario %s output %q, want %q", scenario.name, out, want)
+				}
 			}
 		})
 	}
@@ -382,11 +562,27 @@ func runChild(scenario string) int {
 	}()
 	<-workerReady
 
-	cfg := config.Defaults()
-	cfg.Guard = config.Guard{
-		Profiles:  []config.GuardProfile{{Name: "agent", Manifests: []string{"m"}}},
-		Manifests: []config.GuardManifest{{Name: "m", ReadWriteDirectories: []string{granted}}},
+	declared := granted
+	alias := filepath.Join(root, "alias")
+	if scenario == "symlink-repoint" {
+		if err := os.Symlink(granted, alias); err != nil {
+			fmt.Println("setup failed:", err)
+			return 1
+		}
+		declared = alias
 	}
+
+	profiles := []config.GuardProfile{{Name: "agent", Manifests: []string{"m"}}}
+	manifests := []config.GuardManifest{{Name: "m", ReadWriteDirectories: []string{declared}}}
+	if scenario == "empty-manifest" {
+		manifests = []config.GuardManifest{{Name: "m"}}
+	}
+	if scenario == "zero-manifests" {
+		profiles = []config.GuardProfile{{Name: "agent"}}
+		manifests = nil
+	}
+	cfg := config.Defaults()
+	cfg.Guard = config.Guard{Profiles: profiles, Manifests: manifests}
 
 	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
 	if err != nil {
@@ -394,6 +590,16 @@ func runChild(scenario string) int {
 		return 1
 	}
 	defer func() { _ = prepared.Close() }()
+	if scenario == "symlink-repoint" {
+		if err := os.Remove(alias); err != nil {
+			fmt.Println("setup failed:", err)
+			return 1
+		}
+		if err := os.Symlink(ungranted, alias); err != nil {
+			fmt.Println("setup failed:", err)
+			return 1
+		}
+	}
 
 	if scenario != "no-apply" {
 		record, aerr := prepared.Apply()
@@ -419,6 +625,9 @@ func runChild(scenario string) int {
 		}
 		return e
 	}())
+	if scenario == "symlink-repoint" {
+		report("repointed alias write", os.WriteFile(filepath.Join(alias, "should-not-write.txt"), []byte("x"), 0o600))
+	}
 
 	// Release the pre-existing worker thread now that the restriction is live.
 	close(release)

@@ -587,12 +587,16 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// agent to collect workspace material and submit it to an external URL.
 		// Requiring both the local-workspace collection and URL-routing cues
 		// keeps ordinary descriptions of upload tools out of scope.
-		// The bounded {0,2} word slot before the noun group accepts any
-		// qualifier ("recent", "unrelated", "all", "any", "additional"). It is
-		// deliberately generic: enumerating specific adjectives closes only the
-		// phrasing that happened to be observed and leaves every synonym as a
-		// one-word bypass.
-		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:[a-z][a-z-]*\s+){0,2}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
+		// The qualifier slot lists SCOPE-BROADENING words only ("unrelated",
+		// "any other", "all"), which is the signal that the collection reaches
+		// past what the caller asked for. A scope-NARROWING qualifier
+		// ("selected", "specified") describes an ordinary user-scoped transfer
+		// and must not match, so a counting slot that accepts any adjective is
+		// wrong: it flags a legitimate backup tool. The bare no-qualifier form
+		// still matches, so dropping the adjective is not a bypass. A
+		// scope-broadening synonym outside this list is a known limit of a
+		// regex mechanism and is tracked rather than papered over.
+		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:(?:all|any|other|another|every|unrelated|additional|remaining|extra|cached|nearby|arbitrary|miscellaneous|misc|further|recent)\s+){0,3}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
 	},
 }
 

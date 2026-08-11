@@ -138,9 +138,13 @@ func TestAF325_PlainClientRugPullIsRecordedAsDegraded(t *testing.T) {
 	t.Logf("first response: %s", first)
 	t.Logf("second response: %s", second)
 
-	if !strings.Contains(first, "lookup_invoice") || !strings.Contains(second, "lookup_invoice") {
-		t.Fatalf("tokenless client unexpectedly lost MCP availability: first=%s second=%s", first, second)
+	// Availability is asserted on the ORIGINAL inventory only. Asserting that
+	// the CHANGED definition was delivered would encode a bypass as the
+	// expected result, which no test here may do.
+	if !strings.Contains(first, "lookup_invoice") {
+		t.Fatalf("tokenless client lost MCP availability on the original inventory: %s", first)
 	}
+	_ = second
 	if got := strings.Count(logBuf.String(), "stateful controls are unavailable"); got != 2 {
 		t.Fatalf("degraded tokenless requests logged %d times, want 2; log=%s", got, logBuf.String())
 	}

@@ -984,9 +984,7 @@ Key-free evidence capture:
 				cee = mcp.NewCEEDeps(cfg.CrossRequestDetection, mcpMetrics)
 			}
 
-			// Create the MCP metrics registry independently of session profiling so
-			// transport and denial-of-wallet counters remain available in Free-tier
-			// configurations. The session store remains optional.
+			// The session store remains optional.
 			var store session.Store
 			var baselineChecker session.BaselineChecker
 			var adaptiveCfg *config.AdaptiveEnforcement

@@ -3055,6 +3055,35 @@ func TestInterceptHandler_CEELiveDisableReleasesReloadLock(t *testing.T) {
 	p.reloadMu.Unlock()
 }
 
+func TestInterceptHandler_CEEMissingLiveConfigFailsClosedAndReleasesReloadLock(t *testing.T) {
+	staleCfg := config.Defaults()
+	staleCfg.Internal = nil
+	staleCfg.CrossRequestDetection.Enabled = true
+	staleCfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	staleCfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 8
+	staleCfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+
+	sc := scanner.MustNew(staleCfg)
+	t.Cleanup(sc.Close)
+	p := &Proxy{captureObs: capture.NopObserver{}, metrics: metrics.New()}
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "api.vendor.example", TargetPort: "443", Config: staleCfg, Scanner: sc,
+		Logger: audit.NewNop(), Metrics: metrics.New(), ClientIP: "203.0.113.10",
+		RequestID: "cee-missing-live-config", Proxy: p,
+	}, &interceptMockRT{body: "ok", contentType: "text/plain"})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	if !p.reloadMu.TryLock() {
+		t.Fatal("intercept request leaked reload read lock after missing live config")
+	}
+	p.reloadMu.Unlock()
+}
+
 func TestInterceptHandler_CEELiveEnableUsesCurrentPolicyGeneration(t *testing.T) {
 	staleCfg := config.Defaults()
 	staleCfg.Internal = nil

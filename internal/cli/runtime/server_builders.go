@@ -79,7 +79,9 @@ func buildMCPCEE(cfg *config.Config, m *metrics.Metrics) *mcp.CEEDeps {
 // enabled trackers retain the security history accumulated by active sessions.
 func reloadMCPCEE(current *mcp.CEEDeps, cfg *config.Config, m *metrics.Metrics) *mcp.CEEDeps {
 	if cfg == nil || !cfg.CrossRequestDetection.Enabled {
-		current.Close()
+		if current != nil {
+			current.Close()
+		}
 		return nil
 	}
 	if current == nil {

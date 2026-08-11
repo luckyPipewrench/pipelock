@@ -1194,8 +1194,13 @@ func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 	if !admission.Active || !admission.Result.Blocked || admission.Config.EntropyBudget.BitsPerWindow != 1 {
 		t.Fatalf("old CEE snapshot = %+v", admission)
 	}
-	if ok := <-reloadDone; !ok {
-		t.Fatal("permissive reload failed")
+	select {
+	case ok := <-reloadDone:
+		if !ok {
+			t.Fatal("permissive reload failed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("permissive reload remained wedged after the admission released its snapshot")
 	}
 	p.ceeAdmissionLocked = nil
 	admission = p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
@@ -1255,6 +1260,47 @@ func TestReload_CEEAdmissionUsesLiveScannerAndMetadata(t *testing.T) {
 	}
 	if after.PolicyHash != reloaded.CanonicalPolicyHash() || after.AdaptiveConfig.EscalationThreshold != 1 {
 		t.Fatalf("post-reload metadata = hash:%q threshold:%v", after.PolicyHash, after.AdaptiveConfig.EscalationThreshold)
+	}
+}
+
+func TestCurrentCEEEntropySnapshotsAdaptiveGeneration(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100
+
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	const sessionKey = "connect-session"
+	p.entropyTrackerPtr.Load().Record(sessionKey, []byte("high-entropy-payload-abcdefghijklmnop"))
+
+	reloaded := cfg.Clone()
+	reloaded.AdaptiveEnforcement.EscalationThreshold = 1
+	newScanner := scanner.MustNew(reloaded)
+	if !p.Reload(reloaded, newScanner) {
+		newScanner.Close()
+		t.Fatal("adaptive policy reload failed")
+	}
+
+	snapshot := p.currentCEEEntropy(sessionKey)
+	if !snapshot.Active || !snapshot.Exceeded {
+		t.Fatalf("entropy snapshot = %+v, want active exceeded state", snapshot)
+	}
+	if snapshot.AdaptiveConfig.EscalationThreshold != 1 {
+		t.Fatalf("adaptive threshold = %v, want live threshold 1", snapshot.AdaptiveConfig.EscalationThreshold)
+	}
+	if snapshot.Sessions == nil || snapshot.Sessions != p.sessionMgrPtr.Load() {
+		t.Fatal("entropy snapshot did not retain the live session manager")
 	}
 }
 

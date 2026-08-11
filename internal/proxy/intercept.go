@@ -1353,6 +1353,12 @@ func newInterceptHandler(
 				SessionKey: sessionKey, Outbound: outbound, KeyPayload: keys, TargetURL: r.URL.String(),
 				Agent: ic.Agent, ClientIP: ic.ClientIP, RequestID: ic.RequestID, IncludeFragments: true,
 			})
+			if !admission.Resolved {
+				writeBlockedError(w,
+					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+					"blocked: live cross-request policy unavailable", http.StatusForbidden)
+				return
+			}
 		} else {
 			ceeCfg := ceeEffectiveConfig(ic.Config.CrossRequestDetection, ic.Config.EnforceEnabled())
 			if ceeCfg.Enabled {

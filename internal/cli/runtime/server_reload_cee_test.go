@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 )
 
 func TestReloadMCPCEE_DisableRetiresBufferedState(t *testing.T) {
+	if got := reloadMCPCEE(nil, nil, metrics.New()); got != nil {
+		t.Fatalf("disabled reload without live CEE = %p, want nil", got)
+	}
+
 	cfg := config.Defaults()
 	cfg.CrossRequestDetection.Enabled = true
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
@@ -55,8 +60,11 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	}
 
 	cee := s.currentMCPCEE()
+	if cee == nil {
+		t.Fatal("first CEE load returned nil, want tracker and buffer")
+	}
 	tracker, buffer := cee.Components()
-	if cee == nil || tracker == nil || buffer == nil {
+	if tracker == nil || buffer == nil {
 		t.Fatalf("first CEE load = %+v, want tracker and buffer", cee)
 	}
 	tracker.Record("mcp-session", []byte("abc"))
@@ -106,8 +114,12 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	// the downgrade and leaves the existing MCP window intact.
 	disabled := s.proxy.CurrentConfig().Clone()
 	disabled.CrossRequestDetection.Enabled = false
-	if err := reload(disabled); err == nil {
+	err := reload(disabled)
+	if err == nil {
 		t.Fatal("CEE disable reload succeeded")
+	}
+	if !strings.Contains(err.Error(), "cross_request_detection.enabled disabled") {
+		t.Fatalf("CEE disable rejected for the wrong reason: %v", err)
 	}
 	if got := s.currentMCPCEE(); got == nil {
 		t.Fatal("rejected CEE downgrade replaced MCP CEE state")

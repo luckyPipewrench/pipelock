@@ -61,7 +61,7 @@ func crossBoundaryRegistry() []crossBoundaryPair {
 			name:        "trusted diff generator size limit",
 			authority:   "gitprotect.MaxDiffBytes",
 			copyPath:    filepath.Join("..", "..", "scripts", "generate-trusted-diff.sh"),
-			copyPattern: regexp.MustCompile(`max_bytes=\$\{4:-(\d+)\}`),
+			copyPattern: regexp.MustCompile(`(?m)^max_bytes=\$\{4:-(\d+)\}\s*$`),
 			want:        strconv.Itoa(MaxDiffBytes),
 			why:         "a generator limit below the scanner's refuses diffs the scanner would accept, turning a large but ordinary pull request into a failed gate; one above it produces input the scanner then rejects, which reads to the author as a scanner fault rather than a size limit",
 		},
@@ -85,12 +85,20 @@ func TestCrossBoundaryValuesAgree(t *testing.T) {
 				t.Fatalf("read %s: %v", pair.copyPath, err)
 			}
 
-			m := pair.copyPattern.FindSubmatch(data)
-			if m == nil {
-				t.Fatalf("could not find the %s value in %s; if that file changed shape, update the registry entry rather than deleting it", pair.name, pair.copyPath)
+			// Require exactly one live assignment. Zero means the registry
+			// entry has gone stale and is silently checking nothing; more than
+			// one means the artifact itself now holds competing values and
+			// which one wins depends on parse order.
+			matches := pair.copyPattern.FindAllSubmatch(data, -1)
+			switch len(matches) {
+			case 1:
+			case 0:
+				t.Fatalf("no live %s assignment found in %s; if that file changed shape, update the registry entry rather than leaving a check that verifies nothing", pair.name, pair.copyPath)
+			default:
+				t.Fatalf("%s is assigned %d times in %s; a single authoritative assignment is required or the effective value depends on ordering", pair.name, len(matches), pair.copyPath)
 			}
 
-			if got := string(m[1]); got != pair.want {
+			if got := string(matches[0][1]); got != pair.want {
 				t.Fatalf("%s disagrees: %s has %s, %s has %s.\n%s", pair.name, pair.copyPath, got, pair.authority, pair.want, pair.why)
 			}
 		})

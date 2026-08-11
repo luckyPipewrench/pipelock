@@ -6,85 +6,158 @@ package gitprotect
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-// ciWorkflow returns the CI workflow source.
-func ciWorkflow(t *testing.T) string {
+// These assertions target the EXECUTED commands of the security-scan job, never
+// workflow prose.
+//
+// An earlier version of this file searched the raw workflow text, which meant a
+// comment, a step display name, or an `echo` could satisfy every check while the
+// job invoked no scanner at all. Review caught that, and it is the same defect
+// class the tests exist to prevent: a check that reads as coverage and verifies
+// nothing. Match on what runs, reached through the parsed job.
+
+type workflowStep struct {
+	Name string `yaml:"name"`
+	Uses string `yaml:"uses"`
+	If   string `yaml:"if"`
+	Run  string `yaml:"run"`
+}
+
+type workflowJob struct {
+	Steps []workflowStep `yaml:"steps"`
+}
+
+type workflowFile struct {
+	Jobs map[string]workflowJob `yaml:"jobs"`
+}
+
+// securityScanSteps returns the parsed steps of the gating scan job.
+func securityScanSteps(t *testing.T) []workflowStep {
 	t.Helper()
+
 	path := filepath.Join("..", "..", ".github", "workflows", "ci.yaml")
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatalf("read ci workflow: %v", err)
 	}
-	return string(data)
+
+	var parsed workflowFile
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse ci workflow: %v", err)
+	}
+
+	job, ok := parsed.Jobs["security-scan"]
+	if !ok {
+		t.Fatal("no security-scan job; if the gating job was renamed, update this test rather than deleting it")
+	}
+	if len(job.Steps) == 0 {
+		t.Fatal("security-scan job has no steps")
+	}
+	return job.Steps
 }
 
-// TestTrustedScanRunsHelpersFromTheTrustedWorktree pins where the diff-generation
-// helpers are executed from.
+// runStepsContaining returns steps whose executed shell contains needle.
+// `uses:` steps are excluded because they run an action rather than a command.
+func runStepsContaining(steps []workflowStep, needle string) []workflowStep {
+	var out []workflowStep
+	for _, s := range steps {
+		if s.Run != "" && strings.Contains(s.Run, needle) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestTrustedScanRunsHelpersFromTheTrustedWorktree pins where the diff helpers
+// are executed from.
 //
-// The security-scan job builds its scanner from origin/main so that a pull
-// request cannot supply the tool that inspects it. That guarantee is worth
-// nothing if the SCRIPTS feeding that tool come from the pull request checkout:
-// a pull request could replace generate-trusted-diff.sh with one that emits an
-// empty diff, and the job would report a clean scan having read nothing.
-//
-// That is not hypothetical. It was the state of the job when it was first
-// written, and it was caught in review rather than by any check, which is why
-// this test exists. Fixing the instance does not stop it drifting back.
+// The job builds its scanner from origin/main so a pull request cannot supply
+// the tool that inspects it. That guarantee is worth nothing if the SCRIPTS
+// feeding the tool come from the pull request checkout: a pull request could
+// replace generate-trusted-diff.sh with one emitting an empty diff, and the job
+// would report a clean scan having read nothing. That was the state of the job
+// when first written and it was caught in review.
 func TestTrustedScanRunsHelpersFromTheTrustedWorktree(t *testing.T) {
 	t.Parallel()
 
-	workflow := ciWorkflow(t)
+	steps := securityScanSteps(t)
 
-	helpers := []string{
-		"generate-trusted-diff.sh",
-		"test-generate-trusted-diff.sh",
-	}
+	for _, helper := range []string{"generate-trusted-diff.sh", "test-generate-trusted-diff.sh"} {
+		t.Run(helper, func(t *testing.T) {
+			t.Parallel()
 
-	for _, helper := range helpers {
-		found := false
-		for _, line := range strings.Split(workflow, "\n") {
-			if !strings.Contains(line, helper) {
-				continue
+			invoking := runStepsContaining(steps, helper)
+			if len(invoking) == 0 {
+				t.Fatalf("no executed step invokes %s; if the job was restructured, update this test rather than deleting it", helper)
 			}
-			found = true
-			if !strings.Contains(line, "trusted-main") {
-				t.Errorf("%s is invoked from the pull request checkout:\n  %s\nrun it from ${RUNNER_TEMP}/trusted-main so the pull request cannot supply the script that feeds the scanner", helper, strings.TrimSpace(line))
+
+			for _, step := range invoking {
+				// Join line continuations so a wrapped command is judged whole.
+				run := strings.ReplaceAll(step.Run, "\\\n", " ")
+				for _, line := range strings.Split(run, "\n") {
+					if !strings.Contains(line, helper) {
+						continue
+					}
+					if strings.HasPrefix(strings.TrimSpace(line), "#") {
+						continue
+					}
+					if !strings.Contains(line, "${RUNNER_TEMP}/trusted-main/") {
+						t.Errorf("%s runs from the pull request checkout:\n  %s\ninvoke it from ${RUNNER_TEMP}/trusted-main so a pull request cannot supply the script that feeds the scanner", helper, strings.TrimSpace(line))
+					}
+				}
 			}
-		}
-		if !found {
-			t.Errorf("no invocation of %s found in the CI workflow; if the job was restructured, update this test rather than deleting it", helper)
-		}
+		})
 	}
 }
 
-// TestTrustedScanDoesNotInstallAReleasedScanner pins that the gate builds its
-// scanner rather than downloading one.
+// TestTrustedScanBuildsItsOwnScanner pins that the gate builds the scanner from
+// the default branch rather than installing a published release.
 //
-// A published release is frozen at the last tag, so a scanner fix on the default
-// branch does not reach the gate until the next release ships. That produced a
-// repository-wide block: the whole-file-deletion fix in #1145 was on main and
-// absent from v3.3.0, so every pull request deleting a file failed with a
-// parser error reported as "Secrets detected in PR diff". The general form is
-// worse than that instance, because the next such lag could be a MISSED
-// detection rather than a visible false alarm.
-func TestTrustedScanDoesNotInstallAReleasedScanner(t *testing.T) {
+// A release is frozen at the last tag, so a scanner fix on main does not reach
+// the gate until the next release ships. That produced a repository-wide block:
+// the whole-file-deletion fix in #1145 was on main and absent from v3.3.0, so
+// every pull request deleting a file failed with a parser error reported as
+// "Secrets detected in PR diff". The general form is worse than the instance,
+// because the next lag could be a MISSED detection rather than a visible false
+// alarm.
+func TestTrustedScanBuildsItsOwnScanner(t *testing.T) {
 	t.Parallel()
 
-	workflow := ciWorkflow(t)
+	steps := securityScanSteps(t)
 
-	scanJob := regexp.MustCompile(`(?s)\n  security-scan:\n.*?\n  [a-z][a-z0-9-]*:\n`).FindString(workflow)
-	if scanJob == "" {
-		t.Fatal("could not locate the security-scan job; if the job was renamed, update this test rather than deleting it")
+	for _, step := range steps {
+		if strings.Contains(step.Uses, "luckyPipewrench/pipelock@") {
+			t.Errorf("the scan job installs a published Pipelock release via %q; build from origin/main so the gate is never behind its own fixes", step.Uses)
+		}
+		if step.Run != "" && strings.Contains(step.Run, "releases/latest") {
+			t.Errorf("the scan job downloads a released scanner:\n  %s", strings.TrimSpace(step.Run))
+		}
 	}
 
-	if strings.Contains(scanJob, "luckyPipewrench/pipelock@") {
-		t.Error("the security-scan job installs a published Pipelock release; build the scanner from origin/main instead so the gate is never behind its own fixes")
+	// The build must fetch the default branch, materialise it, and compile from
+	// there. Asserting only that the string "origin/main" appears somewhere
+	// would be satisfied by a comment.
+	required := []struct {
+		needle string
+		why    string
+	}{
+		{"git fetch", "the build must fetch the default branch rather than trusting the checked-out tree"},
+		{"git worktree add", "the build must compile from a separate worktree so no pull request file contributes to the binary"},
+		{"go build", "the scanner must be compiled, not downloaded"},
+		{"./cmd/pipelock", "the build must target the scanner command"},
 	}
-	if !strings.Contains(scanJob, "origin/main") {
-		t.Error("the security-scan job does not build from origin/main; the scanner that judges a branch must be current and must not come from the branch")
+	for _, req := range required {
+		if len(runStepsContaining(steps, req.needle)) == 0 {
+			t.Errorf("no executed step runs %q: %s", req.needle, req.why)
+		}
+	}
+
+	if len(runStepsContaining(steps, "git scan-diff")) == 0 {
+		t.Error("no executed step runs the scanner; the job can look intact while scanning nothing")
 	}
 }

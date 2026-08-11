@@ -136,7 +136,7 @@ func ceeRecordMCP(
 	defer release()
 
 	// Entropy budget check.
-	if tracker != nil && ceeCfg.Enabled && ceeCfg.EntropyBudget.Enabled {
+	if tracker != nil && ceeCfg.EntropyBudget.Enabled {
 		tracker.Record(sessionKey, payload)
 		if tracker.BudgetExceeded(sessionKey) {
 			if m != nil {
@@ -159,7 +159,7 @@ func ceeRecordMCP(
 	}
 
 	// Fragment reassembly DLP check.
-	if buffer != nil && ceeCfg.Enabled && ceeCfg.FragmentReassembly.Enabled {
+	if buffer != nil && ceeCfg.FragmentReassembly.Enabled {
 		buffer.Append(sessionKey, payload)
 		if matches := buffer.ScanForSecrets(context.Background(), sessionKey, sc); len(matches) > 0 {
 			if m != nil {

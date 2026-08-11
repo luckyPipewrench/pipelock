@@ -172,6 +172,7 @@ func TestNewLocalVerifierValidatesAndCopiesConfig(t *testing.T) {
 	}
 
 	issuer := fixture.Issuer
+	originalPublicKey := append(ed25519.PublicKey(nil), publicKey...)
 	issuers := map[string]ed25519.PublicKey{issuer: publicKey}
 	revoked := map[string]struct{}{"grant-valid": {}}
 	verifier, err := NewLocalVerifier(LocalConfig{
@@ -184,8 +185,12 @@ func TestNewLocalVerifierValidatesAndCopiesConfig(t *testing.T) {
 	delete(issuers, issuer)
 	delete(revoked, "grant-valid")
 	publicKey[0] ^= 0x01
-	if _, ok := verifier.trustedIssuers[issuer]; !ok {
+	copiedPublicKey, ok := verifier.trustedIssuers[issuer]
+	if !ok {
 		t.Fatal("trusted issuer map was not copied")
+	}
+	if !bytes.Equal(copiedPublicKey, originalPublicKey) {
+		t.Fatal("trusted issuer public key bytes were not copied")
 	}
 	if _, ok := verifier.revokedReferences["grant-valid"]; !ok {
 		t.Fatal("revocation map was not copied")

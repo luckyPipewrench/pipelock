@@ -1011,6 +1011,7 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
+| `listener_drift_reset_file` | `""` | Owner-only one-shot reset file for the HTTP reverse listener's upstream drift baseline |
 
 When `detect_drift` is enabled, Pipelock hashes the canonical full tool object
 from `tools/list`, excluding only Pipelock's own provenance attestation in
@@ -1020,6 +1021,44 @@ request IDs, or per-list counters in the tool object, that tool will drift on
 every `tools/list`. Keep `tools/list` definitions stable: move changing values
 to tool call arguments, tool results, or an out-of-band capability endpoint, and
 leave `_meta` for stable metadata unless drift on that value is intentional.
+
+For an HTTP reverse listener, drift hashes belong to its one configured
+upstream, not to a client token. Every `tools/list` response, including one
+from a standard MCP client that does not send Pipelock's token, is compared to
+that upstream baseline. Session binding stays token-scoped: an upstream drift
+baseline never makes a tool known to a client that did not establish its own
+token-bound inventory.
+
+This sharing deliberately treats a changed definition for the same tool name
+as drift. A server that personalizes the description of one same-named tool
+per user can therefore block later clients. Pipelock does not add a client
+partition to avoid that false positive because it would restore the fresh
+session rug-pull bypass. Run personalized inventories through separate
+listener/upstream configurations, or keep same-named descriptions stable.
+
+With `action: block`, a confirmed upstream update needs an operator
+re-baseline. Configure an owner-only one-shot control file on the listener:
+
+```yaml pipelock-fragment
+# pipelock-fragment-id: mcp-tool-drift-reset
+mcp_tool_scanning:
+  enabled: true
+  action: block
+  detect_drift: true
+  listener_drift_reset_file: /run/pipelock/mcp-tool-drift.reset
+```
+
+After confirming the update, the proxy owner creates the file with mode 0600:
+
+```bash
+install -m 0600 /dev/null /run/pipelock/mcp-tool-drift.reset
+```
+
+The next listener request consumes the file, resets only that listener's
+upstream definition hashes, and requires a clean `tools/list` to establish the
+replacement inventory. It does not disable drift detection or change any
+token-bound session-binding baseline. The file must be a regular owner-only
+file owned by the proxy user; unsafe files are ignored and removed.
 
 ## MCP Tool Policy
 
@@ -1135,7 +1174,9 @@ mcp_session_binding:
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
 
-On the HTTP reverse listener, Pipelock keeps the tool baseline, adaptive enforcement state, taint risk, and chain history under a Pipelock-issued `Pipelock-Session-Token`. An allowed non-batch `initialize` response with `application/json` issues a 256-bit opaque token in that header. A client returns it on later POST, GET, and DELETE requests to use that persistent state. Pipelock does not forward this header upstream.
+On the HTTP reverse listener, Pipelock keeps each client's session-binding baseline, adaptive enforcement state, taint risk, and chain history under a Pipelock-issued `Pipelock-Session-Token`. An allowed non-batch `initialize` response with `application/json` issues a 256-bit opaque token in that header. This is a Pipelock-specific extension, not an MCP protocol header. Pipelock's own HTTP client returns it on later POST, GET, and DELETE requests; a standard MCP client will not. Pipelock does not forward this header upstream.
+
+A standard client without the token still receives request-local content scanning, tool-poison scanning, and upstream-scoped tool-drift detection on `tools/list`. It cannot read or update token-bound tool session binding, adaptive enforcement, taint, chain, or cross-request exfiltration state. A later `tools/call` therefore follows the configured `no_baseline_action`, even when another client or the upstream drift baseline has seen that tool.
 
 `Mcp-Session-Id` remains upstream protocol routing data. It never selects or rekeys Pipelock listener state, even when an upstream changes or reuses it. This avoids moving one client's learned state into another partition or overwriting an existing partition.
 

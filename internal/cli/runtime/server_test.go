@@ -1576,6 +1576,7 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = config.ActionWarn
 	cfg.MCPToolScanning.DetectDrift = true
+	cfg.MCPToolScanning.ListenerDriftResetFile = "/run/pipelock/mcp-tool-drift.reset"
 	cfg.MCPSessionBinding.Enabled = true
 	cfg.MCPSessionBinding.UnknownToolAction = config.ActionBlock
 	cfg.MCPSessionBinding.NoBaselineAction = config.ActionWarn
@@ -1595,7 +1596,7 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	baseline := mcptools.NewToolBaseline()
 	extra := []*mcptools.ExtraPoisonPattern{{Name: "unsafe"}}
 	toolCfg := buildMCPToolCfg(cfg, extra, baseline)
-	if toolCfg == nil || toolCfg.Action != config.ActionWarn || !toolCfg.DetectDrift || toolCfg.Baseline != baseline {
+	if toolCfg == nil || toolCfg.Action != config.ActionWarn || !toolCfg.DetectDrift || toolCfg.Baseline != baseline || toolCfg.ListenerDriftResetFile != cfg.MCPToolScanning.ListenerDriftResetFile {
 		t.Fatalf("tool cfg = %+v", toolCfg)
 	}
 	if toolCfg.BindingUnknownAction != config.ActionBlock || toolCfg.BindingNoBaselineAction != config.ActionWarn {

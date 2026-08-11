@@ -544,6 +544,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 				if toolAction == config.ActionBlock {
 					_ = emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionBlock)
+					blockReason := "tool poisoning detected in tools/list"
+					if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
+						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
+					}
+					if opts.AuditLogger != nil {
+						opts.AuditLogger.LogBlocked(
+							mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"),
+							"tool_scanning",
+							blockReason,
+						)
+					}
 					// Signal: tool poisoning blocked.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
 						recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
@@ -554,7 +565,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 							Session:       firstNonEmpty(opts.ServerName, "default"),
 						})
 					}
-					resp := blockResponseReason(toolResult.RPCID, "tool poisoning detected in tools/list")
+					resp := blockResponseReason(toolResult.RPCID, blockReason)
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
@@ -849,6 +860,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	}
 
 	return foundInjection, nil
+}
+
+func toolScanHasDrift(result tools.ToolScanResult) bool {
+	for _, match := range result.Matches {
+		if match.DriftDetected {
+			return true
+		}
+	}
+	return false
 }
 
 func emitMCPToolScanReceipt(

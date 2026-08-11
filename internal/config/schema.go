@@ -628,9 +628,10 @@ type MCPInputScanning struct {
 // and drift detection. Scans tools/list responses for hidden instructions
 // in tool definitions and tracks description hashes to detect rug pulls.
 type MCPToolScanning struct {
-	Enabled     bool   `yaml:"enabled"`
-	Action      string `yaml:"action"`       // warn, block
-	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
+	Enabled                bool   `yaml:"enabled"`
+	Action                 string `yaml:"action"`       // warn, block
+	DetectDrift            bool   `yaml:"detect_drift"` // rug pull detection
+	ListenerDriftResetFile string `yaml:"listener_drift_reset_file"`
 }
 
 // MCPDataClassLabels reserves the config surface for DLP-derived MCP receipt

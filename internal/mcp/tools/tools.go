@@ -84,9 +84,20 @@ type ExtraPoisonPattern struct {
 // Session binding fields are optional: when BindingUnknownAction is non-empty,
 // tools/call requests are validated against the baseline captured from tools/list.
 type ToolScanConfig struct {
-	Baseline    *ToolBaseline
-	Action      string // warn, block
-	DetectDrift bool
+	// Baseline holds the caller-scoped baseline for session binding. It is also
+	// the drift baseline unless DriftBaseline is set.
+	Baseline *ToolBaseline
+	// DriftBaseline, when set, is used only for definition-drift detection.
+	// It must never be used for session binding decisions.
+	DriftBaseline *ToolBaseline
+	// DriftRemediation is included in a drift block so an operator has a
+	// narrow recovery action instead of disabling drift detection.
+	DriftRemediation string
+	// ListenerDriftResetFile is an owner-only, one-shot control file honored
+	// by the HTTP reverse listener to re-baseline its upstream tool inventory.
+	ListenerDriftResetFile string
+	Action                 string // warn, block
+	DetectDrift            bool
 
 	// Session binding (optional). When BindingUnknownAction is non-empty,
 	// RunProxy wires tools/call validation into the input scanner.
@@ -1239,25 +1250,29 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		// Drift detection (rug pull).
 		// Skip hash computation for unknown tools when at capacity to prevent
 		// CPU exhaustion from malicious servers sending unlimited unique names.
-		if cfg.DetectDrift && cfg.Baseline != nil && !cfg.Baseline.ShouldSkip(tool.Name) {
+		driftBaseline := cfg.DriftBaseline
+		if driftBaseline == nil {
+			driftBaseline = cfg.Baseline
+		}
+		if cfg.DetectDrift && driftBaseline != nil && !driftBaseline.ShouldSkip(tool.Name) {
 			hash := hashTool(tool)
 			promoteNew := cfg.Action != "block" || !hasFinding
 			promoteChanged := cfg.Action != "block"
-			drifted, prevHash, promoted := cfg.Baseline.CheckAndUpdatePromote(tool.Name, hash, promoteNew, promoteChanged)
+			drifted, prevHash, promoted := driftBaseline.CheckAndUpdatePromote(tool.Name, hash, promoteNew, promoteChanged)
 
 			if drifted {
 				match.DriftDetected = true
 				match.PreviousHash = prevHash
 				match.CurrentHash = hash
-				match.DriftDetail = cfg.Baseline.DiffSummary(tool.Name, tool.Description, paramNames)
+				match.DriftDetail = driftBaseline.DiffSummary(tool.Name, tool.Description, paramNames)
 				hasFinding = true
 			}
 			if promoted {
 				// Store the actual tool description (not the full scan text which
 				// includes param names) so DiffSummary reports description changes
 				// accurately without false "description grew" when only params change.
-				cfg.Baseline.StoreDesc(tool.Name, tool.Description)
-				cfg.Baseline.StoreParams(tool.Name, paramNames)
+				driftBaseline.StoreDesc(tool.Name, tool.Description)
+				driftBaseline.StoreParams(tool.Name, paramNames)
 			}
 		}
 

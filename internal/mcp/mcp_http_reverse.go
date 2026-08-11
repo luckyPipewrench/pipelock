@@ -195,6 +195,7 @@ func RunHTTPListenerProxy(
 	}
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
+	listenerClients.configureDegradationReporter(opts.listenerDegradationReportInterval, opts.listenerDegradationNow)
 
 	// Base opts shared across requests. Per-request fields (Rec) are
 	// overridden on a copy inside each request handler. The static
@@ -435,6 +436,18 @@ func RunHTTPListenerProxy(
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
 		fullRequestBaseOpts := requestBaseOpts
+		if listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW) {
+			resetReason := "operator re-baselined the HTTP listener tool inventory using mcp_tool_scanning.listener_drift_reset_file"
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", resetReason)
+			if requestBaseOpts.AuditLogger != nil {
+				requestBaseOpts.AuditLogger.LogAnomaly(
+					mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
+					"tool_drift",
+					resetReason,
+					0,
+				)
+			}
+		}
 		statefulControls := listenerHasStatefulControls(opts)
 		requireStateToken := listenerRequiresStateToken(opts)
 		listenerSessionToken := r.Header.Get(listenerSessionTokenHeader)
@@ -1067,14 +1080,17 @@ func RunHTTPListenerProxy(
 			bindStateRequestContext()
 		}
 		if requireStateToken && !stateBound {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", listenerUnboundStateDegradationReason)
-			if requestBaseOpts.AuditLogger != nil {
-				requestBaseOpts.AuditLogger.LogAnomaly(
-					mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
-					"",
-					listenerUnboundStateDegradationReason,
-					0,
-				)
+			if count, report := listenerClients.nextUnboundStateDegradationReport(); report {
+				reason := fmt.Sprintf("%s (degraded_requests_since_last_report=%d)", listenerUnboundStateDegradationReason, count)
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", reason)
+				if requestBaseOpts.AuditLogger != nil {
+					requestBaseOpts.AuditLogger.LogAnomaly(
+						mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
+						"",
+						reason,
+						0,
+					)
+				}
 			}
 		}
 
@@ -1807,14 +1823,17 @@ func listenerRequiresStateToken(opts MCPProxyOpts) bool {
 // a retained client state partition. It is used only while a listener request
 // lacks a valid Pipelock-issued token. Stateless scanner, tool-poison, A2A,
 // policy, redaction, contract, and receipt checks remain active. Tool drift
-// remains unavailable because no baseline is retained or fabricated.
+// uses the listener's upstream-owned baseline, never a client baseline.
 func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 	if toolCfg := opts.toolCfg(); toolCfg != nil {
 		// Preserve response-only tool-poison matching and the explicit
 		// no-baseline binding decision without supplying a baseline that a
 		// tokenless request could mutate or reuse.
 		opts.ToolCfg = &tools.ToolScanConfig{
+			DriftBaseline:           toolCfg.DriftBaseline,
+			DriftRemediation:        toolCfg.DriftRemediation,
 			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,

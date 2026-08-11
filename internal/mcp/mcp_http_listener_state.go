@@ -9,14 +9,20 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-const maxMCPListenerClients = 4096
+const (
+	maxMCPListenerClients             = 4096
+	listenerDegradationReportInterval = time.Minute
+	listenerToolDriftRemediation      = "have an authorized operator create the owner-only control file configured by mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
+)
 
 const listenerSessionTokenHeader = "Pipelock-Session-Token"
 
@@ -44,18 +50,71 @@ type mcpListenerClientState struct {
 // loses only the evicted client's learned state; its next call starts with an
 // empty baseline and therefore follows the configured no-baseline action.
 type mcpListenerClientStates struct {
-	mu        sync.Mutex
-	clients   map[string]*mcpListenerClientState
-	clock     uint64
-	store     session.Store
-	driftEdge tools.DetectDriftRisingEdge
+	mu                   sync.Mutex
+	clients              map[string]*mcpListenerClientState
+	clock                uint64
+	store                session.Store
+	upstreamToolBaseline *tools.ToolBaseline
+	driftEdge            tools.DetectDriftRisingEdge
+	degradationReporter  mcpListenerDegradationReporter
+}
+
+// mcpListenerDegradationReporter aggregates the unbound requests for one
+// listener. It deliberately has no client key: clients that omit the
+// Pipelock-issued token are not a trustworthy partition and must not allocate
+// unbounded reporting state.
+type mcpListenerDegradationReporter struct {
+	mu           sync.Mutex
+	pending      uint64
+	lastReported time.Time
+	interval     time.Duration
+	now          func() time.Time
+}
+
+func newMCPListenerDegradationReporter(interval time.Duration, now func() time.Time) mcpListenerDegradationReporter {
+	if interval <= 0 {
+		interval = listenerDegradationReportInterval
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return mcpListenerDegradationReporter{interval: interval, now: now}
+}
+
+// observe returns a report count on the first degraded request and then on
+// the first degraded request after each interval. The count covers every
+// degraded request since the last emitted report.
+func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pending != ^uint64(0) {
+		r.pending++
+	}
+	now := r.now()
+	if !r.lastReported.IsZero() && now.Sub(r.lastReported) < r.interval {
+		return 0, false
+	}
+	count := r.pending
+	r.pending = 0
+	r.lastReported = now
+	return count, true
 }
 
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	return &mcpListenerClientStates{
-		clients: make(map[string]*mcpListenerClientState),
-		store:   store,
+		clients:              make(map[string]*mcpListenerClientState),
+		store:                store,
+		upstreamToolBaseline: tools.NewToolBaseline(),
+		degradationReporter:  newMCPListenerDegradationReporter(0, nil),
 	}
+}
+
+func (s *mcpListenerClientStates) configureDegradationReporter(interval time.Duration, now func() time.Time) {
+	s.degradationReporter = newMCPListenerDegradationReporter(interval, now)
+}
+
+func (s *mcpListenerClientStates) nextUnboundStateDegradationReport() (uint64, bool) {
+	return s.degradationReporter.observe()
 }
 
 func (s *mcpListenerClientStates) stateForToken(token string) (*mcpListenerClientState, bool) {
@@ -265,6 +324,9 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 	}
 	return &tools.ToolScanConfig{
 		Baseline:                state.baseline,
+		DriftBaseline:           s.upstreamToolBaseline,
+		DriftRemediation:        listenerToolDriftRemediation,
+		ListenerDriftResetFile:  cfg.ListenerDriftResetFile,
 		Action:                  cfg.Action,
 		DetectDrift:             cfg.DetectDrift,
 		BindingUnknownAction:    cfg.BindingUnknownAction,
@@ -274,11 +336,18 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 }
 
 func (s *mcpListenerClientStates) resetDriftState() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, state := range s.clients {
-		state.baseline.ResetDriftState()
+	s.upstreamToolBaseline.ResetDriftState()
+}
+
+// resetUpstreamToolDriftStateIfRequested consumes the operator-controlled,
+// one-shot reset file before a request reaches the upstream. It resets only
+// definition hashes; per-token known-tool binding state remains intact.
+func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *tools.ToolScanConfig, logW io.Writer) bool {
+	if cfg == nil || !cfg.DetectDrift || cfg.ListenerDriftResetFile == "" || !consumeToolDriftResetFile(cfg.ListenerDriftResetFile, logW) {
+		return false
 	}
+	s.resetDriftState()
+	return true
 }
 
 func (s *mcpListenerClientStates) touchLocked(state *mcpListenerClientState) {

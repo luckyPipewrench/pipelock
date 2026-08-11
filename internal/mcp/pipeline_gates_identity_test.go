@@ -310,16 +310,18 @@ func TestEvaluateSessionBinding_A2AUnknownMethodWithBaseline(t *testing.T) {
 	}
 }
 
-func TestEvaluateSessionBinding_EarlyReturnsNonBlocking(t *testing.T) {
+func TestEvaluateSessionBinding_NilBaselineAndNonCallable(t *testing.T) {
 	baseline := tools.NewToolBaseline()
 	baseline.SetKnownTools([]string{"search"})
 
 	cases := []struct {
-		name  string
-		check sessionBindingCheck
+		name       string
+		check      sessionBindingCheck
+		wantAction string
+		wantReason string
 	}{
 		{
-			name: "nil baseline",
+			name: "nil baseline follows no-baseline action",
 			check: sessionBindingCheck{
 				Baseline:         nil,
 				Method:           methodToolsCall,
@@ -327,6 +329,8 @@ func TestEvaluateSessionBinding_EarlyReturnsNonBlocking(t *testing.T) {
 				UnknownAction:    config.ActionBlock,
 				NoBaselineAction: config.ActionBlock,
 			},
+			wantAction: config.ActionBlock,
+			wantReason: bindingReasonNoBaseline,
 		},
 		{
 			name: "non-callable method",
@@ -341,8 +345,8 @@ func TestEvaluateSessionBinding_EarlyReturnsNonBlocking(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			action, reason := evaluateSessionBinding(tc.check)
-			if action != "" || reason != "" {
-				t.Fatalf("evaluateSessionBinding = (%q,%q), want non-blocking empty action and reason", action, reason)
+			if action != tc.wantAction || reason != tc.wantReason {
+				t.Fatalf("evaluateSessionBinding = (%q,%q), want (%q,%q)", action, reason, tc.wantAction, tc.wantReason)
 			}
 		})
 	}

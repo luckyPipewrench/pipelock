@@ -931,12 +931,11 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndTokenSetup(t *testing.T)
 	}
 	beforeUnbound := upstreamCalls.Load()
 	afterSetup, _ := post(t, reconnectedClient, 6, "", "upstream-minted-session", "tools/call")
-	wantAfterSetup := `{"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"ok"}]}}`
-	if afterSetup != wantAfterSetup {
-		t.Fatalf("unbound response = %s, want exact upstream response %s", afterSetup, wantAfterSetup)
+	if !strings.Contains(afterSetup, bindingReasonNoBaseline) {
+		t.Fatalf("unbound response = %s, want %q", afterSetup, bindingReasonNoBaseline)
 	}
-	if got := upstreamCalls.Load(); got != beforeUnbound+1 {
-		t.Fatalf("unbound upstream calls = %d, want %d", got, beforeUnbound+1)
+	if got := upstreamCalls.Load(); got != beforeUnbound {
+		t.Fatalf("unbound tools/call reached upstream: calls = %d, want %d", got, beforeUnbound)
 	}
 }
 

@@ -29,6 +29,7 @@ type workflowStep struct {
 }
 
 type workflowJob struct {
+	If    string         `yaml:"if"`
 	Steps []workflowStep `yaml:"steps"`
 }
 
@@ -55,20 +56,37 @@ func securityScanSteps(t *testing.T) []workflowStep {
 	if !ok {
 		t.Fatal("no security-scan job; if the gating job was renamed, update this test rather than deleting it")
 	}
+	// A condition on the gating job is a way to switch the scan off while every
+	// step below still reads as present. The gate must run on every pull
+	// request, so it carries no condition at all.
+	if strings.TrimSpace(job.If) != "" {
+		t.Fatalf("the security-scan job is conditional (if: %q); a gate that can be skipped is not a gate", job.If)
+	}
 	if len(job.Steps) == 0 {
 		t.Fatal("security-scan job has no steps")
 	}
 	return job.Steps
 }
 
-// runStepsContaining returns steps whose executed shell contains needle.
-// `uses:` steps are excluded because they run an action rather than a command.
+// runStepsContaining returns UNCONDITIONAL steps whose executed shell contains
+// needle.
+//
+// Conditional steps are excluded deliberately. Every required command could be
+// placed behind `if: ${{ false }}` and the job would still look complete while
+// scanning nothing, so a command only counts as part of the contract when it
+// runs on every invocation of the job. This job has no conditional steps today;
+// if a legitimate one is added, extend the contract explicitly rather than
+// relaxing this helper.
 func runStepsContaining(steps []workflowStep, needle string) []workflowStep {
 	var out []workflowStep
 	for _, s := range steps {
-		if s.Run != "" && strings.Contains(s.Run, needle) {
-			out = append(out, s)
+		if s.Run == "" || !strings.Contains(s.Run, needle) {
+			continue
 		}
+		if strings.TrimSpace(s.If) != "" {
+			continue
+		}
+		out = append(out, s)
 	}
 	return out
 }

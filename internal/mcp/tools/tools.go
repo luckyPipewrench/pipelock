@@ -587,7 +587,12 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// agent to collect workspace material and submit it to an external URL.
 		// Requiring both the local-workspace collection and URL-routing cues
 		// keeps ordinary descriptions of upload tools out of scope.
-		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:recent\s+|unrelated\s+)?(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
+		// The bounded {0,2} word slot before the noun group accepts any
+		// qualifier ("recent", "unrelated", "all", "any", "additional"). It is
+		// deliberately generic: enumerating specific adjectives closes only the
+		// phrasing that happened to be observed and leaves every synonym as a
+		// one-word bypass.
+		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:[a-z][a-z-]*\s+){0,2}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
 	},
 }
 

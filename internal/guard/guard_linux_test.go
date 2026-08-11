@@ -48,7 +48,29 @@ func TestGuardChildScenario(t *testing.T) {
 	if scenario == "" {
 		t.Skip("not a guard enforcement child process")
 	}
-	if code := runChild(scenario); code != 0 {
+	code := runChild(scenario)
+
+	// Exiting without returning to the framework is REQUIRED whenever counters
+	// are not being collected.
+	//
+	// A child that returns normally lets the testing framework write its
+	// coverage as it exits -- which is the entire reason this runs as a test
+	// rather than intercepting TestMain. But the child has just restricted
+	// itself to its manifest, and under an ordinary `go test -coverprofile` run
+	// the framework writes to a temp directory the manifest never granted. The
+	// write is denied, the child exits non-zero, and every enforcement test
+	// fails for a reason that has nothing to do with enforcement. That is not
+	// hypothetical: it reddened the coverage-instrumented run while `-race` and
+	// the collection script both stayed green, because only the instrumented
+	// run without a collection directory hits it.
+	//
+	// So: collecting means return and let the framework write; not collecting
+	// means leave before it tries. The assertions have already been printed by
+	// this point either way.
+	if os.Getenv("PIPELOCK_GUARD_COVERDIR") == "" {
+		os.Exit(code)
+	}
+	if code != 0 {
 		t.Fatalf("scenario %q failed with code %d", scenario, code)
 	}
 }

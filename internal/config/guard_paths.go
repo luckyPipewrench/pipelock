@@ -292,17 +292,32 @@ var guardSecretAbsolutePaths = []struct {
 	// guardDangerousRWRoots already refused these for WRITE as "socket path";
 	// the read side did not.
 	//
-	// This is defense in depth, NOT a solution to the SSH-agent problem, and
-	// the distinction matters because the stronger claim is tempting and
-	// false. Reaching an agent socket would be full use of every loaded key
-	// with no key file ever read -- but a path grant does not currently confer
-	// that: Landlock's RWDirs does not permit connect(2) on a pathname Unix
-	// socket without WithResolveUnix, and the sandbox adapter uses plain
-	// RWDirs (internal/sandbox/landlock_linux.go). A static path list also
-	// cannot enumerate agent sockets in general, since SSH_AUTH_SOCK is
-	// arbitrary. The real control is a runtime one -- refuse to grant a path
-	// whose object is a socket unless it is an explicit, typed capability --
-	// and it belongs with the evaluator, not here.
+	// This is defense in depth, NOT a solution to the SSH-agent problem.
+	// Reaching an agent socket would be full use of every loaded key with no
+	// key file ever read.
+	//
+	// An earlier version of this comment argued the risk was already bounded,
+	// on the grounds that "Landlock's RWDirs does not permit connect(2) on a
+	// pathname Unix socket without WithResolveUnix." That is true only from
+	// ABI 9, and it was measured false for the code as it actually shipped.
+	// Reproduced on Linux 7.1.5 against a V5 ruleset (which is what
+	// internal/sandbox/landlock_linux.go builds): connect(2) to a socket in a
+	// directory that was never granted SUCCEEDED, while a read of a file in
+	// that same directory was correctly denied. Below ABI 9 a filesystem
+	// ruleset does not mediate pathname-socket connections at all, so a path
+	// grant neither permits nor denies them -- they are simply outside the
+	// model, granted or not.
+	//
+	// The lesson generalizes past this entry: a guard whose justification
+	// depends on a kernel feature must name the ABI that provides it, because
+	// the version actually requested is where the claim lives or dies.
+	//
+	// A static path list also cannot enumerate agent sockets in general, since
+	// SSH_AUTH_SOCK is arbitrary. The real controls are runtime ones and belong
+	// with the evaluator, not here: internal/guard handles the resolve-unix
+	// right without granting it to any path from ABI 9 onward, reports partial
+	// mediation below that ABI, and refuses to grant a path whose pinned object
+	// is a socket.
 	{"/run/user", "per-user runtime state, which holds agent sockets and keyrings"},
 	// Container secret mounts.
 	{"/run/secrets", "the container secret mount point"},

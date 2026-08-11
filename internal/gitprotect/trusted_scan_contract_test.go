@@ -4,6 +4,7 @@
 package gitprotect
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,11 +27,42 @@ type workflowStep struct {
 	Uses string `yaml:"uses"`
 	If   string `yaml:"if"`
 	Run  string `yaml:"run"`
+	// ContinueOnError is any-typed because YAML admits several shapes here:
+	// omitted, null, blank, a bool, or a `${{ }}` expression string.
+	ContinueOnError any `yaml:"continue-on-error"`
 }
 
 type workflowJob struct {
-	If    string         `yaml:"if"`
-	Steps []workflowStep `yaml:"steps"`
+	If              string         `yaml:"if"`
+	ContinueOnError any            `yaml:"continue-on-error"`
+	Steps           []workflowStep `yaml:"steps"`
+}
+
+// continueOnErrorFailsOpen reports whether a continue-on-error value could let a
+// failing step or job report success.
+//
+// Omitted, null and explicit false are safe. `true` is an outright fail-open: the
+// scan would run, find secrets, exit non-zero, and the job would still pass. An
+// expression is rejected because its value is not decidable here, and a gate
+// whose fail-open-ness depends on runtime context is not a gate.
+func continueOnErrorFailsOpen(v any) (bool, string) {
+	switch value := v.(type) {
+	case nil:
+		return false, ""
+	case bool:
+		if value {
+			return true, "true"
+		}
+		return false, ""
+	case string:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || strings.EqualFold(trimmed, "false") {
+			return false, ""
+		}
+		return true, trimmed
+	default:
+		return true, fmt.Sprintf("%v", value)
+	}
 }
 
 type workflowFile struct {
@@ -62,6 +94,9 @@ func securityScanSteps(t *testing.T) []workflowStep {
 	if strings.TrimSpace(job.If) != "" {
 		t.Fatalf("the security-scan job is conditional (if: %q); a gate that can be skipped is not a gate", job.If)
 	}
+	if failsOpen, value := continueOnErrorFailsOpen(job.ContinueOnError); failsOpen {
+		t.Fatalf("the security-scan job sets continue-on-error: %s; the scan would find secrets, fail, and the job would still report success", value)
+	}
 	if len(job.Steps) == 0 {
 		t.Fatal("security-scan job has no steps")
 	}
@@ -84,6 +119,11 @@ func runStepsContaining(steps []workflowStep, needle string) []workflowStep {
 			continue
 		}
 		if strings.TrimSpace(s.If) != "" {
+			continue
+		}
+		// A required command inside a continue-on-error step does not enforce
+		// anything: it can fail and the job still passes.
+		if failsOpen, _ := continueOnErrorFailsOpen(s.ContinueOnError); failsOpen {
 			continue
 		}
 		out = append(out, s)
@@ -177,5 +217,36 @@ func TestTrustedScanBuildsItsOwnScanner(t *testing.T) {
 
 	if len(runStepsContaining(steps, "git scan-diff")) == 0 {
 		t.Error("no executed step runs the scanner; the job can look intact while scanning nothing")
+	}
+}
+
+// TestContinueOnErrorFailsOpenAcrossYAMLShapes covers every form YAML admits
+// for continue-on-error, because the parsed type differs per shape and getting
+// one wrong silently permits a fail-open gate.
+func TestContinueOnErrorFailsOpenAcrossYAMLShapes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		value     any
+		failsOpen bool
+	}{
+		{name: "omitted", value: nil},
+		{name: "explicit null", value: nil},
+		{name: "blank", value: ""},
+		{name: "explicit false", value: false},
+		{name: "string false", value: "false"},
+		{name: "explicit true", value: true, failsOpen: true},
+		{name: "string true", value: "true", failsOpen: true},
+		{name: "expression", value: "${{ matrix.experimental }}", failsOpen: true},
+		{name: "unexpected type", value: 1, failsOpen: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := continueOnErrorFailsOpen(tc.value)
+			if got != tc.failsOpen {
+				t.Fatalf("continueOnErrorFailsOpen(%#v) = %v, want %v", tc.value, got, tc.failsOpen)
+			}
+		})
 	}
 }

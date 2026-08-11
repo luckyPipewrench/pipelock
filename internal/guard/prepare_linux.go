@@ -60,7 +60,15 @@ func (p *PreparedManifest) Outcomes() []PathOutcome {
 func (p *PreparedManifest) Complete() bool { return p.complete }
 
 // Close releases every pinned descriptor.
+//
+// A nil receiver is valid. Prepare returns a nil manifest when planning fails,
+// and its contract tells callers to Close the result even on error, so the
+// documented usage would otherwise panic on exactly the path where something
+// has already gone wrong.
 func (p *PreparedManifest) Close() error {
+	if p == nil {
+		return nil
+	}
 	var firstErr error
 	for i := range p.rules {
 		if p.rules[i].fd < 0 {
@@ -128,6 +136,14 @@ const (
 		llsys.AccessFSRefer
 )
 
+// rightsFor maps a declared access kind to its Landlock right set.
+//
+// An unrecognized kind returns NO rights, which produces a refusal rather than
+// a grant. The previous default returned the writable-directory set, so a kind
+// this function had never heard of received the widest rights the package
+// issues. That is backwards for a default: an unknown access is exactly the
+// case where nothing is known about what the caller intended, and the safe
+// answer to "I do not recognize this" is to grant nothing.
 func rightsFor(access AccessKind) uint64 {
 	switch access {
 	case AccessReadFile:
@@ -136,8 +152,10 @@ func rightsFor(access AccessKind) uint64 {
 		return rightsReadDir
 	case AccessWriteFile:
 		return rightsWriteFile
-	default:
+	case AccessWriteDirectory:
 		return rightsWriteDir
+	default:
+		return 0
 	}
 }
 
@@ -199,6 +217,15 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 			continue
 		}
 
+		rights := rightsFor(g.access)
+		if rights == 0 {
+			outcome.State = StateRefused
+			outcome.Reason = fmt.Sprintf("unrecognized access kind %q; no rights can be derived, so nothing is granted", g.access)
+			prepared.outcomes = append(prepared.outcomes, outcome)
+			prepared.complete = false
+			continue
+		}
+
 		fd, state, reason := pinTarget(resolved, g.access, uid)
 		outcome.State = state
 		outcome.Reason = reason
@@ -209,7 +236,7 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 		}
 		prepared.rules = append(prepared.rules, preparedRule{
 			fd:       fd,
-			access:   rightsFor(g.access),
+			access:   rights,
 			declared: g.declared,
 			kind:     g.access,
 			resolved: resolved,

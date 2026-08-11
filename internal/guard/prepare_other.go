@@ -6,8 +6,6 @@
 package guard
 
 import (
-	"fmt"
-
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -67,5 +65,5 @@ func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 		Reason:           "guard enforcement requires Linux landlock; this platform has no equivalent path-grant mechanism",
 		Outcomes:         p.Outcomes(),
 	}
-	return record, fmt.Errorf("%w", ErrUnsupportedPlatform)
+	return record, ErrUnsupportedPlatform
 }

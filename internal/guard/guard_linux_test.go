@@ -663,7 +663,11 @@ func runChildNested() int {
 	}
 
 	record, err := prepared.Apply()
-	if errors.Is(err, guard.ErrPolicyNarrowed) && !record.Enforced() {
+	// The state must say the restriction WAS applied. Asserting only
+	// !Enforced() cannot tell "refused, process untouched" from "applied but
+	// narrowed", and by this point the process is irreversibly constrained.
+	if errors.Is(err, guard.ErrPolicyNarrowed) && !record.Enforced() &&
+		record.State == guard.EnforcementAppliedNarrowed {
 		fmt.Println("narrowed: DETECTED")
 		return 0
 	}
@@ -718,7 +722,11 @@ func runChildNestedWrite() int {
 	}
 
 	record, err := prepared.Apply()
-	if errors.Is(err, guard.ErrPolicyNarrowed) && !record.Enforced() {
+	// The state must say the restriction WAS applied. Asserting only
+	// !Enforced() cannot tell "refused, process untouched" from "applied but
+	// narrowed", and by this point the process is irreversibly constrained.
+	if errors.Is(err, guard.ErrPolicyNarrowed) && !record.Enforced() &&
+		record.State == guard.EnforcementAppliedNarrowed {
 		fmt.Println("write-narrowed: DETECTED")
 		return 0
 	}

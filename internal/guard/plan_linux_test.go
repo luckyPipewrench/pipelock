@@ -15,6 +15,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// mockFloorAllows is a floor that refuses nothing, for tests whose subject is
+// downstream of the floor.
+func mockFloorAllows(string, config.GuardAccess) (config.GuardFloorDecision, error) {
+	return config.GuardFloorDecision{}, nil
+}
+
 func planConfig(manifests []config.GuardManifest, selects []string) *config.Config {
 	cfg := config.Defaults()
 	cfg.Guard = config.Guard{

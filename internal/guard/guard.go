@@ -151,8 +151,21 @@ const (
 	// EnforcementUnenforcedAccepted: enforcement was impossible and an
 	// operator explicitly accepted running without it.
 	EnforcementUnenforcedAccepted EnforcementState = "unenforced_accepted"
-	// EnforcementRefused: enforcement was impossible and Guard refused.
+	// EnforcementRefused: enforcement was impossible and Guard refused. The
+	// process was not modified.
 	EnforcementRefused EnforcementState = "refused"
+	// EnforcementAppliedNarrowed: the restriction WAS applied and the process is
+	// permanently constrained, but the manifest is not in force as declared
+	// because something outside this policy narrows it.
+	//
+	// This state exists because the alternative was a false record. A failed
+	// post-enforcement check used to return Refused, whose wording is "not
+	// enforced and not run" -- while the process was already irreversibly
+	// restricted and no_new_privs was already set. Refusing and having applied
+	// nothing is a different situation from having applied a restriction that
+	// does not match the declaration, and an operator reading the record has to
+	// be able to tell them apart. Neither is a success.
+	EnforcementAppliedNarrowed EnforcementState = "applied_narrowed"
 )
 
 // EnforcementRecord is the durable statement of what Guard actually did.
@@ -226,6 +239,11 @@ func (r EnforcementRecord) Describe() string {
 		// covered when they were not.
 		return fmt.Sprintf("ENFORCED via %s, PARTIAL mediation (ABI %s): not mediated: %s",
 			r.Mechanism, observed, strings.Join(r.Unmediated, ", "))
+	case EnforcementAppliedNarrowed:
+		// The leading clause says the process IS restricted, because it is, and
+		// an operator who reads only the first line must not conclude the run
+		// was left untouched.
+		return fmt.Sprintf("RESTRICTION APPLIED BUT NARROWED, the process is constrained and the manifest is NOT in force as declared (ABI %s): %s", observed, r.Reason)
 	case EnforcementUnenforcedAccepted:
 		return fmt.Sprintf("NOT ENFORCED, explicitly accepted by the operator (ABI %s, required %d): %s", observed, r.RequiredABI, r.Reason)
 	default:

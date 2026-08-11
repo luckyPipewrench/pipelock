@@ -215,7 +215,11 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	// This fails CLOSED. A narrowed policy is reported and refused rather than
 	// presented as the declared one.
 	if narrowed := p.unreachableGrants(); len(narrowed) > 0 {
-		record.State = EnforcementRefused
+		// Applied, not refused. By this point the ruleset is in force and
+		// no_new_privs is set, and neither can be undone. Reporting Refused
+		// here would tell an operator the process was left alone when it is
+		// permanently constrained.
+		record.State = EnforcementAppliedNarrowed
 		record.Reason = fmt.Sprintf(
 			"the restriction applied, but %d declared path(s) are unreachable under it (%s); an ancestor landlock domain or another restriction is narrowing this policy, so the manifest is not in force as declared",
 			len(narrowed), strings.Join(narrowed, ", "))

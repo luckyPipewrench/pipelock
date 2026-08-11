@@ -366,7 +366,8 @@ type Proxy struct {
 	server               *http.Server
 	agentServers         []*http.Server // per-agent listeners (managed by CLI)
 	startTime            time.Time
-	reloadMu             sync.RWMutex // serializes Reload and coherent request-time runtime snapshots
+	reloadSerialMu       sync.Mutex   // serializes staging by concurrent Reload calls
+	reloadMu             sync.RWMutex // serializes publication and coherent request-time runtime snapshots
 	ceeAdmissionLocked   func()       // test hook: called while a CEE admission owns reloadMu.RLock
 	reloadLocked         func()       // test hook: called after Reload owns reloadMu.Lock
 	approver             *hitl.Approver
@@ -1649,11 +1650,8 @@ func (p *Proxy) PrepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 // Only config values read per-request (mode, enforce, user-agent, blocklists,
 // DLP patterns, response scanning, etc.) take effect immediately.
 func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
-	p.reloadMu.Lock()
-	defer p.reloadMu.Unlock()
-	if p.reloadLocked != nil {
-		p.reloadLocked()
-	}
+	p.reloadSerialMu.Lock()
+	defer p.reloadSerialMu.Unlock()
 
 	oldCfg := p.cfgPtr.Load()
 
@@ -1789,6 +1787,26 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			}
 		}
 	}
+	if cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil && !receiptStage.reuseExisting && receiptStage.emitter != nil {
+		if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("session_open receipt emit failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
+	}
+
+	// Staging above may load keys and build evidence components. Keep that I/O
+	// off the request snapshot lock; only publication and in-place state changes
+	// need to exclude CEE admissions.
+	p.reloadMu.Lock()
+	defer p.reloadMu.Unlock()
+	if p.reloadLocked != nil {
+		p.reloadLocked()
+	}
 
 	// Publish both emitters now that staging has fully succeeded. The
 	// atomic.Pointer swaps are individually atomic; between them, a
@@ -1817,16 +1835,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		// its run window is recorded.
 		if receiptStage.reuseExisting {
 			receiptStage.emitter.UpdateConfigHash(cfg.Hash())
-		} else if receiptStage.emitter != nil {
-			if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
-				p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-					fmt.Errorf("session_open receipt emit failed, keeping old config: %w", err))
-				sc.Close()
-				if newEd != nil {
-					newEd.Close()
-				}
-				return false
-			}
 		}
 		p.receiptEmitterPtr.Store(receiptStage.emitter)
 		p.v2EmitterPtr.Store(receiptStage.v2)
@@ -1970,18 +1978,23 @@ type ceeAdmission struct {
 	Active         bool
 }
 
+type ceeAdmitRequest struct {
+	SessionKey       string
+	Outbound         []byte
+	KeyPayload       []byte
+	TargetURL        string
+	Agent            string
+	ClientIP         string
+	RequestID        string
+	IncludeFragments bool
+}
+
 // admitCurrentCEE keeps the CEE policy snapshot and its mutable tracking
 // state under the reload lock. A request that started before a reload uses the
 // old pair; one that enters this gate afterward uses the new pair. In
 // particular, an old action can never observe a newly relaxed budget/window,
 // scanner, adaptive policy, session manager, or evidence policy hash.
-func (p *Proxy) admitCurrentCEE(
-	ctx context.Context,
-	sessionKey string,
-	outbound, keyPayload []byte,
-	targetURL, agent, clientIP, requestID string,
-	includeFragments bool,
-) ceeAdmission {
+func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdmission {
 	p.reloadMu.RLock()
 	defer p.reloadMu.RUnlock()
 	if p.ceeAdmissionLocked != nil {
@@ -1997,11 +2010,11 @@ func (p *Proxy) admitCurrentCEE(
 		return ceeAdmission{Config: ceeCfg}
 	}
 	fb := p.fragmentBufferPtr.Load()
-	if !includeFragments {
+	if !req.IncludeFragments {
 		fb = nil
 	}
 	return ceeAdmission{
-		Result: ceeAdmit(ctx, sessionKey, outbound, keyPayload, targetURL, agent, clientIP, requestID,
+		Result: ceeAdmit(ctx, req.SessionKey, req.Outbound, req.KeyPayload, req.TargetURL, req.Agent, req.ClientIP, req.RequestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), fb, p.scannerPtr.Load(), p.logger, p.metrics),
 		Config:         ceeCfg,
 		AdaptiveConfig: cfg.AdaptiveEnforcement,
@@ -2083,7 +2096,7 @@ func (p *Proxy) ShutdownAgentServers() {
 }
 
 // buildCEE creates entropy tracker and fragment buffer based on the config.
-// Returns nil for disabled components. Called from setupCEE and Reload.
+// Returns nil for disabled components. Called from setupCEE during startup.
 func (p *Proxy) buildCEE(ceeCfg *config.CrossRequestDetection) (*scanner.EntropyTracker, *scanner.FragmentBuffer) {
 	var et *scanner.EntropyTracker
 	var fb *scanner.FragmentBuffer
@@ -4331,7 +4344,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves the proxy. Fetch is
 	// GET-only so the outbound data is the target URL path and query values.
-	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeSessionKey(agent, clientIP, id.Auth), urlPayload(parsed), queryParamKeys(parsed), displayURL, agent, clientIP, requestID, true)
+	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
+		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), Outbound: urlPayload(parsed),
+		KeyPayload: queryParamKeys(parsed), TargetURL: displayURL, Agent: agent, ClientIP: clientIP,
+		RequestID: requestID, IncludeFragments: true,
+	})
 	if ceeAdmission.Active {
 		ceeRes := ceeAdmission.Result
 		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)

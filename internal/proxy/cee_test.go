@@ -1164,7 +1164,10 @@ func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 	t.Cleanup(func() { p.ceeAdmissionLocked = nil })
 	admissionDone := make(chan ceeAdmission, 1)
 	go func() {
-		admissionDone <- p.admitCurrentCEE(t.Context(), "session", []byte("abc"), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+		admissionDone <- p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
+			SessionKey: "session", Outbound: []byte("abc"), TargetURL: "https://api.vendor.example",
+			ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
+		})
 	}()
 	<-admissionLocked
 
@@ -1195,7 +1198,10 @@ func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 		t.Fatal("permissive reload failed")
 	}
 	p.ceeAdmissionLocked = nil
-	admission = p.admitCurrentCEE(t.Context(), "session", []byte(""), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+	admission = p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
+		SessionKey: "session", Outbound: []byte(""), TargetURL: "https://api.vendor.example",
+		ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
+	})
 	if !admission.Active || admission.Result.Blocked || admission.Config.EntropyBudget.BitsPerWindow != 1000 {
 		t.Fatalf("new CEE snapshot = %+v", admission)
 	}
@@ -1219,7 +1225,10 @@ func TestReload_CEEAdmissionUsesLiveScannerAndMetadata(t *testing.T) {
 	t.Cleanup(p.Close)
 
 	const payload = "reload_secret_"
-	before := p.admitCurrentCEE(t.Context(), "session", []byte(payload), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+	before := p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
+		SessionKey: "session", Outbound: []byte(payload), TargetURL: "https://api.vendor.example",
+		ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
+	})
 	if !before.Active || before.Result.FragmentHit {
 		t.Fatalf("pre-reload admission = %+v, want no custom-pattern match", before)
 	}
@@ -1237,7 +1246,10 @@ func TestReload_CEEAdmissionUsesLiveScannerAndMetadata(t *testing.T) {
 		t.Fatal("scanner policy reload failed")
 	}
 
-	after := p.admitCurrentCEE(t.Context(), "session", []byte("canary"), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+	after := p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
+		SessionKey: "session", Outbound: []byte("canary"), TargetURL: "https://api.vendor.example",
+		ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
+	})
 	if !after.Active || !after.Result.Blocked || !after.Result.FragmentHit {
 		t.Fatalf("post-reload admission = %+v, want live scanner to block retained canary", after)
 	}

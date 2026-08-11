@@ -8,7 +8,30 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
+
+func TestReloadMCPCEE_DisableRetiresBufferedState(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 8
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 64
+	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+	cee := buildMCPCEE(cfg, metrics.New())
+	tracker, buffer := cee.Components()
+	tracker.Record("session", []byte("secret"))
+	buffer.Append("session", []byte("split-secret"))
+
+	if got := reloadMCPCEE(cee, nil, metrics.New()); got != nil {
+		t.Fatalf("disabled reload returned %p, want nil", got)
+	}
+	if tracker.CurrentUsage("session") != 0 || buffer.TotalBufferBytes() != 0 {
+		t.Fatal("disabled reload retained CEE request state")
+	}
+}
 
 func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	s, _ := newTestServer(t, nil)

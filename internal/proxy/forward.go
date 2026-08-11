@@ -1685,7 +1685,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves. Forward proxy has
 	// URL path, query params, and request body as outbound data.
-	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeSessionKey(agent, clientIP, id.Auth), extractOutboundPayload(r), queryParamKeys(r.URL), targetURL, agent, clientIP, requestID, true)
+	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
+		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), Outbound: extractOutboundPayload(r),
+		KeyPayload: queryParamKeys(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
+		RequestID: requestID, IncludeFragments: true,
+	})
 	if ceeAdmission.Active {
 		ceeRes := ceeAdmission.Result
 		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)

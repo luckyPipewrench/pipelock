@@ -31,13 +31,11 @@ type CEEDeps struct {
 // request always reads both from the same generation; reload waits for an
 // active check instead of pairing its old action with a newly changed limit.
 type ceeRuntime struct {
-	mu                    sync.RWMutex
-	tracker               *scanner.EntropyTracker
-	buffer                *scanner.FragmentBuffer
-	metrics               *metrics.Metrics
-	config                config.CrossRequestDetection
-	beforeReconfigureLock func()
-	afterReconfigureLock  func()
+	mu      sync.RWMutex
+	tracker *scanner.EntropyTracker
+	buffer  *scanner.FragmentBuffer
+	metrics *metrics.Metrics
+	config  config.CrossRequestDetection
 }
 
 // NewCEEDeps creates reload-safe MCP CEE dependencies from a config snapshot.
@@ -62,14 +60,8 @@ func (cee *CEEDeps) Reconfigure(ceeCfg config.CrossRequestDetection, m *metrics.
 		return
 	}
 	runtime := cee.runtime
-	if runtime.beforeReconfigureLock != nil {
-		runtime.beforeReconfigureLock()
-	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	if runtime.afterReconfigureLock != nil {
-		runtime.afterReconfigureLock()
-	}
 
 	if ceeCfg.Enabled && ceeCfg.EntropyBudget.Enabled {
 		if runtime.tracker == nil {
@@ -97,6 +89,25 @@ func (cee *CEEDeps) Reconfigure(ceeCfg config.CrossRequestDetection, m *metrics.
 	}
 	runtime.config = ceeCfg
 	runtime.metrics = m
+}
+
+// Close retires all stateful detectors and clears buffered request data.
+func (cee *CEEDeps) Close() {
+	if cee == nil || cee.runtime == nil {
+		return
+	}
+	runtime := cee.runtime
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.tracker != nil {
+		runtime.tracker.Close()
+		runtime.tracker = nil
+	}
+	if runtime.buffer != nil {
+		runtime.buffer.Close()
+		runtime.buffer = nil
+	}
+	runtime.config = config.CrossRequestDetection{}
 }
 
 // Components returns the currently active stateful detectors. Callers must not

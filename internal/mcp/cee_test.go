@@ -36,23 +36,13 @@ func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
 
 	permissive := strict
 	permissive.EntropyBudget.BitsPerWindow = 1000
-	started := make(chan struct{})
-	allowLock := make(chan struct{})
-	acquired := make(chan struct{})
-	cee.runtime.beforeReconfigureLock = func() {
-		close(started)
-		<-allowLock
-	}
-	cee.runtime.afterReconfigureLock = func() { close(acquired) }
 	done := make(chan struct{})
 	go func() {
 		cee.Reconfigure(permissive, metrics.New())
 		close(done)
 	}()
-	<-started
-	close(allowLock)
 	select {
-	case <-acquired:
+	case <-done:
 		t.Fatal("permissive reload acquired its write lock while an old policy snapshot was active")
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -116,6 +106,38 @@ func TestCEEDepsReconfigure_RetiresAndRecreatesComponents(t *testing.T) {
 	}
 	if got := oldBuffer.TotalBufferBytes(); got != 0 {
 		t.Fatalf("retired fragment buffer retained %d bytes", got)
+	}
+}
+
+func TestCEEDepsReconfigure_PreservesHistoryAndAppliesStricterPolicy(t *testing.T) {
+	cfg := config.CrossRequestDetection{
+		Enabled: true,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled: true, BitsPerWindow: 1000, WindowMinutes: 5, Action: config.ActionBlock,
+		},
+	}
+	cee := NewCEEDeps(cfg, metrics.New())
+	tracker, _ := cee.Components()
+	tracker.Record(testMCPSessionKey, []byte("recorded-before-reload"))
+
+	cee.Reconfigure(cfg, metrics.New())
+	unchanged, _ := cee.Components()
+	if unchanged != tracker || unchanged.CurrentUsage(testMCPSessionKey) == 0 {
+		t.Fatal("unrelated reload discarded the active entropy tracker or its history")
+	}
+
+	cfg.EntropyBudget.BitsPerWindow = 1
+	cee.Reconfigure(cfg, metrics.New())
+	strict, _ := cee.Components()
+	if strict != tracker || !strict.BudgetExceeded(testMCPSessionKey) {
+		t.Fatal("stricter reload did not apply to retained entropy history")
+	}
+
+	cfg.Enabled = false
+	cee.Reconfigure(cfg, metrics.New())
+	retired, buffer := cee.Components()
+	if retired != nil || buffer != nil || tracker.CurrentUsage(testMCPSessionKey) != 0 {
+		t.Fatal("disabled reload retained active or buffered CEE state")
 	}
 }
 

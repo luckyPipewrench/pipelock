@@ -1349,7 +1349,10 @@ func newInterceptHandler(
 		keys := queryParamKeys(r.URL)
 		var admission ceeAdmission
 		if ic.Proxy != nil {
-			admission = ic.Proxy.admitCurrentCEE(r.Context(), sessionKey, outbound, keys, r.URL.String(), ic.Agent, ic.ClientIP, ic.RequestID, true)
+			admission = ic.Proxy.admitCurrentCEE(r.Context(), ceeAdmitRequest{
+				SessionKey: sessionKey, Outbound: outbound, KeyPayload: keys, TargetURL: r.URL.String(),
+				Agent: ic.Agent, ClientIP: ic.ClientIP, RequestID: ic.RequestID, IncludeFragments: true,
+			})
 		} else {
 			ceeCfg := ceeEffectiveConfig(ic.Config.CrossRequestDetection, ic.Config.EnforceEnabled())
 			if ceeCfg.Enabled {

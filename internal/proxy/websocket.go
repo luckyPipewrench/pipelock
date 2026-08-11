@@ -2114,7 +2114,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Entropy tracking applies to all frame types (text + binary) since
 		// binary frames can carry high-entropy exfiltrated data. Fragment
 		// buffering only applies to text frames (DLP patterns match text).
-		ceeAdmission := r.proxy.admitCurrentCEE(ctx, ceeSessionKey(r.agent, r.clientIP, r.actorAuth), msg, nil, r.targetURL, r.agent, r.clientIP, r.requestID, frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText)
+		ceeAdmission := r.proxy.admitCurrentCEE(ctx, ceeAdmitRequest{
+			SessionKey: ceeSessionKey(r.agent, r.clientIP, r.actorAuth), Outbound: msg,
+			TargetURL: r.targetURL, Agent: r.agent, ClientIP: r.clientIP, RequestID: r.requestID,
+			IncludeFragments: frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText,
+		})
 		if ceeAdmission.Active {
 			ceeRes := ceeAdmission.Result
 			sessionKey := ceeSessionKey(r.agent, r.clientIP, r.actorAuth)

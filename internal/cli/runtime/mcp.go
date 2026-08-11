@@ -974,10 +974,14 @@ Key-free evidence capture:
 				chainMatcher = chains.New(&cfg.ToolChainDetection)
 			}
 
+			// Create the MCP metrics registry independently of session profiling so
+			// transport, CEE, and denial-of-wallet counters share the served registry.
+			mcpMetrics := metrics.New()
+
 			// Build CEE deps when cross-request detection is enabled.
 			var cee *mcp.CEEDeps
 			if cfg.CrossRequestDetection.Enabled {
-				cee = mcp.NewCEEDeps(cfg.CrossRequestDetection, metrics.New())
+				cee = mcp.NewCEEDeps(cfg.CrossRequestDetection, mcpMetrics)
 			}
 
 			// Create the MCP metrics registry independently of session profiling so
@@ -986,7 +990,6 @@ Key-free evidence capture:
 			var store session.Store
 			var baselineChecker session.BaselineChecker
 			var adaptiveCfg *config.AdaptiveEnforcement
-			mcpMetrics := metrics.New()
 			if cfg.AdaptiveEnforcement.Enabled {
 				adaptiveCfg = &cfg.AdaptiveEnforcement
 			}

@@ -222,8 +222,8 @@ func (fb *FragmentBuffer) UpdateConfig(maxBytesPerSession, windowSecs int) {
 			sb.fragments = sb.fragments[1:]
 		}
 		if sb.totalBytes > fb.maxBytes && len(sb.fragments) == 1 {
-			fragment := &sb.fragments[0]
-			fragment.data = fragment.data[len(fragment.data)-fb.maxBytes:]
+			last := &sb.fragments[0]
+			last.data = last.data[len(last.data)-fb.maxBytes:]
 			sb.totalBytes = fb.maxBytes
 		}
 	}

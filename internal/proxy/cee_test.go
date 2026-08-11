@@ -1302,6 +1302,19 @@ func TestCurrentCEEEntropySnapshotsAdaptiveGeneration(t *testing.T) {
 	if snapshot.Sessions == nil || snapshot.Sessions != p.sessionMgrPtr.Load() {
 		t.Fatal("entropy snapshot did not retain the live session manager")
 	}
+	if snapshot.Recorder == nil || snapshot.Recorder != snapshot.Sessions.GetOrCreate(sessionKey) {
+		t.Fatal("entropy snapshot did not retain the live session recorder")
+	}
+	postRec, postAdaptive := connectPostCEEAdaptiveState(snapshot, nil, config.AdaptiveEnforcement{})
+	if postRec != snapshot.Recorder || postAdaptive.EscalationThreshold != 1 {
+		t.Fatalf("post-CEE state = recorder:%p threshold:%v, want snapshot recorder and threshold 1", postRec, postAdaptive.EscalationThreshold)
+	}
+	fallbackRec := snapshot.Sessions.GetOrCreate("fallback")
+	fallbackCfg := config.AdaptiveEnforcement{Enabled: true, EscalationThreshold: 77}
+	postRec, postAdaptive = connectPostCEEAdaptiveState(ceeEntropySnapshot{}, fallbackRec, fallbackCfg)
+	if postRec != fallbackRec || postAdaptive.EscalationThreshold != 77 {
+		t.Fatalf("inactive post-CEE state = recorder:%p threshold:%v, want fallback", postRec, postAdaptive.EscalationThreshold)
+	}
 }
 
 // --- Fetch CEE integration ---

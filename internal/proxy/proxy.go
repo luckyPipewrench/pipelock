@@ -1988,6 +1988,7 @@ type ceeEntropySnapshot struct {
 	Config         config.CrossRequestDetection
 	AdaptiveConfig config.AdaptiveEnforcement
 	Sessions       *SessionManager
+	Recorder       session.Recorder
 	Active         bool
 }
 
@@ -2054,13 +2055,19 @@ func (p *Proxy) currentCEEEntropy(sessionKey string) ceeEntropySnapshot {
 		return ceeEntropySnapshot{Config: ceeCfg}
 	}
 	usage, budget := et.CurrentUsage(sessionKey), et.Budget()
+	sessions := p.sessionMgrPtr.Load()
+	var recorder session.Recorder
+	if sessions != nil {
+		recorder = sessions.GetOrCreate(sessionKey)
+	}
 	return ceeEntropySnapshot{
 		Exceeded:       usage >= budget,
 		Usage:          usage,
 		Budget:         budget,
 		Config:         ceeCfg,
 		AdaptiveConfig: cfg.AdaptiveEnforcement,
-		Sessions:       p.sessionMgrPtr.Load(),
+		Sessions:       sessions,
+		Recorder:       recorder,
 		Active:         true,
 	}
 }

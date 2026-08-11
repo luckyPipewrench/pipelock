@@ -3084,6 +3084,27 @@ func TestInterceptHandler_CEEMissingLiveConfigFailsClosedAndReleasesReloadLock(t
 	p.reloadMu.Unlock()
 }
 
+func TestInterceptHandler_CEEDisabledDoesNotRequireLiveConfig(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p := &Proxy{captureObs: capture.NopObserver{}, metrics: metrics.New()}
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc,
+		Logger: audit.NewNop(), Metrics: metrics.New(), ClientIP: "203.0.113.10",
+		RequestID: "cee-disabled-missing-live-config", Proxy: p,
+	}, &interceptMockRT{body: "ok", contentType: "text/plain"})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
 func TestInterceptHandler_CEELiveEnableUsesCurrentPolicyGeneration(t *testing.T) {
 	staleCfg := config.Defaults()
 	staleCfg.Internal = nil

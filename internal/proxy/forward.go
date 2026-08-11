@@ -438,6 +438,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// to block_all, permanently locking out legitimate agents.
 	// DLP, SSRF, and per-request entropy checks still run on the hostname.
 	ceeEntropy := p.currentCEEEntropy(ceeSessionKey(agent, clientIP, id.Auth))
+	postCEERec, postCEEAdaptive := connectPostCEEAdaptiveState(ceeEntropy, connectRec, cfg.AdaptiveEnforcement)
 	if ceeEntropy.Active {
 		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 		if ceeEntropy.Exceeded {
@@ -472,10 +473,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// CEE block above may fire ceeRecordSignals without blocking (e.g. entropy
 	// budget exceeded but action=warn), pushing the session to a block_all level.
 	// Use the live recorder for an up-to-date escalation level.
-	if cfg.AdaptiveEnforcement.Enabled {
-		if connectRec != nil {
-			level := connectRec.EscalationLevel()
-			if decide.UpgradeAction("", level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
+	if postCEEAdaptive.Enabled {
+		if postCEERec != nil {
+			level := postCEERec.EscalationLevel()
+			if decide.UpgradeAction("", level, &postCEEAdaptive) == config.ActionBlock {
 				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: connectSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 				emitConnectSessionDenyReceipt()
 				p.metrics.RecordTunnelBlocked(agentLabel)
@@ -832,6 +833,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// are streaming: bytes are tracked after close and enforced on the next
 	// admission check, not mid-stream (can't un-send tunnel data).
 	_ = resolved.Budget.RecordBytes(totalBytes)
+}
+
+func connectPostCEEAdaptiveState(snapshot ceeEntropySnapshot, fallback session.Recorder, fallbackCfg config.AdaptiveEnforcement) (session.Recorder, config.AdaptiveEnforcement) {
+	if snapshot.Active {
+		return snapshot.Recorder, snapshot.AdaptiveConfig
+	}
+	return fallback, fallbackCfg
 }
 
 // handleForwardHTTP handles forward proxy requests with absolute URIs

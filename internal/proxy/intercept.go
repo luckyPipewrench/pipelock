@@ -1353,7 +1353,12 @@ func newInterceptHandler(
 				SessionKey: sessionKey, Outbound: outbound, KeyPayload: keys, TargetURL: r.URL.String(),
 				Agent: ic.Agent, ClientIP: ic.ClientIP, RequestID: ic.RequestID, IncludeFragments: true,
 			})
-			if !admission.Resolved {
+			// A missing live snapshot is security-relevant only when this
+			// tunnel's last coherent config required CEE. Lightweight proxy
+			// contexts used by callers with CEE disabled have no CEE runtime
+			// to resolve and should retain the disabled behavior.
+			staleCEE := ceeEffectiveConfig(ic.Config.CrossRequestDetection, ic.Config.EnforceEnabled())
+			if !admission.Resolved && staleCEE.Enabled {
 				writeBlockedError(w,
 					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
 					"blocked: live cross-request policy unavailable", http.StatusForbidden)

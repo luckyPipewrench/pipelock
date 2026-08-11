@@ -628,10 +628,13 @@ type MCPInputScanning struct {
 // and drift detection. Scans tools/list responses for hidden instructions
 // in tool definitions and tracks description hashes to detect rug pulls.
 type MCPToolScanning struct {
-	Enabled                bool   `yaml:"enabled"`
-	Action                 string `yaml:"action"`       // warn, block
-	DetectDrift            bool   `yaml:"detect_drift"` // rug pull detection
-	ListenerDriftResetFile string `yaml:"listener_drift_reset_file"`
+	Enabled     bool   `yaml:"enabled"`
+	Action      string `yaml:"action"`       // warn, block
+	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
+	// json:"-" because this is an operator control-file location, not
+	// request-time policy: it changes how an authorized operator re-baselines
+	// state, not what Pipelock decides for a scanned request.
+	ListenerDriftResetFile string `yaml:"listener_drift_reset_file" json:"-"`
 }
 
 // MCPDataClassLabels reserves the config surface for DLP-derived MCP receipt

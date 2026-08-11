@@ -152,8 +152,11 @@ func TestAF325_PlainClientRugPullIsRecordedAsDegraded(t *testing.T) {
 	if got := strings.Count(logBuf.String(), "stateful controls are unavailable"); got != 1 {
 		t.Fatalf("degraded tokenless requests reported %d times, want 1 aggregated report; log=%s", got, logBuf.String())
 	}
-	if !strings.Contains(logBuf.String(), "degraded_requests_since_last_report=") {
-		t.Fatalf("degradation report dropped its count, so the throttle loses evidence: %s", logBuf.String())
+	// Assert the VALUE, not the field's presence. A presence-only check passes
+	// on "=0", which is what a listener that never passes the reporter's count
+	// into the record would emit.
+	if !strings.Contains(logBuf.String(), "degraded_requests_since_last_report=1") {
+		t.Fatalf("first degradation report carried the wrong count: %s", logBuf.String())
 	}
 }
 

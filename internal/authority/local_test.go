@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jcs"
 )
 
 type conformanceFixture struct {
@@ -245,6 +247,43 @@ func TestParseLocalReferenceRejectsMalformedInputs(t *testing.T) {
 	}
 }
 
+func TestLocalVerifierAcceptsJCSStringEscaping(t *testing.T) {
+	t.Parallel()
+	fixture := loadConformanceFixture(t)
+	publicKey := mustDecodePublicKey(t, fixture.PublicKey)
+	grant := localGrant{
+		SchemaVersion: localSchemaVersion,
+		Issuer:        fixture.Issuer,
+		Reference:     "grant-query",
+		Actor:         "workload:test-agent",
+		Action:        "records.read",
+		Destination:   "https://api.service.example/v1/records?active=true&limit=10",
+		ExpiresAt:     "2030-01-01T00:05:00Z",
+	}
+	request := Request{
+		Actor:        grant.Actor,
+		Action:       grant.Action,
+		Destination:  grant.Destination,
+		AuthorityRef: signTestGrant(t, grant),
+	}
+	verifier, err := NewLocalVerifier(LocalConfig{
+		TrustedIssuers: map[string]ed25519.PublicKey{fixture.Issuer: publicKey},
+		Clock:          func() time.Time { return mustParseTime(t, fixture.Now) },
+	})
+	if err != nil {
+		t.Fatalf("new verifier: %v", err)
+	}
+
+	got := verifier.Verify(context.Background(), request)
+	if got.Decision != DecisionAllow || got.Reason != ReasonMatched {
+		t.Fatalf("Verify()=%s/%s, want allow/%s", got.Decision, got.Reason, ReasonMatched)
+	}
+	payload := mustPayloadBytes(t, strings.Split(request.AuthorityRef, ".")[1])
+	if !bytes.Contains(payload, []byte("&limit=10")) {
+		t.Fatalf("JCS payload escaped ampersand: %s", payload)
+	}
+}
+
 func TestLocalVerifierRejectsMalformedSignedGrantAndCancellation(t *testing.T) {
 	t.Parallel()
 	fixture := loadConformanceFixture(t)
@@ -349,6 +388,10 @@ func signTestGrant(t *testing.T, grant localGrant) string {
 	payload, err := json.Marshal(grant)
 	if err != nil {
 		t.Fatalf("marshal grant: %v", err)
+	}
+	payload, err = jcs.Canonicalize(payload)
+	if err != nil {
+		t.Fatalf("canonicalize grant: %v", err)
 	}
 	return signTestPayload(t, payload)
 }

@@ -11,11 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/jcs"
 )
 
 const (
@@ -35,8 +34,9 @@ type LocalConfig struct {
 	Clock             func() time.Time
 }
 
-// LocalVerifier verifies compact Ed25519 references against an in-memory key
-// set. It performs no I/O and is not wired into a production request path.
+// LocalVerifier verifies compact Ed25519 references with RFC 8785 canonical
+// payloads against an in-memory key set. It performs no I/O and is not wired
+// into a production request path.
 type LocalVerifier struct {
 	trustedIssuers    map[string]ed25519.PublicKey
 	revokedReferences map[string]struct{}
@@ -172,7 +172,8 @@ func parseLocalReference(reference string) (parsedReference, error) {
 	if err != nil || len(signature) != ed25519.SignatureSize {
 		return parsedReference{}, errMalformedReference
 	}
-	if err := jsonscan.RejectDuplicateKeys(payloadBytes); err != nil {
+	canonical, err := jcs.Canonicalize(payloadBytes)
+	if err != nil || !bytes.Equal(canonical, payloadBytes) {
 		return parsedReference{}, errMalformedReference
 	}
 
@@ -180,13 +181,6 @@ func parseLocalReference(reference string) (parsedReference, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payloadBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		return parsedReference{}, errMalformedReference
-	}
-	if err := ensureJSONEnd(decoder); err != nil {
-		return parsedReference{}, errMalformedReference
-	}
-	canonical, err := json.Marshal(payload)
-	if err != nil || !bytes.Equal(canonical, payloadBytes) {
 		return parsedReference{}, errMalformedReference
 	}
 
@@ -209,17 +203,6 @@ func validateGrant(grant localGrant) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("%w: expiry: %w", errMalformedReference, err)
 	}
 	return expiresAt, nil
-}
-
-func ensureJSONEnd(decoder *json.Decoder) error {
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("multiple JSON values")
-		}
-		return err
-	}
-	return nil
 }
 
 func contextResult(ctx context.Context) (Result, bool) {

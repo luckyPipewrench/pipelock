@@ -371,9 +371,6 @@ type sessionBindingCheck struct {
 }
 
 func evaluateSessionBinding(check sessionBindingCheck) (action, reason string) {
-	if check.Baseline == nil {
-		return "", ""
-	}
 	method := check.Method
 	if method == "" {
 		method = check.Frame.Method
@@ -389,6 +386,16 @@ func evaluateSessionBinding(check sessionBindingCheck) (action, reason string) {
 	if isToolCall && check.ToolName == "" {
 		if check.UnknownAction != "" {
 			return check.UnknownAction, bindingReasonMissingToolName
+		}
+		return "", ""
+	}
+	// A nil baseline is an unavailable inventory, not an absent binding
+	// policy. This covers tokenless listener requests, which deliberately do
+	// not retain state across requests. Bound clients with a newly allocated
+	// empty baseline follow the same configured no-baseline decision below.
+	if check.Baseline == nil {
+		if check.NoBaselineAction != "" {
+			return check.NoBaselineAction, bindingReasonNoBaseline
 		}
 		return "", ""
 	}

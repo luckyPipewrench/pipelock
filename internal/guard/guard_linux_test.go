@@ -456,6 +456,12 @@ func TestPrepare_RefusesFloorViolation(t *testing.T) {
 // enforced. This is the fail-direction check: a withheld grant is a DENY, and
 // enforcing the remainder would present a narrower policy as the declared one.
 func TestApply_RefusesIncompleteManifest(t *testing.T) {
+	// Drives the real Apply, so it needs a host above the in-process floor.
+	// Below it Apply refuses on the ABI before it ever reaches the
+	// incomplete-manifest check, which is correct behaviour and a different
+	// assertion. The ABI-independent version of this check lives in the
+	// internal tests, which inject the version.
+	abiOrSkip(t)
 	root := t.TempDir()
 	cfg := newConfig(t, config.GuardManifest{
 		Name:     "m",

@@ -138,7 +138,9 @@ func Cmd() *cobra.Command {
 						return err
 					}
 				} else {
-					renderGuardPreflight(cmd.OutOrStdout(), result)
+					if err := renderGuardPreflight(cmd.OutOrStdout(), result); err != nil {
+						return err
+					}
 				}
 				if result.Status != sandbox.StatusReady {
 					return cliutil.ExitCodeError(2, errors.New("guard preflight failed"))
@@ -271,21 +273,34 @@ func resolveWorkspace(flagValue, configured string) (string, error) {
 	return resolved, nil
 }
 
-func renderGuardPreflight(w io.Writer, result sandbox.PreflightResult) {
-	_, _ = fmt.Fprintf(w, "Guard Preflight: %s\n", strings.ToUpper(result.Status))
-	_, _ = fmt.Fprintln(w, "  Surface: Linux HTTP/HTTPS preview")
-	_, _ = fmt.Fprintf(w, "  Workspace: %s\n", result.Workspace)
-	_, _ = fmt.Fprintln(w, "  Boundary: non-proxy TCP, UDP, QUIC, and child DNS are denied")
+func renderGuardPreflight(w io.Writer, result sandbox.PreflightResult) error {
+	if _, err := fmt.Fprintf(w, "Guard Preflight: %s\n", strings.ToUpper(result.Status)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "  Surface: Linux HTTP/HTTPS preview"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  Workspace: %s\n", result.Workspace); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "  Boundary: non-proxy TCP, UDP, QUIC, and child DNS are denied"); err != nil {
+		return err
+	}
 	for _, layer := range result.Layers {
 		state := "available"
 		if !layer.Available {
 			state = "unavailable"
 		}
-		_, _ = fmt.Fprintf(w, "  %s: %s (required=%t)\n", layer.Name, state, layer.Required)
+		if _, err := fmt.Fprintf(w, "  %s: %s (required=%t)\n", layer.Name, state, layer.Required); err != nil {
+			return err
+		}
 	}
 	for _, item := range result.Errors {
-		_, _ = fmt.Fprintf(w, "  ERROR: %s\n", item)
+		if _, err := fmt.Fprintf(w, "  ERROR: %s\n", item); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func newHeader(command, configFile string) reportHeader {

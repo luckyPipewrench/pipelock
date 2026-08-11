@@ -271,7 +271,7 @@ func canonicalGuard(g Guard) Guard {
 	}
 	for i, service := range out.Services {
 		out.Services[i].Protocol = strings.ToLower(service.Protocol)
-		out.Services[i].Host = strings.TrimSuffix(strings.ToLower(service.Host), ".")
+		out.Services[i].Host = strings.TrimRight(strings.ToLower(service.Host), ".")
 	}
 	sort.Slice(out.Services, func(i, j int) bool {
 		a, b := out.Services[i], out.Services[j]

@@ -31,7 +31,7 @@ func PrepareExecution(cfg *config.Config, profileName, workspace, tempDir, execu
 	for _, g := range planned {
 		seen[string(g.access)+"\x00"+filepath.Clean(g.declared)] = struct{}{}
 	}
-	add := func(path string, access AccessKind) {
+	add := func(path string, access AccessKind, floorExempt bool) {
 		if path == "" {
 			return
 		}
@@ -41,31 +41,33 @@ func PrepareExecution(cfg *config.Config, profileName, workspace, tempDir, execu
 			return
 		}
 		seen[key] = struct{}{}
-		planned = append(planned, grant{declared: clean, access: access, runtime: true})
+		planned = append(planned, grant{declared: clean, access: access, runtime: floorExempt})
 	}
 	for _, path := range existingExecutionPaths([]string{
 		"/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ssl", "/etc/pki",
 	}) {
-		add(path, AccessReadDirectory)
+		add(path, AccessReadDirectory, true)
 	}
 	for _, path := range existingExecutionPaths([]string{
 		"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/passwd", "/etc/group", "/usr/bin/env",
 	}) {
-		add(path, AccessReadFile)
+		add(path, AccessReadFile, true)
 	}
-	add(workspace, AccessWriteDirectory)
-	add(tempDir, AccessWriteDirectory)
+	add(workspace, AccessWriteDirectory, false)
+	add(tempDir, AccessWriteDirectory, true)
 	// The init process resolves PATH before enforcement and passes the exact
 	// executable here. Grant that inode, not its containing directory, so tools
 	// installed outside /usr or the workspace can start without widening the
 	// workload's filesystem view to an entire developer bin directory.
-	add(executable, AccessReadFile)
-	for _, path := range existingExecutionPaths([]string{"/dev/null", "/dev/zero", "/dev/urandom"}) {
-		add(path, accessRuntimeDevice)
+	add(executable, AccessReadFile, false)
+	for _, path := range existingExecutionPaths(runtimeDevices) {
+		add(path, accessRuntimeDevice, true)
 	}
 
 	return prepareGrants(planned, uid, config.ExplainGuardPathFloor)
 }
+
+var runtimeDevices = []string{"/dev/null", "/dev/zero", "/dev/urandom"}
 
 // ValidateExecutionPaths applies the compiled floor to the caller-selected
 // implicit grants. Fixed Pipelock runtime paths are code-owned, but the

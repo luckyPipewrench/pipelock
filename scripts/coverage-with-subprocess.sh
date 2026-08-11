@@ -40,18 +40,30 @@ go test -count=1 -covermode=set -coverprofile="$UNIT_PROFILE" \
 # create/add/restrict/close sequence at the base ABI without changing the test
 # process, so hosted runners cover the path even when their kernel is below the
 # in-process thread-sync floor.
-go test -count=1 -covermode=set -coverprofile="$GUARD_UNIT_PROFILE" \
-    ./internal/guard -run '^TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync$'
+run_targeted_coverage() {
+    local profile="$1" package="$2" pattern="$3"
+    local output
+    output=$(go test -count=1 -covermode=set -coverprofile="$profile" "$package" -run "$pattern" 2>&1) || {
+        echo "$output"
+        return 1
+    }
+    echo "$output"
+    if grep -q 'no tests to run' <<<"$output"; then
+        echo "Targeted coverage pattern '$pattern' matched no test in $package."
+        return 1
+    fi
+}
+
+run_targeted_coverage "$GUARD_UNIT_PROFILE" ./internal/guard \
+    '^TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync$'
 
 # The scoped PR gate defers the high-fan-in scanner and proxy race suites to CI.
 # Collect the narrow Guard tests here so their changed lines are measured
 # alongside the child paths that consume the same exact destination grants.
-go test -count=1 -covermode=set -coverprofile="$CONFIG_UNIT_PROFILE" \
-    ./internal/config -run '^TestCanonicalPolicyHash_GuardIncludedAndOrderIndependent$'
-go test -count=1 -covermode=set -coverprofile="$SCANNER_UNIT_PROFILE" \
-    ./internal/scanner -run '^TestGuard'
-go test -count=1 -covermode=set -coverprofile="$PROXY_UNIT_PROFILE" \
-    ./internal/proxy -run '^TestGuard'
+run_targeted_coverage "$CONFIG_UNIT_PROFILE" ./internal/config \
+    '^TestCanonicalPolicyHash_GuardIncludedAndOrderIndependent$'
+run_targeted_coverage "$SCANNER_UNIT_PROFILE" ./internal/scanner '^TestGuard'
+run_targeted_coverage "$PROXY_UNIT_PROFILE" ./internal/proxy '^TestGuard'
 
 PIPELOCK_SUBPROCESS_COVERAGE=1 GOCOVERDIR="$COVERDIR" \
     go test -count=1 -timeout=5m ./internal/sandbox \

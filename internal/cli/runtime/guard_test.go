@@ -384,6 +384,17 @@ func TestGuardPreflightRefusesWorkspaceThatBypassesWriteFloor(t *testing.T) {
 	}
 }
 
+func TestGuardPreflightRefusesWorkspaceSymlinkThatBypassesWriteFloor(t *testing.T) {
+	alias := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink("/usr/local/bin", alias); err != nil {
+		t.Fatalf("create workspace symlink: %v", err)
+	}
+	_, err := GuardPreflight(config.Defaults(), "", alias, []string{"/usr/bin/true"})
+	if err == nil || !strings.Contains(err.Error(), "compiled floor") {
+		t.Fatalf("dangerous workspace symlink preflight error = %v", err)
+	}
+}
+
 func TestGuardPreflightValidatesAndDeclaresEveryRequirement(t *testing.T) {
 	if _, err := GuardPreflight(nil, "", t.TempDir(), []string{"/usr/bin/true"}); err == nil {
 		t.Fatal("nil preflight config was accepted")

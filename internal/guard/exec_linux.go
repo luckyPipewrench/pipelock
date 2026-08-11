@@ -33,6 +33,8 @@ const (
 
 const execEnvironmentMaxPayload = 8 << 20
 
+const guardDeclarationEnvironmentMaxPayload = 64 << 10
+
 // IsExecMode reports whether this process is the final Guard pre-exec helper.
 func IsExecMode() bool { return os.Getenv(execModeEnv) == "1" }
 
@@ -44,8 +46,8 @@ func ExecControlEnvironment(declaration config.Guard, profile, policyHash, works
 	if err != nil {
 		return nil, fmt.Errorf("encoding guard declaration: %w", err)
 	}
-	if len(encoded) > 1<<20 {
-		return nil, errors.New("guard declaration exceeds 1 MiB")
+	if len(encoded) > guardDeclarationEnvironmentMaxPayload {
+		return nil, errors.New("guard declaration exceeds the 64 KiB environment transport limit")
 	}
 	return []string{
 		execModeEnv + "=1",
@@ -148,8 +150,6 @@ func runExecWith(
 	if err != nil {
 		return fmt.Errorf("preparing manifest: %w", err)
 	}
-	defer func() { _ = prepared.Close() }()
-
 	// Keep this goroutine on the exact thread that enters the Landlock domain
 	// until exec replaces the process image. ApplyForExec pins internally while
 	// issuing the syscalls, but unpins when it returns; without this outer pin,

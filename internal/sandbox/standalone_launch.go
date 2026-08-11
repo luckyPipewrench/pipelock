@@ -147,8 +147,8 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		if err != nil {
 			return fmt.Errorf("sandbox: encoding guard declaration: %w", err)
 		}
-		if len(declaration) > 1<<20 {
-			return errors.New("sandbox: guard declaration exceeds 1 MiB")
+		if len(declaration) > 64<<10 {
+			return errors.New("sandbox: guard declaration exceeds the 64 KiB environment transport limit")
 		}
 	}
 

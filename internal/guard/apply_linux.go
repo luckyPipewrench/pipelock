@@ -94,9 +94,7 @@ func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 }
 
 func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord, error) {
-	ops := kernelRulesetOperations()
-	ops.getABI = getABI
-	return p.applyWithOperations(ops, true)
+	return p.applyMode(getABI, true)
 }
 
 // ApplyForExec enforces the manifest on the calling thread for an immediate
@@ -252,7 +250,8 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 	// test caught it as a killed child rather than a wrong answer.
 	//
 	// LockOSThread pins this goroutine for the call so it cannot migrate to
-	// another thread between the prctl and the restrict.
+	// another thread between the prctl and the restrict. The optional TSYNC
+	// flag synchronizes existing threads only for the in-process Apply path.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 

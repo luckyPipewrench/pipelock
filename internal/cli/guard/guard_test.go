@@ -56,6 +56,19 @@ func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("writer failed")
 }
 
+type failAfterWriter struct {
+	writes int
+	failAt int
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errors.New("writer failed")
+	}
+	return len(p), nil
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pipelock.yaml")
@@ -467,17 +480,34 @@ func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
 
 func TestRenderGuardPreflightIncludesUnavailableReasons(t *testing.T) {
 	var out bytes.Buffer
-	renderGuardPreflight(&out, sandbox.PreflightResult{
+	if err := renderGuardPreflight(&out, sandbox.PreflightResult{
 		Status:    sandbox.StatusError,
 		Workspace: "/workspace",
 		Layers: []sandbox.LayerProbe{{
 			Name: sandbox.LayerLandlock, Available: false, Required: true,
 		}},
 		Errors: []string{"required layer unavailable"},
-	})
+	}); err != nil {
+		t.Fatalf("renderGuardPreflight: %v", err)
+	}
 	for _, want := range []string{"unavailable", "ERROR: required layer unavailable"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("preflight output missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestRenderGuardPreflightPropagatesEveryWriteFailure(t *testing.T) {
+	result := sandbox.PreflightResult{
+		Status:    sandbox.StatusError,
+		Workspace: "/workspace",
+		Layers:    []sandbox.LayerProbe{{Name: sandbox.LayerLandlock, Required: true}},
+		Errors:    []string{"required layer unavailable"},
+	}
+	for failAt := 1; failAt <= 6; failAt++ {
+		writer := &failAfterWriter{failAt: failAt}
+		if err := renderGuardPreflight(writer, result); err == nil || !strings.Contains(err.Error(), "writer failed") {
+			t.Fatalf("write %d error = %v", failAt, err)
 		}
 	}
 }

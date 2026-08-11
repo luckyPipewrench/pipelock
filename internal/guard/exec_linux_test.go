@@ -119,16 +119,47 @@ func TestExecEntryPointsRejectInvalidControls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecControlEnvironment: %v", err)
 	}
-	if len(controls) == 0 || !slices.Contains(controls, execModeEnv+"=1") {
+	declarationJSON, err := json.Marshal(config.Guard{})
+	if err != nil {
+		t.Fatalf("marshal declaration: %v", err)
+	}
+	wantControls := []string{
+		execModeEnv + "=1",
+		execDeclarationEnv + "=" + string(declarationJSON),
+		execProfileEnv + "=",
+		execPolicyHashEnv + "=policy-hash",
+		execWorkspaceEnv + "=" + controlsValue(t, controls, execWorkspaceEnv),
+		execTempDirEnv + "=" + controlsValue(t, controls, execTempDirEnv),
+		execBinaryEnv + "=/usr/bin/true",
+		execEnvironmentEnv + "=3",
+	}
+	if len(controls) != len(wantControls) {
 		t.Fatalf("controls = %v", controls)
 	}
-	largeDeclaration := config.Guard{Services: []config.GuardService{{Name: strings.Repeat("x", (1<<20)+1)}}}
-	if _, err := ExecControlEnvironment(largeDeclaration, "", "hash", t.TempDir(), t.TempDir(), "/usr/bin/true", 3); err == nil || !strings.Contains(err.Error(), "exceeds 1 MiB") {
+	for _, want := range wantControls {
+		if !slices.Contains(controls, want) {
+			t.Fatalf("controls missing %q: %v", want, controls)
+		}
+	}
+	largeDeclaration := config.Guard{Services: []config.GuardService{{Name: strings.Repeat("x", guardDeclarationEnvironmentMaxPayload+1)}}}
+	if _, err := ExecControlEnvironment(largeDeclaration, "", "hash", t.TempDir(), t.TempDir(), "/usr/bin/true", 3); err == nil || !strings.Contains(err.Error(), "64 KiB") {
 		t.Fatalf("oversized declaration error = %v", err)
 	}
 	if err := runExec(nil, nil); err == nil || !strings.Contains(err.Error(), "missing operator command") {
 		t.Fatalf("runExec error = %v", err)
 	}
+}
+
+func controlsValue(t *testing.T, controls []string, key string) string {
+	t.Helper()
+	prefix := key + "="
+	for _, entry := range controls {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	t.Fatalf("control %q missing: %v", key, controls)
+	return ""
 }
 
 type errorReader struct{ err error }
@@ -280,6 +311,20 @@ func TestPrepareExecutionRefusesWorkspaceThatBypassesWriteFloor(t *testing.T) {
 	_, err := PrepareExecution(config.Defaults(), "", "/usr/local/bin", t.TempDir(), "/usr/bin/true", os.Getuid())
 	if err == nil || !strings.Contains(err.Error(), "compiled floor") {
 		t.Fatalf("dangerous workspace error = %v, want compiled-floor refusal", err)
+	}
+}
+
+func TestPrepareExecutionRefusesWorkspaceSymlinkThatBypassesWriteFloor(t *testing.T) {
+	alias := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink("/usr/local/bin", alias); err != nil {
+		t.Fatalf("create workspace symlink: %v", err)
+	}
+	prepared, err := PrepareExecution(config.Defaults(), "", alias, t.TempDir(), "/usr/bin/true", os.Getuid())
+	if prepared != nil {
+		_ = prepared.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "compiled floor") {
+		t.Fatalf("workspace symlink bypass error = %v", err)
 	}
 }
 

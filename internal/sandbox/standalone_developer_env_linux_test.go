@@ -66,6 +66,9 @@ func TestStandaloneCommandJSONPreservesLegacyDelimiterInArgument(t *testing.T) {
 	if _, err := decodeStandaloneCommand("", ""); err == nil || !strings.Contains(err.Error(), "missing command") {
 		t.Fatalf("missing legacy command error = %v", err)
 	}
+	if _, err := decodeStandaloneCommand("", "\x1farg"); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("legacy empty command error = %v", err)
+	}
 }
 
 func TestLaunchStandaloneDeveloperEnvironmentReachesOnlyFinalCommand(t *testing.T) {

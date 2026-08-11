@@ -427,6 +427,8 @@ func verifyPinned(fd int, resolved string, access AccessKind, uid int, runtimeGr
 			return fmt.Sprintf("%q is a regular file but was declared as a directory subtree", resolved)
 		}
 	case unix.S_IFCHR:
+		// Fixed runtime devices are root-owned and world-writable by design.
+		// The resolved-path check still refuses symlinks to any other device.
 		if !runtimeGrant || access != accessRuntimeDevice || !runtimeDevicePath(resolved) {
 			return fmt.Sprintf("%q is a device node and is not one of Guard's fixed runtime devices", resolved)
 		}
@@ -452,12 +454,13 @@ func verifyPinned(fd int, resolved string, access AccessKind, uid int, runtimeGr
 }
 
 func runtimeDevicePath(path string) bool {
-	switch filepath.Clean(path) {
-	case "/dev/null", "/dev/zero", "/dev/urandom":
-		return true
-	default:
-		return false
+	clean := filepath.Clean(path)
+	for _, device := range runtimeDevices {
+		if clean == device {
+			return true
+		}
 	}
+	return false
 }
 
 // verifyAncestor refuses to create state beneath a directory other users can

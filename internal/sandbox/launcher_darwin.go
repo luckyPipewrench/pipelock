@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // LaunchConfig configures how the sandbox launcher wraps the child process.
@@ -53,6 +55,9 @@ type StandaloneLaunchConfig struct {
 	UseDeveloperEnvironment bool
 	ProxyHandler            func(conn net.Conn)
 	RequireProxyHandler     bool
+	GuardDeclaration        *config.Guard
+	GuardProfile            string
+	GuardPolicyHash         string
 }
 
 // PrepareSandboxCmd builds an exec.Cmd that wraps the child command with

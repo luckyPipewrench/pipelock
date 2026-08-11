@@ -358,15 +358,16 @@ func RunStandaloneInit() {
 }
 
 func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
+	var command []string
 	if encoded == "" {
 		if legacy == "" {
 			return nil, errors.New("missing command")
 		}
-		return strings.Split(legacy, "\x1f"), nil
-	}
-	var command []string
-	if err := json.Unmarshal([]byte(encoded), &command); err != nil {
-		return nil, fmt.Errorf("decoding command JSON: %w", err)
+		command = strings.Split(legacy, "\x1f")
+	} else {
+		if err := json.Unmarshal([]byte(encoded), &command); err != nil {
+			return nil, fmt.Errorf("decoding command JSON: %w", err)
+		}
 	}
 	if len(command) == 0 || command[0] == "" {
 		return nil, errors.New("decoded command is empty")

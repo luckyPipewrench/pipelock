@@ -146,7 +146,7 @@ func TestLaunchStandaloneRejectsInvalidGuardLaunchBeforeChildStart(t *testing.T)
 	}{
 		{name: "missing command", cfg: StandaloneLaunchConfig{Workspace: workspace}, want: "command is required"},
 		{name: "missing guard hash", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"true"}, GuardDeclaration: &config.Guard{}}, want: "policy hash is required"},
-		{name: "oversized guard declaration", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"true"}, GuardDeclaration: largeDeclaration, GuardPolicyHash: "hash"}, want: "exceeds 1 MiB"},
+		{name: "oversized guard declaration", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"true"}, GuardDeclaration: largeDeclaration, GuardPolicyHash: "hash"}, want: "64 KiB"},
 		{name: "missing guard command", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"missing-guard-command"}, GuardDeclaration: &config.Guard{}, GuardPolicyHash: "hash"}, want: "resolving guard command"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

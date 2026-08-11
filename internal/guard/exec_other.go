@@ -23,8 +23,8 @@ func ExecControlEnvironment(declaration config.Guard, profile, policyHash, works
 	if err != nil {
 		return nil, fmt.Errorf("encoding guard declaration: %w", err)
 	}
-	if len(encoded) > 1<<20 {
-		return nil, errors.New("guard declaration exceeds 1 MiB")
+	if len(encoded) > 64<<10 {
+		return nil, errors.New("guard declaration exceeds the 64 KiB environment transport limit")
 	}
 	return []string{execModeEnv + "=1"}, nil
 }

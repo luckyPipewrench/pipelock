@@ -50,10 +50,6 @@ func NewCEEDeps(ceeCfg config.CrossRequestDetection, m *metrics.Metrics) *CEEDep
 		runtime.buffer = scanner.NewFragmentBuffer(ceeCfg.FragmentReassembly.MaxBufferBytes, 10000, ceeCfg.FragmentReassembly.WindowMinutes*60)
 	}
 	return &CEEDeps{
-		Tracker: runtime.tracker,
-		Buffer:  runtime.buffer,
-		Metrics: m,
-		Config:  &runtime.config,
 		runtime: runtime,
 	}
 }
@@ -82,6 +78,9 @@ func (cee *CEEDeps) Reconfigure(ceeCfg config.CrossRequestDetection, m *metrics.
 			runtime.tracker.UpdateConfig(ceeCfg.EntropyBudget.BitsPerWindow, ceeCfg.EntropyBudget.WindowMinutes*60)
 		}
 	} else {
+		if runtime.tracker != nil {
+			runtime.tracker.Close()
+		}
 		runtime.tracker = nil
 	}
 	if ceeCfg.Enabled && ceeCfg.FragmentReassembly.Enabled {
@@ -91,10 +90,21 @@ func (cee *CEEDeps) Reconfigure(ceeCfg config.CrossRequestDetection, m *metrics.
 			runtime.buffer.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeCfg.FragmentReassembly.WindowMinutes*60)
 		}
 	} else {
+		if runtime.buffer != nil {
+			runtime.buffer.Close()
+		}
 		runtime.buffer = nil
 	}
 	runtime.config = ceeCfg
 	runtime.metrics = m
+}
+
+// Components returns the currently active stateful detectors. Callers must not
+// retain the returned pointers across a concurrent Reconfigure call.
+func (cee *CEEDeps) Components() (*scanner.EntropyTracker, *scanner.FragmentBuffer) {
+	tracker, buffer, _, _, release := cee.snapshot()
+	defer release()
+	return tracker, buffer
 }
 
 func (cee *CEEDeps) snapshot() (*scanner.EntropyTracker, *scanner.FragmentBuffer, *metrics.Metrics, config.CrossRequestDetection, func()) {

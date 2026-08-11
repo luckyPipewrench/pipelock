@@ -3055,6 +3055,78 @@ func TestInterceptHandler_CEELiveDisableReleasesReloadLock(t *testing.T) {
 	p.reloadMu.Unlock()
 }
 
+func TestInterceptHandler_CEELiveEnableUsesCurrentPolicyGeneration(t *testing.T) {
+	staleCfg := config.Defaults()
+	staleCfg.Internal = nil
+	staleCfg.CrossRequestDetection.Enabled = false
+	staleCfg.AdaptiveEnforcement.Enabled = true
+	staleCfg.AdaptiveEnforcement.EscalationThreshold = 100
+
+	liveCfg := staleCfg.Clone()
+	liveCfg.CrossRequestDetection.Enabled = true
+	liveCfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	liveCfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	liveCfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+	liveCfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+	liveCfg.SessionProfiling.Enabled = true
+	liveCfg.AdaptiveEnforcement.EscalationThreshold = 1
+
+	oldScanner := scanner.MustNew(staleCfg)
+	t.Cleanup(oldScanner.Close)
+	observer := newCaptureMetadataObserver()
+	p, err := New(staleCfg, audit.NewNop(), oldScanner, metrics.New(), WithCaptureObserver(observer))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+	liveScanner := scanner.MustNew(liveCfg)
+	if !p.Reload(liveCfg, liveScanner) {
+		liveScanner.Close()
+		t.Fatal("enable CEE reload failed")
+	}
+
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "api.vendor.example",
+		TargetPort: "443",
+		Config:     staleCfg,
+		Scanner:    oldScanner,
+		Logger:     audit.NewNop(),
+		Metrics:    p.metrics,
+		ClientIP:   "203.0.113.10",
+		RequestID:  "cee-live-enable",
+		Proxy:      p,
+	}, &interceptMockRT{body: "ok", contentType: "text/plain"})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.vendor.example/upload", strings.NewReader("abc"))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d after live CEE enable: %s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+
+	observer.mu.Lock()
+	var ceeRecords []capture.CaptureSummary
+	for _, record := range observer.records {
+		if record.Surface == capture.SurfaceCEE {
+			ceeRecords = append(ceeRecords, record)
+		}
+	}
+	if len(ceeRecords) != 1 || ceeRecords[0].ConfigHash != liveCfg.CanonicalPolicyHash() {
+		got := append([]capture.CaptureSummary(nil), observer.records...)
+		observer.mu.Unlock()
+		t.Fatalf("CEE capture records = %+v, want one record with live policy hash", got)
+	}
+	observer.mu.Unlock()
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("live session manager is nil")
+	}
+	if got := sm.GetOrCreate("203.0.113.10").EscalationLevel(); got == 0 {
+		t.Fatal("live adaptive threshold was not applied to the CEE signal")
+	}
+}
+
 // TestRecEscalationLevel_Nil verifies that recEscalationLevel returns 0 when
 // the recorder is nil (session profiling disabled).
 func TestRecEscalationLevel_Nil(t *testing.T) {

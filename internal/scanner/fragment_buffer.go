@@ -237,9 +237,15 @@ func (fb *FragmentBuffer) Delete(key string) {
 	delete(fb.sessions, key)
 }
 
-// Close is retained for scanner lifecycle symmetry. FragmentBuffer owns no
-// background resources, so closing it is intentionally a no-op.
-func (fb *FragmentBuffer) Close() {}
+// Close retires all buffered fragments. It is safe to call more than once.
+func (fb *FragmentBuffer) Close() {
+	if fb == nil {
+		return
+	}
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.sessions = make(map[string]*sessionBuffer)
+}
 
 // concatenateFragments builds a single byte slice from non-expired session
 // fragments. Filters by windowSecs so scans never include stale data, even

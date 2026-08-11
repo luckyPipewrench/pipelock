@@ -32,10 +32,10 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	}
 
 	cee := s.currentMCPCEE()
-	if cee == nil || cee.Tracker == nil || cee.Buffer == nil {
+	tracker, buffer := cee.Components()
+	if cee == nil || tracker == nil || buffer == nil {
 		t.Fatalf("first CEE load = %+v, want tracker and buffer", cee)
 	}
-	tracker, buffer := cee.Tracker, cee.Buffer
 	tracker.Record("mcp-session", []byte("abc"))
 	buffer.Append("mcp-session", []byte("first-"))
 	if tracker.BudgetExceeded("mcp-session") {
@@ -50,7 +50,8 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 		t.Fatalf("unrelated reload: %v", err)
 	}
 	cee = s.currentMCPCEE()
-	if cee.Tracker != tracker || cee.Buffer != buffer {
+	gotTracker, gotBuffer := cee.Components()
+	if gotTracker != tracker || gotBuffer != buffer {
 		t.Fatal("unrelated reload replaced MCP CEE state")
 	}
 	tracker.Record("mcp-session", []byte("abc"))
@@ -66,7 +67,8 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 		t.Fatalf("CEE limit reload: %v", err)
 	}
 	cee = s.currentMCPCEE()
-	if cee.Tracker != tracker || cee.Buffer != buffer {
+	gotTracker, gotBuffer = cee.Components()
+	if gotTracker != tracker || gotBuffer != buffer {
 		t.Fatal("CEE limit reload replaced MCP CEE state")
 	}
 	if got := tracker.Budget(); got != 6 {
@@ -84,8 +86,10 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	if err := reload(disabled); err == nil {
 		t.Fatal("CEE disable reload succeeded")
 	}
-	if got := s.currentMCPCEE(); got == nil || got.Tracker != tracker || got.Buffer != buffer {
+	if got := s.currentMCPCEE(); got == nil {
 		t.Fatal("rejected CEE downgrade replaced MCP CEE state")
+	} else if gotTracker, gotBuffer := got.Components(); gotTracker != tracker || gotBuffer != buffer {
+		t.Fatal("rejected CEE downgrade replaced MCP CEE components")
 	}
 }
 
@@ -105,7 +109,8 @@ func TestServerReload_FailedReloadKeepsMCPCEEState(t *testing.T) {
 		t.Fatalf("enable CEE: %v", err)
 	}
 	before := s.currentMCPCEE()
-	before.Tracker.Record("mcp-session", []byte("abc"))
+	beforeTracker, _ := before.Components()
+	beforeTracker.Record("mcp-session", []byte("abc"))
 
 	broken := s.proxy.CurrentConfig().Clone()
 	broken.MediationEnvelope.Enabled = true
@@ -114,11 +119,13 @@ func TestServerReload_FailedReloadKeepsMCPCEEState(t *testing.T) {
 	if err := reload(broken); err == nil {
 		t.Fatal("malformed reload succeeded")
 	}
-	if got := s.currentMCPCEE(); got != before || got.Tracker != before.Tracker {
+	if got := s.currentMCPCEE(); got != before {
 		t.Fatal("failed reload replaced MCP CEE state")
+	} else if gotTracker, _ := got.Components(); gotTracker != beforeTracker {
+		t.Fatal("failed reload replaced MCP CEE tracker")
 	}
-	before.Tracker.Record("mcp-session", []byte("abc"))
-	if !before.Tracker.BudgetExceeded("mcp-session") {
+	beforeTracker.Record("mcp-session", []byte("abc"))
+	if !beforeTracker.BudgetExceeded("mcp-session") {
 		t.Fatal("failed reload cleared MCP entropy history")
 	}
 }

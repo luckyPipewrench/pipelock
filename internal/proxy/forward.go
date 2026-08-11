@@ -1685,7 +1685,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves. Forward proxy has
 	// URL path, query params, and request body as outbound data.
-	if ceeRes, _, active := p.admitCurrentCEE(r.Context(), ceeSessionKey(agent, clientIP, id.Auth), extractOutboundPayload(r), queryParamKeys(r.URL), targetURL, agent, clientIP, requestID, sc, true); active {
+	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeSessionKey(agent, clientIP, id.Auth), extractOutboundPayload(r), queryParamKeys(r.URL), targetURL, agent, clientIP, requestID, true)
+	if ceeAdmission.Active {
+		ceeRes := ceeAdmission.Result
 		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 
 		// Capture observer: record forward CEE verdict for policy replay.
@@ -1702,7 +1704,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionID:         captureSessionKey(agent, clientIP),
 			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
-			ConfigHash:        cfg.CanonicalPolicyHash(),
+			ConfigHash:        ceeAdmission.PolicyHash,
 			Agent:             agent,
 			Profile:           id.Profile,
 			ActionClass:       captureHTTPActionClass(r.Method),
@@ -1720,10 +1722,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		var ceeRec session.Recorder
 		var ceeBlockAll bool
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
+		if sm := ceeAdmission.Sessions; sm != nil {
 			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
 				Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
-				AdaptiveCfg: &cfg.AdaptiveEnforcement, Logger: p.logger, Metrics: p.metrics,
+				AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: p.logger, Metrics: p.metrics,
 				ClientIP: clientIP, RequestID: requestID,
 			})
 		}

@@ -174,9 +174,15 @@ func (et *EntropyTracker) Delete(key string) {
 	delete(et.sessions, key)
 }
 
-// Close is retained for scanner lifecycle symmetry. EntropyTracker owns no
-// background resources, so closing it is intentionally a no-op.
-func (et *EntropyTracker) Close() {}
+// Close retires all tracked entropy state. It is safe to call more than once.
+func (et *EntropyTracker) Close() {
+	if et == nil {
+		return
+	}
+	et.mu.Lock()
+	defer et.mu.Unlock()
+	et.sessions = make(map[string]*entropySession)
+}
 
 // currentUsageLocked sums entropy bits within the sliding window.
 // Caller must hold et.mu.

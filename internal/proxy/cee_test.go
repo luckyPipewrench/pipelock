@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -1154,36 +1155,94 @@ func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 	}
 	t.Cleanup(p.Close)
 
-	// Hold an old request snapshot while a reload tries to relax the budget.
-	// The reload must wait; otherwise this request could use block policy with
-	// the new permissive budget and continue to egress.
-	p.reloadMu.RLock()
-	result, ceeCfg, active := p.admitCurrentCEE(t.Context(), "session", []byte("abc"), nil, "https://api.vendor.example", "", "127.0.0.1", "req", nil, true)
-	if !active || !result.Blocked || ceeCfg.EntropyBudget.BitsPerWindow != 1 {
-		p.reloadMu.RUnlock()
-		t.Fatalf("old CEE snapshot = active:%v result:%+v cfg:%+v", active, result, ceeCfg)
+	admissionLocked := make(chan struct{})
+	releaseAdmission := make(chan struct{})
+	p.ceeAdmissionLocked = func() {
+		close(admissionLocked)
+		<-releaseAdmission
 	}
+	t.Cleanup(func() { p.ceeAdmissionLocked = nil })
+	admissionDone := make(chan ceeAdmission, 1)
+	go func() {
+		admissionDone <- p.admitCurrentCEE(t.Context(), "session", []byte("abc"), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+	}()
+	<-admissionLocked
 
+	// The production admission now owns the read snapshot. A reload cannot
+	// publish its permissive generation until that admission releases it.
 	permissive := cfg.Clone()
 	permissive.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1000
-	done := make(chan bool, 1)
+	reloadLocked := make(chan struct{})
+	p.reloadLocked = func() { close(reloadLocked) }
+	t.Cleanup(func() { p.reloadLocked = nil })
+	reloadDone := make(chan bool, 1)
+	permissiveScanner := scanner.MustNew(permissive)
 	go func() {
-		done <- p.Reload(permissive, scanner.MustNew(permissive))
+		reloadDone <- p.Reload(permissive, permissiveScanner)
 	}()
 	select {
-	case <-done:
-		p.reloadMu.RUnlock()
+	case <-reloadLocked:
 		t.Fatal("permissive reload completed while old CEE snapshot was active")
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
-	p.reloadMu.RUnlock()
+	close(releaseAdmission)
 
-	if ok := <-done; !ok {
+	admission := <-admissionDone
+	if !admission.Active || !admission.Result.Blocked || admission.Config.EntropyBudget.BitsPerWindow != 1 {
+		t.Fatalf("old CEE snapshot = %+v", admission)
+	}
+	if ok := <-reloadDone; !ok {
 		t.Fatal("permissive reload failed")
 	}
-	result, ceeCfg, active = p.admitCurrentCEE(t.Context(), "session", []byte(""), nil, "https://api.vendor.example", "", "127.0.0.1", "req", nil, true)
-	if !active || result.Blocked || ceeCfg.EntropyBudget.BitsPerWindow != 1000 {
-		t.Fatalf("new CEE snapshot = active:%v result:%+v cfg:%+v", active, result, ceeCfg)
+	p.ceeAdmissionLocked = nil
+	admission = p.admitCurrentCEE(t.Context(), "session", []byte(""), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+	if !admission.Active || admission.Result.Blocked || admission.Config.EntropyBudget.BitsPerWindow != 1000 {
+		t.Fatalf("new CEE snapshot = %+v", admission)
+	}
+}
+
+func TestReload_CEEAdmissionUsesLiveScannerAndMetadata(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = config.ActionBlock
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 1024
+	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100
+
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	const payload = "reload_secret_"
+	before := p.admitCurrentCEE(t.Context(), "session", []byte(payload), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+	if !before.Active || before.Result.FragmentHit {
+		t.Fatalf("pre-reload admission = %+v, want no custom-pattern match", before)
+	}
+
+	reloaded := cfg.Clone()
+	reloaded.DLP.Patterns = append(reloaded.DLP.Patterns, config.DLPPattern{
+		Name:     "Reload Canary",
+		Regex:    `reload_secret_[a-z]+`,
+		Severity: "high",
+	})
+	reloaded.AdaptiveEnforcement.EscalationThreshold = 1
+	newScanner := scanner.MustNew(reloaded)
+	if !p.Reload(reloaded, newScanner) {
+		newScanner.Close()
+		t.Fatal("scanner policy reload failed")
+	}
+
+	after := p.admitCurrentCEE(t.Context(), "session", []byte("canary"), nil, "https://api.vendor.example", "", "127.0.0.1", "req", true)
+	if !after.Active || !after.Result.Blocked || !after.Result.FragmentHit {
+		t.Fatalf("post-reload admission = %+v, want live scanner to block retained canary", after)
+	}
+	if after.PolicyHash != reloaded.CanonicalPolicyHash() || after.AdaptiveConfig.EscalationThreshold != 1 {
+		t.Fatalf("post-reload metadata = hash:%q threshold:%v", after.PolicyHash, after.AdaptiveConfig.EscalationThreshold)
 	}
 }
 

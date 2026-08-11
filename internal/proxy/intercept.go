@@ -1344,121 +1344,107 @@ func newInterceptHandler(
 		// request has full body, headers, and URL available for entropy and
 		// fragment analysis. When p is non-nil, resolve CEE objects per-request
 		// so hot-reloads during long-lived CONNECT tunnels use fresh state.
-		ceeCfg := ceeEffectiveConfig(ic.Config.CrossRequestDetection, ic.Config.EnforceEnabled())
-		if ceeCfg.Enabled {
-			ceeET, ceeFB, ceeSM := ic.EntropyTracker, ic.FragmentBuffer, ic.SessionMgr
-			ceeReloadLocked := false
-			if ic.Proxy != nil {
-				ic.Proxy.reloadMu.RLock()
-				ceeReloadLocked = true
-				liveCfg := ic.Proxy.cfgPtr.Load()
-				if liveCfg == nil {
-					ic.Proxy.reloadMu.RUnlock()
-					ceeReloadLocked = false
-					ceeCfg.Enabled = false
-				} else {
-					ceeCfg = ceeEffectiveConfig(liveCfg.CrossRequestDetection, liveCfg.EnforceEnabled())
-					ceeET = ic.Proxy.entropyTrackerPtr.Load()
-					ceeFB = ic.Proxy.fragmentBufferPtr.Load()
-					ceeSM = ic.Proxy.sessionMgrPtr.Load()
-					// The tunnel snapshot may still say CEE is enabled after a
-					// live reload has disabled it. Release the request snapshot
-					// lock before skipping admission; otherwise Reload wedges
-					// behind this permanently retained read lock.
-					if !ceeCfg.Enabled {
-						ic.Proxy.reloadMu.RUnlock()
-						ceeReloadLocked = false
-					}
+		sessionKey := ceeSessionKey(ic.Agent, ic.ClientIP, ic.ActorAuth)
+		outbound := extractOutboundPayload(r)
+		keys := queryParamKeys(r.URL)
+		var admission ceeAdmission
+		if ic.Proxy != nil {
+			admission = ic.Proxy.admitCurrentCEE(r.Context(), sessionKey, outbound, keys, r.URL.String(), ic.Agent, ic.ClientIP, ic.RequestID, true)
+		} else {
+			ceeCfg := ceeEffectiveConfig(ic.Config.CrossRequestDetection, ic.Config.EnforceEnabled())
+			if ceeCfg.Enabled {
+				admission = ceeAdmission{
+					Result: ceeAdmit(r.Context(), sessionKey, outbound, keys, r.URL.String(), ic.Agent, ic.ClientIP, ic.RequestID,
+						ceeCfg, ic.EntropyTracker, ic.FragmentBuffer, ic.Scanner, ic.Logger, ic.Metrics),
+					Config:         ceeCfg,
+					AdaptiveConfig: ic.Config.AdaptiveEnforcement,
+					Sessions:       ic.SessionMgr,
+					PolicyHash:     ic.Config.CanonicalPolicyHash(),
+					Active:         true,
 				}
 			}
+		}
 
-			if ceeCfg.Enabled {
-				sessionKey := ceeSessionKey(ic.Agent, ic.ClientIP, ic.ActorAuth)
-				outbound := extractOutboundPayload(r)
-				keys := queryParamKeys(r.URL)
+		if admission.Active {
+			ceeRes := admission.Result
 
-				ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, r.URL.String(), ic.Agent, ic.ClientIP, ic.RequestID,
-					ceeCfg, ceeET, ceeFB, ic.Scanner, ic.Logger, ic.Metrics)
-				if ceeReloadLocked {
-					ic.Proxy.reloadMu.RUnlock()
-				}
-
-				// Capture observer: record intercept CEE verdict for policy replay.
-				if ic.Proxy != nil {
-					ceeFindings := ceeResultToFindings(ceeRes)
-					ceeAction := config.ActionAllow
-					if ceeRes.Blocked {
-						ceeAction = config.ActionBlock
-					} else if ceeRes.EntropyHit || ceeRes.FragmentHit {
-						ceeAction = config.ActionWarn
-					}
-					ic.Proxy.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
-						Subsurface:        "cee_intercept",
-						Transport:         "connect",
-						SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
-						SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
-						RequestID:         ic.RequestID,
-						ConfigHash:        ic.Config.CanonicalPolicyHash(),
-						Agent:             ic.Agent,
-						Profile:           ic.Profile,
-						ActionClass:       captureHTTPActionClass(r.Method),
-						Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
-						TransformKind:     capture.TransformCEEWindow,
-						RawFindings:       ceeFindings,
-						EffectiveFindings: ceeFindings,
-						EffectiveAction:   ceeAction,
-						Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
-					})
-				}
-
-				ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
-					Result: ceeRes, Sessions: ceeSM, SessionKey: sessionKey,
-					AdaptiveCfg: &ic.Config.AdaptiveEnforcement, Logger: ic.Logger, Metrics: ic.Metrics,
-					ClientIP: ic.ClientIP, RequestID: ic.RequestID,
-				})
-
+			// Capture observer: record intercept CEE verdict for policy replay.
+			if ic.Proxy != nil {
+				ceeFindings := ceeResultToFindings(ceeRes)
+				ceeAction := config.ActionAllow
 				if ceeRes.Blocked {
-					ic.Metrics.RecordTLSRequestBlocked("cross_request")
-					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionBlock,
-						Layer:     "cross_request",
-						Pattern:   ceeRes.Reason,
-						Transport: "intercept",
-						Method:    r.Method,
-						Target:    targetURL,
-						RequestID: ic.RequestID,
-						Agent:     ic.Agent,
-					}))
-					writeBlockedError(w,
-						blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
-						"blocked: "+ceeRes.Reason, http.StatusForbidden)
-					return
+					ceeAction = config.ActionBlock
+				} else if ceeRes.EntropyHit || ceeRes.FragmentHit {
+					ceeAction = config.ActionWarn
 				}
+				ic.Proxy.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
+					Subsurface:        "cee_intercept",
+					Transport:         "connect",
+					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+					SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
+					RequestID:         ic.RequestID,
+					ConfigHash:        admission.PolicyHash,
+					Agent:             ic.Agent,
+					Profile:           ic.Profile,
+					ActionClass:       captureHTTPActionClass(r.Method),
+					Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
+					TransformKind:     capture.TransformCEEWindow,
+					RawFindings:       ceeFindings,
+					EffectiveFindings: ceeFindings,
+					EffectiveAction:   ceeAction,
+					Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
+				})
+			}
 
-				// Re-check block_all after CEE may have escalated the folded CEE
-				// session. ic.Recorder is the raw per-agent recorder and does not
-				// necessarily receive CEE signals for self-declared agent names.
-				if ceeBlockAll {
-					level := recEscalationLevel(ceeRec)
-					recordAdaptiveUpgrade(ic.Logger, ic.Metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
-					ic.Metrics.RecordTLSRequestBlocked(adaptiveSessionDeny)
-					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionBlock,
-						Layer:     adaptiveSessionDeny,
-						Pattern:   "session escalation level " + session.EscalationLabel(level),
-						Transport: "intercept",
-						Method:    r.Method,
-						Target:    targetURL,
-						RequestID: ic.RequestID,
-						Agent:     ic.Agent,
-					}))
-					writeBlockedError(w,
-						blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
-						adaptiveBlockedReason, http.StatusForbidden)
-					return
-				}
+			ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
+				Result: ceeRes, Sessions: admission.Sessions, SessionKey: sessionKey,
+				AdaptiveCfg: &admission.AdaptiveConfig, Logger: ic.Logger, Metrics: ic.Metrics,
+				ClientIP: ic.ClientIP, RequestID: ic.RequestID,
+			})
+
+			if ceeRes.Blocked {
+				ic.Metrics.RecordTLSRequestBlocked("cross_request")
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:   actionID,
+					Verdict:    config.ActionBlock,
+					Layer:      "cross_request",
+					Pattern:    ceeRes.Reason,
+					Transport:  "intercept",
+					Method:     r.Method,
+					Target:     targetURL,
+					RequestID:  ic.RequestID,
+					Agent:      ic.Agent,
+					PolicyHash: admission.PolicyHash,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+					"blocked: "+ceeRes.Reason, http.StatusForbidden)
+				return
+			}
+
+			// Re-check block_all after CEE may have escalated the folded CEE
+			// session. ic.Recorder is the raw per-agent recorder and does not
+			// necessarily receive CEE signals for self-declared agent names.
+			if ceeBlockAll {
+				level := recEscalationLevel(ceeRec)
+				recordAdaptiveUpgrade(ic.Logger, ic.Metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+				ic.Metrics.RecordTLSRequestBlocked(adaptiveSessionDeny)
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:   actionID,
+					Verdict:    config.ActionBlock,
+					Layer:      adaptiveSessionDeny,
+					Pattern:    "session escalation level " + session.EscalationLabel(level),
+					Transport:  "intercept",
+					Method:     r.Method,
+					Target:     targetURL,
+					RequestID:  ic.RequestID,
+					Agent:      ic.Agent,
+					PolicyHash: admission.PolicyHash,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
+					adaptiveBlockedReason, http.StatusForbidden)
+				return
 			}
 		}
 

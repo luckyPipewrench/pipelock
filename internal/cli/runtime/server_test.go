@@ -1605,7 +1605,8 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 		t.Fatal("expected chain matcher when tool chain detection is enabled")
 	}
 	cee := buildMCPCEE(cfg, metrics.New())
-	if cee == nil || cee.Tracker == nil || cee.Buffer == nil {
+	tracker, buffer := cee.Components()
+	if cee == nil || tracker == nil || buffer == nil {
 		t.Fatalf("CEE deps = %+v, want tracker and buffer", cee)
 	}
 }

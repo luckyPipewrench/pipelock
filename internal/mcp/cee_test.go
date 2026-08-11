@@ -77,6 +77,48 @@ func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
 	}
 }
 
+func TestCEEDepsReconfigure_RetiresAndRecreatesComponents(t *testing.T) {
+	cfg := config.CrossRequestDetection{
+		Enabled: true,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 32,
+			WindowMinutes: 5,
+		},
+	}
+	cee := NewCEEDeps(cfg, metrics.New())
+	oldTracker, oldBuffer := cee.Components()
+	if oldTracker == nil || oldBuffer != nil {
+		t.Fatalf("initial components = tracker:%p buffer:%p", oldTracker, oldBuffer)
+	}
+	oldTracker.Record(testMCPSessionKey, []byte("secret state"))
+
+	cfg.EntropyBudget.Enabled = false
+	cfg.FragmentReassembly.Enabled = true
+	cfg.FragmentReassembly.MaxBufferBytes = 128
+	cfg.FragmentReassembly.WindowMinutes = 5
+	cee.Reconfigure(cfg, metrics.New())
+	tracker, oldBuffer := cee.Components()
+	if tracker != nil || oldBuffer == nil {
+		t.Fatalf("fragment-only components = tracker:%p buffer:%p", tracker, oldBuffer)
+	}
+	if got := oldTracker.CurrentUsage(testMCPSessionKey); got != 0 {
+		t.Fatalf("retired tracker retained %.1f bits", got)
+	}
+	oldBuffer.Append(testMCPSessionKey, []byte("split-secret"))
+
+	cfg.EntropyBudget.Enabled = true
+	cfg.FragmentReassembly.Enabled = false
+	cee.Reconfigure(cfg, metrics.New())
+	tracker, buffer := cee.Components()
+	if tracker == nil || tracker == oldTracker || buffer != nil {
+		t.Fatalf("entropy-only components = tracker:%p old:%p buffer:%p", tracker, oldTracker, buffer)
+	}
+	if got := oldBuffer.TotalBufferBytes(); got != 0 {
+		t.Fatalf("retired fragment buffer retained %d bytes", got)
+	}
+}
+
 const (
 	testMCPSessionKey = "session-001"
 	testMCPAgent      = "myagent"

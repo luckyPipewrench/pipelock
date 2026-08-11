@@ -367,6 +367,8 @@ type Proxy struct {
 	agentServers         []*http.Server // per-agent listeners (managed by CLI)
 	startTime            time.Time
 	reloadMu             sync.RWMutex // serializes Reload and coherent request-time runtime snapshots
+	ceeAdmissionLocked   func()       // test hook: called while a CEE admission owns reloadMu.RLock
+	reloadLocked         func()       // test hook: called after Reload owns reloadMu.Lock
 	approver             *hitl.Approver
 	a2aCardBaseline      *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs           capture.CaptureObserver
@@ -1649,6 +1651,9 @@ func (p *Proxy) PrepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
+	if p.reloadLocked != nil {
+		p.reloadLocked()
+	}
 
 	oldCfg := p.cfgPtr.Load()
 
@@ -1956,38 +1961,54 @@ func (p *Proxy) disableCEE(ceeCfg *config.CrossRequestDetection) {
 	}
 }
 
+type ceeAdmission struct {
+	Result         ceeResult
+	Config         config.CrossRequestDetection
+	AdaptiveConfig config.AdaptiveEnforcement
+	Sessions       *SessionManager
+	PolicyHash     string
+	Active         bool
+}
+
 // admitCurrentCEE keeps the CEE policy snapshot and its mutable tracking
 // state under the reload lock. A request that started before a reload uses the
 // old pair; one that enters this gate afterward uses the new pair. In
-// particular, an old action can never observe a newly relaxed budget/window.
+// particular, an old action can never observe a newly relaxed budget/window,
+// scanner, adaptive policy, session manager, or evidence policy hash.
 func (p *Proxy) admitCurrentCEE(
 	ctx context.Context,
 	sessionKey string,
 	outbound, keyPayload []byte,
 	targetURL, agent, clientIP, requestID string,
-	sc *scanner.Scanner,
 	includeFragments bool,
-) (ceeResult, config.CrossRequestDetection, bool) {
+) ceeAdmission {
 	p.reloadMu.RLock()
 	defer p.reloadMu.RUnlock()
+	if p.ceeAdmissionLocked != nil {
+		p.ceeAdmissionLocked()
+	}
 
 	cfg := p.cfgPtr.Load()
 	if cfg == nil {
-		return ceeResult{}, config.CrossRequestDetection{}, false
+		return ceeAdmission{}
 	}
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if !ceeCfg.Enabled {
-		return ceeResult{}, ceeCfg, false
+		return ceeAdmission{Config: ceeCfg}
 	}
 	fb := p.fragmentBufferPtr.Load()
 	if !includeFragments {
 		fb = nil
 	}
-	if sc == nil {
-		sc = p.scannerPtr.Load()
+	return ceeAdmission{
+		Result: ceeAdmit(ctx, sessionKey, outbound, keyPayload, targetURL, agent, clientIP, requestID,
+			ceeCfg, p.entropyTrackerPtr.Load(), fb, p.scannerPtr.Load(), p.logger, p.metrics),
+		Config:         ceeCfg,
+		AdaptiveConfig: cfg.AdaptiveEnforcement,
+		Sessions:       p.sessionMgrPtr.Load(),
+		PolicyHash:     cfg.CanonicalPolicyHash(),
+		Active:         true,
 	}
-	return ceeAdmit(ctx, sessionKey, outbound, keyPayload, targetURL, agent, clientIP, requestID,
-		ceeCfg, p.entropyTrackerPtr.Load(), fb, sc, p.logger, p.metrics), ceeCfg, true
 }
 
 // currentCEEEntropy snapshots an existing entropy result with the policy that
@@ -4310,7 +4331,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves the proxy. Fetch is
 	// GET-only so the outbound data is the target URL path and query values.
-	if ceeRes, _, active := p.admitCurrentCEE(r.Context(), ceeSessionKey(agent, clientIP, id.Auth), urlPayload(parsed), queryParamKeys(parsed), displayURL, agent, clientIP, requestID, sc, true); active {
+	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeSessionKey(agent, clientIP, id.Auth), urlPayload(parsed), queryParamKeys(parsed), displayURL, agent, clientIP, requestID, true)
+	if ceeAdmission.Active {
+		ceeRes := ceeAdmission.Result
 		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 
 		// Capture observer: record CEE verdict for policy replay.
@@ -4327,7 +4350,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			SessionID:         captureSessionKey(agent, clientIP),
 			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
-			ConfigHash:        cfg.CanonicalPolicyHash(),
+			ConfigHash:        ceeAdmission.PolicyHash,
 			Agent:             agent,
 			Profile:           id.Profile,
 			ActionClass:       captureHTTPActionClass(http.MethodGet),
@@ -4341,10 +4364,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		var ceeRec session.Recorder
 		var ceeBlockAll bool
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
+		if sm := ceeAdmission.Sessions; sm != nil {
 			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
 				Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
-				AdaptiveCfg: &cfg.AdaptiveEnforcement, Logger: log, Metrics: p.metrics,
+				AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: log, Metrics: p.metrics,
 				ClientIP: clientIP, RequestID: requestID,
 			})
 		}
@@ -4359,6 +4382,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				ActionID:            receipt.NewActionID(),
 				Verdict:             config.ActionBlock,
 				Layer:               "cross_request",
+				PolicyHash:          ceeAdmission.PolicyHash,
 				Pattern:             ceeRes.Reason,
 				Transport:           "fetch",
 				Method:              http.MethodGet,

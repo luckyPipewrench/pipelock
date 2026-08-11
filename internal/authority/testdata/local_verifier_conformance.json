@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "now": "2030-01-01T00:00:00Z",
+  "issuer": "issuer.test",
+  "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+  "revoked_references": [
+    "grant-revoked"
+  ],
+  "vectors": [
+    {
+      "name": "match",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.read",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "plauth1.eyJzY2hlbWFfdmVyc2lvbiI6MSwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC12YWxpZCIsImFjdG9yIjoid29ya2xvYWQ6dGVzdC1hZ2VudCIsImFjdGlvbiI6InJlY29yZHMucmVhZCIsImRlc3RpbmF0aW9uIjoiaHR0cHM6Ly9hcGkuc2VydmljZS5leGFtcGxlL3YxL3JlY29yZHMiLCJleHBpcmVzX2F0IjoiMjAzMC0wMS0wMVQwMDowNTowMFoifQ.YKwiykhlpIE4zQrtdXN-q7_AxWbhOWo8i5YTLTagmxvTYr3DiCv8NzY1reC9ShWmR5gI6fZgXqKwZAtAIJjPDA"
+      },
+      "context": "active",
+      "want_decision": "allow",
+      "want_reason": "matched"
+    },
+    {
+      "name": "actor mismatch",
+      "request": {
+        "actor": "workload:substituted-agent",
+        "action": "records.read",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "plauth1.eyJzY2hlbWFfdmVyc2lvbiI6MSwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC12YWxpZCIsImFjdG9yIjoid29ya2xvYWQ6dGVzdC1hZ2VudCIsImFjdGlvbiI6InJlY29yZHMucmVhZCIsImRlc3RpbmF0aW9uIjoiaHR0cHM6Ly9hcGkuc2VydmljZS5leGFtcGxlL3YxL3JlY29yZHMiLCJleHBpcmVzX2F0IjoiMjAzMC0wMS0wMVQwMDowNTowMFoifQ.YKwiykhlpIE4zQrtdXN-q7_AxWbhOWo8i5YTLTagmxvTYr3DiCv8NzY1reC9ShWmR5gI6fZgXqKwZAtAIJjPDA"
+      },
+      "context": "active",
+      "want_decision": "deny",
+      "want_reason": "actor_mismatch"
+    },
+    {
+      "name": "action mismatch",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.delete",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "plauth1.eyJzY2hlbWFfdmVyc2lvbiI6MSwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC12YWxpZCIsImFjdG9yIjoid29ya2xvYWQ6dGVzdC1hZ2VudCIsImFjdGlvbiI6InJlY29yZHMucmVhZCIsImRlc3RpbmF0aW9uIjoiaHR0cHM6Ly9hcGkuc2VydmljZS5leGFtcGxlL3YxL3JlY29yZHMiLCJleHBpcmVzX2F0IjoiMjAzMC0wMS0wMVQwMDowNTowMFoifQ.YKwiykhlpIE4zQrtdXN-q7_AxWbhOWo8i5YTLTagmxvTYr3DiCv8NzY1reC9ShWmR5gI6fZgXqKwZAtAIJjPDA"
+      },
+      "context": "active",
+      "want_decision": "deny",
+      "want_reason": "action_mismatch"
+    },
+    {
+      "name": "destination mismatch",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.read",
+        "destination": "https://api.other.example/v1/records",
+        "authority_ref": "plauth1.eyJzY2hlbWFfdmVyc2lvbiI6MSwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC12YWxpZCIsImFjdG9yIjoid29ya2xvYWQ6dGVzdC1hZ2VudCIsImFjdGlvbiI6InJlY29yZHMucmVhZCIsImRlc3RpbmF0aW9uIjoiaHR0cHM6Ly9hcGkuc2VydmljZS5leGFtcGxlL3YxL3JlY29yZHMiLCJleHBpcmVzX2F0IjoiMjAzMC0wMS0wMVQwMDowNTowMFoifQ.YKwiykhlpIE4zQrtdXN-q7_AxWbhOWo8i5YTLTagmxvTYr3DiCv8NzY1reC9ShWmR5gI6fZgXqKwZAtAIJjPDA"
+      },
+      "context": "active",
+      "want_decision": "deny",
+      "want_reason": "destination_mismatch"
+    },
+    {
+      "name": "expiry",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.read",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "plauth1.eyJzY2hlbWFfdmVyc2lvbiI6MSwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC1leHBpcmVkIiwiYWN0b3IiOiJ3b3JrbG9hZDp0ZXN0LWFnZW50IiwiYWN0aW9uIjoicmVjb3Jkcy5yZWFkIiwiZGVzdGluYXRpb24iOiJodHRwczovL2FwaS5zZXJ2aWNlLmV4YW1wbGUvdjEvcmVjb3JkcyIsImV4cGlyZXNfYXQiOiIyMDI5LTEyLTMxVDIzOjU5OjU5WiJ9.DgMs7QcBu4TJCnjBmKFddE70kMxRNwNm1KXaXloGci_axMw0gClGRyEgRLvE05dWdAzBig5ieKhsv482QQbfDg"
+      },
+      "context": "active",
+      "want_decision": "deny",
+      "want_reason": "expired"
+    },
+    {
+      "name": "revocation",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.read",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "plauth1.eyJzY2hlbWFfdmVyc2lvbiI6MSwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC1yZXZva2VkIiwiYWN0b3IiOiJ3b3JrbG9hZDp0ZXN0LWFnZW50IiwiYWN0aW9uIjoicmVjb3Jkcy5yZWFkIiwiZGVzdGluYXRpb24iOiJodHRwczovL2FwaS5zZXJ2aWNlLmV4YW1wbGUvdjEvcmVjb3JkcyIsImV4cGlyZXNfYXQiOiIyMDMwLTAxLTAxVDAwOjA1OjAwWiJ9.UQdYLtkFv_dMdRy95sn2Ml8KhOrX6cx9riwguxbM5c6bLxEfrgVygY673PhlptOfCPxS93GEuOoh2oG5aNDxBw"
+      },
+      "context": "active",
+      "want_decision": "deny",
+      "want_reason": "revoked"
+    },
+    {
+      "name": "malformed input",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.read",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "not-a-local-authority-reference"
+      },
+      "context": "active",
+      "want_decision": "deny",
+      "want_reason": "malformed_reference"
+    },
+    {
+      "name": "timeout",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.read",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "plauth1.eyJzY2hlbWFfdmVyc2lvbiI6MSwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC12YWxpZCIsImFjdG9yIjoid29ya2xvYWQ6dGVzdC1hZ2VudCIsImFjdGlvbiI6InJlY29yZHMucmVhZCIsImRlc3RpbmF0aW9uIjoiaHR0cHM6Ly9hcGkuc2VydmljZS5leGFtcGxlL3YxL3JlY29yZHMiLCJleHBpcmVzX2F0IjoiMjAzMC0wMS0wMVQwMDowNTowMFoifQ.YKwiykhlpIE4zQrtdXN-q7_AxWbhOWo8i5YTLTagmxvTYr3DiCv8NzY1reC9ShWmR5gI6fZgXqKwZAtAIJjPDA"
+      },
+      "context": "expired",
+      "want_decision": "indeterminate",
+      "want_reason": "timeout"
+    }
+  ]
+}

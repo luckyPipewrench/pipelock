@@ -1039,8 +1039,7 @@ listener/upstream configurations, or keep same-named descriptions stable.
 With `action: block`, a confirmed upstream update needs an operator
 re-baseline. Configure an owner-only one-shot control file on the listener:
 
-```yaml pipelock-fragment
-# pipelock-fragment-id: mcp-tool-drift-reset
+```yaml
 mcp_tool_scanning:
   enabled: true
   action: block
@@ -1058,7 +1057,14 @@ The next listener request consumes the file, resets only that listener's
 upstream definition hashes, and requires a clean `tools/list` to establish the
 replacement inventory. It does not disable drift detection or change any
 token-bound session-binding baseline. The file must be a regular owner-only
-file owned by the proxy user; unsafe files are ignored and removed.
+file owned by the proxy user; unsafe files are ignored and removed. Place it
+in a directory the MCP client cannot write. In a same-user deployment, the
+client shares the proxy uid, so owner checks alone cannot distinguish an
+operator file from a client-created one.
+
+On Windows, Pipelock cannot verify the file owner from filesystem mode bits and
+will not honor this reset path. Restart the listener after confirming the
+upstream update to establish a new drift baseline.
 
 ## MCP Tool Policy
 

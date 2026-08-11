@@ -30,11 +30,27 @@ import (
 // so every real enforcement assertion has to happen in a fresh process.
 const childEnv = "PIPELOCK_GUARD_TEST_SCENARIO"
 
-func TestMain(m *testing.M) {
-	if scenario := os.Getenv(childEnv); scenario != "" {
-		os.Exit(runChild(scenario))
+// TestGuardChildScenario is the entry point for a re-executed child.
+//
+// The child runs as an ordinary test rather than intercepting TestMain and
+// calling os.Exit. That is a coverage requirement, not a style preference: a
+// test binary writes its coverage through the testing framework as it exits
+// normally, and os.Exit runs none of that. Intercepting TestMain made the
+// enforcement path -- the most heavily exercised code in this package --
+// measure as almost entirely uncovered.
+//
+// runtime/coverage.WriteMetaDir is not an alternative here. It serves binaries
+// built with `go build -cover`; in a `go test -cover` binary it fails with
+// "no meta-data available", which is exactly what an earlier attempt at this
+// hit, silently, because the message went to a stderr nobody read.
+func TestGuardChildScenario(t *testing.T) {
+	scenario := os.Getenv(childEnv)
+	if scenario == "" {
+		t.Skip("not a guard enforcement child process")
 	}
-	os.Exit(m.Run())
+	if code := runChild(scenario); code != 0 {
+		t.Fatalf("scenario %q failed with code %d", scenario, code)
+	}
 }
 
 func newConfig(t *testing.T, m config.GuardManifest) *config.Config {
@@ -502,15 +518,49 @@ func TestEnforcement_DetectsPolicyNarrowedByOuterDomain(t *testing.T) {
 
 func runScenario(t *testing.T, scenario string) string {
 	t.Helper()
+	args := []string{"-test.run=^TestGuardChildScenario$"}
+	// Hand the child its coverage directory as a test flag.
+	//
+	// The go tool consumes GOCOVERDIR for its own bookkeeping and does not pass
+	// it to the test binary, so inheritance yields nothing. The collection
+	// script sets a dedicated variable that nothing else interprets, and it is
+	// translated here into the flag the testing framework actually reads. When
+	// the variable is unset -- every ordinary test run -- no flag is added and
+	// the child behaves exactly as before.
+	if dir := os.Getenv("PIPELOCK_GUARD_COVERDIR"); dir != "" {
+		args = append(args, "-test.gocoverdir="+dir)
+	}
 	// #nosec G204,G702 -- os.Args[0] is this test binary; re-executing it is the only
 	// way to assert on an irreversible per-process restriction.
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=TestMain")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], args...)
 	cmd.Env = append(os.Environ(), childEnv+"="+scenario)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("child %s failed: %v\n%s", scenario, err, out)
 	}
 	return string(out)
+}
+
+// coverageGrant returns the coverage directory as an extra writable grant when
+// subprocess coverage collection is active, and nothing otherwise.
+//
+// The child restricts itself, and the testing framework then writes its
+// coverage counters as it exits -- into a directory the manifest never granted.
+// The write is denied and the child dies reporting a coverage error rather than
+// its result. This is the same self-defeating shape as enumerating
+// /proc/self/task while holding a ruleset that denies /proc, and it is resolved
+// the same way internal/sandbox resolves it: when collection is on, the
+// collection directory is part of the policy.
+//
+// This only ever fires under the collection script. It widens the child's
+// grants by exactly one directory that no assertion touches: the denied paths
+// every enforcement test checks live elsewhere, so what the tests prove is
+// unchanged.
+func coverageGrant() []string {
+	if dir := os.Getenv("PIPELOCK_GUARD_COVERDIR"); dir != "" {
+		return []string{dir}
+	}
+	return nil
 }
 
 // runChildNested prepares a manifest, then applies an OUTER landlock domain that
@@ -541,7 +591,7 @@ func runChildNested() int {
 	cfg := config.Defaults()
 	cfg.Guard = config.Guard{
 		Profiles:  []config.GuardProfile{{Name: "agent", Manifests: []string{"m"}}},
-		Manifests: []config.GuardManifest{{Name: "m", ReadWriteDirectories: []string{granted}}},
+		Manifests: []config.GuardManifest{{Name: "m", ReadWriteDirectories: append([]string{granted}, coverageGrant()...)}},
 	}
 	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
 	if err != nil {
@@ -556,7 +606,12 @@ func runChildNested() int {
 
 	// The outer domain grants a DIFFERENT directory, so the manifest's path is
 	// unreachable once it applies.
-	if err := landlock.V9.RestrictPaths(landlock.RWDirs(other)); err != nil {
+	// The collection directory joins the outer domain for the same reason it
+	// joins the manifest: this scenario's whole point is an outer restriction
+	// that excludes the manifest's path, and excluding the coverage directory
+	// too would only stop the child reporting what it found.
+	outer := append([]string{other}, coverageGrant()...)
+	if err := landlock.V9.RestrictPaths(landlock.RWDirs(outer...)); err != nil {
 		fmt.Println("outer restriction failed:", err)
 		return 1
 	}
@@ -654,9 +709,13 @@ func runChild(scenario string) int {
 	}
 
 	profiles := []config.GuardProfile{{Name: "agent", Manifests: []string{"m"}}}
-	manifests := []config.GuardManifest{{Name: "m", ReadWriteDirectories: []string{declared}}}
+	manifests := []config.GuardManifest{{Name: "m", ReadWriteDirectories: append([]string{declared}, coverageGrant()...)}}
 	if scenario == "empty-manifest" {
-		manifests = []config.GuardManifest{{Name: "m"}}
+		// Under coverage collection this manifest is not literally empty: it
+		// carries the collection directory, without which the child cannot
+		// write its counters. What the scenario asserts is unaffected, since
+		// every path it expects to be denied lives elsewhere.
+		manifests = []config.GuardManifest{{Name: "m", ReadWriteDirectories: coverageGrant()}}
 	}
 	if scenario == "zero-manifests" {
 		profiles = []config.GuardProfile{{Name: "agent"}}

@@ -3103,6 +3103,10 @@ func TestInterceptHandler_CEEDisabledDoesNotRequireLiveConfig(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
 	}
+	if !p.reloadMu.TryLock() {
+		t.Fatal("reload lock remained held after disabled CEE admission")
+	}
+	p.reloadMu.Unlock()
 }
 
 func TestInterceptHandler_CEELiveEnableUsesCurrentPolicyGeneration(t *testing.T) {

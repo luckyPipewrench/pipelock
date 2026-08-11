@@ -6,6 +6,10 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +93,84 @@ func TestIntegration_SandboxCLI_Echo(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "containment") {
 		t.Errorf("expected containment summary in stderr:\n%s", stderr)
+	}
+}
+
+func TestIntegration_GuardCLI_EnforcesFinalCommand(t *testing.T) {
+	binary := buildTestBinary(t)
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.Mkdir(workspace, 0o750); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside fixture: %v", err)
+	}
+	t.Setenv("OUTSIDE_PATH", outside)
+
+	stdout, stderr, err := runSandboxBinary(t, binary,
+		"guard", "--workspace", workspace, "--", "sh", "-c",
+		`printf guarded > result.txt && ! cat "$OUTSIDE_PATH" >/dev/null 2>&1 && cat result.txt`,
+	)
+	if err != nil {
+		t.Fatalf("guard command failed: %v\nstderr: %s", err, stderr)
+	}
+	if stdout != "guarded" {
+		t.Fatalf("Guard result = %q", stdout)
+	}
+	if !strings.Contains(stderr, "[guard] ENFORCED") {
+		t.Fatalf("Guard enforcement record missing:\n%s", stderr)
+	}
+}
+
+func TestIntegration_GuardCLI_DryRunProbesRequiredBoundary(t *testing.T) {
+	binary := buildTestBinary(t)
+	workspace := t.TempDir()
+
+	stdout, stderr, err := runSandboxBinary(t, binary,
+		"guard", "--dry-run", "--workspace", workspace, "--", "sh", "-c", "true",
+	)
+	if err != nil {
+		t.Fatalf("guard dry-run failed: %v\nstderr: %s\nstdout: %s", err, stderr, stdout)
+	}
+	for _, want := range []string{
+		"Guard Preflight: CAPABILITIES_OK",
+		"filesystem: available (required=true)",
+		"network: available (required=true)",
+		"syscall: available (required=false)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("guard dry-run output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestIntegration_GuardCLI_ProxiesExactGrantedService(t *testing.T) {
+	curl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Skip("curl is required for the Guard proxy integration test")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("through-guard"))
+	}))
+	defer server.Close()
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configBody := fmt.Sprintf("guard:\n  services:\n    - name: fixture\n      protocol: tcp\n      host: 127.0.0.1\n      port: %d\n", port)
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatalf("write Guard config: %v", err)
+	}
+
+	binary := buildTestBinary(t)
+	stdout, stderr, err := runSandboxBinary(t, binary,
+		"guard", "--config", configPath, "--workspace", t.TempDir(), "--", curl, "--silent", server.URL,
+	)
+	if err != nil {
+		t.Fatalf("guard proxied command failed: %v\nstderr: %s", err, stderr)
+	}
+	if stdout != "through-guard" {
+		t.Fatalf("proxied response = %q", stdout)
 	}
 }
 

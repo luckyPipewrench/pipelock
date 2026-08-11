@@ -83,6 +83,11 @@ func removeEnvKey(env []string, key string) []string {
 	return result
 }
 
+func forceEnvValue(env []string, key, value string) []string {
+	env = removeEnvKey(env, key)
+	return append(env, key+"="+value)
+}
+
 // lookPathIn resolves a command name to an absolute path using the PATH
 // from the given environment slice (not os.Getenv).
 func lookPathIn(name string, env []string) (string, error) {
@@ -115,6 +120,44 @@ func lookPathIn(name string, env []string) (string, error) {
 		}
 	}
 
+	return "", fmt.Errorf("%w: %s not found in PATH", exec.ErrNotFound, name)
+}
+
+// ResolveCommandInDir resolves a Guard command exactly as it will execute from
+// workingDir. Unlike lookPathIn, relative slash paths and relative PATH entries
+// are anchored to the final working directory and the result is absolute, so
+// the outer and final Landlock domains grant the same file.
+func ResolveCommandInDir(name string, env []string, workingDir string) (string, error) {
+	if name == "" || !filepath.IsAbs(workingDir) {
+		return "", fmt.Errorf("%w: invalid command or working directory", exec.ErrNotFound)
+	}
+	check := func(path string) (string, bool) {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workingDir, path)
+		}
+		path = filepath.Clean(path)
+		info, err := os.Stat(path)
+		return path, err == nil && !info.IsDir()
+	}
+	if strings.Contains(name, "/") {
+		if path, ok := check(name); ok {
+			return path, nil
+		}
+		return "", fmt.Errorf("%w: %s", exec.ErrNotFound, name)
+	}
+
+	pathValue := "/usr/local/bin:/usr/bin:/bin"
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			pathValue = entry[5:]
+			break
+		}
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if path, ok := check(filepath.Join(dir, name)); ok {
+			return path, nil
+		}
+	}
 	return "", fmt.Errorf("%w: %s not found in PATH", exec.ErrNotFound, name)
 }
 

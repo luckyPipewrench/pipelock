@@ -7,6 +7,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
@@ -73,6 +76,13 @@ type StandaloneLaunchConfig struct {
 	// This makes the debug-only direct-forward path unreachable for callers
 	// that require scanning.
 	RequireProxyHandler bool
+
+	// GuardDeclaration enables the final pre-exec Guard helper. The parent
+	// bridge remains outside this restriction so scanning and evidence outputs
+	// are not accidentally denied by the workload filesystem policy.
+	GuardDeclaration *config.Guard
+	GuardProfile     string
+	GuardPolicyHash  string
 }
 
 // standaloneProxyConnectionConfig controls how one accepted bridge connection
@@ -103,6 +113,9 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if runtime.GOOS != osLinux {
 		return fmt.Errorf("%w: sandbox requires Linux", ErrUnavailable)
 	}
+	if len(cfg.Command) == 0 || cfg.Command[0] == "" {
+		return errors.New("sandbox: command is required")
+	}
 	if cfg.RequireProxyHandler && cfg.ProxyHandler == nil {
 		return errors.New("sandbox: proxy handler is required")
 	}
@@ -126,6 +139,18 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if cfg.UseDeveloperEnvironment && len(cfg.ExtraEnv) > 0 {
 		return errors.New("sandbox: developer environment cannot be combined with extra environment")
 	}
+	if cfg.GuardDeclaration != nil && cfg.GuardPolicyHash == "" {
+		return errors.New("sandbox: guard policy hash is required")
+	}
+	if cfg.GuardDeclaration != nil {
+		declaration, err := json.Marshal(cfg.GuardDeclaration)
+		if err != nil {
+			return fmt.Errorf("sandbox: encoding guard declaration: %w", err)
+		}
+		if len(declaration) > 1<<20 {
+			return errors.New("sandbox: guard declaration exceeds 1 MiB")
+		}
+	}
 
 	if err := ValidateWorkspace(cfg.Workspace); err != nil {
 		return fmt.Errorf("workspace validation: %w", err)
@@ -136,8 +161,32 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if cfg.Policy != nil {
 		policy = *cfg.Policy
 	}
+	// The standalone child re-execs this exact binary after applying the outer
+	// Landlock policy. Installed binaries are normally covered by /usr or /bin,
+	// but development and CI binaries commonly live in a private /tmp tree.
+	// Grant only the resolved executable file, never its containing directory.
+	selfExe, err := os.Readlink("/proc/self/exe")
+	if err != nil {
+		return fmt.Errorf("reading /proc/self/exe: %w", err)
+	}
+	policy.AllowReadFiles = append(policy.AllowReadFiles, selfExe)
+	if cfg.GuardDeclaration != nil {
+		lookupEnvironment := []string(nil)
+		if cfg.UseDeveloperEnvironment {
+			lookupEnvironment = cfg.DeveloperEnvironment
+		}
+		guardExecutable, lookupErr := ResolveCommandInDir(cfg.Command[0], lookupEnvironment, cfg.Workspace)
+		if lookupErr != nil {
+			return fmt.Errorf("resolving guard command %q: %w", cfg.Command[0], lookupErr)
+		}
+		// The outer domain must admit the same exact executable that the final
+		// Guard domain admits. Otherwise the final helper correctly detects an
+		// ancestor policy narrowing and refuses developer tools outside /usr or
+		// the workspace. Grant the file only, never its bin directory.
+		policy.AllowReadFiles = append(policy.AllowReadFiles, guardExecutable)
+	}
 	policy, coverageEnv := prepareSubprocessCoverage(policy, nil)
-	policy, err := ResolvePolicyPaths(policy)
+	policy, err = ResolvePolicyPaths(policy)
 	if err != nil {
 		return fmt.Errorf("resolve policy paths: %w", err)
 	}
@@ -193,11 +242,6 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	defer proxyServer.stop()
 
 	// Fork child in sandbox with standalone init mode.
-	selfExe, err := os.Readlink("/proc/self/exe")
-	if err != nil {
-		return fmt.Errorf("reading /proc/self/exe: %w", err)
-	}
-
 	cmd := exec.CommandContext(ctx, selfExe) //nolint:gosec // G204: re-exec of self
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -303,15 +347,14 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 // developer-environment mode it carries only a fixed descriptor number, never
 // a developer-supplied value.
 func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, coverageEnv []string, policyJSON string, hasNamespaces bool) []string {
+	commandJSON, _ := json.Marshal(cfg.Command)
 	env := []string{
 		standaloneInitEnv + "=1",
 		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
-		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
+		standaloneCommandJSONEnv + "=" + string(commandJSON),
 		sandboxSocketEnv + "=" + socketPath,
 	}
-	if !cfg.UseDeveloperEnvironment {
-		env = append(env, coverageEnv...)
-	}
+	env = append(env, subprocessCoverageControlEnv(coverageEnv)...)
 	if cfg.Strict {
 		env = append(env, strictEnvKey+"=1")
 	}
@@ -324,6 +367,14 @@ func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, cov
 	env = append(env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
 	if !hasNamespaces {
 		env = append(env, noNetNSEnvKey+"=1")
+	}
+	if cfg.GuardDeclaration != nil {
+		declaration, _ := json.Marshal(cfg.GuardDeclaration)
+		env = append(env,
+			standaloneGuardDeclarationEnv+"="+string(declaration),
+			standaloneGuardProfileEnv+"="+cfg.GuardProfile,
+			standaloneGuardPolicyHashEnv+"="+cfg.GuardPolicyHash,
+		)
 	}
 	return env
 }

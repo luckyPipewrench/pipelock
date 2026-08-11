@@ -37,19 +37,9 @@ coverage:
         # retain kernel-dependent failure branches. They remain in project
         # coverage and have a dedicated merged subprocess-coverage CI job.
         #
-        # Guard's enforcement path is excluded for the same reason, with one
-        # difference worth stating plainly: it IS covered, on a kernel new
-        # enough to run it. Applying the restriction to a running process needs
-        # Landlock ABI 8, the hosted runners provide 7, so every enforcement
-        # test skips there and the subprocess job collects nothing to upload.
-        # Measured on a host at ABI 9 the same file reaches ~91%. Excluding it
-        # here reflects what CI can execute, not what is tested; it stays in
-        # project coverage and in the dedicated subprocess job, which asserts
-        # the file appears in the merged profile whenever the tests do run.
         paths:
           - "!internal/sandbox/child_init.go"
           - "!internal/sandbox/child_standalone_init.go"
-          - "!internal/guard/apply_linux.go"
 ignore:
   # The OpenSSF Best Practices entry certifies the Apache-2.0 FLOSS core.
   # ELv2 production sources remain fully tested in CI but are outside that

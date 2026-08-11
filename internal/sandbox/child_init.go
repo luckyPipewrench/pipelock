@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/luckyPipewrench/pipelock/internal/processexec"
 )
 
 // RunInit is the entry point for the MCP sandbox-init child process.
@@ -187,7 +189,7 @@ func RunInit() {
 	}
 
 	reportSubprocessCoverageError(flushSubprocessCoverage())
-	err = syscall.Exec(binary, command, env) //nolint:gosec // G204: intentional exec of user-specified command
+	err = processexec.Replace(binary, command, env)
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] exec failed: %v\n", err)
 	exitSandboxProcess(1)
 }

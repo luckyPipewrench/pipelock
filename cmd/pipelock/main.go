@@ -10,10 +10,15 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	guardruntime "github.com/luckyPipewrench/pipelock/internal/guard"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
 func main() {
+	if guardruntime.IsExecMode() {
+		guardruntime.RunExec()
+		return
+	}
 	// Sandbox re-exec entry points. These run before any CLI initialization.
 	// MCP mode: applies containment then execs the command (does not return).
 	// Standalone mode: applies containment, runs bridge proxy + agent subprocess.

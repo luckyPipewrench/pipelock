@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -83,13 +85,19 @@ func withAllowedSSRFDialScanSnapshot(ctx context.Context, sc *scanner.Scanner, h
 	if sc == nil || !result.Allowed || len(result.SSRFResolvedIPs) == 0 {
 		return clearSnapshot()
 	}
+	guardGranted := scannerDestinationGranted(sc, host, port)
 	for _, ipStr := range result.SSRFResolvedIPs {
 		ip := normalizeSSRFDialIP(net.ParseIP(strings.TrimSpace(stripIPv6Zone(ipStr))))
-		if ip == nil || scanner.IsNonOverridableSSRFTarget(ip) || sc.IsInternalIP(ip) {
+		if ip == nil || scanner.IsNonOverridableSSRFTarget(ip) || (sc.IsInternalIP(ip) && !guardGranted) {
 			return clearSnapshot()
 		}
 	}
 	return withSSRFDialScanSnapshot(ctx, host, port, result.SSRFResolvedIPs)
+}
+
+func scannerDestinationGranted(sc *scanner.Scanner, host, port string) bool {
+	value, err := strconv.ParseUint(normalizeSSRFDialPort(port), 10, 16)
+	return err == nil && value != 0 && sc.IsDestinationGranted(destination.NetworkTCP, host, uint16(value))
 }
 
 // withSSRFDialPort records the exact destination port of an in-progress dial so
@@ -147,6 +155,25 @@ func isSSRFDNSRebind(ctx context.Context, host string, ip net.IP) bool {
 	}
 	_, seenAtScanTime := snapshot.ips[ip.String()]
 	return !seenAtScanTime
+}
+
+func ssrfDialSnapshotContains(ctx context.Context, host string, ip net.IP) bool {
+	if ctx == nil || ip == nil {
+		return false
+	}
+	snapshot, ok := ctx.Value(ctxKeySSRFDialScanSnapshot).(ssrfDialScanSnapshot)
+	if !ok || normalizeSSRFDialHost(host) != snapshot.host {
+		return false
+	}
+	if dialPort := ssrfDialPortFromContext(ctx); dialPort == "" || snapshot.port == "" || dialPort != snapshot.port {
+		return false
+	}
+	ip = normalizeSSRFDialIP(ip)
+	if ip == nil {
+		return false
+	}
+	_, ok = snapshot.ips[ip.String()]
+	return ok
 }
 
 func normalizeSSRFDialHost(host string) string {

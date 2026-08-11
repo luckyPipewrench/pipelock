@@ -4187,34 +4187,11 @@ var guardDangerousRWRoots = []struct {
 }
 
 func (c *Config) validateGuard() error {
-	if err := c.ValidateGuardDeclaration(); err != nil {
-		return err
-	}
-	g := &c.Guard
-	if len(g.Services) == 0 && len(g.Profiles) == 0 && len(g.Manifests) == 0 {
-		return nil
-	}
-
-	// Everything above validated the declaration. This refuses to ACCEPT it.
-	//
-	// No runtime evaluator consumes guard yet, so a config that loads cleanly
-	// would tell an operator their workload is constrained when nothing
-	// constrains it. Silent acceptance of a security-boundary declaration that
-	// has no enforcement is worse than refusing it: the operator acts on the
-	// clean load. Fail closed instead, and say exactly why.
-	//
-	// Validation still runs first so the message names a genuinely broken
-	// declaration ahead of the unsupported gate; an operator writing this
-	// config today gets accurate feedback on it for when enforcement lands.
-	//
-	// REMOVE THIS GATE in the PR that wires the guard runtime evaluator, in
-	// the same change that starts enforcing these grants.
-	return errGuardNotEnforced
+	return c.ValidateGuardDeclaration()
 }
 
 // ValidateGuardDeclaration validates guard names, references, destinations,
-// path declarations, and compiled-floor constraints without treating the
-// not-yet-enforced runtime gate as a declaration error.
+// path declarations, and compiled-floor constraints for Guard execution.
 func (c *Config) ValidateGuardDeclaration() error {
 	return c.validateGuardDeclaration(true)
 }
@@ -4380,14 +4357,6 @@ func validateGuardManifestPath(label, fieldName string, idx int, rawPath string,
 	pathFields[conflictKey] = field
 	return nil
 }
-
-// errGuardNotEnforced is returned for any non-empty guard declaration while the
-// runtime evaluator does not exist.
-var errGuardNotEnforced = errors.New(
-	"guard: configuration is not enforced in this version and is therefore refused rather than silently accepted; " +
-		"declaring guard services, profiles, or state manifests would not constrain any workload. " +
-		"Remove the guard section until a release that implements guard enforcement",
-)
 
 // validateGuardRWPath checks that a read-write path does not grant write
 // access to dangerous or trust-bearing locations.

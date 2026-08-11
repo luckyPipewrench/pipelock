@@ -41,6 +41,10 @@ func Prepare(cfg *config.Config, profileName string, _ int) (*PreparedManifest, 
 	if err != nil {
 		return nil, err
 	}
+	return prepareGrants(grants, 0, config.ExplainGuardPathFloor)
+}
+
+func prepareGrants(grants []grant, _ int, _ floorEvaluator) (*PreparedManifest, error) {
 	prepared := &PreparedManifest{outcomes: make([]PathOutcome, 0, len(grants))}
 	for _, g := range grants {
 		outcome := PathOutcome{DeclaredPath: g.declared, Access: g.access, State: StateWithheld}
@@ -66,4 +70,9 @@ func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 		Outcomes:         p.Outcomes(),
 	}
 	return record, ErrUnsupportedPlatform
+}
+
+// ApplyForExec always refuses off Linux, like Apply.
+func (p *PreparedManifest) ApplyForExec() (EnforcementRecord, error) {
+	return p.Apply()
 }

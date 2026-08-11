@@ -11,6 +11,8 @@ func prepareSubprocessCoverage(policy Policy, env []string) (Policy, []string) {
 	return policy, env
 }
 
+func subprocessCoverageControlEnv([]string) []string { return nil }
+
 func flushSubprocessCoverage() error {
 	return nil
 }

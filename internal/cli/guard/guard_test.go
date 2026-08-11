@@ -5,15 +5,19 @@ package guard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
 const testGuardConfig = `guard:
@@ -80,7 +84,7 @@ func TestExplainHumanCompiledFloorHonesty(t *testing.T) {
 		t.Fatalf("guard explain: %v", err)
 	}
 	for _, want := range []string{
-		"WARNING: Guard is not enforced in this build",
+		"WARNING: This inspection command does not enforce Guard",
 		"READ: WOULD BE REFUSED BY COMPILED FLOOR",
 		"WRITE: WOULD BE REFUSED BY COMPILED FLOOR",
 		"Rule: forbidden_component",
@@ -237,7 +241,7 @@ func TestShowHumanEmptyAndRefusedGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("guard show worker: %v", err)
 	}
-	for _, want := range []string{"WARNING: Guard is not enforced", "Manifest: \"workspace\"", "compiled floor: no refusal", "COMPILED FLOOR REFUSAL", "cannot be configured away"} {
+	for _, want := range []string{"WARNING: This inspection command does not enforce Guard", "Manifest: \"workspace\"", "compiled floor: no refusal", "COMPILED FLOOR REFUSAL", "cannot be configured away"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("worker output missing %q:\n%s", want, out)
 		}
@@ -299,8 +303,13 @@ func TestCommandErrors(t *testing.T) {
 func TestDefaultConfigAndArgumentValidation(t *testing.T) {
 	t.Parallel()
 	help, err := runCommand(t)
-	if err != nil || !strings.Contains(help, "Inspect unenforced guard declarations") {
+	if err != nil || !strings.Contains(help, "Run a command in the Linux HTTP/HTTPS egress-guard preview") {
 		t.Fatalf("guard parent help: err=%v output=%q", err, help)
+	}
+	for _, claimBoundary := range []string{"non-proxy TCP, UDP, QUIC", "Same-UID host brokers remain outside this boundary"} {
+		if !strings.Contains(help, claimBoundary) {
+			t.Fatalf("guard help omitted claim boundary %q:\n%s", claimBoundary, help)
+		}
 	}
 	out, err := runCommand(t, "explain", "/opt/app", "--json")
 	if err != nil {
@@ -313,6 +322,17 @@ func TestDefaultConfigAndArgumentValidation(t *testing.T) {
 		if _, err := runCommand(t, args...); err == nil {
 			t.Fatalf("args %v should fail", args)
 		}
+	}
+}
+
+func TestPreserveCommandExitCode(t *testing.T) {
+	err := exec.CommandContext(context.Background(), "sh", "-c", "exit 37").Run()
+	if err == nil {
+		t.Fatal("helper command unexpectedly succeeded")
+	}
+	wrapped := preserveCommandExitCode(err)
+	if got := cliutil.ExitCodeOf(wrapped); got != 37 {
+		t.Fatalf("exit code = %d, want 37", got)
 	}
 }
 
@@ -384,6 +404,80 @@ func TestOutputErrors(t *testing.T) {
 		cmd.SetArgs(args)
 		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
 			t.Fatalf("args %v error = %v", args, err)
+		}
+	}
+}
+
+func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
+	if _, err := loadRuntimeConfig("-"); err == nil || !strings.Contains(err.Error(), "stdin") {
+		t.Fatalf("stdin runtime config error = %v", err)
+	}
+	if _, err := loadRuntimeConfig(filepath.Join(t.TempDir(), "missing.yaml")); err == nil || !strings.Contains(err.Error(), "loading guard config") {
+		t.Fatalf("missing runtime config error = %v", err)
+	}
+	validConfig := writeConfig(t, "enforce: true\n")
+	if _, err := loadRuntimeConfig(validConfig); err != nil {
+		t.Fatalf("valid runtime config: %v", err)
+	}
+	configured := t.TempDir()
+	if got, err := resolveWorkspace("", configured); err != nil || got != configured {
+		t.Fatalf("configured workspace = %q, err=%v", got, err)
+	}
+	if got, err := resolveWorkspace("", ""); err != nil || !filepath.IsAbs(got) {
+		t.Fatalf("current workspace = %q, err=%v", got, err)
+	}
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original directory: %v", err)
+	}
+	removedDirectory := t.TempDir()
+	if err := os.Chdir(removedDirectory); err != nil {
+		t.Fatalf("enter removable directory: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(originalDirectory); err != nil {
+			t.Fatalf("restore original directory: %v", err)
+		}
+	}()
+	if err := os.Remove(removedDirectory); err != nil {
+		t.Fatalf("remove current directory fixture: %v", err)
+	}
+	if _, err := resolveWorkspace("", ""); err == nil || !strings.Contains(err.Error(), "resolving workspace") {
+		t.Fatalf("removed current directory error = %v", err)
+	}
+	if err := os.Chdir(originalDirectory); err != nil {
+		t.Fatalf("restore original directory before command tests: %v", err)
+	}
+
+	if _, err := runCommand(t, "--config", "-", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "stdin") {
+		t.Fatalf("runtime command config error = %v", err)
+	}
+	if _, err := runCommand(t, "--dry-run", "--workspace", "/usr/local/bin", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "compiled floor") {
+		t.Fatalf("dry-run floor error = %v", err)
+	}
+
+	cmd := Cmd()
+	cmd.SetOut(failingWriter{})
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", "/usr/bin/true"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
+		t.Fatalf("dry-run output error = %v", err)
+	}
+}
+
+func TestRenderGuardPreflightIncludesUnavailableReasons(t *testing.T) {
+	var out bytes.Buffer
+	renderGuardPreflight(&out, sandbox.PreflightResult{
+		Status:    sandbox.StatusError,
+		Workspace: "/workspace",
+		Layers: []sandbox.LayerProbe{{
+			Name: sandbox.LayerLandlock, Available: false, Required: true,
+		}},
+		Errors: []string{"required layer unavailable"},
+	})
+	for _, want := range []string{"unavailable", "ERROR: required layer unavailable"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("preflight output missing %q: %s", want, out.String())
 		}
 	}
 }

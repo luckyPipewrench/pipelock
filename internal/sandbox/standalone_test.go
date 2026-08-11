@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -130,6 +131,29 @@ func TestLaunchStandalone_RequireProxyHandlerRejectsBeforeChildStart(t *testing.
 	}
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("child started despite required proxy handler denial: stat error = %v", statErr)
+	}
+}
+
+func TestLaunchStandaloneRejectsInvalidGuardLaunchBeforeChildStart(t *testing.T) {
+	workspace := t.TempDir()
+	largeDeclaration := &config.Guard{Services: []config.GuardService{{
+		Name: strings.Repeat("x", (1<<20)+1), Protocol: "tcp", Host: "api.vendor.example", Port: 443,
+	}}}
+	for _, testCase := range []struct {
+		name string
+		cfg  StandaloneLaunchConfig
+		want string
+	}{
+		{name: "missing command", cfg: StandaloneLaunchConfig{Workspace: workspace}, want: "command is required"},
+		{name: "missing guard hash", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"true"}, GuardDeclaration: &config.Guard{}}, want: "policy hash is required"},
+		{name: "oversized guard declaration", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"true"}, GuardDeclaration: largeDeclaration, GuardPolicyHash: "hash"}, want: "exceeds 1 MiB"},
+		{name: "missing guard command", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"missing-guard-command"}, GuardDeclaration: &config.Guard{}, GuardPolicyHash: "hash"}, want: "resolving guard command"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := LaunchStandalone(testCase.cfg); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %v, want %q", err, testCase.want)
+			}
+		})
 	}
 }
 
@@ -278,6 +302,26 @@ func TestPreflight_BackwardCompatibleStrictWrapper(t *testing.T) {
 	}
 	if result.Mode != "best-effort" {
 		t.Fatalf("legacy Preflight mode = %q, want best-effort", result.Mode)
+	}
+}
+
+func TestLandlockMeetsRequirementRejectsOlderABI(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		observedABI int
+		minimumABI  int
+		want        bool
+	}{
+		{name: "absent legacy probe", observedABI: 0, want: false},
+		{name: "present legacy probe", observedABI: 1, want: true},
+		{name: "below explicit floor", observedABI: 4, minimumABI: 5, want: false},
+		{name: "at explicit floor", observedABI: 5, minimumABI: 5, want: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := landlockMeetsRequirement(testCase.observedABI, testCase.minimumABI); got != testCase.want {
+				t.Fatalf("landlockMeetsRequirement(%d, %d) = %v, want %v", testCase.observedABI, testCase.minimumABI, got, testCase.want)
+			}
+		})
 	}
 }
 

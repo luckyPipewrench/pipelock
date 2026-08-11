@@ -16,6 +16,7 @@ import (
 type grant struct {
 	declared string
 	access   AccessKind
+	runtime  bool
 	// refusal is non-empty when the compiled floor rejected this declaration.
 	// The grant is retained rather than dropped so the outcome list can report
 	// it; a dropped declaration is indistinguishable from one that was never

@@ -66,10 +66,23 @@ jobs:
 
       - name: Scan the diff
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          zero_sha=0000000000000000000000000000000000000000
+          if [[ -z "${BASE_SHA}" || -z "${HEAD_SHA}" || "${BASE_SHA}" == "${zero_sha}" || "${HEAD_SHA}" == "${zero_sha}" ]]; then
+            echo "refusing to scan an empty or all-zero diff endpoint" >&2
+            exit 1
+          fi
+          git rev-parse --verify --quiet "${BASE_SHA}^{commit}" >/dev/null || {
+            echo "refusing to scan: base is not an available commit: ${BASE_SHA}" >&2
+            exit 1
+          }
+          git rev-parse --verify --quiet "${HEAD_SHA}^{commit}" >/dev/null || {
+            echo "refusing to scan: head is not an available commit: ${HEAD_SHA}" >&2
+            exit 1
+          }
           merge_base=$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")
           diff_file="${RUNNER_TEMP}/pr.diff"
           # Added-line scope for normal text, full new-side blob only where

@@ -23,13 +23,84 @@ import (
 // nothing. Match on what runs, reached through the parsed job.
 
 type workflowStep struct {
-	Name string `yaml:"name"`
-	Uses string `yaml:"uses"`
-	If   string `yaml:"if"`
-	Run  string `yaml:"run"`
+	Name string            `yaml:"name"`
+	Uses string            `yaml:"uses"`
+	If   string            `yaml:"if"`
+	Run  string            `yaml:"run"`
+	Env  map[string]string `yaml:"env"`
 	// ContinueOnError is any-typed because YAML admits several shapes here:
 	// omitted, null, blank, a bool, or a `${{ }}` expression string.
 	ContinueOnError any `yaml:"continue-on-error"`
+}
+
+// TestTrustedScanSelectsDiffEndpointsForEveryTrigger pins both event shapes
+// accepted by the workflow. Pull-request-only fields are empty on a push, so
+// using them unconditionally makes the main-branch gate fail before scanning.
+// The explicit endpoint guards also keep an absent, zero, or unavailable ref
+// from degrading into an empty or ambiguous scan.
+func TestTrustedScanSelectsDiffEndpointsForEveryTrigger(t *testing.T) {
+	t.Parallel()
+
+	var steps []workflowStep
+	for _, step := range runStepsContaining(securityScanSteps(t), "generate-trusted-diff.sh") {
+		if step.Name == "Scan the diff" {
+			steps = append(steps, step)
+		}
+	}
+	if len(steps) != 1 {
+		t.Fatalf("got %d unconditional diff-generation steps, want exactly 1", len(steps))
+	}
+
+	step := steps[0]
+	for _, tc := range []struct {
+		name     string
+		value    string
+		required []string
+	}{
+		{
+			name:  "base",
+			value: step.Env["BASE_SHA"],
+			required: []string{
+				"github.event_name == 'pull_request'",
+				"github.event.pull_request.base.sha",
+				"github.event.before",
+			},
+		},
+		{
+			name:  "head",
+			value: step.Env["HEAD_SHA"],
+			required: []string{
+				"github.event_name == 'pull_request'",
+				"github.event.pull_request.head.sha",
+				"github.sha",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if strings.TrimSpace(tc.value) == "" {
+				t.Fatalf("%s SHA expression is empty", tc.name)
+			}
+			for _, required := range tc.required {
+				if !strings.Contains(tc.value, required) {
+					t.Errorf("%s SHA expression %q does not select %q", tc.name, tc.value, required)
+				}
+			}
+		})
+	}
+
+	for _, required := range []string{
+		`-z "${BASE_SHA}"`,
+		`-z "${HEAD_SHA}"`,
+		`"${BASE_SHA}" == "${zero_sha}"`,
+		`"${HEAD_SHA}" == "${zero_sha}"`,
+		`git rev-parse --verify --quiet "${BASE_SHA}^{commit}"`,
+		`git rev-parse --verify --quiet "${HEAD_SHA}^{commit}"`,
+	} {
+		if !strings.Contains(step.Run, required) {
+			t.Errorf("scan step lacks fail-closed endpoint guard %q", required)
+		}
+	}
 }
 
 type workflowJob struct {

@@ -36,7 +36,7 @@ import (
 
 const listenerProxyAuthorization = "Proxy-Authorization"
 
-const listenerTokenlessDegradationReason = "MCP HTTP listener request has no valid Pipelock session token; stateful controls are unavailable"
+const listenerUnboundStateDegradationReason = "MCP HTTP listener request has no valid Pipelock-issued session state; stateful controls are unavailable"
 
 const (
 	listenerAuthorization   = "Authorization"
@@ -1067,12 +1067,12 @@ func RunHTTPListenerProxy(
 			bindStateRequestContext()
 		}
 		if requireStateToken && !stateBound {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", listenerTokenlessDegradationReason)
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", listenerUnboundStateDegradationReason)
 			if requestBaseOpts.AuditLogger != nil {
 				requestBaseOpts.AuditLogger.LogAnomaly(
 					mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
 					"",
-					listenerTokenlessDegradationReason,
+					listenerUnboundStateDegradationReason,
 					0,
 				)
 			}

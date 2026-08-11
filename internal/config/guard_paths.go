@@ -314,9 +314,10 @@ var guardSecretAbsolutePaths = []struct {
 	//
 	// A static path list also cannot enumerate agent sockets in general, since
 	// SSH_AUTH_SOCK is arbitrary. The real controls are runtime ones and belong
-	// with the evaluator, not here: internal/guard requires ABI 9, handles the
-	// resolve-unix right without granting it to any path, and refuses to grant
-	// a path whose pinned object is a socket.
+	// with the evaluator, not here: internal/guard handles the resolve-unix
+	// right without granting it to any path from ABI 9 onward, reports partial
+	// mediation below that ABI, and refuses to grant a path whose pinned object
+	// is a socket.
 	{"/run/user", "per-user runtime state, which holds agent sockets and keyrings"},
 	// Container secret mounts.
 	{"/run/secrets", "the container secret mount point"},

@@ -31,6 +31,7 @@ type preparedRule struct {
 	fd       int
 	access   uint64
 	declared string
+	kind     AccessKind
 	// resolved and isDir exist so the post-enforcement reachability check can
 	// re-open by NAME. Probing through fd would always succeed, because a
 	// descriptor opened before the restriction stays usable after it.
@@ -210,6 +211,7 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 			fd:       fd,
 			access:   rightsFor(g.access),
 			declared: g.declared,
+			kind:     g.access,
 			resolved: resolved,
 			isDir:    g.access.IsDirectory(),
 		})

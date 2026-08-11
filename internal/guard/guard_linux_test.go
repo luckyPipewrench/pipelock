@@ -458,7 +458,18 @@ func abiOrSkip(t *testing.T) int {
 // process that has actually been restricted, then attempts the forbidden
 // operation, can.
 func TestEnforcement_RealBoundary(t *testing.T) {
-	abiOrSkip(t)
+	abi := abiOrSkip(t)
+	socketWant := "socket connect: DENIED"
+	coverageWant := "record coverage: full fully-mediated=true"
+	if abi < guard.SocketMediationABI {
+		// ABI 8 can apply the filesystem ruleset to every thread, but it has
+		// no resolve-unix right. A pathname Unix-socket connection is therefore
+		// intentionally outside the model, not a denied operation. Accepting
+		// that result is safe only because the record says PARTIAL and refuses
+		// the stronger FullyMediated claim alongside it.
+		socketWant = "socket connect: OK"
+		coverageWant = "record coverage: partial fully-mediated=false"
+	}
 
 	for _, scenario := range []struct {
 		name  string
@@ -466,7 +477,7 @@ func TestEnforcement_RealBoundary(t *testing.T) {
 	}{
 		{"granted-write", []string{"granted write: OK"}},
 		{"ungranted-read", []string{"ungranted read: DENIED"}},
-		{"socket-connect", []string{"socket connect: DENIED"}},
+		{"socket-connect", []string{socketWant, coverageWant}},
 		{"other-thread", []string{"other-thread read: DENIED"}},
 		{"symlink-repoint", []string{"granted write: OK", "repointed alias write: DENIED"}},
 		{"empty-manifest", []string{"ungranted read: DENIED"}},
@@ -516,6 +527,18 @@ func TestEnforcement_DetectsPolicyNarrowedByOuterDomain(t *testing.T) {
 	}
 }
 
+// TestEnforcement_DetectsWritePolicyNarrowedByOuterDomain proves the
+// reachability check does not mistake a readable-but-not-writable exact file
+// for the declared read-write grant. Opening with O_WRONLY is side-effect free;
+// it asks the kernel for the write right without changing the workload state.
+func TestEnforcement_DetectsWritePolicyNarrowedByOuterDomain(t *testing.T) {
+	abiOrSkip(t)
+	out := runScenario(t, "nested-write-narrowed")
+	if !strings.Contains(out, "write-narrowed: DETECTED") {
+		t.Fatalf("output %q, want the outer domain's removed write access to be detected", out)
+	}
+}
+
 func runScenario(t *testing.T, scenario string) string {
 	t.Helper()
 	args := []string{"-test.run=^TestGuardChildScenario$"}
@@ -552,10 +575,11 @@ func runScenario(t *testing.T, scenario string) string {
 // the same way internal/sandbox resolves it: when collection is on, the
 // collection directory is part of the policy.
 //
-// This only ever fires under the collection script. It widens the child's
-// grants by exactly one directory that no assertion touches: the denied paths
-// every enforcement test checks live elsewhere, so what the tests prove is
-// unchanged.
+// The collection script is the only intended setter. An ordinary run with this
+// variable set fails loudly when its binary lacks coverage instrumentation, and
+// a broad directory fails manifest preparation rather than silently widening an
+// assertion. Under collection it grants exactly one directory that no denial
+// assertion touches, so what the tests prove is unchanged.
 func coverageGrant() []string {
 	if dir := os.Getenv("PIPELOCK_GUARD_COVERDIR"); dir != "" {
 		return []string{dir}
@@ -625,10 +649,72 @@ func runChildNested() int {
 	return 0
 }
 
+// runChildNestedWrite creates an outer domain that allows reading an exact
+// file but removes its write permission. This is distinct from
+// runChildNested: reopening that file O_RDONLY succeeds, so only an O_WRONLY
+// probe can detect the policy intersection.
+func runChildNestedWrite() int {
+	root, err := os.MkdirTemp("", "guard-nested-write-")
+	if err != nil {
+		fmt.Println("setup failed:", err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+
+	state := filepath.Join(root, "state.json")
+	if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
+		fmt.Println("setup failed:", err)
+		return 1
+	}
+
+	cfg := config.Defaults()
+	cfg.Guard = config.Guard{
+		Profiles:  []config.GuardProfile{{Name: "agent", Manifests: []string{"m"}}},
+		Manifests: []config.GuardManifest{{Name: "m", ReadWrite: []string{state}, ReadWriteDirectories: coverageGrant()}},
+	}
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		fmt.Println("prepare failed:", err)
+		return 1
+	}
+	defer func() { _ = prepared.Close() }()
+	if !prepared.Complete() {
+		fmt.Printf("manifest incomplete before the outer domain: %+v\n", prepared.Outcomes())
+		return 1
+	}
+
+	// Grant the entire test root read-only in the outer domain. The inner
+	// manifest asks for read-write on state, so the stacked result permits reads
+	// but must deny writes.
+	outer := []landlock.Rule{landlock.RODirs(root)}
+	for _, dir := range coverageGrant() {
+		outer = append(outer, landlock.RWDirs(dir))
+	}
+	if err := landlock.V9.RestrictPaths(outer...); err != nil {
+		fmt.Println("outer restriction failed:", err)
+		return 1
+	}
+
+	record, err := prepared.Apply()
+	if errors.Is(err, guard.ErrPolicyNarrowed) && !record.Enforced() {
+		fmt.Println("write-narrowed: DETECTED")
+		return 0
+	}
+	fd, writeErr := os.OpenFile(filepath.Clean(state), os.O_WRONLY, 0)
+	if writeErr == nil {
+		_ = fd.Close()
+	}
+	fmt.Printf("write-narrowed: MISSED (enforced=%v err=%v state=%q write=%v)\n", record.Enforced(), err, record.State, writeErr)
+	return 0
+}
+
 // runChild performs one enforcement scenario inside a fresh process.
 func runChild(scenario string) int {
 	if scenario == "nested-narrowed" {
 		return runChildNested()
+	}
+	if scenario == "nested-write-narrowed" {
+		return runChildNestedWrite()
 	}
 	root, err := os.MkdirTemp("", "guard-child-")
 	if err != nil {
@@ -751,6 +837,7 @@ func runChild(scenario string) int {
 			fmt.Println("apply did not enforce:", record.Describe())
 			return 1
 		}
+		fmt.Printf("record coverage: %s fully-mediated=%t\n", record.Coverage, record.FullyMediated())
 	}
 
 	report("granted write", os.WriteFile(filepath.Join(granted, "ok.txt"), []byte("x"), 0o600))

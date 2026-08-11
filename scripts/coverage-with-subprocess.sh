@@ -33,13 +33,20 @@ PIPELOCK_SUBPROCESS_COVERAGE=1 GOCOVERDIR="$COVERDIR" \
 
 # Guard's enforcement can only be observed from a process that has actually been
 # restricted, and Landlock is irreversible, so those assertions run in a
-# re-executed child. The child ends with os.Exit, which skips the coverage
-# writer, so the subprocess_coverage build tag compiles in an explicit flush and
-# GOCOVERDIR tells it where to write. Without this the enforcement path measures
-# around half covered while being the most thoroughly exercised code in the
-# package, which is a false signal in the dangerous direction: it invites
-# someone to "fix" it with weaker in-process tests.
+# re-executed child. The child now runs as an ordinary test, which lets the
+# testing framework write its own counters on normal exit. The go tool does not
+# pass GOCOVERDIR through to a re-executed test binary, so the parent translates
+# this dedicated variable into -test.gocoverdir for the child. Without that
+# hand-off the enforcement path measures as uncovered while being the most
+# thoroughly exercised code in this package, inviting weaker in-process tests
+# solely to satisfy coverage.
 #
+# Run every enforcement scenario once without subprocess coverage first. The
+# empty and zero-manifest cases must grant nothing, so giving them the coverage
+# directory would change the policy they prove. Running the parent test keeps
+# those cases honest and automatically includes any future boundary scenario.
+go test -count=1 -timeout=5m ./internal/guard -run '^TestEnforcement_RealBoundary$'
+
 # -cover is required, not optional: the child inherits coverage instrumentation
 # from the test binary, and runtime/coverage has nothing to write from a binary
 # that was not built with it. Omitting it produces a run that passes, writes no
@@ -47,7 +54,7 @@ PIPELOCK_SUBPROCESS_COVERAGE=1 GOCOVERDIR="$COVERDIR" \
 PIPELOCK_GUARD_COVERDIR="$COVERDIR" \
     go test -count=1 -timeout=5m -cover -covermode=atomic \
     ./internal/guard \
-    -run '^TestEnforcement_(RealBoundary/(granted-write|ungranted-read|socket-connect|other-thread)|DetectsPolicyNarrowedByOuterDomain)$'
+    -run '^TestEnforcement_(RealBoundary/(granted-write|ungranted-read|socket-connect|other-thread)|Detects(Write)?PolicyNarrowedByOuterDomain)$'
 
 # Merge all coverage data into a single profile.
 counter_count=$(find "$COVERDIR" -maxdepth 1 -type f -name 'covcounters.*' | wc -l)
@@ -92,10 +99,10 @@ if [ "$child_init_covered" -eq 0 ] || [ "$standalone_init_covered" -eq 0 ]; then
     exit 1
 fi
 
-# The same assertion for Guard. This is the check that keeps the mechanism
-# honest: if the flush silently stops working, the merged profile still parses
-# and the script still exits zero, so only naming the file that MUST appear
-# turns a broken collection into a failure instead of a quiet coverage drop.
+# The same assertion for Guard. This is the check that keeps the hand-off
+# honest: if child collection silently stops working, the merged profile still
+# parses and the script still exits zero, so only naming the file that MUST
+# appear turns a broken collection into a failure instead of a quiet drop.
 guard_apply_covered=$(covered_statements "internal/guard/apply_linux.go")
 if [ "$guard_apply_covered" -eq 0 ]; then
     echo "Merged profile is missing guard enforcement execution."

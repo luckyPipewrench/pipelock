@@ -237,16 +237,34 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 func (p *PreparedManifest) unreachableGrants() []string {
 	var narrowed []string
 	for _, rule := range p.rules {
-		flags := unix.O_RDONLY | unix.O_CLOEXEC
-		if rule.isDir {
-			flags |= unix.O_DIRECTORY
-		}
-		fd, err := unix.Open(rule.resolved, flags, 0)
-		if err != nil {
+		if !reopenGrant(rule, unix.O_RDONLY) {
 			narrowed = append(narrowed, rule.declared)
 			continue
 		}
-		_ = unix.Close(fd)
+		// Opening an exact file O_WRONLY asks the kernel for WriteFile but
+		// does not write or truncate it. A read-only outer domain can therefore
+		// not make a declared read-write file look reachable just because the
+		// old read probe succeeded.
+		if rule.kind == AccessWriteFile && !reopenGrant(rule, unix.O_WRONLY) {
+			narrowed = append(narrowed, rule.declared)
+		}
 	}
 	return narrowed
+}
+
+// reopenGrant tests an operation against the post-restriction pathname and
+// closes it immediately. The access mode is deliberately part of the probe:
+// O_RDONLY checks that every grant is reachable, while O_WRONLY checks an exact
+// writable file's WriteFile right without changing the file.
+func reopenGrant(rule preparedRule, access int) bool {
+	flags := access | unix.O_CLOEXEC
+	if rule.isDir {
+		flags |= unix.O_DIRECTORY
+	}
+	fd, err := unix.Open(rule.resolved, flags, 0)
+	if err != nil {
+		return false
+	}
+	_ = unix.Close(fd)
+	return true
 }

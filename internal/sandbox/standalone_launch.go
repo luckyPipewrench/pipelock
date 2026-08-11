@@ -83,6 +83,9 @@ type StandaloneLaunchConfig struct {
 	GuardDeclaration *config.Guard
 	GuardProfile     string
 	GuardPolicyHash  string
+	// GuardEnforced receives the child-side proof only after the status pipe
+	// closes on successful exec. Returning an error terminates the launch.
+	GuardEnforced func(proof []byte) error
 }
 
 // standaloneProxyConnectionConfig controls how one accepted bridge connection
@@ -171,10 +174,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 	policy.AllowReadFiles = append(policy.AllowReadFiles, selfExe)
 	if cfg.GuardDeclaration != nil {
-		lookupEnvironment := []string(nil)
-		if cfg.UseDeveloperEnvironment {
-			lookupEnvironment = cfg.DeveloperEnvironment
-		}
+		lookupEnvironment := guardLookupEnvironment(cfg.UseDeveloperEnvironment, cfg.DeveloperEnvironment)
 		guardExecutable, lookupErr := ResolveCommandInDir(cfg.Command[0], lookupEnvironment, cfg.Workspace)
 		if lookupErr != nil {
 			return fmt.Errorf("resolving guard command %q: %w", cfg.Command[0], lookupErr)
@@ -253,6 +253,18 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 	cmd.Env = standaloneInitControlEnv(cfg, socketPath, coverageEnv, policyJSON, hasNamespaces)
 
+	var guardStatusReader, guardStatusWriter *os.File
+	if cfg.GuardDeclaration != nil {
+		guardStatusReader, guardStatusWriter, err = os.Pipe()
+		if err != nil {
+			return fmt.Errorf("creating guard status pipe: %w", err)
+		}
+		defer func() {
+			_ = guardStatusReader.Close()
+			_ = guardStatusWriter.Close()
+		}()
+	}
+
 	var developerPipe *developerEnvironmentPipe
 	if cfg.UseDeveloperEnvironment {
 		developerPipe, err = newDeveloperEnvironmentPipe(cfg.DeveloperEnvironment)
@@ -261,6 +273,9 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		}
 		defer developerPipe.close()
 		cmd.ExtraFiles = []*os.File{developerPipe.reader}
+	}
+	if guardStatusWriter != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, guardStatusWriter)
 	}
 
 	if hasNamespaces {
@@ -301,6 +316,13 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting sandbox child: %w", err)
 	}
+	if guardStatusWriter != nil {
+		if err := guardStatusWriter.Close(); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("closing guard status write pipe: %w", err)
+		}
+	}
 	if developerPipe != nil {
 		// ExtraFiles duplicates reader into the re-exec child. Drop the parent's
 		// copy before writing so every failure path closes both local pipe ends.
@@ -313,6 +335,17 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return fmt.Errorf("transporting developer environment: %w", err)
+		}
+	}
+	if guardStatusReader != nil {
+		proof, proofErr := readGuardExecutionProof(guardStatusReader)
+		if proofErr == nil && cfg.GuardEnforced != nil {
+			proofErr = cfg.GuardEnforced(proof)
+		}
+		if proofErr != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("guard execution proof: %w", proofErr)
 		}
 	}
 
@@ -343,6 +376,44 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	return waitErr
 }
 
+func guardLookupEnvironment(useDeveloperEnvironment bool, developerEnvironment []string) []string {
+	if useDeveloperEnvironment {
+		return developerEnvironment
+	}
+	return []string{"PATH=" + syntheticPath}
+}
+
+func readGuardExecutionProof(r io.Reader) ([]byte, error) {
+	decoder := json.NewDecoder(io.LimitReader(r, 1<<20))
+	var proof json.RawMessage
+	if err := decoder.Decode(&proof); err != nil {
+		return nil, fmt.Errorf("reading enforced record: %w", err)
+	}
+	var status struct {
+		ExecError string `json:"exec_error"`
+	}
+	if err := json.Unmarshal(proof, &status); err != nil {
+		return nil, fmt.Errorf("decoding enforced record: %w", err)
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err == nil {
+		var failure struct {
+			ExecError string `json:"exec_error"`
+		}
+		_ = json.Unmarshal(trailing, &failure)
+		if failure.ExecError != "" {
+			return nil, fmt.Errorf("operator command exec failed: %s", failure.ExecError)
+		}
+		return nil, errors.New("guard status pipe contained multiple success records")
+	} else if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("reading guard status completion: %w", err)
+	}
+	if status.ExecError != "" {
+		return nil, fmt.Errorf("operator command exec failed: %s", status.ExecError)
+	}
+	return proof, nil
+}
+
 // standaloneInitControlEnv is the complete re-exec environment. In
 // developer-environment mode it carries only a fixed descriptor number, never
 // a developer-supplied value.
@@ -370,10 +441,15 @@ func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, cov
 	}
 	if cfg.GuardDeclaration != nil {
 		declaration, _ := json.Marshal(cfg.GuardDeclaration)
+		guardStatusFD := 3
+		if cfg.UseDeveloperEnvironment {
+			guardStatusFD++
+		}
 		env = append(env,
 			standaloneGuardDeclarationEnv+"="+string(declaration),
 			standaloneGuardProfileEnv+"="+cfg.GuardProfile,
 			standaloneGuardPolicyHashEnv+"="+cfg.GuardPolicyHash,
+			guardStatusControlEnv+"="+strconv.Itoa(guardStatusFD),
 		)
 	}
 	return env

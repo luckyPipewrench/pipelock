@@ -157,6 +157,81 @@ func TestLaunchStandaloneRejectsInvalidGuardLaunchBeforeChildStart(t *testing.T)
 	}
 }
 
+func TestGuardLookupEnvironmentUsesCompleteSyntheticPath(t *testing.T) {
+	got := guardLookupEnvironment(false, []string{"PATH=/developer/bin"})
+	if len(got) != 1 || got[0] != "PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" {
+		t.Fatalf("synthetic guard lookup environment = %v", got)
+	}
+	developer := []string{"PATH=/developer/bin", "TOKEN=value"}
+	if got := guardLookupEnvironment(true, developer); len(got) != len(developer) || got[0] != developer[0] || got[1] != developer[1] {
+		t.Fatalf("developer guard lookup environment = %v", got)
+	}
+}
+
+func TestGuardLookupEnvironmentResolvesSystemSbinCommand(t *testing.T) {
+	var candidate string
+	for _, path := range []string{"/usr/local/sbin", "/usr/sbin", "/sbin"} {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			info, infoErr := entry.Info()
+			if infoErr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+				candidate = filepath.Join(path, entry.Name())
+				break
+			}
+		}
+		if candidate != "" {
+			break
+		}
+	}
+	if candidate == "" {
+		t.Skip("no executable found in a system sbin directory")
+	}
+	resolved, err := ResolveCommandInDir(filepath.Base(candidate), guardLookupEnvironment(false, nil), t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve sbin command %q: %v", candidate, err)
+	}
+	want, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		t.Fatalf("resolve candidate %q: %v", candidate, err)
+	}
+	if resolved != want {
+		t.Fatalf("resolved sbin command = %q, want %q", resolved, want)
+	}
+}
+
+func TestReadGuardExecutionProofRejectsExecFailureAndTrailingSuccess(t *testing.T) {
+	success := `{"record":{"state":"enforced"},"effective_policy_hash":"hash"}`
+	if got, err := readGuardExecutionProof(strings.NewReader(success)); err != nil || string(got) != success {
+		t.Fatalf("success proof = %q, %v", got, err)
+	}
+	failure := success + "\n" + `{"exec_error":"permission denied"}`
+	if _, err := readGuardExecutionProof(strings.NewReader(failure)); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("exec failure proof error = %v", err)
+	}
+	if _, err := readGuardExecutionProof(strings.NewReader(success + "\n" + success)); err == nil || !strings.Contains(err.Error(), "multiple") {
+		t.Fatalf("duplicate success proof error = %v", err)
+	}
+	for _, testCase := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: "", want: "reading enforced record"},
+		{name: "wrong JSON type", raw: "1", want: "decoding enforced record"},
+		{name: "truncated trailing record", raw: success + "\n{", want: "status completion"},
+		{name: "first record is failure", raw: `{"exec_error":"refused"}`, want: "refused"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := readGuardExecutionProof(strings.NewReader(testCase.raw)); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
 func TestLaunchStandalone_RequireNetNSRejectsBestEffort(t *testing.T) {
 	err := LaunchStandalone(StandaloneLaunchConfig{
 		Command:      []string{"true"},

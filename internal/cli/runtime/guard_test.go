@@ -6,7 +6,9 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -52,9 +54,85 @@ func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
 	if got.ProxyHandler == nil || got.Policy == nil {
 		t.Fatalf("launch omitted proxy or policy: %+v", got)
 	}
+	if got.GuardEnforced == nil {
+		t.Fatal("launch omitted child enforcement callback")
+	}
+	proof := guardfs.NewExecutionProof(
+		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
+		got.GuardPolicyHash, "", workspace, workspace, "/usr/bin/true", []string{"/usr/bin/true"},
+	)
+	encoded, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatalf("marshal proof: %v", err)
+	}
+	if err := got.GuardEnforced(encoded); err != nil {
+		t.Fatalf("GuardEnforced: %v", err)
+	}
+	server, client := net.Pipe()
+	if err := client.Close(); err != nil {
+		t.Fatalf("close proxy client: %v", err)
+	}
+	got.ProxyHandler(server)
+}
+
+func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
+	var got sandbox.StandaloneLaunchConfig
+	err := launchGuard(GuardLaunchOptions{
+		Context: t.Context(), Config: config.Defaults(), Workspace: t.TempDir(),
+		Command: []string{"/usr/bin/true"}, Stderr: io.Discard,
+	}, func(launch sandbox.StandaloneLaunchConfig) error {
+		got = launch
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("launchGuard: %v", err)
+	}
+	if err := got.GuardEnforced([]byte("not-json")); err == nil || !strings.Contains(err.Error(), "decoding") {
+		t.Fatalf("malformed proof error = %v", err)
+	}
+	proof := guardfs.NewExecutionProof(
+		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
+		"wrong-config", "", "/workspace", "/tmp/private", "/usr/bin/true", []string{"/usr/bin/true"},
+	)
+	encoded, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatalf("marshal mismatched proof: %v", err)
+	}
+	if err := got.GuardEnforced(encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
+		t.Fatalf("mismatched proof error = %v", err)
+	}
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	got.ProxyHandler(server)
+}
+
+func TestGuardWorkspaceResolutionFailsFromRemovedDirectory(t *testing.T) {
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original directory: %v", err)
+	}
+	removed := t.TempDir()
+	if err := os.Chdir(removed); err != nil {
+		t.Fatalf("enter removable directory: %v", err)
+	}
+	defer func() { _ = os.Chdir(original) }()
+	if err := os.Remove(removed); err != nil {
+		t.Fatalf("remove current directory: %v", err)
+	}
+	if _, err := GuardPreflight(config.Defaults(), "", "relative", []string{"/usr/bin/true"}); err == nil || !strings.Contains(err.Error(), "resolving guard workspace") {
+		t.Fatalf("GuardPreflight error = %v", err)
+	}
+	if err := launchGuard(GuardLaunchOptions{
+		Config: config.Defaults(), Workspace: "relative", Command: []string{"/usr/bin/true"}, Stderr: io.Discard,
+	}, func(sandbox.StandaloneLaunchConfig) error { return nil }); err == nil || !strings.Contains(err.Error(), "resolving guard workspace") {
+		t.Fatalf("launchGuard error = %v", err)
+	}
 }
 
 func TestLaunchGuardRejectsInvalidRequestsBeforeLaunch(t *testing.T) {
+	if err := LaunchGuard(GuardLaunchOptions{}); err == nil || !strings.Contains(err.Error(), "config is nil") {
+		t.Fatalf("LaunchGuard nil-config error = %v", err)
+	}
 	workspace := t.TempDir()
 	profileCfg := config.Defaults()
 	profileCfg.Guard.Profiles = []config.GuardProfile{{Name: "worker"}}
@@ -92,6 +170,55 @@ func TestLaunchGuardReturnsSandboxFailure(t *testing.T) {
 	}, func(sandbox.StandaloneLaunchConfig) error { return sentinel })
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("error = %v, want sandbox failure", err)
+	}
+}
+
+func TestLaunchGuardFailureDoesNotEmitEnforcementEvidence(t *testing.T) {
+	cfg := config.Defaults()
+	recorderDir := filepath.Join(t.TempDir(), "recorder")
+	_, privateKey, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "receipt.key")
+	if err := signing.SavePrivateKey(privateKey, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	cfg.FlightRecorder.Enabled = true
+	cfg.FlightRecorder.Dir = recorderDir
+	cfg.FlightRecorder.SigningKeyPath = keyPath
+	cfg.FlightRecorder.RequireReceipts = true
+	sentinel := errors.New("sandbox refused")
+	err = launchGuard(GuardLaunchOptions{
+		Config: cfg, Workspace: t.TempDir(), Command: []string{"/usr/bin/true"}, Stderr: io.Discard,
+	}, func(sandbox.StandaloneLaunchConfig) error { return sentinel })
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("launchGuard error = %v", err)
+	}
+	recorderRoot, err := os.OpenRoot(recorderDir)
+	if err != nil {
+		t.Fatalf("open recorder root: %v", err)
+	}
+	defer func() { _ = recorderRoot.Close() }()
+	err = filepath.WalkDir(recorderDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		relative, relErr := filepath.Rel(recorderDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		contents, readErr := recorderRoot.ReadFile(relative)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(contents), "session_open") || strings.Contains(string(contents), "enforcement_success") {
+			t.Fatalf("failed launch emitted enforcement evidence in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk recorder: %v", err)
 	}
 }
 
@@ -211,17 +338,16 @@ func TestValidateGuardRuntimeObjectsRejectsWrongAndMissingPathTypes(t *testing.T
 		t.Fatalf("write fixture: %v", err)
 	}
 	missingParent := filepath.Join(root, "missing", "state")
-	fileParent := filepath.Join(file, "state")
 	for _, testCase := range []struct {
 		name     string
 		manifest config.GuardManifest
 		wantErr  string
 	}{
 		{name: "missing read file", manifest: config.GuardManifest{Name: "m", ReadOnly: []string{filepath.Join(root, "missing")}}, wantErr: "does not exist"},
+		{name: "missing writable file", manifest: config.GuardManifest{Name: "m", ReadWrite: []string{filepath.Join(root, "missing-writable")}}, wantErr: "does not exist"},
 		{name: "file used as directory", manifest: config.GuardManifest{Name: "m", ReadOnlyDirectories: []string{file}}, wantErr: "not a directory"},
 		{name: "directory used as file", manifest: config.GuardManifest{Name: "m", ReadOnly: []string{root}}, wantErr: "not a regular file"},
 		{name: "missing writable parent", manifest: config.GuardManifest{Name: "m", ReadWriteDirectories: []string{missingParent}}, wantErr: "parent"},
-		{name: "writable parent is file", manifest: config.GuardManifest{Name: "m", ReadWriteDirectories: []string{fileParent}}, wantErr: "not a directory"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := config.Defaults()
@@ -250,106 +376,130 @@ func TestValidateGuardRuntimeObjectsRejectsWrongAndMissingPathTypes(t *testing.T
 }
 
 func TestGuardHelpersCoverAbsentAndInvalidInputs(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Guard.Profiles = []config.GuardProfile{{Name: "worker"}}
-	if _, err := guardSandboxPolicy(cfg, "missing", t.TempDir()); err == nil {
-		t.Fatal("missing profile was accepted by policy builder")
-	}
-	if err := validateGuardRuntimeObjects(cfg, "missing"); err == nil {
-		t.Fatal("missing profile was accepted by object validator")
-	}
-	if err := validateGuardRuntimeObjects(cfg, ""); err == nil {
-		t.Fatal("empty profile was accepted with declared profiles")
-	}
-	if _, err := resolveGuardExecutable(nil, t.TempDir()); err == nil {
-		t.Fatal("empty command was accepted")
-	}
-	if got := ctxOrBackground(t.Context()); got != t.Context() {
-		t.Fatal("non-nil context was replaced")
-	}
-	var absentContext context.Context
-	if ctxOrBackground(absentContext) == nil {
-		t.Fatal("nil context was not replaced")
-	}
-	var nilEvidence *guardEvidence
-	nilEvidence.close()
-
-	existing := t.TempDir()
-	missing := filepath.Join(existing, "missing")
-	got := existingGuardPreflightDirs([]string{existing, missing})
-	if len(got) != 1 || got[0] != existing {
-		t.Fatalf("existing preflight directories = %v", got)
-	}
-
-	var stderr bytes.Buffer
-	cfg = config.Defaults()
-	cfg.FlightRecorder.Enabled = true
-	evidence, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), &stderr)
-	if err != nil {
-		t.Fatalf("newGuardEvidence inert recorder: %v", err)
-	}
-	evidence.close()
-	if !strings.Contains(stderr.String(), "enabled but inert") {
-		t.Fatalf("inert recorder warning missing: %q", stderr.String())
-	}
-	cfg.FlightRecorder.RequireReceipts = true
-	if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil {
-		t.Fatal("required receipts without recorder directory were accepted")
-	}
-
-	cfg = config.Defaults()
-	cfg.FlightRecorder.Enabled = true
-	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "receipts")
-	cfg.FlightRecorder.Redact = false
-	cfg.FlightRecorder.SignCheckpoints = false
-	stderr.Reset()
-	evidence, err = newGuardEvidence(t.Context(), cfg, nil, metrics.New(), &stderr)
-	if err != nil {
-		t.Fatalf("unsigned recorder: %v", err)
-	}
-	evidence.close()
-	if !strings.Contains(stderr.String(), "Receipts: disabled") {
-		t.Fatalf("unsigned receipt warning missing: %q", stderr.String())
-	}
-
-	badRecorderDir := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(badRecorderDir, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write recorder obstruction: %v", err)
-	}
-	cfg.FlightRecorder.Dir = badRecorderDir
-	if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "creating Guard flight recorder") {
-		t.Fatalf("recorder creation error = %v", err)
-	}
-
-	cfg = config.Defaults()
-	cfg.FlightRecorder.Enabled = true
-	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "required-receipts")
-	cfg.FlightRecorder.Redact = false
-	cfg.FlightRecorder.SignCheckpoints = false
-	cfg.FlightRecorder.RequireReceipts = true
-	if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "no healthy signed Guard receipt emitter") {
-		t.Fatalf("required unsigned receipt error = %v", err)
-	}
-
-	_, privateKey, err := signing.GenerateKeyPair()
-	if err != nil {
-		t.Fatalf("GenerateKeyPair: %v", err)
-	}
-	keyPath := filepath.Join(t.TempDir(), "receipt.key")
-	if err := signing.SavePrivateKey(privateKey, keyPath); err != nil {
-		t.Fatalf("SavePrivateKey: %v", err)
-	}
-	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "posture-error")
-	cfg.FlightRecorder.SigningKeyPath = keyPath
-	cfg.FlightRecorder.SignCheckpoints = true
-	t.Setenv("PIPELOCK_POSTURE_PROOF", "relative-proof.json")
-	if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "loading Guard posture binding") {
-		t.Fatalf("posture binding error = %v", err)
-	}
-
-	if _, err := guardDestinationGrants([]config.GuardService{{Name: "bad", Protocol: "bad", Host: "api.vendor.example", Port: 443}}); err == nil {
-		t.Fatal("invalid Guard destination was accepted")
-	}
+	t.Run("profile validation", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Guard.Profiles = []config.GuardProfile{{Name: "worker"}}
+		if _, err := guardSandboxPolicy(cfg, "missing", t.TempDir()); err == nil {
+			t.Fatal("missing profile was accepted by policy builder")
+		}
+		if err := validateGuardRuntimeObjects(cfg, "missing"); err == nil {
+			t.Fatal("missing profile was accepted by object validator")
+		}
+		if err := validateGuardRuntimeObjects(cfg, ""); err == nil {
+			t.Fatal("empty profile was accepted with declared profiles")
+		}
+	})
+	t.Run("empty command", func(t *testing.T) {
+		if _, err := resolveGuardExecutable(nil, t.TempDir()); err == nil {
+			t.Fatal("empty command was accepted")
+		}
+	})
+	t.Run("context fallback", func(t *testing.T) {
+		if got := ctxOrBackground(t.Context()); got != t.Context() {
+			t.Fatal("non-nil context was replaced")
+		}
+		var absentContext context.Context
+		if ctxOrBackground(absentContext) == nil {
+			t.Fatal("nil context was not replaced")
+		}
+	})
+	t.Run("nil evidence close", func(t *testing.T) {
+		var nilEvidence *guardEvidence
+		nilEvidence.close()
+	})
+	t.Run("existing preflight directories", func(t *testing.T) {
+		existing := t.TempDir()
+		got := existingGuardPreflightDirs([]string{existing, filepath.Join(existing, "missing")})
+		if len(got) != 1 || got[0] != existing {
+			t.Fatalf("existing preflight directories = %v", got)
+		}
+	})
+	t.Run("inert recorder", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		var stderr bytes.Buffer
+		evidence, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), &stderr)
+		if err != nil {
+			t.Fatalf("newGuardEvidence: %v", err)
+		}
+		evidence.close()
+		if !strings.Contains(stderr.String(), "enabled but inert") {
+			t.Fatalf("warning missing: %q", stderr.String())
+		}
+	})
+	t.Run("required receipts need directory", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.RequireReceipts = true
+		if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil {
+			t.Fatal("required receipts without recorder directory were accepted")
+		}
+	})
+	t.Run("unsigned recorder", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "receipts")
+		cfg.FlightRecorder.Redact = false
+		cfg.FlightRecorder.SignCheckpoints = false
+		var stderr bytes.Buffer
+		evidence, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), &stderr)
+		if err != nil {
+			t.Fatalf("unsigned recorder: %v", err)
+		}
+		evidence.close()
+		if !strings.Contains(stderr.String(), "Receipts: disabled") {
+			t.Fatalf("unsigned receipt warning missing: %q", stderr.String())
+		}
+	})
+	t.Run("recorder obstruction", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Redact = false
+		badRecorderDir := filepath.Join(t.TempDir(), "not-a-directory")
+		if err := os.WriteFile(badRecorderDir, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write recorder obstruction: %v", err)
+		}
+		cfg.FlightRecorder.Dir = badRecorderDir
+		if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "creating Guard flight recorder") {
+			t.Fatalf("recorder creation error = %v", err)
+		}
+	})
+	t.Run("required unsigned receipts", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "required-receipts")
+		cfg.FlightRecorder.Redact = false
+		cfg.FlightRecorder.SignCheckpoints = false
+		cfg.FlightRecorder.RequireReceipts = true
+		if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "no healthy signed Guard receipt emitter") {
+			t.Fatalf("required unsigned receipt error = %v", err)
+		}
+	})
+	t.Run("invalid posture binding", func(t *testing.T) {
+		_, privateKey, err := signing.GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair: %v", err)
+		}
+		keyPath := filepath.Join(t.TempDir(), "receipt.key")
+		if err := signing.SavePrivateKey(privateKey, keyPath); err != nil {
+			t.Fatalf("SavePrivateKey: %v", err)
+		}
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "posture-error")
+		cfg.FlightRecorder.SigningKeyPath = keyPath
+		cfg.FlightRecorder.SignCheckpoints = true
+		cfg.FlightRecorder.RequireReceipts = true
+		t.Setenv("PIPELOCK_POSTURE_PROOF", "relative-proof.json")
+		if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "loading Guard posture binding") {
+			t.Fatalf("posture binding error = %v", err)
+		}
+	})
+	t.Run("invalid destination", func(t *testing.T) {
+		if _, err := guardDestinationGrants([]config.GuardService{{Name: "bad", Protocol: "bad", Host: "api.vendor.example", Port: 443}}); err == nil {
+			t.Fatal("invalid Guard destination was accepted")
+		}
+	})
 }
 
 func TestGuardFirstRunDirectoryIsPreparedBeforeOuterPolicyResolution(t *testing.T) {
@@ -435,6 +585,9 @@ func TestLaunchGuardPropagatesRuntimeAndEvidenceFailures(t *testing.T) {
 			cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "receipts")
 			cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "missing.key")
 		}, want: "loading Guard receipt signing key"},
+		{name: "invalid scanner pattern", mutate: func(cfg *config.Config) {
+			cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "invalid", Regex: "[", Severity: config.SeverityHigh})
+		}, want: "create guard scanner"},
 		{name: "audit file is directory", mutate: func(cfg *config.Config) {
 			cfg.Logging.Output = config.OutputFile
 			cfg.Logging.File = logDirectory
@@ -462,7 +615,7 @@ func TestLaunchGuardPropagatesRuntimeAndEvidenceFailures(t *testing.T) {
 	}
 }
 
-func TestGuardEvidenceBindsCanonicalPolicyHash(t *testing.T) {
+func TestGuardEvidenceBindsEffectiveInvocationHashAfterActivation(t *testing.T) {
 	cfg := config.Defaults()
 	recorderDir := filepath.Join(t.TempDir(), "recorder")
 	keyPath := filepath.Join(t.TempDir(), "receipt.key")
@@ -488,10 +641,14 @@ func TestGuardEvidenceBindsCanonicalPolicyHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newGuardEvidence: %v", err)
 	}
+	wantHash := strings.Repeat("a", 64)
+	if err := evidence.activate(guardfs.ExecutionProof{EffectivePolicyHash: wantHash, Binary: "/usr/bin/true"}); err != nil {
+		t.Fatalf("activate Guard evidence: %v", err)
+	}
 	evidence.close()
 
-	wantHash := cfg.CanonicalPolicyHash()
 	found := false
+	foundEnforcement := false
 	recorderRoot, err := os.OpenRoot(recorderDir)
 	if err != nil {
 		t.Fatalf("open recorder root: %v", err)
@@ -512,12 +669,58 @@ func TestGuardEvidenceBindsCanonicalPolicyHash(t *testing.T) {
 		if strings.Contains(string(contents), wantHash) {
 			found = true
 		}
+		if strings.Contains(string(contents), "enforcement_success") {
+			foundEnforcement = true
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk recorder: %v", err)
 	}
 	if !found {
-		t.Fatalf("recorder does not contain canonical Guard policy hash %s", wantHash)
+		t.Fatalf("recorder does not contain effective Guard policy hash %s", wantHash)
+	}
+	if !foundEnforcement {
+		t.Fatal("recorder does not contain signed enforcement-success evidence")
+	}
+}
+
+func TestGuardEvidenceActivationHandlesUnhealthyEmitter(t *testing.T) {
+	_, privateKey, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "receipt.key")
+	if err := signing.SavePrivateKey(privateKey, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	for _, require := range []bool{true, false} {
+		t.Run(fmt.Sprintf("require=%t", require), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.FlightRecorder.Enabled = true
+			cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "recorder")
+			cfg.FlightRecorder.SigningKeyPath = keyPath
+			cfg.FlightRecorder.RequireReceipts = require
+			sc, scanErr := scanner.New(cfg)
+			if scanErr != nil {
+				t.Fatalf("scanner.New: %v", scanErr)
+			}
+			defer sc.Close()
+			var stderr bytes.Buffer
+			evidence, evidenceErr := newGuardEvidence(t.Context(), cfg, sc, metrics.New(), &stderr)
+			if evidenceErr != nil {
+				t.Fatalf("newGuardEvidence: %v", evidenceErr)
+			}
+			defer evidence.close()
+			evidence.emitter.MarkUnhealthy(errors.New("test failure"))
+			proof := guardfs.ExecutionProof{EffectivePolicyHash: strings.Repeat("b", 64), Binary: "/usr/bin/true"}
+			activationErr := evidence.activate(proof)
+			if require && (activationErr == nil || !strings.Contains(activationErr.Error(), "session_open")) {
+				t.Fatalf("required activation error = %v", activationErr)
+			}
+			if !require && (activationErr != nil || !strings.Contains(stderr.String(), "UNVERIFIED")) {
+				t.Fatalf("best-effort activation error=%v stderr=%q", activationErr, stderr.String())
+			}
+		})
 	}
 }

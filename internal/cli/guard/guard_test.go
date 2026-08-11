@@ -458,6 +458,16 @@ func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
 	if _, err := resolveWorkspace("", ""); err == nil || !strings.Contains(err.Error(), "resolving workspace") {
 		t.Fatalf("removed current directory error = %v", err)
 	}
+	if _, err := resolveWorkspace("relative", ""); err == nil || !strings.Contains(err.Error(), "resolving workspace") {
+		t.Fatalf("relative workspace in removed directory error = %v", err)
+	}
+	cmd := Cmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--workspace", "relative", "--", "/usr/bin/true"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "resolving workspace") {
+		t.Fatalf("runtime command relative workspace error = %v", err)
+	}
 	if err := os.Chdir(originalDirectory); err != nil {
 		t.Fatalf("restore original directory before command tests: %v", err)
 	}
@@ -469,12 +479,19 @@ func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
 		t.Fatalf("dry-run floor error = %v", err)
 	}
 
-	cmd := Cmd()
+	cmd = Cmd()
 	cmd.SetOut(failingWriter{})
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", "/usr/bin/true"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
 		t.Fatalf("dry-run output error = %v", err)
+	}
+	cmd = Cmd()
+	cmd.SetOut(failingWriter{})
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--dry-run", "--workspace", t.TempDir(), "--", "/usr/bin/true"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
+		t.Fatalf("human dry-run output error = %v", err)
 	}
 }
 
@@ -484,13 +501,14 @@ func TestRenderGuardPreflightIncludesUnavailableReasons(t *testing.T) {
 		Status:    sandbox.StatusError,
 		Workspace: "/workspace",
 		Layers: []sandbox.LayerProbe{{
-			Name: sandbox.LayerLandlock, Available: false, Required: true,
+			Name: sandbox.LayerLandlock, Available: false, Required: true, Reason: "kernel rejected the ruleset",
 		}},
-		Errors: []string{"required layer unavailable"},
+		Warnings: []string{"degraded isolation"},
+		Errors:   []string{"required layer unavailable"},
 	}); err != nil {
 		t.Fatalf("renderGuardPreflight: %v", err)
 	}
-	for _, want := range []string{"unavailable", "ERROR: required layer unavailable"} {
+	for _, want := range []string{guardBoundaryNotice, "unavailable: kernel rejected the ruleset", "WARNING: degraded isolation", "ERROR: required layer unavailable"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("preflight output missing %q: %s", want, out.String())
 		}
@@ -501,10 +519,11 @@ func TestRenderGuardPreflightPropagatesEveryWriteFailure(t *testing.T) {
 	result := sandbox.PreflightResult{
 		Status:    sandbox.StatusError,
 		Workspace: "/workspace",
-		Layers:    []sandbox.LayerProbe{{Name: sandbox.LayerLandlock, Required: true}},
+		Layers:    []sandbox.LayerProbe{{Name: sandbox.LayerLandlock, Required: true, Reason: "not available"}},
+		Warnings:  []string{"degraded isolation"},
 		Errors:    []string{"required layer unavailable"},
 	}
-	for failAt := 1; failAt <= 6; failAt++ {
+	for failAt := 1; failAt <= 7; failAt++ {
 		writer := &failAfterWriter{failAt: failAt}
 		if err := renderGuardPreflight(writer, result); err == nil || !strings.Contains(err.Error(), "writer failed") {
 			t.Fatalf("write %d error = %v", failAt, err)

@@ -924,6 +924,12 @@ func TestCanonicalPolicyHash_GuardIncludedAndOrderIndependent(t *testing.T) {
 			Services: []GuardService{
 				{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 8443},
 			},
+			Manifests: []GuardManifest{
+				{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session"}},
+			},
+			Profiles: []GuardProfile{
+				{Name: "codex", Manifests: []string{"session"}},
+			},
 		}
 	})
 
@@ -935,7 +941,7 @@ func TestCanonicalPolicyHash_GuardIncludedAndOrderIndependent(t *testing.T) {
 		c.Guard = Guard{
 			Profiles:  []GuardProfile{{Name: "codex", Manifests: []string{"session"}}},
 			Manifests: []GuardManifest{{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session"}}},
-			Services:  []GuardService{{Name: "api", Protocol: "TCP", Host: "A.VENDOR.EXAMPLE.", Port: 443}},
+			Services:  []GuardService{{Name: "api", Protocol: "TCP", Host: "A.VENDOR.EXAMPLE..", Port: 443}},
 		}
 	})
 	if reordered != withGuard {

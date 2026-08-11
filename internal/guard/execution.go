@@ -11,6 +11,19 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// ExecControlOptions carries the fixed controls passed to the final pre-exec
+// helper without exposing the developer environment in process metadata.
+type ExecControlOptions struct {
+	Declaration   config.Guard
+	Profile       string
+	PolicyHash    string
+	Workspace     string
+	TempDir       string
+	Binary        string
+	EnvironmentFD int
+	StatusFD      int
+}
+
 // PrepareExecution merges Guard's selected state manifest with the fixed
 // runtime paths needed to exec and run an ordinary process. Fixed system,
 // temporary, and device grants are code-owned; caller-selected workspace and
@@ -23,7 +36,7 @@ func PrepareExecution(cfg *config.Config, profileName, workspace, tempDir, execu
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateExecutionPaths(workspace, executable); err != nil {
+	if err := ValidateExecutionPaths(workspace, tempDir, executable); err != nil {
 		return nil, err
 	}
 
@@ -44,17 +57,23 @@ func PrepareExecution(cfg *config.Config, profileName, workspace, tempDir, execu
 		planned = append(planned, grant{declared: clean, access: access, runtime: floorExempt})
 	}
 	for _, path := range existingExecutionPaths([]string{
-		"/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ssl", "/etc/pki",
+		"/usr", "/lib", "/lib64", "/bin", "/sbin",
 	}) {
 		add(path, AccessReadDirectory, true)
 	}
 	for _, path := range existingExecutionPaths([]string{
 		"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/passwd", "/etc/group", "/usr/bin/env",
+		"/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
 	}) {
 		add(path, AccessReadFile, true)
 	}
+	for _, path := range existingExecutionPaths([]string{
+		"/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/pki/ca-trust/extracted",
+	}) {
+		add(path, AccessReadDirectory, true)
+	}
 	add(workspace, AccessWriteDirectory, false)
-	add(tempDir, AccessWriteDirectory, true)
+	add(tempDir, AccessWriteDirectory, false)
 	// The init process resolves PATH before enforcement and passes the exact
 	// executable here. Grant that inode, not its containing directory, so tools
 	// installed outside /usr or the workspace can start without widening the
@@ -73,13 +92,14 @@ var runtimeDevices = []string{"/dev/null", "/dev/zero", "/dev/urandom"}
 // implicit grants. Fixed Pipelock runtime paths are code-owned, but the
 // workspace and executable are operator inputs and cannot bypass the same
 // floor that applies to manifest entries.
-func ValidateExecutionPaths(workspace, executable string) error {
+func ValidateExecutionPaths(workspace, tempDir, executable string) error {
 	for _, required := range []struct {
 		label  string
 		path   string
 		access config.GuardAccess
 	}{
 		{label: "workspace", path: workspace, access: config.GuardAccessWrite},
+		{label: "temporary directory", path: tempDir, access: config.GuardAccessWrite},
 		{label: "executable", path: executable, access: config.GuardAccessRead},
 	} {
 		if required.path == "" {

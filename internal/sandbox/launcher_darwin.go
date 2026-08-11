@@ -58,6 +58,7 @@ type StandaloneLaunchConfig struct {
 	GuardDeclaration        *config.Guard
 	GuardProfile            string
 	GuardPolicyHash         string
+	GuardEnforced           func(proof []byte) error
 }
 
 // PrepareSandboxCmd builds an exec.Cmd that wraps the child command with

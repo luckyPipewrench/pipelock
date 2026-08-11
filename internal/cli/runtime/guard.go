@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -59,7 +60,7 @@ func GuardPreflight(cfg *config.Config, profile, workspace string, command []str
 	if err != nil {
 		return sandbox.PreflightResult{}, err
 	}
-	if err := guardfs.ValidateExecutionPaths(resolved, executable); err != nil {
+	if err := guardfs.ValidateExecutionPaths(resolved, resolved, executable); err != nil {
 		return sandbox.PreflightResult{}, err
 	}
 	policy, err := guardSandboxPolicy(cfg, profile, resolved)
@@ -148,6 +149,13 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		return err
 	}
 	defer evidence.close()
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	guardReady := make(chan struct{})
 
 	p, err := proxy.New(runtimeCfg, logger, sc, guardMetrics, evidence.proxyOptions...)
 	if err != nil {
@@ -156,6 +164,12 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	defer p.Close()
 	handler := p.Handler()
 	proxyHandler := func(conn net.Conn) {
+		select {
+		case <-guardReady:
+		case <-ctx.Done():
+			_ = conn.Close()
+			return
+		}
 		srv := &http.Server{
 			Handler:           handler,
 			ReadHeaderTimeout: 30 * time.Second,
@@ -168,13 +182,8 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	if err != nil {
 		return err
 	}
-	ctx := opts.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 	declaration := runtimeCfg.Guard
+	configPolicyHash := runtimeCfg.CanonicalPolicyHash()
 	return launchStandalone(sandbox.StandaloneLaunchConfig{
 		Ctx:                     ctx,
 		Command:                 opts.Command,
@@ -187,7 +196,21 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		RequireProxyHandler:     true,
 		GuardDeclaration:        &declaration,
 		GuardProfile:            opts.Profile,
-		GuardPolicyHash:         runtimeCfg.CanonicalPolicyHash(),
+		GuardPolicyHash:         configPolicyHash,
+		GuardEnforced: func(encoded []byte) error {
+			var proof guardfs.ExecutionProof
+			if err := json.Unmarshal(encoded, &proof); err != nil {
+				return fmt.Errorf("decoding child enforcement proof: %w", err)
+			}
+			if err := proof.Verify(configPolicyHash); err != nil {
+				return err
+			}
+			if err := evidence.activate(proof); err != nil {
+				return err
+			}
+			close(guardReady)
+			return nil
+		},
 	})
 }
 
@@ -206,6 +229,12 @@ type guardEvidence struct {
 	proxyOptions []proxy.Option
 	recorder     *recorder.Recorder
 	stop         func()
+	emitter      *receipt.Emitter
+	ctx          context.Context
+	heartbeat    time.Duration
+	stderr       io.Writer
+	require      bool
+	activated    bool
 }
 
 func (e *guardEvidence) close() {
@@ -220,8 +249,39 @@ func (e *guardEvidence) close() {
 	}
 }
 
+func (e *guardEvidence) activate(proof guardfs.ExecutionProof) error {
+	if e == nil || e.emitter == nil || e.activated {
+		return nil
+	}
+	e.emitter.UpdateConfigHash(proof.EffectivePolicyHash)
+	if err := emitStartupSessionOpen(e.emitter); err != nil {
+		if e.require {
+			return fmt.Errorf("emitting Guard session_open receipt: %w", err)
+		}
+		_, _ = fmt.Fprintf(e.stderr,
+			"  Receipts: ERROR - Guard session_open could not be emitted: %v\n"+
+				"            Receipt emission for this run is UNVERIFIED until resolved.\n", err)
+	}
+	if err := e.emitter.EmitDurable(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
+		Layer: "guard", Pattern: "enforcement_success", Transport: "guard_exec",
+		Method: "EXEC", Target: proof.Binary, PolicyHash: proof.EffectivePolicyHash,
+	}); err != nil {
+		if e.require {
+			return fmt.Errorf("emitting Guard enforcement-success receipt: %w", err)
+		}
+		_, _ = fmt.Fprintf(e.stderr, "  Receipts: ERROR - Guard enforcement-success could not be emitted: %v\n", err)
+	}
+	e.stop = startStandaloneReceiptLifecycle(e.ctx, e.heartbeat, e.emitter, e.stderr, e.require, nil)
+	e.activated = true
+	return nil
+}
+
 func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, m *metrics.Metrics, stderr io.Writer) (*guardEvidence, error) {
-	evidence := &guardEvidence{stop: func() {}}
+	evidence := &guardEvidence{
+		stop: func() {}, ctx: ctx, heartbeat: cfg.FlightRecorder.HeartbeatIntervalDuration(),
+		stderr: stderr, require: cfg.FlightRecorder.RequireReceipts,
+	}
 	if !cfg.FlightRecorder.Enabled || cfg.FlightRecorder.Dir == "" {
 		if cfg.FlightRecorder.RequireReceipts {
 			return nil, errors.New("flight_recorder.require_receipts is enabled but Guard has no configured recorder directory")
@@ -282,16 +342,7 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		_, _ = fmt.Fprintln(stderr, "  Receipts: disabled; set a healthy flight_recorder.signing_key_path to enable signed Guard receipts")
 		return evidence, nil
 	}
-	if err := emitStartupSessionOpen(emitter); err != nil {
-		if cfg.FlightRecorder.RequireReceipts {
-			evidence.close()
-			return nil, fmt.Errorf("emitting Guard session_open receipt: %w", err)
-		}
-		_, _ = fmt.Fprintf(stderr,
-			"  Receipts: ERROR - Guard session_open could not be emitted: %v\n"+
-				"            Receipt emission for this run is UNVERIFIED until resolved.\n",
-			err)
-	}
+	evidence.emitter = emitter
 	evidence.proxyOptions = append(evidence.proxyOptions,
 		proxy.WithReceiptEmitter(emitter),
 		proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath),
@@ -303,8 +354,7 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	}); v2 != nil {
 		evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithV2ReceiptEmitter(v2))
 	}
-	evidence.stop = startStandaloneReceiptLifecycle(ctx, cfg.FlightRecorder.HeartbeatIntervalDuration(), emitter, stderr, cfg.FlightRecorder.RequireReceipts, nil)
-	_, _ = fmt.Fprintf(stderr, "  Recorder: %s (Guard receipts enabled)\n", cfg.FlightRecorder.Dir)
+	_, _ = fmt.Fprintf(stderr, "  Recorder: %s (Guard receipts armed; awaiting child enforcement proof)\n", cfg.FlightRecorder.Dir)
 	return evidence, nil
 }
 
@@ -406,6 +456,9 @@ func validateGuardRuntimeObjects(cfg *config.Config, profileName string) error {
 			if parentErr != nil {
 				return fmt.Errorf("guard writable directory parent for %q does not exist: %w", path, parentErr)
 			}
+			// EvalSymlinks proved this was a directory, but the path may be
+			// replaced before the grant is prepared. Re-stat it so that race
+			// fails closed instead of creating state beneath a non-directory.
 			info, statErr := os.Stat(parent)
 			if statErr != nil || !info.IsDir() {
 				return fmt.Errorf("guard writable directory parent for %q is not a directory", path)

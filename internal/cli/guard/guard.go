@@ -283,7 +283,7 @@ func renderGuardPreflight(w io.Writer, result sandbox.PreflightResult) error {
 	if _, err := fmt.Fprintf(w, "  Workspace: %s\n", result.Workspace); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(w, "  Boundary: non-proxy TCP, UDP, QUIC, and child DNS are denied"); err != nil {
+	if _, err := fmt.Fprintln(w, "  Boundary: "+guardBoundaryNotice); err != nil {
 		return err
 	}
 	for _, layer := range result.Layers {
@@ -291,7 +291,15 @@ func renderGuardPreflight(w io.Writer, result sandbox.PreflightResult) error {
 		if !layer.Available {
 			state = "unavailable"
 		}
+		if layer.Reason != "" {
+			state += ": " + layer.Reason
+		}
 		if _, err := fmt.Fprintf(w, "  %s: %s (required=%t)\n", layer.Name, state, layer.Required); err != nil {
+			return err
+		}
+	}
+	for _, item := range result.Warnings {
+		if _, err := fmt.Fprintf(w, "  WARNING: %s\n", item); err != nil {
 			return err
 		}
 	}

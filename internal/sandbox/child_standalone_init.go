@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -38,8 +39,10 @@ func RunStandaloneInit() {
 	guardDeclarationRaw := os.Getenv(standaloneGuardDeclarationEnv)
 	guardProfile := os.Getenv(standaloneGuardProfileEnv)
 	guardPolicyHash := os.Getenv(standaloneGuardPolicyHashEnv)
+	guardStatusFDStr := os.Getenv(guardStatusControlEnv)
 
 	var guardDeclaration *config.Guard
+	var guardStatus *os.File
 	if guardDeclarationRaw != "" {
 		guardDeclaration = &config.Guard{}
 		if err := json.Unmarshal([]byte(guardDeclarationRaw), guardDeclaration); err != nil {
@@ -48,6 +51,16 @@ func RunStandaloneInit() {
 		}
 		if guardPolicyHash == "" {
 			_, _ = fmt.Fprintln(os.Stderr, "[sandbox] guard policy hash is missing")
+			exitSandboxProcess(1)
+		}
+		fd, fdErr := strconv.Atoi(guardStatusFDStr)
+		if fdErr != nil || fd < 3 {
+			_, _ = fmt.Fprintln(os.Stderr, "[sandbox] guard status descriptor is invalid")
+			exitSandboxProcess(1)
+		}
+		guardStatus = os.NewFile(uintptr(fd), "guard-status")
+		if guardStatus == nil {
+			_, _ = fmt.Fprintln(os.Stderr, "[sandbox] guard status descriptor is unavailable")
 			exitSandboxProcess(1)
 		}
 	}
@@ -260,6 +273,7 @@ func RunStandaloneInit() {
 		"__PIPELOCK_SANDBOX_POLICY", noNetNSEnvKey,
 		developerEnvironmentControlEnv,
 		standaloneGuardDeclarationEnv, standaloneGuardProfileEnv, standaloneGuardPolicyHashEnv,
+		guardStatusControlEnv,
 	} {
 		env = removeEnvKey(env, key)
 	}
@@ -286,7 +300,10 @@ func RunStandaloneInit() {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard environment pipe: %v\n", readErr)
 			exitSandboxProcess(1)
 		}
-		controls, controlErr := guardruntime.ExecControlEnvironment(*guardDeclaration, guardProfile, guardPolicyHash, workspace, sandboxDir, binary, 3)
+		controls, controlErr := guardruntime.ExecControlEnvironment(guardruntime.ExecControlOptions{
+			Declaration: *guardDeclaration, Profile: guardProfile, PolicyHash: guardPolicyHash,
+			Workspace: workspace, TempDir: sandboxDir, Binary: binary, EnvironmentFD: 3, StatusFD: 4,
+		})
 		if controlErr != nil {
 			_ = guardEnvironmentReader.Close()
 			_ = guardEnvironmentWriter.Close()
@@ -311,19 +328,21 @@ func RunStandaloneInit() {
 	agentCmd.Env = env
 	agentCmd.Dir = workspace
 	if guardEnvironmentReader != nil {
-		agentCmd.ExtraFiles = []*os.File{guardEnvironmentReader}
+		agentCmd.ExtraFiles = []*os.File{guardEnvironmentReader, guardStatus}
 	}
 
 	if err := agentCmd.Start(); err != nil {
 		if guardEnvironmentReader != nil {
 			_ = guardEnvironmentReader.Close()
 			_ = guardEnvironmentWriter.Close()
+			_ = guardStatus.Close()
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		exitSandboxProcess(1)
 	}
 	if guardEnvironmentReader != nil {
 		_ = guardEnvironmentReader.Close()
+		_ = guardStatus.Close()
 		written, writeErr := guardEnvironmentWriter.Write(guardEnvironmentPayload)
 		if writeErr == nil && written != len(guardEnvironmentPayload) {
 			writeErr = io.ErrShortWrite

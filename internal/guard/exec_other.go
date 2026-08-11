@@ -10,16 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
-
-	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const execModeEnv = "__PIPELOCK_GUARD_EXEC"
 
 func IsExecMode() bool { return os.Getenv(execModeEnv) == "1" }
 
-func ExecControlEnvironment(declaration config.Guard, profile, policyHash, workspace, tempDir, binary string, environmentFD int) ([]string, error) {
-	encoded, err := json.Marshal(declaration)
+func ExecControlEnvironment(opts ExecControlOptions) ([]string, error) {
+	encoded, err := json.Marshal(opts.Declaration)
 	if err != nil {
 		return nil, fmt.Errorf("encoding guard declaration: %w", err)
 	}

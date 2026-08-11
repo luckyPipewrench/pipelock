@@ -49,6 +49,7 @@ type StandaloneLaunchConfig struct {
 	GuardDeclaration        *config.Guard
 	GuardProfile            string
 	GuardPolicyHash         string
+	GuardEnforced           func(proof []byte) error
 }
 
 // PrepareSandboxCmd returns ErrUnavailable on non-Linux platforms.

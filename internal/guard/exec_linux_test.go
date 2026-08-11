@@ -47,6 +47,36 @@ func TestReadExecEnvironmentOwnsInheritedDescriptor(t *testing.T) {
 	if len(got) != 1 || got[0] != "PATH=/developer/bin" {
 		t.Fatalf("environment = %v", got)
 	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(inheritedFD, &stat); !errors.Is(err, unix.EBADF) {
+		_ = unix.Close(inheritedFD)
+		t.Fatalf("inherited descriptor remained open: %v", err)
+	}
+}
+
+func TestOpenExecStatusWriterValidatesAndOwnsDescriptor(t *testing.T) {
+	for _, raw := range []string{"", "2", "not-a-number"} {
+		if _, err := openExecStatusWriter(raw); err == nil {
+			t.Fatalf("status descriptor %q was accepted", raw)
+		}
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	inheritedFD, err := unix.Dup(int(writer.Fd()))
+	if err != nil {
+		t.Fatalf("dup status descriptor: %v", err)
+	}
+	_ = writer.Close()
+	status, err := openExecStatusWriter(strconv.Itoa(inheritedFD))
+	if err != nil {
+		t.Fatalf("openExecStatusWriter: %v", err)
+	}
+	if err := status.Close(); err != nil {
+		t.Fatalf("close status writer: %v", err)
+	}
 }
 
 func TestReadExecEnvironmentRoundTripAndClose(t *testing.T) {
@@ -115,7 +145,12 @@ func TestExecEntryPointsRejectInvalidControls(t *testing.T) {
 	if !IsExecMode() {
 		t.Fatal("exec mode marker was ignored")
 	}
-	controls, err := ExecControlEnvironment(config.Guard{}, "", "policy-hash", t.TempDir(), t.TempDir(), "/usr/bin/true", 3)
+	workspace := t.TempDir()
+	tempDir := t.TempDir()
+	controls, err := ExecControlEnvironment(ExecControlOptions{
+		Declaration: config.Guard{}, PolicyHash: "policy-hash", Workspace: workspace,
+		TempDir: tempDir, Binary: "/usr/bin/true", EnvironmentFD: 3, StatusFD: 4,
+	})
 	if err != nil {
 		t.Fatalf("ExecControlEnvironment: %v", err)
 	}
@@ -128,10 +163,11 @@ func TestExecEntryPointsRejectInvalidControls(t *testing.T) {
 		execDeclarationEnv + "=" + string(declarationJSON),
 		execProfileEnv + "=",
 		execPolicyHashEnv + "=policy-hash",
-		execWorkspaceEnv + "=" + controlsValue(t, controls, execWorkspaceEnv),
-		execTempDirEnv + "=" + controlsValue(t, controls, execTempDirEnv),
+		execWorkspaceEnv + "=" + workspace,
+		execTempDirEnv + "=" + tempDir,
 		execBinaryEnv + "=/usr/bin/true",
 		execEnvironmentEnv + "=3",
+		execStatusEnv + "=4",
 	}
 	if len(controls) != len(wantControls) {
 		t.Fatalf("controls = %v", controls)
@@ -142,24 +178,12 @@ func TestExecEntryPointsRejectInvalidControls(t *testing.T) {
 		}
 	}
 	largeDeclaration := config.Guard{Services: []config.GuardService{{Name: strings.Repeat("x", guardDeclarationEnvironmentMaxPayload+1)}}}
-	if _, err := ExecControlEnvironment(largeDeclaration, "", "hash", t.TempDir(), t.TempDir(), "/usr/bin/true", 3); err == nil || !strings.Contains(err.Error(), "64 KiB") {
+	if _, err := ExecControlEnvironment(ExecControlOptions{Declaration: largeDeclaration, PolicyHash: "hash", Workspace: t.TempDir(), TempDir: t.TempDir(), Binary: "/usr/bin/true", EnvironmentFD: 3, StatusFD: 4}); err == nil || !strings.Contains(err.Error(), "64 KiB") {
 		t.Fatalf("oversized declaration error = %v", err)
 	}
 	if err := runExec(nil, nil); err == nil || !strings.Contains(err.Error(), "missing operator command") {
 		t.Fatalf("runExec error = %v", err)
 	}
-}
-
-func controlsValue(t *testing.T, controls []string, key string) string {
-	t.Helper()
-	prefix := key + "="
-	for _, entry := range controls {
-		if strings.HasPrefix(entry, prefix) {
-			return strings.TrimPrefix(entry, prefix)
-		}
-	}
-	t.Fatalf("control %q missing: %v", key, controls)
-	return ""
 }
 
 type errorReader struct{ err error }
@@ -203,6 +227,12 @@ func TestRunExecWithAppliesPolicyAndReplacesProcess(t *testing.T) {
 			}
 			if slices.Contains(environment, "__PIPELOCK_ATTACKER=value") || !slices.Contains(environment, "TOKEN=preserved") {
 				t.Fatalf("replacement environment=%v", environment)
+			}
+			return nil
+		},
+		func(proof ExecutionProof) error {
+			if err := proof.Verify("policy-hash"); err != nil {
+				t.Fatalf("execution proof: %v", err)
 			}
 			return nil
 		},
@@ -263,11 +293,39 @@ func TestRunExecWithRefusesIncompleteControlsAndEnforcement(t *testing.T) {
 					return EnforcementRecord{}, nil
 				}
 			}
-			err := runExecWith(testCase.command, nil, apply, noReplace)
+			err := runExecWith(testCase.command, nil, apply, noReplace, func(ExecutionProof) error { return nil })
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("error = %v, want %q", err, testCase.want)
 			}
 		})
+	}
+}
+
+func TestRunExecWithReportsExecFailureAfterEnforcement(t *testing.T) {
+	t.Setenv(execWorkspaceEnv, t.TempDir())
+	t.Setenv(execTempDirEnv, t.TempDir())
+	t.Setenv(execPolicyHashEnv, "policy-hash")
+	t.Setenv(execBinaryEnv, "/usr/bin/true")
+	t.Setenv(execDeclarationEnv, `{}`)
+	t.Setenv(execProfileEnv, "")
+	wantErr := errors.New("exec refused")
+	var proofs []ExecutionProof
+	err := runExecWith(
+		[]string{"/usr/bin/true"}, nil,
+		func(*PreparedManifest) (EnforcementRecord, error) {
+			return EnforcementRecord{State: EnforcementEnforced, Mechanism: "landlock", Coverage: CoverageFull}, nil
+		},
+		func(string, []string, []string) error { return wantErr },
+		func(proof ExecutionProof) error {
+			proofs = append(proofs, proof)
+			return nil
+		},
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runExecWith error = %v", err)
+	}
+	if len(proofs) != 2 || proofs[0].ExecError != "" || proofs[1].ExecError != wantErr.Error() {
+		t.Fatalf("execution status sequence = %+v", proofs)
 	}
 }
 
@@ -299,18 +357,45 @@ func TestPrepareExecutionGrantsExactResolvedExecutable(t *testing.T) {
 		t.Fatalf("PrepareExecution: %v", err)
 	}
 	defer func() { _ = prepared.Close() }()
+	granted := false
 	for _, outcome := range prepared.Outcomes() {
+		if outcome.DeclaredPath == executableDir && outcome.State.Granted() {
+			t.Fatalf("executable directory %q was granted", executableDir)
+		}
 		if outcome.DeclaredPath == executable && outcome.State.Granted() {
-			return
+			granted = true
 		}
 	}
-	t.Fatalf("exact executable %q was not granted: %+v", executable, prepared.Outcomes())
+	if !granted {
+		t.Fatalf("exact executable %q was not granted: %+v", executable, prepared.Outcomes())
+	}
 }
 
 func TestPrepareExecutionRefusesWorkspaceThatBypassesWriteFloor(t *testing.T) {
 	_, err := PrepareExecution(config.Defaults(), "", "/usr/local/bin", t.TempDir(), "/usr/bin/true", os.Getuid())
 	if err == nil || !strings.Contains(err.Error(), "compiled floor") {
 		t.Fatalf("dangerous workspace error = %v, want compiled-floor refusal", err)
+	}
+}
+
+func TestPrepareExecutionRefusesTempDirThatBypassesWriteFloor(t *testing.T) {
+	_, err := PrepareExecution(config.Defaults(), "", t.TempDir(), "/usr/local/bin", "/usr/bin/true", os.Getuid())
+	if err == nil || !strings.Contains(err.Error(), "compiled floor") || !strings.Contains(err.Error(), "temporary directory") {
+		t.Fatalf("dangerous temporary directory error = %v, want compiled-floor refusal", err)
+	}
+}
+
+func TestPrepareExecutionDoesNotGrantPrivateCertificateTrees(t *testing.T) {
+	workspace := t.TempDir()
+	prepared, err := PrepareExecution(config.Defaults(), "", workspace, workspace, "/usr/bin/true", os.Getuid())
+	if err != nil {
+		t.Fatalf("PrepareExecution: %v", err)
+	}
+	defer func() { _ = prepared.Close() }()
+	for _, outcome := range prepared.Outcomes() {
+		if outcome.DeclaredPath == "/etc/ssl" || outcome.DeclaredPath == "/etc/pki" || strings.HasPrefix(outcome.DeclaredPath, "/etc/ssl/private") {
+			t.Fatalf("private certificate tree was granted: %+v", outcome)
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/processexec"
@@ -29,6 +30,7 @@ const (
 	execTempDirEnv     = "__PIPELOCK_GUARD_TEMP_DIR"
 	execBinaryEnv      = "__PIPELOCK_GUARD_BINARY"
 	execEnvironmentEnv = "__PIPELOCK_GUARD_ENVIRONMENT_FD"
+	execStatusEnv      = "__PIPELOCK_GUARD_STATUS_FD"
 )
 
 const execEnvironmentMaxPayload = 8 << 20
@@ -41,8 +43,8 @@ func IsExecMode() bool { return os.Getenv(execModeEnv) == "1" }
 // ExecControlEnvironment returns the fixed control entries the standalone
 // init adds only to the Guard helper. The declaration contains paths and exact
 // destinations, never the developer's secret-bearing environment.
-func ExecControlEnvironment(declaration config.Guard, profile, policyHash, workspace, tempDir, binary string, environmentFD int) ([]string, error) {
-	encoded, err := json.Marshal(declaration)
+func ExecControlEnvironment(opts ExecControlOptions) ([]string, error) {
+	encoded, err := json.Marshal(opts.Declaration)
 	if err != nil {
 		return nil, fmt.Errorf("encoding guard declaration: %w", err)
 	}
@@ -52,12 +54,13 @@ func ExecControlEnvironment(declaration config.Guard, profile, policyHash, works
 	return []string{
 		execModeEnv + "=1",
 		execDeclarationEnv + "=" + string(encoded),
-		execProfileEnv + "=" + profile,
-		execPolicyHashEnv + "=" + policyHash,
-		execWorkspaceEnv + "=" + workspace,
-		execTempDirEnv + "=" + tempDir,
-		execBinaryEnv + "=" + binary,
-		execEnvironmentEnv + "=" + strconv.Itoa(environmentFD),
+		execProfileEnv + "=" + opts.Profile,
+		execPolicyHashEnv + "=" + opts.PolicyHash,
+		execWorkspaceEnv + "=" + opts.Workspace,
+		execTempDirEnv + "=" + opts.TempDir,
+		execBinaryEnv + "=" + opts.Binary,
+		execEnvironmentEnv + "=" + strconv.Itoa(opts.EnvironmentFD),
+		execStatusEnv + "=" + strconv.Itoa(opts.StatusFD),
 	}, nil
 }
 
@@ -65,13 +68,38 @@ func ExecControlEnvironment(declaration config.Guard, profile, policyHash, works
 // It exits on failure and does not return on success.
 func RunExec() {
 	environment, err := readExecEnvironment(os.Getenv(execEnvironmentEnv))
-	if err == nil {
-		err = runExec(os.Args[1:], environment)
-	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[guard] REFUSED: %v\n", err)
 		os.Exit(1)
 	}
+	status, err := openExecStatusWriter(os.Getenv(execStatusEnv))
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[guard] REFUSED: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = status.Close() }()
+	err = runExecWith(os.Args[1:], environment,
+		func(prepared *PreparedManifest) (EnforcementRecord, error) { return prepared.ApplyForExec() },
+		processexec.Replace,
+		func(proof ExecutionProof) error { return json.NewEncoder(status).Encode(proof) },
+	)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[guard] REFUSED: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func openExecStatusWriter(rawFD string) (*os.File, error) {
+	fd, err := strconv.Atoi(rawFD)
+	if err != nil || fd < 3 {
+		return nil, errors.New("invalid guard status descriptor")
+	}
+	file := os.NewFile(uintptr(fd), "guard-status")
+	if file == nil {
+		return nil, errors.New("opening guard status descriptor")
+	}
+	syscall.CloseOnExec(fd)
+	return file, nil
 }
 
 func readExecEnvironment(rawFD string) ([]string, error) {
@@ -117,6 +145,7 @@ func runExec(command, environment []string) error {
 	return runExecWith(command, environment,
 		func(prepared *PreparedManifest) (EnforcementRecord, error) { return prepared.ApplyForExec() },
 		processexec.Replace,
+		func(ExecutionProof) error { return nil },
 	)
 }
 
@@ -124,6 +153,7 @@ func runExecWith(
 	command, environment []string,
 	apply func(*PreparedManifest) (EnforcementRecord, error),
 	replace func(string, []string, []string) error,
+	report func(ExecutionProof) error,
 ) error {
 	if len(command) == 0 {
 		return errors.New("missing operator command")
@@ -167,6 +197,10 @@ func runExecWith(
 	if err := prepared.Close(); err != nil {
 		return fmt.Errorf("closing prepared manifest: %w", err)
 	}
+	proof := NewExecutionProof(record, policyHash, os.Getenv(execProfileEnv), workspace, tempDir, binary, command)
+	if err := report(proof); err != nil {
+		return fmt.Errorf("reporting guard enforcement: %w", err)
+	}
 	_, _ = fmt.Fprintf(os.Stderr, "[guard] %s; policy_hash=%s\n", record.Describe(), policyHash)
 
 	clean := make([]string, 0, len(environment))
@@ -177,5 +211,12 @@ func runExecWith(
 		}
 		clean = append(clean, entry)
 	}
-	return replace(binary, command, clean)
+	if err := replace(binary, command, clean); err != nil {
+		proof.ExecError = err.Error()
+		if reportErr := report(proof); reportErr != nil {
+			return errors.Join(err, fmt.Errorf("reporting guard exec failure: %w", reportErr))
+		}
+		return err
+	}
+	return nil
 }

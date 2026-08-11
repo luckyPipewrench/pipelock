@@ -100,6 +100,36 @@ func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
 	return count, true
 }
 
+// flush emits requests accumulated since the last report. It is called by the
+// listener-owned ticker so a final burst is still recorded if no later request
+// arrives to trigger observe's interval check.
+func (r *mcpListenerDegradationReporter) flush() (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pending == 0 {
+		return 0, false
+	}
+	count := r.pending
+	r.pending = 0
+	r.lastReported = r.now()
+	return count, true
+}
+
+func (r *mcpListenerDegradationReporter) run(ctx context.Context, emit func(uint64)) {
+	ticker := time.NewTicker(r.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if count, report := r.flush(); report {
+				emit(count)
+			}
+		}
+	}
+}
+
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	return &mcpListenerClientStates{
 		clients:              make(map[string]*mcpListenerClientState),

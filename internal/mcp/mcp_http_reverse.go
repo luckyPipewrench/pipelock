@@ -196,6 +196,28 @@ func RunHTTPListenerProxy(
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
 	listenerClients.configureDegradationReporter(opts.listenerDegradationReportInterval, opts.listenerDegradationNow)
+	reportUnboundStateDegradation := func(count uint64) {
+		reason := fmt.Sprintf("%s (degraded_requests_since_last_report=%d)", listenerUnboundStateDegradationReason, count)
+		_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", reason)
+		if opts.AuditLogger != nil {
+			opts.AuditLogger.LogAnomaly(
+				mustMCPAuditContext(opts.AuditLogger, "MCP", "http-listener"),
+				"",
+				reason,
+				0,
+			)
+		}
+	}
+	degradationCtx, cancelDegradationReporting := context.WithCancel(ctx)
+	degradationReportingDone := make(chan struct{})
+	go func() {
+		defer close(degradationReportingDone)
+		listenerClients.degradationReporter.run(degradationCtx, reportUnboundStateDegradation)
+	}()
+	defer func() {
+		cancelDegradationReporting()
+		<-degradationReportingDone
+	}()
 
 	// Base opts shared across requests. Per-request fields (Rec) are
 	// overridden on a copy inside each request handler. The static
@@ -1081,16 +1103,7 @@ func RunHTTPListenerProxy(
 		}
 		if requireStateToken && !stateBound {
 			if count, report := listenerClients.nextUnboundStateDegradationReport(); report {
-				reason := fmt.Sprintf("%s (degraded_requests_since_last_report=%d)", listenerUnboundStateDegradationReason, count)
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", reason)
-				if requestBaseOpts.AuditLogger != nil {
-					requestBaseOpts.AuditLogger.LogAnomaly(
-						mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
-						"",
-						reason,
-						0,
-					)
-				}
+				reportUnboundStateDegradation(count)
 			}
 		}
 

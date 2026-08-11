@@ -366,6 +366,36 @@ func TestAF325_PlainClientDegradationReportsAreThrottledWithCounts(t *testing.T)
 	}
 }
 
+func TestMCPListenerDegradationReporterFlushesFinalBurst(t *testing.T) {
+	reporter := newMCPListenerDegradationReporter(50*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	reports := make(chan uint64, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reporter.run(ctx, func(count uint64) { reports <- count })
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	if count, report := reporter.observe(); !report || count != 1 {
+		t.Fatalf("first degradation report = (%d, %t), want (1, true)", count, report)
+	}
+	if count, report := reporter.observe(); report || count != 0 {
+		t.Fatalf("second degradation report = (%d, %t), want (0, false)", count, report)
+	}
+	select {
+	case count := <-reports:
+		if count != 1 {
+			t.Fatalf("periodic final-burst count = %d, want 1", count)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("periodic reporter did not flush final degraded request")
+	}
+}
+
 func TestAF325_PlainClientDegradationIsAudited(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

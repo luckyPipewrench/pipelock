@@ -113,6 +113,11 @@ func TestPrepare_GrantsExactFiles(t *testing.T) {
 	if !prepared.Complete() {
 		t.Fatalf("outcomes = %+v, want complete", prepared.Outcomes())
 	}
+	// Assert the count first: a loop over an empty slice passes every check
+	// inside it without examining anything.
+	if len(prepared.rules) != 2 {
+		t.Fatalf("rules = %d, want one per declared exact file", len(prepared.rules))
+	}
 	// Each exact-file grant must carry the file right set, never a directory
 	// set: a directory mask on a regular file is rejected by the kernel and
 	// would take the whole ruleset down with it.

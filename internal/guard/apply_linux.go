@@ -235,6 +235,11 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	// This fails CLOSED. A narrowed policy is reported and refused rather than
 	// presented as the declared one.
 	narrowed, unverified := p.unreachableGrants()
+	// Recorded before the narrowed return, not after. A manifest can have both
+	// outcomes, and returning early on the narrowed one used to drop every
+	// unverified path from the record -- losing exactly the information an
+	// operator needs to know how much of the policy was actually confirmed.
+	record.Unverified = unverified
 	if len(narrowed) > 0 {
 		// Applied, not refused. By this point the ruleset is in force and
 		// no_new_privs is set, and neither can be undone. Reporting Refused
@@ -245,13 +250,6 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 			"the restriction applied, but %d declared path(s) are not in force under it (%s); an ancestor landlock domain or another restriction is narrowing this policy, so the manifest is not in force as declared",
 			len(narrowed), strings.Join(narrowed, ", "))
 		return record, fmt.Errorf("%w: %s", ErrPolicyNarrowed, strings.Join(narrowed, ", "))
-	}
-
-	// A path the filesystem could not answer for is reported, not silently
-	// counted as verified. The restriction is in force either way; what is
-	// unknown is whether an outer domain narrowed this particular grant.
-	if len(unverified) > 0 {
-		record.Unverified = unverified
 	}
 
 	record.State = EnforcementEnforced

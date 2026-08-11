@@ -67,7 +67,11 @@ func TestGuardChildScenario(t *testing.T) {
 	// So: collecting means return and let the framework write; not collecting
 	// means leave before it tries. The assertions have already been printed by
 	// this point either way.
-	if os.Getenv("PIPELOCK_GUARD_COVERDIR") == "" {
+	// A scenario whose policy grants nothing cannot hold the coverage directory
+	// either, so returning to the framework would have it write into a path the
+	// child just denied itself. Those scenarios always leave early; the
+	// collection run does not select them.
+	if os.Getenv("PIPELOCK_GUARD_COVERDIR") == "" || scenario == "zero-manifests" {
 		os.Exit(code)
 	}
 	if code != 0 {
@@ -739,7 +743,7 @@ func runChildNested() int {
 		return 0
 	}
 	fmt.Printf("narrowed: MISSED (enforced=%v err=%v state=%q)\n", record.Enforced(), err, record.State)
-	return 0
+	return 1
 }
 
 // runChildNestedDir narrows a declared read-write DIRECTORY to read-only in an
@@ -795,7 +799,7 @@ func runChildNestedDir() int {
 		return 0
 	}
 	fmt.Printf("dir-narrowed: MISSED (enforced=%v state=%q err=%v)\n", record.Enforced(), record.State, err)
-	return 0
+	return 1
 }
 
 // runChildNestedWrite creates an outer domain that allows reading an exact
@@ -857,7 +861,7 @@ func runChildNestedWrite() int {
 		_ = fd.Close()
 	}
 	fmt.Printf("write-narrowed: MISSED (enforced=%v err=%v state=%q write=%v)\n", record.Enforced(), err, record.State, writeErr)
-	return 0
+	return 1
 }
 
 // runChild performs one enforcement scenario inside a fresh process.

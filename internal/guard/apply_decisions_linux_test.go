@@ -100,7 +100,15 @@ func TestApply_ReportsPartialCoverageBeforeRefusingIncompleteManifest(t *testing
 func TestApply_FullCoverageAtSocketMediationABI(t *testing.T) {
 	p := &PreparedManifest{complete: false}
 
-	record, _ := p.apply(func() (int, error) { return SocketMediationABI, nil })
+	record, err := p.apply(func() (int, error) { return SocketMediationABI, nil })
+
+	// Pin the early return. If the incomplete-manifest check ever moved after
+	// ruleset construction, this test would apply a real restriction to the test
+	// binary for the rest of the run, and the resulting failures would point
+	// everywhere except here.
+	if !errors.Is(err, ErrManifestIncomplete) {
+		t.Fatalf("err = %v, want ErrManifestIncomplete", err)
+	}
 
 	if record.Coverage != CoverageFull {
 		t.Errorf("Coverage = %q, want full at ABI %d", record.Coverage, SocketMediationABI)

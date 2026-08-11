@@ -23,12 +23,20 @@ import (
 func TestWritableDirectory_Outcomes(t *testing.T) {
 	root := t.TempDir()
 
-	if got := writableDirectory(root); got != dirWriteOK {
-		t.Errorf("writableDirectory(writable dir) = %v, want ok", got)
-	}
-	// The probe leaves nothing behind: an unnamed inode never gets a name.
-	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
-		t.Errorf("probe left %d entries (err=%v), want none", len(entries), err)
+	switch got := writableDirectory(root); got {
+	case dirWriteOK:
+		// The probe leaves nothing behind: an unnamed inode never gets a name.
+		if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+			t.Errorf("probe left %d entries (err=%v), want none", len(entries), err)
+		}
+	case dirWriteUnsupported:
+		// A real Linux filesystem can lack unnamed-inode support, and the helper
+		// classifies that as unsupported by design. Asserting success here would
+		// fail the suite for the filesystem under the temp directory rather than
+		// for a defect.
+		t.Skip("temp filesystem does not support unnamed inodes; success path not assertable here")
+	default:
+		t.Errorf("writableDirectory(writable dir) = %v, want ok or unsupported", got)
 	}
 
 	// A path that is not a directory cannot answer the question, and that is

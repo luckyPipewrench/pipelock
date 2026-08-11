@@ -54,12 +54,27 @@ go test -count=1 -timeout=5m ./internal/guard -run '^TestEnforcement_RealBoundar
 # from the test binary, and runtime/coverage has nothing to write from a binary
 # that was not built with it. Omitting it produces a run that passes, writes no
 # counters, and reports zero coverage for the code it just exercised.
+# TWO invocations, and the split is required rather than cosmetic.
+#
+# `go test -run` splits its pattern on `/` into one regex per test-name level,
+# but testing.splitRegexp deliberately ignores a `/` inside parentheses. A single
+# combined pattern with the subtests in an alternation therefore never splits,
+# so it is matched whole against the top-level name and selects NONE of the
+# boundary subtests. They silently did not run, and the collected coverage came
+# only from the narrowed-policy tests, which was not visible because those tests
+# exercise the same file.
 GUARD_LOG=$(mktemp /tmp/pipelock-guard-cover-XXXXXX.log)
 PIPELOCK_GUARD_COVERDIR="$COVERDIR" \
     go test -count=1 -timeout=5m -cover -covermode=atomic -v \
     ./internal/guard \
-    -run '^TestEnforcement_(RealBoundary/(granted-write|ungranted-read|socket-connect|other-thread)|Detects(Write|DirectoryWrite)?PolicyNarrowedByOuterDomain|DetectsDirectoryWriteNarrowedByOuterDomain)$' \
+    -run '^TestEnforcement_RealBoundary$/^(granted-write|ungranted-read|socket-connect|other-thread)$' \
     | tee "$GUARD_LOG"
+
+PIPELOCK_GUARD_COVERDIR="$COVERDIR" \
+    go test -count=1 -timeout=5m -cover -covermode=atomic -v \
+    ./internal/guard \
+    -run '^TestEnforcement_Detects(Policy|WritePolicy|DirectoryWrite)NarrowedByOuterDomain$' \
+    | tee -a "$GUARD_LOG"
 
 # Merge all coverage data into a single profile.
 counter_count=$(find "$COVERDIR" -maxdepth 1 -type f -name 'covcounters.*' | wc -l)

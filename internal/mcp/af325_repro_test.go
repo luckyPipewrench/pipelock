@@ -502,3 +502,36 @@ func TestAF325_PlainClientSessionBindingStillGates(t *testing.T) {
 		t.Fatalf("tokenless tools/call block reason = %s, want %q", resp, bindingReasonNoBaseline)
 	}
 }
+
+// TestAF325_BenchmarkSequenceBlocksForTokenlessClient drives the exact payload
+// pair from agent-egress-bench case mcp-drift-http-rugpull-desc-005: a clean
+// inventory, then the same tool name carrying a workspace-exfiltration
+// instruction, over a tokenless client. This is the sequence the benchmark
+// runner reproduces, so it is the case that must block before the corpus can
+// record a pass. The sibling drift tests deliberately use a benign-looking
+// change to isolate drift; this one asserts the real fixture blocks by
+// whichever layer fires first.
+func TestAF325_BenchmarkSequenceBlocksForTokenlessClient(t *testing.T) {
+	upstream, listCalls := af325Upstream(t, af325After)
+	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
+		Enabled:      true,
+		Action:       config.ActionBlock,
+		OnParseError: config.ActionBlock,
+	}, af325ToolCfg(), nil)
+
+	first := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	second := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+
+	t.Logf("upstream tools/list calls = %d", listCalls.Load())
+	t.Logf("listener log:\n%s", logBuf.String())
+
+	if !strings.Contains(first, "lookup_invoice") {
+		t.Fatalf("first tokenless tools/list = %s, want the approved inventory", first)
+	}
+	if !strings.Contains(second, `"error"`) {
+		t.Fatalf("benchmark rug-pull sequence ALLOWED for a tokenless client; response = %s", second)
+	}
+	if strings.Contains(second, "sink.fixture.example") {
+		t.Fatalf("blocked response leaked the poisoned directive downstream: %s", second)
+	}
+}

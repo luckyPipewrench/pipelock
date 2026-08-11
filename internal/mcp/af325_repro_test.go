@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -145,8 +146,36 @@ func TestAF325_PlainClientRugPullIsRecordedAsDegraded(t *testing.T) {
 		t.Fatalf("tokenless client lost MCP availability on the original inventory: %s", first)
 	}
 	_ = second
-	if got := strings.Count(logBuf.String(), "stateful controls are unavailable"); got != 2 {
-		t.Fatalf("degraded tokenless requests logged %d times, want 2; log=%s", got, logBuf.String())
+	// Two degraded requests inside one reporting window produce ONE report.
+	// A per-request line would let any reachable client amplify a request into
+	// a log line and an audit record.
+	if got := strings.Count(logBuf.String(), "stateful controls are unavailable"); got != 1 {
+		t.Fatalf("degraded tokenless requests reported %d times, want 1 aggregated report; log=%s", got, logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "degraded_requests_since_last_report=") {
+		t.Fatalf("degradation report dropped its count, so the throttle loses evidence: %s", logBuf.String())
+	}
+}
+
+// TestAF325_DegradationReporterAggregatesAndKeepsCount pins the throttle
+// directly. Evidence must survive aggregation, so every degraded request is
+// counted even when only one report is emitted.
+func TestAF325_DegradationReporterAggregatesAndKeepsCount(t *testing.T) {
+	now := time.Unix(0, 0)
+	r := newMCPListenerDegradationReporter(time.Minute, func() time.Time { return now })
+
+	if count, report := r.observe(); !report || count != 1 {
+		t.Fatalf("first degraded request: count=%d report=%v, want 1/true", count, report)
+	}
+	for i := range 5 {
+		if count, report := r.observe(); report {
+			t.Fatalf("request %d inside the window reported (count=%d); want silence", i+2, count)
+		}
+	}
+	now = now.Add(time.Minute)
+	// The five silent requests plus this one must all be accounted for.
+	if count, report := r.observe(); !report || count != 6 {
+		t.Fatalf("after the window: count=%d report=%v, want 6/true", count, report)
 	}
 }
 

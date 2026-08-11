@@ -596,7 +596,11 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// still matches, so dropping the adjective is not a bypass. A
 		// scope-broadening synonym outside this list is a known limit of a
 		// regex mechanism and is tracked rather than papered over.
-		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:(?:all|any|other|another|every|unrelated|additional|remaining|extra|cached|nearby|arbitrary|miscellaneous|misc|further|recent)\s+){0,3}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
+		// A determiner is accepted only AFTER a scope-broadening word, so
+		// "all the" and "all of the" match while a bare "the workspace files"
+		// does not: a lone determiner reads as scoped and belongs with the
+		// benign transfers.
+		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:(?:all|any|other|another|every|unrelated|additional|remaining|extra|cached|nearby|arbitrary|miscellaneous|misc|further|recent)\s+(?:of\s+)?(?:the\s+)?){0,3}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
 	},
 }
 

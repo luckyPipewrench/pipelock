@@ -1067,14 +1067,23 @@ func RunHTTPListenerProxy(
 			bindStateRequestContext()
 		}
 		if requireStateToken && !stateBound {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", listenerUnboundStateDegradationReason)
-			if requestBaseOpts.AuditLogger != nil {
-				requestBaseOpts.AuditLogger.LogAnomaly(
-					mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
-					"",
-					listenerUnboundStateDegradationReason,
-					0,
-				)
+			// Emitting per request lets any reachable client amplify one
+			// request into one log line and one audit record. Aggregate
+			// instead: the first degraded request reports immediately, later
+			// ones are counted, and each report carries the count since the
+			// previous one so the evidence survives the throttle.
+			if degraded, report := listenerClients.degradationReporter.observe(); report {
+				detail := fmt.Sprintf("%s (degraded_requests_since_last_report=%d)",
+					listenerUnboundStateDegradationReason, degraded)
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", detail)
+				if requestBaseOpts.AuditLogger != nil {
+					requestBaseOpts.AuditLogger.LogAnomaly(
+						mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
+						"",
+						detail,
+						0,
+					)
+				}
 			}
 		}
 

@@ -11,12 +11,16 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-const maxMCPListenerClients = 4096
+const (
+	maxMCPListenerClients             = 4096
+	listenerDegradationReportInterval = time.Minute
+)
 
 const listenerSessionTokenHeader = "Pipelock-Session-Token"
 
@@ -44,17 +48,63 @@ type mcpListenerClientState struct {
 // loses only the evicted client's learned state; its next call starts with an
 // empty baseline and therefore follows the configured no-baseline action.
 type mcpListenerClientStates struct {
-	mu        sync.Mutex
-	clients   map[string]*mcpListenerClientState
-	clock     uint64
-	store     session.Store
-	driftEdge tools.DetectDriftRisingEdge
+	mu                  sync.Mutex
+	clients             map[string]*mcpListenerClientState
+	clock               uint64
+	store               session.Store
+	driftEdge           tools.DetectDriftRisingEdge
+	degradationReporter mcpListenerDegradationReporter
+}
+
+// mcpListenerDegradationReporter aggregates degraded (unbound) requests for one
+// listener. It deliberately has no client key: a client that omits the
+// Pipelock-issued token is not a trustworthy partition, so keying reporting
+// state on anything it supplies would let it allocate unbounded memory. An
+// emitted report carries the count since the previous report, so throttling
+// reduces volume without losing the evidence that requests ran degraded.
+type mcpListenerDegradationReporter struct {
+	mu           sync.Mutex
+	pending      uint64
+	lastReported time.Time
+	interval     time.Duration
+	now          func() time.Time
+}
+
+func newMCPListenerDegradationReporter(interval time.Duration, now func() time.Time) mcpListenerDegradationReporter {
+	if interval <= 0 {
+		interval = listenerDegradationReportInterval
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return mcpListenerDegradationReporter{interval: interval, now: now}
+}
+
+// observe records one degraded request and reports whether the caller should
+// emit. It emits on the first degraded request and then on the first request
+// after each interval, returning the count since the last emission. The
+// counter saturates rather than wrapping.
+func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pending != ^uint64(0) {
+		r.pending++
+	}
+	now := r.now()
+	if !r.lastReported.IsZero() && now.Sub(r.lastReported) < r.interval {
+		return 0, false
+	}
+	count := r.pending
+	r.pending = 0
+	r.lastReported = now
+	return count, true
 }
 
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	return &mcpListenerClientStates{
-		clients: make(map[string]*mcpListenerClientState),
-		store:   store,
+		clients:             make(map[string]*mcpListenerClientState),
+		store:               store,
+		degradationReporter: newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
 	}
 }
 

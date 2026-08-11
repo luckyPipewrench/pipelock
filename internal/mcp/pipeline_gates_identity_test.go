@@ -263,6 +263,15 @@ func TestEvaluateSessionBinding_NoBaselineFailClosed(t *testing.T) {
 			wantReason: bindingReasonNoBaseline,
 		},
 		{
+			name: "nil baseline without no-baseline action allows",
+			check: sessionBindingCheck{
+				Baseline:      nil,
+				Method:        methodToolsCall,
+				ToolName:      "search",
+				UnknownAction: config.ActionBlock,
+			},
+		},
+		{
 			name:       "a2a with mcp baseline but no a2a baseline uses NoBaselineAction, not UnknownAction",
 			check:      sessionBindingCheck{Baseline: mcpOnly, Method: "message/send", EnforcementIdentity: "a2a:message/send", NoBaselineAction: config.ActionBlock, UnknownAction: config.ActionAllow},
 			wantAction: config.ActionBlock,

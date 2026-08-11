@@ -16,25 +16,46 @@ package guard
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
-// RequiredABI is the minimum Landlock ABI version Guard will enforce on.
+// Landlock ABI thresholds Guard cares about. Each names a capability rather
+// than a kernel release, because the capability is what a claim depends on.
 //
-// Nine, not the highest the kernel happens to offer, and not the lowest that
-// returns a ruleset. ABI 9 is the first version in which connect(2) and
-// sendmsg(2) on pathname Unix sockets are mediated by filesystem rules at all.
-// Below it, a path grant does not merely fail to cover sockets -- sockets are
-// outside the model entirely, so a workload restricted to one state directory
-// can still connect to any Unix socket on the host whose path it knows,
-// including an SSH agent. Reproduced on Linux 7.1.5 / ABI 9: under a V5 ruleset
-// a connect to a socket in a directory that was never granted SUCCEEDED, while
-// a read of a file in that same directory was correctly denied. The restriction
-// was active; sockets simply were not part of it.
+// The original design required ABI 9 outright, on the reasoning that below it
+// pathname Unix sockets are outside the filesystem model entirely and a
+// "restricted" workload can still reach an SSH agent socket. That reasoning is
+// correct and is measured: on Linux 7.1.5 under a V5 ruleset, a connect to a
+// socket in a never-granted directory SUCCEEDED while a read of a file in that
+// same directory was denied.
 //
-// That is why this is a floor rather than a preference. Enforcing on ABI 8 and
-// reporting success would be a true statement about files and a false statement
-// about the isolation Guard is being trusted to provide.
-const RequiredABI = 9
+// But a flat ABI 9 floor refuses essentially every kernel in service today,
+// which is its own failure direction: a control an operator cannot run is a
+// control an operator turns off. The resolution is not to lower the bar and
+// keep the claim, it is to keep the bar per-capability and make the RECORD say
+// exactly which mediation is in force. Guard never reports coverage it does not
+// have; it is willing to report less coverage honestly.
+const (
+	// MinimumABI is the floor for the full filesystem right set, through
+	// ioctl_dev. Below this Guard cannot express its grants and refuses.
+	MinimumABI = 5
+
+	// IPCScopeABI adds scoping for abstract Unix sockets and signals. Below it,
+	// a restricted workload can still signal and speak to abstract-socket peers
+	// outside its domain.
+	IPCScopeABI = 6
+
+	// ThreadSyncABI adds kernel-side thread synchronisation, which in-process
+	// enforcement requires. The userspace alternative enumerates /proc/self/task
+	// and is denied by Guard's own ruleset, leaving the process half-restricted,
+	// so there is no safe in-process path below this.
+	ThreadSyncABI = 8
+
+	// SocketMediationABI adds connect(2) and sendmsg(2) mediation for pathname
+	// Unix sockets. This is the one that decides whether a filesystem grant can
+	// bound IPC at all.
+	SocketMediationABI = 9
+)
 
 var (
 	// ErrUnsupportedPlatform is returned when Guard enforcement has no
@@ -54,6 +75,12 @@ var (
 	// that the workload needs it, and silently running without it produces a
 	// failure the operator cannot trace back to Guard.
 	ErrManifestIncomplete = errors.New("guard manifest could not be fully prepared")
+
+	// ErrPolicyNarrowed is returned when the restriction applied but a declared
+	// path is unreachable under it, meaning something outside this ruleset --
+	// most often an ancestor landlock domain -- is narrowing the policy. The
+	// manifest is not in force as declared, so this is a refusal, not a caveat.
+	ErrPolicyNarrowed = errors.New("guard policy is narrowed by an outer restriction")
 )
 
 // AccessKind is the grant a manifest entry asks for.
@@ -143,13 +170,43 @@ type EnforcementRecord struct {
 	ObservedABI      *int             `json:"observed_abi"`
 	Reason           string           `json:"reason,omitempty"`
 	ManifestComplete bool             `json:"manifest_complete"`
-	Outcomes         []PathOutcome    `json:"outcomes"`
+	Coverage         Coverage         `json:"coverage"`
+	// Unmediated names each capability the kernel could not mediate at the
+	// observed ABI. It is a list rather than a flag because "enforced" with an
+	// empty caveat list and "enforced" with sockets unmediated are different
+	// security postures, and an operator reading evidence months later needs to
+	// see which one they had.
+	Unmediated []string      `json:"unmediated,omitempty"`
+	Outcomes   []PathOutcome `json:"outcomes"`
 }
+
+// Coverage says how much of Guard's intended mediation the kernel supplied.
+type Coverage string
+
+const (
+	// CoverageUnknown is the zero value: no enforcement was attempted.
+	CoverageUnknown Coverage = ""
+	// CoverageFull: every capability Guard relies on is mediated.
+	CoverageFull Coverage = "full"
+	// CoveragePartial: the filesystem grants are enforced, but at least one
+	// capability in Unmediated is not covered.
+	CoveragePartial Coverage = "partial"
+)
 
 // Enforced reports whether the workload is actually constrained. Callers must
 // route every "is this enforced" question through here rather than testing
 // State themselves, so a future state cannot be silently read as enforced.
+//
+// This is deliberately true for partial coverage: the filesystem grants ARE in
+// force. Anything that turns on the difference must ask FullyMediated, so that
+// the weaker posture has to be looked at rather than inherited by accident.
 func (r EnforcementRecord) Enforced() bool { return r.State == EnforcementEnforced }
+
+// FullyMediated reports whether every capability Guard relies on is covered.
+// A claim about isolation, as opposed to about files, belongs behind this.
+func (r EnforcementRecord) FullyMediated() bool {
+	return r.State == EnforcementEnforced && r.Coverage == CoverageFull
+}
 
 // Describe renders the record for an operator. An unenforced run says so in
 // the first clause; the reason follows rather than leads, because a reason
@@ -161,7 +218,14 @@ func (r EnforcementRecord) Describe() string {
 	}
 	switch r.State {
 	case EnforcementEnforced:
-		return fmt.Sprintf("ENFORCED via %s (ABI %s, required %d)", r.Mechanism, observed, r.RequiredABI)
+		if r.Coverage == CoverageFull {
+			return fmt.Sprintf("ENFORCED via %s, full mediation (ABI %s)", r.Mechanism, observed)
+		}
+		// The caveat is part of the headline, not a footnote. An operator who
+		// reads only the first line must not come away believing sockets were
+		// covered when they were not.
+		return fmt.Sprintf("ENFORCED via %s, PARTIAL mediation (ABI %s): not mediated: %s",
+			r.Mechanism, observed, strings.Join(r.Unmediated, ", "))
 	case EnforcementUnenforcedAccepted:
 		return fmt.Sprintf("NOT ENFORCED, explicitly accepted by the operator (ABI %s, required %d): %s", observed, r.RequiredABI, r.Reason)
 	default:

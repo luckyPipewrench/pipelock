@@ -8,6 +8,7 @@ package guard
 import (
 	"fmt"
 	"runtime"
+	"strings"
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 	"golang.org/x/sys/unix"
@@ -28,7 +29,7 @@ import (
 //
 // MakeChar and MakeBlock are handled and never granted, so device-node
 // creation is denied outright.
-const handledAccessFS = llsys.AccessFSExecute |
+const baseAccessFS = llsys.AccessFSExecute |
 	llsys.AccessFSWriteFile |
 	llsys.AccessFSReadFile |
 	llsys.AccessFSReadDir |
@@ -43,13 +44,39 @@ const handledAccessFS = llsys.AccessFSExecute |
 	llsys.AccessFSMakeSym |
 	llsys.AccessFSRefer |
 	llsys.AccessFSTruncate |
-	llsys.AccessFSIoctlDev |
-	llsys.AccessFSResolveUnix
+	llsys.AccessFSIoctlDev
 
-// scopedIPC additionally severs abstract Unix sockets and signals to processes
-// outside the restricted domain. Pathname sockets are covered by the handled
-// access mask above; abstract sockets have no path, so they need this instead.
+// scopedIPC severs abstract Unix sockets and signals to processes outside the
+// restricted domain. Pathname sockets are covered by the handled access mask;
+// abstract sockets have no path, so they need this instead.
 const scopedIPC = llsys.ScopeAbstractUnixSocket | llsys.ScopeSignal
+
+// capabilitiesFor returns the ruleset masks the observed ABI can actually
+// express, plus the human-readable list of what it cannot.
+//
+// Requesting a right the kernel does not know is not a soft failure: it makes
+// LandlockCreateRuleset reject the whole ruleset, so the mask has to be built
+// from the observed version rather than from the ideal one. The critical part
+// is the third return value. Trimming the mask silently is precisely what
+// BestEffort does, and precisely what turns an unavailable protection into a
+// successful call, so every trimmed capability is named and carried into the
+// record instead.
+func capabilitiesFor(abi int) (accessFS, scoped uint64, unmediated []string) {
+	accessFS = baseAccessFS
+	if abi >= SocketMediationABI {
+		accessFS |= llsys.AccessFSResolveUnix
+	} else {
+		unmediated = append(unmediated,
+			"connect(2) and sendmsg(2) on pathname unix sockets, including agent sockets")
+	}
+	if abi >= IPCScopeABI {
+		scoped = scopedIPC
+	} else {
+		unmediated = append(unmediated,
+			"abstract unix sockets and signals to processes outside the restriction")
+	}
+	return accessFS, scoped, unmediated
+}
 
 // Apply enforces the prepared manifest on the calling process. It is
 // irreversible and inherited by every child.
@@ -69,7 +96,7 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	record := EnforcementRecord{
 		State:            EnforcementRefused,
 		Mechanism:        "landlock",
-		RequiredABI:      RequiredABI,
+		RequiredABI:      ThreadSyncABI,
 		ManifestComplete: p.complete,
 		Outcomes:         p.Outcomes(),
 	}
@@ -80,11 +107,29 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 		return record, fmt.Errorf("%w: %w", ErrLandlockUnavailable, err)
 	}
 	record.ObservedABI = &abi
-	if abi < RequiredABI {
+	if abi < MinimumABI {
 		record.Reason = fmt.Sprintf(
-			"kernel landlock ABI %d is below the minimum %d; below ABI %d, connect(2) on pathname unix sockets is not mediated, so a filesystem restriction cannot bound IPC",
-			abi, RequiredABI, RequiredABI)
-		return record, fmt.Errorf("%w: have %d, need %d", ErrABITooOld, abi, RequiredABI)
+			"kernel landlock ABI %d is below the minimum %d; the full filesystem right set cannot be expressed, so the declared grants cannot be enforced as written",
+			abi, MinimumABI)
+		return record, fmt.Errorf("%w: have %d, need %d", ErrABITooOld, abi, MinimumABI)
+	}
+	// In-process enforcement additionally needs kernel-side thread sync. That is
+	// a limitation of restricting an already-running multi-threaded process, not
+	// of the policy: applying the same ruleset in a single-threaded child
+	// between fork and exec needs only MinimumABI, which is the route the
+	// execution surface should take.
+	if abi < ThreadSyncABI {
+		record.Reason = fmt.Sprintf(
+			"kernel landlock ABI %d is below %d, so this ruleset cannot be applied to every thread of this process atomically; apply it in a single-threaded child before exec instead",
+			abi, ThreadSyncABI)
+		return record, fmt.Errorf("%w: have %d, need %d for in-process application", ErrABITooOld, abi, ThreadSyncABI)
+	}
+
+	handledAccessFS, scoped, unmediated := capabilitiesFor(abi)
+	record.Unmediated = unmediated
+	record.Coverage = CoverageFull
+	if len(unmediated) > 0 {
+		record.Coverage = CoveragePartial
 	}
 
 	// An incomplete manifest is refused here rather than at the call site, so
@@ -98,7 +143,7 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 
 	rulesetFD, err := llsys.LandlockCreateRuleset(&llsys.RulesetAttr{
 		HandledAccessFS: handledAccessFS,
-		Scoped:          scopedIPC,
+		Scoped:          scoped,
 	}, 0)
 	if err != nil {
 		record.Reason = fmt.Sprintf("creating landlock ruleset: %v", err)
@@ -152,6 +197,56 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 		return record, fmt.Errorf("applying landlock restriction: %w", err)
 	}
 
+	// Verify the manifest is actually in force before claiming it is.
+	//
+	// Landlock rulesets STACK: if this process already sits inside an ancestor
+	// domain, the effective policy is the intersection of the two, and a path
+	// this manifest grants can still be unreachable. Nothing reports that. The
+	// syscalls above all succeeded, the record would read "enforced", and the
+	// workload would then be denied a path its own manifest says it has, with
+	// no way to trace the denial back to the ancestor.
+	//
+	// There is no syscall or /proc file that reports the ancestor domain, so
+	// asking "am I nested" is not available. Measuring the thing that actually
+	// matters is: after restricting, try to reach each granted path. Every
+	// right set Guard issues includes read on the object, so a denial here means
+	// something outside this ruleset is narrowing us.
+	//
+	// This fails CLOSED. A narrowed policy is reported and refused rather than
+	// presented as the declared one.
+	if narrowed := p.unreachableGrants(); len(narrowed) > 0 {
+		record.State = EnforcementRefused
+		record.Reason = fmt.Sprintf(
+			"the restriction applied, but %d declared path(s) are unreachable under it (%s); an ancestor landlock domain or another restriction is narrowing this policy, so the manifest is not in force as declared",
+			len(narrowed), strings.Join(narrowed, ", "))
+		return record, fmt.Errorf("%w: %s", ErrPolicyNarrowed, strings.Join(narrowed, ", "))
+	}
+
 	record.State = EnforcementEnforced
 	return record, nil
+}
+
+// unreachableGrants returns the declared paths that cannot be reached after the
+// restriction was applied.
+//
+// It re-resolves by NAME rather than reusing the pinned descriptors, and that
+// is the whole point: a descriptor opened before enforcement stays usable
+// afterwards, so probing through one would report success no matter how
+// narrowed the policy is. That would be a vacuous check dressed as a
+// verification.
+func (p *PreparedManifest) unreachableGrants() []string {
+	var narrowed []string
+	for _, rule := range p.rules {
+		flags := unix.O_RDONLY | unix.O_CLOEXEC
+		if rule.isDir {
+			flags |= unix.O_DIRECTORY
+		}
+		fd, err := unix.Open(rule.resolved, flags, 0)
+		if err != nil {
+			narrowed = append(narrowed, rule.declared)
+			continue
+		}
+		_ = unix.Close(fd)
+	}
+	return narrowed
 }

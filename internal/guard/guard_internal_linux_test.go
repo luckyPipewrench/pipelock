@@ -19,15 +19,15 @@ import (
 
 func TestApply_RefusesABIBelowFloor(t *testing.T) {
 	prepared := &PreparedManifest{complete: true}
-	record, err := prepared.apply(func() (int, error) { return RequiredABI - 1, nil })
+	record, err := prepared.apply(func() (int, error) { return MinimumABI - 1, nil })
 	if !errors.Is(err, ErrABITooOld) {
 		t.Fatalf("err = %v, want ErrABITooOld", err)
 	}
 	if record.Enforced() || record.State != EnforcementRefused {
 		t.Fatalf("record = %+v, want refused and unenforced", record)
 	}
-	if record.ObservedABI == nil || *record.ObservedABI != RequiredABI-1 {
-		t.Fatalf("observed ABI = %v, want %d", record.ObservedABI, RequiredABI-1)
+	if record.ObservedABI == nil || *record.ObservedABI != MinimumABI-1 {
+		t.Fatalf("observed ABI = %v, want %d", record.ObservedABI, MinimumABI-1)
 	}
 }
 

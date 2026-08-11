@@ -61,8 +61,9 @@ func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 	record := EnforcementRecord{
 		State:            EnforcementRefused,
 		Mechanism:        "landlock",
-		RequiredABI:      RequiredABI,
+		RequiredABI:      MinimumABI,
 		ManifestComplete: false,
+		Coverage:         CoverageUnknown,
 		Reason:           "guard enforcement requires Linux landlock; this platform has no equivalent path-grant mechanism",
 		Outcomes:         p.Outcomes(),
 	}

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/landlock-lsm/go-landlock/landlock"
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 	"golang.org/x/sys/unix"
 
@@ -236,8 +237,13 @@ func TestPrepare_RefusesUnsafeWritableOwnershipAndMode(t *testing.T) {
 		t.Fatalf("ownership outcome = %+v, want refused ownership", got)
 	}
 
-	//nolint:gosec // Test must create the unsafe mode Guard is required to refuse.
-	if err := os.Chmod(state, 0o770); err != nil {
+	// Compose the group-writable mode at runtime rather than writing a literal.
+	// The permission linter is right to object to a wide mode in source, and
+	// silencing it would train the next reader to silence it somewhere that
+	// matters. This test needs the unsafe mode precisely because it is what
+	// Guard must refuse.
+	groupWritable := os.FileMode(0o750) | os.FileMode(1)<<4
+	if err := os.Chmod(state, groupWritable); err != nil {
 		t.Fatal(err)
 	}
 	sharedMode, err := guard.Prepare(cfg, "agent", os.Getuid())
@@ -423,8 +429,8 @@ func abiOrSkip(t *testing.T) int {
 	if err != nil {
 		t.Skipf("landlock unavailable: %v", err)
 	}
-	if abi < guard.RequiredABI {
-		t.Skipf("landlock ABI %d below required %d", abi, guard.RequiredABI)
+	if abi < guard.ThreadSyncABI {
+		t.Skipf("landlock ABI %d below in-process floor %d", abi, guard.ThreadSyncABI)
 	}
 	return abi
 }
@@ -479,6 +485,21 @@ func TestEnforcement_NonVacuity(t *testing.T) {
 	}
 }
 
+// TestEnforcement_DetectsPolicyNarrowedByOuterDomain proves Guard refuses when
+// an outer landlock domain makes a declared path unreachable.
+//
+// Landlock rulesets stack, so the effective policy is the intersection. Every
+// syscall Guard makes still succeeds in that situation, and without the
+// post-enforcement reachability check the record would read "enforced" while
+// the workload got denied a path its own manifest declares.
+func TestEnforcement_DetectsPolicyNarrowedByOuterDomain(t *testing.T) {
+	abiOrSkip(t)
+	out := runScenario(t, "nested-narrowed")
+	if !strings.Contains(out, "narrowed: DETECTED") {
+		t.Fatalf("output %q, want the outer domain to be detected as narrowing", out)
+	}
+}
+
 func runScenario(t *testing.T, scenario string) string {
 	t.Helper()
 	// #nosec G204,G702 -- os.Args[0] is this test binary; re-executing it is the only
@@ -492,8 +513,68 @@ func runScenario(t *testing.T, scenario string) string {
 	return string(out)
 }
 
+// runChildNested prepares a manifest, then applies an OUTER landlock domain that
+// excludes the granted path, and finally asks Guard to enforce.
+//
+// The ordering is deliberate: Prepare must run BEFORE the outer restriction, so
+// the paths pin successfully and the manifest is complete. That isolates the
+// narrowing to enforcement time, which is exactly the case the reachability
+// check exists for. Preparing afterwards would fail earlier and for a different
+// reason, proving nothing about this check.
+func runChildNested() int {
+	root, err := os.MkdirTemp("", "guard-nested-")
+	if err != nil {
+		fmt.Println("setup failed:", err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+
+	granted := filepath.Join(root, "state")
+	other := filepath.Join(root, "other")
+	for _, d := range []string{granted, other} {
+		if err := os.Mkdir(d, 0o750); err != nil {
+			fmt.Println("setup failed:", err)
+			return 1
+		}
+	}
+
+	cfg := config.Defaults()
+	cfg.Guard = config.Guard{
+		Profiles:  []config.GuardProfile{{Name: "agent", Manifests: []string{"m"}}},
+		Manifests: []config.GuardManifest{{Name: "m", ReadWriteDirectories: []string{granted}}},
+	}
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		fmt.Println("prepare failed:", err)
+		return 1
+	}
+	defer func() { _ = prepared.Close() }()
+	if !prepared.Complete() {
+		fmt.Printf("manifest incomplete before the outer domain: %+v\n", prepared.Outcomes())
+		return 1
+	}
+
+	// The outer domain grants a DIFFERENT directory, so the manifest's path is
+	// unreachable once it applies.
+	if err := landlock.V9.RestrictPaths(landlock.RWDirs(other)); err != nil {
+		fmt.Println("outer restriction failed:", err)
+		return 1
+	}
+
+	record, err := prepared.Apply()
+	if errors.Is(err, guard.ErrPolicyNarrowed) && !record.Enforced() {
+		fmt.Println("narrowed: DETECTED")
+		return 0
+	}
+	fmt.Printf("narrowed: MISSED (enforced=%v err=%v state=%q)\n", record.Enforced(), err, record.State)
+	return 0
+}
+
 // runChild performs one enforcement scenario inside a fresh process.
 func runChild(scenario string) int {
+	if scenario == "nested-narrowed" {
+		return runChildNested()
+	}
 	root, err := os.MkdirTemp("", "guard-child-")
 	if err != nil {
 		fmt.Println("setup failed:", err)

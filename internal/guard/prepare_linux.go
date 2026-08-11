@@ -31,6 +31,11 @@ type preparedRule struct {
 	fd       int
 	access   uint64
 	declared string
+	// resolved and isDir exist so the post-enforcement reachability check can
+	// re-open by NAME. Probing through fd would always succeed, because a
+	// descriptor opened before the restriction stays usable after it.
+	resolved string
+	isDir    bool
 }
 
 // PreparedManifest holds pinned descriptors for every grantable path. It owns
@@ -84,7 +89,8 @@ func (p *PreparedManifest) Close() error {
 //   - ResolveUnix is NOT granted, so connect(2) on a pathname Unix socket
 //     inside a writable directory is denied. A writable state directory is not
 //     a statement that the workload may speak to whatever is listening there.
-//     This is only meaningful at ABI 9; see RequiredABI.
+//     This is only meaningful from SocketMediationABI; below it the right
+//     cannot be requested and the record reports partial coverage.
 //
 // Device-node creation (MakeChar, MakeBlock) is withheld everywhere. A workload
 // that can mknod a block device inside its own state directory can read the
@@ -204,6 +210,8 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 			fd:       fd,
 			access:   rightsFor(g.access),
 			declared: g.declared,
+			resolved: resolved,
+			isDir:    g.access.IsDirectory(),
 		})
 		prepared.outcomes = append(prepared.outcomes, outcome)
 	}

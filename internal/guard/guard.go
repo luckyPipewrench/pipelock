@@ -81,6 +81,11 @@ var (
 	// most often an ancestor landlock domain -- is narrowing the policy. The
 	// manifest is not in force as declared, so this is a refusal, not a caveat.
 	ErrPolicyNarrowed = errors.New("guard policy is narrowed by an outer restriction")
+
+	// ErrAlreadyApplied is returned when a prepared manifest is applied twice.
+	// Landlock restrictions stack and cannot be lifted, so a second application
+	// would intersect the policy with itself and narrow it for good.
+	ErrAlreadyApplied = errors.New("guard manifest has already been applied")
 )
 
 // AccessKind is the grant a manifest entry asks for.
@@ -189,7 +194,13 @@ type EnforcementRecord struct {
 	// empty caveat list and "enforced" with sockets unmediated are different
 	// security postures, and an operator reading evidence months later needs to
 	// see which one they had.
-	Unmediated []string      `json:"unmediated,omitempty"`
+	Unmediated []string `json:"unmediated,omitempty"`
+	// Unverified names declared paths whose grant could not be confirmed after
+	// enforcement, as distinct from paths confirmed to be narrowed. A
+	// filesystem that cannot answer the question is not evidence of a problem
+	// and is not evidence of correctness either, so it is reported as its own
+	// thing rather than folded into either.
+	Unverified []string      `json:"unverified,omitempty"`
 	Outcomes   []PathOutcome `json:"outcomes"`
 }
 

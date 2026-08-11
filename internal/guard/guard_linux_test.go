@@ -75,6 +75,24 @@ func TestGuardChildScenario(t *testing.T) {
 	}
 }
 
+// childScratchDir returns a directory for one child scenario, under the root
+// the parent provided when there is one.
+//
+// The child never removes it. Once the child restricts itself the root is
+// outside its grants, so a deferred RemoveAll there is denied and the error
+// discarded, which is how these accumulated. Cleanup belongs to the parent,
+// which is not restricted.
+// Prefixes passed here are deliberately one or two characters: a unix socket
+// bound inside one of these directories has to fit in 108 bytes including the
+// temp root, so every component spent on a descriptive name is a byte closer to
+// a confusing bind failure.
+func childScratchDir(prefix string) (string, error) {
+	if parent := os.Getenv("PIPELOCK_GUARD_CHILD_ROOT"); parent != "" {
+		return os.MkdirTemp(parent, prefix)
+	}
+	return os.MkdirTemp("", prefix)
+}
+
 func newConfig(t *testing.T, m config.GuardManifest) *config.Config {
 	t.Helper()
 	cfg := config.Defaults()
@@ -461,6 +479,19 @@ func TestApply_RefusesIncompleteManifest(t *testing.T) {
 	}
 }
 
+// requireSocketMediationABI gates the tests that build a V9 outer domain.
+//
+// abiOrSkip admits any host at or above the in-process floor, but these
+// scenarios construct the outer restriction with the full V9 configuration,
+// which an ABI 8 host cannot accept. Without this the test would fail on a
+// legitimate kernel for a reason unrelated to what it checks.
+func requireSocketMediationABI(t *testing.T) {
+	t.Helper()
+	if abi := abiOrSkip(t); abi < guard.SocketMediationABI {
+		t.Skipf("landlock ABI %d below %d; this scenario builds a V9 outer domain", abi, guard.SocketMediationABI)
+	}
+}
+
 func abiOrSkip(t *testing.T) int {
 	t.Helper()
 	abi, err := llsys.LandlockGetABIVersion()
@@ -542,7 +573,7 @@ func TestEnforcement_NonVacuity(t *testing.T) {
 // post-enforcement reachability check the record would read "enforced" while
 // the workload got denied a path its own manifest declares.
 func TestEnforcement_DetectsPolicyNarrowedByOuterDomain(t *testing.T) {
-	abiOrSkip(t)
+	requireSocketMediationABI(t)
 	out := runScenario(t, "nested-narrowed")
 	if !strings.Contains(out, "narrowed: DETECTED") {
 		t.Fatalf("output %q, want the outer domain to be detected as narrowing", out)
@@ -554,15 +585,46 @@ func TestEnforcement_DetectsPolicyNarrowedByOuterDomain(t *testing.T) {
 // for the declared read-write grant. Opening with O_WRONLY is side-effect free;
 // it asks the kernel for the write right without changing the workload state.
 func TestEnforcement_DetectsWritePolicyNarrowedByOuterDomain(t *testing.T) {
-	abiOrSkip(t)
+	requireSocketMediationABI(t)
 	out := runScenario(t, "nested-write-narrowed")
 	if !strings.Contains(out, "write-narrowed: DETECTED") {
 		t.Fatalf("output %q, want the outer domain's removed write access to be detected", out)
 	}
 }
 
+// TestEnforcement_DetectsDirectoryWriteNarrowedByOuterDomain proves the write
+// probe sees a narrowing that a read probe cannot.
+//
+// The declared directory stays readable throughout, so this test fails if the
+// verification ever regresses to read-only probing.
+func TestEnforcement_DetectsDirectoryWriteNarrowedByOuterDomain(t *testing.T) {
+	requireSocketMediationABI(t)
+	out := runScenario(t, "nested-narrowed-dir")
+	if !strings.Contains(out, "dir-narrowed: DETECTED") {
+		t.Fatalf("output %q, want the read-only narrowing of a writable directory detected", out)
+	}
+}
+
 func runScenario(t *testing.T, scenario string) string {
 	t.Helper()
+	// The parent owns the child's scratch directory.
+	//
+	// A child creates its root, restricts itself to paths beneath it, and can no
+	// longer traverse or remove the root, so its own deferred cleanup is denied
+	// and silently discarded. Every enforcement run therefore leaked a directory.
+	// Cleanup belongs to this parent, which is not restricted.
+	//
+	// The name is SHORT on purpose. A unix socket path is capped at 108 bytes by
+	// sockaddr_un, and these scenarios bind one several directories deep. Using
+	// t.TempDir here embeds the full test name and pushed the socket path over
+	// that limit, which surfaces as "bind: invalid argument" and reads like a
+	// broken test rather than a path-length problem.
+	childRoot, err := os.MkdirTemp("", "plg")
+	if err != nil {
+		t.Fatalf("creating child scratch root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(childRoot) })
+
 	args := []string{"-test.run=^TestGuardChildScenario$"}
 	// Hand the child its coverage directory as a test flag.
 	//
@@ -578,7 +640,7 @@ func runScenario(t *testing.T, scenario string) string {
 	// #nosec G204,G702 -- os.Args[0] is this test binary; re-executing it is the only
 	// way to assert on an irreversible per-process restriction.
 	cmd := exec.CommandContext(t.Context(), os.Args[0], args...)
-	cmd.Env = append(os.Environ(), childEnv+"="+scenario)
+	cmd.Env = append(os.Environ(), childEnv+"="+scenario, "PIPELOCK_GUARD_CHILD_ROOT="+childRoot)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("child %s failed: %v\n%s", scenario, err, out)
@@ -618,12 +680,11 @@ func coverageGrant() []string {
 // check exists for. Preparing afterwards would fail earlier and for a different
 // reason, proving nothing about this check.
 func runChildNested() int {
-	root, err := os.MkdirTemp("", "guard-nested-")
+	root, err := childScratchDir("n")
 	if err != nil {
 		fmt.Println("setup failed:", err)
 		return 1
 	}
-	defer func() { _ = os.RemoveAll(root) }()
 
 	granted := filepath.Join(root, "state")
 	other := filepath.Join(root, "other")
@@ -675,17 +736,72 @@ func runChildNested() int {
 	return 0
 }
 
+// runChildNestedDir narrows a declared read-write DIRECTORY to read-only in an
+// outer domain.
+//
+// This is the case a read-only probe cannot see at all: the directory opens
+// fine for reading, so a reachability check based on O_RDONLY reports the
+// manifest in force while the workload cannot create, write, remove, or rename
+// anything inside its own state directory. Only the unnamed-inode write probe
+// distinguishes it.
+func runChildNestedDir() int {
+	root, err := childScratchDir("nd")
+	if err != nil {
+		fmt.Println("setup failed:", err)
+		return 1
+	}
+
+	state := filepath.Join(root, "state")
+	if err := os.Mkdir(state, 0o750); err != nil {
+		fmt.Println("setup failed:", err)
+		return 1
+	}
+
+	cfg := config.Defaults()
+	cfg.Guard = config.Guard{
+		Profiles:  []config.GuardProfile{{Name: "agent", Manifests: []string{"m"}}},
+		Manifests: []config.GuardManifest{{Name: "m", ReadWriteDirectories: append([]string{state}, coverageGrant()...)}},
+	}
+	prepared, err := guard.Prepare(cfg, "agent", os.Getuid())
+	if err != nil {
+		fmt.Println("prepare failed:", err)
+		return 1
+	}
+	defer func() { _ = prepared.Close() }()
+	if !prepared.Complete() {
+		fmt.Printf("manifest incomplete before the outer domain: %+v\n", prepared.Outcomes())
+		return 1
+	}
+
+	outer := []landlock.Rule{landlock.RODirs(root)}
+	for _, dir := range coverageGrant() {
+		outer = append(outer, landlock.RWDirs(dir))
+	}
+	if err := landlock.V9.RestrictPaths(outer...); err != nil {
+		fmt.Println("outer restriction failed:", err)
+		return 1
+	}
+
+	record, err := prepared.Apply()
+	if errors.Is(err, guard.ErrPolicyNarrowed) && !record.Enforced() &&
+		record.State == guard.EnforcementAppliedNarrowed {
+		fmt.Println("dir-narrowed: DETECTED")
+		return 0
+	}
+	fmt.Printf("dir-narrowed: MISSED (enforced=%v state=%q err=%v)\n", record.Enforced(), record.State, err)
+	return 0
+}
+
 // runChildNestedWrite creates an outer domain that allows reading an exact
 // file but removes its write permission. This is distinct from
 // runChildNested: reopening that file O_RDONLY succeeds, so only an O_WRONLY
 // probe can detect the policy intersection.
 func runChildNestedWrite() int {
-	root, err := os.MkdirTemp("", "guard-nested-write-")
+	root, err := childScratchDir("nw")
 	if err != nil {
 		fmt.Println("setup failed:", err)
 		return 1
 	}
-	defer func() { _ = os.RemoveAll(root) }()
 
 	state := filepath.Join(root, "state.json")
 	if err := os.WriteFile(state, []byte("{}"), 0o600); err != nil {
@@ -746,12 +862,14 @@ func runChild(scenario string) int {
 	if scenario == "nested-write-narrowed" {
 		return runChildNestedWrite()
 	}
-	root, err := os.MkdirTemp("", "guard-child-")
+	if scenario == "nested-narrowed-dir" {
+		return runChildNestedDir()
+	}
+	root, err := childScratchDir("c")
 	if err != nil {
 		fmt.Println("setup failed:", err)
 		return 1
 	}
-	defer func() { _ = os.RemoveAll(root) }()
 
 	granted := filepath.Join(root, "state")
 	ungranted := filepath.Join(root, "elsewhere")

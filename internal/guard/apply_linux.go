@@ -6,6 +6,7 @@
 package guard
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -93,12 +94,28 @@ func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 }
 
 func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord, error) {
+	// Held for the whole call. Close writes -1 over each descriptor, so a
+	// concurrent Close could otherwise leave rule construction handing a stale
+	// descriptor NUMBER to the kernel, and a freed number can be reused by any
+	// other open in the process, which would grant an unrelated object.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	record := EnforcementRecord{
 		State:            EnforcementRefused,
 		Mechanism:        "landlock",
 		RequiredABI:      ThreadSyncABI,
 		ManifestComplete: p.complete,
 		Outcomes:         p.Outcomes(),
+	}
+
+	// Checked before anything else, because applying twice is a caller mistake
+	// whatever the kernel supports. Landlock restrictions stack and cannot be
+	// lifted, so a second application intersects the policy with itself and
+	// narrows it for good.
+	if p.applied {
+		record.Reason = "this manifest was already applied; landlock restrictions are irreversible and stack, so applying again would narrow the policy for good"
+		return record, ErrAlreadyApplied
 	}
 
 	abi, err := getABI()
@@ -196,6 +213,9 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 		record.Reason = fmt.Sprintf("applying landlock restriction: %v", err)
 		return record, fmt.Errorf("applying landlock restriction: %w", err)
 	}
+	// Set here rather than on the success path: the process is constrained from
+	// this point on whatever the verification below concludes.
+	p.applied = true
 
 	// Verify the manifest is actually in force before claiming it is.
 	//
@@ -214,16 +234,24 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	//
 	// This fails CLOSED. A narrowed policy is reported and refused rather than
 	// presented as the declared one.
-	if narrowed := p.unreachableGrants(); len(narrowed) > 0 {
+	narrowed, unverified := p.unreachableGrants()
+	if len(narrowed) > 0 {
 		// Applied, not refused. By this point the ruleset is in force and
 		// no_new_privs is set, and neither can be undone. Reporting Refused
 		// here would tell an operator the process was left alone when it is
 		// permanently constrained.
 		record.State = EnforcementAppliedNarrowed
 		record.Reason = fmt.Sprintf(
-			"the restriction applied, but %d declared path(s) are unreachable under it (%s); an ancestor landlock domain or another restriction is narrowing this policy, so the manifest is not in force as declared",
+			"the restriction applied, but %d declared path(s) are not in force under it (%s); an ancestor landlock domain or another restriction is narrowing this policy, so the manifest is not in force as declared",
 			len(narrowed), strings.Join(narrowed, ", "))
 		return record, fmt.Errorf("%w: %s", ErrPolicyNarrowed, strings.Join(narrowed, ", "))
+	}
+
+	// A path the filesystem could not answer for is reported, not silently
+	// counted as verified. The restriction is in force either way; what is
+	// unknown is whether an outer domain narrowed this particular grant.
+	if len(unverified) > 0 {
+		record.Unverified = unverified
 	}
 
 	record.State = EnforcementEnforced
@@ -238,22 +266,77 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 // afterwards, so probing through one would report success no matter how
 // narrowed the policy is. That would be a vacuous check dressed as a
 // verification.
-func (p *PreparedManifest) unreachableGrants() []string {
-	var narrowed []string
+func (p *PreparedManifest) unreachableGrants() ([]string, []string) {
+	var narrowed, unverified []string
 	for _, rule := range p.rules {
 		if !reopenGrant(rule, unix.O_RDONLY) {
 			narrowed = append(narrowed, rule.declared)
 			continue
 		}
-		// Opening an exact file O_WRONLY asks the kernel for WriteFile but
-		// does not write or truncate it. A read-only outer domain can therefore
-		// not make a declared read-write file look reachable just because the
-		// old read probe succeeded.
-		if rule.kind == AccessWriteFile && !reopenGrant(rule, unix.O_WRONLY) {
-			narrowed = append(narrowed, rule.declared)
+		switch rule.kind {
+		case AccessWriteFile:
+			// Opening an exact file O_WRONLY asks the kernel for WriteFile but
+			// does not write or truncate it.
+			if !reopenGrant(rule, unix.O_WRONLY) {
+				narrowed = append(narrowed, rule.declared)
+			}
+		case AccessWriteDirectory:
+			switch writableDirectory(rule.resolved) {
+			case dirWriteDenied:
+				narrowed = append(narrowed, rule.declared)
+			case dirWriteUnsupported:
+				unverified = append(unverified, rule.declared)
+			}
 		}
 	}
-	return narrowed
+	return narrowed, unverified
+}
+
+// dirWriteResult is the outcome of probing a directory for write access.
+type dirWriteResult int
+
+const (
+	dirWriteOK dirWriteResult = iota
+	dirWriteDenied
+	dirWriteUnsupported
+)
+
+// writableDirectory reports whether the workload can still write inside a
+// declared directory, without leaving anything behind.
+//
+// O_TMPFILE creates an UNNAMED inode in the directory. It requires write
+// permission, it never links a name, and closing the descriptor frees it, so
+// the directory is byte-for-byte unchanged. That matters because the honest
+// alternative was creating and deleting a probe file inside the workload's own
+// state, which races with the workload and leaves debris when it dies between
+// the two steps.
+//
+// Measured on Linux 7.1.5 against an outer read-only rule on a declared
+// read-write directory: the O_RDONLY probe SUCCEEDS (so a read-only check
+// cannot see this narrowing at all) while O_TMPFILE is denied, and zero files
+// appear in either directory.
+//
+// faccessat2(W_OK) is NOT a substitute and must not be swapped in for looking
+// cheaper: Landlock does not mediate it. In that same measurement it returned
+// success on the narrowed directory, which is a fail-open.
+//
+// A filesystem that does not implement O_TMPFILE reports unsupported rather
+// than denied. Refusing a correct policy because the filesystem cannot answer
+// the question is an availability failure, and Guard reports what it could not
+// verify instead of inventing a verdict.
+func writableDirectory(path string) dirWriteResult {
+	fd, err := unix.Open(path, unix.O_TMPFILE|unix.O_WRONLY|unix.O_CLOEXEC, 0o600)
+	if err == nil {
+		_ = unix.Close(fd)
+		return dirWriteOK
+	}
+	if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM) || errors.Is(err, unix.EROFS) {
+		return dirWriteDenied
+	}
+	// EOPNOTSUPP and EISDIR are what a filesystem without O_TMPFILE support
+	// returns. Anything else unexpected is also treated as "could not verify"
+	// rather than as a denial, for the same availability reason.
+	return dirWriteUnsupported
 }
 
 // reopenGrant tests an operation against the post-restriction pathname and

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 	"golang.org/x/sys/unix"
@@ -43,6 +44,16 @@ type preparedRule struct {
 // file descriptors, so Close is mandatory on every path out, including the
 // error paths.
 type PreparedManifest struct {
+	// mu guards rules against a concurrent Close during Apply.
+	//
+	// Close closes each descriptor and writes -1 over it. Without this lock a
+	// Close racing Apply could leave Apply handing a stale descriptor NUMBER to
+	// the kernel, and if any other goroutine opened a file in that window the
+	// number could have been reused, so the ruleset would grant an unrelated
+	// object. The window is small and the outcome is a wrong grant, which is the
+	// kind of defect that does not announce itself.
+	mu       sync.Mutex
+	applied  bool
 	rules    []preparedRule
 	outcomes []PathOutcome
 	complete bool
@@ -69,6 +80,8 @@ func (p *PreparedManifest) Close() error {
 	if p == nil {
 		return nil
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var firstErr error
 	for i := range p.rules {
 		if p.rules[i].fd < 0 {

@@ -188,8 +188,8 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	// the high-level helper's answer to it.
 	//
 	// The answer is TSYNC: the kernel applies the ruleset to every thread of
-	// the process atomically. It is available from ABI 8, and Guard already
-	// requires 9, so it is always the path taken here.
+	// the process atomically. It is available from ABI 8, which is exactly what
+	// ThreadSyncABI requires above, so it is always the path taken here.
 	//
 	// The userspace alternative -- enumerate /proc/self/task and restrict each
 	// thread -- is not merely slower, it is self-defeating for Guard. That walk

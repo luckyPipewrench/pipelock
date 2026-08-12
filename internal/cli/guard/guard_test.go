@@ -5,7 +5,6 @@ package guard
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -339,7 +338,12 @@ func TestDefaultConfigAndArgumentValidation(t *testing.T) {
 }
 
 func TestPreserveCommandExitCode(t *testing.T) {
-	err := exec.CommandContext(context.Background(), "sh", "-c", "exit 37").Run()
+	if os.Getenv("PIPELOCK_TEST_EXIT_37") == "1" {
+		os.Exit(37)
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestPreserveCommandExitCode$") // #nosec G204,G702 -- controlled re-exec of this test binary.
+	cmd.Env = append(os.Environ(), "PIPELOCK_TEST_EXIT_37=1")
+	err := cmd.Run()
 	if err == nil {
 		t.Fatal("helper command unexpectedly succeeded")
 	}

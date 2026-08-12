@@ -171,6 +171,23 @@ func TestLaunchStandaloneGuardProofFailureCleansChildTempDir(t *testing.T) {
 	}
 }
 
+func TestStandaloneChildCleanupReapsOnlyInStrictMode(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(strconv.FormatBool(strict), func(t *testing.T) {
+			reaped := false
+			stopped := false
+			cleanup := standaloneChildCleanup(0, strict, func() { stopped = true }, func() { reaped = true })
+			cleanup()
+			if reaped != strict {
+				t.Fatalf("reaped = %t, want %t", reaped, strict)
+			}
+			if !stopped {
+				t.Fatal("cleanup did not stop the proxy")
+			}
+		})
+	}
+}
+
 func TestLaunchStandaloneDeveloperEnvironmentSupportsLargeEnvironment(t *testing.T) {
 	skipIfStandaloneUnavailable(t)
 

@@ -255,18 +255,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting sandbox child: %w", err)
 	}
-	cleanupChildState := func() {
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		}
-		if cfg.Strict {
-			ReapOrphans()
-		}
-		proxyServer.stop()
-		if cmd.Process != nil {
-			CleanupChildSandboxDir(cmd.Process.Pid)
-		}
-	}
+	cleanupChildState := standaloneChildCleanup(cmd.Process.Pid, cfg.Strict, proxyServer.stop, ReapOrphans)
 	defer cleanupChildState()
 	if guardStatusWriter != nil {
 		if err := guardStatusWriter.Close(); err != nil {
@@ -305,6 +294,21 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	waitErr := cmd.Wait()
 
 	return waitErr
+}
+
+func standaloneChildCleanup(pid int, strict bool, stopProxy, reapOrphans func()) func() {
+	return func() {
+		if pid > 0 {
+			_ = syscall.Kill(-pid, syscall.SIGTERM)
+		}
+		if strict {
+			reapOrphans()
+		}
+		stopProxy()
+		if pid > 0 {
+			CleanupChildSandboxDir(pid)
+		}
+	}
 }
 
 func guardLookupEnvironment(useDeveloperEnvironment bool, developerEnvironment []string) []string {

@@ -32,6 +32,24 @@ func TestLoadForInspectionRejectsMalformedTrailingDocument(t *testing.T) {
 	}
 }
 
+func TestLoadForInspectionResolvesRelativeAuditLogPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(path, []byte("logging:\n  output: file\n  file: logs/audit.jsonl\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadForInspection(path)
+	if err != nil {
+		t.Fatalf("LoadForInspection: %v", err)
+	}
+	if want := filepath.Join(dir, "logs", "audit.jsonl"); cfg.Logging.File != want {
+		t.Fatalf("logging.file = %q, want %q", cfg.Logging.File, want)
+	}
+}
+
 func TestLoadRejectsNonRegularConfigSource(t *testing.T) {
 	t.Parallel()
 

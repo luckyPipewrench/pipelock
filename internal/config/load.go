@@ -168,6 +168,13 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	}
 
 	if !opts.skipRuntimePathResolution {
+		// Resolve the audit file against the config location. Lifecycle commands
+		// and the server must use the same sink even when they run from different
+		// working directories.
+		if cfg.Logging.File != "" && !filepath.IsAbs(cfg.Logging.File) {
+			cfg.Logging.File = filepath.Join(configDir, cfg.Logging.File)
+		}
+
 		// Resolve relative secrets_file path relative to config file directory.
 		if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
 			cfg.DLP.SecretsFile = filepath.Join(configDir, cfg.DLP.SecretsFile)

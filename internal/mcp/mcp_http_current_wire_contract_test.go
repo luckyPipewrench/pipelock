@@ -20,11 +20,11 @@ import (
 )
 
 const (
-	wireContractProtocolVersion = "2026-07-28"
-	wireContractHeaderMismatch  = -32020
-	wireContractProtocolHeader  = "Mcp-Protocol-Version"
-	wireContractMethodHeader    = "Mcp-Method"
-	wireContractNameHeader      = "Mcp-Name"
+	wireContractProtocolVersion = currentMCPVersion
+	wireContractHeaderMismatch  = mcpHeaderMismatchCode
+	wireContractProtocolHeader  = listenerProtocolVersion
+	wireContractMethodHeader    = listenerMCPMethod
+	wireContractNameHeader      = listenerMCPName
 )
 
 // wireContractUpstreamCapture records only requests that reached the real
@@ -80,7 +80,7 @@ func currentWireHeaders(method, name string) http.Header {
 }
 
 func currentWireBody(id int, method, routedParams string) string {
-	meta := `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+	meta := fmt.Sprintf(`"_meta":{"io.modelcontextprotocol/protocolVersion":%q,"io.modelcontextprotocol/clientCapabilities":{}}`, currentMCPVersion)
 	if routedParams != "" {
 		meta = routedParams + "," + meta
 	}
@@ -137,8 +137,8 @@ func requireWireHeaderMismatch(t *testing.T, status int, body string) {
 func TestHTTPListener_CurrentWireContractRejectsIncompleteOrMismatchedHeaders(t *testing.T) {
 	goodBody := currentWireBody(1, "tools/call", `"name":"echo","arguments":{}`)
 	missingProtocolVersion := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/clientCapabilities":{}}}}`
-	missingClientCapabilities := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
-	malformedClientCapabilities := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":false}}}`
+	missingClientCapabilities := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":%q}}}`, currentMCPVersion)
+	malformedClientCapabilities := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":%q,"io.modelcontextprotocol/clientCapabilities":false}}}`, currentMCPVersion)
 
 	for _, tc := range []struct {
 		name        string
@@ -397,6 +397,34 @@ func TestHTTPListener_CurrentWireContractRejectsGETAndDELETE(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_LegacyNonPOSTRejectsPOSTOnlyHeaders(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			upstream, capture := newWireContractUpstream(t)
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+			req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set(wireContractMethodHeader, "tools/call")
+			if method == http.MethodGet {
+				req.Header.Set("Accept", "text/event-stream")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			if got := capture.calls.Load(); got != 0 {
+				t.Fatalf("legacy %s reached upstream %d times", method, got)
+			}
+		})
+	}
+}
+
 func TestHTTPListener_FutureWireVersionFailsClosedAsUnsupported(t *testing.T) {
 	upstream, capture := newWireContractUpstream(t)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
@@ -409,6 +437,21 @@ func TestHTTPListener_FutureWireVersionFailsClosedAsUnsupported(t *testing.T) {
 	}
 	if got := capture.calls.Load(); got != 0 {
 		t.Fatalf("unsupported future version reached upstream %d times", got)
+	}
+}
+
+func TestHTTPListener_FutureBodyVersionWithoutHeaderFailsClosed(t *testing.T) {
+	upstream, capture := newWireContractUpstream(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	body := strings.Replace(currentWireBody(1, "tools/call", `"name":"echo","arguments":{}`), wireContractProtocolVersion, "2027-01-15", 1)
+	headers := currentWireHeaders("tools/call", "echo")
+	headers.Del(wireContractProtocolHeader)
+	status, _, response := postWireContractRequest(t, baseURL, body, headers)
+	if status != http.StatusBadRequest || !strings.Contains(response, `"code":-32022`) {
+		t.Fatalf("future body version = status %d body %s, want 400 unsupported version", status, response)
+	}
+	if got := capture.calls.Load(); got != 0 {
+		t.Fatalf("unsupported future body version reached upstream %d times", got)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ func principalStateToolCall(t *testing.T, baseURL, bearer string, id int, tool s
 	if extra != nil && (extra.Get("Mcp-Session-Id") != "" || extra.Get(listenerSessionTokenHeader) != "") {
 		t.Fatal("current-spec principal-state test must not carry an MCP or Pipelock session token")
 	}
-	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`, id, tool)
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":%q,"io.modelcontextprotocol/clientCapabilities":{}}}}`, id, tool, currentMCPVersion)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -238,6 +239,90 @@ func TestHTTPListener_PrincipalState_ResolverCannotSeeConsumedListenerCredential
 	}
 }
 
+func TestHTTPListener_PrincipalState_ResolverFailuresFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolver ListenerPrincipalResolver
+	}{
+		{name: "resolver error", resolver: func(*http.Request) (ListenerPrincipal, error) {
+			return ListenerPrincipal{}, errors.New("verifier unavailable")
+		}},
+		{name: "subject without provider", resolver: func(*http.Request) (ListenerPrincipal, error) {
+			return ListenerPrincipal{Subject: "orphan"}, nil
+		}},
+		{name: "provider without subject", resolver: func(*http.Request) (ListenerPrincipal, error) {
+			return ListenerPrincipal{Provider: "test"}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream, calls := principalStateUpstream(t)
+			opts := principalStateOpts(t, principalStateTestBearer)
+			opts.ListenerPrincipalResolver = tc.resolver
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			status, body := principalStateToolCall(t, baseURL, principalStateTestBearer, 1, "read_file", nil)
+			if status != http.StatusServiceUnavailable || !strings.Contains(body, "authentication unavailable") {
+				t.Fatalf("status = %d body = %s, want 503 authentication unavailable", status, body)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("failed resolver reached upstream %d times", got)
+			}
+		})
+	}
+}
+
+func TestHTTPListener_PrincipalState_VerifierAuthenticatesWithoutListenerBearer(t *testing.T) {
+	upstream, calls := principalStateUpstream(t)
+	opts := principalStateOpts(t, principalStateTestBearer)
+	opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
+		if r.Header.Get("X-Verified-Subject") != "alice" {
+			return ListenerPrincipal{}, nil
+		}
+		return ListenerPrincipal{Provider: "test", Subject: "alice"}, nil
+	}
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	status, body := principalStateToolCall(t, baseURL, "wrong-bearer", 1, "read_file", http.Header{"X-Verified-Subject": []string{"alice"}})
+	if status != http.StatusOK {
+		t.Fatalf("verifier-backed authentication = status %d body %s, want 200", status, body)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
+func TestHTTPListener_PrincipalState_SlowVerifierDoesNotSerializeRequests(t *testing.T) {
+	upstream, calls := principalStateUpstream(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseVerifier := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseVerifier()
+	opts := principalStateOpts(t, "")
+	opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
+		subject := r.Header.Get("X-Verified-Subject")
+		if subject == "slow" {
+			close(entered)
+			<-release
+		}
+		return ListenerPrincipal{Provider: "test", Subject: subject}, nil
+	}
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	slowDone := make(chan struct{})
+	go func() {
+		defer close(slowDone)
+		principalStateToolCall(t, baseURL, "", 1, "read_file", http.Header{"X-Verified-Subject": []string{"slow"}})
+	}()
+	<-entered
+	status, body := principalStateToolCall(t, baseURL, "", 2, "read_file", http.Header{"X-Verified-Subject": []string{"fast"}})
+	if status != http.StatusOK {
+		t.Fatalf("fast verifier request = status %d body %s, want 200 while slow resolver is blocked", status, body)
+	}
+	releaseVerifier()
+	<-slowDone
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+}
+
 func TestMCPListenerPrincipalState_ExpiredIdleStateNeverResurrects(t *testing.T) {
 	states := newMCPListenerClientStates(nil)
 	now := time.Unix(1_800_000_000, 0)
@@ -252,9 +337,16 @@ func TestMCPListenerPrincipalState_ExpiredIdleStateNeverResurrects(t *testing.T)
 	}
 	for len(states.clients) < maxMCPListenerClients {
 		key := fmt.Sprintf("filler-%d", len(states.clients))
-		states.clients[key] = newMCPListenerClientState("legacy", key)
+		state := newMCPListenerClientState("legacy", key)
+		states.touchLocked(state)
+		states.clients[key] = state
 	}
 	now = now.Add(listenerPrincipalIdleTTL + time.Second)
+	for _, state := range states.clients {
+		if state != first {
+			states.touchLocked(state)
+		}
+	}
 	second, ok := states.stateForPrincipal(principal)
 	if !ok {
 		t.Fatal("expired principal was not recoverable at registry capacity")

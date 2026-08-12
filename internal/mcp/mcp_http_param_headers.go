@@ -15,7 +15,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 )
 
-const mcpParamHeaderPrefix = "mcp-param-"
+const (
+	mcpParamHeaderPrefix = "mcp-param-"
+	maxMCPMirrorInteger  = int64(9007199254740991)
+)
 
 // validateMCPParamHeaders verifies every recognized 2026-07-28 mirrored tool
 // parameter against the exact property path in the accepted tools/list schema.
@@ -23,6 +26,9 @@ const mcpParamHeaderPrefix = "mcp-param-"
 // the protocol requires. A known schema is strict in both directions: a body
 // value requires its header, and a recognized header requires its body value.
 func validateMCPParamHeaders(headers map[string][]string, frame MCPFrame, baseline *tools.ToolBaseline) bool {
+	if frame.RoutingNameErr != nil {
+		return false
+	}
 	if frame.Method != methodToolsCall || baseline == nil || frame.RoutingName == "" {
 		return true
 	}
@@ -116,15 +122,15 @@ func mcpParamValueMatches(header string, raw json.RawMessage, valueType string) 
 			return false
 		}
 		body := bodyNumber.Num()
-		limit := big.NewInt(9007199254740991)
+		limit := big.NewInt(maxMCPMirrorInteger)
 		if body.Cmp(limit) > 0 || body.Cmp(new(big.Int).Neg(limit)) < 0 {
 			return false
 		}
-		headerNumber := new(big.Rat)
-		if _, ok := headerNumber.SetString(header); !ok || !headerNumber.IsInt() {
+		headerInteger, err := strconv.ParseInt(header, 10, 64)
+		if err != nil || strconv.FormatInt(headerInteger, 10) != header || headerInteger > maxMCPMirrorInteger || headerInteger < -maxMCPMirrorInteger {
 			return false
 		}
-		return bodyNumber.Cmp(headerNumber) == 0
+		return body.Cmp(big.NewInt(headerInteger)) == 0
 	default:
 		return false
 	}

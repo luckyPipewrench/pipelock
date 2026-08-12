@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -419,9 +420,12 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		if !strings.Contains(blocked, "chain pattern") {
 			t.Fatalf("first token lost its own chain history: %s", blocked)
 		}
-		withoutToken, _ := post(t, "", `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+		withoutToken, withoutTokenHeaders := post(t, "", `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
 		if !strings.Contains(withoutToken, "authenticated principal") {
 			t.Fatalf("unbound stateful request did not fail closed: %s", withoutToken)
+		}
+		if got := withoutTokenHeaders.Get(blockreason.HeaderReason); got != string(blockreason.SessionBinding) {
+			t.Fatalf("unbound block reason = %q, want %q", got, blockreason.SessionBinding)
 		}
 		if got := upstreamCalls.Load(); got != 4 {
 			t.Fatalf("upstream calls = %d, want 4 after token isolation and two local blocks", got)
@@ -494,9 +498,12 @@ func TestHTTPListenerDiagnosis_HeaderlessChainDoesNotJoinState(t *testing.T) {
 	if !strings.Contains(second, "chain pattern") {
 		t.Fatalf("token-bound follow-up bypassed chain detection: %s", second)
 	}
-	withoutToken, _ := post(t, "", "client-b", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+	withoutToken, withoutTokenHeaders := post(t, "", "client-b", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
 	if !strings.Contains(withoutToken, "authenticated principal") {
 		t.Fatalf("headerless stateful follow-up did not fail closed: %s", withoutToken)
+	}
+	if got := withoutTokenHeaders.Get(blockreason.HeaderReason); got != string(blockreason.SessionBinding) {
+		t.Fatalf("headerless block reason = %q, want %q", got, blockreason.SessionBinding)
 	}
 	if got := upstreamCalls.Load(); got != 2 {
 		t.Fatalf("upstream calls = %d, want setup and first token-bound call only", got)

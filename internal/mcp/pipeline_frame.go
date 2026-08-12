@@ -21,6 +21,8 @@ import (
 // HTTP upstream paths where no pre-validator runs.
 var ErrInvalidMethodType = errors.New("mcp: method must be a string")
 
+const methodPromptsGet = "prompts/get"
+
 // MCPFrame is a structural parse of a JSON-RPC 2.0 message
 // received on an MCP transport. Callers that previously invoked
 // extractRPCID, extractToolCallName, and extractToolCallArgs separately
@@ -204,6 +206,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 			frame.RoutingNamePresent = true
 			if err := json.Unmarshal(params.Name, &frame.RoutingName); err != nil {
 				frame.RoutingNameErr = err
+				frame.ParseErr = err
 				return frame
 			}
 			frame.ToolCallName = frame.RoutingName
@@ -216,26 +219,20 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 			frame.Args = params.Arguments
 		}
 	}
-	if frame.Method == "resources/read" {
-		var params struct {
-			URI json.RawMessage `json:"uri"`
-		}
+	if field := routingFieldForMethod(frame.Method); field != "" {
+		var params map[string]json.RawMessage
 		if err := json.Unmarshal(decoded.Params, &params); err != nil {
 			frame.RoutingNameErr = err
-		} else if len(params.URI) > 0 {
-			frame.RoutingNamePresent = true
-			frame.RoutingNameErr = json.Unmarshal(params.URI, &frame.RoutingName)
+			frame.ParseErr = err
+			return frame
 		}
-	}
-	if frame.Method == "prompts/get" {
-		var params struct {
-			Name json.RawMessage `json:"name"`
-		}
-		if err := json.Unmarshal(decoded.Params, &params); err != nil {
-			frame.RoutingNameErr = err
-		} else if len(params.Name) > 0 {
+		if raw, ok := params[field]; ok && len(raw) > 0 {
 			frame.RoutingNamePresent = true
-			frame.RoutingNameErr = json.Unmarshal(params.Name, &frame.RoutingName)
+			if err := json.Unmarshal(raw, &frame.RoutingName); err != nil {
+				frame.RoutingNameErr = err
+				frame.ParseErr = err
+				return frame
+			}
 		}
 	}
 	var paramsMeta struct {
@@ -252,6 +249,17 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 		}
 	}
 	return frame
+}
+
+func routingFieldForMethod(method string) string {
+	switch method {
+	case methodResourcesRead:
+		return "uri"
+	case methodPromptsGet:
+		return "name"
+	default:
+		return ""
+	}
 }
 
 // recoverTopLevelJSONRPCID reads a top-level JSON-RPC id without requiring the

@@ -26,16 +26,20 @@ func TestExtractHeaderBindings_CurrentSpecConstraints(t *testing.T) {
 		t.Fatalf("bindings = %#v, want direct and nested property contracts", bindings)
 	}
 
-	for _, schema := range []string{
-		`{"type":"object","properties":{"x":{"type":"number","x-mcp-header":"X"}}}`,
-		`{"type":"object","properties":{"x":{"type":"string","x-mcp-header":"bad name"}}}`,
-		`{"type":"object","properties":{"x":{"type":"string","x-mcp-header":"Same"},"y":{"type":"boolean","x-mcp-header":"same"}}}`,
-		`{"type":"object","properties":{"x":{"oneOf":[{"type":"string","x-mcp-header":"X"}]}}}`,
-		`{"type":"object","properties":{"x":{"$ref":"#/$defs/x"}},"$defs":{"x":{"type":"string","x-mcp-header":"X"}}}`,
+	for _, tc := range []struct{ name, schema string }{
+		{name: "unsupported type", schema: `{"type":"object","properties":{"x":{"type":"number","x-mcp-header":"X"}}}`},
+		{name: "root annotation", schema: `{"type":"string","x-mcp-header":"X"}`},
+		{name: "non-string annotation", schema: `{"type":"object","properties":{"x":{"type":"string","x-mcp-header":42}}}`},
+		{name: "invalid token", schema: `{"type":"object","properties":{"x":{"type":"string","x-mcp-header":"bad name"}}}`},
+		{name: "duplicate", schema: `{"type":"object","properties":{"x":{"type":"string","x-mcp-header":"Same"},"y":{"type":"boolean","x-mcp-header":"same"}}}`},
+		{name: "composition", schema: `{"type":"object","properties":{"x":{"oneOf":[{"type":"string","x-mcp-header":"X"}]}}}`},
+		{name: "ref", schema: `{"type":"object","properties":{"x":{"$ref":"#/$defs/x"}},"$defs":{"x":{"type":"string","x-mcp-header":"X"}}}`},
 	} {
-		if _, err := ExtractHeaderBindings(json.RawMessage(schema)); err == nil {
-			t.Fatalf("invalid schema accepted: %s", schema)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ExtractHeaderBindings(json.RawMessage(tc.schema)); err == nil {
+				t.Fatalf("invalid schema accepted: %s", tc.schema)
+			}
+		})
 	}
 }
 
@@ -83,15 +87,27 @@ func TestExtractHeaderBindings_DecodeAndShapeErrors(t *testing.T) {
 		t.Fatalf("empty schema = %#v, %v; want nil, nil", bindings, err)
 	}
 
-	for _, schema := range []string{
-		`{`,
-		`[]`,
-		`{"type":"object","properties":[]}`,
-		`{"type":"object","properties":{"x":[{"x-mcp-header":"X"}]}}`,
+	for _, tc := range []struct{ name, schema string }{
+		{name: "malformed JSON", schema: `{`},
+		{name: "non-object root", schema: `[]`},
+		{name: "non-object properties", schema: `{"type":"object","properties":[]}`},
+		{name: "non-object child", schema: `{"type":"object","properties":{"x":[{"x-mcp-header":"X"}]}}`},
 	} {
-		if _, err := ExtractHeaderBindings(json.RawMessage(schema)); err == nil {
-			t.Fatalf("invalid schema accepted: %s", schema)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ExtractHeaderBindings(json.RawMessage(tc.schema)); err == nil {
+				t.Fatalf("invalid schema accepted: %s", tc.schema)
+			}
+		})
+	}
+}
+
+func TestExtractHeaderBindings_RejectsExcessiveDepth(t *testing.T) {
+	child := `{"type":"string"}`
+	for i := 0; i < maxToolHeaderSchemaDepth+2; i++ {
+		child = `{"type":"object","properties":{"next":` + child + `}}`
+	}
+	if _, err := ExtractHeaderBindings(json.RawMessage(child)); err == nil {
+		t.Fatal("over-deep tool schema was accepted")
 	}
 }
 

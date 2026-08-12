@@ -345,7 +345,7 @@ func RunHTTPListenerProxy(
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
-		if listenerToken != "" && !authorized {
+		if listenerToken != "" && !authorized && listenerPrincipal.key == "" {
 			w.Header().Set("Proxy-Authenticate", `Bearer realm="pipelock-mcp"`)
 			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 			return
@@ -688,18 +688,7 @@ func RunHTTPListenerProxy(
 			if headerResult == nil {
 				return false
 			}
-			pattern := patternUnknown
-			reason := headerResult.reason
-			if reason == "" {
-				reason = blockreason.DLPMatch
-			}
-			if len(headerResult.matches) > 0 {
-				pattern = headerResult.matches[0].PatternName
-			} else if reason == blockreason.PromptInjection {
-				pattern = "MCP parameter header prompt injection"
-			} else if reason == blockreason.BadRequest {
-				pattern = "malformed MCP parameter header encoding"
-			}
+			reason, pattern := listenerHeaderBlockClassification(headerResult)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s in %s header: %s\n", reason, headerResult.header, pattern)
 			emitListenerBlockDecision(mcpListenerBlockDecision{
 				reason:          reason,
@@ -1133,6 +1122,20 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(mismatch)
 				return
 			}
+		} else if hasMCPParamHeaders(r.Header) {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP parameter header requires the current protocol version\n")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			mismatch, _ := json.Marshal(rpcError{
+				JSONRPC: jsonrpc.Version,
+				ID:      frame.ID,
+				Error: rpcErrorDetail{
+					Code:    mcpHeaderMismatchCode,
+					Message: "pipelock: MCP parameter header requires the current protocol version",
+				},
+			})
+			_, _ = w.Write(mismatch)
+			return
 		}
 
 		// Validate JSON-RPC 2.0 structure for single requests: version
@@ -1244,19 +1247,17 @@ func RunHTTPListenerProxy(
 		// body scanner doesn't see HTTP headers, so an agent could leak
 		// credentials via MCP listener headers without triggering DLP.
 		if headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg()); headerResult != nil {
-			pattern := patternUnknown
-			reason := headerResult.reason
-			if reason == "" {
-				reason = blockreason.DLPMatch
-			}
-			if len(headerResult.matches) > 0 {
-				pattern = headerResult.matches[0].PatternName
-			} else if reason == blockreason.PromptInjection {
-				pattern = "MCP parameter header prompt injection"
-			} else if reason == blockreason.BadRequest {
-				pattern = "malformed MCP parameter header encoding"
-			}
+			reason, pattern := listenerHeaderBlockClassification(headerResult)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s in %s header: %s\n", reason, headerResult.header, pattern)
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          reason,
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryNone,
+				layer:           mcpReceiptLayerInput,
+				pattern:         pattern,
+				target:          "mcp:listener-header:" + http.CanonicalHeaderKey(headerResult.header),
+				receiptSeverity: config.SeverityHigh,
+			})
 			recordListenerAdaptiveSignal(reqRec, session.SignalBlock, auditSessionKey)
 			w.Header().Set("Content-Type", "application/json")
 			rpcID := frame.ID
@@ -1713,6 +1714,23 @@ func validateListenerBearerToken(token string) error {
 	return nil
 }
 
+func listenerHeaderBlockClassification(result *mcpListenerHeaderDLPResult) (blockreason.Reason, string) {
+	reason := result.reason
+	if reason == "" {
+		reason = blockreason.DLPMatch
+	}
+	switch {
+	case len(result.matches) > 0:
+		return reason, result.matches[0].PatternName
+	case reason == blockreason.PromptInjection:
+		return reason, "MCP parameter header prompt injection"
+	case reason == blockreason.BadRequest:
+		return reason, "malformed MCP parameter header encoding"
+	default:
+		return reason, patternUnknown
+	}
+}
+
 // forwardIfOperatorUnset copies a client header to the upstream request only
 // when the operator has not already pinned it through --header/--header-file.
 // Operator-configured values are policy; a client must never override them.
@@ -1735,7 +1753,7 @@ func forwardListenerUpstreamHeaders(upReq, r *http.Request, includeLastEventID b
 		forwardIfOperatorUnset(upReq, r, listenerMCPMethod)
 		forwardIfOperatorUnset(upReq, r, listenerMCPName)
 		for name, values := range r.Header {
-			if !strings.HasPrefix(strings.ToLower(name), "mcp-param-") || upReq.Header.Values(name) != nil {
+			if !strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) || upReq.Header.Values(name) != nil {
 				continue
 			}
 			for _, value := range values {
@@ -1759,7 +1777,16 @@ func hasMCPPOSTOnlyHeaders(headers http.Header) bool {
 		return true
 	}
 	for name := range headers {
-		if strings.HasPrefix(strings.ToLower(name), "mcp-param-") {
+		if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMCPParamHeaders(headers http.Header) bool {
+	for name := range headers {
+		if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
 			return true
 		}
 	}
@@ -1864,8 +1891,8 @@ func listenerBearerTokenForRequest(opts MCPProxyOpts) (string, error) {
 
 func listenerAuthenticationForRequest(r *http.Request, opts MCPProxyOpts, states *mcpListenerClientStates) (string, string, bool, mcpListenerPrincipal, error) {
 	states.authMu.Lock()
-	defer states.authMu.Unlock()
 	token, err := listenerBearerTokenForRequest(opts)
+	states.authMu.Unlock()
 	if err != nil {
 		return "", "", false, mcpListenerPrincipal{}, err
 	}
@@ -1878,14 +1905,30 @@ func listenerAuthenticationForRequest(r *http.Request, opts MCPProxyOpts, states
 			principalRequest.Header.Del(listenerAuthorization)
 		}
 	}
-	principal, err := listenerPrincipalForRequest(principalRequest, opts, states, token, authorized)
+	principal, err := listenerPrincipalForRequest(principalRequest, opts, states)
+	if err != nil || principal.key != "" {
+		return token, consumed, authorized, principal, err
+	}
+
+	// A resolver may perform network I/O, so it must run outside authMu. If it
+	// declines the request, refresh and authenticate the bearer again under the
+	// lock before deriving its generation. Rotation cannot race this fallback
+	// into admitting a retired credential epoch.
+	states.authMu.Lock()
+	defer states.authMu.Unlock()
+	token, err = listenerBearerTokenForRequest(opts)
+	if err != nil {
+		return "", "", false, mcpListenerPrincipal{}, err
+	}
+	consumed, authorized = listenerBearerAuthHeader(r.Header, token)
+	if token == "" || !authorized {
+		return token, consumed, authorized, mcpListenerPrincipal{}, nil
+	}
+	principal, err = states.bearerPrincipal(token)
 	return token, consumed, authorized, principal, err
 }
 
-func listenerPrincipalForRequest(r *http.Request, opts MCPProxyOpts, states *mcpListenerClientStates, listenerToken string, authorized bool) (mcpListenerPrincipal, error) {
-	if listenerToken != "" && !authorized {
-		return mcpListenerPrincipal{}, nil
-	}
+func listenerPrincipalForRequest(r *http.Request, opts MCPProxyOpts, states *mcpListenerClientStates) (mcpListenerPrincipal, error) {
 	if opts.ListenerPrincipalResolver != nil {
 		principal, err := opts.ListenerPrincipalResolver(r)
 		if err != nil {
@@ -1901,10 +1944,7 @@ func listenerPrincipalForRequest(r *http.Request, opts MCPProxyOpts, states *mcp
 				principal.Subject, principal.Epoch)
 		}
 	}
-	if listenerToken == "" || !authorized {
-		return mcpListenerPrincipal{}, nil
-	}
-	return states.bearerPrincipal(listenerToken)
+	return mcpListenerPrincipal{}, nil
 }
 
 func setListenerCORSHeaders(headers http.Header, origin string) {
@@ -1932,7 +1972,7 @@ func listenerCORSPreflightAllowed(r *http.Request) bool {
 		if name == "" {
 			continue
 		}
-		if strings.HasPrefix(name, "mcp-param-") {
+		if strings.HasPrefix(name, mcpParamHeaderPrefix) {
 			if !validMCPParamHeaderName(name) {
 				return false
 			}
@@ -1963,7 +2003,7 @@ func allowMCPParamCORSHeaders(headers http.Header, requested string) {
 }
 
 func validMCPParamHeaderName(name string) bool {
-	const prefix = "mcp-param-"
+	const prefix = mcpParamHeaderPrefix
 	if !strings.HasPrefix(strings.ToLower(name), prefix) || len(name) <= len(prefix) || len(name) > 256 {
 		return false
 	}
@@ -2263,7 +2303,7 @@ func currentProtocolHeadersMatchFrame(headers http.Header, frame MCPFrame) bool 
 		return false
 	}
 	switch frame.Method {
-	case methodToolsCall, "resources/read", "prompts/get":
+	case methodToolsCall, methodResourcesRead, methodPromptsGet:
 		name := headers.Get(listenerMCPName)
 		decoded, ok := decodeMCPRoutingName(name)
 		return ok && frame.RoutingNameErr == nil && frame.RoutingNamePresent && frame.RoutingName != "" && decoded == frame.RoutingName

@@ -45,6 +45,8 @@ func scanMCPListenerHeadersForDLP(
 
 	headersToScan := mcpListenerHeadersToScan(headers, cfg)
 	allValues := make([]string, 0)
+	type namedHeaderValue struct{ name, value string }
+	decodedParamValues := make([]namedHeaderValue, 0)
 	for name, values := range headersToScan {
 		if mcpListenerShouldScanHeaderNames(cfg) {
 			result := sc.ScanTextForDLP(ctx, name)
@@ -72,6 +74,7 @@ func scanMCPListenerHeadersForDLP(
 					return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.PromptInjection}
 				}
 				if decoded != value {
+					decodedParamValues = append(decodedParamValues, namedHeaderValue{name: strings.ToLower(name), value: decoded})
 					result = sc.ScanTextForDLP(ctx, decoded)
 					if !result.Clean {
 						return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
@@ -92,6 +95,22 @@ func scanMCPListenerHeadersForDLP(
 		result := sc.ScanTextForDLP(ctx, strings.Join(allValues, "\n"))
 		if !result.Clean {
 			return &mcpListenerHeaderDLPResult{header: "(joined)", matches: result.Matches}
+		}
+	}
+	if len(decodedParamValues) > 1 {
+		sort.Slice(decodedParamValues, func(i, j int) bool {
+			if decodedParamValues[i].name == decodedParamValues[j].name {
+				return decodedParamValues[i].value < decodedParamValues[j].value
+			}
+			return decodedParamValues[i].name < decodedParamValues[j].name
+		})
+		joined := make([]string, len(decodedParamValues))
+		for i := range decodedParamValues {
+			joined[i] = decodedParamValues[i].value
+		}
+		result := sc.ScanTextForDLP(ctx, strings.Join(joined, "\n"))
+		if !result.Clean {
+			return &mcpListenerHeaderDLPResult{header: "(joined decoded parameters)", matches: result.Matches}
 		}
 	}
 	return nil

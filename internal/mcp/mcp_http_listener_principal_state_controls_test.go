@@ -448,8 +448,12 @@ func TestHTTPListener_PrincipalControls_ConcurrentBearerRotationCannotResurrectO
 		t.Fatalf("new epoch exec = status %d body %s, want fresh allowed state", status, body)
 	}
 	close(releaseOld)
-	if got := <-oldResult; got.err != nil {
+	got := <-oldResult
+	if got.err != nil {
 		t.Fatalf("old in-flight request did not complete after revocation: %v", got.err)
+	}
+	if got.status != http.StatusBadGateway || !strings.Contains(got.body, "upstream HTTP request failed") {
+		t.Fatalf("revoked in-flight request = status %d body %s, want canceled-upstream response", got.status, got.body)
 	}
 
 	active.Store(oldBearer)

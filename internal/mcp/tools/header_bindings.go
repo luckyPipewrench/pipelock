@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const maxToolHeaderBindings = 256
+const (
+	maxToolHeaderBindings    = 256
+	maxToolHeaderSchemaDepth = 32
+)
 
 // HeaderBinding identifies one primitive tool argument that a 2026-07-28
 // inputSchema mirrors into Mcp-Param-{HeaderName}.
@@ -20,7 +23,8 @@ type HeaderBinding struct {
 }
 
 // SetToolHeaderBindings replaces the header-binding schema for definitions in
-// an accepted tools/list response. Invalid definitions receive an empty set:
+// an accepted tools/list response. Invalid definitions and definitions beyond
+// the baseline capacity keep no contract, so unknown headers remain transparent.
 // Pipelock must never enforce a partially parsed or ambiguous schema.
 func (tb *ToolBaseline) SetToolHeaderBindings(defs []ToolDef) {
 	tb.mu.Lock()
@@ -105,6 +109,9 @@ func ExtractHeaderBindings(schema json.RawMessage) ([]HeaderBinding, error) {
 }
 
 func walkHeaderSchema(node map[string]any, path []string, seen map[string]struct{}, out *[]HeaderBinding) error {
+	if len(path) > maxToolHeaderSchemaDepth {
+		return fmt.Errorf("input schema nests deeper than %d properties", maxToolHeaderSchemaDepth)
+	}
 	if raw, exists := node["x-mcp-header"]; exists {
 		name, ok := raw.(string)
 		if !ok || name == "" || !validHTTPFieldToken(name) || len(path) == 0 {
@@ -157,19 +164,26 @@ func walkHeaderSchema(node map[string]any, path []string, seen map[string]struct
 }
 
 func containsHeaderAnnotation(value any) bool {
+	return containsHeaderAnnotationDepth(value, 0)
+}
+
+func containsHeaderAnnotationDepth(value any, depth int) bool {
+	if depth > maxToolHeaderSchemaDepth {
+		return true
+	}
 	switch typed := value.(type) {
 	case map[string]any:
 		if _, ok := typed["x-mcp-header"]; ok {
 			return true
 		}
 		for _, child := range typed {
-			if containsHeaderAnnotation(child) {
+			if containsHeaderAnnotationDepth(child, depth+1) {
 				return true
 			}
 		}
 	case []any:
 		for _, child := range typed {
-			if containsHeaderAnnotation(child) {
+			if containsHeaderAnnotationDepth(child, depth+1) {
 				return true
 			}
 		}

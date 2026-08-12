@@ -40,6 +40,10 @@ func TestHTTPListener_CurrentMCPParamContract(t *testing.T) {
 		{name: "mismatched mirror", arguments: `{"region":"us-east-1"}`, headers: map[string][]string{"Mcp-Param-Region": {"us-west-2"}}, wantStatus: http.StatusBadRequest},
 		{name: "duplicate mirror", arguments: `{"region":"us-west-2"}`, headers: map[string][]string{"Mcp-Param-Region": {"us-west-2", "us-west-2"}}, wantStatus: http.StatusBadRequest},
 		{name: "null omits mirror", arguments: `{"region":null}`, wantStatus: http.StatusOK},
+		{name: "hex integer rejected", arguments: `{"nested":{"count":42}}`, headers: map[string][]string{"Mcp-Param-Count": {"0x2a"}}, wantStatus: http.StatusBadRequest},
+		{name: "fraction integer rejected", arguments: `{"nested":{"count":42}}`, headers: map[string][]string{"Mcp-Param-Count": {"42/1"}}, wantStatus: http.StatusBadRequest},
+		{name: "unsafe integer rejected", arguments: `{"nested":{"count":9007199254740993}}`, headers: map[string][]string{"Mcp-Param-Count": {"9007199254740993"}}, wantStatus: http.StatusBadRequest},
+		{name: "malformed encoded mirror rejected", arguments: `{"region":"us-west-2"}`, headers: map[string][]string{"Mcp-Param-Region": {"=?base64?not-base64!?="}}, wantStatus: http.StatusBadRequest},
 		{name: "unknown extension remains transparent", arguments: `{}`, headers: map[string][]string{"Mcp-Param-Future": {"opaque"}}, wantStatus: http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,11 +103,49 @@ func TestHTTPListener_MCPParamHeadersCannotBypassScanning(t *testing.T) {
 		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
 		headers := currentWireHeaders("tools/call", "echo")
 		headers.Set("Mcp-Param-Future", value)
-		status, _, _ := postWireContractRequest(t, baseURL,
+		status, responseHeaders, responseBody := postWireContractRequest(t, baseURL,
 			currentWireBody(1, "tools/call", `"name":"echo","arguments":{}`), headers)
+		if !strings.Contains(responseBody, `"code":-32001`) || responseHeaders.Get(blockreason.HeaderReason) == "" {
+			t.Fatalf("hostile Mcp-Param value %q = status %d reason %q body %s, want local classified block", value, status, responseHeaders.Get(blockreason.HeaderReason), responseBody)
+		}
 		if capture.calls.Load() != 0 {
 			t.Fatalf("hostile Mcp-Param value %q forwarded: status=%d calls=%d", value, status, capture.calls.Load())
 		}
+	}
+}
+
+func TestHTTPListener_LegacyMCPParamHeaderFailsClosed(t *testing.T) {
+	upstream, capture := newWireContractUpstream(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	status, _, body := postWireContractRequest(t, baseURL,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`,
+		http.Header{"Mcp-Param-Future": []string{"opaque"}})
+	requireWireHeaderMismatch(t, status, body)
+	if got := capture.calls.Load(); got != 0 {
+		t.Fatalf("legacy parameter header reached upstream %d times", got)
+	}
+}
+
+func TestHTTPListener_MalformedToolNameCannotSkipParamValidation(t *testing.T) {
+	upstream, capture := newWireContractUpstream(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	headers := currentWireHeaders("tools/call", "echo")
+	headers.Set("Mcp-Param-Future", "opaque")
+	status, _, _ := postWireContractRequest(t, baseURL,
+		currentWireBody(1, "tools/call", `"name":42,"arguments":{}`), headers)
+	if status == http.StatusOK || capture.calls.Load() != 0 {
+		t.Fatalf("malformed tool name = status %d upstream calls %d, want local block", status, capture.calls.Load())
+	}
+}
+
+func TestMCPParamHeaderScanJoinsDecodedValues(t *testing.T) {
+	scanner := testScannerForHTTP(t)
+	headers := http.Header{
+		"Mcp-Param-A": []string{"=?base64?QUtJQUFBQUFBQUFB?="},
+		"Mcp-Param-B": []string{"=?base64?QUFBQUFBQUE=?="},
+	}
+	if result := scanMCPListenerHeadersForDLP(context.Background(), headers, scanner, nil); result == nil {
+		t.Fatal("credential split across encoded parameter headers was not blocked")
 	}
 }
 

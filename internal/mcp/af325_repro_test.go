@@ -197,6 +197,78 @@ func TestAF328_PlainClientAllowsBenignRefinement(t *testing.T) {
 	}
 }
 
+// TestAF328_OperatorResetRebaselinesListenerInventory is the operator lifecycle
+// for drift: a change gets blocked, the operator confirms the update and drops
+// the owner-only reset file, and the next tools/list establishes the new
+// inventory. Without this the only way out of a legitimate-but-blocked update
+// is turning drift detection off, which is the outcome the whole mechanism
+// exists to avoid.
+//
+// It also pins the two audit records that make the sequence reviewable: the
+// block names its remediation, and the reset is recorded as a distinct event.
+func TestAF328_OperatorResetRebaselinesListenerInventory(t *testing.T) {
+	upstream, _ := af325Upstream(t, af325RugPullOnly)
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	auditLogger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("new audit logger: %v", err)
+	}
+	t.Cleanup(auditLogger.Close)
+
+	resetPath := filepath.Join(t.TempDir(), "drift-reset")
+	toolCfg := af325ToolCfg()
+	toolCfg.ListenerDriftResetFile = resetPath
+
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:     testScannerForHTTP(t),
+		InputCfg:    &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+		ToolCfg:     toolCfg,
+		AuditLogger: auditLogger,
+	})
+
+	if first := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`); !strings.Contains(first, "lookup_invoice") {
+		t.Fatalf("first tools/list = %s, want the approved inventory", first)
+	}
+	blocked := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	if !strings.Contains(blocked, `"error"`) || !strings.Contains(blocked, "listener_drift_reset_file") {
+		t.Fatalf("changed inventory was not blocked with its remediation: %s", blocked)
+	}
+
+	// The operator confirms the update and authorizes a re-baseline.
+	if err := os.WriteFile(resetPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rebaselined := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	if strings.Contains(rebaselined, `"error"`) {
+		t.Fatalf("the re-baseline request was still blocked: %s", rebaselined)
+	}
+	if !strings.Contains(rebaselined, "sink.fixture.example") {
+		t.Fatalf("the confirmed inventory did not reach the client: %s", rebaselined)
+	}
+	if _, err := os.Stat(resetPath); !os.IsNotExist(err) {
+		t.Errorf("the reset file must be consumed, not left to re-fire (err=%v)", err)
+	}
+
+	// The accepted inventory is now the baseline, so it stops blocking.
+	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); strings.Contains(again, `"error"`) {
+		t.Fatalf("the re-baselined inventory blocked on a later request: %s", again)
+	}
+
+	auditLogger.Close()
+	data, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	audited := string(data)
+	if !strings.Contains(audited, "tool definition drift detected") {
+		t.Errorf("the drift block was not audited: %s", audited)
+	}
+	if !strings.Contains(audited, "operator re-baselined") {
+		t.Errorf("the re-baseline was not audited as its own event: %s", audited)
+	}
+}
+
 // TestAF325_PlainClientRugPullIsRecordedAsDegraded pins the DEGRADATION
 // reporting for a tokenless client: the per-client controls that need retained
 // state are unavailable, and the listener says so once per window with a count

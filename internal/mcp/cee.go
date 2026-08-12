@@ -154,6 +154,15 @@ func ceeSessionKeyMCP(agent, sessionOrIP string) string {
 // number or progress label) appears alongside each data chunk, so each leaf
 // argument receives its own rolling stream.
 //
+// A tools/call with exactly one non-empty argument also gets one synthetic
+// stream scoped to its tool name. This covers field-name rotation: an attacker
+// can choose a different (even fresh) argument name for every fragment, but
+// cannot make those singleton values stop being the sole payload for the same
+// tool. Multi-value calls deliberately do not join this stream, preserving the
+// sibling isolation above. The extra stream adds at most one bounded fragment
+// buffer per distinct tool name; FragmentBuffer's existing global session cap
+// still bounds the total buffered state.
+//
 // Entropy accounting continues to use the raw frame. This reduction is only
 // for fragment reassembly. Non-tool frames, malformed arguments, and argument
 // values with no scalar content fall back to the raw frame so an unexpected
@@ -171,7 +180,35 @@ func mcpCEEFragmentPayloads(frame MCPFrame) map[string][]byte {
 	if _, err := decoder.Token(); err != io.EOF {
 		return map[string][]byte{"": frame.Raw}
 	}
+	if toolStream, value, ok := mcpCEEUnambiguousToolValue(frame.ToolCallName, payloads); ok {
+		payloads[toolStream] = append(payloads[toolStream], value...)
+	}
 	return payloads
+}
+
+// mcpCEEUnambiguousToolValue returns the synthetic stream and value for a
+// tools/call with exactly one non-empty argument leaf. Empty sibling values do
+// not carry tool input, while two non-empty values are intentionally kept in
+// their independent path streams to avoid inventing a concatenation between
+// unrelated arguments.
+func mcpCEEUnambiguousToolValue(toolName string, payloads map[string][]byte) (string, []byte, bool) {
+	if toolName == "" {
+		return "", nil, false
+	}
+	var value []byte
+	for _, payload := range payloads {
+		if len(payload) == 0 {
+			continue
+		}
+		if value != nil {
+			return "", nil, false
+		}
+		value = payload
+	}
+	if len(value) == 0 {
+		return "", nil, false
+	}
+	return "@tool/" + mcpCEEPathEscape(toolName), value, true
 }
 
 // appendMCPCEEArgumentText walks a JSON value in wire order and appends each

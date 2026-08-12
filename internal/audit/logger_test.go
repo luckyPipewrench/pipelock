@@ -305,7 +305,7 @@ func TestWriteDurableCommitmentKeyLifecycleFailurePaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open /dev/full: %v", err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 
 		logger := &Logger{fileHandle: file, filePath: "/dev/full"}
 		err = logger.WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{Operation: "rotate", Outcome: "pending"})

@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -218,6 +219,41 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 			},
 			want: map[string]string{"": "raw-frame"},
 		},
+		{
+			name: "empty tool arguments fall back to raw frame",
+			frame: MCPFrame{
+				Raw:    []byte("raw-frame"),
+				Method: methodToolsCall,
+			},
+			want: map[string]string{"": "raw-frame"},
+		},
+		{
+			name: "null argument falls back to raw frame",
+			frame: MCPFrame{
+				Raw:    []byte("raw-frame"),
+				Method: methodToolsCall,
+				Args:   []byte(`null`),
+			},
+			want: map[string]string{"": "raw-frame"},
+		},
+		{
+			name: "extra root value falls back to raw frame",
+			frame: MCPFrame{
+				Raw:    []byte("raw-frame"),
+				Method: methodToolsCall,
+				Args:   []byte(`"one" "two"`),
+			},
+			want: map[string]string{"": "raw-frame"},
+		},
+		{
+			name: "root scalar and escaped path are retained",
+			frame: MCPFrame{
+				Raw:    []byte("raw-frame"),
+				Method: methodToolsCall,
+				Args:   []byte(`{"a/b~c":[null,"value"]}`),
+			},
+			want: map[string]string{"$/a~1b~0c/1": "value"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -230,6 +266,55 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 				if value := string(got[path]); value != want {
 					t.Fatalf("mcpCEEFragmentPayloads()[%q] = %q, want %q", path, value, want)
 				}
+			}
+		})
+	}
+}
+
+func TestMCPCEEFragmentSessionKey(t *testing.T) {
+	if got := mcpCEEFragmentSessionKey("session", ""); got != "session" {
+		t.Fatalf("raw fragment key = %q, want session", got)
+	}
+	first := mcpCEEFragmentSessionKey("session", "$/alpha")
+	second := mcpCEEFragmentSessionKey("session", "$/beta")
+	if first == second || !strings.HasPrefix(first, "session|mcp-arg|") {
+		t.Fatalf("argument keys = %q / %q, want distinct hashed keys", first, second)
+	}
+	if strings.Contains(first, "alpha") || strings.Contains(second, "beta") {
+		t.Fatalf("argument key exposed its plaintext path: %q / %q", first, second)
+	}
+}
+
+func TestAppendMCPCEEArgumentText_RejectsMalformedNestedValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		useNum bool
+	}{
+		{
+			name:   "malformed object key",
+			input:  `{"`,
+			useNum: true,
+		},
+		{
+			name:   "malformed array item",
+			input:  `["ok",`,
+			useNum: true,
+		},
+		{
+			name:   "number without UseNumber is an unexpected token type",
+			input:  `1`,
+			useNum: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decoder := json.NewDecoder(strings.NewReader(tt.input))
+			if tt.useNum {
+				decoder.UseNumber()
+			}
+			if appendMCPCEEArgumentText(decoder, make(map[string][]byte), "$") {
+				t.Fatal("appendMCPCEEArgumentText() = true, want false")
 			}
 		})
 	}
@@ -253,6 +338,32 @@ func TestCeeRecordMCP_ReassemblesToolArgumentsAcrossCalls(t *testing.T) {
 	}
 	if !strings.Contains(reason, "cross_request_detection.fragment_reassembly.max_buffer_bytes") {
 		t.Fatalf("fragment block missing live remediation knob: %q", reason)
+	}
+}
+
+func TestCeeRecordMCP_EntropyUsesFragmentPayloadAndSkipsEmptyPath(t *testing.T) {
+	cee := NewCEEDeps(config.CrossRequestDetection{
+		Enabled: true,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1,
+			WindowMinutes: testMCPWindowSecs / 60,
+			Action:        config.ActionBlock,
+		},
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 64,
+			WindowMinutes:  testMCPWindowSecs / 60,
+		},
+	}, metrics.New())
+	t.Cleanup(cee.Close)
+
+	reason := ceeRecordMCP(testMCPSessionKey, nil, map[string][]byte{
+		"$/empty": nil,
+		"$/value": []byte("entropy"),
+	}, cee, nil, &bytes.Buffer{}, nil)
+	if !strings.Contains(reason, "entropy budget exceeded") {
+		t.Fatalf("reason = %q, want entropy budget block", reason)
 	}
 }
 

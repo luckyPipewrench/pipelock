@@ -200,7 +200,9 @@ func appendMCPCEEArgumentText(decoder *json.Decoder, payloads map[string][]byte,
 			}
 			end, err := decoder.Token()
 			return err == nil && end == json.Delim('}')
-		case '[':
+		default:
+			// json.Decoder only yields '{' or '[' as an opening delimiter.
+			// A different delimiter reaches the same fail-closed end-token check.
 			for index := 0; decoder.More(); index++ {
 				if !appendMCPCEEArgumentText(decoder, payloads, path+"/"+strconv.Itoa(index)) {
 					return false
@@ -208,8 +210,6 @@ func appendMCPCEEArgumentText(decoder *json.Decoder, payloads map[string][]byte,
 			}
 			end, err := decoder.Token()
 			return err == nil && end == json.Delim(']')
-		default:
-			return false
 		}
 	case nil:
 		return true
@@ -259,6 +259,9 @@ func ceeRecordMCP(
 	}
 	if len(entropyPayload) == 0 {
 		for _, payload := range fragmentPayloads {
+			if len(payload) == 0 {
+				continue
+			}
 			entropyPayload = payload
 			break
 		}

@@ -98,7 +98,7 @@ func RunStandaloneInit() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
+	sandboxDir := standaloneChildTempDir(os.Getpid())
 	var env []string
 	var binary string
 	if useDeveloperEnvironment {

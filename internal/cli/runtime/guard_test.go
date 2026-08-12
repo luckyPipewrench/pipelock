@@ -67,10 +67,10 @@ func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal proof: %v", err)
 	}
-	if err := got.GuardAppliedPreExec(encoded); err != nil {
+	if err := got.GuardAppliedPreExec(workspace, encoded); err != nil {
 		t.Fatalf("GuardAppliedPreExec: %v", err)
 	}
-	if err := got.GuardAppliedPreExec(encoded); err != nil {
+	if err := got.GuardAppliedPreExec(workspace, encoded); err != nil {
 		t.Fatalf("repeated GuardAppliedPreExec: %v", err)
 	}
 	server, client := net.Pipe()
@@ -93,7 +93,7 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launchGuard: %v", err)
 	}
-	if err := got.GuardAppliedPreExec([]byte("not-json")); err == nil || !strings.Contains(err.Error(), "decoding") {
+	if err := got.GuardAppliedPreExec(got.Workspace, []byte("not-json")); err == nil || !strings.Contains(err.Error(), "decoding") {
 		t.Fatalf("malformed proof error = %v", err)
 	}
 	proof := guardfs.NewExecutionProof(
@@ -105,7 +105,7 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal mismatched proof: %v", err)
 	}
-	if err := got.GuardAppliedPreExec(encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
+	if err := got.GuardAppliedPreExec(got.Workspace, encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
 		t.Fatalf("mismatched proof error = %v", err)
 	}
 	for _, testCase := range []struct {
@@ -114,6 +114,7 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	}{
 		{name: "profile", mutate: func(proof *guardfs.ExecutionProof) { proof.Profile = "other" }},
 		{name: "workspace", mutate: func(proof *guardfs.ExecutionProof) { proof.Workspace = "/other" }},
+		{name: "temporary directory", mutate: func(proof *guardfs.ExecutionProof) { proof.TempDir = "/other" }},
 		{name: "binary", mutate: func(proof *guardfs.ExecutionProof) { proof.Binary = "/usr/bin/false" }},
 		{name: "argv", mutate: func(proof *guardfs.ExecutionProof) { proof.Command = []string{"/usr/bin/false"} }},
 	} {
@@ -134,7 +135,7 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 			if marshalErr != nil {
 				t.Fatalf("marshal wrong proof: %v", marshalErr)
 			}
-			if err := got.GuardAppliedPreExec(encodedWrong); err == nil || !strings.Contains(err.Error(), "requested invocation") {
+			if err := got.GuardAppliedPreExec(got.Workspace, encodedWrong); err == nil || !strings.Contains(err.Error(), "requested invocation") {
 				t.Fatalf("wrong invocation proof error = %v", err)
 			}
 		})

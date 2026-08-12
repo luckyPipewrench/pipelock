@@ -279,7 +279,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if guardStatusReader != nil {
 		proof, proofErr := readGuardExecutionProof(guardStatusReader)
 		if proofErr == nil && cfg.GuardAppliedPreExec != nil {
-			proofErr = cfg.GuardAppliedPreExec(proof)
+			proofErr = cfg.GuardAppliedPreExec(standaloneChildTempDir(cmd.Process.Pid), proof)
 		}
 		if proofErr != nil {
 			_ = cmd.Process.Kill()

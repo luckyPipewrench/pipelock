@@ -8,6 +8,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -121,7 +122,7 @@ func runGuardBoundaryHelper(t *testing.T) {
 		_ = conn.Close()
 		t.Fatal("direct host TCP connection succeeded")
 	}
-	if conn, err := dialer.DialContext(t.Context(), "tcp6", "[2001:db8::1]:443"); err == nil {
+	if conn, err := dialer.DialContext(t.Context(), "tcp6", os.Getenv("PIPELOCK_TEST_TCP6")); err == nil {
 		_ = conn.Close()
 		t.Fatal("direct IPv6 connection succeeded")
 	}
@@ -136,7 +137,13 @@ func runGuardBoundaryHelper(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if _, err := net.DefaultResolver.LookupHost(ctx, "guard-child-dns.invalid."); err == nil {
+	resolver := net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "udp4", os.Getenv("PIPELOCK_TEST_DNS"))
+		},
+	}
+	if _, err := resolver.LookupHost(ctx, "guard-child-dns.example."); err == nil {
 		t.Fatal("child-side DNS unexpectedly resolved")
 	}
 }
@@ -163,18 +170,28 @@ func TestIntegration_GuardHostileConformance(t *testing.T) {
 			t.Fatalf("listen TCP witness: %v", err)
 		}
 		defer func() { _ = tcpWitness.Close() }()
+		tcp6Witness, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp6", "[::1]:0")
+		if err != nil {
+			t.Fatalf("listen IPv6 witness: %v", err)
+		}
+		defer func() { _ = tcp6Witness.Close() }()
+		assertTCPWitnessReachable(t, tcp6Witness)
 		udpWitness, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("listen UDP witness: %v", err)
 		}
 		defer func() { _ = udpWitness.Close() }()
+		dnsWitness := startDNSWitness(t)
+		assertDNSWitnessReachable(t, dnsWitness)
 
 		environment := guardTestEnvironment(map[string]string{
 			guardConformanceHelperEnv: "boundary",
 			"PIPELOCK_TEST_WORKSPACE": workspace,
 			"PIPELOCK_TEST_OUTSIDE":   outside,
 			"PIPELOCK_TEST_TCP":       tcpWitness.Addr().String(),
+			"PIPELOCK_TEST_TCP6":      tcp6Witness.Addr().String(),
 			"PIPELOCK_TEST_UDP":       udpWitness.LocalAddr().String(),
+			"PIPELOCK_TEST_DNS":       dnsWitness.conn.LocalAddr().String(),
 			"HTTP_PROXY":              "http://attacker.invalid:8080",
 			"https_proxy":             "http://attacker.invalid:8081",
 			"NO_PROXY":                "*",
@@ -190,7 +207,9 @@ func TestIntegration_GuardHostileConformance(t *testing.T) {
 			t.Fatalf("outside fixture = %q, %v", contents, err)
 		}
 		assertNoTCPWitness(t, tcpWitness)
+		assertNoTCPWitness(t, tcp6Witness)
 		assertNoUDPWitness(t, udpWitness)
+		assertNoDNSWitness(t, dnsWitness)
 	})
 
 	t.Run("argv transport preserves hostile delimiters", func(t *testing.T) {
@@ -398,6 +417,120 @@ func writeGuardStateConfig(t *testing.T, state string) string {
 		t.Fatalf("write Guard state config: %v", err)
 	}
 	return path
+}
+
+type dnsWitness struct {
+	conn    net.PacketConn
+	queries chan struct{}
+}
+
+func startDNSWitness(t *testing.T) *dnsWitness {
+	t.Helper()
+	conn, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen DNS witness: %v", err)
+	}
+	witness := &dnsWitness{conn: conn, queries: make(chan struct{}, 8)}
+	t.Cleanup(func() { _ = conn.Close() })
+	go func() {
+		buffer := make([]byte, 512)
+		for {
+			n, address, readErr := conn.ReadFrom(buffer)
+			if readErr != nil {
+				return
+			}
+			select {
+			case witness.queries <- struct{}{}:
+			default:
+			}
+			if response := dnsWitnessResponse(buffer[:n]); response != nil {
+				_, _ = conn.WriteTo(response, address)
+			}
+		}
+	}()
+	return witness
+}
+
+func dnsWitnessResponse(query []byte) []byte {
+	if len(query) < 17 || binary.BigEndian.Uint16(query[4:6]) != 1 {
+		return nil
+	}
+	offset := 12
+	for offset < len(query) && query[offset] != 0 {
+		labelLength := int(query[offset])
+		offset++
+		if labelLength == 0 || offset+labelLength > len(query) {
+			return nil
+		}
+		offset += labelLength
+	}
+	if offset+5 > len(query) {
+		return nil
+	}
+	offset++
+	queryType := binary.BigEndian.Uint16(query[offset : offset+2])
+	questionEnd := offset + 4
+	response := append([]byte(nil), query[:questionEnd]...)
+	response[2], response[3] = 0x81, 0x80
+	response[6], response[7] = 0, 1
+	answer := []byte{0xc0, 0x0c, 0, 0, 0, 1, 0, 0, 0, 0}
+	binary.BigEndian.PutUint16(answer[2:4], queryType)
+	switch queryType {
+	case 1:
+		answer = append(answer, 0, 4, 192, 0, 2, 1)
+	case 28:
+		answer = append(answer, 0, 16, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+	default:
+		return nil
+	}
+	return append(response, answer...)
+}
+
+func assertTCPWitnessReachable(t *testing.T, listener net.Listener) {
+	t.Helper()
+	dialer := net.Dialer{Timeout: time.Second}
+	client, err := dialer.DialContext(t.Context(), listener.Addr().Network(), listener.Addr().String())
+	if err != nil {
+		t.Fatalf("reach TCP witness before Guard: %v", err)
+	}
+	server, err := listener.Accept()
+	if err != nil {
+		_ = client.Close()
+		t.Fatalf("accept TCP witness preflight: %v", err)
+	}
+	_ = client.Close()
+	_ = server.Close()
+}
+
+func assertDNSWitnessReachable(t *testing.T, witness *dnsWitness) {
+	t.Helper()
+	dialer := net.Dialer{Timeout: time.Second}
+	resolver := net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "udp4", witness.conn.LocalAddr().String())
+		},
+	}
+	addresses, err := resolver.LookupHost(t.Context(), "guard-child-dns.example.")
+	if err != nil || len(addresses) == 0 {
+		t.Fatalf("reach DNS witness before Guard: addresses=%v err=%v", addresses, err)
+	}
+	for {
+		select {
+		case <-witness.queries:
+		default:
+			return
+		}
+	}
+}
+
+func assertNoDNSWitness(t *testing.T, witness *dnsWitness) {
+	t.Helper()
+	select {
+	case <-witness.queries:
+		t.Fatal("guarded process emitted a query to the controlled DNS witness")
+	case <-time.After(200 * time.Millisecond):
+	}
 }
 
 func assertNoTCPWitness(t *testing.T, listener net.Listener) {

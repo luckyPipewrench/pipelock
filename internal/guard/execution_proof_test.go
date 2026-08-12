@@ -18,7 +18,7 @@ func TestExecutionProofBindsEffectiveInvocation(t *testing.T) {
 	}
 	t.Run("valid proof", func(t *testing.T) {
 		if err := newValidProof().VerifyInvocation(ExecControlOptions{
-			Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", Binary: "/usr/bin/tool",
+			Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", TempDir: "/tmp/private", Binary: "/usr/bin/tool",
 		}, []string{"tool", "arg"}); err != nil {
 			t.Fatalf("VerifyInvocation: %v", err)
 		}
@@ -28,10 +28,11 @@ func TestExecutionProofBindsEffectiveInvocation(t *testing.T) {
 		expected ExecControlOptions
 		command  []string
 	}{
-		{name: "wrong requested profile", expected: ExecControlOptions{Profile: "other", PolicyHash: "config-hash", Workspace: "/workspace", Binary: "/usr/bin/tool"}, command: []string{"tool", "arg"}},
-		{name: "wrong requested workspace", expected: ExecControlOptions{Profile: "worker", PolicyHash: "config-hash", Workspace: "/other", Binary: "/usr/bin/tool"}, command: []string{"tool", "arg"}},
-		{name: "wrong requested binary", expected: ExecControlOptions{Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", Binary: "/usr/bin/other"}, command: []string{"tool", "arg"}},
-		{name: "wrong requested argv", expected: ExecControlOptions{Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", Binary: "/usr/bin/tool"}, command: []string{"tool", "other"}},
+		{name: "wrong requested profile", expected: ExecControlOptions{Profile: "other", PolicyHash: "config-hash", Workspace: "/workspace", TempDir: "/tmp/private", Binary: "/usr/bin/tool"}, command: []string{"tool", "arg"}},
+		{name: "wrong requested workspace", expected: ExecControlOptions{Profile: "worker", PolicyHash: "config-hash", Workspace: "/other", TempDir: "/tmp/private", Binary: "/usr/bin/tool"}, command: []string{"tool", "arg"}},
+		{name: "wrong requested temporary directory", expected: ExecControlOptions{Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", TempDir: "/tmp/other", Binary: "/usr/bin/tool"}, command: []string{"tool", "arg"}},
+		{name: "wrong requested binary", expected: ExecControlOptions{Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", TempDir: "/tmp/private", Binary: "/usr/bin/other"}, command: []string{"tool", "arg"}},
+		{name: "wrong requested argv", expected: ExecControlOptions{Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", TempDir: "/tmp/private", Binary: "/usr/bin/tool"}, command: []string{"tool", "other"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if err := newValidProof().VerifyInvocation(testCase.expected, testCase.command); err == nil {
@@ -41,7 +42,7 @@ func TestExecutionProofBindsEffectiveInvocation(t *testing.T) {
 	}
 	t.Run("wrong config binding", func(t *testing.T) {
 		if err := newValidProof().VerifyInvocation(ExecControlOptions{
-			Profile: "worker", PolicyHash: "other-config", Workspace: "/workspace", Binary: "/usr/bin/tool",
+			Profile: "worker", PolicyHash: "other-config", Workspace: "/workspace", TempDir: "/tmp/private", Binary: "/usr/bin/tool",
 		}, []string{"tool", "arg"}); err == nil {
 			t.Fatal("proof with the wrong config binding was accepted")
 		}

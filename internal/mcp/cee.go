@@ -6,11 +6,12 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -143,75 +144,102 @@ func ceeSessionKeyMCP(agent, sessionOrIP string) string {
 	return sessionOrIP
 }
 
-// mcpCEEFragmentPayload returns the text-bearing tool argument values in a
-// stable order for fragment reassembly. CEE previously buffered the entire
-// JSON-RPC envelope, which placed protocol syntax and unrelated fields between
-// chunks from consecutive tools/call requests. That makes a secret split over
-// calls non-contiguous to the fragment DLP scanner even though the tool server
-// receives contiguous argument data.
+// mcpCEEFragmentPayloads returns text-bearing tool argument values partitioned
+// by their argument path for fragment reassembly. CEE previously buffered the
+// entire JSON-RPC envelope, which placed protocol syntax and unrelated fields
+// between chunks from consecutive tools/call requests. That makes a secret
+// split over calls non-contiguous to the fragment DLP scanner even though the
+// tool server receives contiguous argument data. Flattening all argument
+// values has the same defect when a benign sibling field (for example a page
+// number or progress label) appears alongside each data chunk, so each leaf
+// argument receives its own rolling stream.
 //
 // Entropy accounting continues to use the raw frame. This reduction is only
 // for fragment reassembly. Non-tool frames, malformed arguments, and argument
 // values with no scalar content fall back to the raw frame so an unexpected
 // shape cannot skip cross-request evaluation.
-func mcpCEEFragmentPayload(frame MCPFrame) []byte {
+func mcpCEEFragmentPayloads(frame MCPFrame) map[string][]byte {
 	if !frame.IsToolsCall() || len(frame.Args) == 0 {
-		return frame.Raw
+		return map[string][]byte{"": frame.Raw}
 	}
-
 	decoder := json.NewDecoder(bytes.NewReader(frame.Args))
 	decoder.UseNumber()
-	var arguments any
-	if err := decoder.Decode(&arguments); err != nil {
-		return frame.Raw
+	payloads := make(map[string][]byte)
+	if !appendMCPCEEArgumentText(decoder, payloads, "$") || len(payloads) == 0 {
+		return map[string][]byte{"": frame.Raw}
 	}
-
-	var payload bytes.Buffer
-	if !appendMCPCEEArgumentText(&payload, arguments) || payload.Len() == 0 {
-		return frame.Raw
+	if _, err := decoder.Token(); err != io.EOF {
+		return map[string][]byte{"": frame.Raw}
 	}
-	return payload.Bytes()
+	return payloads
 }
 
-// appendMCPCEEArgumentText emits every scalar argument value without JSON
-// scaffolding. Map keys are sorted so semantically equivalent MCP argument
-// objects produce the same stream regardless of Go map iteration order. Array
-// order remains significant and is retained.
-func appendMCPCEEArgumentText(dst *bytes.Buffer, value any) bool {
-	switch v := value.(type) {
+// appendMCPCEEArgumentText walks a JSON value in wire order and appends each
+// scalar to its JSON-pointer-like argument path. A decoder, instead of a Go
+// map, preserves array and object ordering without reintroducing JSON syntax
+// between values. Object keys identify a stream but are not themselves mixed
+// into data values: a server receives alpha and progress as distinct arguments.
+func appendMCPCEEArgumentText(decoder *json.Decoder, payloads map[string][]byte, path string) bool {
+	token, err := decoder.Token()
+	if err != nil {
+		return false
+	}
+	switch value := token.(type) {
+	case json.Delim:
+		switch value {
+		case '{':
+			for decoder.More() {
+				key, err := decoder.Token()
+				if err != nil {
+					return false
+				}
+				keyString, ok := key.(string)
+				if !ok || !appendMCPCEEArgumentText(decoder, payloads, path+"/"+mcpCEEPathEscape(keyString)) {
+					return false
+				}
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim('}')
+		case '[':
+			for index := 0; decoder.More(); index++ {
+				if !appendMCPCEEArgumentText(decoder, payloads, path+"/"+strconv.Itoa(index)) {
+					return false
+				}
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim(']')
+		default:
+			return false
+		}
 	case nil:
 		return true
 	case string:
-		dst.WriteString(v)
+		payloads[path] = append(payloads[path], value...)
 		return true
 	case json.Number:
-		dst.WriteString(v.String())
+		payloads[path] = append(payloads[path], value.String()...)
 		return true
 	case bool:
-		dst.WriteString(strconv.FormatBool(v))
-		return true
-	case []any:
-		for _, item := range v {
-			if !appendMCPCEEArgumentText(dst, item) {
-				return false
-			}
-		}
-		return true
-	case map[string]any:
-		keys := make([]string, 0, len(v))
-		for key := range v {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if !appendMCPCEEArgumentText(dst, v[key]) {
-				return false
-			}
-		}
+		payloads[path] = append(payloads[path], strconv.FormatBool(value)...)
 		return true
 	default:
 		return false
 	}
+}
+
+func mcpCEEPathEscape(part string) string {
+	return strings.NewReplacer("~", "~0", "/", "~1").Replace(part)
+}
+
+// mcpCEEFragmentSessionKey isolates one argument path's fragment history from
+// its siblings. Hashing keeps attacker-controlled paths bounded in tracker
+// keys without preserving a plaintext tool schema in memory or logs.
+func mcpCEEFragmentSessionKey(sessionKey, path string) string {
+	if path == "" {
+		return sessionKey
+	}
+	digest := sha256.Sum256([]byte(path))
+	return sessionKey + "|mcp-arg|" + fmt.Sprintf("%x", digest[:])
 }
 
 // ceeRecordMCP runs cross-request exfiltration checks on outbound MCP payload.
@@ -220,20 +248,20 @@ func appendMCPCEEArgumentText(dst *bytes.Buffer, value any) bool {
 func ceeRecordMCP(
 	sessionKey string,
 	entropyPayload []byte,
-	fragmentPayload []byte,
+	fragmentPayloads map[string][]byte,
 	cee *CEEDeps,
 	sc *scanner.Scanner,
 	logW io.Writer,
 	logger *audit.Logger,
 ) string {
-	if cee == nil || (len(entropyPayload) == 0 && len(fragmentPayload) == 0) {
+	if cee == nil || (len(entropyPayload) == 0 && len(fragmentPayloads) == 0) {
 		return ""
 	}
 	if len(entropyPayload) == 0 {
-		entropyPayload = fragmentPayload
-	}
-	if len(fragmentPayload) == 0 {
-		fragmentPayload = entropyPayload
+		for _, payload := range fragmentPayloads {
+			entropyPayload = payload
+			break
+		}
 	}
 	tracker, buffer, m, ceeCfg, release := cee.snapshot()
 	defer release()
@@ -263,22 +291,28 @@ func ceeRecordMCP(
 
 	// Fragment reassembly DLP check.
 	if buffer != nil && ceeCfg.FragmentReassembly.Enabled {
-		buffer.Append(sessionKey, fragmentPayload)
-		if matches := buffer.ScanForSecrets(context.Background(), sessionKey, sc); len(matches) > 0 {
-			if m != nil {
-				m.RecordCrossRequestDLPMatch()
+		for path, payload := range fragmentPayloads {
+			if len(payload) == 0 {
+				continue
 			}
-			reason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", matches[0].PatternName)
-			_, _ = fmt.Fprintf(logW, "pipelock: CEE: %s (session=%s)\n", reason, sessionKey)
-			if ceeCfg.Action == config.ActionBlock {
-				if logger != nil {
-					logger.LogBlocked(mustMCPAuditContext(logger, "CEE", "mcp-input"), "cross_request_fragment", reason)
+			fragmentKey := mcpCEEFragmentSessionKey(sessionKey, path)
+			buffer.Append(fragmentKey, payload)
+			if matches := buffer.ScanForSecrets(context.Background(), fragmentKey, sc); len(matches) > 0 {
+				if m != nil {
+					m.RecordCrossRequestDLPMatch()
 				}
-				return reason
-			}
-			// Warn mode: emit structured anomaly event for audit trail.
-			if logger != nil {
-				logger.LogAnomaly(mustMCPAuditContext(logger, "CEE", "mcp-input"), "cross_request_fragment", reason, 0)
+				reason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", matches[0].PatternName)
+				_, _ = fmt.Fprintf(logW, "pipelock: CEE: %s (session=%s)\n", reason, sessionKey)
+				if ceeCfg.Action == config.ActionBlock {
+					if logger != nil {
+						logger.LogBlocked(mustMCPAuditContext(logger, "CEE", "mcp-input"), "cross_request_fragment", reason)
+					}
+					return reason
+				}
+				// Warn mode: emit structured anomaly event for audit trail.
+				if logger != nil {
+					logger.LogAnomaly(mustMCPAuditContext(logger, "CEE", "mcp-input"), "cross_request_fragment", reason, 0)
+				}
 			}
 		}
 	}

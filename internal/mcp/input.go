@@ -859,7 +859,15 @@ func ForwardScannedInput(
 				continue
 			}
 			// Cross-request exfiltration check on clean outbound messages.
-			if reason := ceeRecordMCP(ceeStdioKey, line, mcpCEEFragmentPayloads(frame), cee, sc, logW, auditLogger); reason != "" {
+			if reason := ceeRecordMCP(ceeRecordMCPOptions{
+				sessionKey:     ceeStdioKey,
+				entropyPayload: line,
+				frame:          frame,
+				cee:            cee,
+				sc:             sc,
+				logW:           logW,
+				logger:         auditLogger,
+			}); reason != "" {
 				// Capture: record CEE verdict.
 				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 					Subsurface:        "cee_mcp_stdio",
@@ -1369,7 +1377,15 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
 				lineNum, method, reasonStr)
 			// Cross-request exfiltration check even in warn mode.
-			if reason := ceeRecordMCP(ceeStdioKey, line, mcpCEEFragmentPayloads(frame), cee, sc, logW, auditLogger); reason != "" {
+			if reason := ceeRecordMCP(ceeRecordMCPOptions{
+				sessionKey:     ceeStdioKey,
+				entropyPayload: line,
+				frame:          frame,
+				cee:            cee,
+				sc:             sc,
+				logW:           logW,
+				logger:         auditLogger,
+			}); reason != "" {
 				// Capture: record CEE verdict (warn-path).
 				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 					Subsurface:        "cee_mcp_stdio",

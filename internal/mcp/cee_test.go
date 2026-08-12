@@ -6,6 +6,8 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -190,10 +192,10 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 			name:  "tool arguments keep sibling values in separate streams",
 			frame: ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"z":["three",true],"a":{"y":"one","x":2}}}}`)),
 			want: map[string]string{
-				"$/a/x": "2",
-				"$/a/y": "one",
-				"$/z/0": "three",
-				"$/z/1": "true",
+				"@tool/integrity_checker/args$/a/x": "2",
+				"@tool/integrity_checker/args$/a/y": "one",
+				"@tool/integrity_checker/args$/z/0": "three",
+				"@tool/integrity_checker/args$/z/1": "true",
 			},
 		},
 		{
@@ -204,18 +206,20 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 		{
 			name: "malformed arguments fall back to raw frame",
 			frame: MCPFrame{
-				Raw:    []byte("raw-frame"),
-				Method: methodToolsCall,
-				Args:   []byte(`{"unterminated"`),
+				Raw:          []byte("raw-frame"),
+				Method:       methodToolsCall,
+				ToolCallName: "integrity_checker",
+				Args:         []byte(`{"unterminated"`),
 			},
 			want: map[string]string{"": "raw-frame"},
 		},
 		{
 			name: "arguments without scalar content fall back to raw frame",
 			frame: MCPFrame{
-				Raw:    []byte("raw-frame"),
-				Method: methodToolsCall,
-				Args:   []byte(`{"empty":[]}`),
+				Raw:          []byte("raw-frame"),
+				Method:       methodToolsCall,
+				ToolCallName: "integrity_checker",
+				Args:         []byte(`{"empty":[]}`),
 			},
 			want: map[string]string{"": "raw-frame"},
 		},
@@ -230,29 +234,35 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 		{
 			name: "null argument falls back to raw frame",
 			frame: MCPFrame{
-				Raw:    []byte("raw-frame"),
-				Method: methodToolsCall,
-				Args:   []byte(`null`),
+				Raw:          []byte("raw-frame"),
+				Method:       methodToolsCall,
+				ToolCallName: "integrity_checker",
+				Args:         []byte(`null`),
 			},
 			want: map[string]string{"": "raw-frame"},
 		},
 		{
 			name: "extra root value falls back to raw frame",
 			frame: MCPFrame{
-				Raw:    []byte("raw-frame"),
-				Method: methodToolsCall,
-				Args:   []byte(`"one" "two"`),
+				Raw:          []byte("raw-frame"),
+				Method:       methodToolsCall,
+				ToolCallName: "integrity_checker",
+				Args:         []byte(`"one" "two"`),
 			},
 			want: map[string]string{"": "raw-frame"},
 		},
 		{
 			name: "root scalar and escaped path are retained",
 			frame: MCPFrame{
-				Raw:    []byte("raw-frame"),
-				Method: methodToolsCall,
-				Args:   []byte(`{"a/b~c":[null,"value"]}`),
+				Raw:          []byte("raw-frame"),
+				Method:       methodToolsCall,
+				ToolCallName: "integrity_checker",
+				Args:         []byte(`{"a/b~c":[null,"value"]}`),
 			},
-			want: map[string]string{"$/a~1b~0c/1": "value"},
+			want: map[string]string{
+				"@tool/integrity_checker/args$/a~1b~0c/1": "value",
+				"@tool/integrity_checker/singleton":       "value",
+			},
 		},
 	}
 
@@ -275,10 +285,10 @@ func TestMCPCEEFragmentPayloads_AddsToolStreamForUnambiguousValue(t *testing.T) 
 	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"rotating_name":"AKIA","empty":""}}}`))
 	payloads := mcpCEEFragmentPayloads(frame)
 
-	if got := string(payloads["$/rotating_name"]); got != "AKIA" {
+	if got := string(payloads["@tool/integrity_checker/args$/rotating_name"]); got != "AKIA" {
 		t.Fatalf("path payload = %q, want %q", got, "AKIA")
 	}
-	if got := string(payloads["@tool/integrity_checker"]); got != "AKIA" {
+	if got := string(payloads["@tool/integrity_checker/singleton"]); got != "AKIA" {
 		t.Fatalf("singleton tool payload = %q, want %q", got, "AKIA")
 	}
 }
@@ -287,7 +297,7 @@ func TestMCPCEEFragmentPayloads_DoesNotJoinSiblingValues(t *testing.T) {
 	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"alpha":"one","beta":"two"}}}`))
 	payloads := mcpCEEFragmentPayloads(frame)
 
-	if _, ok := payloads["@tool/integrity_checker"]; ok {
+	if _, ok := payloads["@tool/integrity_checker/singleton"]; ok {
 		t.Fatalf("multi-value tool call unexpectedly joined sibling values: %#v", payloads)
 	}
 }
@@ -303,26 +313,27 @@ func TestMCPCEEUnambiguousToolValue(t *testing.T) {
 	}{
 		{
 			name:     "empty tool name",
-			payloads: map[string][]byte{"$/alpha": []byte("value")},
+			payloads: map[string][]byte{"@tool/integrity_checker/args$/alpha": []byte("value")},
 		},
 		{
 			name:     "all values empty",
 			toolName: "integrity_checker",
-			payloads: map[string][]byte{"$/alpha": nil, "$/beta": {}},
+			payloads: map[string][]byte{"@tool/integrity_checker/args$/alpha": nil, "@tool/integrity_checker/args$/beta": {}},
 		},
 		{
 			name:      "one non-empty value",
 			toolName:  "integrity_checker",
-			payloads:  map[string][]byte{"$/alpha": []byte("value"), "$/beta": nil},
+			payloads:  map[string][]byte{"@tool/integrity_checker/args$/alpha": []byte("value"), "@tool/integrity_checker/args$/beta": nil},
 			wantOK:    true,
-			wantPath:  "@tool/integrity_checker",
+			wantPath:  "@tool/integrity_checker/singleton",
 			wantValue: "value",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path, value, ok := mcpCEEUnambiguousToolValue(tt.toolName, tt.payloads)
+			toolPrefix, _ := mcpCEEToolStreamPrefixFor(tt.toolName)
+			path, value, ok := mcpCEEUnambiguousToolValue(toolPrefix, tt.payloads)
 			if ok != tt.wantOK || path != tt.wantPath || string(value) != tt.wantValue {
 				t.Fatalf("mcpCEEUnambiguousToolValue() = (%q, %q, %t), want (%q, %q, %t)", path, value, ok, tt.wantPath, tt.wantValue, tt.wantOK)
 			}
@@ -372,11 +383,119 @@ func TestAppendMCPCEEArgumentText_RejectsMalformedNestedValues(t *testing.T) {
 			if tt.useNum {
 				decoder.UseNumber()
 			}
-			if appendMCPCEEArgumentText(decoder, make(map[string][]byte), "$") {
+			if appendMCPCEEArgumentText(decoder, make(map[string][]byte), "@tool/integrity_checker", []byte("$"), 0) {
 				t.Fatal("appendMCPCEEArgumentText() = true, want false")
 			}
 		})
 	}
+}
+
+func TestMCPCEEFragmentPayloads_FallsBackToRawAtDepthLimit(t *testing.T) {
+	depth := mcpCEEArgumentMaxDepth + 1
+	frame := MCPFrame{
+		Raw:          []byte("raw-depth-limit"),
+		Method:       methodToolsCall,
+		ToolCallName: "integrity_checker",
+		Args:         []byte(strings.Repeat("[", depth) + `"value"` + strings.Repeat("]", depth)),
+	}
+
+	assertMCPCEERawFallback(t, frame)
+}
+
+func TestMCPCEEFragmentPayloads_FallsBackToRawAtPathLimit(t *testing.T) {
+	frame := MCPFrame{
+		Raw:          []byte("raw-path-limit"),
+		Method:       methodToolsCall,
+		ToolCallName: "integrity_checker",
+		Args:         []byte(`{"` + strings.Repeat("x", mcpCEEArgumentMaxPathBytes) + `":"value"}`),
+	}
+
+	assertMCPCEERawFallback(t, frame)
+}
+
+func TestMCPCEEFragmentPayloads_FallsBackToRawAtStreamLimit(t *testing.T) {
+	frame := MCPFrame{
+		Raw:          []byte("raw-stream-limit"),
+		Method:       methodToolsCall,
+		ToolCallName: "integrity_checker",
+		Args:         mcpCEEArgumentsWithLeaves(mcpCEEArgumentMaxStreams + 1),
+	}
+
+	assertMCPCEERawFallback(t, frame)
+}
+
+func TestMCPCEEFragmentPayloads_FallsBackToRawWhenSingletonWouldExceedStreamLimit(t *testing.T) {
+	frame := MCPFrame{
+		Raw:          []byte("raw-singleton-stream-limit"),
+		Method:       methodToolsCall,
+		ToolCallName: "integrity_checker",
+		Args:         mcpCEEArgumentsWithSingleNonEmptyLeaf(mcpCEEArgumentMaxStreams),
+	}
+
+	assertMCPCEERawFallback(t, frame)
+}
+
+func TestMCPCEEFragmentPayloads_FallsBackToRawAtStreamKeyLimit(t *testing.T) {
+	frame := MCPFrame{
+		Raw:          []byte("raw-stream-key-limit"),
+		Method:       methodToolsCall,
+		ToolCallName: strings.Repeat("x", mcpCEEArgumentMaxStreamKeyBytes),
+		Args:         []byte(`{"alpha":"value"}`),
+	}
+
+	assertMCPCEERawFallback(t, frame)
+}
+
+func TestMCPCEEFragmentPayloads_FallsBackToRawWithoutToolName(t *testing.T) {
+	frame := MCPFrame{
+		Raw:    []byte("raw-missing-tool-name"),
+		Method: methodToolsCall,
+		Args:   []byte(`{"alpha":"value"}`),
+	}
+
+	assertMCPCEERawFallback(t, frame)
+}
+
+func assertMCPCEERawFallback(t *testing.T, frame MCPFrame) {
+	t.Helper()
+	payloads := mcpCEEFragmentPayloads(frame)
+	if len(payloads) != 1 || string(payloads[""]) != string(frame.Raw) {
+		t.Fatalf("mcpCEEFragmentPayloads() = %#v, want complete raw frame %q", payloads, frame.Raw)
+	}
+}
+
+func mcpCEEArgumentsWithLeaves(leaves int) []byte {
+	var args strings.Builder
+	args.WriteByte('{')
+	for index := range leaves {
+		if index > 0 {
+			args.WriteByte(',')
+		}
+		args.WriteString(strconv.Quote("field_" + strconv.Itoa(index)))
+		args.WriteByte(':')
+		args.WriteString(strconv.Quote("value"))
+	}
+	args.WriteByte('}')
+	return []byte(args.String())
+}
+
+func mcpCEEArgumentsWithSingleNonEmptyLeaf(leaves int) []byte {
+	var args strings.Builder
+	args.WriteByte('{')
+	for index := range leaves {
+		if index > 0 {
+			args.WriteByte(',')
+		}
+		args.WriteString(strconv.Quote("field_" + strconv.Itoa(index)))
+		args.WriteByte(':')
+		if index == 0 {
+			args.WriteString(strconv.Quote("value"))
+		} else {
+			args.WriteString(strconv.Quote(""))
+		}
+	}
+	args.WriteByte('}')
+	return []byte(args.String())
 }
 
 func TestCeeRecordMCP_ReassemblesToolArgumentsAcrossCalls(t *testing.T) {
@@ -388,10 +507,10 @@ func TestCeeRecordMCP_ReassemblesToolArgumentsAcrossCalls(t *testing.T) {
 	second := ParseMCPFrame(mcpChunkedCEERequest(2, testMCPAWSKeySuffix))
 	var logBuf bytes.Buffer
 
-	if reason := ceeRecordMCP(testMCPSessionKey, first.Raw, mcpCEEFragmentPayloads(first), cee, sc, &logBuf, nil); reason != "" {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
 		t.Fatalf("first fragment blocked: %s", reason)
 	}
-	reason := ceeRecordMCP(testMCPSessionKey, second.Raw, mcpCEEFragmentPayloads(second), cee, sc, &logBuf, nil)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf})
 	if !strings.Contains(reason, "cross-request fragment DLP match") {
 		t.Fatalf("second fragment reason = %q, want fragment DLP block", reason)
 	}
@@ -409,29 +528,136 @@ func TestCeeRecordMCP_ReassemblesRotatedSingletonArgumentsAcrossCalls(t *testing
 	second := ParseMCPFrame(mcpSingletonCEERequest(2, "fresh_beta", "integrity_checker", testMCPAWSKeySuffix))
 	var logBuf bytes.Buffer
 
-	if reason := ceeRecordMCP(testMCPSessionKey, first.Raw, mcpCEEFragmentPayloads(first), cee, sc, &logBuf, nil); reason != "" {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
 		t.Fatalf("first rotated fragment blocked: %s", reason)
 	}
-	reason := ceeRecordMCP(testMCPSessionKey, second.Raw, mcpCEEFragmentPayloads(second), cee, sc, &logBuf, nil)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf})
 	if !strings.Contains(reason, "cross-request fragment DLP match") {
 		t.Fatalf("second rotated fragment reason = %q, want fragment DLP block", reason)
 	}
 }
 
-func TestCeeRecordMCP_DoesNotJoinSingletonValuesAcrossTools(t *testing.T) {
+func TestCeeRecordMCP_ReassemblesSamePathWithinTool(t *testing.T) {
+	cee := testMCPCEEFragmentBlock(t)
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+
+	first := ParseMCPFrame(mcpSingletonCEERequest(1, "alpha", "integrity_checker", "AKI"+"A"))
+	second := ParseMCPFrame(mcpSingletonCEERequest(2, "alpha", "integrity_checker", testMCPAWSKeySuffix))
+	var logBuf bytes.Buffer
+
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
+		t.Fatalf("first same-path fragment blocked: %s", reason)
+	}
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf}); !strings.Contains(reason, "cross-request fragment DLP match") {
+		t.Fatalf("same-path fragments within one tool = %q, want fragment DLP block", reason)
+	}
+}
+
+func TestCeeRecordMCP_DoesNotJoinSamePathValuesAcrossTools(t *testing.T) {
 	cee := testMCPCEEFragmentBlock(t)
 	sc := testMCPScanner()
 	t.Cleanup(sc.Close)
 
 	first := ParseMCPFrame(mcpSingletonCEERequest(1, "alpha", "first_tool", "AKI"+"A"))
-	second := ParseMCPFrame(mcpSingletonCEERequest(2, "beta", "second_tool", testMCPAWSKeySuffix))
+	second := ParseMCPFrame(mcpSingletonCEERequest(2, "alpha", "second_tool", testMCPAWSKeySuffix))
 	var logBuf bytes.Buffer
 
-	if reason := ceeRecordMCP(testMCPSessionKey, first.Raw, mcpCEEFragmentPayloads(first), cee, sc, &logBuf, nil); reason != "" {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
 		t.Fatalf("first tool fragment blocked: %s", reason)
 	}
-	if reason := ceeRecordMCP(testMCPSessionKey, second.Raw, mcpCEEFragmentPayloads(second), cee, sc, &logBuf, nil); reason != "" {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
 		t.Fatalf("different tool names unexpectedly joined: %s", reason)
+	}
+}
+
+func TestCeeRecordMCP_HighLeafFallbackPreservesExistingFragment(t *testing.T) {
+	buffer := scanner.NewFragmentBuffer(64, 3, testMCPWindowSecs)
+	t.Cleanup(buffer.Close)
+	cee := &CEEDeps{
+		Buffer: buffer,
+		Config: &config.CrossRequestDetection{
+			Action: config.ActionBlock,
+			FragmentReassembly: config.CrossRequestFragments{
+				Enabled:        true,
+				MaxBufferBytes: 64,
+				WindowMinutes:  testMCPWindowSecs / 60,
+			},
+		},
+	}
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	var logBuf bytes.Buffer
+
+	first := ParseMCPFrame(mcpSingletonCEERequest(1, "alpha", "integrity_checker", "AKI"+"A"))
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
+		t.Fatalf("first fragment blocked: %s", reason)
+	}
+
+	highLeafArgs := mcpCEEArgumentsWithLeaves(mcpCEEArgumentMaxStreams + 1)
+	highLeaf := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"integrity_checker","arguments":` + string(highLeafArgs) + `}}`))
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: highLeaf.Raw, frame: highLeaf, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
+		t.Fatalf("high-leaf frame blocked: %s", reason)
+	}
+
+	second := ParseMCPFrame(mcpSingletonCEERequest(3, "alpha", "integrity_checker", testMCPAWSKeySuffix))
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf}); !strings.Contains(reason, "cross-request fragment DLP match") {
+		t.Fatalf("secret split around high-leaf frame = %q, want fragment DLP block", reason)
+	}
+}
+
+func TestCeeRecordMCP_DeduplicatesEquivalentSingletonFindings(t *testing.T) {
+	m := metrics.New()
+	cee := NewCEEDeps(config.CrossRequestDetection{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 64,
+			WindowMinutes:  testMCPWindowSecs / 60,
+		},
+	}, m)
+	t.Cleanup(cee.Close)
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	auditPath := filepath.Join(t.TempDir(), "cee-audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	var logBuf bytes.Buffer
+
+	first := ParseMCPFrame(mcpSingletonCEERequest(1, "alpha", "integrity_checker", "AKI"+"A"))
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf, logger: logger}); reason != "" {
+		t.Fatalf("first fragment blocked in warn mode: %s", reason)
+	}
+	second := ParseMCPFrame(mcpSingletonCEERequest(2, "alpha", "integrity_checker", testMCPAWSKeySuffix))
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf, logger: logger}); reason != "" {
+		t.Fatalf("completed secret blocked in warn mode: %s", reason)
+	}
+	logger.Close()
+
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matches float64
+	for _, family := range families {
+		if family.GetName() == "pipelock_cross_request_dlp_match_total" && len(family.Metric) == 1 {
+			matches = family.Metric[0].GetCounter().GetValue()
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("cross-request DLP match metric = %v, want 1", matches)
+	}
+
+	auditData, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anomalies := strings.Count(string(auditData), `"scanner":"cross_request_fragment"`); anomalies != 1 {
+		t.Fatalf("cross-request fragment anomaly records = %d, want 1; audit=%s", anomalies, auditData)
 	}
 }
 
@@ -452,10 +678,15 @@ func TestCeeRecordMCP_EntropyUsesFragmentPayloadAndSkipsEmptyPath(t *testing.T) 
 	}, metrics.New())
 	t.Cleanup(cee.Close)
 
-	reason := ceeRecordMCP(testMCPSessionKey, nil, map[string][]byte{
-		"$/empty": nil,
-		"$/value": []byte("entropy"),
-	}, cee, nil, &bytes.Buffer{}, nil)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey,
+		fragmentPayloads: map[string][]byte{
+			"$/empty": nil,
+			"$/value": []byte("entropy"),
+		},
+		cee:  cee,
+		logW: &bytes.Buffer{},
+	})
 	if !strings.Contains(reason, "entropy budget exceeded") {
 		t.Fatalf("reason = %q, want entropy budget block", reason)
 	}
@@ -470,16 +701,26 @@ func TestCeeRecordMCP_FragmentSkipsEmptyPayloads(t *testing.T) {
 	second := []byte(testMCPAWSKeySuffix)
 	var logBuf bytes.Buffer
 
-	if reason := ceeRecordMCP(testMCPSessionKey, first, map[string][]byte{
-		"$/empty":  nil,
-		"$/active": first,
-	}, cee, sc, &logBuf, nil); reason != "" {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey:     testMCPSessionKey,
+		entropyPayload: first,
+		fragmentPayloads: map[string][]byte{
+			"$/empty":  nil,
+			"$/active": first,
+		},
+		cee: cee, sc: sc, logW: &logBuf,
+	}); reason != "" {
 		t.Fatalf("first fragment blocked: %s", reason)
 	}
-	if reason := ceeRecordMCP(testMCPSessionKey, second, map[string][]byte{
-		"$/empty":  {},
-		"$/active": second,
-	}, cee, sc, &logBuf, nil); !strings.Contains(reason, "cross-request fragment DLP match") {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey:     testMCPSessionKey,
+		entropyPayload: second,
+		fragmentPayloads: map[string][]byte{
+			"$/empty":  {},
+			"$/active": second,
+		},
+		cee: cee, sc: sc, logW: &logBuf,
+	}); !strings.Contains(reason, "cross-request fragment DLP match") {
 		t.Fatalf("second fragment reason = %q, want fragment DLP block", reason)
 	}
 }
@@ -508,7 +749,9 @@ func mcpSingletonCEERequest(id int, argumentName, toolName, chunk string) []byte
 }
 
 func TestCeeRecordMCP_NilCEE(t *testing.T) {
-	reason := ceeRecordMCP(testMCPSessionKey, []byte("payload"), map[string][]byte{"": []byte("payload")}, nil, nil, &bytes.Buffer{}, nil)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: []byte("payload"), fragmentPayloads: map[string][]byte{"": []byte("payload")}, logW: &bytes.Buffer{},
+	})
 	if reason != "" {
 		t.Errorf("expected empty reason for nil CEE, got %q", reason)
 	}
@@ -516,15 +759,29 @@ func TestCeeRecordMCP_NilCEE(t *testing.T) {
 
 func TestCeeRecordMCP_EmptyPayload(t *testing.T) {
 	cee := &CEEDeps{}
-	reason := ceeRecordMCP(testMCPSessionKey, []byte{}, map[string][]byte{}, cee, nil, &bytes.Buffer{}, nil)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: []byte{}, fragmentPayloads: map[string][]byte{}, cee: cee, logW: &bytes.Buffer{},
+	})
 	if reason != "" {
 		t.Errorf("expected empty reason for empty payload, got %q", reason)
 	}
 
 	// Also test nil payload.
-	reason = ceeRecordMCP(testMCPSessionKey, nil, nil, cee, nil, &bytes.Buffer{}, nil)
+	reason = ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, cee: cee, logW: &bytes.Buffer{}})
 	if reason != "" {
 		t.Errorf("expected empty reason for nil payload, got %q", reason)
+	}
+}
+
+func TestCeeRecordMCP_EmptyActivePayload(t *testing.T) {
+	cee := testMCPCEEFragmentBlock(t)
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey:       testMCPSessionKey,
+		fragmentPayloads: map[string][]byte{},
+		cee:              cee,
+		logW:             &bytes.Buffer{},
+	}); reason != "" {
+		t.Fatalf("empty active CEE payload = %q, want no block", reason)
 	}
 }
 
@@ -558,7 +815,9 @@ func TestCeeRecordMCP_EntropyBudgetBlock(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz")
-	reason := ceeRecordMCP(testMCPSessionKey, payload, map[string][]byte{"": payload}, cee, sc, &logBuf, logger)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: payload, fragmentPayloads: map[string][]byte{"": payload}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	})
 
 	if reason == "" {
 		t.Fatal("expected non-empty reason for entropy budget block")
@@ -593,7 +852,9 @@ func TestCeeRecordMCP_EntropyBudgetWarn(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz")
-	reason := ceeRecordMCP(testMCPSessionKey, payload, map[string][]byte{"": payload}, cee, nil, &logBuf, nil)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: payload, fragmentPayloads: map[string][]byte{"": payload}, cee: cee, logW: &logBuf,
+	})
 
 	// Warn mode: should NOT block (empty reason).
 	if reason != "" {
@@ -640,13 +901,17 @@ func TestCeeRecordMCP_FragmentDLPBlock(t *testing.T) {
 	var logBuf bytes.Buffer
 
 	// First fragment: not enough to trigger.
-	reason := ceeRecordMCP(testMCPSessionKey, []byte(part1), map[string][]byte{"": []byte(part1)}, cee, sc, &logBuf, logger)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: []byte(part1), fragmentPayloads: map[string][]byte{"": []byte(part1)}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	})
 	if reason != "" {
 		t.Fatalf("expected no block on first fragment, got %q", reason)
 	}
 
 	// Second fragment: completes the key, should block.
-	reason = ceeRecordMCP(testMCPSessionKey, []byte(part2), map[string][]byte{"": []byte(part2)}, cee, sc, &logBuf, logger)
+	reason = ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: []byte(part2), fragmentPayloads: map[string][]byte{"": []byte(part2)}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	})
 	if reason == "" {
 		t.Fatal("expected non-empty reason for fragment DLP block")
 	}
@@ -686,13 +951,17 @@ func TestCeeRecordMCP_FragmentDLPWarn(t *testing.T) {
 	var logBuf bytes.Buffer
 
 	// First fragment.
-	reason := ceeRecordMCP("warn-session", []byte(part1), map[string][]byte{"": []byte(part1)}, cee, sc, &logBuf, logger)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: "warn-session", entropyPayload: []byte(part1), fragmentPayloads: map[string][]byte{"": []byte(part1)}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	})
 	if reason != "" {
 		t.Fatalf("expected no block on first fragment, got %q", reason)
 	}
 
 	// Second fragment: completes the key. Warn mode should NOT block.
-	reason = ceeRecordMCP("warn-session", []byte(part2), map[string][]byte{"": []byte(part2)}, cee, sc, &logBuf, logger)
+	reason = ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: "warn-session", entropyPayload: []byte(part2), fragmentPayloads: map[string][]byte{"": []byte(part2)}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	})
 	if reason != "" {
 		t.Errorf("expected empty reason for warn mode, got %q", reason)
 	}
@@ -729,7 +998,9 @@ func TestCeeRecordMCP_EntropyBudgetWarnWithLogger(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz")
-	reason := ceeRecordMCP(testMCPSessionKey, payload, map[string][]byte{"": payload}, cee, nil, &logBuf, logger)
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: payload, fragmentPayloads: map[string][]byte{"": payload}, cee: cee, logW: &logBuf, logger: logger,
+	})
 
 	// Warn mode: should NOT block.
 	if reason != "" {

@@ -634,7 +634,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		// Cross-request exfiltration check on clean outbound messages.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
-		if reason := ceeRecordMCP(ceeKey, msg, mcpCEEFragmentPayloads(frame), cee, sc, logW, auditLogger); reason != "" {
+		if reason := ceeRecordMCP(ceeRecordMCPOptions{
+			sessionKey:     ceeKey,
+			entropyPayload: msg,
+			frame:          frame,
+			cee:            cee,
+			sc:             sc,
+			logW:           logW,
+			logger:         auditLogger,
+		}); reason != "" {
 			// Capture: record CEE verdict.
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 				Subsurface:        "cee_mcp_http",
@@ -1085,7 +1093,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		// Cross-request exfiltration check even in warn mode.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
-		if reason := ceeRecordMCP(ceeKey, msg, mcpCEEFragmentPayloads(frame), cee, sc, logW, auditLogger); reason != "" {
+		if reason := ceeRecordMCP(ceeRecordMCPOptions{
+			sessionKey:     ceeKey,
+			entropyPayload: msg,
+			frame:          frame,
+			cee:            cee,
+			sc:             sc,
+			logW:           logW,
+			logger:         auditLogger,
+		}); reason != "" {
 			// Capture: record CEE verdict (warn-path).
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 				Subsurface:        "cee_mcp_http",

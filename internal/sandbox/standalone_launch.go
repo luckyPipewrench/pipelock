@@ -20,73 +20,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/luckyPipewrench/pipelock/internal/config"
 )
-
-// StandaloneLaunchConfig configures the standalone sandbox launcher.
-type StandaloneLaunchConfig struct {
-	// Ctx controls the child's lifetime.
-	Ctx context.Context
-
-	// Command is the command and arguments to execute inside the sandbox.
-	Command []string
-
-	// Workspace is the resolved absolute workspace path.
-	Workspace string
-
-	// Policy overrides the default sandbox policy.
-	Policy *Policy
-
-	// Strict enables strict containment: error on missing layers,
-	// private /dev/shm mount, clone3 blocked, subreaper enabled.
-	Strict bool
-
-	// BestEffort skips namespace isolation when unavailable (e.g. inside
-	// containers where CLONE_NEWUSER is blocked by seccomp). Landlock and
-	// seccomp are still applied. Network scanning uses proxy-based routing
-	// instead of kernel-enforced isolation. Mutually exclusive with Strict.
-	BestEffort bool
-
-	// RequireNetNS rejects launches that cannot create a user and network
-	// namespace. It is independent of Strict, which additionally requires the
-	// optional filesystem and syscall containment layers.
-	RequireNetNS bool
-
-	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
-	ExtraEnv []string
-
-	// DeveloperEnvironment is the caller's complete developer environment for
-	// the final contained command. It is transported over an anonymous pipe,
-	// never through the re-exec control environment.
-	DeveloperEnvironment []string
-
-	// UseDeveloperEnvironment selects DeveloperEnvironment instead of the
-	// ordinary minimal SyntheticEnv. It is opt-in and fails closed on a nil
-	// environment or when combined with ExtraEnv.
-	UseDeveloperEnvironment bool
-
-	// ProxyHandler is called for each connection from the sandboxed agent.
-	// It receives the connection from the bridge proxy and should handle
-	// it as an HTTP forward proxy (CONNECT tunneling, DLP scanning, etc.).
-	// If nil, connections are closed without forwarding.
-	ProxyHandler func(conn net.Conn)
-
-	// RequireProxyHandler rejects a nil ProxyHandler before the child starts.
-	// This makes the debug-only direct-forward path unreachable for callers
-	// that require scanning.
-	RequireProxyHandler bool
-
-	// GuardDeclaration enables the final pre-exec Guard helper. The parent
-	// bridge remains outside this restriction so scanning and evidence outputs
-	// are not accidentally denied by the workload filesystem policy.
-	GuardDeclaration *config.Guard
-	GuardProfile     string
-	GuardPolicyHash  string
-	// GuardEnforced receives the child-side proof only after the status pipe
-	// closes on successful exec. Returning an error terminates the launch.
-	GuardEnforced func(proof []byte) error
-}
 
 // standaloneProxyConnectionConfig controls how one accepted bridge connection
 // is dispatched. Unscanned forwarding is an internal debug-only opt-in whose
@@ -145,6 +79,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if cfg.GuardDeclaration != nil && cfg.GuardPolicyHash == "" {
 		return errors.New("sandbox: guard policy hash is required")
 	}
+	var guardDeclarationJSON []byte
 	if cfg.GuardDeclaration != nil {
 		declaration, err := json.Marshal(cfg.GuardDeclaration)
 		if err != nil {
@@ -153,6 +88,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		if len(declaration) > 64<<10 {
 			return errors.New("sandbox: guard declaration exceeds the 64 KiB environment transport limit")
 		}
+		guardDeclarationJSON = declaration
 	}
 
 	if err := ValidateWorkspace(cfg.Workspace); err != nil {
@@ -251,8 +187,6 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if jsonErr != nil {
 		return fmt.Errorf("encoding sandbox policy: %w", jsonErr)
 	}
-	cmd.Env = standaloneInitControlEnv(cfg, socketPath, coverageEnv, policyJSON, hasNamespaces)
-
 	var guardStatusReader, guardStatusWriter *os.File
 	if cfg.GuardDeclaration != nil {
 		guardStatusReader, guardStatusWriter, err = os.Pipe()
@@ -277,6 +211,11 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if guardStatusWriter != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, guardStatusWriter)
 	}
+	guardStatusFD := 0
+	if guardStatusWriter != nil {
+		guardStatusFD = 2 + len(cmd.ExtraFiles)
+	}
+	cmd.Env = standaloneInitControlEnv(cfg, socketPath, coverageEnv, policyJSON, hasNamespaces, guardDeclarationJSON, guardStatusFD)
 
 	if hasNamespaces {
 		cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
@@ -339,8 +278,8 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 	if guardStatusReader != nil {
 		proof, proofErr := readGuardExecutionProof(guardStatusReader)
-		if proofErr == nil && cfg.GuardEnforced != nil {
-			proofErr = cfg.GuardEnforced(proof)
+		if proofErr == nil && cfg.GuardAppliedPreExec != nil {
+			proofErr = cfg.GuardAppliedPreExec(proof)
 		}
 		if proofErr != nil {
 			_ = cmd.Process.Kill()
@@ -384,6 +323,9 @@ func guardLookupEnvironment(useDeveloperEnvironment bool, developerEnvironment [
 }
 
 func readGuardExecutionProof(r io.Reader) ([]byte, error) {
+	// EOF proves only that the close-on-exec writer is gone. That can follow a
+	// successful exec or abrupt helper termination, so the returned record is
+	// strictly proof of ruleset application before the exec attempt.
 	decoder := json.NewDecoder(io.LimitReader(r, 1<<20))
 	var proof json.RawMessage
 	if err := decoder.Decode(&proof); err != nil {
@@ -417,7 +359,7 @@ func readGuardExecutionProof(r io.Reader) ([]byte, error) {
 // standaloneInitControlEnv is the complete re-exec environment. In
 // developer-environment mode it carries only a fixed descriptor number, never
 // a developer-supplied value.
-func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, coverageEnv []string, policyJSON string, hasNamespaces bool) []string {
+func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, coverageEnv []string, policyJSON string, hasNamespaces bool, guardDeclarationJSON []byte, guardStatusFD int) []string {
 	commandJSON, _ := json.Marshal(cfg.Command)
 	env := []string{
 		standaloneInitEnv + "=1",
@@ -440,13 +382,8 @@ func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, cov
 		env = append(env, noNetNSEnvKey+"=1")
 	}
 	if cfg.GuardDeclaration != nil {
-		declaration, _ := json.Marshal(cfg.GuardDeclaration)
-		guardStatusFD := 3
-		if cfg.UseDeveloperEnvironment {
-			guardStatusFD++
-		}
 		env = append(env,
-			standaloneGuardDeclarationEnv+"="+string(declaration),
+			standaloneGuardDeclarationEnv+"="+string(guardDeclarationJSON),
 			standaloneGuardProfileEnv+"="+cfg.GuardProfile,
 			standaloneGuardPolicyHashEnv+"="+cfg.GuardPolicyHash,
 			guardStatusControlEnv+"="+strconv.Itoa(guardStatusFD),

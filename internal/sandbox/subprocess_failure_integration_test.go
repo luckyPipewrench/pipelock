@@ -116,6 +116,36 @@ func TestIntegration_InitChildrenRejectMalformedLaunchState(t *testing.T) {
 			wantErr:  "guard policy hash is missing",
 		},
 		{
+			name: "standalone init rejects nonnumeric guard status descriptor",
+			env: []string{
+				standaloneInitEnv + "=1",
+				"__PIPELOCK_SANDBOX_WORKSPACE=" + workspace,
+				"__PIPELOCK_SANDBOX_COMMAND=true",
+				sandboxSocketEnv + "=" + socketPath,
+				standaloneGuardDeclarationEnv + "={}",
+				standaloneGuardPolicyHashEnv + "=hash",
+				guardStatusControlEnv + "=not-a-number",
+				noNetNSEnvKey + "=1",
+			},
+			wantCode: 1,
+			wantErr:  "[sandbox] guard status descriptor is invalid",
+		},
+		{
+			name: "standalone init rejects reserved guard status descriptor",
+			env: []string{
+				standaloneInitEnv + "=1",
+				"__PIPELOCK_SANDBOX_WORKSPACE=" + workspace,
+				"__PIPELOCK_SANDBOX_COMMAND=true",
+				sandboxSocketEnv + "=" + socketPath,
+				standaloneGuardDeclarationEnv + "={}",
+				standaloneGuardPolicyHashEnv + "=hash",
+				guardStatusControlEnv + "=2",
+				noNetNSEnvKey + "=1",
+			},
+			wantCode: 1,
+			wantErr:  "[sandbox] guard status descriptor is invalid",
+		},
+		{
 			name: "standalone init rejects malformed command transport",
 			env: []string{
 				standaloneInitEnv + "=1",

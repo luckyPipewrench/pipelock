@@ -193,12 +193,16 @@ func TestGuardLookupEnvironmentResolvesSystemSbinCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve sbin command %q: %v", candidate, err)
 	}
-	want, err := filepath.EvalSymlinks(candidate)
+	resolvedInfo, err := os.Stat(resolved)
 	if err != nil {
-		t.Fatalf("resolve candidate %q: %v", candidate, err)
+		t.Fatalf("stat resolved command %q: %v", resolved, err)
 	}
-	if resolved != want {
-		t.Fatalf("resolved sbin command = %q, want %q", resolved, want)
+	candidateInfo, err := os.Stat(candidate)
+	if err != nil {
+		t.Fatalf("stat candidate %q: %v", candidate, err)
+	}
+	if !os.SameFile(resolvedInfo, candidateInfo) {
+		t.Fatalf("resolved sbin command = %q, want the same file as %q", resolved, candidate)
 	}
 }
 

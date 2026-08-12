@@ -9,12 +9,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // LaunchConfig configures how the sandbox launcher wraps the child process.
@@ -39,26 +36,6 @@ type LaunchConfig struct {
 	Stdin            io.Reader
 	Stdout           io.Writer
 	Stderr           io.Writer
-}
-
-// StandaloneLaunchConfig configures the standalone sandbox launcher.
-type StandaloneLaunchConfig struct {
-	Ctx                     context.Context
-	Command                 []string
-	Workspace               string
-	Policy                  *Policy
-	Strict                  bool
-	BestEffort              bool
-	RequireNetNS            bool
-	ExtraEnv                []string
-	DeveloperEnvironment    []string
-	UseDeveloperEnvironment bool
-	ProxyHandler            func(conn net.Conn)
-	RequireProxyHandler     bool
-	GuardDeclaration        *config.Guard
-	GuardProfile            string
-	GuardPolicyHash         string
-	GuardEnforced           func(proof []byte) error
 }
 
 // PrepareSandboxCmd builds an exec.Cmd that wraps the child command with
@@ -143,7 +120,10 @@ func LaunchSandboxed(cfg LaunchConfig) (*exec.Cmd, error) {
 // LaunchStandalone returns ErrUnavailable on macOS.
 // Standalone mode (veth routing) requires Linux network namespaces.
 // MCP mode (stdio) works on macOS via PrepareSandboxCmd.
-func LaunchStandalone(_ StandaloneLaunchConfig) error {
+func LaunchStandalone(cfg StandaloneLaunchConfig) error {
+	if cfg.GuardDeclaration != nil {
+		return fmt.Errorf("%w: Guard execution requires Linux", ErrUnavailable)
+	}
 	return fmt.Errorf("%w: standalone sandbox mode requires Linux (use MCP mode on macOS)", ErrUnavailable)
 }
 

@@ -116,7 +116,7 @@ func Cmd() *cobra.Command {
 				return cmd.Help()
 			}
 			dashIdx := cmd.ArgsLenAtDash()
-			if dashIdx < 0 || dashIdx >= len(args) {
+			if dashIdx != 0 || dashIdx >= len(args) {
 				return errors.New("usage: pipelock guard [flags] -- COMMAND [ARGS...]")
 			}
 			command := args[dashIdx:]
@@ -246,6 +246,20 @@ func loadRuntimeConfig(path string) (*config.Config, error) {
 	}
 	if path == "-" {
 		return nil, errors.New("guard runtime config cannot be read from stdin because stdin belongs to the operator command")
+	}
+	configInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("loading guard config %q: %w", path, err)
+	}
+	stdinInfo, err := os.Stdin.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspecting operator-command stdin: %w", err)
+	}
+	if os.SameFile(configInfo, stdinInfo) {
+		return nil, errors.New("guard runtime config cannot alias stdin because stdin belongs to the operator command")
+	}
+	if !configInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("loading guard config %q: not a regular file", path)
 	}
 	cfg, err := config.Load(path)
 	if err != nil {

@@ -180,6 +180,12 @@ func runExecWith(
 	if err != nil {
 		return fmt.Errorf("preparing manifest: %w", err)
 	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = prepared.Close()
+		}
+	}()
 	// Keep this goroutine on the exact thread that enters the Landlock domain
 	// until exec replaces the process image. ApplyForExec pins internally while
 	// issuing the syscalls, but unpins when it returns; without this outer pin,
@@ -194,10 +200,14 @@ func runExecWith(
 	if !record.Enforced() {
 		return fmt.Errorf("%s", record.Describe())
 	}
+	closed = true
 	if err := prepared.Close(); err != nil {
 		return fmt.Errorf("closing prepared manifest: %w", err)
 	}
-	proof := NewExecutionProof(record, policyHash, os.Getenv(execProfileEnv), workspace, tempDir, binary, command)
+	proof := NewExecutionProof(record, ExecControlOptions{
+		Profile: os.Getenv(execProfileEnv), PolicyHash: policyHash,
+		Workspace: workspace, TempDir: tempDir, Binary: binary,
+	}, command)
 	if err := report(proof); err != nil {
 		return fmt.Errorf("reporting guard enforcement: %w", err)
 	}

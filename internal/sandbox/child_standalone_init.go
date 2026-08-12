@@ -59,10 +59,6 @@ func RunStandaloneInit() {
 			exitSandboxProcess(1)
 		}
 		guardStatus = os.NewFile(uintptr(fd), "guard-status")
-		if guardStatus == nil {
-			_, _ = fmt.Fprintln(os.Stderr, "[sandbox] guard status descriptor is unavailable")
-			exitSandboxProcess(1)
-		}
 	}
 
 	if workspace == "" || (commandJSON == "" && commandStr == "") || socketPath == "" {

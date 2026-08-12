@@ -11,9 +11,11 @@ import (
 	"slices"
 )
 
-// ExecutionProof binds the kernel result to the exact invocation that entered
-// the enforced domain. It is transported over an inherited close-on-exec pipe;
-// the parent accepts it only after exec closes that pipe without a later error.
+// ExecutionProof binds the kernel result to the exact invocation whose helper
+// entered the enforced domain before attempting exec. The close-on-exec status
+// pipe can distinguish a returned exec error, but EOF cannot distinguish a
+// successful exec from abrupt helper termination. This proof never asserts
+// that the operator command started.
 type ExecutionProof struct {
 	Record              EnforcementRecord `json:"record"`
 	ConfigPolicyHash    string            `json:"config_policy_hash"`
@@ -27,10 +29,10 @@ type ExecutionProof struct {
 }
 
 // NewExecutionProof constructs and hashes the effective child-side policy.
-func NewExecutionProof(record EnforcementRecord, configHash, profile, workspace, tempDir, binary string, command []string) ExecutionProof {
+func NewExecutionProof(record EnforcementRecord, opts ExecControlOptions, command []string) ExecutionProof {
 	proof := ExecutionProof{
-		Record: record, ConfigPolicyHash: configHash, Profile: profile,
-		Workspace: workspace, TempDir: tempDir, Binary: binary,
+		Record: record, ConfigPolicyHash: opts.PolicyHash, Profile: opts.Profile,
+		Workspace: opts.Workspace, TempDir: opts.TempDir, Binary: opts.Binary,
 		Command: slices.Clone(command),
 	}
 	proof.EffectivePolicyHash = proof.recomputeHash()
@@ -40,7 +42,7 @@ func NewExecutionProof(record EnforcementRecord, configHash, profile, workspace,
 // Verify checks the child proof against the parent-side configuration binding.
 func (p ExecutionProof) Verify(expectedConfigHash string) error {
 	if !p.Record.Enforced() || p.ConfigPolicyHash == "" || p.ConfigPolicyHash != expectedConfigHash || p.ExecError != "" {
-		return errors.New("guard execution proof does not describe a successful enforced invocation")
+		return errors.New("guard execution proof does not describe valid pre-exec enforcement")
 	}
 	want := p.recomputeHash()
 	if p.EffectivePolicyHash == "" || p.EffectivePolicyHash != want {

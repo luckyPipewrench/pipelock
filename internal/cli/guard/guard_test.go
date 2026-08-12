@@ -425,6 +425,23 @@ func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
 	if _, err := loadRuntimeConfig("-"); err == nil || !strings.Contains(err.Error(), "stdin") {
 		t.Fatalf("stdin runtime config error = %v", err)
 	}
+	for _, stdinAlias := range []string{"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"} {
+		if _, err := os.Stat(stdinAlias); err != nil {
+			continue
+		}
+		if _, err := loadRuntimeConfig(stdinAlias); err == nil || !strings.Contains(err.Error(), "stdin") {
+			t.Fatalf("stdin alias %q error = %v", stdinAlias, err)
+		}
+	}
+	if _, err := os.Stat("/proc/self/fd/0"); err == nil {
+		alias := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.Symlink("/proc/self/fd/0", alias); err != nil {
+			t.Fatalf("create stdin config symlink: %v", err)
+		}
+		if _, err := loadRuntimeConfig(alias); err == nil || !strings.Contains(err.Error(), "stdin") {
+			t.Fatalf("symlinked stdin config error = %v", err)
+		}
+	}
 	if _, err := loadRuntimeConfig(filepath.Join(t.TempDir(), "missing.yaml")); err == nil || !strings.Contains(err.Error(), "loading guard config") {
 		t.Fatalf("missing runtime config error = %v", err)
 	}
@@ -480,16 +497,20 @@ func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
 	}
 
 	cmd = Cmd()
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
 	cmd.SetOut(failingWriter{})
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", "/usr/bin/true"})
+	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", testExecutable})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
 		t.Fatalf("dry-run output error = %v", err)
 	}
 	cmd = Cmd()
 	cmd.SetOut(failingWriter{})
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--dry-run", "--workspace", t.TempDir(), "--", "/usr/bin/true"})
+	cmd.SetArgs([]string{"--dry-run", "--workspace", t.TempDir(), "--", testExecutable})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
 		t.Fatalf("human dry-run output error = %v", err)
 	}
@@ -512,6 +533,16 @@ func TestRenderGuardPreflightIncludesUnavailableReasons(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("preflight output missing %q: %s", want, out.String())
 		}
+	}
+}
+
+func TestGuardCommandRejectsArgumentsBeforeSeparator(t *testing.T) {
+	cmd := Cmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"stray", "--", "tool"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "usage: pipelock guard") {
+		t.Fatalf("pre-separator argument error = %v", err)
 	}
 }
 

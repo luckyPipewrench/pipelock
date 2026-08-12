@@ -899,38 +899,28 @@ func TestCanonicalPolicyHash_GuardIncludedAndOrderIndependent(t *testing.T) {
 
 	base := canonicalHashOf(t, func(c *Config) {})
 
-	withGuard := canonicalHashOf(t, func(c *Config) {
-		c.Guard = Guard{
-			Services: []GuardService{
-				{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 443},
-			},
-			Manifests: []GuardManifest{
-				{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session"}},
-			},
-			Profiles: []GuardProfile{
-				{Name: "codex", Manifests: []string{"session"}},
-			},
-		}
-	})
+	guardDeclaration := Guard{
+		Services: []GuardService{{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 443}},
+		Manifests: []GuardManifest{
+			{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session", "/tmp/pipelock-guard-work"}},
+			{Name: "cache", ReadOnly: []string{"/tmp/pipelock-guard-cache-a", "/tmp/pipelock-guard-cache-b"}},
+		},
+		Profiles: []GuardProfile{
+			{Name: "codex", Manifests: []string{"session", "cache"}},
+			{Name: "worker", Manifests: []string{"cache", "session"}},
+		},
+	}
+	withGuard := canonicalHashOf(t, func(c *Config) { c.Guard = guardDeclaration })
 
 	if base == withGuard {
 		t.Fatal("enforced guard config did not change the canonical policy hash")
 	}
 
-	// A semantically different guard must also leave the hash untouched while
-	// the section is inert; otherwise the exclusion is only partial.
+	// Changing only an enforced Guard destination port must change the policy hash.
 	differentPort := canonicalHashOf(t, func(c *Config) {
-		c.Guard = Guard{
-			Services: []GuardService{
-				{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 8443},
-			},
-			Manifests: []GuardManifest{
-				{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session"}},
-			},
-			Profiles: []GuardProfile{
-				{Name: "codex", Manifests: []string{"session"}},
-			},
-		}
+		c.Guard = guardDeclaration
+		c.Guard.Services = append([]GuardService(nil), guardDeclaration.Services...)
+		c.Guard.Services[0].Port = 8443
 	})
 
 	if withGuard == differentPort {
@@ -939,9 +929,15 @@ func TestCanonicalPolicyHash_GuardIncludedAndOrderIndependent(t *testing.T) {
 
 	reordered := canonicalHashOf(t, func(c *Config) {
 		c.Guard = Guard{
-			Profiles:  []GuardProfile{{Name: "codex", Manifests: []string{"session"}}},
-			Manifests: []GuardManifest{{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session"}}},
-			Services:  []GuardService{{Name: "api", Protocol: "TCP", Host: "A.VENDOR.EXAMPLE..", Port: 443}},
+			Profiles: []GuardProfile{
+				{Name: "worker", Manifests: []string{"session", "cache"}},
+				{Name: "codex", Manifests: []string{"cache", "session"}},
+			},
+			Manifests: []GuardManifest{
+				{Name: "cache", ReadOnly: []string{"/tmp/pipelock-guard-cache-b", "/tmp/pipelock-guard-cache-a"}},
+				{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-work", "/tmp/pipelock-guard-session"}},
+			},
+			Services: []GuardService{{Name: "api", Protocol: "TCP", Host: "A.VENDOR.EXAMPLE..", Port: 443}},
 		}
 	})
 	if reordered != withGuard {

@@ -54,7 +54,7 @@ func PrepareExecution(cfg *config.Config, profileName, workspace, tempDir, execu
 			return
 		}
 		seen[key] = struct{}{}
-		planned = append(planned, grant{declared: clean, access: access, runtime: floorExempt})
+		planned = append(planned, grant{declared: clean, access: access, floorExempt: floorExempt})
 	}
 	for _, path := range existingExecutionPaths([]string{
 		"/usr", "/lib", "/lib64", "/bin", "/sbin",

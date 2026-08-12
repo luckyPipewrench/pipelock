@@ -74,6 +74,13 @@ func TestOpenExecStatusWriterValidatesAndOwnsDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openExecStatusWriter: %v", err)
 	}
+	flags, err := unix.FcntlInt(uintptr(inheritedFD), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatalf("read status descriptor flags: %v", err)
+	}
+	if flags&unix.FD_CLOEXEC == 0 {
+		t.Fatal("guard status descriptor is not close-on-exec")
+	}
 	if err := status.Close(); err != nil {
 		t.Fatalf("close status writer: %v", err)
 	}

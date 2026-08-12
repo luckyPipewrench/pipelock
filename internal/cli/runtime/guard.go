@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -144,18 +145,16 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	defer logger.Close()
 
 	guardMetrics := metrics.New()
-	evidence, err := newGuardEvidence(ctxOrBackground(opts.Context), runtimeCfg, sc, guardMetrics, opts.Stderr)
+	baseCtx := ctxOrBackground(opts.Context)
+	evidence, err := newGuardEvidence(baseCtx, runtimeCfg, sc, guardMetrics, opts.Stderr)
 	if err != nil {
 		return err
 	}
 	defer evidence.close()
-	ctx := opts.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(baseCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	guardReady := make(chan struct{})
+	var guardReadyOnce sync.Once
 
 	p, err := proxy.New(runtimeCfg, logger, sc, guardMetrics, evidence.proxyOptions...)
 	if err != nil {
@@ -197,7 +196,7 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		GuardDeclaration:        &declaration,
 		GuardProfile:            opts.Profile,
 		GuardPolicyHash:         configPolicyHash,
-		GuardEnforced: func(encoded []byte) error {
+		GuardAppliedPreExec: func(encoded []byte) error {
 			var proof guardfs.ExecutionProof
 			if err := json.Unmarshal(encoded, &proof); err != nil {
 				return fmt.Errorf("decoding child enforcement proof: %w", err)
@@ -208,7 +207,7 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 			if err := evidence.activate(proof); err != nil {
 				return err
 			}
-			close(guardReady)
+			guardReadyOnce.Do(func() { close(guardReady) })
 			return nil
 		},
 	})
@@ -234,7 +233,8 @@ type guardEvidence struct {
 	heartbeat    time.Duration
 	stderr       io.Writer
 	require      bool
-	activated    bool
+	activateOnce sync.Once
+	activateErr  error
 }
 
 func (e *guardEvidence) close() {
@@ -250,10 +250,17 @@ func (e *guardEvidence) close() {
 }
 
 func (e *guardEvidence) activate(proof guardfs.ExecutionProof) error {
-	if e == nil || e.emitter == nil || e.activated {
+	if e == nil || e.emitter == nil {
 		return nil
 	}
-	e.emitter.UpdateConfigHash(proof.EffectivePolicyHash)
+	e.activateOnce.Do(func() {
+		e.activateErr = e.activateReceipts(proof)
+	})
+	return e.activateErr
+}
+
+func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
+	e.emitter.UpdateConfigHash(proof.ConfigPolicyHash)
 	if err := emitStartupSessionOpen(e.emitter); err != nil {
 		if e.require {
 			return fmt.Errorf("emitting Guard session_open receipt: %w", err)
@@ -264,16 +271,19 @@ func (e *guardEvidence) activate(proof guardfs.ExecutionProof) error {
 	}
 	if err := e.emitter.EmitDurable(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
-		Layer: "guard", Pattern: "enforcement_success", Transport: "guard_exec",
-		Method: "EXEC", Target: proof.Binary, PolicyHash: proof.EffectivePolicyHash,
+		Layer: "guard", Pattern: "landlock_applied_pre_exec", Transport: "guard_exec",
+		Method: "EXEC", Target: proof.Binary, PolicyHash: proof.ConfigPolicyHash,
+		// RequestID is the signed per-action correlation field. Guard uses it to
+		// carry the effective invocation digest without mislabeling that digest
+		// as the canonical configuration policy hash.
+		RequestID: "guard-exec:" + proof.EffectivePolicyHash,
 	}); err != nil {
 		if e.require {
-			return fmt.Errorf("emitting Guard enforcement-success receipt: %w", err)
+			return fmt.Errorf("emitting Guard pre-exec enforcement receipt: %w", err)
 		}
-		_, _ = fmt.Fprintf(e.stderr, "  Receipts: ERROR - Guard enforcement-success could not be emitted: %v\n", err)
+		_, _ = fmt.Fprintf(e.stderr, "  Receipts: ERROR - Guard pre-exec enforcement could not be emitted: %v\n", err)
 	}
 	e.stop = startStandaloneReceiptLifecycle(e.ctx, e.heartbeat, e.emitter, e.stderr, e.require, nil)
-	e.activated = true
 	return nil
 }
 

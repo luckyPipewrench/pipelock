@@ -224,7 +224,7 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 		}
 		outcome.ResolvedPath = resolved
 
-		if refusal := floorRefusal(resolved, g.access, explainFloor); refusal != "" && !g.runtime {
+		if refusal := floorRefusal(resolved, g.access, explainFloor); refusal != "" && !g.floorExempt {
 			outcome.State = StateRefused
 			outcome.Reason = "resolved target refused by compiled floor: " + refusal
 			prepared.outcomes = append(prepared.outcomes, outcome)
@@ -241,7 +241,7 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 			continue
 		}
 
-		fd, state, reason := pinTarget(resolved, g.access, uid, g.runtime)
+		fd, state, reason := pinTarget(resolved, g.access, uid, g.floorExempt)
 		outcome.State = state
 		outcome.Reason = reason
 		if !state.Granted() {

@@ -22,6 +22,10 @@ inspects an encrypted request or response body.
 Audit, receipt, and evidence work stays in the parent Pipelock process, outside
 the workload filesystem restriction. Signed Guard receipts bind the canonical
 policy hash when `flight_recorder.dir` and `signing_key_path` are configured.
+The `landlock_applied_pre_exec` receipt proves that the helper applied the
+filesystem ruleset before attempting `exec`; it does not claim that the operator
+command started, because abrupt helper termination and successful `exec` both
+close the inherited status pipe.
 
 ## Run a command
 
@@ -35,8 +39,9 @@ returns the command's exit code. `--dry-run` validates the declaration and
 checks the required kernel features without launching the command.
 
 The `show` and `explain` subcommands remain read-only. Their human and JSON
-output says that the inspection itself did not enforce anything; run output and
-the Guard receipt are the enforcement record.
+output says that the inspection itself did not enforce anything. Run output
+reports the command result; the Guard receipt records pre-exec ruleset
+application separately and does not certify command start.
 
 The commands deliberately separate two policy layers:
 

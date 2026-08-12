@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
@@ -54,19 +55,23 @@ func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
 	if got.ProxyHandler == nil || got.Policy == nil {
 		t.Fatalf("launch omitted proxy or policy: %+v", got)
 	}
-	if got.GuardEnforced == nil {
+	if got.GuardAppliedPreExec == nil {
 		t.Fatal("launch omitted child enforcement callback")
 	}
 	proof := guardfs.NewExecutionProof(
 		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
-		got.GuardPolicyHash, "", workspace, workspace, "/usr/bin/true", []string{"/usr/bin/true"},
+		guardfs.ExecControlOptions{PolicyHash: got.GuardPolicyHash, Workspace: workspace, TempDir: workspace, Binary: "/usr/bin/true"},
+		[]string{"/usr/bin/true"},
 	)
 	encoded, err := json.Marshal(proof)
 	if err != nil {
 		t.Fatalf("marshal proof: %v", err)
 	}
-	if err := got.GuardEnforced(encoded); err != nil {
-		t.Fatalf("GuardEnforced: %v", err)
+	if err := got.GuardAppliedPreExec(encoded); err != nil {
+		t.Fatalf("GuardAppliedPreExec: %v", err)
+	}
+	if err := got.GuardAppliedPreExec(encoded); err != nil {
+		t.Fatalf("repeated GuardAppliedPreExec: %v", err)
 	}
 	server, client := net.Pipe()
 	if err := client.Close(); err != nil {
@@ -76,9 +81,10 @@ func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
 }
 
 func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
 	var got sandbox.StandaloneLaunchConfig
 	err := launchGuard(GuardLaunchOptions{
-		Context: t.Context(), Config: config.Defaults(), Workspace: t.TempDir(),
+		Context: ctx, Config: config.Defaults(), Workspace: t.TempDir(),
 		Command: []string{"/usr/bin/true"}, Stderr: io.Discard,
 	}, func(launch sandbox.StandaloneLaunchConfig) error {
 		got = launch
@@ -87,23 +93,34 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launchGuard: %v", err)
 	}
-	if err := got.GuardEnforced([]byte("not-json")); err == nil || !strings.Contains(err.Error(), "decoding") {
+	if err := got.GuardAppliedPreExec([]byte("not-json")); err == nil || !strings.Contains(err.Error(), "decoding") {
 		t.Fatalf("malformed proof error = %v", err)
 	}
 	proof := guardfs.NewExecutionProof(
 		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
-		"wrong-config", "", "/workspace", "/tmp/private", "/usr/bin/true", []string{"/usr/bin/true"},
+		guardfs.ExecControlOptions{PolicyHash: "wrong-config", Workspace: "/workspace", TempDir: "/tmp/private", Binary: "/usr/bin/true"},
+		[]string{"/usr/bin/true"},
 	)
 	encoded, err := json.Marshal(proof)
 	if err != nil {
 		t.Fatalf("marshal mismatched proof: %v", err)
 	}
-	if err := got.GuardEnforced(encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
+	if err := got.GuardAppliedPreExec(encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
 		t.Fatalf("mismatched proof error = %v", err)
 	}
 	server, client := net.Pipe()
 	defer func() { _ = client.Close() }()
-	got.ProxyHandler(server)
+	done := make(chan struct{})
+	go func() {
+		got.ProxyHandler(server)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy handler did not return after cancellation")
+	}
 }
 
 func TestGuardWorkspaceResolutionFailsFromRemovedDirectory(t *testing.T) {
@@ -115,7 +132,11 @@ func TestGuardWorkspaceResolutionFailsFromRemovedDirectory(t *testing.T) {
 	if err := os.Chdir(removed); err != nil {
 		t.Fatalf("enter removable directory: %v", err)
 	}
-	defer func() { _ = os.Chdir(original) }()
+	defer func() {
+		if err := os.Chdir(original); err != nil {
+			t.Fatalf("restore original directory: %v", err)
+		}
+	}()
 	if err := os.Remove(removed); err != nil {
 		t.Fatalf("remove current directory: %v", err)
 	}
@@ -212,7 +233,7 @@ func TestLaunchGuardFailureDoesNotEmitEnforcementEvidence(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		if strings.Contains(string(contents), "session_open") || strings.Contains(string(contents), "enforcement_success") {
+		if strings.Contains(string(contents), "session_open") || strings.Contains(string(contents), "landlock_applied_pre_exec") {
 			t.Fatalf("failed launch emitted enforcement evidence in %s", path)
 		}
 		return nil
@@ -615,7 +636,7 @@ func TestLaunchGuardPropagatesRuntimeAndEvidenceFailures(t *testing.T) {
 	}
 }
 
-func TestGuardEvidenceBindsEffectiveInvocationHashAfterActivation(t *testing.T) {
+func TestGuardEvidenceRecordsPreExecApplicationWithoutClaimingCommandStart(t *testing.T) {
 	cfg := config.Defaults()
 	recorderDir := filepath.Join(t.TempDir(), "recorder")
 	keyPath := filepath.Join(t.TempDir(), "receipt.key")
@@ -637,18 +658,20 @@ func TestGuardEvidenceBindsEffectiveInvocationHashAfterActivation(t *testing.T) 
 		t.Fatalf("scanner.New: %v", err)
 	}
 	defer sc.Close()
-	evidence, err := newGuardEvidence(context.Background(), cfg, sc, metrics.New(), io.Discard)
+	evidence, err := newGuardEvidence(t.Context(), cfg, sc, metrics.New(), io.Discard)
 	if err != nil {
 		t.Fatalf("newGuardEvidence: %v", err)
 	}
 	wantHash := strings.Repeat("a", 64)
-	if err := evidence.activate(guardfs.ExecutionProof{EffectivePolicyHash: wantHash, Binary: "/usr/bin/true"}); err != nil {
+	wantExecutionHash := strings.Repeat("b", 64)
+	if err := evidence.activate(guardfs.ExecutionProof{ConfigPolicyHash: wantHash, EffectivePolicyHash: wantExecutionHash, Binary: "/usr/bin/true"}); err != nil {
 		t.Fatalf("activate Guard evidence: %v", err)
 	}
 	evidence.close()
 
 	found := false
-	foundEnforcement := false
+	foundExecution := false
+	foundPreExec := false
 	recorderRoot, err := os.OpenRoot(recorderDir)
 	if err != nil {
 		t.Fatalf("open recorder root: %v", err)
@@ -669,8 +692,14 @@ func TestGuardEvidenceBindsEffectiveInvocationHashAfterActivation(t *testing.T) 
 		if strings.Contains(string(contents), wantHash) {
 			found = true
 		}
+		if strings.Contains(string(contents), "guard-exec:"+wantExecutionHash) {
+			foundExecution = true
+		}
+		if strings.Contains(string(contents), "landlock_applied_pre_exec") {
+			foundPreExec = true
+		}
 		if strings.Contains(string(contents), "enforcement_success") {
-			foundEnforcement = true
+			t.Fatalf("recorder overclaims successful command execution in %s", path)
 		}
 		return nil
 	})
@@ -678,10 +707,13 @@ func TestGuardEvidenceBindsEffectiveInvocationHashAfterActivation(t *testing.T) 
 		t.Fatalf("walk recorder: %v", err)
 	}
 	if !found {
-		t.Fatalf("recorder does not contain effective Guard policy hash %s", wantHash)
+		t.Fatalf("recorder does not contain canonical Guard policy hash %s", wantHash)
 	}
-	if !foundEnforcement {
-		t.Fatal("recorder does not contain signed enforcement-success evidence")
+	if !foundExecution {
+		t.Fatalf("recorder does not contain effective Guard execution digest %s", wantExecutionHash)
+	}
+	if !foundPreExec {
+		t.Fatal("recorder does not contain signed pre-exec enforcement evidence")
 	}
 }
 
@@ -713,7 +745,7 @@ func TestGuardEvidenceActivationHandlesUnhealthyEmitter(t *testing.T) {
 			}
 			defer evidence.close()
 			evidence.emitter.MarkUnhealthy(errors.New("test failure"))
-			proof := guardfs.ExecutionProof{EffectivePolicyHash: strings.Repeat("b", 64), Binary: "/usr/bin/true"}
+			proof := guardfs.ExecutionProof{ConfigPolicyHash: strings.Repeat("a", 64), EffectivePolicyHash: strings.Repeat("b", 64), Binary: "/usr/bin/true"}
 			activationErr := evidence.activate(proof)
 			if require && (activationErr == nil || !strings.Contains(activationErr.Error(), "session_open")) {
 				t.Fatalf("required activation error = %v", activationErr)

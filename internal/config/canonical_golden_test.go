@@ -306,8 +306,9 @@ const (
 	// Re-bumped for request body/WebSocket content entropy warn-by-default
 	// posture in ApplyDefaults.
 	// Re-bumped for the policy-semantic forward_proxy.sni_require_tls field.
-	// Re-bumped for fake system-note external-action response coverage.
-	goldenHashDefaults = "5bcc4c5d4da55abfdfb2d9e6c60ad2f2bebf386bc171800e5fd3a42a4a8bf0a6"
+	// Re-bumped for sentence-bounded external-data-transfer directives,
+	// sensitive query-key variants, and command-body transfer coverage.
+	goldenHashDefaults = "176ce8f9f79ab12aeb49a1be152021647ecf8c31a33e7958df5a0cebc2716641"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -456,8 +457,9 @@ const (
 	// posture in ApplyDefaults: see goldenHashDefaults note above.
 	// Re-bumped for forward_proxy.sni_require_tls; the rich fixture omits the
 	// field, whose compatibility default is false.
-	// Re-bumped for fake system-note external-action response coverage.
-	goldenHashRichConfig = "6ae5a981b2c2ca6f572890d0380c65ef21b5951c1649d06b8ce396e8cc11b950"
+	// Re-bumped for the external-data-transfer directive precision changes;
+	// the rich fixture inherits the default response-scanning pattern set.
+	goldenHashRichConfig = "ff8494cd4b0fedf865eb031c55b7c94205c29308cc6d078bc3e68cb61ff6be40"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

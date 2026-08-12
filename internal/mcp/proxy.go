@@ -519,6 +519,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean),
 				})
 			}
+			// Accepted definition drift is not a finding and does not affect the
+			// verdict, so it is reported here rather than on the block path. An
+			// upstream changing a tool under an approved baseline is something
+			// the operator must be able to see even when it is allowed.
+			if toolResult.IsToolsList && len(toolResult.Observations) > 0 {
+				tools.LogToolObservations(logW, lineNum, toolResult)
+			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				resolveToolInventory(config.ActionBlock)
 			}

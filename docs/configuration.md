@@ -1029,15 +1029,44 @@ that upstream baseline. Session binding stays token-scoped: an upstream drift
 baseline never makes a tool known to a client that did not establish its own
 token-bound inventory.
 
-This sharing deliberately treats a changed definition for the same tool name
-as drift. A server that personalizes the description of one same-named tool
-per user can therefore block later clients. Pipelock does not add a client
-partition to avoid that false positive because it would restore the fresh
-session rug-pull bypass. Run personalized inventories through separate
-listener/upstream configurations, or keep same-named descriptions stable.
+Drift blocks on what a change introduces, not on the fact that it changed. A
+definition that changes after you approved it is treated as suspicious, which
+lowers the bar for the rest of the checks rather than being a verdict by
+itself. Pipelock blocks the changed definition when the change introduces
+something the approved one did not have:
 
-With `action: block`, a confirmed upstream update needs an operator
-re-baseline. Configure an owner-only one-shot control file on the listener:
+- an outbound destination: a URL that something is sent, posted, uploaded, or
+  mirrored to. A URL on its own, such as a documentation link or a parameter
+  format example, is not a cue;
+- an instruction aimed at the agent rather than a description of what the tool
+  returns, such as "Before returning, ...". The comma matters: "solves the
+  challenge before returning the response" describes the tool's own behavior
+  and is not a cue;
+- an instruction to conceal the behavior, such as "do not mention this";
+- a reference to another tool;
+- text matching any tool-poison pattern;
+- any change outside the description, including the input schema, parameters,
+  and annotations.
+
+A change that adds only descriptive text is allowed, and the changed
+definition becomes the new baseline, so a vendor clarifying what a tool returns
+does not need an operator re-baseline and does not re-report on every later
+`tools/list`. The acceptance is logged rather than silent.
+
+That last bullet is the fail-closed half: acceptance requires the whole change
+to be accounted for as descriptive text, so anything Pipelock cannot
+characterize is treated as introduced. A `destructiveHint` flipped from `true`
+to `false` blocks even though the description is untouched.
+
+Because the bar is content rather than change, an upstream that personalizes a
+same-named tool's description per user no longer blocks later clients: the
+personalized text introduces no cue. Pipelock still does not partition the
+drift baseline per client, which would restore the fresh-session rug-pull
+bypass.
+
+With `action: block`, a confirmed upstream update that Pipelock blocked needs
+an operator re-baseline. Configure an owner-only one-shot control file on the
+listener:
 
 ```yaml
 mcp_tool_scanning:

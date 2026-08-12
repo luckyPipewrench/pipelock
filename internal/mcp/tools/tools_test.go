@@ -628,8 +628,9 @@ func containsFinding(findings []string, want string) bool {
 	return false
 }
 
-// containsWorkspaceExfilFinding reports whether any match carries the
-// workspace-exfiltration tool-poison finding.
+// containsWorkspaceExfilFinding reports whether the workspace exfiltration
+// directive fired. The pattern name is fixed because every caller checks that
+// one detector.
 func containsWorkspaceExfilFinding(result ToolScanResult) bool {
 	const want = "Workspace Data Exfiltration Directive"
 	for _, match := range result.Matches {

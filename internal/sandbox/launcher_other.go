@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os/exec"
 )
 
@@ -30,22 +29,6 @@ type LaunchConfig struct {
 	Stderr           io.Writer
 }
 
-// StandaloneLaunchConfig configures the standalone sandbox launcher.
-type StandaloneLaunchConfig struct {
-	Ctx                     context.Context
-	Command                 []string
-	Workspace               string
-	Policy                  *Policy
-	Strict                  bool
-	BestEffort              bool
-	RequireNetNS            bool
-	ExtraEnv                []string
-	DeveloperEnvironment    []string
-	UseDeveloperEnvironment bool
-	ProxyHandler            func(conn net.Conn)
-	RequireProxyHandler     bool
-}
-
 // PrepareSandboxCmd returns ErrUnavailable on non-Linux platforms.
 func PrepareSandboxCmd(_ LaunchConfig) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("%w: requires linux", ErrUnavailable)
@@ -57,7 +40,10 @@ func LaunchSandboxed(_ LaunchConfig) (*exec.Cmd, error) {
 }
 
 // LaunchStandalone returns ErrUnavailable on non-Linux platforms.
-func LaunchStandalone(_ StandaloneLaunchConfig) error {
+func LaunchStandalone(cfg StandaloneLaunchConfig) error {
+	if cfg.GuardDeclaration != nil {
+		return fmt.Errorf("%w: Guard execution requires Linux", ErrUnavailable)
+	}
 	return fmt.Errorf("%w: requires linux", ErrUnavailable)
 }
 

@@ -434,7 +434,7 @@ type Config struct {
 	MediationEnvelope        MediationEnvelope       `yaml:"mediation_envelope"`
 	Redaction                redact.Config           `yaml:"redaction"`
 	Learn                    Learn                   `yaml:"learn"`
-	Guard                    Guard                   `yaml:"guard" json:"-"`      // startup-only guard declaration with no runtime consumer yet, excluded from canonical policy hash
+	Guard                    Guard                   `yaml:"guard" json:"-"`      // startup-only guard declaration, projected into the canonical hash only when non-empty
 	LearnLock                LearnLock               `yaml:"learn_lock" json:"-"` // operational lock-runtime config, excluded from canonical policy hash
 	Conductor                Conductor               `yaml:"conductor" json:"-"`  // follower control-plane config, excluded from canonical policy hash
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`

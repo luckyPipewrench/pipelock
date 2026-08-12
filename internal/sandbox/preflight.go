@@ -35,6 +35,7 @@ type PreflightRequirements struct {
 	RequireNetNS        bool `json:"network"`
 	RequireProxyHandler bool `json:"handler"`
 	RequireLandlock     bool `json:"landlock"`
+	MinimumLandlockABI  int  `json:"minimum_landlock_abi,omitempty"`
 	RequireSeccomp      bool `json:"seccomp"`
 }
 
@@ -119,10 +120,11 @@ func preflight(workspace string, argv []string, policy *Policy, requirements Pre
 	// NOTE: These are capability probes, not launch guarantees.
 	// User namespaces may probe as available while loopback setup or
 	// /dev/shm mount fails under AppArmor/container restrictions.
+	landlockAvailable := landlockMeetsRequirement(caps.LandlockABI, requirements.MinimumLandlockABI)
 	result.Layers = []LayerProbe{
 		{
 			Name:      LayerLandlock,
-			Available: caps.LandlockABI > 0,
+			Available: landlockAvailable,
 			Required:  requirements.RequireLandlock,
 			Detail:    fmt.Sprintf("ABI v%d", caps.LandlockABI),
 		},
@@ -141,6 +143,8 @@ func preflight(workspace string, argv []string, policy *Policy, requirements Pre
 
 	if caps.LandlockABI <= 0 {
 		result.Layers[0].Reason = "Landlock not available (kernel 5.13+ required)"
+	} else if requirements.MinimumLandlockABI > 0 && caps.LandlockABI < requirements.MinimumLandlockABI {
+		result.Layers[0].Reason = fmt.Sprintf("Landlock ABI v%d is below required ABI v%d", caps.LandlockABI, requirements.MinimumLandlockABI)
 	}
 	if !caps.UserNamespaces {
 		result.Layers[1].Reason = "user namespaces unavailable"
@@ -188,4 +192,11 @@ func preflight(workspace string, argv []string, policy *Policy, requirements Pre
 	}
 
 	return result
+}
+
+func landlockMeetsRequirement(observedABI, minimumABI int) bool {
+	if minimumABI > 0 {
+		return observedABI >= minimumABI
+	}
+	return observedABI > 0
 }

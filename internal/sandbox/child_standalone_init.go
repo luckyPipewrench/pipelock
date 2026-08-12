@@ -9,14 +9,20 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	guardruntime "github.com/luckyPipewrench/pipelock/internal/guard"
 )
 
 // RunStandaloneInit is the entry point for standalone sandbox-init mode.
@@ -26,16 +32,45 @@ import (
 func RunStandaloneInit() {
 	workspace := os.Getenv("__PIPELOCK_SANDBOX_WORKSPACE")
 	commandStr := os.Getenv("__PIPELOCK_SANDBOX_COMMAND")
+	commandJSON := os.Getenv(standaloneCommandJSONEnv)
 	socketPath := os.Getenv(sandboxSocketEnv)
 	extraEnvStr := os.Getenv("__PIPELOCK_SANDBOX_EXTRA_ENV")
 	developerEnvFDStr := os.Getenv(developerEnvironmentControlEnv)
+	guardDeclarationRaw := os.Getenv(standaloneGuardDeclarationEnv)
+	guardProfile := os.Getenv(standaloneGuardProfileEnv)
+	guardPolicyHash := os.Getenv(standaloneGuardPolicyHashEnv)
+	guardStatusFDStr := os.Getenv(guardStatusControlEnv)
 
-	if workspace == "" || commandStr == "" || socketPath == "" {
+	var guardDeclaration *config.Guard
+	var guardStatus *os.File
+	if guardDeclarationRaw != "" {
+		guardDeclaration = &config.Guard{}
+		if err := json.Unmarshal([]byte(guardDeclarationRaw), guardDeclaration); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard declaration: %v\n", err)
+			exitSandboxProcess(1)
+		}
+		if guardPolicyHash == "" {
+			_, _ = fmt.Fprintln(os.Stderr, "[sandbox] guard policy hash is missing")
+			exitSandboxProcess(1)
+		}
+		fd, fdErr := strconv.Atoi(guardStatusFDStr)
+		if fdErr != nil || fd < 3 {
+			_, _ = fmt.Fprintln(os.Stderr, "[sandbox] guard status descriptor is invalid")
+			exitSandboxProcess(1)
+		}
+		guardStatus = os.NewFile(uintptr(fd), "guard-status")
+	}
+
+	if workspace == "" || (commandJSON == "" && commandStr == "") || socketPath == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] missing workspace, command, or socket path\n")
 		exitSandboxProcess(1)
 	}
 
-	command := strings.Split(commandStr, "\x1f")
+	command, err := decodeStandaloneCommand(commandJSON, commandStr)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command transport: %v\n", err)
+		exitSandboxProcess(1)
+	}
 	var extraEnv []string
 	if extraEnvStr != "" {
 		extraEnv = strings.Split(extraEnvStr, "\x1f")
@@ -66,7 +101,6 @@ func RunStandaloneInit() {
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
 	var env []string
 	var binary string
-	var err error
 	if useDeveloperEnvironment {
 		// SyntheticEnv normally creates this directory before policy resolution.
 		// The developer path preserves the caller environment instead, but the
@@ -75,7 +109,11 @@ func RunStandaloneInit() {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] developer scratch dir: %v\n", err)
 			exitSandboxProcess(1)
 		}
-		binary, err = lookPathIn(command[0], developerEnvironment)
+		if guardDeclaration != nil {
+			binary, err = ResolveCommandInDir(command[0], developerEnvironment, workspace)
+		} else {
+			binary, err = lookPathIn(command[0], developerEnvironment)
+		}
 	} else {
 		// Build synthetic environment.
 		env, err = SyntheticEnv(sandboxDir, workspace, extraEnv)
@@ -83,7 +121,11 @@ func RunStandaloneInit() {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
 			exitSandboxProcess(1)
 		}
-		binary, err = lookPathIn(command[0], env)
+		if guardDeclaration != nil {
+			binary, err = ResolveCommandInDir(command[0], env, workspace)
+		} else {
+			binary, err = lookPathIn(command[0], env)
+		}
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
@@ -208,6 +250,11 @@ func RunStandaloneInit() {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
 			exitSandboxProcess(1)
 		}
+		// The caller's environment may point PWD or TMPDIR outside the paths
+		// granted to the final Guard process. Force both to the contained paths
+		// so ordinary tools do not fail merely by honoring inherited metadata.
+		env = forceEnvValue(env, "PWD", workspace)
+		env = forceEnvValue(env, "TMPDIR", sandboxDir)
 	} else {
 		// Add HTTP_PROXY/HTTPS_PROXY to agent's environment.
 		env = appendBridgeProxyEnv(env, bridge.Addr())
@@ -217,24 +264,92 @@ func RunStandaloneInit() {
 	for _, key := range []string{
 		standaloneInitEnv, initEnvKey,
 		"__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
+		standaloneCommandJSONEnv,
 		sandboxSocketEnv, "__PIPELOCK_SANDBOX_EXTRA_ENV",
 		"__PIPELOCK_SANDBOX_POLICY", noNetNSEnvKey,
 		developerEnvironmentControlEnv,
+		standaloneGuardDeclarationEnv, standaloneGuardProfileEnv, standaloneGuardPolicyHashEnv,
+		guardStatusControlEnv,
 	} {
 		env = removeEnvKey(env, key)
 	}
 
-	// Run the agent command as a subprocess.
+	// Run the agent command as a subprocess. Guard adds one final self re-exec:
+	// that helper applies the manifest to its calling thread and immediately
+	// replaces itself with the operator command, leaving this bridge process
+	// outside the workload filesystem restriction.
+	var guardEnvironmentReader, guardEnvironmentWriter *os.File
+	var guardEnvironmentPayload []byte
+	if guardDeclaration != nil {
+		selfExe, readErr := os.Readlink("/proc/self/exe")
+		if readErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard helper path: %v\n", readErr)
+			exitSandboxProcess(1)
+		}
+		guardEnvironmentPayload, readErr = json.Marshal(env)
+		if readErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard environment: %v\n", readErr)
+			exitSandboxProcess(1)
+		}
+		guardEnvironmentReader, guardEnvironmentWriter, readErr = os.Pipe()
+		if readErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard environment pipe: %v\n", readErr)
+			exitSandboxProcess(1)
+		}
+		controls, controlErr := guardruntime.ExecControlEnvironment(guardruntime.ExecControlOptions{
+			Declaration: *guardDeclaration, Profile: guardProfile, PolicyHash: guardPolicyHash,
+			Workspace: workspace, TempDir: sandboxDir, Binary: binary, EnvironmentFD: 3, StatusFD: 4,
+		})
+		if controlErr != nil {
+			_ = guardEnvironmentReader.Close()
+			_ = guardEnvironmentWriter.Close()
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard controls: %v\n", controlErr)
+			exitSandboxProcess(1)
+		}
+		// The helper receives no developer-controlled loader or runtime hooks.
+		// It reads the preserved environment as inert JSON over fd 3, applies
+		// Guard, closes the pipe, and gives those values only to the final exec.
+		env = append([]string{
+			"PATH=/usr/bin:/bin",
+			"PWD=" + workspace,
+			"TMPDIR=" + sandboxDir,
+		}, controls...)
+		binary = selfExe
+		command = append([]string{selfExe}, command...)
+	}
 	agentCmd := exec.CommandContext(ctx, binary, command[1:]...) //nolint:gosec // G204: user-specified agent command
 	agentCmd.Stdin = os.Stdin
 	agentCmd.Stdout = os.Stdout
 	agentCmd.Stderr = os.Stderr
 	agentCmd.Env = env
 	agentCmd.Dir = workspace
+	if guardEnvironmentReader != nil {
+		agentCmd.ExtraFiles = []*os.File{guardEnvironmentReader, guardStatus}
+	}
 
 	if err := agentCmd.Start(); err != nil {
+		if guardEnvironmentReader != nil {
+			_ = guardEnvironmentReader.Close()
+			_ = guardEnvironmentWriter.Close()
+			_ = guardStatus.Close()
+		}
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		exitSandboxProcess(1)
+	}
+	if guardEnvironmentReader != nil {
+		_ = guardEnvironmentReader.Close()
+		_ = guardStatus.Close()
+		written, writeErr := guardEnvironmentWriter.Write(guardEnvironmentPayload)
+		if writeErr == nil && written != len(guardEnvironmentPayload) {
+			writeErr = io.ErrShortWrite
+		}
+		closeErr := guardEnvironmentWriter.Close()
+		if writeErr != nil || closeErr != nil {
+			_ = agentCmd.Process.Kill()
+			_ = agentCmd.Wait()
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard environment transport: %v\n", errors.Join(writeErr, closeErr))
+			exitSandboxProcess(1)
+		}
 	}
 	agentDone := make(chan error, 1)
 	go func() { agentDone <- agentCmd.Wait() }()
@@ -255,6 +370,29 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		exitSandboxProcess(1)
 	}
+}
+
+func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
+	var command []string
+	if encoded == "" {
+		if legacy == "" {
+			return nil, errors.New("missing command")
+		}
+		command = strings.Split(legacy, "\x1f")
+	} else {
+		if err := json.Unmarshal([]byte(encoded), &command); err != nil {
+			return nil, fmt.Errorf("decoding command JSON: %w", err)
+		}
+	}
+	if len(command) == 0 || command[0] == "" {
+		return nil, errors.New("decoded command is empty")
+	}
+	for _, arg := range command {
+		if strings.IndexByte(arg, 0) >= 0 {
+			return nil, errors.New("decoded command contains NUL")
+		}
+	}
+	return command, nil
 }
 
 // waitStandaloneAgentAndBridge waits for the agent and its required bridge.

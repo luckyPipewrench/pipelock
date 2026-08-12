@@ -12,6 +12,13 @@ import (
 // (with bridge proxy, unlike MCP mode which uses syscall.Exec).
 const standaloneInitEnv = "__PIPELOCK_SANDBOX_STANDALONE"
 
+const (
+	standaloneGuardDeclarationEnv = "__PIPELOCK_SANDBOX_GUARD_DECLARATION"
+	standaloneGuardProfileEnv     = "__PIPELOCK_SANDBOX_GUARD_PROFILE"
+	standaloneGuardPolicyHashEnv  = "__PIPELOCK_SANDBOX_GUARD_POLICY_HASH"
+	standaloneCommandJSONEnv      = "__PIPELOCK_SANDBOX_COMMAND_JSON"
+)
+
 // sandboxSocketEnv carries the parent Unix socket path used by sandbox
 // bridge mode. The child-side loopback proxy forwards connections there.
 const sandboxSocketEnv = "__PIPELOCK_SANDBOX_SOCKET"

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -649,7 +650,8 @@ func (s *Scanner) mergedSSRFCIDRs() []*net.IPNet {
 //
 // Respects ssrf.ip_allowlist so operators can explicitly permit specific
 // internal IPs (e.g., sidecar communication, test servers).
-func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
+func (s *Scanner) checkCoreSSRFLiteral(dest destination.Destination) Result {
+	hostname := dest.Host
 	if s.core == nil {
 		return Result{Allowed: true}
 	}
@@ -672,7 +674,7 @@ func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
 	}
 
 	// Operator override: ip_allowlist exempts specific ranges.
-	if s.IsIPAllowlisted(ip) {
+	if s.IsIPAllowlisted(ip) || s.destinationGrants.Contains(dest) {
 		return Result{Allowed: true}
 	}
 

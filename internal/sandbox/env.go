@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+const syntheticPath = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+
+const guardStatusControlEnv = "__PIPELOCK_SANDBOX_GUARD_STATUS_FD"
+
 // safePassthroughKeys are the ONLY parent environment variables passed to the
 // sandboxed child. This is an allowlist, not a blocklist - any variable not
 // listed here is dropped. Matches the MCP proxy's safeEnv() approach to
@@ -101,7 +105,7 @@ func SyntheticEnv(sandboxDir, workspace string, extraEnv []string) ([]string, er
 		"XDG_DATA_HOME="+filepath.Join(homeDir, "data"),
 		"TMPDIR="+filepath.Join(sandboxDir, "tmp"),
 		"SHELL=/bin/sh",
-		"PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+		"PATH="+syntheticPath,
 		"PWD="+workspace,
 	)
 

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -130,6 +131,108 @@ func TestLaunchStandalone_RequireProxyHandlerRejectsBeforeChildStart(t *testing.
 	}
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("child started despite required proxy handler denial: stat error = %v", statErr)
+	}
+}
+
+func TestLaunchStandaloneRejectsInvalidGuardLaunchBeforeChildStart(t *testing.T) {
+	workspace := t.TempDir()
+	largeDeclaration := &config.Guard{Services: []config.GuardService{{
+		Name: strings.Repeat("x", (1<<20)+1), Protocol: "tcp", Host: "api.vendor.example", Port: 443,
+	}}}
+	for _, testCase := range []struct {
+		name string
+		cfg  StandaloneLaunchConfig
+		want string
+	}{
+		{name: "missing command", cfg: StandaloneLaunchConfig{Workspace: workspace}, want: "command is required"},
+		{name: "missing guard hash", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"true"}, GuardDeclaration: &config.Guard{}}, want: "policy hash is required"},
+		{name: "oversized guard declaration", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"true"}, GuardDeclaration: largeDeclaration, GuardPolicyHash: "hash"}, want: "64 KiB"},
+		{name: "missing guard command", cfg: StandaloneLaunchConfig{Workspace: workspace, Command: []string{"missing-guard-command"}, GuardDeclaration: &config.Guard{}, GuardPolicyHash: "hash"}, want: "resolving guard command"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := LaunchStandalone(testCase.cfg); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestGuardLookupEnvironmentUsesCompleteSyntheticPath(t *testing.T) {
+	got := guardLookupEnvironment(false, []string{"PATH=/developer/bin"})
+	if len(got) != 1 || got[0] != "PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" {
+		t.Fatalf("synthetic guard lookup environment = %v", got)
+	}
+	developer := []string{"PATH=/developer/bin", "TOKEN=value"}
+	if got := guardLookupEnvironment(true, developer); len(got) != len(developer) || got[0] != developer[0] || got[1] != developer[1] {
+		t.Fatalf("developer guard lookup environment = %v", got)
+	}
+}
+
+func TestGuardLookupEnvironmentResolvesSystemSbinCommand(t *testing.T) {
+	var candidate string
+	for _, path := range []string{"/usr/local/sbin", "/usr/sbin", "/sbin"} {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			info, infoErr := entry.Info()
+			if infoErr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+				candidate = filepath.Join(path, entry.Name())
+				break
+			}
+		}
+		if candidate != "" {
+			break
+		}
+	}
+	if candidate == "" {
+		t.Skip("no executable found in a system sbin directory")
+	}
+	resolved, err := ResolveCommandInDir(filepath.Base(candidate), guardLookupEnvironment(false, nil), t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve sbin command %q: %v", candidate, err)
+	}
+	resolvedInfo, err := os.Stat(resolved)
+	if err != nil {
+		t.Fatalf("stat resolved command %q: %v", resolved, err)
+	}
+	candidateInfo, err := os.Stat(candidate)
+	if err != nil {
+		t.Fatalf("stat candidate %q: %v", candidate, err)
+	}
+	if !os.SameFile(resolvedInfo, candidateInfo) {
+		t.Fatalf("resolved sbin command = %q, want the same file as %q", resolved, candidate)
+	}
+}
+
+func TestReadGuardExecutionProofRejectsExecFailureAndTrailingSuccess(t *testing.T) {
+	success := `{"record":{"state":"enforced"},"effective_policy_hash":"hash"}`
+	if got, err := readGuardExecutionProof(strings.NewReader(success)); err != nil || string(got) != success {
+		t.Fatalf("success proof = %q, %v", got, err)
+	}
+	failure := success + "\n" + `{"exec_error":"permission denied"}`
+	if _, err := readGuardExecutionProof(strings.NewReader(failure)); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("exec failure proof error = %v", err)
+	}
+	if _, err := readGuardExecutionProof(strings.NewReader(success + "\n" + success)); err == nil || !strings.Contains(err.Error(), "multiple") {
+		t.Fatalf("duplicate success proof error = %v", err)
+	}
+	for _, testCase := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: "", want: "reading enforced record"},
+		{name: "wrong JSON type", raw: "1", want: "decoding enforced record"},
+		{name: "truncated trailing record", raw: success + "\n{", want: "status completion"},
+		{name: "first record is failure", raw: `{"exec_error":"refused"}`, want: "refused"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := readGuardExecutionProof(strings.NewReader(testCase.raw)); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %v, want %q", err, testCase.want)
+			}
+		})
 	}
 }
 
@@ -278,6 +381,26 @@ func TestPreflight_BackwardCompatibleStrictWrapper(t *testing.T) {
 	}
 	if result.Mode != "best-effort" {
 		t.Fatalf("legacy Preflight mode = %q, want best-effort", result.Mode)
+	}
+}
+
+func TestLandlockMeetsRequirementRejectsOlderABI(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		observedABI int
+		minimumABI  int
+		want        bool
+	}{
+		{name: "absent legacy probe", observedABI: 0, want: false},
+		{name: "present legacy probe", observedABI: 1, want: true},
+		{name: "below explicit floor", observedABI: 4, minimumABI: 5, want: false},
+		{name: "at explicit floor", observedABI: 5, minimumABI: 5, want: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := landlockMeetsRequirement(testCase.observedABI, testCase.minimumABI); got != testCase.want {
+				t.Fatalf("landlockMeetsRequirement(%d, %d) = %v, want %v", testCase.observedABI, testCase.minimumABI, got, testCase.want)
+			}
+		})
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
 
 // These cover the decisions Apply makes BEFORE it touches the kernel.
@@ -63,6 +65,78 @@ func TestApply_RefusesBelowThreadSyncABI(t *testing.T) {
 	}
 	if record.ObservedABI == nil || *record.ObservedABI != ThreadSyncABI-1 {
 		t.Errorf("ObservedABI = %v, want %d", record.ObservedABI, ThreadSyncABI-1)
+	}
+}
+
+func TestApplyForExec_AcceptsBaseABIWithoutThreadSync(t *testing.T) {
+	p := &PreparedManifest{complete: false}
+
+	record, err := p.applyMode(func() (int, error) { return MinimumABI, nil }, false)
+
+	if !errors.Is(err, ErrManifestIncomplete) {
+		t.Fatalf("err = %v, want manifest refusal after the ABI check", err)
+	}
+	if errors.Is(err, ErrABITooOld) {
+		t.Fatalf("pre-exec application incorrectly required thread sync: %v", err)
+	}
+	if record.RequiredABI != MinimumABI {
+		t.Fatalf("RequiredABI = %d, want base ABI %d", record.RequiredABI, MinimumABI)
+	}
+	if record.ObservedABI == nil || *record.ObservedABI != MinimumABI {
+		t.Fatalf("ObservedABI = %v, want %d", record.ObservedABI, MinimumABI)
+	}
+}
+
+func TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync(t *testing.T) {
+	p := &PreparedManifest{complete: true}
+	var created, restricted, closed, noNewPrivs bool
+	var restrictFlags uint32
+	ops := rulesetOperations{
+		getABI: func() (int, error) { return MinimumABI, nil },
+		createRuleset: func(attr *llsys.RulesetAttr, flags int) (int, error) {
+			created = true
+			if flags != 0 || attr.HandledAccessFS == 0 {
+				t.Fatalf("create flags=%d handled=%d", flags, attr.HandledAccessFS)
+			}
+			return 42, nil
+		},
+		addPathRule: func(int, *llsys.PathBeneathAttr, int) error {
+			t.Fatal("empty manifest unexpectedly added a path rule")
+			return nil
+		},
+		restrictSelf: func(fd int, flags uint32) error {
+			restricted = true
+			restrictFlags = flags
+			if fd != 42 {
+				t.Fatalf("restrict fd=%d, want 42", fd)
+			}
+			return nil
+		},
+		setNoNewPrivs: func() error {
+			noNewPrivs = true
+			return nil
+		},
+		closeFD: func(fd int) error {
+			closed = true
+			if fd != 42 {
+				t.Fatalf("close fd=%d, want 42", fd)
+			}
+			return nil
+		},
+	}
+
+	record, err := p.applyWithOperations(ops, false)
+	if err != nil {
+		t.Fatalf("applyWithOperations: %v", err)
+	}
+	if !record.Enforced() || record.RequiredABI != MinimumABI {
+		t.Fatalf("record = %+v, want enforced at base ABI", record)
+	}
+	if !created || !noNewPrivs || !restricted || !closed {
+		t.Fatalf("sequence create=%v no_new_privs=%v restrict=%v close=%v", created, noNewPrivs, restricted, closed)
+	}
+	if restrictFlags != 0 {
+		t.Fatalf("pre-exec restrict flags=%d, want no thread-sync flag", restrictFlags)
 	}
 }
 

@@ -16,6 +16,10 @@ import (
 type grant struct {
 	declared string
 	access   AccessKind
+	// floorExempt marks a code-owned execution grant. It skips the compiled-floor
+	// check against the resolved target and permits the fixed character-device
+	// allowlist. Never set it for an operator-selected path.
+	floorExempt bool
 	// refusal is non-empty when the compiled floor rejected this declaration.
 	// The grant is retained rather than dropped so the outcome list can report
 	// it; a dropped declaration is indistinguishable from one that was never

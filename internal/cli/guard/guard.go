@@ -1,32 +1,42 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-// Package guard implements read-only inspection of guard declarations and the
-// compiled filesystem floor. Guard is not enforced in this build.
+// Package guard implements the Guard command plus read-only declaration and
+// compiled-floor inspection.
 package guard
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	cliruntime "github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
 const (
 	reportSchemaVersion = "1"
 	defaultConfigLabel  = "(built-in defaults)"
-	enforcementNotice   = "Guard is not enforced in this build. These results describe declarations and the compiled validation floor only; no workload is constrained."
+	enforcementNotice   = "This inspection command does not enforce Guard. These results describe declarations and the compiled validation floor only; no workload is constrained."
+	guardBoundaryNotice = "Linux HTTP/HTTPS preview: non-proxy TCP, UDP, QUIC, and child DNS are denied. Host ownership maps to the caller UID while the namespace UID may be 0. Same-UID host brokers remain outside this boundary."
 )
 
 type commandOptions struct {
 	configFile string
+	profile    string
+	workspace  string
+	dryRun     bool
+	jsonOutput bool
 }
 
 type reportHeader struct {
@@ -96,21 +106,76 @@ type showReport struct {
 func Cmd() *cobra.Command {
 	opts := &commandOptions{}
 	cmd := &cobra.Command{
-		Use:          "guard",
-		Short:        "Inspect unenforced guard declarations and the compiled floor",
+		Use:          "guard [flags] -- COMMAND [ARGS...]",
+		Short:        "Run a command in the Linux HTTP/HTTPS egress-guard preview",
+		Long:         "Run a command in the Linux HTTP/HTTPS egress-guard preview.\n\n" + guardBoundaryNotice,
 		SilenceUsage: true,
-		Args:         cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return cmd.Help()
+		Args:         cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			dashIdx := cmd.ArgsLenAtDash()
+			if dashIdx != 0 || dashIdx >= len(args) {
+				return errors.New("usage: pipelock guard [flags] -- COMMAND [ARGS...]")
+			}
+			if opts.jsonOutput && !opts.dryRun {
+				return errors.New("--json requires --dry-run, guard show, or guard explain")
+			}
+			command := args[dashIdx:]
+			cfg, err := loadRuntimeConfig(opts.configFile)
+			if err != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+			}
+			workspace, err := resolveWorkspace(opts.workspace, cfg.Sandbox.Workspace)
+			if err != nil {
+				return err
+			}
+			if opts.dryRun {
+				result, preflightErr := cliruntime.GuardPreflight(cfg, opts.profile, workspace, command)
+				if preflightErr != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, preflightErr)
+				}
+				if opts.jsonOutput {
+					if err := writeJSON(cmd.OutOrStdout(), "guard", result); err != nil {
+						return err
+					}
+				} else {
+					if err := renderGuardPreflight(cmd.OutOrStdout(), result); err != nil {
+						return err
+					}
+				}
+				if result.Status != sandbox.StatusReady {
+					return cliutil.ExitCodeError(2, errors.New("guard preflight failed"))
+				}
+				return nil
+			}
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock guard: "+guardBoundaryNotice)
+			launchErr := cliruntime.LaunchGuard(cliruntime.GuardLaunchOptions{
+				Context: cmd.Context(), Config: cfg, Profile: opts.profile,
+				Workspace: workspace, Command: command, Stderr: cmd.ErrOrStderr(),
+			})
+			return preserveCommandExitCode(launchErr)
 		},
 	}
 	cmd.PersistentFlags().StringVarP(&opts.configFile, "config", "c", "", "config file path (default: built-in defaults)")
+	cmd.PersistentFlags().StringVar(&opts.profile, "profile", "", "guard profile selecting state manifests")
+	cmd.PersistentFlags().StringVar(&opts.workspace, "workspace", "", "workspace directory (default: sandbox.workspace or current directory)")
+	cmd.PersistentFlags().BoolVar(&opts.dryRun, "dry-run", false, "validate and probe the Linux HTTP/HTTPS preview without launching")
+	cmd.PersistentFlags().BoolVar(&opts.jsonOutput, "json", false, "output reports as JSON")
 	cmd.AddCommand(explainCmd(opts), showCmd(opts))
 	return cmd
 }
 
+func preserveCommandExitCode(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return cliutil.ExitCodeError(exitErr.ExitCode(), err)
+	}
+	return err
+}
+
 func explainCmd(opts *commandOptions) *cobra.Command {
-	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "explain <absolute-path>",
 		Short: "Explain read and write declarations and compiled-floor refusals",
@@ -124,18 +189,16 @@ func explainCmd(opts *commandOptions) *cobra.Command {
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			if jsonOutput {
+			if opts.jsonOutput {
 				return writeJSON(cmd.OutOrStdout(), "guard explain", report)
 			}
 			return writeHuman(cmd.OutOrStdout(), renderExplain(report))
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
 	return cmd
 }
 
 func showCmd(opts *commandOptions) *cobra.Command {
-	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "show <profile>",
 		Short: "Show a profile's resolved manifests, grants, and floor refusals",
@@ -149,13 +212,12 @@ func showCmd(opts *commandOptions) *cobra.Command {
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			if jsonOutput {
+			if opts.jsonOutput {
 				return writeJSON(cmd.OutOrStdout(), "guard show", report)
 			}
 			return writeHuman(cmd.OutOrStdout(), renderShow(report))
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
 	return cmd
 }
 
@@ -175,6 +237,95 @@ func loadConfig(path string) (*config.Config, string, error) {
 		return nil, "", fmt.Errorf("invalid guard declaration: %w", err)
 	}
 	return cfg, path, nil
+}
+
+func loadRuntimeConfig(path string) (*config.Config, error) {
+	if path == "" {
+		cfg := config.Defaults()
+		if err := cfg.Validate(); err != nil {
+			return nil, fmt.Errorf("validating built-in config: %w", err)
+		}
+		return cfg, nil
+	}
+	if path == "-" {
+		return nil, errors.New("guard runtime config cannot be read from stdin because stdin belongs to the operator command")
+	}
+	configInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("loading guard config %q: %w", path, err)
+	}
+	stdinInfo, err := os.Stdin.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspecting operator-command stdin: %w", err)
+	}
+	if os.SameFile(configInfo, stdinInfo) {
+		return nil, errors.New("guard runtime config cannot alias stdin because stdin belongs to the operator command")
+	}
+	if !configInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("loading guard config %q: not a regular file", path)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("loading guard config %q: %w", path, err)
+	}
+	return cfg, nil
+}
+
+func resolveWorkspace(flagValue, configured string) (string, error) {
+	workspace := flagValue
+	if workspace == "" {
+		workspace = configured
+	}
+	if workspace == "" {
+		var err error
+		workspace, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolving workspace: %w", err)
+		}
+	}
+	resolved, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolving workspace: %w", err)
+	}
+	return resolved, nil
+}
+
+func renderGuardPreflight(w io.Writer, result sandbox.PreflightResult) error {
+	if _, err := fmt.Fprintf(w, "Guard Preflight: %s\n", strings.ToUpper(result.Status)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "  Surface: Linux HTTP/HTTPS preview"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  Workspace: %s\n", result.Workspace); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "  Boundary: "+guardBoundaryNotice); err != nil {
+		return err
+	}
+	for _, layer := range result.Layers {
+		state := "available"
+		if !layer.Available {
+			state = "unavailable"
+		}
+		if layer.Reason != "" {
+			state += ": " + layer.Reason
+		}
+		if _, err := fmt.Fprintf(w, "  %s: %s (required=%t)\n", layer.Name, state, layer.Required); err != nil {
+			return err
+		}
+	}
+	for _, item := range result.Warnings {
+		if _, err := fmt.Fprintf(w, "  WARNING: %s\n", item); err != nil {
+			return err
+		}
+	}
+	for _, item := range result.Errors {
+		if _, err := fmt.Fprintf(w, "  ERROR: %s\n", item); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newHeader(command, configFile string) reportHeader {

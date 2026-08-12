@@ -7,13 +7,16 @@ package sandbox
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T) {
-	const token = "recognizable-api-token-for-control-env-test"
+	token := "test-" + strings.ReplaceAll(t.Name(), "/", "-")
 	cfg := StandaloneLaunchConfig{
 		Command:                 []string{"sh", "-c", "true"},
 		Workspace:               "/workspace",
@@ -27,7 +30,7 @@ func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T
 	controlEnv := standaloneInitControlEnv(cfg, "/tmp/pipelock-sandbox-test/proxy.sock", []string{
 		"GOCOVERDIR=/tmp/pipelock-covdata-" + token,
 		"PIPELOCK_SUBPROCESS_COVERAGE=1",
-	}, `{"workspace":"/workspace"}`, true)
+	}, `{"workspace":"/workspace"}`, true, nil, 0)
 
 	for _, entry := range controlEnv {
 		if strings.Contains(entry, token) || strings.Contains(entry, "LD_PRELOAD") || strings.Contains(entry, "NODE_OPTIONS") {
@@ -43,10 +46,35 @@ func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T
 	}
 }
 
+func TestStandaloneCommandJSONPreservesLegacyDelimiterInArgument(t *testing.T) {
+	want := []string{"tool", "left\x1fright", "line one\nline two"}
+	controlEnv := standaloneInitControlEnv(StandaloneLaunchConfig{
+		Command: want, Workspace: "/workspace",
+	}, "/tmp/pipelock-sandbox-test/proxy.sock", nil, `{"workspace":"/workspace"}`, true, nil, 0)
+	got, err := decodeStandaloneCommand(envValue(controlEnv, standaloneCommandJSONEnv), "")
+	if err != nil {
+		t.Fatalf("decodeStandaloneCommand: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("command = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("command[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if _, err := decodeStandaloneCommand("", ""); err == nil || !strings.Contains(err.Error(), "missing command") {
+		t.Fatalf("missing legacy command error = %v", err)
+	}
+	if _, err := decodeStandaloneCommand("", "\x1farg"); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("legacy empty command error = %v", err)
+	}
+}
+
 func TestLaunchStandaloneDeveloperEnvironmentReachesOnlyFinalCommand(t *testing.T) {
 	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
-	const token = "recognizable-api-token-for-final-command-test"
+	token := "test-" + strings.ReplaceAll(t.Name(), "/", "-")
 
 	err := LaunchStandalone(StandaloneLaunchConfig{
 		Command:   []string{"sh", "-c", "test \"$API_TOKEN\" = \"$EXPECTED_TOKEN\" && test -n \"$HTTP_PROXY\" && test -n \"$HTTPS_PROXY\" && test -z \"$NO_PROXY\" && test -z \"$no_proxy\" && test -z \"$Http_Proxy\" && test -z \"$ALL_proxy\" && test ! -e /proc/self/fd/3 && { test ! -e /proc/$PPID/fd/3 || ! readlink /proc/$PPID/fd/3 | grep -q '^pipe:'; } && ! tr '\\000' '\\n' < \"/proc/$PPID/environ\" | grep -F -q -- \"$EXPECTED_TOKEN\""},
@@ -55,14 +83,56 @@ func TestLaunchStandaloneDeveloperEnvironmentReachesOnlyFinalCommand(t *testing.
 			"PATH=" + os.Getenv("PATH"),
 			"API_TOKEN=" + token,
 			"EXPECTED_TOKEN=" + token,
-			"Http_Proxy=http://attacker.invalid",
-			"ALL_proxy=socks5://attacker.invalid",
+			"Http_Proxy=http://api.vendor.example",
+			"ALL_proxy=socks5://api.vendor.example",
 			"NO_proxy=*",
 		},
 		UseDeveloperEnvironment: true,
 	})
 	if err != nil {
 		t.Fatalf("LaunchStandalone: %v", err)
+	}
+}
+
+func TestLaunchStandaloneGuardAppliesOnlyToFinalCommand(t *testing.T) {
+	skipIfStandaloneUnavailable(t)
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.Mkdir(workspace, 0o750); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("must stay unreadable"), 0o600); err != nil {
+		t.Fatalf("write outside fixture: %v", err)
+	}
+
+	developerEnvironment := forceEnvValue(os.Environ(), "PWD", root)
+	developerEnvironment = forceEnvValue(developerEnvironment, "TMPDIR", "/tmp")
+	developerEnvironment = forceEnvValue(developerEnvironment, "EXPECTED_WORKSPACE", workspace)
+	developerEnvironment = forceEnvValue(developerEnvironment, "OUTSIDE_PATH", outside)
+	declaration := config.Guard{}
+	err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:                 []string{"sh", "-c", `test -z "$__PIPELOCK_GUARD_EXEC$__PIPELOCK_GUARD_DECLARATION$__PIPELOCK_SANDBOX_POLICY" && test "$PWD" = "$EXPECTED_WORKSPACE" && test "$TMPDIR" != /tmp && : > "$TMPDIR/temp-ok" && printf guarded > result.txt && ! cat "$OUTSIDE_PATH" >/dev/null 2>&1`},
+		Workspace:               workspace,
+		DeveloperEnvironment:    developerEnvironment,
+		UseDeveloperEnvironment: true,
+		GuardDeclaration:        &declaration,
+		GuardPolicyHash:         "test-policy-hash",
+	})
+	if err != nil {
+		t.Fatalf("LaunchStandalone with Guard: %v", err)
+	}
+	workspaceRoot, err := os.OpenRoot(workspace)
+	if err != nil {
+		t.Fatalf("open workspace root: %v", err)
+	}
+	defer func() { _ = workspaceRoot.Close() }()
+	result, err := workspaceRoot.ReadFile("result.txt")
+	if err != nil {
+		t.Fatalf("read command result: %v", err)
+	}
+	if string(result) != "guarded" {
+		t.Fatalf("result = %q, want guarded", result)
 	}
 }
 

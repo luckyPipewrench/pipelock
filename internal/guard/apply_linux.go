@@ -94,6 +94,46 @@ func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 }
 
 func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord, error) {
+	return p.applyMode(getABI, true)
+}
+
+// ApplyForExec enforces the manifest on the calling thread for an immediate
+// exec. The caller must perform no concurrent application work and must replace
+// the process image after this returns. The exec'd program inherits the domain,
+// and every thread it later creates inherits it too, so base Landlock ABI 5 is
+// sufficient; kernel thread synchronization is only required by Apply's
+// already-multithreaded in-process contract.
+func (p *PreparedManifest) ApplyForExec() (EnforcementRecord, error) {
+	return p.applyWithOperations(kernelRulesetOperations(), false)
+}
+
+func (p *PreparedManifest) applyMode(getABI func() (int, error), threadSync bool) (EnforcementRecord, error) {
+	ops := kernelRulesetOperations()
+	ops.getABI = getABI
+	return p.applyWithOperations(ops, threadSync)
+}
+
+type rulesetOperations struct {
+	getABI        func() (int, error)
+	createRuleset func(*llsys.RulesetAttr, int) (int, error)
+	addPathRule   func(int, *llsys.PathBeneathAttr, int) error
+	restrictSelf  func(int, uint32) error
+	setNoNewPrivs func() error
+	closeFD       func(int) error
+}
+
+func kernelRulesetOperations() rulesetOperations {
+	return rulesetOperations{
+		getABI:        llsys.LandlockGetABIVersion,
+		createRuleset: llsys.LandlockCreateRuleset,
+		addPathRule:   llsys.LandlockAddPathBeneathRule,
+		restrictSelf:  llsys.LandlockRestrictSelf,
+		setNoNewPrivs: func() error { return unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+		closeFD:       unix.Close,
+	}
+}
+
+func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync bool) (EnforcementRecord, error) {
 	// Held for the whole call. Close writes -1 over each descriptor, so a
 	// concurrent Close could otherwise leave rule construction handing a stale
 	// descriptor NUMBER to the kernel, and a freed number can be reused by any
@@ -104,7 +144,7 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	record := EnforcementRecord{
 		State:            EnforcementRefused,
 		Mechanism:        "landlock",
-		RequiredABI:      ThreadSyncABI,
+		RequiredABI:      MinimumABI,
 		ManifestComplete: p.complete,
 		Outcomes:         p.Outcomes(),
 	}
@@ -118,7 +158,7 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 		return record, ErrAlreadyApplied
 	}
 
-	abi, err := getABI()
+	abi, err := ops.getABI()
 	if err != nil {
 		record.Reason = fmt.Sprintf("landlock is unavailable: %v", err)
 		return record, fmt.Errorf("%w: %w", ErrLandlockUnavailable, err)
@@ -135,11 +175,14 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	// of the policy: applying the same ruleset in a single-threaded child
 	// between fork and exec needs only MinimumABI, which is the route the
 	// execution surface should take.
-	if abi < ThreadSyncABI {
+	if threadSync && abi < ThreadSyncABI {
 		record.Reason = fmt.Sprintf(
 			"kernel landlock ABI %d is below %d, so this ruleset cannot be applied to every thread of this process atomically; apply it in a single-threaded child before exec instead",
 			abi, ThreadSyncABI)
 		return record, fmt.Errorf("%w: have %d, need %d for in-process application", ErrABITooOld, abi, ThreadSyncABI)
+	}
+	if threadSync {
+		record.RequiredABI = ThreadSyncABI
 	}
 
 	handledAccessFS, scoped, unmediated := capabilitiesFor(abi)
@@ -154,11 +197,18 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	// path that could not be granted is a denied grant, and a denied grant that
 	// the workload was told it had is a failure the operator cannot diagnose.
 	if !p.complete {
-		record.Reason = "at least one declared path could not be granted; refusing to enforce a partial manifest"
+		missing := make([]string, 0)
+		for _, outcome := range p.outcomes {
+			if outcome.State.Granted() {
+				continue
+			}
+			missing = append(missing, fmt.Sprintf("%s (%s: %s)", outcome.DeclaredPath, outcome.State, outcome.Reason))
+		}
+		record.Reason = "at least one declared path could not be granted; refusing to enforce a partial manifest: " + strings.Join(missing, "; ")
 		return record, ErrManifestIncomplete
 	}
 
-	rulesetFD, err := llsys.LandlockCreateRuleset(&llsys.RulesetAttr{
+	rulesetFD, err := ops.createRuleset(&llsys.RulesetAttr{
 		HandledAccessFS: handledAccessFS,
 		Scoped:          scoped,
 	}, 0)
@@ -166,14 +216,14 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 		record.Reason = fmt.Sprintf("creating landlock ruleset: %v", err)
 		return record, fmt.Errorf("creating landlock ruleset: %w", err)
 	}
-	defer func() { _ = unix.Close(rulesetFD) }()
+	defer func() { _ = ops.closeFD(rulesetFD) }()
 
 	for _, rule := range p.rules {
 		attr := llsys.PathBeneathAttr{
 			AllowedAccess: rule.access,
 			ParentFd:      rule.fd,
 		}
-		if err := llsys.LandlockAddPathBeneathRule(rulesetFD, &attr, 0); err != nil {
+		if err := ops.addPathRule(rulesetFD, &attr, 0); err != nil {
 			record.Reason = fmt.Sprintf("adding rule for %q: %v", rule.declared, err)
 			return record, fmt.Errorf("adding landlock rule for %q: %w", rule.declared, err)
 		}
@@ -200,16 +250,21 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 	// test caught it as a killed child rather than a wrong answer.
 	//
 	// LockOSThread pins this goroutine for the call so it cannot migrate to
-	// another thread between the prctl and the restrict.
+	// another thread between the prctl and the restrict. The optional TSYNC
+	// flag synchronizes existing threads only for the in-process Apply path.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+	if err := ops.setNoNewPrivs(); err != nil {
 		record.Reason = fmt.Sprintf("setting no_new_privs: %v", err)
 		return record, fmt.Errorf("setting no_new_privs: %w", err)
 	}
 
-	if err := llsys.LandlockRestrictSelf(rulesetFD, llsys.FlagRestrictSelfTSync); err != nil {
+	flags := uint32(0)
+	if threadSync {
+		flags = llsys.FlagRestrictSelfTSync
+	}
+	if err := ops.restrictSelf(rulesetFD, flags); err != nil {
 		record.Reason = fmt.Sprintf("applying landlock restriction: %v", err)
 		return record, fmt.Errorf("applying landlock restriction: %w", err)
 	}

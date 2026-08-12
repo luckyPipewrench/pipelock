@@ -3503,6 +3503,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	// Bind the rebind snapshot to this dial's port: a scan-time snapshot only
 	// vouches for the exact host:port it was taken for.
 	ctx = withSSRFDialPort(ctx, port)
+	guardGranted := scannerDestinationGranted(currentSc, host, port)
 
 	// If the host is already an IP, check it and dial directly.
 	// IsTrustedDomain rejects IP literals, so raw IPs are always
@@ -3516,7 +3517,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
 			return nil, err
 		}
-		if currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) {
+		if currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) && !guardGranted {
 			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
 		}
 		return p.dialer.DialContext(ctx, network, addr)
@@ -3552,6 +3553,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 				// Trusted domain or IP-allowlisted address - allow.
 				// The scanner-level checkSSRF handles the authoritative
 				// allow/deny decision and logging.
+				continue
+			}
+			if guardGranted && ssrfDialSnapshotContains(ctx, host, ip) {
 				continue
 			}
 			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))

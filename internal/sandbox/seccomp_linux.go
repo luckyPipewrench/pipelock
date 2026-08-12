@@ -275,7 +275,7 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_PKEY_ALLOC, unix.SYS_PKEY_FREE, unix.SYS_PKEY_MPROTECT,
 
 		// File I/O
-		unix.SYS_READ, unix.SYS_WRITE, unix.SYS_OPENAT, unix.SYS_CLOSE,
+		unix.SYS_READ, unix.SYS_WRITE, unix.SYS_OPENAT, unix.SYS_OPENAT2, unix.SYS_CLOSE,
 		unix.SYS_LSEEK, unix.SYS_PREAD64, unix.SYS_PWRITE64,
 		unix.SYS_READV, unix.SYS_WRITEV, unix.SYS_PREADV, unix.SYS_PWRITEV,
 		unix.SYS_PREADV2, unix.SYS_PWRITEV2,
@@ -370,6 +370,10 @@ func allowedSyscalls() []uint32 {
 		// Misc / system info
 		unix.SYS_GETRANDOM, unix.SYS_UNAME, unix.SYS_SYSINFO, unix.SYS_GETCPU,
 		unix.SYS_SECCOMP, // allow nested seccomp (additional restrictions only)
+		// Allow the final Guard helper to add a nested Landlock ruleset before
+		// exec. Landlock is monotonic: these calls can only add restrictions to
+		// the already-contained process and its descendants.
+		unix.SYS_LANDLOCK_CREATE_RULESET, unix.SYS_LANDLOCK_ADD_RULE, unix.SYS_LANDLOCK_RESTRICT_SELF,
 	}
 }
 

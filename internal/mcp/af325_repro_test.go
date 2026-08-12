@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,17 +78,9 @@ func af325ToolCfg() *tools.ToolScanConfig {
 
 func af325Post(t *testing.T, baseURL, token, body string) string {
 	t.Helper()
-	payload, err := af325PostResult(baseURL, token, body)
-	if err != nil {
-		t.Fatalf("POST listener: %v", err)
-	}
-	return payload
-}
-
-func af325PostResult(baseURL, token, body string) (string, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 	if err != nil {
-		return "", err
+		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
@@ -97,14 +88,14 @@ func af325PostResult(baseURL, token, body string) (string, error) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		t.Fatalf("POST listener: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		t.Fatalf("ReadAll(listener response): %v", err)
 	}
-	return string(payload), nil
+	return string(payload)
 }
 
 // TestAF325_TokenBoundClientBlocksRugPull is the control: a client that echoes
@@ -138,10 +129,41 @@ func TestAF325_TokenBoundClientBlocksRugPull(t *testing.T) {
 	}
 }
 
+// TestAF325_PlainClientBlocksRugPull proves drift belongs to the listener's
+// configured upstream, not to an optional Pipelock client token. A standard MCP
+// client never returns that token, and a current-spec client cannot even mint
+// one, so keying drift to it would leave the ordinary client unprotected.
+func TestAF325_PlainClientBlocksRugPull(t *testing.T) {
+	upstream, _ := af325Upstream(t, af325RugPullOnly)
+	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
+		Enabled:      true,
+		Action:       config.ActionBlock,
+		OnParseError: config.ActionBlock,
+	}, af325ToolCfg(), nil)
+
+	first := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	second := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+
+	if !strings.Contains(first, "lookup_invoice") {
+		t.Fatalf("first tokenless tools/list = %s, want the approved inventory", first)
+	}
+	if !strings.Contains(second, `"error"`) || !strings.Contains(second, "definition drift") {
+		t.Fatalf("AF-325: tokenless rug pull was ALLOWED; response = %s", second)
+	}
+	// The block names a narrow recovery action, so an operator's only option is
+	// not to disable drift detection.
+	if !strings.Contains(second, "listener_drift_reset_file") {
+		t.Fatalf("drift block omitted its remediation: %s", second)
+	}
+	if !strings.Contains(logBuf.String(), "definition-drift") {
+		t.Fatalf("tokenless rug pull did not reach drift detection; log=%s", logBuf.String())
+	}
+}
+
 // TestAF328_PlainClientAllowsBenignRefinement is the allow direction of the
-// same listener path. Upstream-keyed drift is only shippable if a legitimate
-// vendor description update passes: an operator whose tool updates get blocked
-// turns drift detection off, which costs more than it protects.
+// drift path. Upstream-keyed drift is only shippable if a legitimate vendor
+// description update passes: an operator whose tool updates get blocked turns
+// drift detection off, which costs more than it protects.
 func TestAF328_PlainClientAllowsBenignRefinement(t *testing.T) {
 	upstream, _ := af325Upstream(t, af325BenignRefinement)
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
@@ -175,9 +197,19 @@ func TestAF328_PlainClientAllowsBenignRefinement(t *testing.T) {
 	}
 }
 
-// TestAF325_PlainClientBlocksRugPull proves drift belongs to the configured
-// upstream inventory, not to an optional Pipelock client token.
-func TestAF325_PlainClientBlocksRugPull(t *testing.T) {
+// TestAF325_PlainClientRugPullIsRecordedAsDegraded pins the DEGRADATION
+// reporting for a tokenless client: the per-client controls that need retained
+// state are unavailable, and the listener says so once per window with a count
+// rather than once per request.
+//
+// It deliberately does not assert the drift verdict. Drift is keyed to the
+// listener's upstream rather than to a client token, so a tokenless client DOES
+// get drift detection; TestAF325_PlainClientBlocksRugPull covers that and
+// TestAF328_PlainClientAllowsBenignRefinement covers the allow direction. The
+// earlier form of this comment claimed the listener could not compare a
+// tokenless response against a retained baseline, which upstream keying made
+// false.
+func TestAF325_PlainClientRugPullIsRecordedAsDegraded(t *testing.T) {
 	upstream, listCalls := af325Upstream(t, af325RugPullOnly)
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
 		Enabled:      true,
@@ -193,253 +225,46 @@ func TestAF325_PlainClientBlocksRugPull(t *testing.T) {
 	t.Logf("first response: %s", first)
 	t.Logf("second response: %s", second)
 
+	// Availability is asserted on the ORIGINAL inventory only. Asserting that
+	// the CHANGED definition was delivered would encode a bypass as the
+	// expected result, which no test here may do.
 	if !strings.Contains(first, "lookup_invoice") {
-		t.Fatalf("first tokenless tools/list = %s, want approved inventory", first)
+		t.Fatalf("tokenless client lost MCP availability on the original inventory: %s", first)
 	}
-	if !strings.Contains(second, `"error"`) || !strings.Contains(second, "definition drift") {
-		t.Fatalf("AF-325: tokenless rug pull was ALLOWED; response = %s", second)
-	}
+	_ = second
+	// Two degraded requests inside one reporting window produce ONE report.
+	// A per-request line would let any reachable client amplify a request into
+	// a log line and an audit record.
 	if got := strings.Count(logBuf.String(), "stateful controls are unavailable"); got != 1 {
-		t.Fatalf("degraded tokenless requests logged %d times, want 1 initial report; log=%s", got, logBuf.String())
+		t.Fatalf("degraded tokenless requests reported %d times, want 1 aggregated report; log=%s", got, logBuf.String())
 	}
+	// Assert the VALUE, not the field's presence. A presence-only check passes
+	// on "=0", which is what a listener that never passes the reporter's count
+	// into the record would emit.
 	if !strings.Contains(logBuf.String(), "degraded_requests_since_last_report=1") {
-		t.Fatalf("initial degradation report omitted its count: %s", logBuf.String())
+		t.Fatalf("first degradation report carried the wrong count: %s", logBuf.String())
 	}
 }
 
-func TestAF325_ConcurrentPlainClientsShareUpstreamDriftBaseline(t *testing.T) {
-	var listCalls atomic.Int32
-	arrived := make(chan struct{}, 2)
-	release := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("ReadAll(upstream request): %v", err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if !strings.Contains(string(body), `"method":"tools/list"`) {
-			t.Errorf("unexpected upstream request: %s", body)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if listCalls.Add(1) <= 2 {
-			arrived <- struct{}{}
-			<-release
-			_, _ = w.Write([]byte(af325Before))
-			return
-		}
-		_, _ = w.Write([]byte(af325RugPullOnly))
-	}))
-	t.Cleanup(upstream.Close)
+// TestAF325_DegradationReporterAggregatesAndKeepsCount pins the throttle
+// directly. Evidence must survive aggregation, so every degraded request is
+// counted even when only one report is emitted.
+func TestAF325_DegradationReporterAggregatesAndKeepsCount(t *testing.T) {
+	now := time.Unix(0, 0)
+	r := newMCPListenerDegradationReporter(time.Minute, func() time.Time { return now })
 
-	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
-		Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock,
-	}, af325ToolCfg(), nil)
-
-	type postResult struct {
-		body string
-		err  error
+	if count, report := r.observe(); !report || count != 1 {
+		t.Fatalf("first degraded request: count=%d report=%v, want 1/true", count, report)
 	}
-	results := make(chan postResult, 2)
-	var wg sync.WaitGroup
-	for range 2 {
-		wg.Go(func() {
-			body, err := af325PostResult(baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-			results <- postResult{body: body, err: err}
-		})
-	}
-	<-arrived
-	<-arrived
-	close(release)
-	wg.Wait()
-	close(results)
-	for result := range results {
-		if result.err != nil {
-			t.Fatalf("concurrent tools/list request: %v", result.err)
-		}
-		if !strings.Contains(result.body, "lookup_invoice") || strings.Contains(result.body, `"error"`) {
-			t.Fatalf("concurrent clean tools/list = %s, want allowed inventory", result.body)
+	for i := range 5 {
+		if count, report := r.observe(); report {
+			t.Fatalf("request %d inside the window reported (count=%d); want silence", i+2, count)
 		}
 	}
-
-	rugPull := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	if !strings.Contains(rugPull, `"error"`) || !strings.Contains(rugPull, "definition drift") {
-		t.Fatalf("shared upstream baseline did not block later rug pull: %s", rugPull)
-	}
-	if got := listCalls.Load(); got != 3 {
-		t.Fatalf("upstream tools/list calls = %d, want 3", got)
-	}
-	if got := strings.Count(logBuf.String(), "definition-drift"); got != 1 {
-		t.Fatalf("concurrent clean lists corrupted or double-seeded drift baseline; drift logs=%d\n%s", got, logBuf.String())
-	}
-}
-
-func TestAF325_PoisonedFirstInventoryDoesNotSeedUpstreamDriftBaseline(t *testing.T) {
-	var listCalls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("ReadAll(upstream request): %v", err)
-			return
-		}
-		if !strings.Contains(string(body), `"method":"tools/list"`) {
-			t.Errorf("unexpected upstream request: %s", body)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if listCalls.Add(1) == 1 {
-			_, _ = w.Write([]byte(strings.Replace(af325After, `"id":2`, `"id":1`, 1)))
-			return
-		}
-		_, _ = w.Write([]byte(af325RugPullOnly))
-	}))
-	t.Cleanup(upstream.Close)
-	baseURL, _, _ := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
-		Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock,
-	}, af325ToolCfg(), nil)
-
-	poisoned := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-	if !strings.Contains(poisoned, `"error"`) {
-		t.Fatalf("poisoned first inventory was allowed: %s", poisoned)
-	}
-	clean := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	if strings.Contains(clean, `"error"`) || !strings.Contains(clean, "lookup_invoice") {
-		t.Fatalf("poisoned first inventory seeded the shared drift baseline: %s", clean)
-	}
-}
-
-func TestAF325_PlainClientDriftResetFileRebaselinesInventory(t *testing.T) {
-	upstream, _ := af325Upstream(t, af325RugPullOnly)
-	resetPath := filepath.Join(t.TempDir(), "listener-tool-drift-reset")
-	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
-	auditLogger, err := audit.New("json", "file", auditPath, false, true)
-	if err != nil {
-		t.Fatalf("new audit logger: %v", err)
-	}
-	t.Cleanup(auditLogger.Close)
-
-	cfg := af325ToolCfg()
-	cfg.ListenerDriftResetFile = resetPath
-	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner: testScannerForHTTP(t), ToolCfg: cfg, AuditLogger: auditLogger,
-		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
-	})
-
-	first := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-	if strings.Contains(first, `"error"`) {
-		t.Fatalf("initial inventory blocked: %s", first)
-	}
-	blocked := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	if !strings.Contains(blocked, "mcp_tool_scanning.listener_drift_reset_file") {
-		t.Fatalf("drift block omitted remediation: %s", blocked)
-	}
-	if err := os.WriteFile(resetPath, []byte("operator-approved"), 0o600); err != nil {
-		t.Fatalf("write reset file: %v", err)
-	}
-	rebaselined := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	if strings.Contains(rebaselined, `"error"`) || !strings.Contains(rebaselined, "lookup_invoice") {
-		t.Fatalf("operator reset did not re-baseline inventory: %s", rebaselined)
-	}
-	if _, err := os.Stat(resetPath); !os.IsNotExist(err) {
-		t.Fatalf("reset file must be consumed once, stat err=%v", err)
-	}
-
-	auditLogger.Close()
-	data, err := os.ReadFile(filepath.Clean(auditPath))
-	if err != nil {
-		t.Fatalf("read audit log: %v", err)
-	}
-	if !strings.Contains(string(data), "mcp_tool_scanning.listener_drift_reset_file") || !strings.Contains(string(data), "operator re-baselined") {
-		t.Fatalf("drift block or reset audit record omitted remediation: %s", data)
-	}
-}
-
-func TestAF325_PlainClientDegradationReportsAreThrottledWithCounts(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(af325Before))
-	}))
-	t.Cleanup(upstream.Close)
-
-	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
-	auditLogger, err := audit.New("json", "file", auditPath, false, true)
-	if err != nil {
-		t.Fatalf("new audit logger: %v", err)
-	}
-	t.Cleanup(auditLogger.Close)
-	var unixSeconds atomic.Int64
-	unixSeconds.Store(1_700_000_000)
-	now := func() time.Time { return time.Unix(unixSeconds.Load(), 0) }
-
-	baseURL, logBuf := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:                           testScannerForHTTP(t),
-		ToolCfg:                           af325ToolCfg(),
-		AuditLogger:                       auditLogger,
-		InputCfg:                          &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
-		listenerDegradationNow:            now,
-		listenerDegradationReportInterval: 10 * time.Second,
-	})
-	for range 3 {
-		response := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-		if strings.Contains(response, `"error"`) {
-			t.Fatalf("clean tokenless tools/list blocked: %s", response)
-		}
-	}
-	if got := strings.Count(logBuf.String(), "stateful controls are unavailable"); got != 1 {
-		t.Fatalf("initial burst produced %d degradation reports, want 1: %s", got, logBuf.String())
-	}
-	if !strings.Contains(logBuf.String(), "degraded_requests_since_last_report=1") {
-		t.Fatalf("first degradation report omitted count: %s", logBuf.String())
-	}
-
-	unixSeconds.Add(10)
-	_ = af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`)
-	if got := strings.Count(logBuf.String(), "stateful controls are unavailable"); got != 2 {
-		t.Fatalf("interval report count = %d, want 2: %s", got, logBuf.String())
-	}
-	if !strings.Contains(logBuf.String(), "degraded_requests_since_last_report=3") {
-		t.Fatalf("interval report omitted three-request aggregate: %s", logBuf.String())
-	}
-
-	auditLogger.Close()
-	data, err := os.ReadFile(filepath.Clean(auditPath))
-	if err != nil {
-		t.Fatalf("read audit log: %v", err)
-	}
-	if !strings.Contains(string(data), "degraded_requests_since_last_report=1") || !strings.Contains(string(data), "degraded_requests_since_last_report=3") {
-		t.Fatalf("audit evidence omitted degradation counts: %s", data)
-	}
-}
-
-func TestMCPListenerDegradationReporterFlushesFinalBurst(t *testing.T) {
-	reporter := newMCPListenerDegradationReporter(50*time.Millisecond, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	reports := make(chan uint64, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		reporter.run(ctx, func(count uint64) { reports <- count })
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-
-	if count, report := reporter.observe(); !report || count != 1 {
-		t.Fatalf("first degradation report = (%d, %t), want (1, true)", count, report)
-	}
-	if count, report := reporter.observe(); report || count != 0 {
-		t.Fatalf("second degradation report = (%d, %t), want (0, false)", count, report)
-	}
-	select {
-	case count := <-reports:
-		if count != 1 {
-			t.Fatalf("periodic final-burst count = %d, want 1", count)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("periodic reporter did not flush final degraded request")
+	now = now.Add(time.Minute)
+	// The five silent requests plus this one must all be accounted for.
+	if count, report := r.observe(); !report || count != 6 {
+		t.Fatalf("after the window: count=%d report=%v, want 6/true", count, report)
 	}
 }
 
@@ -512,16 +337,12 @@ func TestAF325_PlainClientSessionBindingStillGates(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(string(body), `"method":"tools/list"`):
-			_, _ = w.Write([]byte(af325Before))
-		case strings.Contains(string(body), `"method":"tools/call"`):
+		if strings.Contains(string(body), `"method":"tools/call"`) {
 			toolCalls.Add(1)
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
-		default:
-			t.Errorf("unexpected upstream request: %s", body)
-			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":0,"result":{}}`))
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -535,11 +356,7 @@ func TestAF325_PlainClientSessionBindingStillGates(t *testing.T) {
 		OnParseError: config.ActionBlock,
 	}, cfg, nil)
 
-	listed := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-	if strings.Contains(listed, `"error"`) || !strings.Contains(listed, "lookup_invoice") {
-		t.Fatalf("tokenless tools/list did not seed only the upstream drift baseline: %s", listed)
-	}
-	resp := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lookup_invoice","arguments":{}}}`)
+	resp := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"never_listed","arguments":{}}}`)
 	t.Logf("listener log:\n%s", logBuf.String())
 	t.Logf("response: %s", resp)
 	if got := toolCalls.Load(); got != 0 {
@@ -547,38 +364,5 @@ func TestAF325_PlainClientSessionBindingStillGates(t *testing.T) {
 	}
 	if !strings.Contains(resp, bindingReasonNoBaseline) {
 		t.Fatalf("tokenless tools/call block reason = %s, want %q", resp, bindingReasonNoBaseline)
-	}
-}
-
-// TestAF325_BenchmarkSequenceBlocksForTokenlessClient drives the exact payload
-// pair from agent-egress-bench case mcp-drift-http-rugpull-desc-005: a clean
-// inventory, then the same tool name carrying a workspace-exfiltration
-// instruction, over a tokenless client. This is the sequence the benchmark
-// runner reproduces, so it is the case that must block before the corpus can
-// record a pass. The sibling drift tests deliberately use a benign-looking
-// change to isolate drift; this one asserts the real fixture blocks by
-// whichever layer fires first.
-func TestAF325_BenchmarkSequenceBlocksForTokenlessClient(t *testing.T) {
-	upstream, listCalls := af325Upstream(t, af325After)
-	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
-		Enabled:      true,
-		Action:       config.ActionBlock,
-		OnParseError: config.ActionBlock,
-	}, af325ToolCfg(), nil)
-
-	first := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-	second := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-
-	t.Logf("upstream tools/list calls = %d", listCalls.Load())
-	t.Logf("listener log:\n%s", logBuf.String())
-
-	if !strings.Contains(first, "lookup_invoice") {
-		t.Fatalf("first tokenless tools/list = %s, want the approved inventory", first)
-	}
-	if !strings.Contains(second, `"error"`) {
-		t.Fatalf("benchmark rug-pull sequence ALLOWED for a tokenless client; response = %s", second)
-	}
-	if strings.Contains(second, "sink.fixture.example") {
-		t.Fatalf("blocked response leaked the poisoned directive downstream: %s", second)
 	}
 }

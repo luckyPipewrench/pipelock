@@ -113,7 +113,12 @@ func (c *Config) computeCanonicalPolicyHash() string {
 // tool policy rules, chain detection rules, suppress entries). Only
 // set-like string slices with no semantic order (api_allowlist, internal
 // SSRF block, trusted_domains) are sorted into canonical order.
-func (c *Config) policySemanticView() Config {
+type canonicalPolicyView struct {
+	Config
+	Guard *Guard `json:"guard,omitempty"`
+}
+
+func (c *Config) policySemanticView() canonicalPolicyView {
 	view := *c
 
 	// Transport structs (FetchProxy, ForwardProxy, WebSocketProxy,
@@ -235,14 +240,11 @@ func (c *Config) policySemanticView() Config {
 	view.Redaction.AllowlistUnparseableRoutes = canonicalUnparseableRoutes(view.Redaction.Enabled, view.Redaction.AllowlistUnparseableRoutes)
 	view.Redaction.Providers = canonicalRedactionProviders(view.Redaction.Enabled, view.Redaction.Providers)
 
-	// Guard is deliberately NOT canonicalized here. It carries json:"-" and is
-	// excluded from the canonical policy hash while it has no runtime consumer:
-	// a field enters the policy hash only once a production decision path
-	// consumes it, because that hash is stamped into receipts, learn-compile
-	// output, dashboard snapshots, replay packets, and conductor bundles. An
-	// inert field entering the hash would make byte-identical effective policy
-	// emit different evidence across a mixed-version fleet mid-upgrade.
-	// Canonicalize guard here when the runtime evaluator lands.
+	// Guard declarations are set-like startup policy. The execution surface
+	// consumes them, so they belong in the policy hash; sorting copies keeps
+	// declaration order from creating false policy drift.
+	guard := canonicalGuard(view.Guard)
+	view.Guard = Guard{}
 
 	// Resolve omitted-or-zero learn-inference fields to their effective
 	// defaults so the policy hash reflects the runtime-effective policy,
@@ -254,7 +256,50 @@ func (c *Config) policySemanticView() Config {
 	view.Learn.Inference.Floors = view.Learn.Inference.Floors.Resolved()
 	view.Learn.Inference.Normalization = view.Learn.Inference.Normalization.Resolved()
 
-	return view
+	var guardView *Guard
+	if len(guard.Services) > 0 || len(guard.Profiles) > 0 || len(guard.Manifests) > 0 {
+		guardView = &guard
+	}
+	return canonicalPolicyView{Config: view, Guard: guardView}
+}
+
+func canonicalGuard(g Guard) Guard {
+	out := Guard{
+		Services:  append([]GuardService(nil), g.Services...),
+		Profiles:  make([]GuardProfile, len(g.Profiles)),
+		Manifests: make([]GuardManifest, len(g.Manifests)),
+	}
+	for i, service := range out.Services {
+		out.Services[i].Protocol = strings.ToLower(service.Protocol)
+		out.Services[i].Host = strings.TrimRight(strings.ToLower(service.Host), ".")
+	}
+	sort.Slice(out.Services, func(i, j int) bool {
+		a, b := out.Services[i], out.Services[j]
+		if a.Protocol != b.Protocol {
+			return a.Protocol < b.Protocol
+		}
+		if a.Host != b.Host {
+			return a.Host < b.Host
+		}
+		if a.Port != b.Port {
+			return a.Port < b.Port
+		}
+		return a.Name < b.Name
+	})
+	for i, profile := range g.Profiles {
+		out.Profiles[i] = profile
+		out.Profiles[i].Manifests = sortedCopy(profile.Manifests)
+	}
+	sort.Slice(out.Profiles, func(i, j int) bool { return out.Profiles[i].Name < out.Profiles[j].Name })
+	for i, manifest := range g.Manifests {
+		out.Manifests[i] = manifest
+		out.Manifests[i].ReadOnly = sortedCopy(manifest.ReadOnly)
+		out.Manifests[i].ReadOnlyDirectories = sortedCopy(manifest.ReadOnlyDirectories)
+		out.Manifests[i].ReadWrite = sortedCopy(manifest.ReadWrite)
+		out.Manifests[i].ReadWriteDirectories = sortedCopy(manifest.ReadWriteDirectories)
+	}
+	sort.Slice(out.Manifests, func(i, j int) bool { return out.Manifests[i].Name < out.Manifests[j].Name })
+	return out
 }
 
 func canonicalA2ATrustedCardKeys(keys []A2ATrustedCardKey) []A2ATrustedCardKey {

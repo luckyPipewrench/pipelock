@@ -59,10 +59,12 @@ type mcpListenerClientStates struct {
 	degradationReporter  mcpListenerDegradationReporter
 }
 
-// mcpListenerDegradationReporter aggregates the unbound requests for one
-// listener. It deliberately has no client key: clients that omit the
-// Pipelock-issued token are not a trustworthy partition and must not allocate
-// unbounded reporting state.
+// mcpListenerDegradationReporter aggregates degraded (unbound) requests for one
+// listener. It deliberately has no client key: a client that omits the
+// Pipelock-issued token is not a trustworthy partition, so keying reporting
+// state on anything it supplies would let it allocate unbounded memory. An
+// emitted report carries the count since the previous report, so throttling
+// reduces volume without losing the evidence that requests ran degraded.
 type mcpListenerDegradationReporter struct {
 	mu           sync.Mutex
 	pending      uint64
@@ -81,9 +83,10 @@ func newMCPListenerDegradationReporter(interval time.Duration, now func() time.T
 	return mcpListenerDegradationReporter{interval: interval, now: now}
 }
 
-// observe returns a report count on the first degraded request and then on
-// the first degraded request after each interval. The count covers every
-// degraded request since the last emitted report.
+// observe records one degraded request and reports whether the caller should
+// emit. It emits on the first degraded request and then on the first request
+// after each interval, returning the count since the last emission. The
+// counter saturates rather than wrapping.
 func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -100,42 +103,12 @@ func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
 	return count, true
 }
 
-// flush emits requests accumulated since the last report. It is called by the
-// listener-owned ticker so a final burst is still recorded if no later request
-// arrives to trigger observe's interval check.
-func (r *mcpListenerDegradationReporter) flush() (uint64, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.pending == 0 {
-		return 0, false
-	}
-	count := r.pending
-	r.pending = 0
-	r.lastReported = r.now()
-	return count, true
-}
-
-func (r *mcpListenerDegradationReporter) run(ctx context.Context, emit func(uint64)) {
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if count, report := r.flush(); report {
-				emit(count)
-			}
-		}
-	}
-}
-
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	return &mcpListenerClientStates{
 		clients:              make(map[string]*mcpListenerClientState),
 		store:                store,
 		upstreamToolBaseline: tools.NewToolBaseline(),
-		degradationReporter:  newMCPListenerDegradationReporter(0, nil),
+		degradationReporter:  newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
 	}
 }
 

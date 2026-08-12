@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"gopkg.in/yaml.v3"
 )
 
@@ -374,7 +375,7 @@ func TestCore_SSRFLiteral_ConfigMismatch_CanonicalIPNeverAllows(t *testing.T) {
 
 			// Classification is metadata on the denial: recognizing an equivalent
 			// api_allowlist spelling must never turn the core SSRF block into allow.
-			result := s.checkCoreSSRFLiteral(tt.hostname)
+			result := s.checkCoreSSRFLiteral(destination.Destination{Network: destination.NetworkTCP, Host: tt.hostname, Port: 80})
 			if result.Allowed {
 				t.Fatalf("api_allowlist classification allowed blocked literal %q", tt.hostname)
 			}

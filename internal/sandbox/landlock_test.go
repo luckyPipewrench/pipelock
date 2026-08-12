@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	guardruntime "github.com/luckyPipewrench/pipelock/internal/guard"
 )
 
 // Landlock tests use subprocess execution because Landlock restrictions are
@@ -32,7 +34,11 @@ const landlockTestEnv = "__SANDBOX_LANDLOCK_TEST"
 const landlockChildTimeout = 60 * time.Second
 
 func TestMain(m *testing.M) {
-	// Sandbox re-exec entry point. Must be checked FIRST because the
+	if guardruntime.IsExecMode() {
+		guardruntime.RunExec()
+		return
+	}
+	// Sandbox re-exec entry point. Must be checked before ordinary tests because the
 	// re-exec'd child is the test binary itself. Without this, the child
 	// would run the full test suite recursively.
 	if IsInitMode() {

@@ -167,6 +167,8 @@ func rightsFor(access AccessKind) uint64 {
 		return rightsWriteFile
 	case AccessWriteDirectory:
 		return rightsWriteDir
+	case accessRuntimeDevice:
+		return llsys.AccessFSReadFile | llsys.AccessFSWriteFile
 	default:
 		return 0
 	}
@@ -222,7 +224,7 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 		}
 		outcome.ResolvedPath = resolved
 
-		if refusal := floorRefusal(resolved, g.access, explainFloor); refusal != "" {
+		if refusal := floorRefusal(resolved, g.access, explainFloor); refusal != "" && !g.floorExempt {
 			outcome.State = StateRefused
 			outcome.Reason = "resolved target refused by compiled floor: " + refusal
 			prepared.outcomes = append(prepared.outcomes, outcome)
@@ -239,7 +241,7 @@ func prepareGrants(grants []grant, uid int, explainFloor floorEvaluator) (*Prepa
 			continue
 		}
 
-		fd, state, reason := pinTarget(resolved, g.access, uid)
+		fd, state, reason := pinTarget(resolved, g.access, uid, g.floorExempt)
 		outcome.State = state
 		outcome.Reason = reason
 		if !state.Granted() {
@@ -296,11 +298,11 @@ func resolvePhysical(path string) (string, error) {
 
 // pinTarget opens the resolved path as an O_PATH descriptor, creating an
 // absent read-write directory leaf when that is the declared access.
-func pinTarget(resolved string, access AccessKind, uid int) (int, PathState, string) {
+func pinTarget(resolved string, access AccessKind, uid int, runtimeGrant bool) (int, PathState, string) {
 	fd, err := openNoSymlinks(resolved, access.IsDirectory())
 	switch {
 	case err == nil:
-		if reason := verifyPinned(fd, resolved, access, uid); reason != "" {
+		if reason := verifyPinned(fd, resolved, access, uid, runtimeGrant); reason != "" {
 			_ = unix.Close(fd)
 			return -1, StateRefused, reason
 		}
@@ -355,7 +357,7 @@ func createLeaf(resolved string, uid int) (int, PathState, string) {
 	if err != nil {
 		return -1, StateWithheld, fmt.Sprintf("reopening created %q: %v", resolved, err)
 	}
-	if reason := verifyPinned(fd, resolved, AccessWriteDirectory, uid); reason != "" {
+	if reason := verifyPinned(fd, resolved, AccessWriteDirectory, uid, false); reason != "" {
 		_ = unix.Close(fd)
 		return -1, StateRefused, reason
 	}
@@ -409,7 +411,7 @@ func openatNoSymlinks(dirfd int, rel string, dir bool) (int, error) {
 // the object that will actually be granted. Refusing a socket, FIFO, or device
 // here is not redundant with the rights masks above: a directory grant whose
 // target turns out to be a device node would hand out access to raw storage.
-func verifyPinned(fd int, resolved string, access AccessKind, uid int) string {
+func verifyPinned(fd int, resolved string, access AccessKind, uid int, runtimeGrant bool) string {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return fmt.Sprintf("stat of pinned %q failed: %v", resolved, err)
@@ -424,6 +426,13 @@ func verifyPinned(fd int, resolved string, access AccessKind, uid int) string {
 		if access.IsDirectory() {
 			return fmt.Sprintf("%q is a regular file but was declared as a directory subtree", resolved)
 		}
+	case unix.S_IFCHR:
+		// Fixed runtime devices are root-owned and world-writable by design.
+		// The resolved-path check still refuses symlinks to any other device.
+		if !runtimeGrant || access != accessRuntimeDevice || !runtimeDevicePath(resolved) {
+			return fmt.Sprintf("%q is a device node and is not one of Guard's fixed runtime devices", resolved)
+		}
+		return ""
 	default:
 		return fmt.Sprintf("%q is neither a regular file nor a directory; guard refuses to grant sockets, FIFOs, and device nodes", resolved)
 	}
@@ -442,6 +451,16 @@ func verifyPinned(fd int, resolved string, access AccessKind, uid int) string {
 		return fmt.Sprintf("writable %q is group- or world-writable (mode %04o)", resolved, st.Mode&0o7777)
 	}
 	return ""
+}
+
+func runtimeDevicePath(path string) bool {
+	clean := filepath.Clean(path)
+	for _, device := range runtimeDevices {
+		if clean == device {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyAncestor refuses to create state beneath a directory other users can

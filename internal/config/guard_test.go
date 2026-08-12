@@ -4,7 +4,6 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -148,7 +147,7 @@ func TestExplainGuardPathFloorValidatorAntiDrift(t *testing.T) {
 	}
 }
 
-func TestGuardInspectionValidationSeparatesStructureFloorAndRuntimeGate(t *testing.T) {
+func TestGuardInspectionValidationSeparatesStructureAndFloor(t *testing.T) {
 	t.Parallel()
 
 	floorRefused := Defaults()
@@ -159,8 +158,8 @@ func TestGuardInspectionValidationSeparatesStructureFloorAndRuntimeGate(t *testi
 	if err := floorRefused.ValidateGuardStructure(); err != nil {
 		t.Fatalf("structure-only validation must retain a floor-refused path for explanation: %v", err)
 	}
-	if err := floorRefused.ValidateGuardDeclaration(); err == nil || errors.Is(err, errGuardNotEnforced) || !strings.Contains(err.Error(), ".netrc") {
-		t.Fatalf("declaration validation must enforce the path floor before the runtime gate: %v", err)
+	if err := floorRefused.ValidateGuardDeclaration(); err == nil || !strings.Contains(err.Error(), ".netrc") {
+		t.Fatalf("declaration validation must enforce the path floor: %v", err)
 	}
 
 	invalidStructure := Defaults()
@@ -207,17 +206,8 @@ func TestValidateGuard_ValidFull(t *testing.T) {
 			},
 		},
 	}
-	// A structurally valid declaration passes every path and naming rule and is
-	// then refused solely because nothing enforces guard yet. Asserting the
-	// exact sentinel keeps this test honest: if a real validation rule started
-	// rejecting this config, the error would no longer be the gate and this
-	// would fail rather than quietly passing for the wrong reason.
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("guard config must be refused while no runtime evaluator enforces it")
-	}
-	if !errors.Is(err, errGuardNotEnforced) {
-		t.Fatalf("valid guard config should fail only on the not-enforced gate, got: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid enforced guard declaration rejected: %v", err)
 	}
 }
 
@@ -236,7 +226,6 @@ func TestValidateGuard_PathTypes(t *testing.T) {
 		name      string
 		manifest  GuardManifest
 		wantErr   string
-		wantGate  bool
 		noPathErr bool
 	}{
 		{
@@ -246,7 +235,6 @@ func TestValidateGuard_PathTypes(t *testing.T) {
 				ReadOnly:  []string{missingFile},
 				ReadWrite: []string{filepath.Join(t.TempDir(), "writable-state")},
 			},
-			wantGate:  true,
 			noPathErr: true,
 		},
 		{
@@ -256,7 +244,6 @@ func TestValidateGuard_PathTypes(t *testing.T) {
 				ReadOnlyDirectories:  []string{missingDirectory},
 				ReadWriteDirectories: []string{filepath.Join(t.TempDir(), "writable-state") + string(filepath.Separator)},
 			},
-			wantGate:  true,
 			noPathErr: true,
 		},
 		{
@@ -322,18 +309,12 @@ func TestValidateGuard_PathTypes(t *testing.T) {
 			cfg := Defaults()
 			cfg.Guard = Guard{Manifests: []GuardManifest{tt.manifest}}
 			err := cfg.Validate()
-			if err == nil {
-				t.Fatal("guard config must be rejected while the evaluator is absent")
-			}
-			if tt.wantGate && !errors.Is(err, errGuardNotEnforced) {
-				t.Fatalf("declared path type must pass path validation and reach the gate, got: %v", err)
-			}
-			if tt.noPathErr && !errors.Is(err, errGuardNotEnforced) {
+			if tt.noPathErr && err != nil {
 				t.Fatalf("path type validation must not depend on an absent path, got: %v", err)
 			}
 			if tt.wantErr != "" {
-				if errors.Is(err, errGuardNotEnforced) {
-					t.Fatalf("invalid declaration was refused only by the gate, not its path-type rule: %v", err)
+				if err == nil {
+					t.Fatal("invalid declaration was accepted")
 				}
 				if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantErr)) {
 					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
@@ -574,9 +555,7 @@ func TestValidateGuard_Rejections(t *testing.T) {
 			guard: Guard{Manifests: []GuardManifest{
 				{Name: "ok", ReadWrite: []string{"/tmp/workdir"}},
 			}},
-			// The path itself is fine. The declaration is refused only by the
-			// not-enforced gate, which is the message asserted here.
-			wantErr: "not enforced",
+			// The path itself is fine and must remain available.
 		},
 		{
 			// Inverted deliberately. Read-only is NOT safe for key material
@@ -645,7 +624,6 @@ func TestValidateGuard_Rejections(t *testing.T) {
 			guard: Guard{Manifests: []GuardManifest{
 				{Name: "ok", ReadOnly: []string{filepath.Join(guardTestHome, ".config", "autostart")}},
 			}},
-			wantErr: "not enforced",
 		},
 		{
 			name: "ro_absolute_etc_pipelock_rejected",
@@ -882,18 +860,6 @@ func TestValidateGuard_ForeignHomeTrustPaths(t *testing.T) {
 				t.Errorf("read-write on %q must be rejected regardless of which user Pipelock runs as", path)
 				return
 			}
-			// Assert the rejection came from a PATH rule, not from the
-			// not-enforced gate.
-			//
-			// This test was proven non-vacuous when written, and then SILENTLY
-			// became vacuous when the errGuardNotEnforced gate was added later:
-			// the gate rejects every non-empty guard declaration, so a bare
-			// err != nil check passes even with every protected-path rule
-			// deleted. A guard proven honest at one commit is not proven honest
-			// at the next; a later change can hollow it out without touching it.
-			if errors.Is(err, errGuardNotEnforced) {
-				t.Errorf("read-write on %q was refused only by the not-enforced gate, so no path rule actually rejected it: %v", path, err)
-			}
 		})
 	}
 }
@@ -921,58 +887,75 @@ func TestValidateGuard_OrdinaryWorkspacePathsStillAllowed(t *testing.T) {
 					{Name: "ok", ReadWrite: []string{path}},
 				},
 			}
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatalf("guard is refused while unenforced; %q should still reach the gate", path)
-			}
-			// The point of this test is the DIRECTION of the refusal: an
-			// ordinary workspace path must be rejected only by the
-			// not-enforced gate, never by a trust-bearing path rule. An
-			// over-strict guard that refuses legitimate work gets the whole
-			// feature switched off, which on a security product costs nearly
-			// as much as permitting too much.
-			if !errors.Is(err, errGuardNotEnforced) {
+			if err := cfg.Validate(); err != nil {
 				t.Errorf("ordinary workspace path %q must pass the path rules, got: %v", path, err)
 			}
 		})
 	}
 }
 
-func TestCanonicalPolicyHash_GuardExcludedWhileInert(t *testing.T) {
+func TestCanonicalPolicyHash_GuardIncludedAndOrderIndependent(t *testing.T) {
 	t.Parallel()
 
 	base := canonicalHashOf(t, func(c *Config) {})
 
-	withGuard := canonicalHashOf(t, func(c *Config) {
-		c.Guard = Guard{
-			Services: []GuardService{
-				{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 443},
-			},
-			Manifests: []GuardManifest{
-				{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session"}},
-			},
-			Profiles: []GuardProfile{
-				{Name: "codex", Manifests: []string{"session"}},
-			},
-		}
-	})
+	guardDeclaration := Guard{
+		Services: []GuardService{{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 443}},
+		Manifests: []GuardManifest{
+			{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-session", "/tmp/pipelock-guard-work"}},
+			{Name: "cache", ReadOnly: []string{"/tmp/pipelock-guard-cache-a", "/tmp/pipelock-guard-cache-b"}},
+		},
+		Profiles: []GuardProfile{
+			{Name: "codex", Manifests: []string{"session", "cache"}},
+			{Name: "worker", Manifests: []string{"cache", "session"}},
+		},
+	}
+	withGuard := canonicalHashOf(t, func(c *Config) { c.Guard = guardDeclaration })
 
-	if base != withGuard {
-		t.Errorf("inert guard config must not change the canonical policy hash:\n  without guard = %s\n  with guard    = %s", base, withGuard)
+	if base == withGuard {
+		t.Fatal("enforced guard config did not change the canonical policy hash")
 	}
 
-	// A semantically different guard must also leave the hash untouched while
-	// the section is inert; otherwise the exclusion is only partial.
+	// Changing only an enforced Guard destination port must change the policy hash.
 	differentPort := canonicalHashOf(t, func(c *Config) {
-		c.Guard = Guard{
-			Services: []GuardService{
-				{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 8443},
-			},
-		}
+		c.Guard = guardDeclaration
+		c.Guard.Services = append([]GuardService(nil), guardDeclaration.Services...)
+		c.Guard.Services[0].Port = 8443
 	})
 
-	if base != differentPort {
-		t.Errorf("inert guard config must not change the canonical policy hash for any value:\n  without guard = %s\n  different port = %s", base, differentPort)
+	if withGuard == differentPort {
+		t.Fatal("changing an enforced guard destination port did not change the canonical policy hash")
+	}
+
+	reordered := canonicalHashOf(t, func(c *Config) {
+		c.Guard = Guard{
+			Profiles: []GuardProfile{
+				{Name: "worker", Manifests: []string{"session", "cache"}},
+				{Name: "codex", Manifests: []string{"cache", "session"}},
+			},
+			Manifests: []GuardManifest{
+				{Name: "cache", ReadOnly: []string{"/tmp/pipelock-guard-cache-b", "/tmp/pipelock-guard-cache-a"}},
+				{Name: "session", ReadWrite: []string{"/tmp/pipelock-guard-work", "/tmp/pipelock-guard-session"}},
+			},
+			Services: []GuardService{{Name: "api", Protocol: "TCP", Host: "A.VENDOR.EXAMPLE..", Port: 443}},
+		}
+	})
+	if reordered != withGuard {
+		t.Fatalf("equivalent guard declarations changed hash:\n  first = %s\n  reordered = %s", withGuard, reordered)
+	}
+
+	sorted := canonicalGuard(Guard{Services: []GuardService{
+		{Name: "z", Protocol: "udp", Host: "b.vendor.example", Port: 8443},
+		{Name: "c", Protocol: "tcp", Host: "b.vendor.example", Port: 8443},
+		{Name: "b", Protocol: "tcp", Host: "b.vendor.example", Port: 443},
+		{Name: "a", Protocol: "tcp", Host: "b.vendor.example", Port: 443},
+		{Name: "api", Protocol: "tcp", Host: "a.vendor.example", Port: 8443},
+	}})
+	wantNames := []string{"api", "a", "b", "c", "z"}
+	for i, want := range wantNames {
+		if sorted.Services[i].Name != want {
+			t.Fatalf("canonical service order = %+v, want names %v", sorted.Services, wantNames)
+		}
 	}
 }
 
@@ -1075,12 +1058,6 @@ func TestValidateGuard_SecretMaterialRefusedBothDirections(t *testing.T) {
 				if err == nil {
 					t.Fatalf("%s on credential path %q must be rejected", mode, path)
 				}
-				// The rejection must come from a PATH rule. A bare err != nil
-				// check passes with every rule in this file deleted, because
-				// errGuardNotEnforced refuses any non-empty guard declaration.
-				if errors.Is(err, errGuardNotEnforced) {
-					t.Errorf("%s on %q was refused only by the not-enforced gate, so no path rule rejected it: %v", mode, path, err)
-				}
 			})
 		}
 	}
@@ -1122,11 +1099,7 @@ func TestValidateGuard_NonSecretNeighboursStillAllowed(t *testing.T) {
 				cfg := Defaults()
 				cfg.Guard = Guard{Manifests: []GuardManifest{m}}
 
-				err := cfg.Validate()
-				if err == nil {
-					t.Fatalf("guard is refused while unenforced; %q should still reach the gate", path)
-				}
-				if !errors.Is(err, errGuardNotEnforced) {
+				if err := cfg.Validate(); err != nil {
 					t.Errorf("non-secret path %q must pass the %s path rules, got: %v", path, mode, err)
 				}
 			})
@@ -1162,9 +1135,6 @@ func TestValidateGuard_WholeHomeReadRefused(t *testing.T) {
 			if err == nil {
 				t.Fatalf("read access to whole home %q must be rejected", path)
 			}
-			if errors.Is(err, errGuardNotEnforced) {
-				t.Fatalf("read on %q was refused only by the not-enforced gate: %v", path, err)
-			}
 			if !strings.Contains(err.Error(), "entire home directory") {
 				t.Errorf("read on %q must be refused as a whole-home grant, not incidentally by a credential rule, got: %v", path, err)
 			}
@@ -1194,11 +1164,7 @@ func TestValidateGuard_RunSubtreesStillReadable(t *testing.T) {
 			cfg.Guard = Guard{
 				Manifests: []GuardManifest{{Name: "ok", ReadOnly: []string{path}}},
 			}
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatalf("guard is refused while unenforced; %q should still reach the gate", path)
-			}
-			if !errors.Is(err, errGuardNotEnforced) {
+			if err := cfg.Validate(); err != nil {
 				t.Errorf("non-credential runtime path %q must remain readable, got: %v", path, err)
 			}
 		})
@@ -1239,9 +1205,6 @@ func TestValidateGuard_CredentialFloorIndependentOfHomeLayout(t *testing.T) {
 				err := cfg.Validate()
 				if err == nil {
 					t.Fatalf("%s on %q must be rejected regardless of home layout", mode, path)
-				}
-				if errors.Is(err, errGuardNotEnforced) {
-					t.Errorf("%s on %q was refused only by the not-enforced gate, so no path rule rejected it: %v", mode, path, err)
 				}
 			})
 		}
@@ -1291,9 +1254,6 @@ func TestValidateGuard_CredentialFloorIsCaseInsensitive(t *testing.T) {
 				err := cfg.Validate()
 				if err == nil {
 					t.Fatalf("%s on %q must be rejected on a case-insensitive volume", mode, path)
-				}
-				if errors.Is(err, errGuardNotEnforced) {
-					t.Errorf("%s on %q was refused only by the not-enforced gate: %v", mode, path, err)
 				}
 			})
 		}
@@ -1363,9 +1323,6 @@ func TestValidateGuard_CaseEquivalentGrantsConflict(t *testing.T) {
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("case-equivalent declarations of one object must be rejected")
-			}
-			if errors.Is(err, errGuardNotEnforced) {
-				t.Fatalf("case-equivalent declarations were refused only by the not-enforced gate, so no path rule caught the conflict: %v", err)
 			}
 			if !strings.Contains(err.Error(), "conflicts") {
 				t.Errorf("expected a conflict refusal, got: %v", err)

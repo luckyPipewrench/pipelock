@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -215,7 +216,8 @@ type Scanner struct {
 	internalCIDRs              []*net.IPNet
 	ipAllowlistCIDRs           []*net.IPNet // SSRF-exempt IP ranges (ssrf.ip_allowlist)
 	trustedDomains             []string     // SSRF-exempt domains (wildcard via MatchDomain)
-	rawAPIAllowlist            []string     // full api_allowlist for SSRF hint generation (all modes)
+	destinationGrants          destination.GrantSet
+	rawAPIAllowlist            []string // full api_allowlist for SSRF hint generation (all modes)
 	rateLimiter                *RateLimiter
 	dataBudget                 *DataBudget
 	envSecrets                 []string // filtered high-entropy env var values
@@ -357,7 +359,18 @@ func (p *compiledPattern) matches(text string) bool {
 // config.Validate(), but scanner construction is also a runtime activation
 // boundary: invalid config-derived compile inputs and unavailable runtime
 // files are returned as errors so callers can fail closed without panicking.
+type Options struct {
+	DestinationGrants destination.GrantSet
+}
+
 func New(cfg *config.Config) (*Scanner, error) {
+	return NewWithOptions(cfg, Options{})
+}
+
+// NewWithOptions creates a scanner with runtime-only policy overlays. These
+// overlays never mutate Config, so a Guard invocation cannot widen another
+// runtime built from the same configuration.
+func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 	// Only enforce the allowlist in strict mode. In balanced/audit modes,
 	// the allowlist is a config field but not enforced at the scanner level.
 	var allowlist []string
@@ -377,6 +390,7 @@ func New(cfg *config.Config) (*Scanner, error) {
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
+		destinationGrants:         opts.DestinationGrants,
 	}
 
 	// Initialize rate limiter if enabled
@@ -589,6 +603,36 @@ func New(cfg *config.Config) (*Scanner, error) {
 	}
 
 	return s, nil
+}
+
+// IsDestinationGranted reports whether Guard authorized this exact
+// network/host/port tuple. Malformed destinations fail closed as no match.
+func (s *Scanner) IsDestinationGranted(network destination.Network, host string, port uint16) bool {
+	dest, err := destination.New(network, host, port)
+	return err == nil && s.destinationGrants.Contains(dest)
+}
+
+func urlDestination(parsed *url.URL, hostname string) (destination.Destination, bool) {
+	if parsed == nil {
+		return destination.Destination{}, false
+	}
+	port := parsed.Port()
+	if port == "" {
+		switch strings.ToLower(parsed.Scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return destination.Destination{}, false
+		}
+	}
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value == 0 {
+		return destination.Destination{}, false
+	}
+	dest, err := destination.New(destination.NetworkTCP, hostname, uint16(value))
+	return dest, err == nil
 }
 
 // MustNew creates a Scanner and panics if construction fails.
@@ -906,6 +950,10 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 			Score:   1.0,
 		}
 	}
+	dest, destinationOK := urlDestination(parsed, hostname)
+	if !destinationOK {
+		return Result{Allowed: false, Reason: "invalid destination port", Scanner: ScannerParser, Score: 1.0}
+	}
 
 	// CRLF injection check - %0D%0A in URLs enables header injection.
 	// Runs early because CRLF is never legitimate in a URL.
@@ -920,7 +968,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 
 	// Allowlist check - if configured, only allowlisted domains are permitted.
 	// Runs before DNS to reject disallowed domains without any network I/O.
-	if result := s.checkAllowlist(hostname); !result.Allowed {
+	if result := s.checkAllowlist(dest); !result.Allowed {
 		return result
 	}
 
@@ -933,7 +981,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	// even when cfg.Internal is nil (SSRF disabled). Blocks direct requests
 	// to private IPs (127.0.0.1, 169.254.169.254, 10.x, etc.). Respects
 	// ssrf.ip_allowlist for operator overrides.
-	if result := s.checkCoreSSRFLiteral(hostname); !result.Allowed {
+	if result := s.checkCoreSSRFLiteral(dest); !result.Allowed {
 		return result
 	}
 
@@ -1000,7 +1048,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	// When active, core CIDRs are always included via mergedSSRFCIDRs()
 	// so private ranges (10.x, 172.16.x, 192.168.x, loopback, link-local)
 	// cannot be removed from the check set via config alone.
-	ssrfResult := s.checkSSRF(ctx, hostname)
+	ssrfResult := s.checkSSRF(ctx, dest)
 	if !ssrfResult.Allowed {
 		return ssrfResult
 	}
@@ -1063,7 +1111,8 @@ func isCloudMetadataIP(ip net.IP) bool {
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
 // When SSRF IS active, core CIDRs are always included in the check set.
-func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
+func (s *Scanner) checkSSRF(ctx context.Context, dest destination.Destination) Result {
+	hostname := dest.Host
 	// Check context before the SSRF-disabled fast path so cancelled requests
 	// don't slip through when internalCIDRs is empty.
 	if ctx.Err() != nil {
@@ -1074,7 +1123,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 			Score:   1.0,
 		}
 	}
-	if len(s.internalCIDRs) == 0 {
+	if len(s.internalCIDRs) == 0 && s.destinationGrants.Len() == 0 {
 		return Result{Allowed: true}
 	}
 
@@ -1102,7 +1151,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 			}
 		}
 		for _, cidr := range allCIDRs {
-			if cidr.Contains(literalIP) && !s.IsIPAllowlisted(literalIP) {
+			if cidr.Contains(literalIP) && !s.IsIPAllowlisted(literalIP) && !s.destinationGrants.Contains(dest) {
 				result := Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("SSRF blocked: %s is an internal IP", hostname),
@@ -1197,6 +1246,9 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 	if s.IsTrustedDomain(hostname) {
 		return Result{Allowed: true}
 	}
+	if s.destinationGrants.Contains(dest) {
+		return Result{Allowed: true, SSRFResolvedIPs: append([]string(nil), ips...)}
+	}
 
 	// Internal CIDRs (core + config). Cloud-metadata addresses never reach here:
 	// they are non-overridable and already returned above, so this pass only
@@ -1227,7 +1279,11 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 // checkAllowlist rejects requests to domains not in the allowlist.
 // When the allowlist is empty, all domains are permitted (allowlist is opt-in).
 // Uses MatchDomain for consistent wildcard matching with the blocklist.
-func (s *Scanner) checkAllowlist(hostname string) Result {
+func (s *Scanner) checkAllowlist(dest destination.Destination) Result {
+	hostname := dest.Host
+	if s.destinationGrants.Contains(dest) {
+		return Result{Allowed: true}
+	}
 	if len(s.allowlist) == 0 {
 		return Result{Allowed: true}
 	}

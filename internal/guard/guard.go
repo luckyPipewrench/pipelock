@@ -8,9 +8,9 @@
 // enforced. Sharing an adapter would force one of those two contracts to bend,
 // and the one that would bend in practice is this one.
 //
-// Nothing here is wired to a command yet. Guard remains unenforced as a product
-// surface until the execution surface consumes this package; config validation
-// still refuses a runtime guard declaration.
+// The execution surface consumes this package only in its final pre-exec
+// helper. Parent-side proxying, audit, receipts, and evidence remain outside
+// the workload restriction.
 package guard
 
 import (
@@ -96,6 +96,7 @@ const (
 	AccessReadDirectory  AccessKind = "read_only_directories"
 	AccessWriteFile      AccessKind = "read_write"
 	AccessWriteDirectory AccessKind = "read_write_directories"
+	accessRuntimeDevice  AccessKind = "runtime_device"
 )
 
 // IsDirectory reports whether the grant covers a subtree.
@@ -105,7 +106,7 @@ func (a AccessKind) IsDirectory() bool {
 
 // IsWrite reports whether the grant confers modification rights.
 func (a AccessKind) IsWrite() bool {
-	return a == AccessWriteFile || a == AccessWriteDirectory
+	return a == AccessWriteFile || a == AccessWriteDirectory || a == accessRuntimeDevice
 }
 
 // PathState is what actually happened to one declared path.

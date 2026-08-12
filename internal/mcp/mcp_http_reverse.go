@@ -195,29 +195,6 @@ func RunHTTPListenerProxy(
 	}
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
-	listenerClients.configureDegradationReporter(opts.listenerDegradationReportInterval, opts.listenerDegradationNow)
-	reportUnboundStateDegradation := func(count uint64) {
-		reason := fmt.Sprintf("%s (degraded_requests_since_last_report=%d)", listenerUnboundStateDegradationReason, count)
-		_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", reason)
-		if opts.AuditLogger != nil {
-			opts.AuditLogger.LogAnomaly(
-				mustMCPAuditContext(opts.AuditLogger, "MCP", "http-listener"),
-				"",
-				reason,
-				0,
-			)
-		}
-	}
-	degradationCtx, cancelDegradationReporting := context.WithCancel(ctx)
-	degradationReportingDone := make(chan struct{})
-	go func() {
-		defer close(degradationReportingDone)
-		listenerClients.degradationReporter.run(degradationCtx, reportUnboundStateDegradation)
-	}()
-	defer func() {
-		cancelDegradationReporting()
-		<-degradationReportingDone
-	}()
 
 	// Base opts shared across requests. Per-request fields (Rec) are
 	// overridden on a copy inside each request handler. The static
@@ -1102,8 +1079,23 @@ func RunHTTPListenerProxy(
 			bindStateRequestContext()
 		}
 		if requireStateToken && !stateBound {
-			if count, report := listenerClients.nextUnboundStateDegradationReport(); report {
-				reportUnboundStateDegradation(count)
+			// Emitting per request lets any reachable client amplify one
+			// request into one log line and one audit record. Aggregate
+			// instead: the first degraded request reports immediately, later
+			// ones are counted, and each report carries the count since the
+			// previous one so the evidence survives the throttle.
+			if degraded, report := listenerClients.degradationReporter.observe(); report {
+				detail := fmt.Sprintf("%s (degraded_requests_since_last_report=%d)",
+					listenerUnboundStateDegradationReason, degraded)
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", detail)
+				if requestBaseOpts.AuditLogger != nil {
+					requestBaseOpts.AuditLogger.LogAnomaly(
+						mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
+						"",
+						detail,
+						0,
+					)
+				}
 			}
 		}
 

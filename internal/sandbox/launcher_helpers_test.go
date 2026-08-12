@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -174,6 +175,51 @@ func TestLookPathIn_FallbackPATH(t *testing.T) {
 	}
 	if path == "" {
 		t.Error("expected non-empty path for sh")
+	}
+}
+
+func TestResolveCommandInDirAnchorsRelativePathsToWorkspace(t *testing.T) {
+	if _, err := ResolveCommandInDir("", nil, "/relative"); err == nil {
+		t.Fatal("empty command and relative working directory were accepted")
+	}
+	workspace := t.TempDir()
+	tool := filepath.Join(workspace, "tool")
+	if err := os.WriteFile(tool, []byte("tool"), 0o600); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	workspaceRoot, err := os.OpenRoot(workspace)
+	if err != nil {
+		t.Fatalf("open workspace root: %v", err)
+	}
+	defer func() { _ = workspaceRoot.Close() }()
+	toolFile, err := workspaceRoot.Open("tool")
+	if err != nil {
+		t.Fatalf("open tool: %v", err)
+	}
+	if err := toolFile.Chmod(0o700); err != nil {
+		_ = toolFile.Close()
+		t.Fatalf("make tool executable: %v", err)
+	}
+	if err := toolFile.Close(); err != nil {
+		t.Fatalf("close tool: %v", err)
+	}
+	for _, testCase := range []struct {
+		name string
+		cmd  string
+		env  []string
+	}{
+		{name: "slash path", cmd: "./tool"},
+		{name: "relative PATH", cmd: "tool", env: []string{"PATH=."}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resolved, err := ResolveCommandInDir(testCase.cmd, testCase.env, workspace)
+			if err != nil {
+				t.Fatalf("ResolveCommandInDir: %v", err)
+			}
+			if resolved != tool {
+				t.Fatalf("resolved = %q, want %q", resolved, tool)
+			}
+		})
 	}
 }
 

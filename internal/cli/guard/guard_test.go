@@ -9,11 +9,14 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
 const testGuardConfig = `guard:
@@ -52,6 +55,19 @@ func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("writer failed")
 }
 
+type failAfterWriter struct {
+	writes int
+	failAt int
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errors.New("writer failed")
+	}
+	return len(p), nil
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pipelock.yaml")
@@ -80,7 +96,7 @@ func TestExplainHumanCompiledFloorHonesty(t *testing.T) {
 		t.Fatalf("guard explain: %v", err)
 	}
 	for _, want := range []string{
-		"WARNING: Guard is not enforced in this build",
+		"WARNING: This inspection command does not enforce Guard",
 		"READ: WOULD BE REFUSED BY COMPILED FLOOR",
 		"WRITE: WOULD BE REFUSED BY COMPILED FLOOR",
 		"Rule: forbidden_component",
@@ -237,7 +253,7 @@ func TestShowHumanEmptyAndRefusedGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("guard show worker: %v", err)
 	}
-	for _, want := range []string{"WARNING: Guard is not enforced", "Manifest: \"workspace\"", "compiled floor: no refusal", "COMPILED FLOOR REFUSAL", "cannot be configured away"} {
+	for _, want := range []string{"WARNING: This inspection command does not enforce Guard", "Manifest: \"workspace\"", "compiled floor: no refusal", "COMPILED FLOOR REFUSAL", "cannot be configured away"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("worker output missing %q:\n%s", want, out)
 		}
@@ -299,8 +315,13 @@ func TestCommandErrors(t *testing.T) {
 func TestDefaultConfigAndArgumentValidation(t *testing.T) {
 	t.Parallel()
 	help, err := runCommand(t)
-	if err != nil || !strings.Contains(help, "Inspect unenforced guard declarations") {
+	if err != nil || !strings.Contains(help, "Run a command in the Linux HTTP/HTTPS egress-guard preview") {
 		t.Fatalf("guard parent help: err=%v output=%q", err, help)
+	}
+	for _, claimBoundary := range []string{"non-proxy TCP, UDP, QUIC", "Same-UID host brokers remain outside this boundary"} {
+		if !strings.Contains(help, claimBoundary) {
+			t.Fatalf("guard help omitted claim boundary %q:\n%s", claimBoundary, help)
+		}
 	}
 	out, err := runCommand(t, "explain", "/opt/app", "--json")
 	if err != nil {
@@ -313,6 +334,22 @@ func TestDefaultConfigAndArgumentValidation(t *testing.T) {
 		if _, err := runCommand(t, args...); err == nil {
 			t.Fatalf("args %v should fail", args)
 		}
+	}
+}
+
+func TestPreserveCommandExitCode(t *testing.T) {
+	if os.Getenv("PIPELOCK_TEST_EXIT_37") == "1" {
+		os.Exit(37)
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestPreserveCommandExitCode$") // #nosec G204,G702 -- controlled re-exec of this test binary.
+	cmd.Env = append(os.Environ(), "PIPELOCK_TEST_EXIT_37=1")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("helper command unexpectedly succeeded")
+	}
+	wrapped := preserveCommandExitCode(err)
+	if got := cliutil.ExitCodeOf(wrapped); got != 37 {
+		t.Fatalf("exit code = %d, want 37", got)
 	}
 }
 
@@ -384,6 +421,150 @@ func TestOutputErrors(t *testing.T) {
 		cmd.SetArgs(args)
 		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
 			t.Fatalf("args %v error = %v", args, err)
+		}
+	}
+}
+
+func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
+	if _, err := loadRuntimeConfig("-"); err == nil || !strings.Contains(err.Error(), "stdin") {
+		t.Fatalf("stdin runtime config error = %v", err)
+	}
+	for _, stdinAlias := range []string{"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"} {
+		if _, err := os.Stat(stdinAlias); err != nil {
+			continue
+		}
+		if _, err := loadRuntimeConfig(stdinAlias); err == nil || !strings.Contains(err.Error(), "stdin") {
+			t.Fatalf("stdin alias %q error = %v", stdinAlias, err)
+		}
+	}
+	if _, err := os.Stat("/proc/self/fd/0"); err == nil {
+		alias := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.Symlink("/proc/self/fd/0", alias); err != nil {
+			t.Fatalf("create stdin config symlink: %v", err)
+		}
+		if _, err := loadRuntimeConfig(alias); err == nil || !strings.Contains(err.Error(), "stdin") {
+			t.Fatalf("symlinked stdin config error = %v", err)
+		}
+	}
+	if _, err := loadRuntimeConfig(filepath.Join(t.TempDir(), "missing.yaml")); err == nil || !strings.Contains(err.Error(), "loading guard config") {
+		t.Fatalf("missing runtime config error = %v", err)
+	}
+	validConfig := writeConfig(t, "enforce: true\n")
+	if _, err := loadRuntimeConfig(validConfig); err != nil {
+		t.Fatalf("valid runtime config: %v", err)
+	}
+	configured := t.TempDir()
+	if got, err := resolveWorkspace("", configured); err != nil || got != configured {
+		t.Fatalf("configured workspace = %q, err=%v", got, err)
+	}
+	if got, err := resolveWorkspace("", ""); err != nil || !filepath.IsAbs(got) {
+		t.Fatalf("current workspace = %q, err=%v", got, err)
+	}
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get original directory: %v", err)
+	}
+	removedDirectory := t.TempDir()
+	if err := os.Chdir(removedDirectory); err != nil {
+		t.Fatalf("enter removable directory: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(originalDirectory); err != nil {
+			t.Fatalf("restore original directory: %v", err)
+		}
+	}()
+	if err := os.Remove(removedDirectory); err != nil {
+		t.Fatalf("remove current directory fixture: %v", err)
+	}
+	if _, err := resolveWorkspace("", ""); err == nil || !strings.Contains(err.Error(), "resolving workspace") {
+		t.Fatalf("removed current directory error = %v", err)
+	}
+	if _, err := resolveWorkspace("relative", ""); err == nil || !strings.Contains(err.Error(), "resolving workspace") {
+		t.Fatalf("relative workspace in removed directory error = %v", err)
+	}
+	cmd := Cmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--workspace", "relative", "--", "/usr/bin/true"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "resolving workspace") {
+		t.Fatalf("runtime command relative workspace error = %v", err)
+	}
+	if err := os.Chdir(originalDirectory); err != nil {
+		t.Fatalf("restore original directory before command tests: %v", err)
+	}
+
+	if _, err := runCommand(t, "--config", "-", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "stdin") {
+		t.Fatalf("runtime command config error = %v", err)
+	}
+	if _, err := runCommand(t, "--json", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "--json requires --dry-run") {
+		t.Fatalf("runtime command JSON error = %v", err)
+	}
+	if _, err := runCommand(t, "--dry-run", "--workspace", "/usr/local/bin", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "compiled floor") {
+		t.Fatalf("dry-run floor error = %v", err)
+	}
+
+	cmd = Cmd()
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	cmd.SetOut(failingWriter{})
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--dry-run", "--json", "--workspace", t.TempDir(), "--", testExecutable})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
+		t.Fatalf("dry-run output error = %v", err)
+	}
+	cmd = Cmd()
+	cmd.SetOut(failingWriter{})
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--dry-run", "--workspace", t.TempDir(), "--", testExecutable})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "writer failed") {
+		t.Fatalf("human dry-run output error = %v", err)
+	}
+}
+
+func TestRenderGuardPreflightIncludesUnavailableReasons(t *testing.T) {
+	var out bytes.Buffer
+	if err := renderGuardPreflight(&out, sandbox.PreflightResult{
+		Status:    sandbox.StatusError,
+		Workspace: "/workspace",
+		Layers: []sandbox.LayerProbe{{
+			Name: sandbox.LayerLandlock, Available: false, Required: true, Reason: "kernel rejected the ruleset",
+		}},
+		Warnings: []string{"degraded isolation"},
+		Errors:   []string{"required layer unavailable"},
+	}); err != nil {
+		t.Fatalf("renderGuardPreflight: %v", err)
+	}
+	for _, want := range []string{guardBoundaryNotice, "unavailable: kernel rejected the ruleset", "WARNING: degraded isolation", "ERROR: required layer unavailable"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("preflight output missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestGuardCommandRejectsArgumentsBeforeSeparator(t *testing.T) {
+	cmd := Cmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"stray", "--", "tool"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "usage: pipelock guard") {
+		t.Fatalf("pre-separator argument error = %v", err)
+	}
+}
+
+func TestRenderGuardPreflightPropagatesEveryWriteFailure(t *testing.T) {
+	result := sandbox.PreflightResult{
+		Status:    sandbox.StatusError,
+		Workspace: "/workspace",
+		Layers:    []sandbox.LayerProbe{{Name: sandbox.LayerLandlock, Required: true, Reason: "not available"}},
+		Warnings:  []string{"degraded isolation"},
+		Errors:    []string{"required layer unavailable"},
+	}
+	for failAt := 1; failAt <= 7; failAt++ {
+		writer := &failAfterWriter{failAt: failAt}
+		if err := renderGuardPreflight(writer, result); err == nil || !strings.Contains(err.Error(), "writer failed") {
+			t.Fatalf("write %d error = %v", failAt, err)
 		}
 	}
 }

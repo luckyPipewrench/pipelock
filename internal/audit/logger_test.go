@@ -78,6 +78,9 @@ func TestNew_StdoutJSON(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer logger.Close()
+	if logger.filePath != "" || logger.fileHandle != nil {
+		t.Fatalf("stdout logger file state = path %q handle %v, want no file state", logger.filePath, logger.fileHandle)
+	}
 }
 
 func TestNew_FileOutput(t *testing.T) {
@@ -106,7 +109,7 @@ func TestNew_FileOutput(t *testing.T) {
 	}
 }
 
-func TestNew_FileOutputRejectsNonRegularFile(t *testing.T) {
+func TestNewDurableFileRejectsNonRegularFile(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("/dev/full is a Linux special device")
 	}
@@ -123,8 +126,8 @@ func TestNewDurableFileRejectsSymlinkToNonRegularFile(t *testing.T) {
 	if err := os.Symlink("/dev/full", path); err != nil {
 		t.Fatalf("create audit link: %v", err)
 	}
-	if _, err := NewDurableFile("json", path, true, true); err == nil || !strings.Contains(err.Error(), "set logging.file to a writable regular file") {
-		t.Fatalf("NewDurableFile(%q) error = %v, want regular-file refusal", path, err)
+	if _, err := NewDurableFile("json", path, true, true); err == nil || !strings.Contains(err.Error(), "too many levels of symbolic links") {
+		t.Fatalf("NewDurableFile(%q) error = %v, want final-symlink refusal", path, err)
 	}
 }
 
@@ -261,23 +264,41 @@ func TestWriteDurableCommitmentKeyLifecycleFailurePaths(t *testing.T) {
 	})
 }
 
-func TestWriteAndSyncLifecycleRecordRejectsPartialAndSyncFailure(t *testing.T) {
+func TestWriteAndSyncLifecycleRecordFailurePaths(t *testing.T) {
 	record := durableCommitmentKeyLifecycleRecord{Event: string(EventCommitmentKeyLifecycle), Operation: "rotate", Outcome: "pending"}
 
-	t.Run("partial write", func(t *testing.T) {
-		file := &lifecycleRecordTestFile{writeLimit: 5}
-		if err := writeAndSyncLifecycleRecord(file, record); !errors.Is(err, io.ErrShortWrite) {
-			t.Fatalf("writeAndSyncLifecycleRecord error = %v, want short write", err)
-		}
-		if file.syncCalls != 0 {
-			t.Fatalf("Sync calls = %d, want 0 after partial write", file.syncCalls)
-		}
-	})
+	for _, tc := range []struct {
+		name      string
+		file      *lifecycleRecordTestFile
+		want      string
+		wantShort bool
+		wantSync  int
+	}{
+		{name: "write error", file: &lifecycleRecordTestFile{writeErr: errors.New("disk gone")}, want: "write lifecycle audit record", wantSync: 0},
+		{name: "partial write", file: &lifecycleRecordTestFile{writeLimit: 5}, wantShort: true, wantSync: 0},
+		{name: "sync failure", file: &lifecycleRecordTestFile{syncErr: errors.New("no space left")}, want: "sync lifecycle audit record", wantSync: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := writeAndSyncLifecycleRecord(tc.file, record)
+			if err == nil {
+				t.Fatal("writeAndSyncLifecycleRecord error = nil, want failure")
+			}
+			if tc.wantShort && !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("writeAndSyncLifecycleRecord error = %v, want short write", err)
+			}
+			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("writeAndSyncLifecycleRecord error = %v, want %q", err, tc.want)
+			}
+			if tc.file.syncCalls != tc.wantSync {
+				t.Fatalf("Sync calls = %d, want %d", tc.file.syncCalls, tc.wantSync)
+			}
+		})
+	}
 
-	t.Run("sync failure", func(t *testing.T) {
-		file := &lifecycleRecordTestFile{syncErr: errors.New("no space left")}
-		if err := writeAndSyncLifecycleRecord(file, record); err == nil || !strings.Contains(err.Error(), "sync lifecycle audit record") {
-			t.Fatalf("writeAndSyncLifecycleRecord error = %v, want sync failure", err)
+	t.Run("success syncs the record", func(t *testing.T) {
+		file := &lifecycleRecordTestFile{}
+		if err := writeAndSyncLifecycleRecord(file, record); err != nil {
+			t.Fatalf("writeAndSyncLifecycleRecord: %v", err)
 		}
 		if file.syncCalls != 1 {
 			t.Fatalf("Sync calls = %d, want 1", file.syncCalls)
@@ -413,11 +434,15 @@ func TestWriteDurableCommitmentKeyLifecycleConcurrentAppends(t *testing.T) {
 type lifecycleRecordTestFile struct {
 	bytes.Buffer
 	writeLimit int
+	writeErr   error
 	syncErr    error
 	syncCalls  int
 }
 
 func (f *lifecycleRecordTestFile) Write(data []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
 	if f.writeLimit > 0 && len(data) > f.writeLimit {
 		_, _ = f.Buffer.Write(data[:f.writeLimit])
 		return f.writeLimit, nil
@@ -5634,59 +5659,4 @@ func TestLogAgentIdentityCollision_JSONFormat(t *testing.T) {
 	if !ok || score < 0.69 || score > 0.71 {
 		t.Errorf("expected score ~0.7, got %v", entry["score"])
 	}
-}
-
-type stubLifecycleRecordFile struct {
-	written   int
-	writeErr  error
-	shortBy   int
-	syncErr   error
-	syncCalls int
-}
-
-func (f *stubLifecycleRecordFile) Write(p []byte) (int, error) {
-	if f.writeErr != nil {
-		return 0, f.writeErr
-	}
-	f.written += len(p)
-	return len(p) - f.shortBy, nil
-}
-
-func (f *stubLifecycleRecordFile) Sync() error {
-	f.syncCalls++
-	return f.syncErr
-}
-
-func TestWriteAndSyncLifecycleRecordFailurePaths(t *testing.T) {
-	record := durableCommitmentKeyLifecycleRecord{Event: "commitment_key_lifecycle", Operation: "rotate", Outcome: "pending"}
-
-	for _, tc := range []struct {
-		name string
-		file *stubLifecycleRecordFile
-		want string
-	}{
-		{name: "write error", file: &stubLifecycleRecordFile{writeErr: errors.New("disk gone")}, want: "write lifecycle audit record"},
-		{name: "short write", file: &stubLifecycleRecordFile{shortBy: 3}, want: "lifecycle audit record"},
-		{name: "sync error", file: &stubLifecycleRecordFile{syncErr: errors.New("sync refused")}, want: "sync"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := writeAndSyncLifecycleRecord(tc.file, record)
-			if err == nil {
-				t.Fatal("writeAndSyncLifecycleRecord error = nil, want failure")
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("writeAndSyncLifecycleRecord error = %v, want it to mention %q", err, tc.want)
-			}
-		})
-	}
-
-	t.Run("success syncs the record", func(t *testing.T) {
-		file := &stubLifecycleRecordFile{}
-		if err := writeAndSyncLifecycleRecord(file, record); err != nil {
-			t.Fatalf("writeAndSyncLifecycleRecord: %v", err)
-		}
-		if file.syncCalls != 1 {
-			t.Fatalf("sync calls = %d, want 1", file.syncCalls)
-		}
-	})
 }

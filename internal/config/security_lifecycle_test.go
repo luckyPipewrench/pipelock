@@ -36,17 +36,29 @@ func TestLoadForInspectionResolvesRelativeAuditLogPath(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "pipelock.yaml")
-	if err := os.WriteFile(path, []byte("logging:\n  output: file\n  file: logs/audit.jsonl\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	for _, tc := range []struct {
+		name string
+		file string
+		want string
+	}{
+		{name: "relative", file: "logs/audit.jsonl", want: filepath.Join(dir, "logs", "audit.jsonl")},
+		{name: "absolute", file: filepath.Join(dir, "absolute-audit.jsonl"), want: filepath.Join(dir, "absolute-audit.jsonl")},
+		{name: "empty", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".yaml")
+			if err := os.WriteFile(path, []byte("logging:\n  output: file\n  file: "+tc.file+"\n"), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
 
-	cfg, err := LoadForInspection(path)
-	if err != nil {
-		t.Fatalf("LoadForInspection: %v", err)
-	}
-	if want := filepath.Join(dir, "logs", "audit.jsonl"); cfg.Logging.File != want {
-		t.Fatalf("logging.file = %q, want %q", cfg.Logging.File, want)
+			cfg, err := LoadForInspection(path)
+			if err != nil {
+				t.Fatalf("LoadForInspection: %v", err)
+			}
+			if cfg.Logging.File != tc.want {
+				t.Fatalf("logging.file = %q, want %q", cfg.Logging.File, tc.want)
+			}
+		})
 	}
 }
 

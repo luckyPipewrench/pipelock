@@ -1731,6 +1731,11 @@ logging:
 | `include_allowed` | `true` | Log allowed requests |
 | `include_blocked` | `true` | Log blocked requests |
 
+Relative `logging.file` paths resolve from the directory containing the config
+file. This applies to server startup and commitment-key lifecycle commands, so
+both write to the same audit file even when they run with different working
+directories. Absolute paths and an empty `logging.file` are unchanged.
+
 ## Internal Networks (SSRF Protection)
 
 Private/reserved IP ranges blocked from agent access. Post-DNS check prevents SSRF via DNS rebinding.

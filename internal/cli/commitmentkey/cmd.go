@@ -76,22 +76,22 @@ func initializeCmd() *cobra.Command {
 			emitCapabilityNotice(cmd)
 			if err := flags.prepareLifecycleAudit(cmd, true); err != nil {
 				err = fmt.Errorf("initialize: file-backed lifecycle audit sink: %w", err)
-				return finishLifecycleAudit(cmd, "initialize", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "initialize", Outcome: "denied", Err: err})
 			}
 			defer closeLifecycleAudit(cmd)
 			path, err := flags.resolve()
 			if err != nil {
-				return finishLifecycleAudit(cmd, "initialize", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "initialize", Outcome: "denied", Err: err})
 			}
 			if err := beginMutationAudit(cmd, "initialize", "", 0); err != nil {
 				err = fmt.Errorf("initialize: durable lifecycle audit intent: %w", err)
-				return finishLifecycleAudit(cmd, "initialize", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "initialize", Outcome: "denied", Err: err})
 			}
 			keyring, err := domkey.Initialize(path, time.Now())
 			if err != nil {
-				return finishLifecycleAudit(cmd, "initialize", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "initialize", Outcome: "denied", Err: err})
 			}
-			if err := finishLifecycleAudit(cmd, "initialize", "succeeded", keyring.ActiveID, keyring.Epoch, nil); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "initialize", Outcome: "succeeded", KeyID: keyring.ActiveID, Epoch: keyring.Epoch}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, keyring.Metadata())
@@ -113,9 +113,9 @@ func inspectCmd() *cobra.Command {
 			defer closeLifecycleAudit(cmd)
 			keyring, err := flags.load()
 			if err != nil {
-				return finishLifecycleAudit(cmd, "inspect", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "inspect", Outcome: "denied", Err: err})
 			}
-			if err := finishLifecycleAudit(cmd, "inspect", "succeeded", keyring.ActiveID, keyring.Epoch, nil); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "inspect", Outcome: "succeeded", KeyID: keyring.ActiveID, Epoch: keyring.Epoch}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, keyring.Metadata())
@@ -135,22 +135,22 @@ func rotateCmd() *cobra.Command {
 			emitCapabilityNotice(cmd)
 			if err := flags.prepareLifecycleAudit(cmd, true); err != nil {
 				err = fmt.Errorf("rotate: file-backed lifecycle audit sink: %w", err)
-				return finishLifecycleAudit(cmd, "rotate", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "rotate", Outcome: "denied", Err: err})
 			}
 			defer closeLifecycleAudit(cmd)
 			path, err := flags.resolve()
 			if err != nil {
-				return finishLifecycleAudit(cmd, "rotate", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "rotate", Outcome: "denied", Err: err})
 			}
 			if err := beginMutationAudit(cmd, "rotate", "", 0); err != nil {
 				err = fmt.Errorf("rotate: durable lifecycle audit intent: %w", err)
-				return finishLifecycleAudit(cmd, "rotate", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "rotate", Outcome: "denied", Err: err})
 			}
 			handle, metadata, err := domkey.Rotate(path, time.Now())
 			if err != nil {
-				return finishLifecycleAudit(cmd, "rotate", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "rotate", Outcome: "denied", Err: err})
 			}
-			if err := finishLifecycleAudit(cmd, "rotate", "succeeded", handle.KeyID, handle.Epoch, nil); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "rotate", Outcome: "succeeded", KeyID: handle.KeyID, Epoch: handle.Epoch}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, metadata)
@@ -171,27 +171,31 @@ func retireCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
+			authorization := ""
+			if acceptLoss {
+				authorization = "operator_accept_loss"
+			}
 			if err := flags.prepareLifecycleAudit(cmd, true); err != nil {
 				err = fmt.Errorf("retire: file-backed lifecycle audit sink: %w", err)
-				return finishLifecycleAudit(cmd, "retire", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "retire", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err, Authorization: authorization})
 			}
 			defer closeLifecycleAudit(cmd)
 			if err := requireFlags(cmd, "key-id", "epoch"); err != nil {
-				return finishLifecycleAudit(cmd, "retire", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "retire", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err, Authorization: authorization})
 			}
 			path, err := flags.resolve()
 			if err != nil {
-				return finishLifecycleAudit(cmd, "retire", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "retire", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err, Authorization: authorization})
 			}
-			if err := beginMutationAudit(cmd, "retire", keyID, epoch, "operator_accept_loss"); err != nil {
+			if err := beginMutationAudit(cmd, "retire", keyID, epoch, authorization); err != nil {
 				err = fmt.Errorf("retire: durable lifecycle audit intent: %w", err)
-				return finishLifecycleAudit(cmd, "retire", "denied", keyID, epoch, err, "operator_accept_loss")
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "retire", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err, Authorization: authorization})
 			}
 			metadata, err := domkey.Retire(path, keyID, epoch, acceptLoss)
 			if err != nil {
-				return finishLifecycleAudit(cmd, "retire", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "retire", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err, Authorization: authorization})
 			}
-			if err := finishLifecycleAudit(cmd, "retire", "succeeded", keyID, epoch, nil, "operator_accept_loss"); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "retire", Outcome: "succeeded", KeyID: keyID, Epoch: epoch, Authorization: authorization}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, metadata)
@@ -215,25 +219,25 @@ func backupCmd() *cobra.Command {
 			emitCapabilityNotice(cmd)
 			if err := flags.prepareLifecycleAudit(cmd, true, out); err != nil {
 				err = fmt.Errorf("backup: file-backed lifecycle audit sink: %w", err)
-				return finishLifecycleAudit(cmd, "backup", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "denied", Err: err})
 			}
 			defer closeLifecycleAudit(cmd)
 			if err := requireFlags(cmd, "out"); err != nil {
-				return finishLifecycleAudit(cmd, "backup", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "denied", Err: err})
 			}
 			path, err := flags.resolve()
 			if err != nil {
-				return finishLifecycleAudit(cmd, "backup", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "denied", Err: err})
 			}
 			if err := beginMutationAudit(cmd, "backup", "", 0); err != nil {
 				err = fmt.Errorf("backup: durable lifecycle audit intent: %w", err)
-				return finishLifecycleAudit(cmd, "backup", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "denied", Err: err})
 			}
 			keyring, err := domkey.Backup(path, filepath.Clean(out))
 			if err != nil {
-				return finishLifecycleAudit(cmd, "backup", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "denied", Err: err})
 			}
-			if err := finishLifecycleAudit(cmd, "backup", "succeeded", keyring.ActiveID, keyring.Epoch, nil); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "succeeded", KeyID: keyring.ActiveID, Epoch: keyring.Epoch}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, keyring.Metadata())
@@ -255,25 +259,25 @@ func restoreCmd() *cobra.Command {
 			emitCapabilityNotice(cmd)
 			if err := flags.prepareLifecycleAudit(cmd, true, from); err != nil {
 				err = fmt.Errorf("restore: file-backed lifecycle audit sink: %w", err)
-				return finishLifecycleAudit(cmd, "restore", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
 			}
 			defer closeLifecycleAudit(cmd)
 			if err := requireFlags(cmd, "from"); err != nil {
-				return finishLifecycleAudit(cmd, "restore", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
 			}
 			path, err := flags.resolve()
 			if err != nil {
-				return finishLifecycleAudit(cmd, "restore", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
 			}
 			if err := beginMutationAudit(cmd, "restore", "", 0); err != nil {
 				err = fmt.Errorf("restore: durable lifecycle audit intent: %w", err)
-				return finishLifecycleAudit(cmd, "restore", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
 			}
 			keyring, err := domkey.Restore(filepath.Clean(from), path)
 			if err != nil {
-				return finishLifecycleAudit(cmd, "restore", "denied", "", 0, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
 			}
-			if err := finishLifecycleAudit(cmd, "restore", "succeeded", keyring.ActiveID, keyring.Epoch, nil); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "succeeded", KeyID: keyring.ActiveID, Epoch: keyring.Epoch}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, keyring.Metadata())
@@ -297,19 +301,19 @@ func testCmd() *cobra.Command {
 			flags.prepareReadOnlyLifecycleAudit(cmd, viewFile)
 			defer closeLifecycleAudit(cmd)
 			if err := requireFlags(cmd, "key-id", "epoch", "source-id", "commitment"); err != nil {
-				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
 			}
 			keyring, err := flags.load()
 			if err != nil {
-				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
 			}
 			handle, err := keyring.Open(keyID, epoch)
 			if err != nil {
-				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
 			}
 			recipe, err := parseRecipe(recipeJSON)
 			if err != nil {
-				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
 			}
 			source := contractreceipt.ProvenanceSource{
 				SourceOrdinal: sourceOrdinal,
@@ -318,17 +322,17 @@ func testCmd() *cobra.Command {
 			}
 			view, err := readView(cmd, viewFile)
 			if err != nil {
-				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
 			}
 			got, err := contractreceipt.CommitView(handle.Key, source, view)
 			if err != nil {
-				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
 			}
 			if got != want {
 				err := ErrCommitmentMismatch
-				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
 			}
-			if err := finishLifecycleAudit(cmd, "test", "succeeded", keyID, epoch, nil); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "succeeded", KeyID: keyID, Epoch: epoch}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, map[string]any{"key_id": keyID, "epoch": epoch, "opened": true})
@@ -381,6 +385,12 @@ type lifecycleAuditSink struct {
 	writeFailed bool
 }
 
+var (
+	errMissingRequiredFlags          = errors.New("required flag(s)")
+	errLifecycleAuditSinkUnavailable = errors.New("lifecycle audit sink unavailable")
+	newDurableAuditFile              = audit.NewDurableFile
+)
+
 func (f *pathFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.path, "keyring", "", "commitment keyring path")
 	cmd.Flags().StringVar(&f.configFile, "config", "", "config file containing evidence_provenance.commitment_keyring_path")
@@ -429,6 +439,7 @@ func (f *pathFlags) prepareReadOnlyLifecycleAudit(cmd *cobra.Command, protectedP
 func (f *pathFlags) prepareLifecycleAudit(cmd *cobra.Command, mutating bool, protectedPaths ...string) error {
 	logger, err := f.durableAuditSink(protectedPaths...)
 	if err != nil {
+		err = fmt.Errorf("%w: %w", errLifecycleAuditSinkUnavailable, err)
 		if mutating {
 			return err
 		}
@@ -448,7 +459,7 @@ func (f *pathFlags) prepareLifecycleAudit(cmd *cobra.Command, mutating bool, pro
 func beginMutationAudit(cmd *cobra.Command, operation, keyID string, epoch uint64, authorization ...string) error {
 	sink, ok := lifecycleAuditSinkFromCommand(cmd)
 	if !ok {
-		return errors.New("durable lifecycle audit sink is not prepared")
+		return fmt.Errorf("%w: durable lifecycle audit sink is not prepared", errLifecycleAuditSinkUnavailable)
 	}
 	var auth string
 	if len(authorization) != 0 {
@@ -498,6 +509,9 @@ func (f *pathFlags) durableAuditSink(protectedPaths ...string) (*audit.Logger, e
 		return nil, errors.New("logging.file is required for a file-backed lifecycle audit sink")
 	}
 	protectedPaths = append(protectedPaths, cfg.EvidenceProvenance.CommitmentKeyringPath)
+	if f.configFile != "-" {
+		protectedPaths = append(protectedPaths, f.configFile)
+	}
 	if f.path != "" {
 		protectedPaths = append(protectedPaths, f.path)
 	}
@@ -513,9 +527,13 @@ func (f *pathFlags) durableAuditSink(protectedPaths ...string) (*audit.Logger, e
 			return nil, errors.New("logging.file must not refer to the commitment keyring or a lifecycle input/output file")
 		}
 	}
-	logger, err := audit.NewDurableFile(cfg.Logging.Format, cfg.Logging.File, cfg.Logging.IncludeAllowed, cfg.Logging.IncludeBlocked)
+	logger, err := newDurableAuditFile(cfg.Logging.Format, cfg.Logging.File, cfg.Logging.IncludeAllowed, cfg.Logging.IncludeBlocked)
 	if err != nil {
 		return nil, fmt.Errorf("open logging.file: %w", err)
+	}
+	if err := logger.RejectDurableFileAliases(protectedPaths...); err != nil {
+		logger.Close()
+		return nil, fmt.Errorf("verify logging.file after open: %w", err)
 	}
 	return logger, nil
 }
@@ -587,7 +605,7 @@ func requireFlags(cmd *cobra.Command, names ...string) error {
 	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("required flag(s) %q not set", strings.Join(missing, ", "))
+	return fmt.Errorf("%w %q not set", errMissingRequiredFlags, strings.Join(missing, ", "))
 }
 
 func readView(cmd *cobra.Command, path string) (string, error) {
@@ -612,28 +630,35 @@ func emitCapabilityNotice(cmd *cobra.Command) {
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), capabilityNotice)
 }
 
-func finishLifecycleAudit(cmd *cobra.Command, operation, outcome, keyID string, epoch uint64, operationErr error, authorization ...string) error {
-	if err := emitAudit(cmd, operation, outcome, keyID, epoch, operationErr, authorization...); err != nil {
-		auditErr := fmt.Errorf("persist lifecycle audit outcome: %w", err)
-		if operationErr == nil {
-			return auditErr
-		}
-		return errors.Join(operationErr, auditErr)
-	}
-	return operationErr
+type lifecycleAuditOptions struct {
+	Operation     string
+	Outcome       string
+	KeyID         string
+	Epoch         uint64
+	Err           error
+	Authorization string
 }
 
-func emitAudit(cmd *cobra.Command, operation, outcome, keyID string, epoch uint64, operationErr error, authorization ...string) error {
-	event := auditEvent{Event: "commitment_key_lifecycle", EventType: "commitment_key_lifecycle", Operation: operation, Phase: "outcome", Outcome: outcome, KeyID: keyID, Epoch: epoch, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
+func finishLifecycleAudit(cmd *cobra.Command, opts lifecycleAuditOptions) error {
+	if err := emitAudit(cmd, opts); err != nil {
+		auditErr := fmt.Errorf("persist lifecycle audit outcome: %w", err)
+		if opts.Err == nil {
+			return auditErr
+		}
+		return errors.Join(opts.Err, auditErr)
+	}
+	return opts.Err
+}
+
+func emitAudit(cmd *cobra.Command, opts lifecycleAuditOptions) error {
+	event := auditEvent{Event: "commitment_key_lifecycle", EventType: "commitment_key_lifecycle", Operation: opts.Operation, Phase: "outcome", Outcome: opts.Outcome, KeyID: opts.KeyID, Epoch: opts.Epoch, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
 	sink, hasSink := lifecycleAuditSinkFromCommand(cmd)
 	if hasSink {
 		event.OperationID = sink.operationID
 	}
-	if len(authorization) != 0 {
-		event.Authorization = authorization[0]
-	}
-	if operationErr != nil {
-		event.Reason = lifecycleAuditReason(operationErr)
+	event.Authorization = opts.Authorization
+	if opts.Err != nil {
+		event.Reason = lifecycleAuditReason(opts.Err)
 	}
 	data, err := json.Marshal(event)
 	if err == nil {
@@ -641,12 +666,12 @@ func emitAudit(cmd *cobra.Command, operation, outcome, keyID string, epoch uint6
 	}
 	if hasSink && !sink.writeFailed {
 		if err := sink.logger.WriteDurableCommitmentKeyLifecycle(audit.CommitmentKeyLifecycleEvent{
-			Operation:     operation,
+			Operation:     opts.Operation,
 			Phase:         event.Phase,
-			Outcome:       outcome,
+			Outcome:       opts.Outcome,
 			OperationID:   event.OperationID,
-			KeyID:         keyID,
-			Epoch:         epoch,
+			KeyID:         opts.KeyID,
+			Epoch:         opts.Epoch,
 			Timestamp:     event.Timestamp,
 			Reason:        event.Reason,
 			Authorization: event.Authorization,
@@ -676,14 +701,14 @@ func lifecycleAuditReason(err error) string {
 		return "symlink_refused"
 	case errors.Is(err, domkey.ErrUnsafePermission):
 		return "unsafe_permission"
+	case errors.Is(err, errMissingRequiredFlags):
+		return "missing_required_flag"
+	case errors.Is(err, errLifecycleAuditSinkUnavailable):
+		return "audit_sink_unavailable"
 	case errors.Is(err, os.ErrNotExist):
 		return "file_not_found"
 	case errors.Is(err, os.ErrPermission):
 		return "permission_denied"
-	case strings.Contains(err.Error(), "required flag(s)"):
-		return "missing_required_flag"
-	case strings.Contains(err.Error(), "lifecycle audit sink"):
-		return "audit_sink_unavailable"
 	default:
 		return "operation_failed"
 	}

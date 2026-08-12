@@ -610,30 +610,43 @@ func New(format, output, filePath string, includeAllowed, includeBlocked bool) (
 // change New's behavior because the running server may use stream devices for
 // its ordinary logging configuration.
 func NewDurableFile(format, filePath string, includeAllowed, includeBlocked bool) (*Logger, error) {
-	logger, err := New(format, "file", filePath, includeAllowed, includeBlocked)
+	cleanPath := filepath.Clean(filePath)
+	file, created, err := openDurableAuditFile(cleanPath)
 	if err != nil {
 		return nil, err
 	}
-	info, err := logger.fileHandle.Stat()
+	info, err := file.Stat()
 	if err != nil {
-		logger.Close()
+		_ = file.Close()
 		return nil, fmt.Errorf("stat audit log file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		logger.Close()
-		return nil, fmt.Errorf("audit log file must be a regular file; set logging.file to a writable regular file: %s", filepath.Clean(filePath))
+		_ = file.Close()
+		return nil, fmt.Errorf("audit log file must be a regular file; set logging.file to a writable regular file: %s", cleanPath)
 	}
-	if err := logger.fileHandle.Sync(); err != nil {
-		logger.Close()
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
 		return nil, fmt.Errorf("sync audit log file: %w", err)
 	}
-	if logger.fileCreated {
-		if err := syncDurableAuditParent(logger.filePath); err != nil {
-			logger.Close()
+	if created {
+		if err := syncDurableAuditParent(cleanPath); err != nil {
+			_ = file.Close()
 			return nil, fmt.Errorf("sync audit log directory: %w", err)
 		}
 	}
-	return logger, nil
+	return newLogger(loggerOpts{
+		IdentifierEntropyLoggerOpts: IdentifierEntropyLoggerOpts{
+			Format:         format,
+			Output:         "file",
+			FilePath:       cleanPath,
+			IncludeAllowed: includeAllowed,
+			IncludeBlocked: includeBlocked,
+			Stream:         os.Stdout,
+		},
+		identifierSource: sharedIdentifierRedactor,
+		openedFile:       file,
+		fileCreated:      created,
+	})
 }
 
 // NewWithStream creates an audit logger whose stream output uses stream rather
@@ -683,6 +696,8 @@ func NewWithIdentifierEntropy(opts IdentifierEntropyLoggerOpts) (*Logger, error)
 type loggerOpts struct {
 	IdentifierEntropyLoggerOpts
 	identifierSource func() (*identifierRedactor, error)
+	openedFile       *os.File
+	fileCreated      bool
 }
 
 func newLogger(opts loggerOpts) (*Logger, error) {
@@ -702,14 +717,20 @@ func newLogger(opts loggerOpts) (*Logger, error) {
 	var fileHandle *os.File
 	var fileCreated bool
 	if opts.Output == "file" || opts.Output == "both" {
-		filePath := filepath.Clean(opts.FilePath)
-		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		fileCreated = err == nil
-		if errors.Is(err, fs.ErrExist) {
-			f, err = os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0o600)
-		}
-		if err != nil {
-			return nil, err
+		f := opts.openedFile
+		if f == nil {
+			filePath := filepath.Clean(opts.FilePath)
+			var err error
+			f, err = os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			fileCreated = err == nil
+			if errors.Is(err, fs.ErrExist) {
+				f, err = os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0o600)
+			}
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			fileCreated = opts.fileCreated
 		}
 		writers = append(writers, f)
 		fileHandle = f
@@ -731,12 +752,16 @@ func newLogger(opts loggerOpts) (*Logger, error) {
 		Str("component", "pipelock").
 		Logger()
 
+	filePath := ""
+	if fileHandle != nil {
+		filePath = filepath.Clean(opts.FilePath)
+	}
 	return &Logger{
 		zl:                 zl,
 		includeAllowed:     opts.IncludeAllowed,
 		includeBlocked:     opts.IncludeBlocked,
 		fileHandle:         fileHandle,
-		filePath:           filepath.Clean(opts.FilePath),
+		filePath:           filePath,
 		fileCreated:        fileCreated,
 		identifierRedactor: newLazyIdentifierRedactor(opts.identifierSource),
 	}, nil
@@ -909,6 +934,36 @@ func (l *Logger) verifyDurableFileBinding() error {
 		return fmt.Errorf("configured audit log file was replaced or rotated: %s", l.filePath)
 	}
 	return nil
+}
+
+// RejectDurableFileAliases proves that the already-open durable file is not a
+// protected lifecycle file. It compares descriptor identity after the open so
+// a pathname swap between a cheap preflight check and the open cannot redirect
+// lifecycle records into a keyring, config, backup, or private-view file.
+func (l *Logger) RejectDurableFileAliases(protectedPaths ...string) error {
+	if l.fileHandle == nil || l.filePath == "" {
+		return errors.New("durable audit log file is not open")
+	}
+	handleInfo, err := l.fileHandle.Stat()
+	if err != nil {
+		return fmt.Errorf("stat open audit log file: %w", err)
+	}
+	for _, protectedPath := range protectedPaths {
+		if protectedPath == "" || protectedPath == "-" {
+			continue
+		}
+		info, err := os.Stat(filepath.Clean(protectedPath))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("stat protected lifecycle file: %w", err)
+		}
+		if os.SameFile(handleInfo, info) {
+			return errors.New("logging.file must not refer to the commitment keyring or a lifecycle input/output file")
+		}
+	}
+	return l.verifyDurableFileBinding()
 }
 
 // LogAllowed logs a successful, allowed request.

@@ -82,7 +82,7 @@ running Pipelock server or flight recorder. It writes the lifecycle event to
 the configured `logging.file`, rather than the flight-recorder directory, so it
 does not compete with receipt evidence chains or their writer lock.
 
-Instead, every command that reaches its lifecycle handler emits exactly one
+Every command that reaches its lifecycle handler emits exactly one
 newline-delimited JSON `commitment_key_lifecycle` telemetry event to standard error after
 the operation attempt: successful operations report `outcome: "succeeded"`;
 refused or failed operations report `outcome: "denied"` and a reason. Missing
@@ -105,7 +105,9 @@ a failed outcome reports the error after the key operation, with the durable
 intent left for reconciliation. `logging.output: stdout` writes only to a
 stream, including when the stream is a terminal, so it is not a durable
 lifecycle audit sink and cannot authorize a mutation. Read-only `inspect` and
-`test` commands warn and proceed when a durable sink is unavailable.
+`test` commands warn and proceed when a durable sink is unavailable. When a
+durable sink is available but its outcome record cannot be written, both
+commands return that error rather than reporting a successful operation.
 
 When Pipelock creates a new audit file on Unix, it also syncs the parent
 directory before a lifecycle mutation can proceed, so the file name as well as

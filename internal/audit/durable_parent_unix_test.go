@@ -7,6 +7,7 @@ package audit
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,9 @@ func TestSyncDurableAuditParentFailurePaths(t *testing.T) {
 	})
 
 	t.Run("procfs does not support directory sync", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("procfs is only available on Linux")
+		}
 		err := syncDurableAuditParent("/proc/self/audit.jsonl")
 		if err == nil || !strings.Contains(err.Error(), "sync parent directory") {
 			t.Fatalf("syncDurableAuditParent error = %v, want parent sync failure", err)

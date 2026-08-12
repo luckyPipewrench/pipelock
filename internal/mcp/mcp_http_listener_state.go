@@ -112,14 +112,6 @@ func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	}
 }
 
-func (s *mcpListenerClientStates) configureDegradationReporter(interval time.Duration, now func() time.Time) {
-	s.degradationReporter = newMCPListenerDegradationReporter(interval, now)
-}
-
-func (s *mcpListenerClientStates) nextUnboundStateDegradationReport() (uint64, bool) {
-	return s.degradationReporter.observe()
-}
-
 func (s *mcpListenerClientStates) stateForToken(token string) (*mcpListenerClientState, bool) {
 	if token == "" {
 		return nil, false

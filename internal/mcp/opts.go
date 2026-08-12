@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
@@ -98,10 +97,6 @@ type MCPProxyOpts struct {
 	// of true. It exists for narrowly-scoped transport compatibility tests; no
 	// operator-facing configuration disables the requirement.
 	listenerStateTokenRequired *bool
-	// listenerDegradationReportInterval and listenerDegradationNow are test
-	// hooks. Production listeners always use the fixed reporting cadence.
-	listenerDegradationReportInterval time.Duration
-	listenerDegradationNow            func() time.Time
 	// UpstreamHeaders are operator-configured headers applied by the HTTP
 	// reverse listener. They take precedence over client-supplied headers, so a
 	// browser can use Authorization for listener authentication while Pipelock

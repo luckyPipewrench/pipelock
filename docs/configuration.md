@@ -1634,6 +1634,8 @@ Tracks cumulative Shannon entropy of all outbound payloads (URLs, request bodies
 
 **Tuning:** The default 4096 bits per 5-minute window allows roughly 500 characters of random data across URL query parameters and path segments. This is appropriate when scanning URL-level traffic only.
 
+`entropy_budget.action: warn` records a threshold crossing but forwards the request. Set it to `block` to make the budget an enforcement limit. Lower `bits_per_window` or increase `window_minutes` to reduce the amount of opaque data a session can send before a block. Both settings can block legitimate uploads, identifiers, hashes, or encoded media, so tune them against expected traffic before enforcing them.
+
 **With TLS interception enabled**, request bodies are also scanned for entropy. A single LLM API call body (conversation context) can contain 100,000+ bits of entropy. Set `bits_per_window` to `500000` or higher when using `tls_interception` with cross-request detection, and add your LLM provider to `exempt_domains`:
 
 ```yaml
@@ -1661,6 +1663,8 @@ Buffers outbound payloads (URLs, request bodies, MCP JSON-RPC payloads, WebSocke
 **Memory:** Each tracked session uses up to `max_buffer_bytes`. With 10,000 concurrent sessions (hard cap), the worst-case memory is `max_buffer_bytes * 10000` (640 MB at defaults). Reduce `max_buffer_bytes` in memory-constrained environments.
 
 **Scope note:** Cross-request detection scans all outbound content visible to the proxy: URLs, request bodies, MCP JSON-RPC payloads, and WebSocket frames. CONNECT tunnels without TLS interception only expose the target hostname (entropy tracking only). Enable `tls_interception` for full cross-request coverage on tunneled traffic.
+
+Fragment reassembly detects known DLP patterns inside the configured byte and time window. It does not guarantee prevention for arbitrary multi-request data transfer. MCP arguments are buffered independently so ordinary sibling values are not treated as one payload; a tool can therefore send data in separate populated arguments, and a stream can also age out after `fragment_reassembly.window_minutes`. Use fragment reassembly for detection and evidence, then use `entropy_budget.action: block` with a tuned `bits_per_window` and `window_minutes` when a lower sustained-throughput ceiling is worth the false-positive cost.
 
 ## Finding Suppression
 

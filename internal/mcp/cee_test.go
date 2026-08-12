@@ -461,6 +461,29 @@ func TestCeeRecordMCP_EntropyUsesFragmentPayloadAndSkipsEmptyPath(t *testing.T) 
 	}
 }
 
+func TestCeeRecordMCP_FragmentSkipsEmptyPayloads(t *testing.T) {
+	cee := testMCPCEEFragmentBlock(t)
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+
+	first := []byte("AKI" + "A")
+	second := []byte(testMCPAWSKeySuffix)
+	var logBuf bytes.Buffer
+
+	if reason := ceeRecordMCP(testMCPSessionKey, first, map[string][]byte{
+		"$/empty":  nil,
+		"$/active": first,
+	}, cee, sc, &logBuf, nil); reason != "" {
+		t.Fatalf("first fragment blocked: %s", reason)
+	}
+	if reason := ceeRecordMCP(testMCPSessionKey, second, map[string][]byte{
+		"$/empty":  {},
+		"$/active": second,
+	}, cee, sc, &logBuf, nil); !strings.Contains(reason, "cross-request fragment DLP match") {
+		t.Fatalf("second fragment reason = %q, want fragment DLP block", reason)
+	}
+}
+
 func testMCPCEEFragmentBlock(t *testing.T) *CEEDeps {
 	t.Helper()
 	cee := NewCEEDeps(config.CrossRequestDetection{

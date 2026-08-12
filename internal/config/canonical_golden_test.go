@@ -308,7 +308,8 @@ const (
 	// Re-bumped for the policy-semantic forward_proxy.sni_require_tls field.
 	// Re-bumped for sentence-bounded external-data-transfer directives,
 	// sensitive query-key variants, and command-body transfer coverage.
-	goldenHashDefaults = "176ce8f9f79ab12aeb49a1be152021647ecf8c31a33e7958df5a0cebc2716641"
+	// Re-bumped for cookie query keys plus curl/wget upload-form coverage.
+	goldenHashDefaults = "51c40a48baeba9b917c6e7dce3ee1353e554b1d87f6c9d4d016d18c662b3b296"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -459,7 +460,8 @@ const (
 	// field, whose compatibility default is false.
 	// Re-bumped for the external-data-transfer directive precision changes;
 	// the rich fixture inherits the default response-scanning pattern set.
-	goldenHashRichConfig = "ff8494cd4b0fedf865eb031c55b7c94205c29308cc6d078bc3e68cb61ff6be40"
+	// Re-bumped for cookie query keys plus curl/wget upload-form coverage.
+	goldenHashRichConfig = "2a3df1630233368e7301b72529051d41f3e3e689e1a748621df64ae2932c2ddf"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

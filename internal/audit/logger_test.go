@@ -157,6 +157,40 @@ func TestNewDurableFileRejectsUnopenablePaths(t *testing.T) {
 	}
 }
 
+func TestNewReusesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := os.WriteFile(path, []byte("existing\n"), 0o600); err != nil {
+		t.Fatalf("write existing audit file: %v", err)
+	}
+
+	logger, err := New("json", "file", path, false, false)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer logger.Close()
+	if logger.fileCreated {
+		t.Fatal("New reported a pre-existing file as created")
+	}
+}
+
+func TestNewDurableFileRejectsFilesystemSyncFailure(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the procfs sync failure case is Linux-specific")
+	}
+	if _, err := os.Stat("/proc/self/clear_refs"); err != nil {
+		t.Skipf("procfs clear_refs unavailable: %v", err)
+	}
+
+	logger, err := NewDurableFile("json", "/proc/self/clear_refs", false, false)
+	if logger != nil {
+		logger.Close()
+		t.Fatal("NewDurableFile accepted a procfs file whose sync failed")
+	}
+	if err == nil || !strings.Contains(err.Error(), "sync audit log file") {
+		t.Fatalf("NewDurableFile error = %v, want sync failure", err)
+	}
+}
+
 func TestLogCommitmentKeyLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, err := New("json", "file", path, false, false)
@@ -262,6 +296,109 @@ func TestWriteDurableCommitmentKeyLifecycleFailurePaths(t *testing.T) {
 			t.Fatalf("record level = %q, want warn", record.Level)
 		}
 	})
+
+	t.Run("full device returns write failure", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("/dev/full is a Linux special device")
+		}
+		file, err := os.OpenFile("/dev/full", os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatalf("open /dev/full: %v", err)
+		}
+		defer file.Close()
+
+		logger := &Logger{fileHandle: file, filePath: "/dev/full"}
+		err = logger.WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{Operation: "rotate", Outcome: "pending"})
+		if err == nil || !strings.Contains(err.Error(), "write lifecycle audit record") {
+			t.Fatalf("WriteDurableCommitmentKeyLifecycle error = %v, want write failure", err)
+		}
+	})
+}
+
+func TestRejectDurableFileAliases(t *testing.T) {
+	newLogger := func(t *testing.T) (*Logger, string) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		logger, err := NewDurableFile("json", path, false, false)
+		if err != nil {
+			t.Fatalf("NewDurableFile: %v", err)
+		}
+		t.Cleanup(logger.Close)
+		return logger, path
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "unopened logger is refused",
+			run: func(t *testing.T) {
+				err := (&Logger{}).RejectDurableFileAliases("keyring.json")
+				if err == nil || !strings.Contains(err.Error(), "not open") {
+					t.Fatalf("RejectDurableFileAliases error = %v, want unopened-file refusal", err)
+				}
+			},
+		},
+		{
+			name: "closed handle is refused",
+			run: func(t *testing.T) {
+				logger, _ := newLogger(t)
+				if err := logger.fileHandle.Close(); err != nil {
+					t.Fatalf("close audit file: %v", err)
+				}
+				err := logger.RejectDurableFileAliases("keyring.json")
+				if err == nil || !strings.Contains(err.Error(), "stat open audit log file") {
+					t.Fatalf("RejectDurableFileAliases error = %v, want closed-handle refusal", err)
+				}
+			},
+		},
+		{
+			name: "blank missing and distinct paths are allowed",
+			run: func(t *testing.T) {
+				logger, path := newLogger(t)
+				distinct := filepath.Join(filepath.Dir(path), "keyring.json")
+				if err := os.WriteFile(distinct, []byte("keyring"), 0o600); err != nil {
+					t.Fatalf("write distinct protected file: %v", err)
+				}
+				if err := logger.RejectDurableFileAliases("", "-", filepath.Join(filepath.Dir(path), "missing.json"), distinct); err != nil {
+					t.Fatalf("RejectDurableFileAliases: %v", err)
+				}
+			},
+		},
+		{
+			name: "hard link to sink is refused",
+			run: func(t *testing.T) {
+				logger, path := newLogger(t)
+				alias := filepath.Join(filepath.Dir(path), "keyring.json")
+				if err := os.Link(path, alias); err != nil {
+					t.Fatalf("hard link audit sink: %v", err)
+				}
+				err := logger.RejectDurableFileAliases(alias)
+				if err == nil || !strings.Contains(err.Error(), "must not refer") {
+					t.Fatalf("RejectDurableFileAliases error = %v, want alias refusal", err)
+				}
+			},
+		},
+		{
+			name: "replaced sink is refused by final binding check",
+			run: func(t *testing.T) {
+				logger, path := newLogger(t)
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove audit sink: %v", err)
+				}
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatalf("replace audit sink: %v", err)
+				}
+				err := logger.RejectDurableFileAliases(filepath.Join(filepath.Dir(path), "missing.json"))
+				if err == nil || !strings.Contains(err.Error(), "was replaced or rotated") {
+					t.Fatalf("RejectDurableFileAliases error = %v, want replaced-sink refusal", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, tc.run)
+	}
 }
 
 func TestWriteAndSyncLifecycleRecordFailurePaths(t *testing.T) {

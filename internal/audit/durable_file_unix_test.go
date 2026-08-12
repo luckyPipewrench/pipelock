@@ -6,11 +6,52 @@
 package audit
 
 import (
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestOpenDurableAuditFileFailurePaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(t *testing.T) string
+		want error
+	}{
+		{
+			name: "missing parent",
+			path: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing", "audit.jsonl")
+			},
+			want: fs.ErrNotExist,
+		},
+		{
+			name: "directory instead of file",
+			path: func(t *testing.T) string {
+				return t.TempDir()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, created, err := openDurableAuditFile(tc.path(t))
+			if file != nil {
+				_ = file.Close()
+				t.Fatal("openDurableAuditFile returned a file for an unusable path")
+			}
+			if created {
+				t.Fatal("openDurableAuditFile reported an unusable path as created")
+			}
+			if err == nil {
+				t.Fatal("openDurableAuditFile error = nil, want failure")
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("openDurableAuditFile error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
 
 func TestNewDurableFileRejectsFIFOWithoutBlocking(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.fifo")

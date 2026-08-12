@@ -280,10 +280,16 @@ type DefinitionEvaluation struct {
 	// PromoteNew stores a first sighting. Block mode withholds it when the
 	// definition already carries a finding.
 	PromoteNew bool
-	// PromoteChanged stores a CHANGED definition that was blocked. Block mode
-	// withholds it so the approved definition stays in place. It does not
-	// affect an accepted change, which is always promoted.
+	// PromoteChanged stores a CHANGED definition that was blocked BY DRIFT.
+	// Block mode withholds it so the approved definition stays in place.
 	PromoteChanged bool
+	// PromoteAccepted allows a change carrying no drift cue to become the new
+	// baseline. It must carry the FULL per-tool verdict, not just the drift
+	// one: a definition the scanner blocked for injection or poisoning has to
+	// stay out of the baseline even when drift itself found nothing to say,
+	// or rejected content becomes the approved comparison state and every
+	// later drift decision is measured against something we refused.
+	PromoteAccepted bool
 	// Classify returns the cue classes the change introduced. It runs while the
 	// baseline lock is held, so it must be pure and must not call back into the
 	// baseline.
@@ -331,10 +337,11 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 		Cues:         classify(prevDesc, !hasPrevStructural || prevStructural != structural),
 	}
 
-	// An accepted change always becomes the new baseline, or it re-reports on
-	// every later tools/list. A blocked change is promoted only when the
-	// configured action does not hold the approved definition in place.
-	if len(result.Cues) == 0 || promoteChanged {
+	// An accepted change becomes the new baseline, or it re-reports on every
+	// later tools/list. "Accepted" means the whole scan accepted it, not just
+	// drift. A change blocked by drift is promoted only when the configured
+	// action does not hold the approved definition in place.
+	if (len(result.Cues) == 0 && in.PromoteAccepted) || promoteChanged {
 		promote()
 	}
 	return result
@@ -1405,6 +1412,9 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				Structural:     structuralDigest(tool),
 				PromoteNew:     promoteNew,
 				PromoteChanged: promoteChanged,
+				// hasFinding carries every earlier per-tool verdict in this
+				// loop: injection, poison, confusable name, exfil parameter.
+				PromoteAccepted: cfg.Action != "block" || !hasFinding,
 				Classify: func(prevDesc string, structuralChanged bool) []string {
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},

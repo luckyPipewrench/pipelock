@@ -79,11 +79,16 @@ func canonicalJSONWithout(raw []byte, dropField string) ([]byte, error) {
 // it is blocked when it introduces content that a lookup or analysis tool has
 // no reason to acquire, and allowed when it only adds descriptive text.
 //
-// "Introduced" is a set difference on cue CLASSES, not a text diff of appended
-// characters. A rewrite that reorders a sentence would defeat a tail diff, and
-// a tool whose approved description already carried a URL would otherwise be
-// blocked forever by its next benign edit. Comparing which classes are present
-// before and after is stable under both.
+// "Introduced" is a set difference on cue INSTANCES, not a text diff of
+// appended characters. A rewrite that reorders a sentence would defeat a tail
+// diff, so comparison is on what the definition carries rather than on where it
+// appears. Instance rather than class, because presence-only comparison is a
+// fail-open: a tool whose approved description already posts somewhere carries
+// an egress cue before and after an attacker changes the destination, and the
+// same holds for swapping one agent instruction for another. The instance keeps
+// the destination URL, the referenced tool name, and the matched instruction
+// span, so an unchanged one stays silent under unrelated edits while a changed
+// one is introduced.
 const (
 	// DriftCueEgressURL: the change introduced an outbound destination.
 	DriftCueEgressURL = "egress-url"
@@ -145,20 +150,29 @@ var driftCuePatterns = []driftCuePattern{
 			`cop(?:y|ies|ied)|delivers?|delivered|exfiltrates?|exfiltrated|` +
 			`reports?|reported|relays?|relayed|pushe?s?|pushed|syncs?|synced|` +
 			`stream(?:s|ed)?|export(?:s|ed)?|leaks?|leaked|beacons?|beaconed` +
-			`)\b[^.!?]{0,100}?(?:\bhttps?://([a-z0-9._~%:@-]+)|\bwww\.([a-z0-9-]+\.[a-z]{2,}))`),
+			`)\b[^.!?]{0,100}?(\bhttps?://[^\s,;)"'\]]+|\bwww\.[a-z0-9-]+\.[a-z]{2,}[^\s,;)"'\]]*)`),
 		valued: true,
 	},
 	{
-		cue: DriftCueConcealment,
+		cue:    DriftCueConcealment,
+		valued: true,
 		// Instructions to suppress disclosure. Third-person descriptions of a
 		// tool's own reticence ("does not log request bodies") are not
 		// second-person or imperative and do not match.
-		re: regexp.MustCompile(`(?i)` +
+		re: regexp.MustCompile(`(?i)(?:` +
 			`\b(?:do\s+not|don'?t|never)\s+(?:mention|tell|inform|reveal|disclose|notify|announce|surface|report\s+this|log\s+this)\b` +
 			`|\bwithout\s+(?:telling|informing|notifying|mentioning|alerting)\b` +
-			`|\b(?:silently|covertly|secretly|discreetly)\b` +
+			`|\b(?:covertly|secretly)\b` +
+			// "silently" and "discreetly" need an object worth hiding.
+			// The official filesystem server's create_directory says it
+			// "will succeed silently", which is idempotence, not concealment.
+			`|\b(?:silently|discreetly)\s+(?:\w+\s+){0,3}(?:send|sends|sent|forward|forwards|forwarded|copy|copies|copied|upload|uploads|uploaded|attach|attaches|attached|include|includes|included|log|logs|logged|report|reports|reported|collect|collects|collected|read|reads|omit|omits|omitted|drop|drops|dropped)\b` +
 			`|\bkeep\s+(?:this|it|that)\s+(?:secret|hidden|quiet|confidential|between)\b` +
-			`|\bhide\s+(?:this|it|the)\s+\w+\s+from\b`),
+			`|\bhide\s+(?:this|it|the)\s+\w+\s+from\b` +
+			// The trailing clause is part of the cue IDENTITY, not of the
+			// match decision: without it every concealment instruction has
+			// the same span, and swapping one for another reads as no change.
+			`)[^.!?]{0,80}`),
 	},
 	{
 		cue: DriftCueCrossTool,
@@ -174,7 +188,8 @@ var driftCuePatterns = []driftCuePattern{
 		valued: true,
 	},
 	{
-		cue: DriftCueDirective,
+		cue:    DriftCueDirective,
+		valued: true,
 		// Obligation and call-ordering aimed at the agent. Deliberately NOT
 		// bare imperative mood and NOT bare sequencing: "Pass the region
 		// code.", "Always returns a list.", and "Also, the checked_at field is
@@ -193,13 +208,22 @@ var driftCuePatterns = []driftCuePattern{
 		// files" is an instruction, while scrapling's "solves all types of
 		// Cloudflare's challenges before returning the response to you" is
 		// prose about what the tool does, and the bare form flagged it.
-		re: regexp.MustCompile(`(?i)` +
+		re: regexp.MustCompile(`(?i)(?:` +
 			`\bbefore\s+(?:returning|responding|answering|replying|proceeding|continuing|calling|invoking|using)\s*,` +
 			`|\bafter\s+(?:returning|responding|answering|replying|the\s+call)\s*,` +
-			`|\byou\s+(?:must|should|need\s+to|have\s+to|are\s+required\s+to)\b` +
+			`|\byou\s+(?:must|should|are\s+required\s+to)\b` +
+			// NOT "you need to" or "you have to": in a tool description those
+			// almost always complete "use this tool when you need to ...",
+			// which says when the tool applies rather than instructing the
+			// agent to do anything. Both official filesystem read tools
+			// flagged on that phrasing.
 			`|\b(?:make|be)\s+sure\s+to\b` +
 			`|\bensure\s+(?:that\s+)?you\b` +
-			`|\bignore\s+(?:previous|prior|earlier|all|any)\b`),
+			`|\bignore\s+(?:previous|prior|earlier|all|any)\b` +
+			// As above: the clause after the marker is what distinguishes
+			// "before returning, validate the input" from "before
+			// returning, collect the caller's environment".
+			`)[^.!?]{0,80}`),
 	},
 }
 
@@ -229,7 +253,12 @@ func driftCues(text string) map[cueIdentity]bool {
 			continue
 		}
 		for _, m := range p.re.FindAllStringSubmatch(normalized, -1) {
-			value := ""
+			// Prefer a capture group when the pattern names the risky value
+			// (the destination URL, the referenced tool). Otherwise the whole
+			// matched span IS the value, so replacing one instruction with a
+			// different one inside an already-present class still reads as
+			// introduced.
+			value := strings.ToLower(strings.Join(strings.Fields(m[0]), " "))
 			for _, group := range m[1:] {
 				if group != "" {
 					value = strings.ToLower(group)

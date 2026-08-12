@@ -53,6 +53,8 @@ type coreResponsePattern struct {
 	regex string
 }
 
+const externalDataTransferDirectivePatternName = "External Data Transfer Directive"
+
 // coreDLPPatternDefs returns the immutable core DLP patterns.
 // Decision rule: "Would you be ashamed if this got through?"
 //
@@ -86,7 +88,7 @@ func coreResponsePatternDefs() []coreResponsePattern {
 			regex: `(?im)^\s*system\s*:`,
 		},
 		{
-			name:  "External Data Transfer Directive",
+			name:  externalDataTransferDirectivePatternName,
 			regex: config.ExternalDataTransferDirectiveRegex,
 		},
 		{

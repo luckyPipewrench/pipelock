@@ -5574,6 +5574,23 @@ func TestScanHTTPInput_CEEBlocksClean(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_CEEReassemblesToolArgumentsAcrossCalls(t *testing.T) {
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	cee := testMCPCEEFragmentBlock(t)
+
+	if blocked := scanHTTPInput(mcpChunkedCEERequest(1, "AKI"+"A"), io.Discard, "mcp-session", "mcp-session", MCPProxyOpts{Scanner: sc, CEE: cee}); blocked != nil {
+		t.Fatalf("first fragment blocked: %+v", blocked)
+	}
+	blocked := scanHTTPInput(mcpChunkedCEERequest(2, testMCPAWSKeySuffix), io.Discard, "mcp-session", "mcp-session", MCPProxyOpts{Scanner: sc, CEE: cee})
+	if blocked == nil {
+		t.Fatal("second fragment was allowed, want cross-request fragment DLP block")
+	}
+	if blocked.ErrorCode != -32005 || !strings.Contains(blocked.ErrorMessage, "cross-request fragment DLP match") {
+		t.Fatalf("blocked request = %+v, want cross-request fragment DLP block", blocked)
+	}
+}
+
 func TestScanHTTPInput_CEEBlocksWarnMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

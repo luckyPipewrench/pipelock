@@ -4,9 +4,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -139,26 +143,104 @@ func ceeSessionKeyMCP(agent, sessionOrIP string) string {
 	return sessionOrIP
 }
 
+// mcpCEEFragmentPayload returns the text-bearing tool argument values in a
+// stable order for fragment reassembly. CEE previously buffered the entire
+// JSON-RPC envelope, which placed protocol syntax and unrelated fields between
+// chunks from consecutive tools/call requests. That makes a secret split over
+// calls non-contiguous to the fragment DLP scanner even though the tool server
+// receives contiguous argument data.
+//
+// Entropy accounting continues to use the raw frame. This reduction is only
+// for fragment reassembly. Non-tool frames, malformed arguments, and argument
+// values with no scalar content fall back to the raw frame so an unexpected
+// shape cannot skip cross-request evaluation.
+func mcpCEEFragmentPayload(frame MCPFrame) []byte {
+	if !frame.IsToolsCall() || len(frame.Args) == 0 {
+		return frame.Raw
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(frame.Args))
+	decoder.UseNumber()
+	var arguments any
+	if err := decoder.Decode(&arguments); err != nil {
+		return frame.Raw
+	}
+
+	var payload bytes.Buffer
+	if !appendMCPCEEArgumentText(&payload, arguments) || payload.Len() == 0 {
+		return frame.Raw
+	}
+	return payload.Bytes()
+}
+
+// appendMCPCEEArgumentText emits every scalar argument value without JSON
+// scaffolding. Map keys are sorted so semantically equivalent MCP argument
+// objects produce the same stream regardless of Go map iteration order. Array
+// order remains significant and is retained.
+func appendMCPCEEArgumentText(dst *bytes.Buffer, value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return true
+	case string:
+		dst.WriteString(v)
+		return true
+	case json.Number:
+		dst.WriteString(v.String())
+		return true
+	case bool:
+		dst.WriteString(strconv.FormatBool(v))
+		return true
+	case []any:
+		for _, item := range v {
+			if !appendMCPCEEArgumentText(dst, item) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if !appendMCPCEEArgumentText(dst, v[key]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 // ceeRecordMCP runs cross-request exfiltration checks on outbound MCP payload.
 // Returns a non-empty reason string if the request should be blocked.
 // Returns "" if clean or CEE is disabled.
 func ceeRecordMCP(
 	sessionKey string,
-	payload []byte,
+	entropyPayload []byte,
+	fragmentPayload []byte,
 	cee *CEEDeps,
 	sc *scanner.Scanner,
 	logW io.Writer,
 	logger *audit.Logger,
 ) string {
-	if cee == nil || len(payload) == 0 {
+	if cee == nil || (len(entropyPayload) == 0 && len(fragmentPayload) == 0) {
 		return ""
+	}
+	if len(entropyPayload) == 0 {
+		entropyPayload = fragmentPayload
+	}
+	if len(fragmentPayload) == 0 {
+		fragmentPayload = entropyPayload
 	}
 	tracker, buffer, m, ceeCfg, release := cee.snapshot()
 	defer release()
 
 	// Entropy budget check.
 	if tracker != nil && ceeCfg.EntropyBudget.Enabled {
-		tracker.Record(sessionKey, payload)
+		tracker.Record(sessionKey, entropyPayload)
 		if tracker.BudgetExceeded(sessionKey) {
 			if m != nil {
 				m.RecordCrossRequestEntropyExceeded()
@@ -181,12 +263,12 @@ func ceeRecordMCP(
 
 	// Fragment reassembly DLP check.
 	if buffer != nil && ceeCfg.FragmentReassembly.Enabled {
-		buffer.Append(sessionKey, payload)
+		buffer.Append(sessionKey, fragmentPayload)
 		if matches := buffer.ScanForSecrets(context.Background(), sessionKey, sc); len(matches) > 0 {
 			if m != nil {
 				m.RecordCrossRequestDLPMatch()
 			}
-			reason := fmt.Sprintf("cross-request fragment DLP match: %s", matches[0].PatternName)
+			reason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", matches[0].PatternName)
 			_, _ = fmt.Fprintf(logW, "pipelock: CEE: %s (session=%s)\n", reason, sessionKey)
 			if ceeCfg.Action == config.ActionBlock {
 				if logger != nil {

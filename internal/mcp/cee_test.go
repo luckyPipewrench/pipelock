@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"bytes"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,8 +179,93 @@ func TestCeeSessionKeyMCP_WithAgent(t *testing.T) {
 	}
 }
 
+func TestMCPCEEFragmentPayload(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame MCPFrame
+		want  string
+	}{
+		{
+			name:  "tool arguments emit scalar values without JSON scaffolding",
+			frame: ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"z":["three",true],"a":{"y":"one","x":2}}}}`)),
+			want:  "2onethreetrue",
+		},
+		{
+			name:  "non-tool call falls back to raw frame",
+			frame: ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)),
+			want:  `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		},
+		{
+			name: "malformed arguments fall back to raw frame",
+			frame: MCPFrame{
+				Raw:    []byte("raw-frame"),
+				Method: methodToolsCall,
+				Args:   []byte(`{"unterminated"`),
+			},
+			want: "raw-frame",
+		},
+		{
+			name: "arguments without scalar content fall back to raw frame",
+			frame: MCPFrame{
+				Raw:    []byte("raw-frame"),
+				Method: methodToolsCall,
+				Args:   []byte(`{"empty":[]}`),
+			},
+			want: "raw-frame",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(mcpCEEFragmentPayload(tt.frame)); got != tt.want {
+				t.Fatalf("mcpCEEFragmentPayload() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCeeRecordMCP_ReassemblesToolArgumentsAcrossCalls(t *testing.T) {
+	cee := testMCPCEEFragmentBlock(t)
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+
+	first := ParseMCPFrame(mcpChunkedCEERequest(1, "AKI"+"A"))
+	second := ParseMCPFrame(mcpChunkedCEERequest(2, testMCPAWSKeySuffix))
+	var logBuf bytes.Buffer
+
+	if reason := ceeRecordMCP(testMCPSessionKey, first.Raw, mcpCEEFragmentPayload(first), cee, sc, &logBuf, nil); reason != "" {
+		t.Fatalf("first fragment blocked: %s", reason)
+	}
+	reason := ceeRecordMCP(testMCPSessionKey, second.Raw, mcpCEEFragmentPayload(second), cee, sc, &logBuf, nil)
+	if !strings.Contains(reason, "cross-request fragment DLP match") {
+		t.Fatalf("second fragment reason = %q, want fragment DLP block", reason)
+	}
+	if !strings.Contains(reason, "cross_request_detection.fragment_reassembly.max_buffer_bytes") {
+		t.Fatalf("fragment block missing live remediation knob: %q", reason)
+	}
+}
+
+func testMCPCEEFragmentBlock(t *testing.T) *CEEDeps {
+	t.Helper()
+	cee := NewCEEDeps(config.CrossRequestDetection{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 64,
+			WindowMinutes:  testMCPWindowSecs / 60,
+		},
+	}, metrics.New())
+	t.Cleanup(cee.Close)
+	return cee
+}
+
+func mcpChunkedCEERequest(id int, chunk string) []byte {
+	return []byte(`{"jsonrpc":"2.0","id":` + strconv.Itoa(id) + `,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"alpha":"` + chunk + `"}}}`)
+}
+
 func TestCeeRecordMCP_NilCEE(t *testing.T) {
-	reason := ceeRecordMCP(testMCPSessionKey, []byte("payload"), nil, nil, &bytes.Buffer{}, nil)
+	reason := ceeRecordMCP(testMCPSessionKey, []byte("payload"), []byte("payload"), nil, nil, &bytes.Buffer{}, nil)
 	if reason != "" {
 		t.Errorf("expected empty reason for nil CEE, got %q", reason)
 	}
@@ -186,13 +273,13 @@ func TestCeeRecordMCP_NilCEE(t *testing.T) {
 
 func TestCeeRecordMCP_EmptyPayload(t *testing.T) {
 	cee := &CEEDeps{}
-	reason := ceeRecordMCP(testMCPSessionKey, []byte{}, cee, nil, &bytes.Buffer{}, nil)
+	reason := ceeRecordMCP(testMCPSessionKey, []byte{}, []byte{}, cee, nil, &bytes.Buffer{}, nil)
 	if reason != "" {
 		t.Errorf("expected empty reason for empty payload, got %q", reason)
 	}
 
 	// Also test nil payload.
-	reason = ceeRecordMCP(testMCPSessionKey, nil, cee, nil, &bytes.Buffer{}, nil)
+	reason = ceeRecordMCP(testMCPSessionKey, nil, nil, cee, nil, &bytes.Buffer{}, nil)
 	if reason != "" {
 		t.Errorf("expected empty reason for nil payload, got %q", reason)
 	}
@@ -228,7 +315,7 @@ func TestCeeRecordMCP_EntropyBudgetBlock(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz")
-	reason := ceeRecordMCP(testMCPSessionKey, payload, cee, sc, &logBuf, logger)
+	reason := ceeRecordMCP(testMCPSessionKey, payload, payload, cee, sc, &logBuf, logger)
 
 	if reason == "" {
 		t.Fatal("expected non-empty reason for entropy budget block")
@@ -263,7 +350,7 @@ func TestCeeRecordMCP_EntropyBudgetWarn(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz")
-	reason := ceeRecordMCP(testMCPSessionKey, payload, cee, nil, &logBuf, nil)
+	reason := ceeRecordMCP(testMCPSessionKey, payload, payload, cee, nil, &logBuf, nil)
 
 	// Warn mode: should NOT block (empty reason).
 	if reason != "" {
@@ -310,13 +397,13 @@ func TestCeeRecordMCP_FragmentDLPBlock(t *testing.T) {
 	var logBuf bytes.Buffer
 
 	// First fragment: not enough to trigger.
-	reason := ceeRecordMCP(testMCPSessionKey, []byte(part1), cee, sc, &logBuf, logger)
+	reason := ceeRecordMCP(testMCPSessionKey, []byte(part1), []byte(part1), cee, sc, &logBuf, logger)
 	if reason != "" {
 		t.Fatalf("expected no block on first fragment, got %q", reason)
 	}
 
 	// Second fragment: completes the key, should block.
-	reason = ceeRecordMCP(testMCPSessionKey, []byte(part2), cee, sc, &logBuf, logger)
+	reason = ceeRecordMCP(testMCPSessionKey, []byte(part2), []byte(part2), cee, sc, &logBuf, logger)
 	if reason == "" {
 		t.Fatal("expected non-empty reason for fragment DLP block")
 	}
@@ -356,13 +443,13 @@ func TestCeeRecordMCP_FragmentDLPWarn(t *testing.T) {
 	var logBuf bytes.Buffer
 
 	// First fragment.
-	reason := ceeRecordMCP("warn-session", []byte(part1), cee, sc, &logBuf, logger)
+	reason := ceeRecordMCP("warn-session", []byte(part1), []byte(part1), cee, sc, &logBuf, logger)
 	if reason != "" {
 		t.Fatalf("expected no block on first fragment, got %q", reason)
 	}
 
 	// Second fragment: completes the key. Warn mode should NOT block.
-	reason = ceeRecordMCP("warn-session", []byte(part2), cee, sc, &logBuf, logger)
+	reason = ceeRecordMCP("warn-session", []byte(part2), []byte(part2), cee, sc, &logBuf, logger)
 	if reason != "" {
 		t.Errorf("expected empty reason for warn mode, got %q", reason)
 	}
@@ -399,7 +486,7 @@ func TestCeeRecordMCP_EntropyBudgetWarnWithLogger(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz")
-	reason := ceeRecordMCP(testMCPSessionKey, payload, cee, nil, &logBuf, logger)
+	reason := ceeRecordMCP(testMCPSessionKey, payload, payload, cee, nil, &logBuf, logger)
 
 	// Warn mode: should NOT block.
 	if reason != "" {

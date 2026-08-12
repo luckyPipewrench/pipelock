@@ -3783,6 +3783,40 @@ func TestForwardScannedInput_CEEBlocksCleanMessage(t *testing.T) {
 	}
 }
 
+func TestForwardScannedInput_CEEReassemblesToolArgumentsAcrossCalls(t *testing.T) {
+	sc := testInputScanner(t)
+	cee := testMCPCEEFragmentBlock(t)
+	first := mcpChunkedCEERequest(1, "AKI"+"A")
+	second := mcpChunkedCEERequest(2, testMCPAWSKeySuffix)
+
+	var serverIn bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 2)
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(string(first)+"\n"+string(second)+"\n")),
+		transport.NewStdioWriter(&serverIn),
+		&logBuf, config.ActionBlock, config.ActionBlock, blockedCh,
+		nil, nil, MCPProxyOpts{Scanner: sc, CEE: cee},
+	)
+
+	var blocked []BlockedRequest
+	for request := range blockedCh {
+		blocked = append(blocked, request)
+	}
+	if len(blocked) != 1 {
+		t.Fatalf("blocked requests = %d, want 1; log=%s", len(blocked), logBuf.String())
+	}
+	if blocked[0].ErrorCode != -32005 || !strings.Contains(blocked[0].ErrorMessage, "cross-request fragment DLP match") {
+		t.Fatalf("blocked request = %+v, want cross-request fragment DLP block", blocked[0])
+	}
+	if !strings.Contains(serverIn.String(), `"id":1`) {
+		t.Fatalf("first fragment was not forwarded: %s", serverIn.String())
+	}
+	if strings.Contains(serverIn.String(), `"id":2`) {
+		t.Fatalf("second fragment was forwarded after CEE block: %s", serverIn.String())
+	}
+}
+
 func TestForwardScannedInput_CEEBlocksInWarnMode(t *testing.T) {
 	sc := testInputScanner(t)
 	logger, err := audit.New("json", "stdout", "", false, false)

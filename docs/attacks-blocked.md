@@ -447,6 +447,8 @@ seed_phrase_detection:
 
 **Why pipelock catches it:** The dedicated seed phrase scanner tokenizes text and runs a sliding window over BIP-39 dictionary words. SHA-256 checksum validation eliminates false positives from normal English text. Detection covers URL query params, hostname labels, path segments, MCP tool arguments, request bodies, headers, WebSocket frames, and cross-request fragment reassembly. The scanner uses `ForMatching()` normalization to preserve word boundaries while still catching zero-width character and homoglyph evasion.
 
+**Bound on cross-request fragment reassembly:** reassembly recognizes a known pattern that arrives split across requests within the configured byte and time window. It is detection, not a guarantee against arbitrary multi-request transfer: a sender that controls fragment size, argument placement, and pacing can stay under any recognizer. Treat it as raising the cost of split exfiltration and producing evidence when it occurs, and see the cross-request detection section in [configuration.md](configuration.md) for the throughput ceiling an operator can enforce and what it costs in false positives.
+
 ## Cryptocurrency Private Key Exfiltration
 
 **MITRE ATT&CK:** T1048 (Exfiltration Over Alternative Protocol)

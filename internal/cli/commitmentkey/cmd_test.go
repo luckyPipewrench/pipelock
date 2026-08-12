@@ -556,6 +556,17 @@ func TestLifecycleAuditRequiresConfiguredFile(t *testing.T) {
 	}
 }
 
+func TestInitializeAuditsResolveFailureAfterOpeningDurableSink(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeLifecycleAuditConfig(t, dir, filepath.Join(dir, "keyring.json"), filepath.Join(dir, "audit.jsonl"), "file", "")
+
+	_, _, err := execute(t, "initialize", "--config", configPath, "--keyring", filepath.Join(dir, "other-keyring.json"))
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("initialize error = %v, want --keyring/--config refusal", err)
+	}
+	assertDurableAudit(t, filepath.Join(dir, "audit.jsonl"), "initialize", "denied")
+}
+
 func TestLifecycleAuditReadsStdinConfigOnce(t *testing.T) {
 	dir := t.TempDir()
 	keyringPath := filepath.Join(dir, "keyring.json")

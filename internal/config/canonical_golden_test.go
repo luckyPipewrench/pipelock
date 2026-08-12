@@ -312,7 +312,8 @@ const (
 	// Re-bumped for URL-first curl and wget upload-command coverage.
 	// Re-bumped for shell-boundary handling, dotted paths, and additional
 	// sensitive query-key aliases in external data-transfer directives.
-	goldenHashDefaults = "29f82bbfeeb9f67f370e778a7bfe33345c0c100661135e6d4a30da1f532267d3"
+	// Re-bumped for natural-language password and private-key transfers.
+	goldenHashDefaults = "25cbe6c74358e04c76485244009be0acae9e5eec7208e540584b33cd9c2939fe"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -465,7 +466,8 @@ const (
 	// the rich fixture inherits the default response-scanning pattern set.
 	// Re-bumped for cookie query keys plus curl/wget upload-form coverage.
 	// Re-bumped for URL-first curl and wget upload-command coverage.
-	goldenHashRichConfig = "a6327ae2ff7fbba1484687c218ef4c5fad6ce2b8a4602b818bfaa04e419b7ffa"
+	// Re-bumped for natural-language password and private-key transfers.
+	goldenHashRichConfig = "3b8492e676ab7527987ad8fccf4be9375015b785108c8852893fccc2f7fa5ddc"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -98,7 +98,7 @@ func RunStandaloneInit() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
+	sandboxDir := standaloneChildTempDir(os.Getpid())
 	var env []string
 	var binary string
 	if useDeveloperEnvironment {
@@ -365,6 +365,13 @@ func RunStandaloneInit() {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				// ExitCode reports -1 for a signaled process. Passing that to
+				// os.Exit becomes 255 and loses the command's real termination
+				// status. Preserve the shell-visible 128+signal convention across
+				// the standalone init and outer CLI process boundary.
+				exitSandboxProcess(128 + int(status.Signal()))
+			}
 			exitSandboxProcess(exitErr.ExitCode())
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)

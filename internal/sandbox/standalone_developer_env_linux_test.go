@@ -6,10 +6,12 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -133,6 +135,56 @@ func TestLaunchStandaloneGuardAppliesOnlyToFinalCommand(t *testing.T) {
 	}
 	if string(result) != "guarded" {
 		t.Fatalf("result = %q, want guarded", result)
+	}
+}
+
+func TestLaunchStandaloneGuardProofFailureCleansChildTempDir(t *testing.T) {
+	skipIfStandaloneUnavailable(t)
+	workspace := t.TempDir()
+	declaration := config.Guard{}
+	var childTempDir string
+	err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:          []string{"sh", "-c", "true"},
+		Workspace:        workspace,
+		GuardDeclaration: &declaration,
+		GuardPolicyHash:  "test-policy-hash",
+		GuardAppliedPreExec: func(tempDir string, _ []byte) error {
+			childTempDir = tempDir
+			return errors.New("reject proof for cleanup test")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "reject proof for cleanup test") {
+		t.Fatalf("LaunchStandalone proof error = %v", err)
+	}
+	if childTempDir == "" {
+		t.Fatal("proof callback did not receive the child temporary directory")
+	}
+	if _, statErr := os.Stat(childTempDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("child temporary directory remained after proof failure: %v", statErr)
+	}
+	childPID, parseErr := strconv.Atoi(strings.TrimPrefix(filepath.Base(childTempDir), "pipelock-sandbox-"))
+	if parseErr != nil {
+		t.Fatalf("parse child PID from %q: %v", childTempDir, parseErr)
+	}
+	if signalErr := syscall.Kill(childPID, 0); !errors.Is(signalErr, syscall.ESRCH) {
+		t.Fatalf("child process %d was not reaped after proof failure: %v", childPID, signalErr)
+	}
+}
+
+func TestStandaloneChildCleanupReapsOnlyInStrictMode(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(strconv.FormatBool(strict), func(t *testing.T) {
+			reaped := false
+			stopped := false
+			cleanup := standaloneChildCleanup(0, strict, func() { stopped = true }, func() { reaped = true })
+			cleanup()
+			if reaped != strict {
+				t.Fatalf("reaped = %t, want %t", reaped, strict)
+			}
+			if !stopped {
+				t.Fatal("cleanup did not stop the proxy")
+			}
+		})
 	}
 }
 

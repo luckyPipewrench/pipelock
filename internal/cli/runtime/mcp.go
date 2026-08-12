@@ -952,9 +952,10 @@ Key-free evidence capture:
 			var toolCfg *tools.ToolScanConfig
 			if cfg.MCPToolScanning.Enabled {
 				toolCfg = &tools.ToolScanConfig{
-					Action:      cfg.MCPToolScanning.Action,
-					DetectDrift: cfg.MCPToolScanning.DetectDrift,
-					ExtraPoison: extraPoison,
+					Action:                 cfg.MCPToolScanning.Action,
+					DetectDrift:            cfg.MCPToolScanning.DetectDrift,
+					ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
+					ExtraPoison:            extraPoison,
 				}
 				// Wire session binding into tool scanning when enabled.
 				if cfg.MCPSessionBinding.Enabled {

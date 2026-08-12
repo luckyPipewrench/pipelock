@@ -519,6 +519,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean),
 				})
 			}
+			// Accepted definition drift is not a finding and does not affect the
+			// verdict, so it is reported here rather than on the block path. An
+			// upstream changing a tool under an approved baseline is something
+			// the operator must be able to see even when it is allowed.
+			if toolResult.IsToolsList && len(toolResult.Observations) > 0 {
+				tools.LogToolObservations(logW, lineNum, toolResult)
+			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				resolveToolInventory(config.ActionBlock)
 			}
@@ -544,6 +551,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 				if toolAction == config.ActionBlock {
 					_ = emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionBlock)
+					blockReason := "tool poisoning detected in tools/list"
+					if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
+						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
+					}
+					if opts.AuditLogger != nil {
+						opts.AuditLogger.LogBlocked(
+							mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"),
+							"tool_scanning",
+							blockReason,
+						)
+					}
 					// Signal: tool poisoning blocked.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
 						recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
@@ -554,7 +572,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 							Session:       firstNonEmpty(opts.ServerName, "default"),
 						})
 					}
-					resp := blockResponseReason(toolResult.RPCID, "tool poisoning detected in tools/list")
+					resp := blockResponseReason(toolResult.RPCID, blockReason)
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
@@ -849,6 +867,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	}
 
 	return foundInjection, nil
+}
+
+func toolScanHasDrift(result tools.ToolScanResult) bool {
+	for _, match := range result.Matches {
+		if match.DriftDetected {
+			return true
+		}
+	}
+	return false
 }
 
 func emitMCPToolScanReceipt(

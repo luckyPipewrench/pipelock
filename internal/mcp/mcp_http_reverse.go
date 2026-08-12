@@ -435,6 +435,18 @@ func RunHTTPListenerProxy(
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
 		fullRequestBaseOpts := requestBaseOpts
+		if listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW) {
+			resetReason := "operator re-baselined the HTTP listener tool inventory using mcp_tool_scanning.listener_drift_reset_file"
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", resetReason)
+			if requestBaseOpts.AuditLogger != nil {
+				requestBaseOpts.AuditLogger.LogAnomaly(
+					mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
+					"tool_drift",
+					resetReason,
+					0,
+				)
+			}
+		}
 		statefulControls := listenerHasStatefulControls(opts)
 		requireStateToken := listenerRequiresStateToken(opts)
 		listenerSessionToken := r.Header.Get(listenerSessionTokenHeader)
@@ -1816,14 +1828,17 @@ func listenerRequiresStateToken(opts MCPProxyOpts) bool {
 // a retained client state partition. It is used only while a listener request
 // lacks a valid Pipelock-issued token. Stateless scanner, tool-poison, A2A,
 // policy, redaction, contract, and receipt checks remain active. Tool drift
-// remains unavailable because no baseline is retained or fabricated.
+// uses the listener's upstream-owned baseline, never a client baseline.
 func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 	if toolCfg := opts.toolCfg(); toolCfg != nil {
 		// Preserve response-only tool-poison matching and the explicit
 		// no-baseline binding decision without supplying a baseline that a
 		// tokenless request could mutate or reuse.
 		opts.ToolCfg = &tools.ToolScanConfig{
+			DriftBaseline:           toolCfg.DriftBaseline,
+			DriftRemediation:        toolCfg.DriftRemediation,
 			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,

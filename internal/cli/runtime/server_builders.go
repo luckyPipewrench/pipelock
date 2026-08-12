@@ -48,10 +48,11 @@ func buildMCPToolCfg(
 		return nil
 	}
 	toolCfg := &tools.ToolScanConfig{
-		Baseline:    baseline,
-		Action:      cfg.MCPToolScanning.Action,
-		DetectDrift: cfg.MCPToolScanning.DetectDrift,
-		ExtraPoison: extraPoison,
+		Baseline:               baseline,
+		Action:                 cfg.MCPToolScanning.Action,
+		DetectDrift:            cfg.MCPToolScanning.DetectDrift,
+		ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
+		ExtraPoison:            extraPoison,
 	}
 	if cfg.MCPSessionBinding.Enabled {
 		toolCfg.BindingUnknownAction = cfg.MCPSessionBinding.UnknownToolAction

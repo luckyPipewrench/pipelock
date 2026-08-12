@@ -37,6 +37,17 @@ const resetFileDisallowedBits = 0o077
 // (secperm.Enforced() is false); access control there is the deployment's NTFS
 // ACL responsibility, matching the rest of pipelock's secret-file handling.
 func consumeAdaptiveResetFile(path string, logW io.Writer) bool {
+	return consumeMCPResetFile(path, "adaptive", logW)
+}
+
+// consumeToolDriftResetFile uses the same owner-only, one-shot control-file
+// contract as adaptive reset. Re-baselining is a security-relevant operator
+// action, so a file an MCP client could plant must never be honored.
+func consumeToolDriftResetFile(path string, logW io.Writer) bool {
+	return consumeMCPResetFile(path, "tool drift", logW)
+}
+
+func consumeMCPResetFile(path, kind string, logW io.Writer) bool {
 	if path == "" {
 		return false
 	}
@@ -45,12 +56,12 @@ func consumeAdaptiveResetFile(path string, logW io.Writer) bool {
 		return false // missing/unreadable: no reset requested
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		warnResetFile(logW, path, "is a symlink")
+		warnResetFile(logW, kind, path, "is a symlink")
 		_ = os.Remove(path)
 		return false
 	}
 	if !info.Mode().IsRegular() {
-		warnResetFile(logW, path, "is not a regular file")
+		warnResetFile(logW, kind, path, "is not a regular file")
 		// Best-effort cleanup so a persistent invalid path (FIFO, device,
 		// socket) is not re-checked and re-warned on every message. Never
 		// remove a directory.
@@ -62,22 +73,22 @@ func consumeAdaptiveResetFile(path string, logW io.Writer) bool {
 	// secperm.TooPermissive is a no-op on Windows (mode bits there do not
 	// reflect the NTFS ACL), matching how readHeaderFile gates --header-file.
 	if secperm.TooPermissive(info.Mode().Perm(), resetFileDisallowedBits) {
-		warnResetFile(logW, path, fmt.Sprintf("has unsafe mode %#o (must be 0600, owner-only)", info.Mode().Perm()))
+		warnResetFile(logW, kind, path, fmt.Sprintf("has unsafe mode %#o (must be 0600, owner-only)", info.Mode().Perm()))
 		_ = os.Remove(path)
 		return false
 	}
 	if !resetFileOwnedBySelf(info) {
-		warnResetFile(logW, path, "is not owned by the proxy user")
+		warnResetFile(logW, kind, path, "is not owned by the proxy user")
 		_ = os.Remove(path)
 		return false
 	}
 	if err := os.Remove(path); err != nil {
-		warnResetFile(logW, path, fmt.Sprintf("could not be removed (%v); reset skipped to avoid a loop", err))
+		warnResetFile(logW, kind, path, fmt.Sprintf("could not be removed (%v); reset skipped to avoid a loop", err))
 		return false
 	}
 	return true
 }
 
-func warnResetFile(logW io.Writer, path, reason string) {
-	_, _ = fmt.Fprintf(logW, "pipelock: adaptive reset file %q %s - ignored\n", path, reason)
+func warnResetFile(logW io.Writer, kind, path, reason string) {
+	_, _ = fmt.Fprintf(logW, "pipelock: %s reset file %q %s - ignored\n", kind, path, reason)
 }

@@ -1011,6 +1011,7 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
+| `listener_drift_reset_file` | `""` | Owner-only one-shot reset file for the HTTP reverse listener's upstream drift baseline |
 
 When `detect_drift` is enabled, Pipelock hashes the canonical full tool object
 from `tools/list`, excluding only Pipelock's own provenance attestation in
@@ -1020,6 +1021,79 @@ request IDs, or per-list counters in the tool object, that tool will drift on
 every `tools/list`. Keep `tools/list` definitions stable: move changing values
 to tool call arguments, tool results, or an out-of-band capability endpoint, and
 leave `_meta` for stable metadata unless drift on that value is intentional.
+
+For an HTTP reverse listener, drift hashes belong to its one configured
+upstream, not to a client token. Every `tools/list` response, including one
+from a standard MCP client that does not send Pipelock's token, is compared to
+that upstream baseline. Session binding stays token-scoped: an upstream drift
+baseline never makes a tool known to a client that did not establish its own
+token-bound inventory.
+
+Drift blocks on what a change introduces, not on the fact that it changed. A
+definition that changes after you approved it is treated as suspicious, which
+lowers the bar for the rest of the checks rather than being a verdict by
+itself. Pipelock blocks the changed definition when the change introduces
+something the approved one did not have:
+
+- an outbound destination: a URL that something is sent, posted, uploaded, or
+  mirrored to. A URL on its own, such as a documentation link or a parameter
+  format example, is not a cue;
+- an instruction aimed at the agent rather than a description of what the tool
+  returns, such as "Before returning, ...". The comma matters: "solves the
+  challenge before returning the response" describes the tool's own behavior
+  and is not a cue;
+- an instruction to conceal the behavior, such as "do not mention this";
+- a reference to another tool;
+- text matching any tool-poison pattern;
+- any change outside the description, including the input schema, parameters,
+  and annotations.
+
+A change that adds only descriptive text is allowed, and the changed
+definition becomes the new baseline, so a vendor clarifying what a tool returns
+does not need an operator re-baseline and does not re-report on every later
+`tools/list`. The acceptance is logged rather than silent.
+
+That last bullet is the fail-closed half: acceptance requires the whole change
+to be accounted for as descriptive text, so anything Pipelock cannot
+characterize is treated as introduced. A `destructiveHint` flipped from `true`
+to `false` blocks even though the description is untouched.
+
+Because the bar is content rather than change, an upstream that personalizes a
+same-named tool's description per user no longer blocks later clients: the
+personalized text introduces no cue. Pipelock still does not partition the
+drift baseline per client, which would restore the fresh-session rug-pull
+bypass.
+
+With `action: block`, a confirmed upstream update that Pipelock blocked needs
+an operator re-baseline. Configure an owner-only one-shot control file on the
+listener:
+
+```yaml
+mcp_tool_scanning:
+  enabled: true
+  action: block
+  detect_drift: true
+  listener_drift_reset_file: /run/pipelock/mcp-tool-drift.reset
+```
+
+After confirming the update, the proxy owner creates the file with mode 0600:
+
+```bash
+install -m 0600 /dev/null /run/pipelock/mcp-tool-drift.reset
+```
+
+The next listener request consumes the file, resets only that listener's
+upstream definition hashes, and requires a clean `tools/list` to establish the
+replacement inventory. It does not disable drift detection or change any
+token-bound session-binding baseline. The file must be a regular owner-only
+file owned by the proxy user; unsafe files are ignored and removed. Place it
+in a directory the MCP client cannot write. In a same-user deployment, the
+client shares the proxy uid, so owner checks alone cannot distinguish an
+operator file from a client-created one.
+
+On Windows, Pipelock cannot verify the file owner from filesystem mode bits and
+will not honor this reset path. Restart the listener after confirming the
+upstream update to establish a new drift baseline.
 
 ## MCP Tool Policy
 
@@ -1135,7 +1209,9 @@ mcp_session_binding:
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
 
-On the HTTP reverse listener, Pipelock keeps the tool baseline, adaptive enforcement state, taint risk, and chain history under a Pipelock-issued `Pipelock-Session-Token`. An allowed non-batch `initialize` response with `application/json` issues a 256-bit opaque token in that header. A client returns it on later POST, GET, and DELETE requests to use that persistent state. Pipelock does not forward this header upstream.
+On the HTTP reverse listener, Pipelock keeps each client's session-binding baseline, adaptive enforcement state, taint risk, and chain history under a Pipelock-issued `Pipelock-Session-Token`. An allowed non-batch `initialize` response with `application/json` issues a 256-bit opaque token in that header. This is a Pipelock-specific extension, not an MCP protocol header. Pipelock's own HTTP client returns it on later POST, GET, and DELETE requests; a standard MCP client will not. Pipelock does not forward this header upstream.
+
+A standard client without the token still receives request-local content scanning, tool-poison scanning, and upstream-scoped tool-drift detection on `tools/list`. It cannot read or update token-bound tool session binding, adaptive enforcement, taint, chain, or cross-request exfiltration state. A later `tools/call` therefore follows the configured `no_baseline_action`, even when another client or the upstream drift baseline has seen that tool.
 
 `Mcp-Session-Id` remains upstream protocol routing data. It never selects or rekeys Pipelock listener state, even when an upstream changes or reuses it. This avoids moving one client's learned state into another partition or overwriting an existing partition.
 

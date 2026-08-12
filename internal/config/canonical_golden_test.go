@@ -1047,6 +1047,16 @@ func TestCanonicalPolicyHash_GoldenInvariantUnderOpsFields(t *testing.T) {
 	}
 }
 
+func TestCanonicalPolicyHash_ListenerDriftResetFileIsOperational(t *testing.T) {
+	base := Defaults()
+	withResetFile := Defaults()
+	withResetFile.MCPToolScanning.ListenerDriftResetFile = "/run/pipelock/mcp-tool-drift.reset"
+
+	if got, want := withResetFile.computeCanonicalPolicyHash(), base.computeCanonicalPolicyHash(); got != want {
+		t.Fatalf("listener drift reset file changed canonical policy hash: got %s, want %s", got, want)
+	}
+}
+
 // TestCanonicalPolicyHash_UnscannablePassthrough exercises the canonical
 // serialization + sort of unscannable_passthrough entries (so the policy hash
 // binds them) and the deep-copy clone path. Entries are supplied unsorted and

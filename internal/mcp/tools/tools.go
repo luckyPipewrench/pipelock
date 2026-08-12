@@ -55,9 +55,16 @@ type ToolScanMatch struct {
 	Injection     []scanner.ResponseMatch `json:"injection,omitempty"`
 	ToolPoison    []string                `json:"tool_poison,omitempty"`
 	DriftDetected bool                    `json:"drift_detected,omitempty"`
-	PreviousHash  string                  `json:"previous_hash,omitempty"`
-	CurrentHash   string                  `json:"current_hash,omitempty"`
-	DriftDetail   string                  `json:"drift_detail,omitempty"`
+	// DriftAccepted reports a definition that changed but introduced no risk
+	// cue. It is an observation for the operator, never a finding: it does not
+	// affect the verdict, and the changed definition becomes the new baseline.
+	DriftAccepted bool `json:"drift_accepted,omitempty"`
+	// DriftCues lists the cue classes the change introduced. Populated only
+	// when DriftDetected is true, and it is the reason the change was blocked.
+	DriftCues    []string `json:"drift_cues,omitempty"`
+	PreviousHash string   `json:"previous_hash,omitempty"`
+	CurrentHash  string   `json:"current_hash,omitempty"`
+	DriftDetail  string   `json:"drift_detail,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -65,8 +72,13 @@ type ToolScanResult struct {
 	IsToolsList bool            `json:"is_tools_list"`
 	Clean       bool            `json:"clean"`
 	Matches     []ToolScanMatch `json:"matches,omitempty"`
-	RPCID       json.RawMessage `json:"-"` // parsed ID for block responses (avoids re-parse)
-	ToolNames   []string        `json:"-"` // tool names from tools/list (for session binding)
+	// Observations carry non-blocking drift notices: a definition changed but
+	// introduced no risk cue. They never affect Clean or the verdict; they
+	// exist so an accepted change is visible to the operator rather than
+	// silent.
+	Observations []ToolScanMatch `json:"observations,omitempty"`
+	RPCID        json.RawMessage `json:"-"` // parsed ID for block responses (avoids re-parse)
+	ToolNames    []string        `json:"-"` // tool names from tools/list (for session binding)
 }
 
 // ExtraPoisonPattern is a tool-poison pattern from a community rule bundle.
@@ -84,9 +96,20 @@ type ExtraPoisonPattern struct {
 // Session binding fields are optional: when BindingUnknownAction is non-empty,
 // tools/call requests are validated against the baseline captured from tools/list.
 type ToolScanConfig struct {
-	Baseline    *ToolBaseline
-	Action      string // warn, block
-	DetectDrift bool
+	// Baseline holds the caller-scoped baseline for session binding. It is also
+	// the drift baseline unless DriftBaseline is set.
+	Baseline *ToolBaseline
+	// DriftBaseline, when set, is used only for definition-drift detection.
+	// It must never be used for session binding decisions.
+	DriftBaseline *ToolBaseline
+	// DriftRemediation is included in a drift block so an operator has a
+	// narrow recovery action instead of disabling drift detection.
+	DriftRemediation string
+	// ListenerDriftResetFile is an owner-only, one-shot control file honored
+	// by the HTTP reverse listener to re-baseline its upstream tool inventory.
+	ListenerDriftResetFile string
+	Action                 string // warn, block
+	DetectDrift            bool
 
 	// Session binding (optional). When BindingUnknownAction is non-empty,
 	// RunProxy wires tools/call validation into the input scanner.
@@ -102,6 +125,7 @@ type ToolScanConfig struct {
 type ToolBaseline struct {
 	mu          sync.Mutex
 	hashes      map[string]string   // tool name → SHA256(description + inputSchema)
+	structural  map[string]string   // tool name → digest of everything but the description
 	descs       map[string]string   // tool name → last known description text
 	params      map[string][]string // tool name → last known parameter names (sorted)
 	knownTools  map[string]bool     // session binding: tool name set from first tools/list
@@ -113,9 +137,10 @@ type ToolBaseline struct {
 // NewToolBaseline creates a new empty tool baseline.
 func NewToolBaseline() *ToolBaseline {
 	return &ToolBaseline{
-		hashes: make(map[string]string),
-		descs:  make(map[string]string),
-		params: make(map[string][]string),
+		hashes:     make(map[string]string),
+		structural: make(map[string]string),
+		descs:      make(map[string]string),
+		params:     make(map[string][]string),
 	}
 }
 
@@ -209,13 +234,131 @@ func (tb *ToolBaseline) StoreParams(name string, paramNames []string) {
 	tb.params[name] = cp
 }
 
+// DriftEvaluation is the outcome of one atomic compare-and-promote against the
+// baseline.
+type DriftEvaluation struct {
+	// Drifted reports that a stored definition changed.
+	Drifted bool
+	// Cues lists what the change introduced. Empty means the change was
+	// accepted and the new definition is now the baseline.
+	Cues []string
+	// PreviousHash is the hash the baseline held before this evaluation.
+	PreviousHash string
+	// Detail is the human-readable diff, computed from the same locked
+	// snapshot the decision used.
+	Detail string
+}
+
+// Accepted reports a change that was evaluated and adopted as the new baseline.
+func (e DriftEvaluation) Accepted() bool { return e.Drifted && len(e.Cues) == 0 }
+
+// EvaluateDefinition compares a tool definition against the baseline and
+// promotes it, under ONE lock acquisition.
+//
+// Atomicity is the point. The HTTP reverse listener shares a single baseline
+// across concurrent clients, so reading the previous definition, deciding, and
+// writing the new hash, description, parameters, and structural digest through
+// separate acquisitions lets two responses interleave and pair a new hash with
+// another response's metadata. A later comparison then runs against a
+// definition that never existed, which can both manufacture a finding and hide
+// one.
+//
+// classify receives the previous description and whether anything outside the
+// description moved, and returns the cue classes the change introduced. It runs
+// while the lock is held, so it must be pure and must not call back into this
+// baseline.
+// DefinitionEvaluation carries one tool definition and the promotion policy to
+// apply to it.
+type DefinitionEvaluation struct {
+	Name string
+	Hash string
+	Desc string
+	// Params are the tool's parameter names, already sorted.
+	Params []string
+	// Structural is the digest of everything except the description.
+	Structural string
+	// PromoteNew stores a first sighting. Block mode withholds it when the
+	// definition already carries a finding.
+	PromoteNew bool
+	// PromoteChanged stores a CHANGED definition that was blocked BY DRIFT.
+	// Block mode withholds it so the approved definition stays in place.
+	PromoteChanged bool
+	// PromoteAccepted allows a change carrying no drift cue to become the new
+	// baseline. It must carry the FULL per-tool verdict, not just the drift
+	// one: a definition the scanner blocked for injection or poisoning has to
+	// stay out of the baseline even when drift itself found nothing to say,
+	// or rejected content becomes the approved comparison state and every
+	// later drift decision is measured against something we refused.
+	PromoteAccepted bool
+	// Classify returns the cue classes the change introduced. It runs while the
+	// baseline lock is held, so it must be pure and must not call back into the
+	// baseline.
+	Classify func(prevDesc string, structuralChanged bool) []string
+}
+
+func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluation {
+	name, hash, desc := in.Name, in.Hash, in.Desc
+	params, structural := in.Params, in.Structural
+	promoteNew, promoteChanged, classify := in.PromoteNew, in.PromoteChanged, in.Classify
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	prevHash, exists := tb.hashes[name]
+	if !exists && len(tb.hashes) >= maxBaselineTools {
+		return DriftEvaluation{}
+	}
+
+	promote := func() {
+		tb.hashes[name] = hash
+		tb.descs[name] = desc
+		cp := make([]string, len(params))
+		copy(cp, params)
+		tb.params[name] = cp
+		tb.structural[name] = structural
+	}
+
+	if !exists {
+		if promoteNew {
+			promote()
+		}
+		return DriftEvaluation{}
+	}
+	if prevHash == hash {
+		promote()
+		return DriftEvaluation{}
+	}
+
+	prevDesc := tb.descs[name]
+	prevStructural, hasPrevStructural := tb.structural[name]
+	result := DriftEvaluation{
+		Drifted:      true,
+		PreviousHash: prevHash,
+		Detail:       tb.diffSummaryLocked(name, desc, params),
+		Cues:         classify(prevDesc, !hasPrevStructural || prevStructural != structural),
+	}
+
+	// An accepted change becomes the new baseline, or it re-reports on every
+	// later tools/list. "Accepted" means the whole scan accepted it, not just
+	// drift. A change blocked by drift is promoted only when the configured
+	// action does not hold the approved definition in place.
+	if (len(result.Cues) == 0 && in.PromoteAccepted) || promoteChanged {
+		promote()
+	}
+	return result
+}
+
 // DiffSummary returns a human-readable summary of what changed between the
 // stored description/params and the new ones. Returns "" if no previous data.
 func (tb *ToolBaseline) DiffSummary(name, newDesc string, newParams []string) string {
 	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.diffSummaryLocked(name, newDesc, newParams)
+}
+
+// diffSummaryLocked is DiffSummary's body. Callers hold tb.mu.
+func (tb *ToolBaseline) diffSummaryLocked(name, newDesc string, newParams []string) string {
 	prevDesc, hasDesc := tb.descs[name]
 	prevParams, hasParams := tb.params[name]
-	tb.mu.Unlock()
 
 	if !hasDesc && !hasParams {
 		return ""
@@ -303,6 +446,7 @@ func (tb *ToolBaseline) ResetDriftState() {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	tb.hashes = make(map[string]string)
+	tb.structural = make(map[string]string)
 	tb.descs = make(map[string]string)
 	tb.params = make(map[string][]string)
 }
@@ -1112,13 +1256,13 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		names[i] = t.Name
 	}
 
-	matches := scanToolDefs(tools, sc, cfg)
+	matches, observations := scanToolDefs(tools, sc, cfg)
 
 	if len(matches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names, Observations: observations}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, RPCID: rpc.ID, ToolNames: names}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, Observations: observations, RPCID: rpc.ID, ToolNames: names}
 }
 
 // scanToolsBatch scans a JSON-RPC 2.0 batch response for tool poisoning.
@@ -1130,6 +1274,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	}
 
 	var allMatches []ToolScanMatch
+	var allObservations []ToolScanMatch
 	var allNames []string
 	var firstID json.RawMessage
 	isToolsList := false
@@ -1142,6 +1287,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 				firstID = r.RPCID
 			}
 			allMatches = append(allMatches, r.Matches...)
+			allObservations = append(allObservations, r.Observations...)
 			allNames = append(allNames, r.ToolNames...)
 		}
 	}
@@ -1151,15 +1297,14 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	}
 
 	if len(allMatches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID, ToolNames: allNames}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID, ToolNames: allNames, Observations: allObservations}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, RPCID: firstID, ToolNames: allNames}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, Observations: allObservations, RPCID: firstID, ToolNames: allNames}
 }
 
 // scanToolDefs scans a slice of tool definitions for injection, poisoning, and drift.
-func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []ToolScanMatch {
-	var matches []ToolScanMatch
+func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch) {
 	confusableNames := confusableToolNameCollisions(tools)
 
 	for _, tool := range tools {
@@ -1247,25 +1392,52 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		// Drift detection (rug pull).
 		// Skip hash computation for unknown tools when at capacity to prevent
 		// CPU exhaustion from malicious servers sending unlimited unique names.
-		if cfg.DetectDrift && cfg.Baseline != nil && !cfg.Baseline.ShouldSkip(tool.Name) {
+		driftBaseline := cfg.DriftBaseline
+		if driftBaseline == nil {
+			driftBaseline = cfg.Baseline
+		}
+		if cfg.DetectDrift && driftBaseline != nil && !driftBaseline.ShouldSkip(tool.Name) {
 			hash := hashTool(tool)
 			promoteNew := cfg.Action != "block" || !hasFinding
 			promoteChanged := cfg.Action != "block"
-			drifted, prevHash, promoted := cfg.Baseline.CheckAndUpdatePromote(tool.Name, hash, promoteNew, promoteChanged)
+			// Compare and promote atomically. A change is a lowered evidence
+			// bar, not a verdict: block on what it introduced, and accept a
+			// change that only adds descriptive text so a legitimate vendor
+			// update does not re-report forever.
+			eval := driftBaseline.EvaluateDefinition(DefinitionEvaluation{
+				Name:           tool.Name,
+				Hash:           hash,
+				Desc:           tool.Description,
+				Params:         paramNames,
+				Structural:     structuralDigest(tool),
+				PromoteNew:     promoteNew,
+				PromoteChanged: promoteChanged,
+				// hasFinding carries every earlier per-tool verdict in this
+				// loop: injection, poison, confusable name, exfil parameter.
+				PromoteAccepted: cfg.Action != "block" || !hasFinding,
+				Classify: func(prevDesc string, structuralChanged bool) []string {
+					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
+				},
+			})
 
-			if drifted {
-				match.DriftDetected = true
-				match.PreviousHash = prevHash
+			if eval.Drifted {
+				match.PreviousHash = eval.PreviousHash
 				match.CurrentHash = hash
-				match.DriftDetail = cfg.Baseline.DiffSummary(tool.Name, tool.Description, paramNames)
-				hasFinding = true
-			}
-			if promoted {
-				// Store the actual tool description (not the full scan text which
-				// includes param names) so DiffSummary reports description changes
-				// accurately without false "description grew" when only params change.
-				cfg.Baseline.StoreDesc(tool.Name, tool.Description)
-				cfg.Baseline.StoreParams(tool.Name, paramNames)
+				match.DriftDetail = eval.Detail
+
+				if len(eval.Cues) > 0 {
+					match.DriftDetected = true
+					match.DriftCues = eval.Cues
+					hasFinding = true
+				} else {
+					observations = append(observations, ToolScanMatch{
+						ToolName:      tool.Name,
+						DriftAccepted: true,
+						PreviousHash:  eval.PreviousHash,
+						CurrentHash:   hash,
+						DriftDetail:   eval.Detail,
+					})
+				}
 			}
 		}
 
@@ -1274,7 +1446,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		}
 	}
 
-	return matches
+	return matches, observations
 }
 
 func confusableToolNameCollisions(tools []ToolDef) map[string]bool {
@@ -1304,11 +1476,31 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 		reasons = append(reasons, m.ToolPoison...)
 		if m.DriftDetected {
 			reasons = append(reasons, "definition-drift")
+			if len(m.DriftCues) > 0 {
+				reasons = append(reasons, "introduced: "+strings.Join(m.DriftCues, "+"))
+			}
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: %s\n",
 			lineNum, m.ToolName, strings.Join(reasons, ", "))
 		if m.DriftDetail != "" {
 			_, _ = fmt.Fprintf(logW, "  %s\n", m.DriftDetail)
+		}
+	}
+}
+
+// LogToolObservations writes non-blocking drift notices. Accepted drift is not
+// a finding, so it is reported separately from LogToolFindings and on every
+// tools/list, including a clean one.
+func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
+	for _, o := range result.Observations {
+		if !o.DriftAccepted {
+			continue
+		}
+		_, _ = fmt.Fprintf(logW,
+			"pipelock: line %d: tool %q: definition-drift accepted, no risk cue introduced; new definition is now the baseline\n",
+			lineNum, o.ToolName)
+		if o.DriftDetail != "" {
+			_, _ = fmt.Fprintf(logW, "  %s\n", o.DriftDetail)
 		}
 	}
 }

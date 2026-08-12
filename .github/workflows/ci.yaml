@@ -274,7 +274,9 @@ jobs:
   test-subprocess-coverage:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Includes subprocess coverage plus four race-enabled Guard conformance
+    # invocations, each with its own five-minute timeout.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -293,6 +295,9 @@ jobs:
 
       - name: Collect sandbox subprocess coverage
         run: bash scripts/coverage-with-subprocess.sh coverage-subprocess.out
+
+      - name: Run Guard hostile-input conformance gate
+        run: bash scripts/check-guard-conformance.sh
 
       - name: Upload subprocess coverage
         # Best-effort telemetry; see the Upload coverage step above. A Codecov

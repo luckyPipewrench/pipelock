@@ -67,10 +67,10 @@ func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal proof: %v", err)
 	}
-	if err := got.GuardAppliedPreExec(encoded); err != nil {
+	if err := got.GuardAppliedPreExec(workspace, encoded); err != nil {
 		t.Fatalf("GuardAppliedPreExec: %v", err)
 	}
-	if err := got.GuardAppliedPreExec(encoded); err != nil {
+	if err := got.GuardAppliedPreExec(workspace, encoded); err != nil {
 		t.Fatalf("repeated GuardAppliedPreExec: %v", err)
 	}
 	server, client := net.Pipe()
@@ -93,7 +93,7 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launchGuard: %v", err)
 	}
-	if err := got.GuardAppliedPreExec([]byte("not-json")); err == nil || !strings.Contains(err.Error(), "decoding") {
+	if err := got.GuardAppliedPreExec(got.Workspace, []byte("not-json")); err == nil || !strings.Contains(err.Error(), "decoding") {
 		t.Fatalf("malformed proof error = %v", err)
 	}
 	proof := guardfs.NewExecutionProof(
@@ -105,8 +105,53 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal mismatched proof: %v", err)
 	}
-	if err := got.GuardAppliedPreExec(encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
+	if err := got.GuardAppliedPreExec(got.Workspace, encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
 		t.Fatalf("mismatched proof error = %v", err)
+	}
+	tampered := guardfs.NewExecutionProof(
+		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
+		guardfs.ExecControlOptions{PolicyHash: got.GuardPolicyHash, Workspace: got.Workspace, TempDir: got.Workspace, Binary: "/usr/bin/true"},
+		[]string{"/usr/bin/true"},
+	)
+	tampered.Record.Coverage = guardfs.CoveragePartial
+	encodedTampered, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatalf("marshal tampered proof: %v", err)
+	}
+	if err := got.GuardAppliedPreExec(got.Workspace, encodedTampered); err == nil {
+		t.Fatal("parent evidence boundary accepted a tampered enforcement record")
+	}
+	for _, testCase := range []struct {
+		name   string
+		mutate func(*guardfs.ExecutionProof)
+	}{
+		{name: "profile", mutate: func(proof *guardfs.ExecutionProof) { proof.Profile = "other" }},
+		{name: "workspace", mutate: func(proof *guardfs.ExecutionProof) { proof.Workspace = "/other" }},
+		{name: "temporary directory", mutate: func(proof *guardfs.ExecutionProof) { proof.TempDir = "/other" }},
+		{name: "binary", mutate: func(proof *guardfs.ExecutionProof) { proof.Binary = "/usr/bin/false" }},
+		{name: "argv", mutate: func(proof *guardfs.ExecutionProof) { proof.Command = []string{"/usr/bin/false"} }},
+	} {
+		t.Run("self-consistent wrong "+testCase.name, func(t *testing.T) {
+			wrong := guardfs.NewExecutionProof(
+				guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
+				guardfs.ExecControlOptions{PolicyHash: got.GuardPolicyHash, Workspace: got.Workspace, TempDir: got.Workspace, Binary: "/usr/bin/true"},
+				[]string{"/usr/bin/true"},
+			)
+			testCase.mutate(&wrong)
+			// Rebuild after mutation so the digest is valid for the wrong
+			// invocation. The parent comparison, not hash mismatch, must deny it.
+			wrong = guardfs.NewExecutionProof(wrong.Record, guardfs.ExecControlOptions{
+				Profile: wrong.Profile, PolicyHash: wrong.ConfigPolicyHash,
+				Workspace: wrong.Workspace, TempDir: wrong.TempDir, Binary: wrong.Binary,
+			}, wrong.Command)
+			encodedWrong, marshalErr := json.Marshal(wrong)
+			if marshalErr != nil {
+				t.Fatalf("marshal wrong proof: %v", marshalErr)
+			}
+			if err := got.GuardAppliedPreExec(got.Workspace, encodedWrong); err == nil || !strings.Contains(err.Error(), "requested invocation") {
+				t.Fatalf("wrong invocation proof error = %v", err)
+			}
+		})
 	}
 	server, client := net.Pipe()
 	defer func() { _ = client.Close() }()

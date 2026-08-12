@@ -294,6 +294,9 @@ jobs:
       - name: Collect sandbox subprocess coverage
         run: bash scripts/coverage-with-subprocess.sh coverage-subprocess.out
 
+      - name: Run Guard hostile-input conformance gate
+        run: bash scripts/check-guard-conformance.sh
+
       - name: Upload subprocess coverage
         # Best-effort telemetry; see the Upload coverage step above. A Codecov
         # uploader-integrity hiccup must not red this job when coverage collection

@@ -201,7 +201,10 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 			if err := json.Unmarshal(encoded, &proof); err != nil {
 				return fmt.Errorf("decoding child enforcement proof: %w", err)
 			}
-			if err := proof.Verify(configPolicyHash); err != nil {
+			if err := proof.VerifyInvocation(guardfs.ExecControlOptions{
+				Profile: opts.Profile, PolicyHash: configPolicyHash,
+				Workspace: workspace, Binary: executable,
+			}, opts.Command); err != nil {
 				return err
 			}
 			if err := evidence.activate(proof); err != nil {

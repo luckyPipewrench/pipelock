@@ -6,6 +6,7 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -133,6 +134,32 @@ func TestLaunchStandaloneGuardAppliesOnlyToFinalCommand(t *testing.T) {
 	}
 	if string(result) != "guarded" {
 		t.Fatalf("result = %q, want guarded", result)
+	}
+}
+
+func TestLaunchStandaloneGuardProofFailureCleansChildTempDir(t *testing.T) {
+	skipIfStandaloneUnavailable(t)
+	workspace := t.TempDir()
+	declaration := config.Guard{}
+	var childTempDir string
+	err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:          []string{"sh", "-c", "true"},
+		Workspace:        workspace,
+		GuardDeclaration: &declaration,
+		GuardPolicyHash:  "test-policy-hash",
+		GuardAppliedPreExec: func(tempDir string, _ []byte) error {
+			childTempDir = tempDir
+			return errors.New("reject proof for cleanup test")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "reject proof for cleanup test") {
+		t.Fatalf("LaunchStandalone proof error = %v", err)
+	}
+	if childTempDir == "" {
+		t.Fatal("proof callback did not receive the child temporary directory")
+	}
+	if _, statErr := os.Stat(childTempDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("child temporary directory remained after proof failure: %v", statErr)
 	}
 }
 

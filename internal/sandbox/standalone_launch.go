@@ -255,6 +255,19 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting sandbox child: %w", err)
 	}
+	cleanupChildState := func() {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		}
+		if cfg.Strict {
+			ReapOrphans()
+		}
+		proxyServer.stop()
+		if cmd.Process != nil {
+			CleanupChildSandboxDir(cmd.Process.Pid)
+		}
+	}
+	defer cleanupChildState()
 	if guardStatusWriter != nil {
 		if err := guardStatusWriter.Close(); err != nil {
 			_ = cmd.Process.Kill()
@@ -290,27 +303,6 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 
 	// Wait for child to exit.
 	waitErr := cmd.Wait()
-
-	// Kill process group - terminate descendants that may still hold bridge
-	// proxy connections open.
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	}
-
-	// Strict mode: reap orphaned descendants adopted by subreaper.
-	// Best-effort relies on process-group termination plus proxy server stop.
-	if cfg.Strict {
-		ReapOrphans()
-	}
-
-	// Stop accepting, close active bridge connections, and join the accept
-	// loop plus all proxy handlers before sandbox directory cleanup.
-	proxyServer.stop()
-
-	// Clean up child's sandbox temp dir.
-	if cmd.Process != nil {
-		CleanupChildSandboxDir(cmd.Process.Pid)
-	}
 
 	return waitErr
 }

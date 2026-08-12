@@ -381,6 +381,20 @@ func TestRejectDurableFileAliases(t *testing.T) {
 			},
 		},
 		{
+			name: "protected path below a regular file is refused",
+			run: func(t *testing.T) {
+				logger, path := newLogger(t)
+				protected := filepath.Join(filepath.Dir(path), "keyring.json")
+				if err := os.WriteFile(protected, []byte("keyring"), 0o600); err != nil {
+					t.Fatalf("write protected file: %v", err)
+				}
+				err := logger.RejectDurableFileAliases(filepath.Join(protected, "child"))
+				if err == nil || !strings.Contains(err.Error(), "stat protected lifecycle file") {
+					t.Fatalf("RejectDurableFileAliases error = %v, want protected-path stat failure", err)
+				}
+			},
+		},
+		{
 			name: "replaced sink is refused by final binding check",
 			run: func(t *testing.T) {
 				logger, path := newLogger(t)

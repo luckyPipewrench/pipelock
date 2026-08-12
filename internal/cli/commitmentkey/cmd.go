@@ -109,9 +109,7 @@ func inspectCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
-			if err := flags.prepareLifecycleAudit(cmd, false); err != nil {
-				return err
-			}
+			flags.prepareReadOnlyLifecycleAudit(cmd)
 			defer closeLifecycleAudit(cmd)
 			keyring, err := flags.load()
 			if err != nil {
@@ -296,9 +294,7 @@ func testCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
-			if err := flags.prepareLifecycleAudit(cmd, false, viewFile); err != nil {
-				return err
-			}
+			flags.prepareReadOnlyLifecycleAudit(cmd, viewFile)
 			defer closeLifecycleAudit(cmd)
 			if err := requireFlags(cmd, "key-id", "epoch", "source-id", "commitment"); err != nil {
 				return finishLifecycleAudit(cmd, "test", "denied", keyID, epoch, err)
@@ -420,6 +416,14 @@ func (f *pathFlags) load() (*domkey.Keyring, error) {
 		return nil, err
 	}
 	return domkey.Load(path)
+}
+
+// prepareReadOnlyLifecycleAudit attaches a lifecycle sink when one is available
+// and warns when it is not. A read-only operation never fails on an unavailable
+// sink, so it deliberately returns nothing rather than an error its callers
+// could not act on.
+func (f *pathFlags) prepareReadOnlyLifecycleAudit(cmd *cobra.Command, protectedPaths ...string) {
+	_ = f.prepareLifecycleAudit(cmd, false, protectedPaths...)
 }
 
 func (f *pathFlags) prepareLifecycleAudit(cmd *cobra.Command, mutating bool, protectedPaths ...string) error {

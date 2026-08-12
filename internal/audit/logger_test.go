@@ -5635,3 +5635,58 @@ func TestLogAgentIdentityCollision_JSONFormat(t *testing.T) {
 		t.Errorf("expected score ~0.7, got %v", entry["score"])
 	}
 }
+
+type stubLifecycleRecordFile struct {
+	written   int
+	writeErr  error
+	shortBy   int
+	syncErr   error
+	syncCalls int
+}
+
+func (f *stubLifecycleRecordFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	f.written += len(p)
+	return len(p) - f.shortBy, nil
+}
+
+func (f *stubLifecycleRecordFile) Sync() error {
+	f.syncCalls++
+	return f.syncErr
+}
+
+func TestWriteAndSyncLifecycleRecordFailurePaths(t *testing.T) {
+	record := durableCommitmentKeyLifecycleRecord{Event: "commitment_key_lifecycle", Operation: "rotate", Outcome: "pending"}
+
+	for _, tc := range []struct {
+		name string
+		file *stubLifecycleRecordFile
+		want string
+	}{
+		{name: "write error", file: &stubLifecycleRecordFile{writeErr: errors.New("disk gone")}, want: "write lifecycle audit record"},
+		{name: "short write", file: &stubLifecycleRecordFile{shortBy: 3}, want: "lifecycle audit record"},
+		{name: "sync error", file: &stubLifecycleRecordFile{syncErr: errors.New("sync refused")}, want: "sync"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := writeAndSyncLifecycleRecord(tc.file, record)
+			if err == nil {
+				t.Fatal("writeAndSyncLifecycleRecord error = nil, want failure")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("writeAndSyncLifecycleRecord error = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("success syncs the record", func(t *testing.T) {
+		file := &stubLifecycleRecordFile{}
+		if err := writeAndSyncLifecycleRecord(file, record); err != nil {
+			t.Fatalf("writeAndSyncLifecycleRecord: %v", err)
+		}
+		if file.syncCalls != 1 {
+			t.Fatalf("sync calls = %d, want 1", file.syncCalls)
+		}
+	})
+}

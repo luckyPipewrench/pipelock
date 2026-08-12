@@ -5,6 +5,7 @@ package commitmentkey
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,8 +16,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	domkey "github.com/luckyPipewrench/pipelock/internal/commitmentkey"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -556,15 +559,132 @@ func TestLifecycleAuditRequiresConfiguredFile(t *testing.T) {
 	}
 }
 
-func TestInitializeAuditsResolveFailureAfterOpeningDurableSink(t *testing.T) {
+func TestLifecycleCommandsAuditResolveFailureAfterOpeningDurableSink(t *testing.T) {
 	dir := t.TempDir()
 	configPath := writeLifecycleAuditConfig(t, dir, filepath.Join(dir, "keyring.json"), filepath.Join(dir, "audit.jsonl"), "file", "")
 
-	_, _, err := execute(t, "initialize", "--config", configPath, "--keyring", filepath.Join(dir, "other-keyring.json"))
-	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("initialize error = %v, want --keyring/--config refusal", err)
+	for _, tc := range []struct {
+		name      string
+		operation string
+		args      []string
+	}{
+		{name: "initialize", operation: "initialize"},
+		{name: "rotate", operation: "rotate"},
+		{name: "retire", operation: "retire", args: []string{"--key-id", "ck_test", "--epoch", "1"}},
+		{name: "backup", operation: "backup", args: []string{"--out", filepath.Join(dir, "backup.json")}},
+		{name: "restore", operation: "restore", args: []string{"--from", filepath.Join(dir, "backup.json")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{tc.name, "--config", configPath, "--keyring", filepath.Join(dir, tc.name+"-keyring.json")}, tc.args...)
+			_, _, err := execute(t, args...)
+			if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+				t.Fatalf("%s error = %v, want --keyring/--config refusal", tc.name, err)
+			}
+			assertDurableAudit(t, filepath.Join(dir, "audit.jsonl"), tc.operation, "denied")
+		})
 	}
-	assertDurableAudit(t, filepath.Join(dir, "audit.jsonl"), "initialize", "denied")
+}
+
+func TestLifecycleCommandsRejectUnavailableDurableSink(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, filepath.Join(dir, "missing", "audit.jsonl"), "file", "")
+
+	for _, operation := range []string{"initialize", "rotate", "retire", "backup", "restore"} {
+		t.Run(operation, func(t *testing.T) {
+			_, _, err := execute(t, operation, "--config", configPath)
+			if err == nil || !strings.Contains(err.Error(), "file-backed lifecycle audit sink") {
+				t.Fatalf("%s error = %v, want durable sink refusal", operation, err)
+			}
+			if _, statErr := os.Stat(keyringPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s created keyring despite unavailable audit sink: stat error = %v", operation, statErr)
+			}
+		})
+	}
+}
+
+func TestLifecycleAuditHelpersRejectUnavailableSink(t *testing.T) {
+	t.Run("mutation without prepared sink", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		cmd.SetContext(context.Background())
+		if err := beginMutationAudit(cmd, "rotate", "", 0); err == nil || !strings.Contains(err.Error(), "not prepared") {
+			t.Fatalf("beginMutationAudit error = %v, want unprepared-sink refusal", err)
+		}
+	})
+
+	t.Run("closed sink makes intent and outcome fail", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		logger, err := audit.NewDurableFile("json", path, false, false)
+		if err != nil {
+			t.Fatalf("NewDurableFile: %v", err)
+		}
+		logger.Close()
+		cmd := &cobra.Command{}
+		cmd.SetContext(context.WithValue(context.Background(), lifecycleAuditSinkContextKey{}, &lifecycleAuditSink{logger: logger, operationID: "cka_test"}))
+		if err := beginMutationAudit(cmd, "rotate", "", 0); err == nil || !strings.Contains(err.Error(), "not open") {
+			t.Fatalf("beginMutationAudit error = %v, want closed-sink refusal", err)
+		}
+
+		cmd.SetContext(context.WithValue(context.Background(), lifecycleAuditSinkContextKey{}, &lifecycleAuditSink{logger: logger, operationID: "cka_test"}))
+		if err := finishLifecycleAudit(cmd, "rotate", "succeeded", "", 0, nil); err == nil || !strings.Contains(err.Error(), "persist lifecycle audit outcome") {
+			t.Fatalf("finishLifecycleAudit error = %v, want closed-sink refusal", err)
+		}
+	})
+}
+
+func TestLifecycleCommandsRejectSinkDeletedBeforeIntent(t *testing.T) {
+	for _, tc := range []struct {
+		operation string
+		args      []string
+	}{
+		{operation: "initialize"},
+		{operation: "rotate"},
+		{operation: "retire", args: []string{"--key-id", "ck_test", "--epoch", "1"}},
+		{operation: "backup", args: []string{"--out", "backup.json"}},
+		{operation: "restore", args: []string{"--from", "backup.json"}},
+	} {
+		t.Run(tc.operation, func(t *testing.T) {
+			dir := t.TempDir()
+			keyringPath := filepath.Join(dir, "keyring.json")
+			auditPath := filepath.Join(dir, "audit.jsonl")
+			configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", "")
+
+			watcher, err := fsnotify.NewWatcher()
+			if err != nil {
+				t.Fatalf("NewWatcher: %v", err)
+			}
+			defer watcher.Close()
+			if err := watcher.Add(dir); err != nil {
+				t.Fatalf("watch audit directory: %v", err)
+			}
+			deleted := make(chan error, 1)
+			go func() {
+				for event := range watcher.Events {
+					if filepath.Clean(event.Name) == auditPath && event.Has(fsnotify.Create) {
+						deleted <- os.Remove(auditPath)
+						return
+					}
+				}
+			}()
+
+			args := append([]string{tc.operation, "--config", configPath}, tc.args...)
+			_, _, err = execute(t, args...)
+			if err == nil || !strings.Contains(err.Error(), "durable lifecycle audit intent") {
+				t.Fatalf("%s error = %v, want intent-audit refusal", tc.operation, err)
+			}
+			select {
+			case deleteErr := <-deleted:
+				if deleteErr != nil {
+					t.Fatalf("delete audit sink: %v", deleteErr)
+				}
+			default:
+				t.Fatal("audit sink was not deleted during operation")
+			}
+			if _, statErr := os.Stat(keyringPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s created keyring despite failed intent audit: stat error = %v", tc.operation, statErr)
+			}
+		})
+	}
 }
 
 func TestLifecycleAuditReadsStdinConfigOnce(t *testing.T) {

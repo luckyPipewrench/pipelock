@@ -304,12 +304,12 @@ func TestEvaluateDefinition_FirstSightingAndUnchangedAreSilent(t *testing.T) {
 	tb := NewToolBaseline()
 	never := func(string, bool) []string { return nil }
 
-	first := tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
+	first := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash1", Desc: "Echo text", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: true, Classify: never})
 	if first.Drifted {
 		t.Errorf("first sighting reported drift: %+v", first)
 	}
 
-	same := tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
+	same := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash1", Desc: "Echo text", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: true, Classify: never})
 	if same.Drifted {
 		t.Errorf("unchanged definition reported drift: %+v", same)
 	}
@@ -322,11 +322,11 @@ func TestEvaluateDefinition_UnpromotedFirstSightingIsNotBaselined(t *testing.T) 
 	tb := NewToolBaseline()
 	never := func(string, bool) []string { return nil }
 
-	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", false, true, never)
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash1", Desc: "Echo text", Params: nil, Structural: "struct1", PromoteNew: false, PromoteChanged: true, Classify: never})
 
 	// Still unknown, so a different definition is another first sighting
 	// rather than drift against a baseline that was never approved.
-	next := tb.EvaluateDefinition("echo", "hash2", "Echo text 2", nil, "struct2", false, true, never)
+	next := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash2", Desc: "Echo text 2", Params: nil, Structural: "struct2", PromoteNew: false, PromoteChanged: true, Classify: never})
 	if next.Drifted {
 		t.Errorf("an unpromoted first sighting became a baseline: %+v", next)
 	}
@@ -338,13 +338,13 @@ func TestEvaluateDefinition_AcceptedChangePromotesUnderBlockAction(t *testing.T)
 	tb := NewToolBaseline()
 	never := func(string, bool) []string { return nil }
 
-	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, false, never)
-	accepted := tb.EvaluateDefinition("echo", "hash2", "Echo text, verbatim", nil, "struct1", true, false, never)
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash1", Desc: "Echo text", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: false, Classify: never})
+	accepted := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash2", Desc: "Echo text, verbatim", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: false, Classify: never})
 	if !accepted.Accepted() {
 		t.Fatalf("change with no cues was not accepted: %+v", accepted)
 	}
 
-	repeat := tb.EvaluateDefinition("echo", "hash2", "Echo text, verbatim", nil, "struct1", true, false, never)
+	repeat := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash2", Desc: "Echo text, verbatim", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: false, Classify: never})
 	if repeat.Drifted {
 		t.Errorf("accepted definition did not become the baseline: %+v", repeat)
 	}
@@ -357,14 +357,14 @@ func TestEvaluateDefinition_BlockedChangeDoesNotPromoteUnderBlockAction(t *testi
 	always := func(string, bool) []string { return []string{DriftCueEgressURL} }
 	never := func(string, bool) []string { return nil }
 
-	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, false, never)
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash1", Desc: "Echo text", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: false, Classify: never})
 
-	first := tb.EvaluateDefinition("echo", "hash2", "Echo text, poisoned", nil, "struct1", true, false, always)
+	first := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash2", Desc: "Echo text, poisoned", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: false, Classify: always})
 	if !first.Drifted || len(first.Cues) == 0 {
 		t.Fatalf("cue-bearing change was not blocked: %+v", first)
 	}
 
-	again := tb.EvaluateDefinition("echo", "hash2", "Echo text, poisoned", nil, "struct1", true, false, always)
+	again := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash2", Desc: "Echo text, poisoned", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: false, Classify: always})
 	if !again.Drifted || again.PreviousHash != "hash1" {
 		t.Fatalf("blocked change was promoted: %+v", again)
 	}
@@ -374,7 +374,7 @@ func TestEvaluateDefinition_BlockedChangeDoesNotPromoteUnderBlockAction(t *testi
 func TestEvaluateDefinition_ClassifySeesPreviousDescriptionAndStructuralMove(t *testing.T) {
 	tb := NewToolBaseline()
 	never := func(string, bool) []string { return nil }
-	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash1", Desc: "Echo text", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: true, Classify: never})
 
 	var gotDesc string
 	var gotStructural bool
@@ -383,7 +383,7 @@ func TestEvaluateDefinition_ClassifySeesPreviousDescriptionAndStructuralMove(t *
 		return nil
 	}
 
-	tb.EvaluateDefinition("echo", "hash2", "Echo text, more", nil, "struct2", true, true, capture)
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash2", Desc: "Echo text, more", Params: nil, Structural: "struct2", PromoteNew: true, PromoteChanged: true, Classify: capture})
 	if gotDesc != "Echo text" {
 		t.Errorf("classify saw prevDesc %q, want the approved description", gotDesc)
 	}
@@ -398,7 +398,7 @@ func TestEvaluateDefinition_ClassifySeesPreviousDescriptionAndStructuralMove(t *
 func TestEvaluateDefinition_ConcurrentUpdatesKeepDefinitionStateConsistent(t *testing.T) {
 	tb := NewToolBaseline()
 	never := func(string, bool) []string { return nil }
-	tb.EvaluateDefinition("echo", "hash0", "desc0", []string{"p0"}, "struct0", true, true, never)
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash0", Desc: "desc0", Params: []string{"p0"}, Structural: "struct0", PromoteNew: true, PromoteChanged: true, Classify: never})
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -408,7 +408,11 @@ func TestEvaluateDefinition_ConcurrentUpdatesKeepDefinitionStateConsistent(t *te
 			defer wg.Done()
 			id := fmt.Sprintf("%d", n)
 			for range 50 {
-				tb.EvaluateDefinition("echo", "hash"+id, "desc"+id, []string{"p" + id}, "struct"+id, true, true, never)
+				tb.EvaluateDefinition(DefinitionEvaluation{
+					Name: "echo", Hash: "hash" + id, Desc: "desc" + id,
+					Params: []string{"p" + id}, Structural: "struct" + id,
+					PromoteNew: true, PromoteChanged: true, Classify: never,
+				})
 			}
 		}(i)
 	}
@@ -418,11 +422,10 @@ func TestEvaluateDefinition_ConcurrentUpdatesKeepDefinitionStateConsistent(t *te
 	// structural digest must all come from that same definition.
 	var seenPrevDesc string
 	var seenStructuralChanged bool
-	tb.EvaluateDefinition("echo", "sentinel", "sentinel-desc", []string{"sentinel"}, "sentinel-struct", true, true,
-		func(prevDesc string, structuralChanged bool) []string {
-			seenPrevDesc, seenStructuralChanged = prevDesc, structuralChanged
-			return nil
-		})
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "sentinel", Desc: "sentinel-desc", Params: []string{"sentinel"}, Structural: "sentinel-struct", PromoteNew: true, PromoteChanged: true, Classify: func(prevDesc string, structuralChanged bool) []string {
+		seenPrevDesc, seenStructuralChanged = prevDesc, structuralChanged
+		return nil
+	}})
 
 	if !strings.HasPrefix(seenPrevDesc, "desc") {
 		t.Fatalf("previous description was %q, want one written by a worker", seenPrevDesc)
@@ -449,23 +452,38 @@ func TestEvaluateDefinition_ConcurrentUpdatesKeepDefinitionStateConsistent(t *te
 func TestResetDriftState_ClearsStructuralState(t *testing.T) {
 	tb := NewToolBaseline()
 	never := func(string, bool) []string { return nil }
-	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash1", Desc: "Echo text", Params: nil, Structural: "struct1", PromoteNew: true, PromoteChanged: true, Classify: never})
 	tb.ResetDriftState()
 
-	// After a reset the next definition is a first sighting again. Structural
-	// state left behind would make it read as an uncharacterizable change and
-	// block the operator's own re-baseline.
-	var structuralChanged bool
-	after := tb.EvaluateDefinition("echo", "hash2", "Echo text", nil, "struct2", true, true,
-		func(_ string, changed bool) []string {
-			structuralChanged = changed
-			return nil
-		})
-	if after.Drifted {
+	// Assert the cleared state directly. Checking it through classify alone is
+	// VACUOUS: after a reset the next definition takes the first-sighting path,
+	// which returns before classify runs, so a structuralChanged flag stays
+	// false whether or not stale digests survived.
+	tb.mu.Lock()
+	remainingStructural, remainingHashes := len(tb.structural), len(tb.hashes)
+	tb.mu.Unlock()
+	if remainingStructural != 0 || remainingHashes != 0 {
+		t.Errorf("ResetDriftState left %d structural digests and %d hashes behind",
+			remainingStructural, remainingHashes)
+	}
+
+	// Then re-baseline and drive a SECOND evaluation, which is the first one
+	// that actually reaches classify. Stale structural state would surface here
+	// as an uncharacterizable change and block the operator's own re-baseline.
+	if after := tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash2", Desc: "Echo text", Params: nil, Structural: "struct2", PromoteNew: true, PromoteChanged: true, Classify: never}); after.Drifted {
 		t.Error("ResetDriftState left the hash behind, so the re-baseline reported drift")
 	}
+
+	var classifyRan, structuralChanged bool
+	tb.EvaluateDefinition(DefinitionEvaluation{Name: "echo", Hash: "hash3", Desc: "Echo text, more", Params: nil, Structural: "struct2", PromoteNew: true, PromoteChanged: true, Classify: func(_ string, changed bool) []string {
+		classifyRan, structuralChanged = true, changed
+		return nil
+	}})
+	if !classifyRan {
+		t.Fatal("classify never ran, so this test asserts nothing about structural state")
+	}
 	if structuralChanged {
-		t.Error("classify ran after a reset, so structural state survived the reset")
+		t.Error("structural state from before the reset survived and forced a structural cue")
 	}
 }
 

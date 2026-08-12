@@ -267,13 +267,33 @@ func (e DriftEvaluation) Accepted() bool { return e.Drifted && len(e.Cues) == 0 
 // description moved, and returns the cue classes the change introduced. It runs
 // while the lock is held, so it must be pure and must not call back into this
 // baseline.
-func (tb *ToolBaseline) EvaluateDefinition(
-	name, hash, desc string,
-	params []string,
-	structural string,
-	promoteNew, promoteChanged bool,
-	classify func(prevDesc string, structuralChanged bool) []string,
-) DriftEvaluation {
+// DefinitionEvaluation carries one tool definition and the promotion policy to
+// apply to it.
+type DefinitionEvaluation struct {
+	Name string
+	Hash string
+	Desc string
+	// Params are the tool's parameter names, already sorted.
+	Params []string
+	// Structural is the digest of everything except the description.
+	Structural string
+	// PromoteNew stores a first sighting. Block mode withholds it when the
+	// definition already carries a finding.
+	PromoteNew bool
+	// PromoteChanged stores a CHANGED definition that was blocked. Block mode
+	// withholds it so the approved definition stays in place. It does not
+	// affect an accepted change, which is always promoted.
+	PromoteChanged bool
+	// Classify returns the cue classes the change introduced. It runs while the
+	// baseline lock is held, so it must be pure and must not call back into the
+	// baseline.
+	Classify func(prevDesc string, structuralChanged bool) []string
+}
+
+func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluation {
+	name, hash, desc := in.Name, in.Hash, in.Desc
+	params, structural := in.Params, in.Structural
+	promoteNew, promoteChanged, classify := in.PromoteNew, in.PromoteChanged, in.Classify
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
@@ -1377,13 +1397,18 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// bar, not a verdict: block on what it introduced, and accept a
 			// change that only adds descriptive text so a legitimate vendor
 			// update does not re-report forever.
-			eval := driftBaseline.EvaluateDefinition(
-				tool.Name, hash, tool.Description, paramNames, structuralDigest(tool),
-				promoteNew, promoteChanged,
-				func(prevDesc string, structuralChanged bool) []string {
+			eval := driftBaseline.EvaluateDefinition(DefinitionEvaluation{
+				Name:           tool.Name,
+				Hash:           hash,
+				Desc:           tool.Description,
+				Params:         paramNames,
+				Structural:     structuralDigest(tool),
+				PromoteNew:     promoteNew,
+				PromoteChanged: promoteChanged,
+				Classify: func(prevDesc string, structuralChanged bool) []string {
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},
-			)
+			})
 
 			if eval.Drifted {
 				match.PreviousHash = eval.PreviousHash

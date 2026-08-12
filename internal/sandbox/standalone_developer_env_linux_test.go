@@ -16,7 +16,7 @@ import (
 )
 
 func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T) {
-	const token = "recognizable-api-token-for-control-env-test"
+	token := "test-" + strings.ReplaceAll(t.Name(), "/", "-")
 	cfg := StandaloneLaunchConfig{
 		Command:                 []string{"sh", "-c", "true"},
 		Workspace:               "/workspace",
@@ -74,7 +74,7 @@ func TestStandaloneCommandJSONPreservesLegacyDelimiterInArgument(t *testing.T) {
 func TestLaunchStandaloneDeveloperEnvironmentReachesOnlyFinalCommand(t *testing.T) {
 	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
-	const token = "recognizable-api-token-for-final-command-test"
+	token := "test-" + strings.ReplaceAll(t.Name(), "/", "-")
 
 	err := LaunchStandalone(StandaloneLaunchConfig{
 		Command:   []string{"sh", "-c", "test \"$API_TOKEN\" = \"$EXPECTED_TOKEN\" && test -n \"$HTTP_PROXY\" && test -n \"$HTTPS_PROXY\" && test -z \"$NO_PROXY\" && test -z \"$no_proxy\" && test -z \"$Http_Proxy\" && test -z \"$ALL_proxy\" && test ! -e /proc/self/fd/3 && { test ! -e /proc/$PPID/fd/3 || ! readlink /proc/$PPID/fd/3 | grep -q '^pipe:'; } && ! tr '\\000' '\\n' < \"/proc/$PPID/environ\" | grep -F -q -- \"$EXPECTED_TOKEN\""},
@@ -83,8 +83,8 @@ func TestLaunchStandaloneDeveloperEnvironmentReachesOnlyFinalCommand(t *testing.
 			"PATH=" + os.Getenv("PATH"),
 			"API_TOKEN=" + token,
 			"EXPECTED_TOKEN=" + token,
-			"Http_Proxy=http://attacker.invalid",
-			"ALL_proxy=socks5://attacker.invalid",
+			"Http_Proxy=http://api.vendor.example",
+			"ALL_proxy=socks5://api.vendor.example",
 			"NO_proxy=*",
 		},
 		UseDeveloperEnvironment: true,

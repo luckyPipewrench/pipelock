@@ -492,6 +492,9 @@ func TestRuntimeCommandValidationAndDryRunErrors(t *testing.T) {
 	if _, err := runCommand(t, "--config", "-", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "stdin") {
 		t.Fatalf("runtime command config error = %v", err)
 	}
+	if _, err := runCommand(t, "--json", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "--json requires --dry-run") {
+		t.Fatalf("runtime command JSON error = %v", err)
+	}
 	if _, err := runCommand(t, "--dry-run", "--workspace", "/usr/local/bin", "--", "/usr/bin/true"); err == nil || !strings.Contains(err.Error(), "compiled floor") {
 		t.Fatalf("dry-run floor error = %v", err)
 	}

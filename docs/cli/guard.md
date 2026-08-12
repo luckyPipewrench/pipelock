@@ -121,7 +121,7 @@ declarations, and case-folded conflicts across all four path lists.
 | `--profile` | empty | Select the workload profile. Required when profiles are declared. |
 | `--workspace` | config value or current directory | Set the writable workspace and command working directory. |
 | `--dry-run` | `false` | Validate and probe required kernel features without launching. |
-| `--json` | `false` | Emit JSON for dry-run, `show`, or `explain`. |
+| `--json` | `false` | Emit JSON for dry-run, `show`, or `explain`; runtime command execution rejects this flag. |
 
 The `show` and `explain` subcommands are read-only. They do not write config or
 state, contact the proxy, create filesystem entries, or alter enforcement.

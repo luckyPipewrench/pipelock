@@ -23,8 +23,8 @@ func TestDeveloperEnvPreservesDeveloperVariablesAndForcesBridgeProxy(t *testing.
 		"ENV=/developer/shenv",
 		"__PIPELOCK_SANDBOX_POLICY=must-not-reach-agent",
 		"__pipelock_private=must-not-reach-agent",
-		"Http_Proxy=http://attacker.invalid",
-		"ALL_proxy=socks5://attacker.invalid",
+		"Http_Proxy=http://api.vendor.example",
+		"ALL_proxy=socks5://api.vendor.example",
 		"No_PrOxY=*",
 	}, "127.0.0.1:43210")
 	if err != nil {

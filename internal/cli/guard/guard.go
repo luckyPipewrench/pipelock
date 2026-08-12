@@ -119,6 +119,9 @@ func Cmd() *cobra.Command {
 			if dashIdx != 0 || dashIdx >= len(args) {
 				return errors.New("usage: pipelock guard [flags] -- COMMAND [ARGS...]")
 			}
+			if opts.jsonOutput && !opts.dryRun {
+				return errors.New("--json requires --dry-run, guard show, or guard explain")
+			}
 			command := args[dashIdx:]
 			cfg, err := loadRuntimeConfig(opts.configFile)
 			if err != nil {

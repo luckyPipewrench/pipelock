@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,12 +15,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
 	maxMCPListenerClients             = 4096
+	listenerPrincipalIdleTTL          = 24 * time.Hour
+	listenerLegacyIdleTTL             = 24 * time.Hour
 	listenerDegradationReportInterval = time.Minute
 	listenerToolDriftRemediation      = "have an authorized operator create the owner-only control file configured by mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
 )
@@ -33,30 +37,57 @@ const listenerSessionTokenHeader = "Pipelock-Session-Token"
 type mcpListenerClientState struct {
 	token        string
 	key          string
+	principalSet string
+	principal    bool
 	baseline     *tools.ToolBaseline
 	recorder     session.Recorder
 	lastAccessed uint64
+	lastActive   time.Time
+	inFlight     atomic.Int64
 	commitMu     sync.Mutex
 	revoked      atomic.Bool
 	done         context.Context
 	cancel       context.CancelFunc
 }
 
-// mcpListenerClientStates partitions listener state by a Pipelock-issued
-// opaque token. A state is admitted only after a successful initialize
-// response. Non-setup requests never allocate state.
+// mcpListenerPrincipal is an authenticated security identity, not MCP routing
+// metadata. key is privacy-safe and stable for the credential identity. An
+// exclusive set represents a credential source where only one generation may
+// be valid at a time, such as the listener's rotating shared bearer token.
+type mcpListenerPrincipal struct {
+	key          string
+	billingKey   string
+	exclusiveSet string
+	trust        config.DoWSubjectTrust
+}
+
+// mcpListenerClientStates partitions listener state by either a verified
+// principal or a legacy Pipelock-issued opaque token. Principal state is
+// admitted on the first authenticated request; legacy token state is admitted
+// only after a successful initialize response.
 //
-// The registry retains at most maxMCPListenerClients client states. Eviction
-// loses only the evicted client's learned state; its next call starts with an
-// empty baseline and therefore follows the configured no-baseline action.
+// The registry retains at most maxMCPListenerClients client states. Legacy
+// states keep their compatibility LRU behavior. Principal states are never
+// pressure-evicted while live; idle states expire, and admission otherwise
+// fails closed at capacity so flooding cannot reset learned security history.
 type mcpListenerClientStates struct {
-	mu                   sync.Mutex
-	clients              map[string]*mcpListenerClientState
-	clock                uint64
-	store                session.Store
-	upstreamToolBaseline *tools.ToolBaseline
-	driftEdge            tools.DetectDriftRisingEdge
-	degradationReporter  mcpListenerDegradationReporter
+	authMu                  sync.Mutex
+	mu                      sync.Mutex
+	clients                 map[string]*mcpListenerClientState
+	clock                   uint64
+	store                   session.Store
+	upstreamToolBaseline    *tools.ToolBaseline
+	driftEdge               tools.DetectDriftRisingEdge
+	degradationReporter     mcpListenerDegradationReporter
+	principalSecret         [32]byte
+	principalSecretErr      error
+	activeBearer            [32]byte
+	activeBearerPrincipal   string
+	admittedBearerPrincipal string
+	hasActiveBearer         bool
+	bearerGeneration        uint64
+	now                     func() time.Time
+	revokeContentionSignal  chan<- struct{}
 }
 
 // mcpListenerDegradationReporter aggregates degraded (unbound) requests for one
@@ -104,12 +135,89 @@ func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
 }
 
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
-	return &mcpListenerClientStates{
+	states := &mcpListenerClientStates{
 		clients:              make(map[string]*mcpListenerClientState),
 		store:                store,
 		upstreamToolBaseline: tools.NewToolBaseline(),
 		degradationReporter:  newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
+		now:                  time.Now,
 	}
+	_, states.principalSecretErr = rand.Read(states.principalSecret[:])
+	return states
+}
+
+func (s *mcpListenerClientStates) principal(provider, subject string, epoch uint64) (mcpListenerPrincipal, error) {
+	if err := s.ensurePrincipalSecret(); err != nil {
+		return mcpListenerPrincipal{}, fmt.Errorf("initialize listener principal key: %w", err)
+	}
+	if provider == "" || subject == "" {
+		return mcpListenerPrincipal{}, nil
+	}
+	mac := hmac.New(sha256.New, s.principalSecret[:])
+	_, _ = mac.Write([]byte(provider))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(subject))
+	_, _ = fmt.Fprintf(mac, "\x00%d", epoch)
+	billingMAC := hmac.New(sha256.New, s.principalSecret[:])
+	_, _ = billingMAC.Write([]byte("listener-principal-billing-v1\x00"))
+	_, _ = billingMAC.Write([]byte(provider))
+	_, _ = billingMAC.Write([]byte{0})
+	_, _ = billingMAC.Write([]byte(subject))
+	return mcpListenerPrincipal{
+		key:        fmt.Sprintf("mcp-http-listener-principal:%x", mac.Sum(nil)),
+		billingKey: fmt.Sprintf("mcp-http-listener-billing:%x", billingMAC.Sum(nil)),
+		trust:      config.DoWTrustPrincipal,
+	}, nil
+}
+
+func (s *mcpListenerClientStates) bearerPrincipal(subject string) (mcpListenerPrincipal, error) {
+	if err := s.ensurePrincipalSecret(); err != nil {
+		return mcpListenerPrincipal{}, fmt.Errorf("initialize listener principal key: %w", err)
+	}
+	fingerprint := hmac.New(sha256.New, s.principalSecret[:])
+	_, _ = fingerprint.Write([]byte("listener-bearer-fingerprint-v1\x00"))
+	_, _ = fingerprint.Write([]byte(subject))
+	var current [32]byte
+	copy(current[:], fingerprint.Sum(nil))
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasActiveBearer || !hmac.Equal(s.activeBearer[:], current[:]) {
+		s.bearerGeneration++
+		s.activeBearer = current
+		s.hasActiveBearer = true
+	}
+	mac := hmac.New(sha256.New, s.principalSecret[:])
+	_, _ = mac.Write([]byte("listener-bearer-principal-v1\x00"))
+	_, _ = mac.Write(current[:])
+	_, _ = fmt.Fprintf(mac, "\x00%d", s.bearerGeneration)
+	principal := mcpListenerPrincipal{
+		key:          fmt.Sprintf("mcp-http-listener-principal:%x", mac.Sum(nil)),
+		billingKey:   s.listenerBearerBillingKey(),
+		exclusiveSet: "listener-bearer-v1",
+		// One listener bearer identifies a configured agent trust domain, not
+		// an individual human/service principal. Every holder intentionally
+		// shares the same state and DoW bucket.
+		trust: config.DoWTrustAgent,
+	}
+	s.activeBearerPrincipal = principal.key
+	return principal, nil
+}
+
+func (s *mcpListenerClientStates) ensurePrincipalSecret() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.principalSecretErr == nil {
+		return nil
+	}
+	_, s.principalSecretErr = rand.Read(s.principalSecret[:])
+	return s.principalSecretErr
+}
+
+func (s *mcpListenerClientStates) listenerBearerBillingKey() string {
+	mac := hmac.New(sha256.New, s.principalSecret[:])
+	_, _ = mac.Write([]byte("listener-bearer-billing-v1"))
+	return fmt.Sprintf("mcp-http-listener-billing:%x", mac.Sum(nil))
 }
 
 func (s *mcpListenerClientStates) stateForToken(token string) (*mcpListenerClientState, bool) {
@@ -127,6 +235,79 @@ func (s *mcpListenerClientStates) stateForToken(token string) (*mcpListenerClien
 	return state, true
 }
 
+// stateForPrincipal returns the durable state for a verified caller. Unlike
+// the legacy setup-token path, the first authenticated request creates state:
+// current MCP transports no longer have an initialize exchange on which a
+// proxy-private token can depend.
+func (s *mcpListenerClientStates) stateForPrincipal(principal mcpListenerPrincipal) (*mcpListenerClientState, bool) {
+	if principal.key == "" {
+		return nil, false
+	}
+	s.mu.Lock()
+	if principal.exclusiveSet == "listener-bearer-v1" && principal.key != s.activeBearerPrincipal {
+		// Authentication and state admission are separate phases. A request
+		// authenticated just before a credential rotation must not race the new
+		// request and restore the retired credential epoch afterward.
+		s.mu.Unlock()
+		return nil, false
+	}
+	var removed []*mcpListenerClientState
+	if principal.exclusiveSet != "" {
+		if oldKey := s.admittedBearerPrincipal; oldKey != "" && oldKey != principal.key {
+			if state := s.clients[oldKey]; state != nil {
+				delete(s.clients, oldKey)
+				removed = append(removed, state)
+			}
+			s.admittedBearerPrincipal = ""
+		}
+	}
+	if state := s.clients[principal.key]; state != nil && !state.revoked.Load() {
+		if state.principal && state.inFlight.Load() == 0 && !state.lastActive.After(s.now().Add(-listenerPrincipalIdleTTL)) {
+			delete(s.clients, principal.key)
+			if s.admittedBearerPrincipal == principal.key {
+				s.admittedBearerPrincipal = ""
+			}
+			removed = append(removed, state)
+			s.mu.Unlock()
+			s.revokeRemoved(removed)
+			return s.stateForPrincipal(principal)
+		} else {
+			s.touchLocked(state)
+			s.mu.Unlock()
+			s.revokeRemoved(removed)
+			return state, true
+		}
+	}
+	if len(s.clients) >= maxMCPListenerClients {
+		removed = append(removed, s.purgeExpiredPrincipalsLocked()...)
+		removed = append(removed, s.purgeExpiredLegacyLocked()...)
+	}
+	if len(s.clients) >= maxMCPListenerClients {
+		if legacy := s.removeOldestLegacyLocked(); legacy != nil {
+			removed = append(removed, legacy)
+		}
+	}
+	if len(s.clients) >= maxMCPListenerClients {
+		s.mu.Unlock()
+		s.revokeRemoved(removed)
+		return nil, false
+	}
+	state := newMCPListenerClientState("", principal.key)
+	state.principalSet = principal.exclusiveSet
+	state.principal = true
+	if s.store != nil {
+		state.recorder = s.store.GetOrCreate(state.key)
+	}
+	s.touchLocked(state)
+	s.clients[state.key] = state
+	if principal.exclusiveSet == "listener-bearer-v1" {
+		s.admittedBearerPrincipal = principal.key
+	}
+	s.mu.Unlock()
+	s.revokeRemoved(removed)
+	return state, true
+}
+
 // stateForLegacySession preserves the pre-token listener behavior for narrow
 // transport compatibility tests. Production listeners keep
 // listenerStateTokenRequired unset and therefore never call this path.
@@ -136,13 +317,24 @@ func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpLi
 	}
 	key := mcpListenerStateKey(sessionID)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if state := s.clients[key]; state != nil && !state.revoked.Load() {
 		s.touchLocked(state)
+		s.mu.Unlock()
 		return state
 	}
+	var removed []*mcpListenerClientState
 	if len(s.clients) >= maxMCPListenerClients {
-		s.evictOldestLocked()
+		removed = append(removed, s.purgeExpiredLegacyLocked()...)
+		if len(s.clients) >= maxMCPListenerClients {
+			if oldest := s.removeOldestLegacyLocked(); oldest != nil {
+				removed = append(removed, oldest)
+			}
+		}
+		if len(s.clients) >= maxMCPListenerClients {
+			s.mu.Unlock()
+			s.revokeRemoved(removed)
+			return newMCPListenerTransientState()
+		}
 	}
 	state := newMCPListenerClientState("", key)
 	if s.store != nil {
@@ -150,6 +342,8 @@ func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpLi
 	}
 	s.touchLocked(state)
 	s.clients[key] = state
+	s.mu.Unlock()
+	s.revokeRemoved(removed)
 	return state
 }
 
@@ -212,10 +406,12 @@ func (state *mcpListenerClientState) requestContext(parent context.Context) (con
 		return parent, func() {}
 	}
 	ctx, cancel := context.WithCancel(parent)
+	state.inFlight.Add(1)
 	stop := context.AfterFunc(state.done, cancel)
 	return ctx, func() {
 		stop()
 		cancel()
+		state.inFlight.Add(-1)
 	}
 }
 
@@ -268,18 +464,31 @@ func (s *mcpListenerClientStates) admitSetup(state *mcpListenerClientState) bool
 		return false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.clients[state.key] != nil {
+		s.mu.Unlock()
 		return false
 	}
+	var removed []*mcpListenerClientState
 	if len(s.clients) >= maxMCPListenerClients {
-		s.evictOldestLocked()
+		removed = append(removed, s.purgeExpiredLegacyLocked()...)
+		if len(s.clients) >= maxMCPListenerClients {
+			if oldest := s.removeOldestLegacyLocked(); oldest != nil {
+				removed = append(removed, oldest)
+			}
+		}
+		if len(s.clients) >= maxMCPListenerClients {
+			s.mu.Unlock()
+			s.revokeRemoved(removed)
+			return false
+		}
 	}
 	if s.store != nil {
 		state.recorder = s.store.GetOrCreate(state.key)
 	}
 	s.touchLocked(state)
 	s.clients[state.key] = state
+	s.mu.Unlock()
+	s.revokeRemoved(removed)
 	return true
 }
 
@@ -299,14 +508,15 @@ func (s *mcpListenerClientStates) forgetLegacySession(sessionID string) {
 
 func (s *mcpListenerClientStates) forgetKey(key string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if state := s.clients[key]; state != nil {
-		state.revoke()
+	state := s.clients[key]
+	if state != nil {
 		delete(s.clients, key)
-		if s.store != nil {
-			s.store.Delete(key)
+		if s.admittedBearerPrincipal == key {
+			s.admittedBearerPrincipal = ""
 		}
 	}
+	s.mu.Unlock()
+	s.revokeRemoved([]*mcpListenerClientState{state})
 }
 
 func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg *tools.ToolScanConfig) *tools.ToolScanConfig {
@@ -348,12 +558,45 @@ func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *to
 func (s *mcpListenerClientStates) touchLocked(state *mcpListenerClientState) {
 	s.clock++
 	state.lastAccessed = s.clock
+	state.lastActive = s.now()
 }
 
-func (s *mcpListenerClientStates) evictOldestLocked() {
+func (s *mcpListenerClientStates) purgeExpiredPrincipalsLocked() []*mcpListenerClientState {
+	cutoff := s.now().Add(-listenerPrincipalIdleTTL)
+	var removed []*mcpListenerClientState
+	for key, state := range s.clients {
+		if !state.principal || state.inFlight.Load() != 0 || state.lastActive.After(cutoff) {
+			continue
+		}
+		delete(s.clients, key)
+		if s.admittedBearerPrincipal == key {
+			s.admittedBearerPrincipal = ""
+		}
+		removed = append(removed, state)
+	}
+	return removed
+}
+
+func (s *mcpListenerClientStates) purgeExpiredLegacyLocked() []*mcpListenerClientState {
+	cutoff := s.now().Add(-listenerLegacyIdleTTL)
+	var removed []*mcpListenerClientState
+	for key, state := range s.clients {
+		if state.principal || state.inFlight.Load() != 0 || state.lastActive.After(cutoff) {
+			continue
+		}
+		delete(s.clients, key)
+		removed = append(removed, state)
+	}
+	return removed
+}
+
+func (s *mcpListenerClientStates) removeOldestLegacyLocked() *mcpListenerClientState {
 	var oldestKey string
 	var oldest uint64
 	for key, state := range s.clients {
+		if state.principal {
+			continue
+		}
 		if oldestKey == "" || state.lastAccessed < oldest {
 			oldestKey = key
 			oldest = state.lastAccessed
@@ -361,10 +604,22 @@ func (s *mcpListenerClientStates) evictOldestLocked() {
 	}
 	if oldestKey != "" {
 		state := s.clients[oldestKey]
-		state.revoke()
 		delete(s.clients, oldestKey)
+		return state
+	}
+	return nil
+}
+
+func (s *mcpListenerClientStates) revokeRemoved(states []*mcpListenerClientState) {
+	contentionSignal := s.revokeContentionSignal
+	for _, state := range states {
+		if state == nil {
+			continue
+		}
+		state.revokeWithContentionSignal(contentionSignal)
+		contentionSignal = nil
 		if s.store != nil {
-			s.store.Delete(oldestKey)
+			s.store.Delete(state.key)
 		}
 	}
 }

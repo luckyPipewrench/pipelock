@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -29,6 +30,7 @@ var defaultMCPListenerSensitiveHeaders = []string{
 type mcpListenerHeaderDLPResult struct {
 	header  string
 	matches []scanner.TextDLPMatch
+	reason  blockreason.Reason
 }
 
 func scanMCPListenerHeadersForDLP(
@@ -61,6 +63,21 @@ func scanMCPListenerHeadersForDLP(
 			if !result.Clean {
 				return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
 			}
+			if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
+				decoded, ok := decodeMCPHeaderValue(value)
+				if !ok {
+					return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.BadRequest}
+				}
+				if response := sc.ScanResponse(ctx, decoded); !response.Clean {
+					return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.PromptInjection}
+				}
+				if decoded != value {
+					result = sc.ScanTextForDLP(ctx, decoded)
+					if !result.Clean {
+						return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+					}
+				}
+			}
 			if mcpListenerShouldScanHeaderNames(cfg) {
 				result = sc.ScanTextForDLP(ctx, name+value)
 				if !result.Clean {
@@ -81,15 +98,15 @@ func scanMCPListenerHeadersForDLP(
 }
 
 func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanning) map[string][]string {
+	var out map[string][]string
 	if cfg == nil || !cfg.Enabled || !cfg.ScanHeaders {
-		return mcpListenerExplicitHeaders(headers, []string{listenerAuthorization, listenerLastEventID})
-	}
-	if cfg.HeaderMode == config.HeaderModeAll {
+		out = mcpListenerExplicitHeaders(headers, []string{listenerAuthorization, listenerLastEventID})
+	} else if cfg.HeaderMode == config.HeaderModeAll {
 		ignored := make(map[string]struct{}, len(cfg.IgnoreHeaders))
 		for _, name := range cfg.IgnoreHeaders {
 			ignored[http.CanonicalHeaderKey(name)] = struct{}{}
 		}
-		out := make(map[string][]string)
+		out = make(map[string][]string)
 		for name, values := range headers {
 			canonical := http.CanonicalHeaderKey(name)
 			if _, skip := ignored[canonical]; skip {
@@ -103,17 +120,25 @@ func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanni
 		if values := headers.Values(listenerLastEventID); len(values) > 0 {
 			out[http.CanonicalHeaderKey(listenerLastEventID)] = values
 		}
-		return out
-	}
-
-	sensitiveHeaders := cfg.SensitiveHeaders
-	if len(sensitiveHeaders) == 0 {
-		sensitiveHeaders = defaultMCPListenerSensitiveHeaders
 	} else {
-		sensitiveHeaders = append([]string{}, sensitiveHeaders...)
-		sensitiveHeaders = append(sensitiveHeaders, listenerLastEventID)
+		sensitiveHeaders := cfg.SensitiveHeaders
+		if len(sensitiveHeaders) == 0 {
+			sensitiveHeaders = defaultMCPListenerSensitiveHeaders
+		} else {
+			sensitiveHeaders = append([]string{}, sensitiveHeaders...)
+			sensitiveHeaders = append(sensitiveHeaders, listenerLastEventID)
+		}
+		out = mcpListenerExplicitHeaders(headers, sensitiveHeaders)
 	}
-	return mcpListenerExplicitHeaders(headers, sensitiveHeaders)
+	// Mcp-Param values can affect routing and authorization at the upstream.
+	// They are never exemptable, even when generic header scanning is disabled
+	// or an ignore list is configured.
+	for name, values := range headers {
+		if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
+			out[http.CanonicalHeaderKey(name)] = values
+		}
+	}
+	return out
 }
 
 func mcpListenerExplicitHeaders(headers http.Header, names []string) map[string][]string {

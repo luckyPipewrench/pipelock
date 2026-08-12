@@ -79,6 +79,7 @@ type ToolScanResult struct {
 	Observations []ToolScanMatch `json:"observations,omitempty"`
 	RPCID        json.RawMessage `json:"-"` // parsed ID for block responses (avoids re-parse)
 	ToolNames    []string        `json:"-"` // tool names from tools/list (for session binding)
+	ToolDefs     []ToolDef       `json:"-"` // accepted definitions for transport header binding
 }
 
 // ExtraPoisonPattern is a tool-poison pattern from a community rule bundle.
@@ -123,24 +124,26 @@ type ToolScanConfig struct {
 // ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection
 // and session binding (known tool inventory). Safe for concurrent use.
 type ToolBaseline struct {
-	mu          sync.Mutex
-	hashes      map[string]string   // tool name → SHA256(description + inputSchema)
-	structural  map[string]string   // tool name → digest of everything but the description
-	descs       map[string]string   // tool name → last known description text
-	params      map[string][]string // tool name → last known parameter names (sorted)
-	knownTools  map[string]bool     // session binding: tool name set from first tools/list
-	knownA2A    map[string]bool     // session binding: A2A method identity set from trusted inventory
-	hasBaseline bool                // true after first SetKnownTools call
-	hasA2A      bool                // true after first SetKnownA2AMethods call
+	mu             sync.Mutex
+	hashes         map[string]string                   // tool name → SHA256(description + inputSchema)
+	structural     map[string]string                   // tool name → digest of everything but the description
+	descs          map[string]string                   // tool name → last known description text
+	params         map[string][]string                 // tool name → last known parameter names (sorted)
+	knownTools     map[string]bool                     // session binding: tool name set from first tools/list
+	knownA2A       map[string]bool                     // session binding: A2A method identity set from trusted inventory
+	headerBindings map[string]map[string]HeaderBinding // tool name -> lower-case Mcp-Param name -> schema binding
+	hasBaseline    bool                                // true after first SetKnownTools call
+	hasA2A         bool                                // true after first SetKnownA2AMethods call
 }
 
 // NewToolBaseline creates a new empty tool baseline.
 func NewToolBaseline() *ToolBaseline {
 	return &ToolBaseline{
-		hashes:     make(map[string]string),
-		structural: make(map[string]string),
-		descs:      make(map[string]string),
-		params:     make(map[string][]string),
+		hashes:         make(map[string]string),
+		structural:     make(map[string]string),
+		descs:          make(map[string]string),
+		params:         make(map[string][]string),
+		headerBindings: make(map[string]map[string]HeaderBinding),
 	}
 }
 
@@ -1259,10 +1262,10 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 	matches, observations := scanToolDefs(tools, sc, cfg)
 
 	if len(matches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names, Observations: observations}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, Observations: observations, RPCID: rpc.ID, ToolNames: names}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, Observations: observations, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
 }
 
 // scanToolsBatch scans a JSON-RPC 2.0 batch response for tool poisoning.
@@ -1276,6 +1279,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	var allMatches []ToolScanMatch
 	var allObservations []ToolScanMatch
 	var allNames []string
+	var allDefs []ToolDef
 	var firstID json.RawMessage
 	isToolsList := false
 
@@ -1289,6 +1293,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 			allMatches = append(allMatches, r.Matches...)
 			allObservations = append(allObservations, r.Observations...)
 			allNames = append(allNames, r.ToolNames...)
+			allDefs = append(allDefs, r.ToolDefs...)
 		}
 	}
 
@@ -1297,10 +1302,10 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	}
 
 	if len(allMatches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID, ToolNames: allNames, Observations: allObservations}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs, Observations: allObservations}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, Observations: allObservations, RPCID: firstID, ToolNames: allNames}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, Observations: allObservations, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs}
 }
 
 // scanToolDefs scans a slice of tool definitions for injection, poisoning, and drift.

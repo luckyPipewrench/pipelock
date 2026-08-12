@@ -60,6 +60,26 @@ type MCPFrame struct {
 	// check as a "not a tools/call" gate without re-parsing.
 	ToolCallName string
 
+	// RoutingName is the entity selected by methods whose 2026-07-28 HTTP
+	// routing contract requires Mcp-Name. It is the tool name, resource URI, or
+	// prompt name, depending on Method.
+	RoutingName string
+	// RoutingNamePresent distinguishes an absent body field from an explicitly
+	// present empty string. RoutingNameErr records a non-string or malformed
+	// params shape without turning otherwise valid legacy traffic into a global
+	// parse failure. HTTP routing-header validation uses both fields to refuse a
+	// header that has no trustworthy body value to mirror.
+	RoutingNamePresent bool
+	RoutingNameErr     error
+
+	// ProtocolVersion and ClientCapabilitiesPresent come from the standard
+	// request metadata added by protocol revision 2026-07-28. ClientInfo is
+	// deliberately not retained because it is self-declared and is never an
+	// authentication input.
+	ProtocolVersion           string
+	ProtocolVersionPresent    bool
+	ClientCapabilitiesPresent bool
+
 	// Args is the raw params.arguments JSON for tools/call messages.
 	// nil for non-tools/call methods and when arguments are absent.
 	// Kept as json.RawMessage so callers that need to re-emit the
@@ -173,19 +193,62 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	}
 	if frame.Method == methodToolsCall {
 		var params struct {
-			Name      string          `json:"name"`
+			Name      json.RawMessage `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
 		}
 		if err := json.Unmarshal(decoded.Params, &params); err != nil {
+			frame.RoutingNameErr = err
 			return frame
 		}
-		frame.ToolCallName = params.Name
+		if len(params.Name) > 0 {
+			frame.RoutingNamePresent = true
+			if err := json.Unmarshal(params.Name, &frame.RoutingName); err != nil {
+				frame.RoutingNameErr = err
+				return frame
+			}
+			frame.ToolCallName = frame.RoutingName
+		}
 		// Only retain a non-null, non-empty Arguments slice. A
 		// json.RawMessage of "null" is non-nil in Go but semantically
 		// absent; normalising to nil here lets callers rely on a plain
 		// len() == 0 check without the jsonrpc.Null-literal dance.
 		if len(params.Arguments) > 0 && string(params.Arguments) != jsonrpc.Null {
 			frame.Args = params.Arguments
+		}
+	}
+	if frame.Method == "resources/read" {
+		var params struct {
+			URI json.RawMessage `json:"uri"`
+		}
+		if err := json.Unmarshal(decoded.Params, &params); err != nil {
+			frame.RoutingNameErr = err
+		} else if len(params.URI) > 0 {
+			frame.RoutingNamePresent = true
+			frame.RoutingNameErr = json.Unmarshal(params.URI, &frame.RoutingName)
+		}
+	}
+	if frame.Method == "prompts/get" {
+		var params struct {
+			Name json.RawMessage `json:"name"`
+		}
+		if err := json.Unmarshal(decoded.Params, &params); err != nil {
+			frame.RoutingNameErr = err
+		} else if len(params.Name) > 0 {
+			frame.RoutingNamePresent = true
+			frame.RoutingNameErr = json.Unmarshal(params.Name, &frame.RoutingName)
+		}
+	}
+	var paramsMeta struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	if json.Unmarshal(decoded.Params, &paramsMeta) == nil && paramsMeta.Meta != nil {
+		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/protocolVersion"]; ok {
+			frame.ProtocolVersionPresent = true
+			_ = json.Unmarshal(raw, &frame.ProtocolVersion)
+		}
+		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/clientCapabilities"]; ok {
+			var capabilities map[string]json.RawMessage
+			frame.ClientCapabilitiesPresent = json.Unmarshal(raw, &capabilities) == nil && capabilities != nil
 		}
 	}
 	return frame

@@ -45,6 +45,19 @@ type DoWAttribution struct {
 	Trust      string
 }
 
+// ListenerPrincipal identifies a caller only after an authentication verifier
+// has accepted it. Provider separates trust domains; Epoch invalidates prior
+// state after verifier-policy or subject revocation changes.
+type ListenerPrincipal struct {
+	Provider string
+	Subject  string
+	Epoch    uint64
+}
+
+// ListenerPrincipalResolver authenticates an HTTP listener request and returns
+// its stable security identity. It must not trust self-declared MCP metadata.
+type ListenerPrincipalResolver func(*http.Request) (ListenerPrincipal, error)
+
 const (
 	transportMCPStdio = "mcp_stdio"
 	transportMCPHTTP  = "mcp_http"
@@ -85,6 +98,11 @@ type MCPProxyOpts struct {
 	// File-backed CLI modes use this so token replacement revokes old clients
 	// without restarting the listener. Errors fail the request closed.
 	ListenerBearerTokenFn func() (string, error)
+	// ListenerPrincipalResolver returns a stable identity only after an external
+	// verifier has authenticated the request. It may subdivide holders of the
+	// listener bearer credential and is the integration seam for OAuth or mTLS.
+	// Client-declared MCP metadata must never be returned as a principal.
+	ListenerPrincipalResolver ListenerPrincipalResolver
 	// ListenerAllowedOrigins is an exact allowlist for browser Origin headers.
 	// An empty list rejects every request carrying Origin.
 	ListenerAllowedOrigins []string

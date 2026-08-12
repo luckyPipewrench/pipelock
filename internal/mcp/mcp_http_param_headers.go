@@ -1,0 +1,131 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+package mcp
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"math/big"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+)
+
+const mcpParamHeaderPrefix = "mcp-param-"
+
+// validateMCPParamHeaders verifies every recognized 2026-07-28 mirrored tool
+// parameter against the exact property path in the accepted tools/list schema.
+// Unknown headers remain intermediary data and are forwarded after scanning, as
+// the protocol requires. A known schema is strict in both directions: a body
+// value requires its header, and a recognized header requires its body value.
+func validateMCPParamHeaders(headers map[string][]string, frame MCPFrame, baseline *tools.ToolBaseline) bool {
+	if frame.Method != methodToolsCall || baseline == nil || frame.RoutingName == "" {
+		return true
+	}
+	bindings, known := baseline.HeaderBindings(frame.RoutingName)
+	if !known {
+		return true
+	}
+	paramHeaders := make(map[string][]string)
+	for name, values := range headers {
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, mcpParamHeaderPrefix) {
+			paramHeaders[strings.TrimPrefix(lower, mcpParamHeaderPrefix)] = values
+		}
+	}
+	for lowerName, binding := range bindings {
+		raw, present, ok := argumentAtPath(frame.Args, binding.Path)
+		if !ok {
+			return false
+		}
+		values := paramHeaders[lowerName]
+		if !present || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			if len(values) != 0 {
+				return false
+			}
+			continue
+		}
+		if len(values) != 1 {
+			return false
+		}
+		decoded, ok := decodeMCPHeaderValue(values[0])
+		if !ok || !mcpParamValueMatches(decoded, raw, binding.Type) {
+			return false
+		}
+	}
+	return true
+}
+
+func argumentAtPath(arguments json.RawMessage, path []string) (json.RawMessage, bool, bool) {
+	if len(arguments) == 0 {
+		return nil, false, true
+	}
+	current := arguments
+	for _, part := range path {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(current, &object); err != nil {
+			return nil, false, false
+		}
+		next, exists := object[part]
+		if !exists {
+			return nil, false, true
+		}
+		current = next
+	}
+	return current, true, true
+}
+
+func decodeMCPHeaderValue(value string) (string, bool) {
+	const prefix = "=?base64?"
+	if strings.HasPrefix(value, prefix) || strings.HasSuffix(value, "?=") {
+		if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, "?=") {
+			return "", false
+		}
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(value, prefix), "?="))
+		if err != nil || !utf8.Valid(raw) {
+			return "", false
+		}
+		return string(raw), true
+	}
+	if value == "" || strings.TrimSpace(value) != value {
+		return "", false
+	}
+	for i := range len(value) {
+		if (value[i] < 0x20 || value[i] > 0x7e) && value[i] != '\t' {
+			return "", false
+		}
+	}
+	return value, true
+}
+
+func mcpParamValueMatches(header string, raw json.RawMessage, valueType string) bool {
+	switch valueType {
+	case "string":
+		var body string
+		return json.Unmarshal(raw, &body) == nil && header == body
+	case "boolean":
+		var body bool
+		return json.Unmarshal(raw, &body) == nil && header == strconv.FormatBool(body)
+	case "integer":
+		bodyNumber := new(big.Rat)
+		if _, ok := bodyNumber.SetString(string(bytes.TrimSpace(raw))); !ok || !bodyNumber.IsInt() {
+			return false
+		}
+		body := bodyNumber.Num()
+		limit := big.NewInt(9007199254740991)
+		if body.Cmp(limit) > 0 || body.Cmp(new(big.Int).Neg(limit)) < 0 {
+			return false
+		}
+		headerNumber := new(big.Rat)
+		if _, ok := headerNumber.SetString(header); !ok || !headerNumber.IsInt() {
+			return false
+		}
+		return bodyNumber.Cmp(headerNumber) == 0
+	default:
+		return false
+	}
+}

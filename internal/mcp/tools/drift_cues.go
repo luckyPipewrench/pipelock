@@ -4,6 +4,7 @@
 package tools
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,19 +27,41 @@ import (
 func structuralDigest(t ToolDef) string {
 	source := t.raw
 	if len(source) > 0 {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(source, &fields); err == nil {
-			delete(fields, "description")
-			// json.Marshal sorts map keys, so this is canonical.
-			if encoded, err := json.Marshal(fields); err == nil {
-				source = encoded
-			}
+		if canonical, err := canonicalJSONWithout(source, "description"); err == nil {
+			source = canonical
 		}
 	} else {
 		source = append([]byte(t.Name), t.InputSchema...)
 	}
 	sum := sha256.Sum256(source)
 	return hex.EncodeToString(sum[:])
+}
+
+// canonicalJSONWithout re-encodes a JSON object with every nested object key
+// sorted, dropping one top-level field.
+//
+// Decoding to json.RawMessage and re-marshalling is NOT enough: json.Marshal
+// sorts the keys of the map it is handed, but a RawMessage value is written
+// back byte for byte, so nested key order survives. An upstream that builds its
+// schema from a Go map emits a different key order on every response, which
+// would report a structural change on every tools/list and block the tool
+// permanently. Decoding all the way to interface{} makes every level a
+// map[string]interface{} that json.Marshal sorts.
+//
+// UseNumber keeps numeric literals as written, so a float64 round trip cannot
+// turn 1 into 1e+00 or lose precision on a large integer and manufacture a
+// difference that way.
+func canonicalJSONWithout(raw []byte, dropField string) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	if fields, ok := decoded.(map[string]any); ok {
+		delete(fields, dropField)
+	}
+	return json.Marshal(decoded)
 }
 
 // Drift cues answer "what did this change INTRODUCE", not "did it change".

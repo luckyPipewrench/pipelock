@@ -4,8 +4,10 @@
 package tools
 
 import (
+	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -224,54 +226,175 @@ func TestDriftCues_EmptyDescriptionHasNoCues(t *testing.T) {
 	}
 }
 
-func TestStoreHash_DoesNotCreateAnEntryForAnUnknownTool(t *testing.T) {
+// EvaluateDefinition is the only path that promotes definition state, so its
+// contract is what these pin. A first sighting must not be reported as drift,
+// and a repeat of the same definition must stay silent.
+func TestEvaluateDefinition_FirstSightingAndUnchangedAreSilent(t *testing.T) {
 	tb := NewToolBaseline()
+	never := func(string, bool) []string { return nil }
 
-	// StoreHash is the accepted-drift promoter. It must never establish a
-	// first baseline, or a tool could be baselined without ever being scanned.
-	tb.StoreHash("never-seen", "hash1")
-	if _, _, hasStructural := tb.PreviousDefinition("never-seen"); hasStructural {
-		t.Error("StoreHash created structural state for an unknown tool")
-	}
-	if drifted, _, _ := tb.CheckAndUpdatePromote("never-seen", "hash2", true, true); drifted {
-		t.Error("StoreHash established a baseline for an unknown tool")
+	first := tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
+	if first.Drifted {
+		t.Errorf("first sighting reported drift: %+v", first)
 	}
 
-	// For a known tool it does promote.
-	tb.CheckAndUpdatePromote("known", "hash1", true, true)
-	tb.StoreHash("known", "hash2")
-	if drifted, _, _ := tb.CheckAndUpdatePromote("known", "hash2", true, false); drifted {
-		t.Error("StoreHash did not promote the hash for a known tool")
+	same := tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
+	if same.Drifted {
+		t.Errorf("unchanged definition reported drift: %+v", same)
 	}
 }
 
-func TestPreviousDefinition_ReportsMissingStructuralState(t *testing.T) {
+// A first sighting is not recorded when the caller declines to promote it,
+// which is how block mode refuses to baseline a definition that already
+// carries a finding.
+func TestEvaluateDefinition_UnpromotedFirstSightingIsNotBaselined(t *testing.T) {
 	tb := NewToolBaseline()
-	if _, _, hasStructural := tb.PreviousDefinition("absent"); hasStructural {
-		t.Error("absent tool reported structural state")
+	never := func(string, bool) []string { return nil }
+
+	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", false, true, never)
+
+	// Still unknown, so a different definition is another first sighting
+	// rather than drift against a baseline that was never approved.
+	next := tb.EvaluateDefinition("echo", "hash2", "Echo text 2", nil, "struct2", false, true, never)
+	if next.Drifted {
+		t.Errorf("an unpromoted first sighting became a baseline: %+v", next)
+	}
+}
+
+// An accepted change is promoted even when the configured action holds blocked
+// definitions in place, or a legitimate vendor update re-reports forever.
+func TestEvaluateDefinition_AcceptedChangePromotesUnderBlockAction(t *testing.T) {
+	tb := NewToolBaseline()
+	never := func(string, bool) []string { return nil }
+
+	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, false, never)
+	accepted := tb.EvaluateDefinition("echo", "hash2", "Echo text, verbatim", nil, "struct1", true, false, never)
+	if !accepted.Accepted() {
+		t.Fatalf("change with no cues was not accepted: %+v", accepted)
 	}
 
-	tb.StoreStructural("present", "digest1")
-	desc, structural, hasStructural := tb.PreviousDefinition("present")
-	if !hasStructural || structural != "digest1" {
-		t.Errorf("PreviousDefinition() structural = %q/%v, want digest1/true", structural, hasStructural)
+	repeat := tb.EvaluateDefinition("echo", "hash2", "Echo text, verbatim", nil, "struct1", true, false, never)
+	if repeat.Drifted {
+		t.Errorf("accepted definition did not become the baseline: %+v", repeat)
 	}
-	if desc != "" {
-		t.Errorf("PreviousDefinition() desc = %q, want empty", desc)
+}
+
+// A blocked change must NOT be promoted under block action, or the rug pull
+// becomes the approved definition on its second delivery.
+func TestEvaluateDefinition_BlockedChangeDoesNotPromoteUnderBlockAction(t *testing.T) {
+	tb := NewToolBaseline()
+	always := func(string, bool) []string { return []string{DriftCueEgressURL} }
+	never := func(string, bool) []string { return nil }
+
+	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, false, never)
+
+	first := tb.EvaluateDefinition("echo", "hash2", "Echo text, poisoned", nil, "struct1", true, false, always)
+	if !first.Drifted || len(first.Cues) == 0 {
+		t.Fatalf("cue-bearing change was not blocked: %+v", first)
 	}
 
-	tb.StoreDesc("present", "Some description")
-	if desc, _, _ := tb.PreviousDefinition("present"); desc != "Some description" {
-		t.Errorf("PreviousDefinition() desc = %q", desc)
+	again := tb.EvaluateDefinition("echo", "hash2", "Echo text, poisoned", nil, "struct1", true, false, always)
+	if !again.Drifted || again.PreviousHash != "hash1" {
+		t.Fatalf("blocked change was promoted: %+v", again)
+	}
+}
+
+// classify sees the state the decision is actually made against.
+func TestEvaluateDefinition_ClassifySeesPreviousDescriptionAndStructuralMove(t *testing.T) {
+	tb := NewToolBaseline()
+	never := func(string, bool) []string { return nil }
+	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
+
+	var gotDesc string
+	var gotStructural bool
+	capture := func(prevDesc string, structuralChanged bool) []string {
+		gotDesc, gotStructural = prevDesc, structuralChanged
+		return nil
+	}
+
+	tb.EvaluateDefinition("echo", "hash2", "Echo text, more", nil, "struct2", true, true, capture)
+	if gotDesc != "Echo text" {
+		t.Errorf("classify saw prevDesc %q, want the approved description", gotDesc)
+	}
+	if !gotStructural {
+		t.Error("classify was not told the structural digest moved")
+	}
+}
+
+// The whole reason EvaluateDefinition exists: concurrent listener clients share
+// one baseline, and a hash must never end up paired with another response's
+// description. Run under -race.
+func TestEvaluateDefinition_ConcurrentUpdatesKeepDefinitionStateConsistent(t *testing.T) {
+	tb := NewToolBaseline()
+	never := func(string, bool) []string { return nil }
+	tb.EvaluateDefinition("echo", "hash0", "desc0", []string{"p0"}, "struct0", true, true, never)
+
+	const workers = 8
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			id := fmt.Sprintf("%d", n)
+			for range 50 {
+				tb.EvaluateDefinition("echo", "hash"+id, "desc"+id, []string{"p" + id}, "struct"+id, true, true, never)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Whichever writer landed last, its hash, description, parameters, and
+	// structural digest must all come from that same definition.
+	var seenPrevDesc string
+	var seenStructuralChanged bool
+	tb.EvaluateDefinition("echo", "sentinel", "sentinel-desc", []string{"sentinel"}, "sentinel-struct", true, true,
+		func(prevDesc string, structuralChanged bool) []string {
+			seenPrevDesc, seenStructuralChanged = prevDesc, structuralChanged
+			return nil
+		})
+
+	if !strings.HasPrefix(seenPrevDesc, "desc") {
+		t.Fatalf("previous description was %q, want one written by a worker", seenPrevDesc)
+	}
+	if !seenStructuralChanged {
+		t.Error("sentinel structural digest should differ from every worker digest")
+	}
+	// The sentinel was promoted last, so every field must now come from the
+	// sentinel definition. A hash paired with a worker's description or
+	// structural digest is the torn state this method exists to prevent.
+	tb.mu.Lock()
+	desc, params := tb.descs["echo"], tb.params["echo"]
+	structural, hash := tb.structural["echo"], tb.hashes["echo"]
+	tb.mu.Unlock()
+
+	if hash != "sentinel" || desc != "sentinel-desc" || structural != "sentinel-struct" {
+		t.Errorf("torn definition state: hash=%q desc=%q structural=%q, want all sentinel", hash, desc, structural)
+	}
+	if len(params) != 1 || params[0] != "sentinel" {
+		t.Errorf("torn parameter state: params=%v, want [sentinel]", params)
 	}
 }
 
 func TestResetDriftState_ClearsStructuralState(t *testing.T) {
 	tb := NewToolBaseline()
-	tb.StoreStructural("echo", "digest1")
+	never := func(string, bool) []string { return nil }
+	tb.EvaluateDefinition("echo", "hash1", "Echo text", nil, "struct1", true, true, never)
 	tb.ResetDriftState()
-	if _, _, hasStructural := tb.PreviousDefinition("echo"); hasStructural {
-		t.Error("ResetDriftState left structural state behind, so a re-baseline would still block")
+
+	// After a reset the next definition is a first sighting again. Structural
+	// state left behind would make it read as an uncharacterizable change and
+	// block the operator's own re-baseline.
+	var structuralChanged bool
+	after := tb.EvaluateDefinition("echo", "hash2", "Echo text", nil, "struct2", true, true,
+		func(_ string, changed bool) []string {
+			structuralChanged = changed
+			return nil
+		})
+	if after.Drifted {
+		t.Error("ResetDriftState left the hash behind, so the re-baseline reported drift")
+	}
+	if structuralChanged {
+		t.Error("classify ran after a reset, so structural state survived the reset")
 	}
 }
 

@@ -234,54 +234,104 @@ func (tb *ToolBaseline) StoreParams(name string, paramNames []string) {
 	tb.params[name] = cp
 }
 
-// PreviousDefinition returns the last stored description and structural digest
-// for a tool. Callers must read it BEFORE promotion overwrites both.
-//
-// hasStructural is false for a baseline entry recorded before structural
-// digests were tracked. Callers must treat that as "cannot characterize" and
-// not as "nothing changed".
-func (tb *ToolBaseline) PreviousDefinition(name string) (desc, structural string, hasStructural bool) {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-	desc = tb.descs[name]
-	structural, hasStructural = tb.structural[name]
-	return desc, structural, hasStructural
+// DriftEvaluation is the outcome of one atomic compare-and-promote against the
+// baseline.
+type DriftEvaluation struct {
+	// Drifted reports that a stored definition changed.
+	Drifted bool
+	// Cues lists what the change introduced. Empty means the change was
+	// accepted and the new definition is now the baseline.
+	Cues []string
+	// PreviousHash is the hash the baseline held before this evaluation.
+	PreviousHash string
+	// Detail is the human-readable diff, computed from the same locked
+	// snapshot the decision used.
+	Detail string
 }
 
-// StoreStructural saves the digest of everything in a tool definition except
-// its description. Called alongside StoreDesc. Respects maxBaselineTools.
-func (tb *ToolBaseline) StoreStructural(name, digest string) {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-	if _, exists := tb.structural[name]; !exists && len(tb.structural) >= maxBaselineTools {
-		return
-	}
-	tb.structural[name] = digest
-}
+// Accepted reports a change that was evaluated and adopted as the new baseline.
+func (e DriftEvaluation) Accepted() bool { return e.Drifted && len(e.Cues) == 0 }
 
-// StoreHash promotes a definition hash that CheckAndUpdatePromote reported but
-// declined to store. It exists for the accepted-drift path: a change evaluated
-// and found to introduce nothing must become the new baseline, or every later
-// tools/list re-reports the same change forever.
+// EvaluateDefinition compares a tool definition against the baseline and
+// promotes it, under ONE lock acquisition.
 //
-// It does not create an entry for an unknown tool, so it cannot be used to
-// establish a first baseline and cannot grow the map past capacity.
-func (tb *ToolBaseline) StoreHash(name, hash string) {
+// Atomicity is the point. The HTTP reverse listener shares a single baseline
+// across concurrent clients, so reading the previous definition, deciding, and
+// writing the new hash, description, parameters, and structural digest through
+// separate acquisitions lets two responses interleave and pair a new hash with
+// another response's metadata. A later comparison then runs against a
+// definition that never existed, which can both manufacture a finding and hide
+// one.
+//
+// classify receives the previous description and whether anything outside the
+// description moved, and returns the cue classes the change introduced. It runs
+// while the lock is held, so it must be pure and must not call back into this
+// baseline.
+func (tb *ToolBaseline) EvaluateDefinition(
+	name, hash, desc string,
+	params []string,
+	structural string,
+	promoteNew, promoteChanged bool,
+	classify func(prevDesc string, structuralChanged bool) []string,
+) DriftEvaluation {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
-	if _, exists := tb.hashes[name]; !exists {
-		return
+
+	prevHash, exists := tb.hashes[name]
+	if !exists && len(tb.hashes) >= maxBaselineTools {
+		return DriftEvaluation{}
 	}
-	tb.hashes[name] = hash
+
+	promote := func() {
+		tb.hashes[name] = hash
+		tb.descs[name] = desc
+		cp := make([]string, len(params))
+		copy(cp, params)
+		tb.params[name] = cp
+		tb.structural[name] = structural
+	}
+
+	if !exists {
+		if promoteNew {
+			promote()
+		}
+		return DriftEvaluation{}
+	}
+	if prevHash == hash {
+		promote()
+		return DriftEvaluation{}
+	}
+
+	prevDesc := tb.descs[name]
+	prevStructural, hasPrevStructural := tb.structural[name]
+	result := DriftEvaluation{
+		Drifted:      true,
+		PreviousHash: prevHash,
+		Detail:       tb.diffSummaryLocked(name, desc, params),
+		Cues:         classify(prevDesc, !hasPrevStructural || prevStructural != structural),
+	}
+
+	// An accepted change always becomes the new baseline, or it re-reports on
+	// every later tools/list. A blocked change is promoted only when the
+	// configured action does not hold the approved definition in place.
+	if len(result.Cues) == 0 || promoteChanged {
+		promote()
+	}
+	return result
 }
 
 // DiffSummary returns a human-readable summary of what changed between the
 // stored description/params and the new ones. Returns "" if no previous data.
 func (tb *ToolBaseline) DiffSummary(name, newDesc string, newParams []string) string {
 	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.diffSummaryLocked(name, newDesc, newParams)
+}
+
+// diffSummaryLocked is DiffSummary's body. Callers hold tb.mu.
+func (tb *ToolBaseline) diffSummaryLocked(name, newDesc string, newParams []string) string {
 	prevDesc, hasDesc := tb.descs[name]
 	prevParams, hasParams := tb.params[name]
-	tb.mu.Unlock()
 
 	if !hasDesc && !hasParams {
 		return ""
@@ -1323,45 +1373,36 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			hash := hashTool(tool)
 			promoteNew := cfg.Action != "block" || !hasFinding
 			promoteChanged := cfg.Action != "block"
-			prevDesc, prevStructural, hasPrevStructural := driftBaseline.PreviousDefinition(tool.Name)
-			newStructural := structuralDigest(tool)
-			drifted, prevHash, promoted := driftBaseline.CheckAndUpdatePromote(tool.Name, hash, promoteNew, promoteChanged)
+			// Compare and promote atomically. A change is a lowered evidence
+			// bar, not a verdict: block on what it introduced, and accept a
+			// change that only adds descriptive text so a legitimate vendor
+			// update does not re-report forever.
+			eval := driftBaseline.EvaluateDefinition(
+				tool.Name, hash, tool.Description, paramNames, structuralDigest(tool),
+				promoteNew, promoteChanged,
+				func(prevDesc string, structuralChanged bool) []string {
+					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
+				},
+			)
 
-			if drifted {
-				match.PreviousHash = prevHash
+			if eval.Drifted {
+				match.PreviousHash = eval.PreviousHash
 				match.CurrentHash = hash
-				match.DriftDetail = driftBaseline.DiffSummary(tool.Name, tool.Description, paramNames)
+				match.DriftDetail = eval.Detail
 
-				// A change is a lowered evidence bar, not a verdict. Block on
-				// what it introduced; accept a change that only adds
-				// descriptive text, and adopt it as the new baseline so a
-				// legitimate vendor update does not re-report forever.
-				structuralChanged := !hasPrevStructural || prevStructural != newStructural
-				if cues := introducedDriftCues(prevDesc, tool.Description, structuralChanged); len(cues) > 0 {
+				if len(eval.Cues) > 0 {
 					match.DriftDetected = true
-					match.DriftCues = cues
+					match.DriftCues = eval.Cues
 					hasFinding = true
 				} else {
 					observations = append(observations, ToolScanMatch{
 						ToolName:      tool.Name,
 						DriftAccepted: true,
-						PreviousHash:  prevHash,
+						PreviousHash:  eval.PreviousHash,
 						CurrentHash:   hash,
-						DriftDetail:   match.DriftDetail,
+						DriftDetail:   eval.Detail,
 					})
-					if !promoted {
-						driftBaseline.StoreHash(tool.Name, hash)
-						promoted = true
-					}
 				}
-			}
-			if promoted {
-				// Store the actual tool description (not the full scan text which
-				// includes param names) so DiffSummary reports description changes
-				// accurately without false "description grew" when only params change.
-				driftBaseline.StoreDesc(tool.Name, tool.Description)
-				driftBaseline.StoreParams(tool.Name, paramNames)
-				driftBaseline.StoreStructural(tool.Name, newStructural)
 			}
 		}
 

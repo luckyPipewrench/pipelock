@@ -11,6 +11,9 @@ receipt-signing key. Configure its operator-owned location separately:
 ```yaml
 evidence_provenance:
   commitment_keyring_path: /var/lib/pipelock/evidence/commitment-keyring.json
+logging:
+  output: file
+  file: /var/log/pipelock/audit.jsonl
 ```
 
 The configured file is loaded at startup. A missing keyring, a symlink, a
@@ -46,8 +49,7 @@ pipelock commitment-key retire \
   --config /etc/pipelock/pipelock.yaml \
   --key-id ck_0123456789abcdef0123456789abcdef \
   --epoch 1 \
-  --accept-loss \
-  --allow-unaudited
+  --accept-loss
 ```
 
 Backups and restores are validated, atomic, and written with `0600` mode. Both
@@ -75,10 +77,10 @@ telemetry event to stderr.
 
 ## Lifecycle telemetry
 
-This command runs before a Pipelock server and its flight recorder necessarily
-exist, so it deliberately does **not** reuse the flight-recorder directory as
-a telemetry file. Reusing it would make a separate command compete with the
-running recorder for the same evidence chain and writer lock.
+This command opens the configured audit logger directly. It does not require a
+running Pipelock server or flight recorder. It writes the lifecycle event to
+the configured `logging.file`, rather than the flight-recorder directory, so it
+does not compete with receipt evidence chains or their writer lock.
 
 Instead, every command that reaches its lifecycle handler emits exactly one
 newline-delimited JSON `commitment_key_lifecycle` telemetry event to standard error after
@@ -86,25 +88,45 @@ the operation attempt: successful operations report `outcome: "succeeded"`;
 refused or failed operations report `outcome: "denied"` and a reason. Missing
 required lifecycle flags are handled inside that handler so they are recorded
 as denials too. The event contains only the operation, outcome, key ID and
-epoch when known, timestamp, reason, and the explicit loss and unaudited
-break-glass authorizations when applicable. It never contains key material or the private view supplied to
-`test`.
+epoch when known, timestamp, a safe reason code, and the explicit loss
+authorization when applicable. It never contains key material, the private
+view supplied to `test`, or lifecycle file paths.
 
-Standard error is lifecycle telemetry, not a durable or tamper-evident audit
-trail on its own. `retire` therefore fails closed unless
-`--allow-unaudited` explicitly acknowledges the break-glass operation. That
-flag is required even when standard error is redirected to a collector because
-this command cannot verify a collector's persistence or acknowledgement. Run
-lifecycle commands through an owner-managed persistent collector
-(for example, a service-manager journal or a centrally managed audit system)
-and retain records whose `event_type` is `commitment_key_lifecycle`. If that
-collector writes a local file, its owner must create and protect the file with
-`0600` permissions; Pipelock cannot make shell redirection or a collector's
-storage durable from inside this pre-runtime command.
+Standard error remains lifecycle telemetry but is not a retained record on its
+own. Every mutating lifecycle command requires `--config` with
+`logging.output: file` or `logging.output: both`, and the default
+`logging.format: json`. `logging.file` is opened before the operation begins.
+The command writes and fsyncs an `intent` record before it changes a keyring or
+lifecycle artifact, then writes and fsyncs an `outcome` record after the
+attempt. Both records share an `operation_id`; an intent without an outcome
+means an operator must inspect the keyring before retrying. If either durable
+write fails, the command returns an error. A failed intent denies the mutation;
+a failed outcome reports the error after the key operation, with the durable
+intent left for reconciliation. `logging.output: stdout` writes only to a
+stream, including when the stream is a terminal, so it is not a durable
+lifecycle audit sink and cannot authorize a mutation. Read-only `inspect` and
+`test` commands warn and proceed when a durable sink is unavailable.
 
-This is intentionally an explicit caller responsibility until a dedicated
-evidence producer can own a signed audit sink end to end. Do not treat an
-uncollected terminal transcript as lifecycle evidence.
+When Pipelock creates a new audit file on Unix, it also syncs the parent
+directory before a lifecycle mutation can proceed, so the file name as well as
+the record survives a power loss.
+
+The command verifies that the open file still names `logging.file` before and
+after each durable record. A deleted or rotated sink makes the command fail
+instead of silently appending to an unlinked old file. Each record is appended
+and synced as one write. Concurrent lifecycle commands can interleave whole
+records without mixing them into one record; a failed partial append is
+isolated from the next record by a fresh line boundary.
+
+Pipelock opens the configured audit file in append mode and attempts a
+filesystem sync after writing each lifecycle record. A newly created file uses
+`0600` permissions. This is a local, file-backed operational record. It is not
+tamper-evident evidence, a complete history, or rollback detection: anyone who
+can modify the file can truncate, rewrite, delete, replace, or restore an
+older copy without Pipelock detecting it. The lifecycle command does not write
+to the signed receipt chain or anchor these records. Send the file and stderr
+stream to an independently protected audit system when retention or
+tamper-evidence matters.
 
 On Unix, keyring, backup, restore, view, and lock paths are opened relative to
 validated directory descriptors; final symlinks are refused, opened files must

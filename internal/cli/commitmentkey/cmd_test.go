@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -116,7 +117,7 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	}
 	assertAudit(t, stderr, "test", "succeeded")
 
-	stdout, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--accept-loss", "--allow-unaudited")
+	stdout, stderr, err = execute(t, "retire", "--keyring", path, "--key-id", first.ActiveID, "--epoch", "1", "--accept-loss")
 	if err != nil {
 		t.Fatalf("retire with explicit loss acceptance: %v", err)
 	}
@@ -124,14 +125,15 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 		t.Fatalf("retired metadata = %+v, want only epoch 2", got)
 	}
 	assertAudit(t, stderr, "retire", "succeeded")
-	assertAuditAuthorization(t, stderr, "operator_accept_loss,operator_allow_unaudited")
+	assertAuditAuthorization(t, stderr, "operator_accept_loss")
 	assertNoKeyMaterial(t, stdout, stderr)
 }
 
 func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")
-	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nevidence_provenance:\n  commitment_keyring_path: state/keyring.json\n"), 0o600); err != nil {
+	body := "mode: balanced\nlogging:\n  output: file\n  file: " + filepath.Join(dir, "audit.jsonl") + "\nevidence_provenance:\n  commitment_keyring_path: state/keyring.json\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile config: %v", err)
 	}
 	stdout, _, err := execute(t, "initialize", "--config", cfgPath)
@@ -152,7 +154,7 @@ func TestCommandConfigResolutionAndMismatchDenial(t *testing.T) {
 func TestCommandConfigResolutionIgnoresUnrelatedRuntimeFiles(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")
-	body := "mode: balanced\nlicense_file: missing-license.txt\nevidence_provenance:\n  commitment_keyring_path: state/keyring.json\n"
+	body := "mode: balanced\nlicense_file: missing-license.txt\nlogging:\n  output: file\n  file: " + filepath.Join(dir, "audit.jsonl") + "\nevidence_provenance:\n  commitment_keyring_path: state/keyring.json\n"
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile config: %v", err)
 	}
@@ -201,13 +203,12 @@ func TestCommandDenialBranches(t *testing.T) {
 		{name: "inspect missing", operation: "inspect", args: []string{"inspect", "--keyring", missingMarker}, wantAudit: true},
 		{name: "rotate missing", operation: "rotate", args: []string{"rotate", "--keyring", missingMarker}, wantAudit: true},
 		{name: "retire without loss acceptance", operation: "retire", args: []string{"retire", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1"}, wantAudit: true},
-		{name: "retire missing required flags before keyring access", operation: "retire", args: []string{"retire", "--keyring", missingMarker, "--accept-loss", "--allow-unaudited"}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch" not set`, wantAuditText: `required flag(s) "key-id, epoch" not set`},
-		{name: "retire requires explicit unaudited break glass", operation: "retire", args: []string{"retire", "--keyring", missingMarker, "--key-id", activeIDMarker, "--epoch", "1", "--accept-loss"}, wantAudit: true, wantErr: "--allow-unaudited is required to retire without a durable audit sink", wantAuditText: "--allow-unaudited is required to retire without a durable audit sink"},
-		{name: "backup missing required flag before keyring access", operation: "backup", args: []string{"backup", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "out" not set`, wantAuditText: `required flag(s) "out" not set`},
-		{name: "restore missing required flag before keyring access", operation: "restore", args: []string{"restore", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "from" not set`, wantAuditText: `required flag(s) "from" not set`},
+		{name: "retire missing required flags before keyring access", operation: "retire", args: []string{"retire", "--keyring", missingMarker, "--accept-loss"}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch" not set`, wantAuditText: "missing_required_flag"},
+		{name: "backup missing required flag before keyring access", operation: "backup", args: []string{"backup", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "out" not set`, wantAuditText: "missing_required_flag"},
+		{name: "restore missing required flag before keyring access", operation: "restore", args: []string{"restore", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "from" not set`, wantAuditText: "missing_required_flag"},
 		{name: "test unknown key", operation: "test", args: []string{"test", "--keyring", keyringMarker, "--key-id", "ck_00000000000000000000000000000000", "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64)}, wantAudit: true},
-		{name: "test missing required flag before keyring access", operation: "test", args: []string{"test", "--keyring", missingMarker, "--key-id", activeIDMarker, "--epoch", "1", "--source-id", "source-1"}, wantAudit: true, wantErr: `required flag(s) "commitment" not set`, wantAuditText: `required flag(s) "commitment" not set`},
-		{name: "test reports every missing required flag", operation: "test", args: []string{"test", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch, source-id, commitment" not set`, wantAuditText: `required flag(s) "key-id, epoch, source-id, commitment" not set`},
+		{name: "test missing required flag before keyring access", operation: "test", args: []string{"test", "--keyring", missingMarker, "--key-id", activeIDMarker, "--epoch", "1", "--source-id", "source-1"}, wantAudit: true, wantErr: `required flag(s) "commitment" not set`, wantAuditText: "missing_required_flag"},
+		{name: "test reports every missing required flag", operation: "test", args: []string{"test", "--keyring", missingMarker}, wantAudit: true, wantErr: `required flag(s) "key-id, epoch, source-id, commitment" not set`, wantAuditText: "missing_required_flag"},
 		{name: "test invalid recipe", operation: "test", args: []string{"test", "--keyring", keyringMarker, "--key-id", activeIDMarker, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:" + strings.Repeat("0", 64), "--recipe-json", `{}`}, wantAudit: true},
 		{name: "missing path selector", operation: "inspect", args: []string{"inspect"}, wantAudit: true},
 		{name: "initialize missing path selector", operation: "initialize", args: []string{"initialize"}, wantAudit: true},
@@ -275,6 +276,553 @@ func TestCommandDenialBranches(t *testing.T) {
 		t.Fatal("restore over existing keyring succeeded")
 	}
 	assertAudit(t, stderr, "restore", "denied")
+}
+
+func TestLifecycleDurableAuditCoversMutationsAndDenial(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	backupPath := filepath.Join(dir, "backup.json")
+	restoredPath := filepath.Join(dir, "restored.json")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", "")
+
+	stdout, _, err := execute(t, "initialize", "--config", configPath)
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	first := decodeMetadata(t, stdout)
+	if _, _, err := execute(t, "rotate", "--config", configPath); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if _, _, err := execute(t, "backup", "--config", configPath, "--out", backupPath); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	if _, _, err := execute(t, "backup", "--config", configPath, "--out", backupPath); err == nil {
+		t.Fatal("duplicate backup succeeded")
+	}
+	restoreConfig := writeLifecycleAuditConfig(t, dir, restoredPath, auditPath, "both", "")
+	if _, _, err := execute(t, "restore", "--config", restoreConfig, "--from", backupPath); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, _, err := execute(t, "retire", "--config", configPath, "--key-id", first.ActiveID, "--epoch", "1", "--accept-loss"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+
+	for operation, outcome := range map[string]string{
+		"initialize": "succeeded",
+		"rotate":     "succeeded",
+		"backup":     "denied",
+		"restore":    "succeeded",
+		"retire":     "succeeded",
+	} {
+		assertDurableAudit(t, auditPath, operation, outcome)
+		assertDurableMutationAuditPair(t, auditPath, operation, outcome)
+	}
+	assertNoKeyMaterial(t, string(mustReadFile(t, auditPath)))
+}
+
+func TestLifecycleAuditFileMatchesStderrRecord(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", "")
+
+	stdout, stderr, err := execute(t, "initialize", "--config", configPath)
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	assertMatchingLifecycleRecords(t, "initialize", "succeeded", stderr, string(mustReadFile(t, auditPath)))
+
+	metadata := decodeMetadata(t, stdout)
+	_, stderr, err = execute(t, "retire", "--config", configPath, "--key-id", metadata.ActiveID, "--epoch", "1")
+	if err == nil {
+		t.Fatal("retire without --accept-loss succeeded")
+	}
+	assertMatchingLifecycleRecords(t, "retire", "denied", stderr, string(mustReadFile(t, auditPath)))
+}
+
+func TestLifecycleAuditDoesNotExposePrivateViewPath(t *testing.T) {
+	if !supportsUnixSymlinkTest(runtime.GOOS) {
+		t.Skip("Windows uses reparse-point checks and may not permit symlink creation")
+	}
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", "")
+	stdout, _, err := execute(t, "initialize", "--config", configPath)
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	metadata := decodeMetadata(t, stdout)
+	viewPath := filepath.Join(dir, "private-view.txt")
+	if err := os.WriteFile(viewPath, []byte("private transformed evidence"), 0o600); err != nil {
+		t.Fatalf("WriteFile view: %v", err)
+	}
+	linkPath := filepath.Join(dir, "private-view-link.txt")
+	if err := os.Symlink(viewPath, linkPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	_, stderr, err := execute(t, "test", "--config", configPath, "--key-id", metadata.ActiveID, "--epoch", "1", "--source-id", "source-1", "--commitment", "hmac-sha256:"+strings.Repeat("0", 64), "--view-file", linkPath)
+	if !errors.Is(err, domkey.ErrSymlink) {
+		t.Fatalf("test with symlink private view error = %v, want ErrSymlink", err)
+	}
+	for _, output := range []string{stderr, string(mustReadFile(t, auditPath))} {
+		if strings.Contains(output, viewPath) || strings.Contains(output, linkPath) {
+			t.Fatalf("lifecycle audit exposed private view path: %q", output)
+		}
+	}
+}
+
+func TestLifecycleAuditDenialsIgnoreBlockedFilter(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		includeBlocked string
+	}{
+		{name: "omitted", includeBlocked: ""},
+		{name: "explicit false", includeBlocked: "false"},
+		{name: "explicit true", includeBlocked: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			keyringPath := filepath.Join(dir, "keyring.json")
+			auditPath := filepath.Join(dir, "audit.jsonl")
+			configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", tc.includeBlocked)
+			stdout, _, err := execute(t, "initialize", "--config", configPath)
+			if err != nil {
+				t.Fatalf("initialize: %v", err)
+			}
+			metadata := decodeMetadata(t, stdout)
+			if _, _, err := execute(t, "retire", "--config", configPath, "--key-id", metadata.ActiveID, "--epoch", "1"); err == nil {
+				t.Fatal("retire without --accept-loss succeeded")
+			}
+			assertDurableAudit(t, auditPath, "retire", "denied")
+		})
+	}
+}
+
+func TestConcurrentRotationsSerializeKeyringAndDurableAudit(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", "")
+	if _, _, err := execute(t, "initialize", "--config", configPath); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	const rotations = 12
+	errs := make(chan error, rotations)
+	var wg sync.WaitGroup
+	for range rotations {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := executeCommand("", "rotate", "--config", configPath)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent rotate: %v", err)
+		}
+	}
+
+	metadata := mustLoadMetadata(t, keyringPath)
+	if metadata.Epoch != rotations+1 || len(metadata.Keys) != rotations+1 {
+		t.Fatalf("concurrent rotations produced epoch=%d keys=%d, want %d", metadata.Epoch, len(metadata.Keys), rotations+1)
+	}
+
+	type pair struct{ intent, outcome bool }
+	pairs := make(map[string]pair, rotations)
+	for _, line := range strings.Split(strings.TrimSpace(string(mustReadFile(t, auditPath))), "\n") {
+		if line == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("interleaved audit record %q: %v", line, err)
+		}
+		if event["operation"] != "rotate" {
+			continue
+		}
+		operationID, _ := event["operation_id"].(string)
+		state := pairs[operationID]
+		if event["phase"] == "intent" && event["outcome"] == "pending" {
+			state.intent = true
+		}
+		if event["phase"] == "outcome" && event["outcome"] == "succeeded" {
+			state.outcome = true
+		}
+		pairs[operationID] = state
+	}
+	if len(pairs) != rotations {
+		t.Fatalf("rotate audit attempts = %d, want %d", len(pairs), rotations)
+	}
+	for operationID, state := range pairs {
+		if !state.intent || !state.outcome {
+			t.Fatalf("rotate audit pair %s = %+v, want durable intent and outcome", operationID, state)
+		}
+	}
+}
+
+func TestLifecycleAuditSinkFailureDirections(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	setupConfig := writeLifecycleAuditConfig(t, dir, keyringPath, filepath.Join(dir, "audit.jsonl"), "file", "")
+	if _, _, err := execute(t, "initialize", "--config", setupConfig); err != nil {
+		t.Fatalf("test fixture initialize: %v", err)
+	}
+	before := snapshotTestFile(t, keyringPath)
+	if _, stderr, err := executeRaw(t, "rotate", "--keyring", keyringPath); err == nil || !strings.Contains(stderr, `"outcome":"denied"`) {
+		t.Fatalf("rotate without --config err=%v stderr=%q, want denied lifecycle audit", err, stderr)
+	}
+	assertTestFileSnapshot(t, keyringPath, before)
+
+	tests := []struct {
+		name       string
+		configBody string
+	}{
+		{name: "missing logging block", configBody: "mode: balanced\nevidence_provenance:\n  commitment_keyring_path: " + keyringPath + "\n"},
+		{name: "stdout only", configBody: lifecycleAuditConfig(keyringPath, filepath.Join(dir, "stdout-audit.jsonl"), "stdout", "")},
+		{name: "missing audit file", configBody: lifecycleAuditConfig(keyringPath, "", "file", "")},
+		{name: "unopenable file", configBody: lifecycleAuditConfig(keyringPath, filepath.Join(dir, "missing", "audit.jsonl"), "file", "")},
+		{name: "invalid logging format", configBody: strings.Replace(lifecycleAuditConfig(keyringPath, filepath.Join(dir, "audit.jsonl"), "file", ""), "  output:", "  format: xml\n  output:", 1)},
+		{name: "text logging format", configBody: strings.Replace(lifecycleAuditConfig(keyringPath, filepath.Join(dir, "audit.jsonl"), "file", ""), "  output:", "  format: text\n  output:", 1)},
+	}
+	if runtime.GOOS == "linux" {
+		tests = append(tests, struct {
+			name       string
+			configBody string
+		}{name: "full device", configBody: lifecycleAuditConfig(keyringPath, "/dev/full", "file", "")})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(configPath, []byte(tc.configBody), 0o600); err != nil {
+				t.Fatalf("WriteFile config: %v", err)
+			}
+			before := snapshotTestFile(t, keyringPath)
+			_, stderr, err := execute(t, "rotate", "--config", configPath)
+			if err == nil {
+				t.Fatal("rotate succeeded without a durable sink")
+			}
+			if !strings.Contains(stderr, `"outcome":"denied"`) {
+				t.Fatalf("stderr = %q, want denied lifecycle audit", stderr)
+			}
+			assertTestFileSnapshot(t, keyringPath, before)
+		})
+	}
+
+	readOnlyConfig := filepath.Join(dir, "readonly.yaml")
+	if err := os.WriteFile(readOnlyConfig, []byte(lifecycleAuditConfig(keyringPath, filepath.Join(dir, "missing", "audit.jsonl"), "file", "")), 0o600); err != nil {
+		t.Fatalf("WriteFile readonly config: %v", err)
+	}
+	if _, stderr, err := execute(t, "inspect", "--config", readOnlyConfig); err != nil || !strings.Contains(stderr, "proceeding because this operation is read-only") {
+		t.Fatalf("inspect err=%v stderr=%q, want warning and success", err, stderr)
+	}
+}
+
+func TestLifecycleAuditAppendsToExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	const existing = "{\"event\":\"previous\"}\n"
+	if err := os.WriteFile(auditPath, []byte(existing), 0o600); err != nil {
+		t.Fatalf("write existing audit log: %v", err)
+	}
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", "")
+
+	if _, _, err := execute(t, "initialize", "--config", configPath); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	data := string(mustReadFile(t, auditPath))
+	if !strings.HasPrefix(data, existing) {
+		t.Fatalf("audit log = %q, want existing record preserved", data)
+	}
+	assertDurableAudit(t, auditPath, "initialize", "succeeded")
+}
+
+func TestLifecycleAuditRequiresConfiguredFile(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("logging:\n  output: file\nevidence_provenance:\n  commitment_keyring_path: keyring.json\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	flags := pathFlags{configFile: configPath}
+
+	if _, err := flags.durableAuditSink(); err == nil || err.Error() != "logging.file is required for a file-backed lifecycle audit sink" {
+		t.Fatalf("durableAuditSink error = %v, want missing logging.file error", err)
+	}
+}
+
+func TestLifecycleAuditReadsStdinConfigOnce(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configBody := lifecycleAuditConfig(keyringPath, auditPath, "file", "")
+
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if _, err := writeEnd.WriteString(configBody); err != nil {
+		t.Fatalf("write stdin config: %v", err)
+	}
+	if err := writeEnd.Close(); err != nil {
+		t.Fatalf("close stdin config: %v", err)
+	}
+	originalStdin := os.Stdin
+	os.Stdin = readEnd
+	t.Cleanup(func() {
+		os.Stdin = originalStdin
+		_ = readEnd.Close()
+	})
+
+	stdout, _, err := executeRaw(t, "initialize", "--config", "-")
+	if err != nil {
+		t.Fatalf("initialize with stdin config: %v", err)
+	}
+	if got := decodeMetadata(t, stdout); got.Epoch != 1 {
+		t.Fatalf("initialized metadata = %+v, want epoch 1", got)
+	}
+	assertDurableAudit(t, auditPath, "initialize", "succeeded")
+}
+
+func TestLifecycleAuditRejectsProtectedFileAliases(t *testing.T) {
+	t.Run("keyring", func(t *testing.T) {
+		dir := t.TempDir()
+		keyringPath := filepath.Join(dir, "keyring.json")
+		setupConfig := writeLifecycleAuditConfig(t, dir, keyringPath, filepath.Join(dir, "audit.jsonl"), "file", "")
+		if _, _, err := execute(t, "initialize", "--config", setupConfig); err != nil {
+			t.Fatalf("initialize fixture: %v", err)
+		}
+		before := snapshotTestFile(t, keyringPath)
+		collisionConfig := writeLifecycleAuditConfig(t, dir, keyringPath, keyringPath, "file", "")
+
+		if _, stderr, err := execute(t, "inspect", "--config", collisionConfig); err != nil || !strings.Contains(stderr, "proceeding because this operation is read-only") {
+			t.Fatalf("inspect err=%v stderr=%q, want warning and success", err, stderr)
+		}
+		assertTestFileSnapshot(t, keyringPath, before)
+	})
+
+	t.Run("backup output", func(t *testing.T) {
+		dir := t.TempDir()
+		keyringPath := filepath.Join(dir, "keyring.json")
+		backupPath := filepath.Join(dir, "backup.json")
+		setupConfig := writeLifecycleAuditConfig(t, dir, keyringPath, filepath.Join(dir, "audit.jsonl"), "file", "")
+		if _, _, err := execute(t, "initialize", "--config", setupConfig); err != nil {
+			t.Fatalf("initialize fixture: %v", err)
+		}
+		collisionConfig := writeLifecycleAuditConfig(t, dir, keyringPath, backupPath, "file", "")
+
+		if _, _, err := execute(t, "backup", "--config", collisionConfig, "--out", backupPath); err == nil {
+			t.Fatal("backup succeeded with logging.file pointing at its output")
+		}
+		if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("backup output = %v, want no file created", err)
+		}
+	})
+
+	t.Run("backup input", func(t *testing.T) {
+		dir := t.TempDir()
+		keyringPath := filepath.Join(dir, "keyring.json")
+		backupPath := filepath.Join(dir, "backup.json")
+		restoredPath := filepath.Join(dir, "restored.json")
+		setupConfig := writeLifecycleAuditConfig(t, dir, keyringPath, filepath.Join(dir, "audit.jsonl"), "file", "")
+		if _, _, err := execute(t, "initialize", "--config", setupConfig); err != nil {
+			t.Fatalf("initialize fixture: %v", err)
+		}
+		if _, _, err := execute(t, "backup", "--config", setupConfig, "--out", backupPath); err != nil {
+			t.Fatalf("backup fixture: %v", err)
+		}
+		before := snapshotTestFile(t, backupPath)
+		collisionConfig := writeLifecycleAuditConfig(t, dir, restoredPath, backupPath, "file", "")
+
+		if _, _, err := execute(t, "restore", "--config", collisionConfig, "--from", backupPath); err == nil {
+			t.Fatal("restore succeeded with logging.file pointing at its backup input")
+		}
+		assertTestFileSnapshot(t, backupPath, before)
+		if _, err := os.Stat(restoredPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("restored keyring = %v, want no file created", err)
+		}
+	})
+
+	t.Run("private view", func(t *testing.T) {
+		dir := t.TempDir()
+		keyringPath := filepath.Join(dir, "keyring.json")
+		viewPath := filepath.Join(dir, "view.txt")
+		setupConfig := writeLifecycleAuditConfig(t, dir, keyringPath, filepath.Join(dir, "audit.jsonl"), "file", "")
+		stdout, _, err := execute(t, "initialize", "--config", setupConfig)
+		if err != nil {
+			t.Fatalf("initialize fixture: %v", err)
+		}
+		metadata := decodeMetadata(t, stdout)
+		const view = "private transformed evidence"
+		if err := os.WriteFile(viewPath, []byte(view), 0o600); err != nil {
+			t.Fatalf("write view: %v", err)
+		}
+		keyring, err := domkey.Load(keyringPath)
+		if err != nil {
+			t.Fatalf("load keyring: %v", err)
+		}
+		handle, err := keyring.Open(metadata.ActiveID, metadata.Epoch)
+		if err != nil {
+			t.Fatalf("open active key: %v", err)
+		}
+		source := contractreceipt.ProvenanceSource{SourceID: "source-1", Recipe: normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest}}
+		commitment, err := contractreceipt.CommitView(handle.Key, source, view)
+		if err != nil {
+			t.Fatalf("commit view: %v", err)
+		}
+		before := snapshotTestFile(t, viewPath)
+		collisionConfig := writeLifecycleAuditConfig(t, dir, keyringPath, viewPath, "file", "")
+
+		if _, stderr, err := execute(t, "test", "--config", collisionConfig, "--key-id", handle.KeyID, "--epoch", "1", "--source-id", "source-1", "--commitment", commitment, "--view-file", viewPath); err != nil || !strings.Contains(stderr, "proceeding because this operation is read-only") {
+			t.Fatalf("test err=%v stderr=%q, want warning and success", err, stderr)
+		}
+		assertTestFileSnapshot(t, viewPath, before)
+	})
+}
+
+func TestLifecycleAuditConfigCachePreservesErrorWrapping(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "malformed.yaml")
+	if err := os.WriteFile(path, []byte("mode: [\n"), 0o600); err != nil {
+		t.Fatalf("write malformed config: %v", err)
+	}
+
+	flags := pathFlags{configFile: path}
+	_, firstErr := flags.loadConfig()
+	_, secondErr := flags.loadConfig()
+	if firstErr == nil || secondErr == nil {
+		t.Fatalf("load errors = (%v, %v), want two failures", firstErr, secondErr)
+	}
+	if firstErr.Error() != secondErr.Error() {
+		t.Fatalf("cached error = %q, first error = %q", secondErr, firstErr)
+	}
+}
+
+func TestLifecycleAuditResolvesRelativeLogFileFromConfig(t *testing.T) {
+	configDir := t.TempDir()
+	runnerDir := t.TempDir()
+	configPath := filepath.Join(configDir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: balanced\nlogging:\n  output: file\n  file: audit.jsonl\nevidence_provenance:\n  commitment_keyring_path: state/keyring.json\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(runnerDir); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	if _, _, err := execute(t, "initialize", "--config", configPath); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	assertDurableAudit(t, filepath.Join(configDir, "audit.jsonl"), "initialize", "succeeded")
+	if _, err := os.Stat(filepath.Join(runnerDir, "audit.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("working-directory audit file = %v, want no file", err)
+	}
+}
+
+func writeLifecycleAuditConfig(t *testing.T, dir, keyringPath, auditPath, output, includeBlocked string) string {
+	t.Helper()
+	path := filepath.Join(dir, "pipelock-"+strings.ReplaceAll(filepath.Base(keyringPath), ".", "-")+".yaml")
+	if err := os.WriteFile(path, []byte(lifecycleAuditConfig(keyringPath, auditPath, output, includeBlocked)), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	return path
+}
+
+func lifecycleAuditConfig(keyringPath, auditPath, output, includeBlocked string) string {
+	body := "mode: balanced\nlogging:\n  output: " + output + "\n"
+	if auditPath != "" {
+		body += "  file: " + auditPath + "\n"
+	}
+	if includeBlocked != "" {
+		body += "  include_blocked: " + includeBlocked + "\n"
+	}
+	return body + "evidence_provenance:\n  commitment_keyring_path: " + keyringPath + "\n"
+}
+
+func assertDurableAudit(t *testing.T, path, operation, outcome string) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(string(mustReadFile(t, path))), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event["event"] == "commitment_key_lifecycle" && event["operation"] == operation && event["outcome"] == outcome {
+			return
+		}
+	}
+	t.Fatalf("durable audit %s/%s not found in %s", operation, outcome, path)
+}
+
+func assertDurableMutationAuditPair(t *testing.T, path, operation, outcome string) {
+	t.Helper()
+	intentIndex := make(map[string]int)
+	for index, line := range strings.Split(strings.TrimSpace(string(mustReadFile(t, path))), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event["event"] != "commitment_key_lifecycle" || event["operation"] != operation {
+			continue
+		}
+		operationID, _ := event["operation_id"].(string)
+		if event["phase"] == "intent" && event["outcome"] == "pending" && operationID != "" {
+			intentIndex[operationID] = index
+			continue
+		}
+		if event["phase"] == "outcome" && event["outcome"] == outcome && operationID != "" {
+			if intent, ok := intentIndex[operationID]; ok && intent < index {
+				return
+			}
+		}
+	}
+	t.Fatalf("durable audit %s/%s has no intent-before-outcome pair in %s", operation, outcome, path)
+}
+
+func assertMatchingLifecycleRecords(t *testing.T, operation, outcome, stderr, file string) {
+	t.Helper()
+	stderrRecord := findLifecycleRecord(t, operation, outcome, stderr)
+	fileRecord := findLifecycleRecord(t, operation, outcome, file)
+	for field, want := range stderrRecord {
+		if got := fileRecord[field]; got != want {
+			t.Fatalf("file lifecycle record %q = %#v, want stderr value %#v; file=%#v stderr=%#v", field, got, want, fileRecord, stderrRecord)
+		}
+	}
+}
+
+func findLifecycleRecord(t *testing.T, operation, outcome, data string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(data), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			continue
+		}
+		if (record["event_type"] == "commitment_key_lifecycle" || record["event"] == "commitment_key_lifecycle") && record["operation"] == operation && record["outcome"] == outcome {
+			return record
+		}
+	}
+	t.Fatalf("commitment key lifecycle %s/%s record not found in %q", operation, outcome, data)
+	return nil
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+	return data
 }
 
 func TestWriteJSONReportsOutputFailure(t *testing.T) {
@@ -445,6 +993,20 @@ func execute(t *testing.T, args ...string) (string, string, error) {
 
 func executeInput(t *testing.T, input string, args ...string) (string, string, error) {
 	t.Helper()
+	return executeInputRaw(t, input, withTestAuditConfig(t, args)...)
+}
+
+func executeRaw(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+	return executeInputRaw(t, "", args...)
+}
+
+func executeInputRaw(t *testing.T, input string, args ...string) (string, string, error) {
+	t.Helper()
+	return executeCommand(input, args...)
+}
+
+func executeCommand(input string, args ...string) (string, string, error) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	root := &cobra.Command{Use: "pipelock", SilenceUsage: true, SilenceErrors: true}
@@ -455,6 +1017,38 @@ func executeInput(t *testing.T, input string, args ...string) (string, string, e
 	root.SetArgs(append([]string{"commitment-key"}, args...))
 	err := root.Execute()
 	return stdout.String(), stderr.String(), err
+}
+
+// withTestAuditConfig keeps legacy --keyring test cases focused on the
+// keyring behavior under test. Production mutations require --config so they
+// can open the configured durable audit sink before changing key state.
+func withTestAuditConfig(t *testing.T, args []string) []string {
+	t.Helper()
+	for _, arg := range args {
+		if arg == "--config" {
+			return args
+		}
+	}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "--keyring" {
+			continue
+		}
+		keyringPath := filepath.Clean(args[i+1])
+		if err := os.MkdirAll(filepath.Dir(keyringPath), 0o750); err != nil {
+			t.Fatalf("MkdirAll config directory: %v", err)
+		}
+		configPath := filepath.Join(filepath.Dir(keyringPath), "test-pipelock.yaml")
+		auditPath := filepath.Join(filepath.Dir(keyringPath), "lifecycle-audit.jsonl")
+		body := "mode: balanced\nlogging:\n  output: file\n  file: " + auditPath + "\nevidence_provenance:\n  commitment_keyring_path: " + keyringPath + "\n"
+		if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+			t.Fatalf("WriteFile config: %v", err)
+		}
+		out := append([]string{}, args[:i]...)
+		out = append(out, "--config", configPath)
+		out = append(out, args[i+2:]...)
+		return out
+	}
+	return args
 }
 
 func decodeMetadata(t *testing.T, raw string) domkey.Metadata {

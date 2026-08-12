@@ -6,9 +6,11 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -389,13 +391,14 @@ const (
 	EventResponseScanExempt EventType = "response_scan_exempt"
 	EventTaintDecision      EventType = "taint_decision"
 
-	EventAirlockEnter       EventType = "airlock_enter"
-	EventAirlockDeny        EventType = "airlock_deny"
-	EventAirlockDeescalate  EventType = "airlock_deescalate"
-	EventShieldRewrite      EventType = "shield_rewrite"
-	EventMediaExposure      EventType = "media_exposure"
-	EventLicenseExpiry      EventType = "license_expiry"
-	EventRuleBundleDegraded EventType = "rule_bundle_degraded"
+	EventAirlockEnter           EventType = "airlock_enter"
+	EventAirlockDeny            EventType = "airlock_deny"
+	EventAirlockDeescalate      EventType = "airlock_deescalate"
+	EventShieldRewrite          EventType = "shield_rewrite"
+	EventMediaExposure          EventType = "media_exposure"
+	EventLicenseExpiry          EventType = "license_expiry"
+	EventRuleBundleDegraded     EventType = "rule_bundle_degraded"
+	EventCommitmentKeyLifecycle EventType = "commitment_key_lifecycle"
 )
 
 const responseScanExemptFullTrustEffect = "response_scanning.exempt_domains is a full-trust valve: injection scanning is disabled for ALL responses from this host, including oversized over-cap responses that stream unscanned"
@@ -581,6 +584,8 @@ type Logger struct {
 	includeAllowed     bool
 	includeBlocked     bool
 	fileHandle         *os.File      // non-nil if logging to file
+	filePath           string        // non-empty if logging to file
+	fileCreated        bool          // true when this logger created filePath
 	emitter            *emit.Emitter // optional external event emitter
 	identifierRedactor *lazyIdentifierRedactor
 }
@@ -598,6 +603,37 @@ func New(format, output, filePath string, includeAllowed, includeBlocked bool) (
 		},
 		identifierSource: sharedIdentifierRedactor,
 	})
+}
+
+// NewDurableFile creates an audit logger for an operation that must refuse to
+// proceed unless it has a regular local file sink. It deliberately does not
+// change New's behavior because the running server may use stream devices for
+// its ordinary logging configuration.
+func NewDurableFile(format, filePath string, includeAllowed, includeBlocked bool) (*Logger, error) {
+	logger, err := New(format, "file", filePath, includeAllowed, includeBlocked)
+	if err != nil {
+		return nil, err
+	}
+	info, err := logger.fileHandle.Stat()
+	if err != nil {
+		logger.Close()
+		return nil, fmt.Errorf("stat audit log file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		logger.Close()
+		return nil, fmt.Errorf("audit log file must be a regular file; set logging.file to a writable regular file: %s", filepath.Clean(filePath))
+	}
+	if err := logger.fileHandle.Sync(); err != nil {
+		logger.Close()
+		return nil, fmt.Errorf("sync audit log file: %w", err)
+	}
+	if logger.fileCreated {
+		if err := syncDurableAuditParent(logger.filePath); err != nil {
+			logger.Close()
+			return nil, fmt.Errorf("sync audit log directory: %w", err)
+		}
+	}
+	return logger, nil
 }
 
 // NewWithStream creates an audit logger whose stream output uses stream rather
@@ -664,8 +700,14 @@ func newLogger(opts loggerOpts) (*Logger, error) {
 	}
 
 	var fileHandle *os.File
+	var fileCreated bool
 	if opts.Output == "file" || opts.Output == "both" {
-		f, err := os.OpenFile(filepath.Clean(opts.FilePath), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		filePath := filepath.Clean(opts.FilePath)
+		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		fileCreated = err == nil
+		if errors.Is(err, fs.ErrExist) {
+			f, err = os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0o600)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -694,6 +736,8 @@ func newLogger(opts loggerOpts) (*Logger, error) {
 		includeAllowed:     opts.IncludeAllowed,
 		includeBlocked:     opts.IncludeBlocked,
 		fileHandle:         fileHandle,
+		filePath:           filepath.Clean(opts.FilePath),
+		fileCreated:        fileCreated,
 		identifierRedactor: newLazyIdentifierRedactor(opts.identifierSource),
 	}, nil
 }
@@ -720,6 +764,151 @@ func (l *Logger) subjectDiscriminator(subjectKey string) string {
 // the proxy starts serving). Not safe for concurrent use with Log methods.
 func (l *Logger) SetEmitter(e *emit.Emitter) {
 	l.emitter = e
+}
+
+// CommitmentKeyLifecycleEvent records a commitment-key lifecycle operation.
+// It intentionally carries metadata only: callers must never place key
+// material or private evidence views in these fields.
+type CommitmentKeyLifecycleEvent struct {
+	Operation     string
+	Phase         string
+	Outcome       string
+	OperationID   string
+	KeyID         string
+	Epoch         uint64
+	Timestamp     string
+	Reason        string
+	Authorization string
+}
+
+// LogCommitmentKeyLifecycle records a commitment-key lifecycle operation.
+// Lifecycle records always bypass the allowed/blocked sampling controls: a
+// denied key operation is security evidence even when routine request logging
+// is reduced.
+func (l *Logger) LogCommitmentKeyLifecycle(ev CommitmentKeyLifecycleEvent) {
+	zlEvent := l.zl.Info()
+	if ev.Outcome == "denied" {
+		zlEvent = l.zl.Warn()
+	}
+	e := newLogEntry(zlEvent, EventCommitmentKeyLifecycle).
+		str("event_type", string(EventCommitmentKeyLifecycle)).
+		str("operation", ev.Operation).
+		str("outcome", ev.Outcome).
+		optStr("key_id", ev.KeyID).
+		optStr("timestamp", ev.Timestamp).
+		optStr("reason", ev.Reason).
+		optStr("authorization", ev.Authorization)
+	if ev.Epoch != 0 {
+		e.event = e.event.Uint64("epoch", ev.Epoch)
+		e.fields["epoch"] = ev.Epoch
+	}
+	e.msg("commitment key lifecycle")
+}
+
+// WriteDurableCommitmentKeyLifecycle appends and syncs one lifecycle record.
+// It is deliberately separate from LogCommitmentKeyLifecycle: zerolog's
+// regular logging API reports write failures only through its global error
+// handler, while a lifecycle mutation must receive the write and fsync error
+// before it is allowed to proceed.
+func (l *Logger) WriteDurableCommitmentKeyLifecycle(ev CommitmentKeyLifecycleEvent) error {
+	if l.fileHandle == nil || l.filePath == "" {
+		return errors.New("durable audit log file is not open")
+	}
+	if err := l.verifyDurableFileBinding(); err != nil {
+		return err
+	}
+	now := sanitizeString(ev.Timestamp)
+	if now == "" {
+		now = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	record := durableCommitmentKeyLifecycleRecord{
+		Level:         "info",
+		Component:     "pipelock",
+		Event:         string(EventCommitmentKeyLifecycle),
+		EventType:     string(EventCommitmentKeyLifecycle),
+		Operation:     sanitizeString(ev.Operation),
+		Phase:         sanitizeString(ev.Phase),
+		Outcome:       sanitizeString(ev.Outcome),
+		OperationID:   sanitizeString(ev.OperationID),
+		KeyID:         sanitizeString(ev.KeyID),
+		Epoch:         ev.Epoch,
+		Reason:        sanitizeString(ev.Reason),
+		Authorization: sanitizeString(ev.Authorization),
+		Time:          now,
+		Timestamp:     now,
+		Message:       "commitment key lifecycle",
+	}
+	if ev.Outcome == "denied" {
+		record.Level = "warn"
+	}
+	if err := writeAndSyncLifecycleRecord(l.fileHandle, record); err != nil {
+		return err
+	}
+	if err := l.verifyDurableFileBinding(); err != nil {
+		return err
+	}
+	return nil
+}
+
+type durableCommitmentKeyLifecycleRecord struct {
+	Level         string `json:"level"`
+	Component     string `json:"component"`
+	Event         string `json:"event"`
+	EventType     string `json:"event_type"`
+	Operation     string `json:"operation"`
+	Phase         string `json:"phase,omitempty"`
+	Outcome       string `json:"outcome"`
+	OperationID   string `json:"operation_id,omitempty"`
+	KeyID         string `json:"key_id,omitempty"`
+	Epoch         uint64 `json:"epoch,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Authorization string `json:"authorization,omitempty"`
+	Time          string `json:"time"`
+	Timestamp     string `json:"timestamp"`
+	Message       string `json:"message"`
+}
+
+type lifecycleRecordFile interface {
+	io.Writer
+	Sync() error
+}
+
+// writeAndSyncLifecycleRecord uses a leading newline as a record boundary.
+// A failed append can leave one malformed record, but the next record starts
+// on a fresh line instead of being glued to it. Each lifecycle record is one
+// Write call, so O_APPEND preserves the boundary between concurrent commands.
+func writeAndSyncLifecycleRecord(file lifecycleRecordFile, record durableCommitmentKeyLifecycleRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal lifecycle audit record: %w", err)
+	}
+	data = append([]byte{'\n'}, data...)
+	n, err := file.Write(data)
+	if err != nil {
+		return fmt.Errorf("write lifecycle audit record: %w", err)
+	}
+	if n != len(data) {
+		return fmt.Errorf("write lifecycle audit record: %w", io.ErrShortWrite)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync lifecycle audit record: %w", err)
+	}
+	return nil
+}
+
+func (l *Logger) verifyDurableFileBinding() error {
+	pathInfo, err := os.Stat(l.filePath)
+	if err != nil {
+		return fmt.Errorf("stat configured audit log file: %w", err)
+	}
+	handleInfo, err := l.fileHandle.Stat()
+	if err != nil {
+		return fmt.Errorf("stat open audit log file: %w", err)
+	}
+	if !os.SameFile(pathInfo, handleInfo) {
+		return fmt.Errorf("configured audit log file was replaced or rotated: %s", l.filePath)
+	}
+	return nil
 }
 
 // LogAllowed logs a successful, allowed request.

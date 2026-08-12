@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -103,6 +104,245 @@ func TestNew_FileOutput(t *testing.T) {
 			t.Errorf("expected file permissions 0600, got %o", perm)
 		}
 	}
+}
+
+func TestNew_FileOutputRejectsNonRegularFile(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/dev/full is a Linux special device")
+	}
+	if _, err := NewDurableFile("json", "/dev/full", true, true); err == nil || !strings.Contains(err.Error(), "set logging.file to a writable regular file") {
+		t.Fatalf("NewDurableFile(/dev/full) error = %v, want regular-file refusal", err)
+	}
+}
+
+func TestNewDurableFileRejectsSymlinkToNonRegularFile(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/dev/full is a Linux special device")
+	}
+	path := filepath.Join(t.TempDir(), "audit-link")
+	if err := os.Symlink("/dev/full", path); err != nil {
+		t.Fatalf("create audit link: %v", err)
+	}
+	if _, err := NewDurableFile("json", path, true, true); err == nil || !strings.Contains(err.Error(), "set logging.file to a writable regular file") {
+		t.Fatalf("NewDurableFile(%q) error = %v, want regular-file refusal", path, err)
+	}
+}
+
+func TestLogCommitmentKeyLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := New("json", "file", path, false, false)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.LogCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{
+		Operation:     "retire",
+		Outcome:       "denied",
+		KeyID:         "ck_0123456789abcdef0123456789abcdef",
+		Epoch:         2,
+		Timestamp:     "2026-08-12T21:00:00Z",
+		Reason:        "missing_required_flag",
+		Authorization: "operator_accept_loss",
+	})
+	logger.Close()
+
+	var event map[string]any
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(data), &event); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if event["event"] != string(EventCommitmentKeyLifecycle) || event["event_type"] != string(EventCommitmentKeyLifecycle) || event["outcome"] != "denied" || event["epoch"] != float64(2) || event["timestamp"] != "2026-08-12T21:00:00Z" || event["reason"] != "missing_required_flag" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestWriteDurableCommitmentKeyLifecycleSyncsJSONRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := NewDurableFile("json", path, false, false)
+	if err != nil {
+		t.Fatalf("NewDurableFile: %v", err)
+	}
+	defer logger.Close()
+
+	err = logger.WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{
+		Operation:   "rotate",
+		Phase:       "intent",
+		Outcome:     "pending",
+		OperationID: "cka_test",
+	})
+	if err != nil {
+		t.Fatalf("WriteDurableCommitmentKeyLifecycle: %v", err)
+	}
+
+	var event map[string]any
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(data), &event); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if event["phase"] != "intent" || event["outcome"] != "pending" || event["operation_id"] != "cka_test" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestWriteAndSyncLifecycleRecordRejectsPartialAndSyncFailure(t *testing.T) {
+	record := durableCommitmentKeyLifecycleRecord{Event: string(EventCommitmentKeyLifecycle), Operation: "rotate", Outcome: "pending"}
+
+	t.Run("partial write", func(t *testing.T) {
+		file := &lifecycleRecordTestFile{writeLimit: 5}
+		if err := writeAndSyncLifecycleRecord(file, record); !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("writeAndSyncLifecycleRecord error = %v, want short write", err)
+		}
+		if file.syncCalls != 0 {
+			t.Fatalf("Sync calls = %d, want 0 after partial write", file.syncCalls)
+		}
+	})
+
+	t.Run("sync failure", func(t *testing.T) {
+		file := &lifecycleRecordTestFile{syncErr: errors.New("no space left")}
+		if err := writeAndSyncLifecycleRecord(file, record); err == nil || !strings.Contains(err.Error(), "sync lifecycle audit record") {
+			t.Fatalf("writeAndSyncLifecycleRecord error = %v, want sync failure", err)
+		}
+		if file.syncCalls != 1 {
+			t.Fatalf("Sync calls = %d, want 1", file.syncCalls)
+		}
+	})
+
+	t.Run("next record recovers after partial write", func(t *testing.T) {
+		file := &lifecycleRecordTestFile{writeLimit: 5}
+		_ = writeAndSyncLifecycleRecord(file, record)
+		file.writeLimit = 0
+		record.Outcome = "succeeded"
+		if err := writeAndSyncLifecycleRecord(file, record); err != nil {
+			t.Fatalf("second write: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(file.String()), "\n")
+		var recovered durableCommitmentKeyLifecycleRecord
+		if err := json.Unmarshal([]byte(lines[len(lines)-1]), &recovered); err != nil {
+			t.Fatalf("last record after partial write: %v", err)
+		}
+		if recovered.Outcome != "succeeded" {
+			t.Fatalf("recovered record = %#v", recovered)
+		}
+	})
+}
+
+func TestWriteDurableCommitmentKeyLifecycleRejectsDeletedOrRotatedSink(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, path string)
+	}{
+		{
+			name: "deleted",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("Remove: %v", err)
+				}
+			},
+		},
+		{
+			name: "rotated",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				rotated := path + ".1"
+				if err := os.Rename(path, rotated); err != nil {
+					t.Fatalf("Rename: %v", err)
+				}
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatalf("replace log path: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			logger, err := NewDurableFile("json", path, false, false)
+			if err != nil {
+				t.Fatalf("NewDurableFile: %v", err)
+			}
+			defer logger.Close()
+			tc.mutate(t, path)
+			if err := logger.WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{Operation: "rotate", Outcome: "pending"}); err == nil {
+				t.Fatal("WriteDurableCommitmentKeyLifecycle succeeded after sink changed")
+			}
+		})
+	}
+}
+
+func TestWriteDurableCommitmentKeyLifecycleConcurrentAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	const writers = 32
+
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			logger, err := NewDurableFile("json", path, false, false)
+			if err == nil {
+				err = logger.WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{
+					Operation:   "rotate",
+					Phase:       "intent",
+					Outcome:     "pending",
+					OperationID: fmt.Sprintf("cka_%d", n),
+				})
+				logger.Close()
+			}
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent durable write: %v", err)
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	seen := make(map[string]struct{}, writers)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var event durableCommitmentKeyLifecycleRecord
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("interleaved lifecycle record %q: %v", line, err)
+		}
+		seen[event.OperationID] = struct{}{}
+	}
+	if len(seen) != writers {
+		t.Fatalf("parsed %d durable lifecycle records, want %d", len(seen), writers)
+	}
+}
+
+type lifecycleRecordTestFile struct {
+	bytes.Buffer
+	writeLimit int
+	syncErr    error
+	syncCalls  int
+}
+
+func (f *lifecycleRecordTestFile) Write(data []byte) (int, error) {
+	if f.writeLimit > 0 && len(data) > f.writeLimit {
+		_, _ = f.Buffer.Write(data[:f.writeLimit])
+		return f.writeLimit, nil
+	}
+	return f.Buffer.Write(data)
+}
+
+func (f *lifecycleRecordTestFile) Sync() error {
+	f.syncCalls++
+	return f.syncErr
 }
 
 func TestNew_FileOutputMissingPath(t *testing.T) {

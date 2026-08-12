@@ -954,7 +954,7 @@ func ForwardScannedInput(
 			// Track request ID immediately before forwarding so response-side
 			// can validate without leaving stale state when a required
 			// receipt fails before the request is written.
-			if isRequest(fwdLine) && opts.requireReceipts() && actionID != "" {
+			if isTrackableRequest(fwdLine, verdict.ID) && opts.requireReceipts() && actionID != "" {
 				outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionAllow,
@@ -975,7 +975,7 @@ func ForwardScannedInput(
 				})
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, contractGate)
 				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt})
-			} else if isRequest(fwdLine) {
+			} else if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.Track(verdict.ID)
 			}
 			if err := forwardMessage(fwdLine); err != nil {
@@ -1310,7 +1310,7 @@ func ForwardScannedInput(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
-						if isRequest(heldLine) {
+						if isTrackableRequest(heldLine, heldID) {
 							tracker.Track(heldID)
 						}
 						if err := forwardMessage(heldLine); err != nil {
@@ -1475,7 +1475,7 @@ func ForwardScannedInput(
 			}
 			receiptEmitted = true
 			// Forward anyway (warn mode).
-			if isRequest(fwdLine) {
+			if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.Track(verdict.ID)
 			}
 			if err := forwardMessage(fwdLine); err != nil {
@@ -1595,6 +1595,10 @@ func unescapeJSONUnicode(s string) string {
 // for null is non-nil with len=4, so len(id)==0 alone is insufficient.
 func isRPCNotification(id json.RawMessage) bool {
 	return len(id) == 0 || string(id) == jsonrpc.Null
+}
+
+func isTrackableRequest(msg []byte, id json.RawMessage) bool {
+	return isRequest(msg) && !isRPCNotification(id)
 }
 
 // joinStrings joins strings with newline separator, matching jsonrpc.ExtractText pattern.

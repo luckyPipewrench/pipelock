@@ -6748,42 +6748,41 @@ func TestHTTPListener_DoWRemainsEnforcedWhenStateTokenIsOmitted(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if request.Method == "initialize" {
-			w.Header().Set("Mcp-Session-Id", "server-session-"+string(request.ID))
-		}
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
 	}))
 	defer upstream.Close()
 
-	var budgetCalls atomic.Int32
+	var budgetMu sync.Mutex
+	budgetBySubject := make(map[string]int)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
 		Scanner:                testScannerForHTTP(t),
 		ToolCfg:                &tools.ToolScanConfig{Action: config.ActionBlock},
 		DoWEnforceSubjectTrust: true,
-		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
-			if budgetCalls.Add(1) > 1 {
+		DoWCheck: func(subject, _, _ string) (bool, string, string, string) {
+			budgetMu.Lock()
+			defer budgetMu.Unlock()
+			budgetBySubject[subject]++
+			if budgetBySubject[subject] > 1 {
 				return false, config.ActionBlock, "subject budget exceeded", "test_budget"
 			}
 			return true, config.ActionBlock, "", ""
 		},
 	})
 
-	// Establish two independent listener sessions, then deliberately omit both
-	// Pipelock-issued tokens. A client-controlled upstream session ID must not
-	// buy a fresh DoW subject bucket or disable the budget check.
-	_ = initializeHTTPListenerSession(t, baseURL, 101)
-	_ = initializeHTTPListenerSession(t, baseURL, 202)
-	first := postHTTPListenerToolCall(t, baseURL, "server-session-101", http.StatusOK)
+	// Current MCP clients can send tool calls without the removed initialize
+	// handshake. Omitting both listener and upstream session tokens must not
+	// disable the subject budget or buy a fresh bucket.
+	first := postHTTPListenerToolCall(t, baseURL, "")
 	if strings.Contains(first, "subject budget exceeded") {
 		t.Fatalf("first tokenless call unexpectedly blocked: %s", first)
 	}
-	second := postHTTPListenerToolCall(t, baseURL, "server-session-202", http.StatusOK)
+	second := postHTTPListenerToolCall(t, baseURL, "")
 	if !strings.Contains(second, "subject budget exceeded") {
 		t.Fatalf("second tokenless call bypassed same-subject budget: %s", second)
 	}
-	if got := upstreamHits.Load(); got != 3 {
-		// Two initialize requests and only the first tools/call reach upstream.
-		t.Fatalf("upstream hits = %d, want 3", got)
+	if got := upstreamHits.Load(); got != 1 {
+		// Only the first tools/call reaches upstream.
+		t.Fatalf("upstream hits = %d, want 1", got)
 	}
 }
 
@@ -6836,10 +6835,10 @@ func TestHTTPListener_DoWUsesStableSubjectAcrossServerIssuedSessions(t *testing.
 
 	sessionA := initializeHTTPListenerSession(t, baseURL, 101)
 	sessionB := initializeHTTPListenerSession(t, baseURL, 202)
-	if body := postHTTPListenerToolCall(t, baseURL, sessionA, http.StatusOK); strings.Contains(body, "subject budget exceeded") {
+	if body := postHTTPListenerToolCall(t, baseURL, sessionA); strings.Contains(body, "subject budget exceeded") {
 		t.Fatalf("first session-a call body = %s, want allowed", body)
 	}
-	body := postHTTPListenerToolCall(t, baseURL, sessionB, http.StatusOK)
+	body := postHTTPListenerToolCall(t, baseURL, sessionB)
 	if !strings.Contains(body, "subject budget exceeded") {
 		t.Fatalf("new server session body = %s, want same-subject budget block", body)
 	}
@@ -6894,10 +6893,10 @@ func TestHTTPListener_DoWCollapsesSelfDeclaredAgentRenameToSameSubject(t *testin
 
 	sessionA := initializeHTTPListenerSession(t, baseURL, 303)
 	sessionB := initializeHTTPListenerSession(t, baseURL, 404)
-	if body := postHTTPListenerToolCallWithAgent(t, baseURL, sessionA, "attacker-alpha", http.StatusOK); strings.Contains(body, "subject budget exceeded") {
+	if body := postHTTPListenerToolCallWithAgent(t, baseURL, sessionA, "attacker-alpha"); strings.Contains(body, "subject budget exceeded") {
 		t.Fatalf("first self-declared agent call body = %s, want allowed", body)
 	}
-	body := postHTTPListenerToolCallWithAgent(t, baseURL, sessionB, "attacker-beta", http.StatusOK)
+	body := postHTTPListenerToolCallWithAgent(t, baseURL, sessionB, "attacker-beta")
 	if !strings.Contains(body, "subject budget exceeded") {
 		t.Fatalf("renamed self-declared agent body = %s, want same-subject budget block", body)
 	}
@@ -6989,9 +6988,9 @@ func initializeHTTPListenerSession(t *testing.T, baseURL string, id int) string 
 	return sessionID
 }
 
-func postHTTPListenerToolCall(t *testing.T, baseURL, sessionID string, wantStatus int) string {
+func postHTTPListenerToolCall(t *testing.T, baseURL, sessionID string) string {
 	t.Helper()
-	return postHTTPListenerToolCallWithAgent(t, baseURL, sessionID, "", wantStatus)
+	return postHTTPListenerToolCallWithAgent(t, baseURL, sessionID, "")
 }
 
 func postHTTPListenerToolCallWithForwardedHeaders(t *testing.T, baseURL, sessionID, forwardedFor string) {
@@ -7015,7 +7014,7 @@ func postHTTPListenerToolCallWithForwardedHeaders(t *testing.T, baseURL, session
 	}
 }
 
-func postHTTPListenerToolCallWithAgent(t *testing.T, baseURL, sessionID, agent string, wantStatus int) string {
+func postHTTPListenerToolCallWithAgent(t *testing.T, baseURL, sessionID, agent string) string {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
 	if err != nil {
@@ -7034,8 +7033,8 @@ func postHTTPListenerToolCallWithAgent(t *testing.T, baseURL, sessionID, agent s
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != wantStatus {
-		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, wantStatus, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	return string(body)
 }

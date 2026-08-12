@@ -958,6 +958,27 @@ func TestForwardScannedInput_ClientResponseDoesNotAuthorizeServerResponse(t *tes
 	}
 }
 
+func TestIsTrackableRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		id   json.RawMessage
+		want bool
+	}{
+		{name: "request", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, id: json.RawMessage(`1`), want: true},
+		{name: "notification", msg: `{"jsonrpc":"2.0","method":"notifications/initialized"}`, id: nil, want: false},
+		{name: "null ID notification", msg: `{"jsonrpc":"2.0","id":null,"method":"notifications/progress"}`, id: json.RawMessage(`null`), want: false},
+		{name: "client response", msg: `{"jsonrpc":"2.0","id":2,"result":{}}`, id: json.RawMessage(`2`), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTrackableRequest([]byte(tt.msg), tt.id); got != tt.want {
+				t.Fatalf("isTrackableRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestForwardScannedInput_BlockedRequestSendsID(t *testing.T) {
 	sc := testInputScanner(t)
 	dirty := makeRequest(42, "tools/call", map[string]string{

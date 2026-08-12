@@ -108,6 +108,19 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	if err := got.GuardAppliedPreExec(got.Workspace, encoded); err == nil || !strings.Contains(err.Error(), "does not describe") {
 		t.Fatalf("mismatched proof error = %v", err)
 	}
+	tampered := guardfs.NewExecutionProof(
+		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
+		guardfs.ExecControlOptions{PolicyHash: got.GuardPolicyHash, Workspace: got.Workspace, TempDir: got.Workspace, Binary: "/usr/bin/true"},
+		[]string{"/usr/bin/true"},
+	)
+	tampered.Record.Coverage = guardfs.CoveragePartial
+	encodedTampered, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatalf("marshal tampered proof: %v", err)
+	}
+	if err := got.GuardAppliedPreExec(got.Workspace, encodedTampered); err == nil {
+		t.Fatal("parent evidence boundary accepted a tampered enforcement record")
+	}
 	for _, testCase := range []struct {
 		name   string
 		mutate func(*guardfs.ExecutionProof)

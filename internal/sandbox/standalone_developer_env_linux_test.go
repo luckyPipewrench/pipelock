@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -160,6 +161,13 @@ func TestLaunchStandaloneGuardProofFailureCleansChildTempDir(t *testing.T) {
 	}
 	if _, statErr := os.Stat(childTempDir); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("child temporary directory remained after proof failure: %v", statErr)
+	}
+	childPID, parseErr := strconv.Atoi(strings.TrimPrefix(filepath.Base(childTempDir), "pipelock-sandbox-"))
+	if parseErr != nil {
+		t.Fatalf("parse child PID from %q: %v", childTempDir, parseErr)
+	}
+	if signalErr := syscall.Kill(childPID, 0); !errors.Is(signalErr, syscall.ESRCH) {
+		t.Fatalf("child process %d was not reaped after proof failure: %v", childPID, signalErr)
 	}
 }
 

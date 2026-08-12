@@ -47,6 +47,15 @@ func TestExecutionProofBindsEffectiveInvocation(t *testing.T) {
 			t.Fatal("proof with the wrong config binding was accepted")
 		}
 	})
+	t.Run("tampered record through invocation verifier", func(t *testing.T) {
+		proof := newValidProof()
+		proof.Record.Coverage = CoveragePartial
+		if err := proof.VerifyInvocation(ExecControlOptions{
+			Profile: "worker", PolicyHash: "config-hash", Workspace: "/workspace", TempDir: "/tmp/private", Binary: "/usr/bin/tool",
+		}, []string{"tool", "arg"}); err == nil {
+			t.Fatal("invocation verifier accepted a tampered enforcement record")
+		}
+	})
 	t.Run("execution failure", func(t *testing.T) {
 		proof := newValidProof()
 		proof.ExecError = "exec failed"

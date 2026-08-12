@@ -276,7 +276,7 @@ jobs:
     runs-on: ubuntu-latest
     # Includes subprocess coverage plus four race-enabled Guard conformance
     # invocations, each with its own five-minute timeout.
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:

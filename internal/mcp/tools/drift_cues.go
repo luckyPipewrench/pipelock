@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -31,7 +33,11 @@ func structuralDigest(t ToolDef) string {
 			source = canonical
 		}
 	} else {
-		source = append([]byte(t.Name), t.InputSchema...)
+		// Length-delimited, because a bare concatenation collides: name "ab"
+		// with schema "c" would hash the same preimage as name "a" with schema
+		// "bc", and two different definitions sharing a structural digest read
+		// as "nothing outside the description moved".
+		source = fmt.Appendf(nil, "%d:%s%d:%s", len(t.Name), t.Name, len(t.InputSchema), t.InputSchema)
 	}
 	sum := sha256.Sum256(source)
 	return hex.EncodeToString(sum[:])
@@ -107,9 +113,18 @@ const (
 )
 
 // driftCuePattern pairs a cue class with the shape that detects it.
+//
+// valued marks a cue whose IDENTITY includes the matched value, not just the
+// class. Presence-only comparison is a fail-open for these: a tool whose
+// approved description already posts to a vendor endpoint would have an
+// egress-url cue before and after an attacker swapped the destination, so the
+// set difference would be empty and the swap would be accepted. Capturing the
+// destination makes a new one an introduced cue while leaving unrelated edits
+// around an unchanged destination silent.
 type driftCuePattern struct {
-	cue string
-	re  *regexp.Regexp
+	cue    string
+	re     *regexp.Regexp
+	valued bool
 }
 
 var driftCuePatterns = []driftCuePattern{
@@ -130,7 +145,8 @@ var driftCuePatterns = []driftCuePattern{
 			`cop(?:y|ies|ied)|delivers?|delivered|exfiltrates?|exfiltrated|` +
 			`reports?|reported|relays?|relayed|pushe?s?|pushed|syncs?|synced|` +
 			`stream(?:s|ed)?|export(?:s|ed)?|leaks?|leaked|beacons?|beaconed` +
-			`)\b[^.!?]{0,100}?(?:\bhttps?://|\bwww\.[a-z0-9-]+\.[a-z]{2,})`),
+			`)\b[^.!?]{0,100}?(?:\bhttps?://([a-z0-9._~%:@-]+)|\bwww\.([a-z0-9-]+\.[a-z]{2,}))`),
+		valued: true,
 	},
 	{
 		cue: DriftCueConcealment,
@@ -152,9 +168,10 @@ var driftCuePatterns = []driftCuePattern{
 		// like an MCP tool identifier - containing an underscore, dot, or
 		// hyphen - which "Use the region tool naming convention." does not.
 		re: regexp.MustCompile(`(?i)` +
-			`\b(?:call|calls|calling|invoke|invokes|invoking)\s+(?:the\s+)?[a-z0-9][a-z0-9_.-]*\s+tool\b` +
-			`|\b(?:use|uses|using|with|via|through)\s+(?:the\s+)?[a-z0-9][a-z0-9]*[_.-][a-z0-9_.-]*\s+tool\b` +
-			`|\btool\s+named\s+['"\x60]?[a-z0-9][a-z0-9_.-]*`),
+			`\b(?:call|calls|calling|invoke|invokes|invoking)\s+(?:the\s+)?([a-z0-9][a-z0-9_.-]*)\s+tool\b` +
+			`|\b(?:use|uses|using|with|via|through)\s+(?:the\s+)?([a-z0-9][a-z0-9]*[_.-][a-z0-9_.-]*)\s+tool\b` +
+			`|\btool\s+named\s+['"\x60]?([a-z0-9][a-z0-9_.-]*)`),
+		valued: true,
 	},
 	{
 		cue: DriftCueDirective,
@@ -186,23 +203,43 @@ var driftCuePatterns = []driftCuePattern{
 	},
 }
 
-// driftCues returns the cue classes present in a definition's text, sorted and
-// deduplicated. Text is normalized the same way tool-poison matching normalizes
-// it, so a homoglyph or zero-width split cannot hide a cue from the comparison
-// on one side and reveal it on the other.
-func driftCues(text string) []string {
+// cueIdentity is one cue occurrence. Class is what an operator is told; value
+// is empty for a presence-only cue and carries the destination or referenced
+// tool name for a valued one.
+type cueIdentity struct {
+	class string
+	value string
+}
+
+// driftCues returns the cue identities present in a definition's text. Text is
+// normalized the same way tool-poison matching normalizes it, so a homoglyph or
+// zero-width split cannot hide a cue from the comparison on one side and reveal
+// it on the other.
+func driftCues(text string) map[cueIdentity]bool {
 	if text == "" {
 		return nil
 	}
 	normalized := normalize.ForToolText(text)
-	var cues []string
+	found := make(map[cueIdentity]bool)
 	for _, p := range driftCuePatterns {
-		if p.re.MatchString(normalized) {
-			cues = append(cues, p.cue)
+		if !p.valued {
+			if p.re.MatchString(normalized) {
+				found[cueIdentity{class: p.cue}] = true
+			}
+			continue
+		}
+		for _, m := range p.re.FindAllStringSubmatch(normalized, -1) {
+			value := ""
+			for _, group := range m[1:] {
+				if group != "" {
+					value = strings.ToLower(group)
+					break
+				}
+			}
+			found[cueIdentity{class: p.cue, value: value}] = true
 		}
 	}
-	sort.Strings(cues)
-	return cues
+	return found
 }
 
 // introducedDriftCues returns the cue classes present in the new definition
@@ -211,33 +248,41 @@ func driftCues(text string) []string {
 //
 // structuralChanged reports whether anything outside the description differed.
 func introducedDriftCues(prevDesc, newDesc string, structuralChanged bool) []string {
-	before := make(map[string]bool, len(driftCuePatterns)+1)
-	for _, cue := range definitionCues(prevDesc) {
-		before[cue] = true
-	}
+	before := definitionCues(prevDesc)
 
-	var introduced []string
-	for _, cue := range definitionCues(newDesc) {
+	classes := make(map[string]bool)
+	for cue := range definitionCues(newDesc) {
 		if !before[cue] {
-			introduced = append(introduced, cue)
+			classes[cue.class] = true
 		}
 	}
 	if structuralChanged {
-		introduced = append(introduced, DriftCueStructural)
-		sort.Strings(introduced)
+		classes[DriftCueStructural] = true
 	}
+
+	introduced := make([]string, 0, len(classes))
+	for class := range classes {
+		introduced = append(introduced, class)
+	}
+	sort.Strings(introduced)
 	return introduced
 }
 
-// definitionCues returns every cue class a description carries, including a
-// single collapsed entry for any tool-poison pattern hit. Poison matching is
-// reused rather than reimplemented so the drift bar can never disagree with
-// first-sight scanning about the same text.
-func definitionCues(desc string) []string {
+// definitionCues returns every cue identity a description carries. Poison
+// matching is reused rather than reimplemented so the drift bar can never
+// disagree with first-sight scanning about the same text, and each matched
+// pattern NAME is part of the identity so swapping one poison shape for another
+// still reads as introduced.
+func definitionCues(desc string) map[cueIdentity]bool {
 	cues := driftCues(desc)
-	if desc != "" && len(checkToolPoison(normalize.ForToolText(desc))) > 0 {
-		cues = append(cues, DriftCuePoison)
-		sort.Strings(cues)
+	if desc == "" {
+		return cues
+	}
+	if cues == nil {
+		cues = make(map[cueIdentity]bool)
+	}
+	for _, name := range checkToolPoison(normalize.ForToolText(desc)) {
+		cues[cueIdentity{class: DriftCuePoison, value: name}] = true
 	}
 	return cues
 }

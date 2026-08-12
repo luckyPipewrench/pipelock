@@ -384,6 +384,8 @@ response_scanning:
       regex: '(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()'
     - name: "Tool Invocation"
       regex: '(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)'
+    - name: "External Data Transfer Directive"
+      regex: '(?ims)(?:^|[.!?:]\s+)\s*(?:[-*]\s+)?(?:(?:please|must|required\s+to|need\s+to|you\s+(?:must|should|need\s+to))\s+)?(?:(?:send|upload|post|transmit|forward|email|exfiltrat\w*)\b.{0,120}\b(?:(?:session|user|customer|workspace|diagnostic)[_ -]+(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?)|credentials?|secrets?|tokens?)\b.{0,120}\bhttps?://|(?:call|invoke|execute|run|fetch|curl)\b.{0,180}\bhttps?://[^\s]{0,240}[?&](?:(?:session|user|customer|workspace|diagnostic)(?:[_%-]+(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?))?|token|secret|credential)=)'
     - name: "Authority Escalation"
       regex: '(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)'
     - name: "Pliny Divider"

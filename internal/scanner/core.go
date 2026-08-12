@@ -86,6 +86,10 @@ func coreResponsePatternDefs() []coreResponsePattern {
 			regex: `(?im)^\s*system\s*:`,
 		},
 		{
+			name:  "External Data Transfer Directive",
+			regex: config.ExternalDataTransferDirectiveRegex,
+		},
+		{
 			name:  "Role Override",
 			regex: `(?i)you\s+are\s+(now\s+)?(a\s+)?((?-i:\bDAN\b)|evil|unrestricted|jailbroken|unfiltered)`,
 		},

@@ -306,7 +306,8 @@ const (
 	// Re-bumped for request body/WebSocket content entropy warn-by-default
 	// posture in ApplyDefaults.
 	// Re-bumped for the policy-semantic forward_proxy.sni_require_tls field.
-	goldenHashDefaults = "f0a90dcdbb792983d0e90babd96db0f28189e7d44cf0c13cbe151fd5007cca61"
+	// Re-bumped for fake system-note external-action response coverage.
+	goldenHashDefaults = "5bcc4c5d4da55abfdfb2d9e6c60ad2f2bebf386bc171800e5fd3a42a4a8bf0a6"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -455,7 +456,8 @@ const (
 	// posture in ApplyDefaults: see goldenHashDefaults note above.
 	// Re-bumped for forward_proxy.sni_require_tls; the rich fixture omits the
 	// field, whose compatibility default is false.
-	goldenHashRichConfig = "829f65ad00b257f4511a046afdde22b75f657516057e691ace971275c7abfee5"
+	// Re-bumped for fake system-note external-action response coverage.
+	goldenHashRichConfig = "6ae5a981b2c2ca6f572890d0380c65ef21b5951c1649d06b8ce396e8cc11b950"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -6,9 +6,14 @@ package sandbox
 import (
 	"context"
 	"net"
+	"strconv"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func standaloneChildTempDir(pid int) string {
+	return "/tmp/pipelock-sandbox-" + strconv.Itoa(pid)
+}
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
 type StandaloneLaunchConfig struct {
@@ -42,8 +47,9 @@ type StandaloneLaunchConfig struct {
 	GuardProfile string
 	// GuardPolicyHash binds the canonical runtime configuration.
 	GuardPolicyHash string
-	// GuardAppliedPreExec receives proof that the helper applied the filesystem
-	// ruleset before attempting exec. Pipe completion cannot prove that the
-	// operator command started; returning an error terminates the launch.
-	GuardAppliedPreExec func(proof []byte) error
+	// GuardAppliedPreExec receives the parent-created temporary directory and
+	// proof that the helper applied the filesystem ruleset before attempting
+	// exec. Pipe completion cannot prove that the operator command started;
+	// returning an error terminates the launch.
+	GuardAppliedPreExec func(tempDir string, proof []byte) error
 }

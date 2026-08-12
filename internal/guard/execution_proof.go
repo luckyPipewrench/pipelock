@@ -51,6 +51,22 @@ func (p ExecutionProof) Verify(expectedConfigHash string) error {
 	return nil
 }
 
+// VerifyInvocation checks the proof and binds it to the invocation requested
+// by the parent. Recomputing a digest over child-supplied fields proves that
+// those fields agree with each other; it does not prove they match the
+// parent's profile, workspace, temporary directory, executable, and argv unless
+// they are compared.
+func (p ExecutionProof) VerifyInvocation(expected ExecControlOptions, command []string) error {
+	if err := p.Verify(expected.PolicyHash); err != nil {
+		return err
+	}
+	if p.Profile != expected.Profile || p.Workspace != expected.Workspace || p.TempDir != expected.TempDir ||
+		p.Binary != expected.Binary || !slices.Equal(p.Command, command) {
+		return errors.New("guard execution proof does not match the requested invocation")
+	}
+	return nil
+}
+
 func (p ExecutionProof) recomputeHash() string {
 	material := struct {
 		Record           EnforcementRecord `json:"record"`

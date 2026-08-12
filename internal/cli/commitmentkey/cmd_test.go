@@ -632,6 +632,54 @@ func TestLifecycleAuditHelpersRejectUnavailableSink(t *testing.T) {
 	})
 }
 
+func TestDurableAuditSinkRejectsInvalidFilesystemPaths(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeLifecycleAuditConfig(t, dir, filepath.Join(dir, "keyring.json"), filepath.Join(dir, "audit.jsonl"), "file", "")
+
+	flags := pathFlags{configFile: configPath}
+	if _, err := flags.durableAuditSink("\x00"); err == nil || !strings.Contains(err.Error(), "inspect lifecycle file") {
+		t.Fatalf("durableAuditSink error = %v, want invalid protected-path refusal", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		left  string
+		right string
+		want  string
+	}{
+		{name: "invalid logging path", left: "\x00", right: filepath.Join(dir, "keyring.json"), want: "inspect logging.file"},
+		{name: "invalid lifecycle path", left: filepath.Join(dir, "audit.jsonl"), right: "\x00", want: "inspect lifecycle file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := sameFilesystemPath(tc.left, tc.right); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("sameFilesystemPath error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizedFilesystemPathRejectsUnavailableWorkingDirectory(t *testing.T) {
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	missingDir := t.TempDir()
+	if err := os.Chdir(missingDir); err != nil {
+		t.Fatalf("Chdir into temporary directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+	if err := os.Remove(missingDir); err != nil {
+		t.Fatalf("remove current directory: %v", err)
+	}
+	if _, err := normalizedFilesystemPath("audit.jsonl"); err == nil {
+		t.Fatal("normalizedFilesystemPath succeeded without a working directory")
+	}
+}
+
 func TestLifecycleCommandsRejectSinkDeletedBeforeIntent(t *testing.T) {
 	for _, tc := range []struct {
 		operation string

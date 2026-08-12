@@ -680,6 +680,62 @@ func TestNormalizedFilesystemPathRejectsUnavailableWorkingDirectory(t *testing.T
 	}
 }
 
+func TestSameFilesystemPathRejectsInvalidSecondPathAfterWorkingDirectoryLoss(t *testing.T) {
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	missingDir := t.TempDir()
+	if err := os.Chdir(missingDir); err != nil {
+		t.Fatalf("Chdir into temporary directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+	if err := os.Remove(missingDir); err != nil {
+		t.Fatalf("remove current directory: %v", err)
+	}
+	if _, err := sameFilesystemPath(filepath.Join(originalDir, "audit.jsonl"), "keyring.json"); err == nil || !strings.Contains(err.Error(), "resolve lifecycle file") {
+		t.Fatalf("sameFilesystemPath error = %v, want unavailable-working-directory refusal", err)
+	}
+}
+
+func TestSameFilesystemPathRecognizesIdenticalPaths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	same, err := sameFilesystemPath(path, path)
+	if err != nil {
+		t.Fatalf("sameFilesystemPath: %v", err)
+	}
+	if !same {
+		t.Fatalf("sameFilesystemPath(%q, %q) = false, want true", path, path)
+	}
+}
+
+func TestLifecycleAuditReasonClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "nil", want: ""},
+		{name: "existing keyring", err: domkey.ErrAlreadyExists, want: "keyring_already_exists"},
+		{name: "invalid keyring", err: domkey.ErrInvalidKeyring, want: "invalid_keyring"},
+		{name: "unsafe permission", err: domkey.ErrUnsafePermission, want: "unsafe_permission"},
+		{name: "missing file", err: os.ErrNotExist, want: "file_not_found"},
+		{name: "permission denied", err: os.ErrPermission, want: "permission_denied"},
+		{name: "missing required flag", err: errors.New("required flag(s) \"key-id\" not set"), want: "missing_required_flag"},
+		{name: "missing audit sink", err: errors.New("durable lifecycle audit sink is not prepared"), want: "audit_sink_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lifecycleAuditReason(tc.err); got != tc.want {
+				t.Fatalf("lifecycleAuditReason(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLifecycleCommandsRejectSinkDeletedBeforeIntent(t *testing.T) {
 	for _, tc := range []struct {
 		operation string
@@ -701,7 +757,7 @@ func TestLifecycleCommandsRejectSinkDeletedBeforeIntent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewWatcher: %v", err)
 			}
-			defer watcher.Close()
+			defer func() { _ = watcher.Close() }()
 			if err := watcher.Add(dir); err != nil {
 				t.Fatalf("watch audit directory: %v", err)
 			}

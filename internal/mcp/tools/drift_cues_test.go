@@ -543,12 +543,24 @@ func TestResetDriftState_ClearsStructuralState(t *testing.T) {
 	// VACUOUS: after a reset the next definition takes the first-sighting path,
 	// which returns before classify runs, so a structuralChanged flag stays
 	// false whether or not stale digests survived.
+	// All FOUR maps, not just the two that show up as a structural cue. A
+	// surviving description is the fail-open of the set: EvaluateDefinition
+	// hands the stale approved description to Classify, so a cue the pre-reset
+	// definition already carried would read as pre-existing and produce no
+	// block. Nothing later in this test can catch that, because the classify
+	// closures below ignore prevDesc.
 	tb.mu.Lock()
-	remainingStructural, remainingHashes := len(tb.structural), len(tb.hashes)
+	remaining := map[string]int{
+		"hashes":     len(tb.hashes),
+		"structural": len(tb.structural),
+		"descs":      len(tb.descs),
+		"params":     len(tb.params),
+	}
 	tb.mu.Unlock()
-	if remainingStructural != 0 || remainingHashes != 0 {
-		t.Errorf("ResetDriftState left %d structural digests and %d hashes behind",
-			remainingStructural, remainingHashes)
+	for name, n := range remaining {
+		if n != 0 {
+			t.Errorf("ResetDriftState left %d entries in %s", n, name)
+		}
 	}
 
 	// Then re-baseline and drive a SECOND evaluation, which is the first one

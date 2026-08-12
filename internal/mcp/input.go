@@ -954,7 +954,7 @@ func ForwardScannedInput(
 			// Track request ID immediately before forwarding so response-side
 			// can validate without leaving stale state when a required
 			// receipt fails before the request is written.
-			if opts.requireReceipts() && actionID != "" {
+			if isRequest(fwdLine) && opts.requireReceipts() && actionID != "" {
 				outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionAllow,
@@ -975,7 +975,7 @@ func ForwardScannedInput(
 				})
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, contractGate)
 				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt})
-			} else {
+			} else if isRequest(fwdLine) {
 				tracker.Track(verdict.ID)
 			}
 			if err := forwardMessage(fwdLine); err != nil {
@@ -1310,7 +1310,9 @@ func ForwardScannedInput(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
-						tracker.Track(heldID)
+						if isRequest(heldLine) {
+							tracker.Track(heldID)
+						}
 						if err := forwardMessage(heldLine); err != nil {
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
@@ -1473,7 +1475,9 @@ func ForwardScannedInput(
 			}
 			receiptEmitted = true
 			// Forward anyway (warn mode).
-			tracker.Track(verdict.ID)
+			if isRequest(fwdLine) {
+				tracker.Track(verdict.ID)
+			}
 			if err := forwardMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return

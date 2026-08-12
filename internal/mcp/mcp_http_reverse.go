@@ -1827,8 +1827,10 @@ func listenerRequiresStateToken(opts MCPProxyOpts) bool {
 // listenerStatelessRequestOpts strips every control whose decision depends on
 // a retained client state partition. It is used only while a listener request
 // lacks a valid Pipelock-issued token. Stateless scanner, tool-poison, A2A,
-// policy, redaction, contract, and receipt checks remain active. Tool drift
-// uses the listener's upstream-owned baseline, never a client baseline.
+// policy, redaction, contract, receipt, and subject-keyed denial-of-wallet
+// checks remain active. Tool drift uses the listener's upstream-owned baseline,
+// never a client baseline. DoW derives identity from the authenticated principal
+// or transport peer, so it does not depend on this client state partition.
 func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 	if toolCfg := opts.toolCfg(); toolCfg != nil {
 		// Preserve response-only tool-poison matching and the explicit
@@ -1857,9 +1859,6 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 	opts.CEEFn = nil
 	opts.ToolFreezer = nil
 	opts.FrozenToolStableKey = ""
-	opts.DoWCheck = nil
-	opts.DoWEnabledFn = nil
-	opts.DoWEnforceSubjectTrust = false
 	return opts
 }
 

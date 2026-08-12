@@ -6735,6 +6735,58 @@ func TestHTTPListener_DoWBillsSessionlessRequestAtDefaultMinimumTrust(t *testing
 	}
 }
 
+func TestHTTPListener_DoWRemainsEnforcedWhenStateTokenIsOmitted(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "server-session-"+string(request.ID))
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
+	}))
+	defer upstream.Close()
+
+	var budgetCalls atomic.Int32
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                testScannerForHTTP(t),
+		ToolCfg:                &tools.ToolScanConfig{Action: config.ActionBlock},
+		DoWEnforceSubjectTrust: true,
+		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+			if budgetCalls.Add(1) > 1 {
+				return false, config.ActionBlock, "subject budget exceeded", "test_budget"
+			}
+			return true, config.ActionBlock, "", ""
+		},
+	})
+
+	// Establish two independent listener sessions, then deliberately omit both
+	// Pipelock-issued tokens. A client-controlled upstream session ID must not
+	// buy a fresh DoW subject bucket or disable the budget check.
+	_ = initializeHTTPListenerSession(t, baseURL, 101)
+	_ = initializeHTTPListenerSession(t, baseURL, 202)
+	first := postHTTPListenerToolCall(t, baseURL, "server-session-101", http.StatusOK)
+	if strings.Contains(first, "subject budget exceeded") {
+		t.Fatalf("first tokenless call unexpectedly blocked: %s", first)
+	}
+	second := postHTTPListenerToolCall(t, baseURL, "server-session-202", http.StatusOK)
+	if !strings.Contains(second, "subject budget exceeded") {
+		t.Fatalf("second tokenless call bypassed same-subject budget: %s", second)
+	}
+	if got := upstreamHits.Load(); got != 3 {
+		// Two initialize requests and only the first tools/call reach upstream.
+		t.Fatalf("upstream hits = %d, want 3", got)
+	}
+}
+
 func TestHTTPListener_DoWUsesStableSubjectAcrossServerIssuedSessions(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {

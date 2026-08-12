@@ -21,7 +21,7 @@ func TestSyncDurableAuditParentFailurePaths(t *testing.T) {
 	})
 
 	t.Run("procfs does not support directory sync", func(t *testing.T) {
-		if runtime.GOOS != "linux" {
+		if !supportsProcfsDirectorySyncFailure(runtime.GOOS) {
 			t.Skip("procfs is only available on Linux")
 		}
 		err := syncDurableAuditParent("/proc/self/audit.jsonl")
@@ -29,4 +29,23 @@ func TestSyncDurableAuditParentFailurePaths(t *testing.T) {
 			t.Fatalf("syncDurableAuditParent error = %v, want parent sync failure", err)
 		}
 	})
+}
+
+func TestSupportsProcfsDirectorySyncFailure(t *testing.T) {
+	for _, tc := range []struct {
+		goos string
+		want bool
+	}{
+		{goos: "linux", want: true},
+		{goos: "darwin", want: false},
+		{goos: "freebsd", want: false},
+	} {
+		if got := supportsProcfsDirectorySyncFailure(tc.goos); got != tc.want {
+			t.Fatalf("supportsProcfsDirectorySyncFailure(%q) = %t, want %t", tc.goos, got, tc.want)
+		}
+	}
+}
+
+func supportsProcfsDirectorySyncFailure(goos string) bool {
+	return goos == "linux"
 }

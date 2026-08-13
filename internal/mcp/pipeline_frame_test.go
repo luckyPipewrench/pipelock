@@ -156,6 +156,25 @@ func TestParseMCPFrame_ProtocolVersionMetadata(t *testing.T) {
 			name: "malformed JSON",
 			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":`,
 		},
+		{
+			// A JSON null unmarshals into a string without error, so this case
+			// would report the version present with an empty value if the flag
+			// were set from unmarshal success alone.
+			name: "null version",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":null}}}`,
+		},
+		{
+			name: "empty string version",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":""}}}`,
+		},
+		{
+			name: "null _meta",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":null}}`,
+		},
+		{
+			name: "absent _meta",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

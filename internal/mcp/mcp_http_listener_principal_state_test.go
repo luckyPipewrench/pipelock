@@ -315,6 +315,17 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 	if !strings.Contains(string(auditData), `"session":"`+legacySession+`"`) {
 		t.Fatalf("unbound request audit key did not retain its compatibility session header: %s", auditData)
 	}
+
+	// Positive control. Every security assertion above is a negative one: the
+	// retired request was not blocked. That proves the retired principal avoided
+	// the legacy partition only if the matcher would have fired had it entered
+	// that partition. Complete the chain on the legacy key directly and require
+	// a match, so a matcher that silently stops recognising this pattern fails
+	// here instead of leaving the test green while proving nothing. Run it after
+	// the HTTP assertions so it cannot alter the state the listener observed.
+	if verdict := chainMatcher.Record(legacyStateKey, "bash_exec"); !verdict.Matched {
+		t.Fatalf("chain matcher did not match the completing step on the legacy partition, so the negative assertions above prove nothing: %+v", verdict)
+	}
 }
 
 func TestHTTPListener_PrincipalState_VerifierSeparatesAuthenticatedSubjects(t *testing.T) {

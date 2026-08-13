@@ -241,7 +241,11 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	}
 	if json.Unmarshal(decoded.Params, &paramsMeta) == nil && paramsMeta.Meta != nil {
 		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/protocolVersion"]; ok {
-			frame.ProtocolVersionPresent = json.Unmarshal(raw, &frame.ProtocolVersion) == nil
+			// A JSON null unmarshals into a string without error and leaves it
+			// empty, so success alone would mark a null version present. The flag
+			// gates current-wire validation, so it must mean "a version string
+			// arrived", not "the key was there".
+			frame.ProtocolVersionPresent = json.Unmarshal(raw, &frame.ProtocolVersion) == nil && frame.ProtocolVersion != ""
 		}
 		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/clientCapabilities"]; ok {
 			var capabilities map[string]json.RawMessage

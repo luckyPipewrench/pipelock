@@ -136,6 +136,55 @@ func TestRosterBuild_EnforcesAtomicOutputPermissions(t *testing.T) {
 	}
 }
 
+func TestRosterBuild_RefusesOutputNamingRootKey(t *testing.T) {
+	fx := newRosterBuildFixture(t)
+	rootBefore, err := os.ReadFile(filepath.Clean(fx.rootPath))
+	if err != nil {
+		t.Fatalf("read root before command: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		out     string
+		wantErr string
+	}{
+		{name: "root key", out: fx.rootPath, wantErr: "--out must not name the roster root key"},
+		{name: "distinct output", out: filepath.Join(fx.dir, "roster.json")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := rosterBuildCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{
+				"--root", fx.rootPath,
+				"--include", "id=compile-test,key=" + fx.compilePath + ",purpose=" + string(domsigning.PurposeContractCompileSigning),
+				"--data-class", "internal",
+				"--out", tc.out,
+				"--force",
+			})
+			err := cmd.Execute()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Execute: %v", err)
+				}
+				if _, statErr := os.Stat(tc.out); statErr != nil {
+					t.Fatalf("stat distinct roster output: %v", statErr)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Execute error = %v, want %q", err, tc.wantErr)
+			}
+
+			rootAfter, readErr := os.ReadFile(filepath.Clean(fx.rootPath))
+			if readErr != nil {
+				t.Fatalf("read root after command: %v", readErr)
+			}
+			if !bytes.Equal(rootAfter, rootBefore) {
+				t.Fatal("roster root key changed")
+			}
+		})
+	}
+}
+
 func TestRosterBuild_RefusesDuplicateID(t *testing.T) {
 	fx := newRosterBuildFixture(t)
 	out := filepath.Join(fx.dir, "roster.json")

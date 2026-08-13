@@ -113,6 +113,31 @@ func TestPubkeyCmd_OutWritesPublicKeyFile0640(t *testing.T) {
 	}
 }
 
+func TestPubkeyCmd_RefusesOutputNamingPrivateKey(t *testing.T) {
+	keyPath, _, _ := writeRecorderSigningKey(t)
+	keyBefore, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key before command: %v", err)
+	}
+
+	cmd := signingPubkeyTestRoot()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"signing", "pubkey", "--key-file", keyPath, "--out", keyPath})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--out must not name the signing key") {
+		t.Fatalf("Execute error = %v, want output alias refusal", err)
+	}
+
+	keyAfter, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key after command: %v", err)
+	}
+	if !bytes.Equal(keyAfter, keyBefore) {
+		t.Fatal("private key changed")
+	}
+}
+
 func TestPubkeyCmd_RejectsPublicKeyFileAsKeyFile(t *testing.T) {
 	t.Parallel()
 

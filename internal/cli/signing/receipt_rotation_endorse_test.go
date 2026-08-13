@@ -85,6 +85,53 @@ func TestReceiptRotationEndorseCmdCreatesVerifiedArtifact(t *testing.T) {
 	}
 }
 
+func TestReceiptRotationEndorseCmd_RefusesOutputNamingRotationKey(t *testing.T) {
+	dir := t.TempDir()
+	pubA, privA := generateRotationTestKey(t)
+	_, privB := generateRotationTestKey(t)
+	emitClosedInto(t, dir, privA, 2, 0)
+	priorPath := saveRotationTestKey(t, dir, "prior.key", privA)
+	newPath := saveRotationTestKey(t, dir, "new.key", privB)
+
+	for _, tc := range []struct {
+		name      string
+		out       string
+		protected string
+		wantErr   string
+	}{
+		{name: "retiring key", out: priorPath, protected: priorPath, wantErr: "--out must not name the retiring signing key"},
+		{name: "successor key", out: newPath, protected: newPath, wantErr: "--out must not name the successor signing key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyBefore, err := os.ReadFile(filepath.Clean(tc.protected))
+			if err != nil {
+				t.Fatalf("read protected key before command: %v", err)
+			}
+			cmd := receiptRotationEndorseCmd(time.Now)
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{
+				"--chain", dir,
+				"--prior-key-file", priorPath,
+				"--new-key-file", newPath,
+				"--root-key", hex.EncodeToString(pubA),
+				"--out", tc.out,
+			})
+			err = cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Execute error = %v, want %q", err, tc.wantErr)
+			}
+			keyAfter, readErr := os.ReadFile(filepath.Clean(tc.protected))
+			if readErr != nil {
+				t.Fatalf("read protected key after command: %v", readErr)
+			}
+			if !bytes.Equal(keyAfter, keyBefore) {
+				t.Fatalf("%s changed", tc.name)
+			}
+		})
+	}
+}
+
 func TestReceiptRotationEndorseCmdSupportsPreviouslyEndorsedChain(t *testing.T) {
 	dir := t.TempDir()
 	pubA, privA := generateRotationTestKey(t)

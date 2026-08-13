@@ -1209,17 +1209,19 @@ mcp_session_binding:
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
 
-On the HTTP reverse listener, Pipelock keeps each client's session-binding baseline, adaptive enforcement state, taint risk, and chain history under a Pipelock-issued `Pipelock-Session-Token`. An allowed non-batch `initialize` response with `application/json` issues a 256-bit opaque token in that header. This is a Pipelock-specific extension, not an MCP protocol header. Pipelock's own HTTP client returns it on later POST, GET, and DELETE requests; a standard MCP client will not. Pipelock does not forward this header upstream.
+On the HTTP reverse listener, persistent security state belongs to an authenticated principal. The configured listener bearer is one shared credential principal: every holder intentionally shares its session-binding baseline, adaptive state, taint risk, chain history, cross-request exfiltration state, and quota. It proves membership in that trust domain, not an individual human identity. Deployments that need separate users or agents can supply a verifier-backed principal resolver; OAuth and mTLS integrations use the same state boundary without changing the MCP wire protocol.
 
-A standard client without the token still receives request-local content scanning, tool-poison scanning, and upstream-scoped tool-drift detection on `tools/list`. It cannot read or update token-bound tool session binding, adaptive enforcement, taint, chain, or cross-request exfiltration state. A later `tools/call` therefore follows the configured `no_baseline_action`, even when another client or the upstream drift baseline has seen that tool.
+Protocol revision `2026-07-28` does not use `initialize` or protocol sessions. Each request authenticates with either the configured listener bearer or credentials resolved by the verifier, and persistent protection begins on the first authenticated request. No Pipelock-specific response header is required. `Mcp-Session-Id`, `_meta.clientInfo`, forwarded client-IP headers, routing names, and other client-declared values never select or rekey security state.
 
-`Mcp-Session-Id` remains upstream protocol routing data. It never selects or rekeys Pipelock listener state, even when an upstream changes or reuses it. This avoids moving one client's learned state into another partition or overwriting an existing partition.
+Current HTTP requests carry `Mcp-Method` and, where applicable, `Mcp-Name` plus schema-selected `Mcp-Param-*` mirrors. Pipelock checks the standard routing headers against the body before forwarding. When tool scanning accepts a `tools/list` response for an authenticated principal, Pipelock records valid `x-mcp-header` contracts and checks each recognized parameter mirror against the exact body argument path. Missing, duplicate, malformed, or mismatched recognized mirrors fail locally. A contract from a warned or invalid definition is not trusted. Its parameter headers remain transparent intermediary data for protocol compatibility, but their raw and decoded values are always scanned. Base64 is transport encoding, not secrecy; do not mark credentials or personal data with `x-mcp-header`.
 
-Token-bound state is enabled automatically when tool session binding, adaptive enforcement, taint, chain detection, or cross-request exfiltration detection is configured. A POST without a valid token, including one after eviction or DELETE, still receives request-local content scanning and follows that scan's verdict, but it receives no persistent state. GET and DELETE require a valid token because those methods operate on an established state. DELETE removes the recorder and cancels outstanding requests using that token.
+When a principal-scoped control is configured and a request has no authenticated principal, Pipelock performs its request-local scan and then refuses the request before it reaches the upstream. It does not silently remove the configured control. Pure request scanning, tool-poison scanning, upstream-scoped tool drift, and network-grade denial-of-wallet remain usable without a principal.
 
-The registry holds at most 4,096 token states. It evicts the least recently used state and deletes its recorder. An evicted client must run `initialize` again to recover persistent state. Until then, its POST requests remain stateless but still pass through the content scanners. Stateless listener configurations do not require the token.
+Replacing a file-backed listener bearer starts a new credential epoch on the next request. Pipelock revokes and cancels the previous epoch, deletes its recorder, and does not carry learned security state into the new credential. The listener trust domain keeps its denial-of-wallet spend across rotation, so credential hygiene cannot become a quota reset. A current-protocol DELETE terminates upstream transport resources but does not erase the authenticated principal's firewall history.
 
-The token is a Pipelock-issued bearer correlation capability, not an authenticated end-user identity. A deployment that lets an untrusted party start arbitrary allowed `initialize` flows must use listener authentication or another access boundary to control who can create new token states.
+For migration, older clients may continue returning a Pipelock-issued `Pipelock-Session-Token` after a legacy `initialize` exchange. That compatibility capability is isolated from principal-owned state, is never forwarded upstream, and is never issued for a `2026-07-28` request. New integrations must use authenticated principal state instead.
+
+The registry holds at most 4,096 client states. Idle principal and legacy compatibility states expire after 24 hours. At capacity, a new authenticated principal evicts legacy state first but never pressure-evicts another live principal's security history; if every slot belongs to a live principal, admission fails closed. Stateless listener configurations do not allocate persistent client state.
 
 ## MCP WebSocket Listener
 
@@ -2047,6 +2049,11 @@ start refusing traffic Pipelock can already account for. Raise it to `agent` or
 let them spend one another's allowance. Note that raising the minimum above what
 a deployment can actually prove will refuse every request, which is why the
 setting is explicit rather than inferred.
+
+The HTTP listener's configured shared bearer reaches `agent` trust and creates
+one shared budget for every holder. It does not reach `principal`: only a
+verifier-backed identity such as an OAuth subject or mTLS client identity can
+separate callers at that grade.
 
 `dow_min_subject_trust` is hot-reloadable; a change takes effect on the next
 request without restarting the listener.

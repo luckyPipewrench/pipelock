@@ -826,6 +826,8 @@ func (l *Logger) LogCommitmentKeyLifecycle(ev CommitmentKeyLifecycleEvent) {
 		str("event_type", string(EventCommitmentKeyLifecycle)).
 		str("operation", ev.Operation).
 		str("outcome", ev.Outcome).
+		optStr("phase", ev.Phase).
+		optStr("operation_id", ev.OperationID).
 		optStr("key_id", ev.KeyID).
 		optStr("timestamp", ev.Timestamp).
 		optStr("reason", ev.Reason).

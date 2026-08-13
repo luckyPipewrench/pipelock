@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,30 +93,31 @@ func TestHTTPListener_ForwardsRequiredMCPRequestHeaders(t *testing.T) {
 		default:
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
 	}))
 	defer upstream.Close()
 
-	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+	baseURL, logBuf := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
 		Scanner: testScannerForHTTP(t),
 	})
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(listenerMCPMethod, "tools/list")
+	req.Header.Set(listenerMCPMethod, "tools/call")
 	req.Header.Set(listenerMCPName, "echo")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
+	payload, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("request status = %d, want 200", resp.StatusCode)
+		t.Fatalf("request status = %d body=%s log=%s, want 200", resp.StatusCode, payload, logBuf.String())
 	}
 
 	got := <-seen
-	if got.method != "tools/list" {
-		t.Errorf("upstream got %s = %q, want %q (stripped header downgrades the protocol)", listenerMCPMethod, got.method, "tools/list")
+	if got.method != "tools/call" {
+		t.Errorf("upstream got %s = %q, want %q (stripped header downgrades the protocol)", listenerMCPMethod, got.method, "tools/call")
 	}
 	if got.name != "echo" {
 		t.Errorf("upstream got %s = %q, want %q", listenerMCPName, got.name, "echo")

@@ -127,29 +127,95 @@ func TestParseMCPFrame_ToolsCallNullArgs(t *testing.T) {
 	}
 }
 
-func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
+func TestParseMCPFrame_ProtocolVersionMetadata(t *testing.T) {
 	tests := []struct {
-		name string
-		msg  string
+		name        string
+		msg         string
+		wantPresent bool
+		wantVersion string
 	}{
 		{
-			name: "params array",
-			msg:  `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":["not","object"]}`,
+			name:        "valid string",
+			msg:         `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-06-18"}}}`,
+			wantPresent: true,
+			wantVersion: "2025-06-18",
 		},
 		{
-			name: "params string",
-			msg:  `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":"not-object"}`,
+			name: "number",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":1}}}`,
 		},
 		{
-			name: "non-string tool name",
-			msg:  `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":42,"arguments":{"q":"x"}}}`,
+			name: "object",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":{}}}}`,
+		},
+		{
+			name: "array",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":[]}}}`,
+		},
+		{
+			name: "malformed JSON",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":`,
+		},
+		{
+			// A JSON null unmarshals into a string without error, so this case
+			// would report the version present with an empty value if the flag
+			// were set from unmarshal success alone.
+			name: "null version",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":null}}}`,
+		},
+		{
+			name: "empty string version",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":""}}}`,
+		},
+		{
+			name: "null _meta",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":null}}`,
+		},
+		{
+			name: "absent _meta",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			frame := ParseMCPFrame([]byte(tt.msg))
-			if frame.ParseErr != nil {
-				t.Fatalf("ParseErr = %v, want nil", frame.ParseErr)
+			if frame.ProtocolVersionPresent != tt.wantPresent {
+				t.Errorf("ProtocolVersionPresent = %v, want %v", frame.ProtocolVersionPresent, tt.wantPresent)
+			}
+			if frame.ProtocolVersion != tt.wantVersion {
+				t.Errorf("ProtocolVersion = %q, want %q", frame.ProtocolVersion, tt.wantVersion)
+			}
+		})
+	}
+}
+
+func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
+	tests := []struct {
+		name         string
+		msg          string
+		wantParseErr bool
+	}{
+		{
+			name:         "params array",
+			msg:          `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":["not","object"]}`,
+			wantParseErr: true,
+		},
+		{
+			name:         "params string",
+			msg:          `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":"not-object"}`,
+			wantParseErr: true,
+		},
+		{
+			name:         "non-string tool name",
+			msg:          `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":42,"arguments":{"q":"x"}}}`,
+			wantParseErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := ParseMCPFrame([]byte(tt.msg))
+			if got := frame.ParseErr != nil; got != tt.wantParseErr {
+				t.Fatalf("ParseErr = %v, present = %v, want present = %v", frame.ParseErr, got, tt.wantParseErr)
 			}
 			if frame.ID == nil {
 				t.Fatal("ID = nil, want preserved request ID")

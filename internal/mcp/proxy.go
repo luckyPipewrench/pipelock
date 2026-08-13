@@ -448,6 +448,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					decision = config.ActionAllow
 				}
 			}
+			// Header bindings are security state for the exact accepted tool
+			// definitions, just like the inventory. Commit them only after the
+			// tools/list response survives poisoning, DLP, provenance, and output.
+			if toolResult.Clean {
+				toolCfg.Baseline.SetToolHeaderBindings(toolResult.ToolDefs)
+			} else {
+				toolCfg.Baseline.ClearToolHeaderBindings(toolResult.ToolDefs)
+			}
 			if !toolInventoryResolved {
 				resolveToolInventory(decision)
 			}

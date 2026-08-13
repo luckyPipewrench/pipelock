@@ -21,6 +21,8 @@ import (
 // HTTP upstream paths where no pre-validator runs.
 var ErrInvalidMethodType = errors.New("mcp: method must be a string")
 
+const methodPromptsGet = "prompts/get"
+
 // MCPFrame is a structural parse of a JSON-RPC 2.0 message
 // received on an MCP transport. Callers that previously invoked
 // extractRPCID, extractToolCallName, and extractToolCallArgs separately
@@ -59,6 +61,26 @@ type MCPFrame struct {
 	// "tools/call". Empty otherwise so callers can use the empty-string
 	// check as a "not a tools/call" gate without re-parsing.
 	ToolCallName string
+
+	// RoutingName is the entity selected by methods whose 2026-07-28 HTTP
+	// routing contract requires Mcp-Name. It is the tool name, resource URI, or
+	// prompt name, depending on Method.
+	RoutingName string
+	// RoutingNamePresent distinguishes an absent body field from an explicitly
+	// present empty string. RoutingNameErr records a non-string or malformed
+	// params shape without turning otherwise valid legacy traffic into a global
+	// parse failure. HTTP routing-header validation uses both fields to refuse a
+	// header that has no trustworthy body value to mirror.
+	RoutingNamePresent bool
+	RoutingNameErr     error
+
+	// ProtocolVersion and ClientCapabilitiesPresent come from the standard
+	// request metadata added by protocol revision 2026-07-28. ClientInfo is
+	// deliberately not retained because it is self-declared and is never an
+	// authentication input.
+	ProtocolVersion           string
+	ProtocolVersionPresent    bool
+	ClientCapabilitiesPresent bool
 
 	// Args is the raw params.arguments JSON for tools/call messages.
 	// nil for non-tools/call methods and when arguments are absent.
@@ -173,13 +195,23 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	}
 	if frame.Method == methodToolsCall {
 		var params struct {
-			Name      string          `json:"name"`
+			Name      json.RawMessage `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
 		}
 		if err := json.Unmarshal(decoded.Params, &params); err != nil {
+			frame.RoutingNameErr = err
+			frame.ParseErr = err
 			return frame
 		}
-		frame.ToolCallName = params.Name
+		if len(params.Name) > 0 {
+			frame.RoutingNamePresent = true
+			if err := json.Unmarshal(params.Name, &frame.RoutingName); err != nil {
+				frame.RoutingNameErr = err
+				frame.ParseErr = err
+				return frame
+			}
+			frame.ToolCallName = frame.RoutingName
+		}
 		// Only retain a non-null, non-empty Arguments slice. A
 		// json.RawMessage of "null" is non-nil in Go but semantically
 		// absent; normalising to nil here lets callers rely on a plain
@@ -188,7 +220,50 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 			frame.Args = params.Arguments
 		}
 	}
+	if field := routingFieldForMethod(frame.Method); field != "" {
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(decoded.Params, &params); err != nil {
+			frame.RoutingNameErr = err
+			frame.ParseErr = err
+			return frame
+		}
+		if raw, ok := params[field]; ok && len(raw) > 0 {
+			frame.RoutingNamePresent = true
+			if err := json.Unmarshal(raw, &frame.RoutingName); err != nil {
+				frame.RoutingNameErr = err
+				frame.ParseErr = err
+				return frame
+			}
+		}
+	}
+	var paramsMeta struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	if json.Unmarshal(decoded.Params, &paramsMeta) == nil && paramsMeta.Meta != nil {
+		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/protocolVersion"]; ok {
+			// A JSON null unmarshals into a string without error and leaves it
+			// empty, so success alone would mark a null version present. The flag
+			// gates current-wire validation, so it must mean "a version string
+			// arrived", not "the key was there".
+			frame.ProtocolVersionPresent = json.Unmarshal(raw, &frame.ProtocolVersion) == nil && frame.ProtocolVersion != ""
+		}
+		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/clientCapabilities"]; ok {
+			var capabilities map[string]json.RawMessage
+			frame.ClientCapabilitiesPresent = json.Unmarshal(raw, &capabilities) == nil && capabilities != nil
+		}
+	}
 	return frame
+}
+
+func routingFieldForMethod(method string) string {
+	switch method {
+	case methodResourcesRead:
+		return "uri"
+	case methodPromptsGet:
+		return "name"
+	default:
+		return ""
+	}
 }
 
 // recoverTopLevelJSONRPCID reads a top-level JSON-RPC id without requiring the

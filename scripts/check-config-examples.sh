@@ -227,6 +227,8 @@ probe() {
     # Relocating them keeps the block booted; skipping it would hollow out cover.
     # Input dirs such as rules_dir and learn_lock.store_dir are deliberately
     # excluded: replacing them with an empty directory could conceal a refusal.
+    # The bare file key is logging.file; all other file-path schema keys use a
+    # distinct *_file name, so it cannot accidentally rewrite an input path.
     local run_cfg="$WORK/run-$total.yaml"
     sed -E "s@^([[:space:]]*(dir|profile_dir|bundle_cache_dir|durable_audit_queue_dir|quarantine_dir|capture_dir):[[:space:]])(\"[^\"]+\"|'[^']+'|[^\"'[:space:]#]([^#]*[^[:space:]#])?)([[:space:]]*#.*)?\$@\1\"$WORK/d$total\"\5@" \
         "$snippet" \

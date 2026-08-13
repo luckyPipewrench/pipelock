@@ -310,6 +310,7 @@ func TestMCPListenerClientStates_LegacyAdmissionEvictsOldest(t *testing.T) {
 		if i == 0 {
 			oldest = state
 		}
+		states.touchLocked(state)
 		state.lastAccessed = uint64(i + 1)
 		states.clients[state.key] = state
 		store.GetOrCreate(state.key)

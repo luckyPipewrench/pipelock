@@ -793,7 +793,7 @@ func TestAppendLedger(t *testing.T) {
 		Features:  []string{license.FeatureAgents},
 	}
 
-	if err := appendLedger(ledgerPath, lic, "fake-token"); err != nil {
+	if err := appendLedger(ledgerPath, lic, "fake-token", nil); err != nil {
 		t.Fatalf("appendLedger: %v", err)
 	}
 
@@ -813,7 +813,7 @@ func TestAppendLedger(t *testing.T) {
 		IssuedAt: time.Now().Unix(),
 		Features: []string{license.FeatureAgents},
 	}
-	if err := appendLedger(ledgerPath, lic2, "fake-token-2"); err != nil {
+	if err := appendLedger(ledgerPath, lic2, "fake-token-2", nil); err != nil {
 		t.Fatalf("appendLedger second: %v", err)
 	}
 
@@ -1233,7 +1233,7 @@ func TestAppendLedger_UnwritablePath(t *testing.T) {
 		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
 		Features:  []string{license.FeatureAgents},
 	}
-	err := appendLedger(ledgerPath, lic, "token")
+	err := appendLedger(ledgerPath, lic, "token", nil)
 	if err == nil {
 		t.Fatal("expected error for unwritable ledger path")
 	}
@@ -1251,7 +1251,7 @@ func TestAppendLedger_WithExpiry(t *testing.T) {
 		Features:  []string{license.FeatureAgents},
 	}
 
-	if err := appendLedger(ledgerPath, lic, "fake-token"); err != nil {
+	if err := appendLedger(ledgerPath, lic, "fake-token", nil); err != nil {
 		t.Fatalf("appendLedger: %v", err)
 	}
 
@@ -1367,7 +1367,7 @@ func TestAppendLedger_Symlink(t *testing.T) {
 	}
 
 	lic := license.License{ID: "lic_test", Email: "test@example.com"}
-	err := appendLedger(link, lic, "token")
+	err := appendLedger(link, lic, "token", nil)
 	if err == nil {
 		t.Fatal("expected error for symlink ledger path")
 	}

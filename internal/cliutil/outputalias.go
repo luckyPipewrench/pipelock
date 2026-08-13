@@ -53,6 +53,28 @@ func RefuseOutputAliases(protectedPaths map[string]string, outputs map[string]st
 // comparable, and compares inode identity when both paths exist, so a symlink
 // or a hard link to the protected file is recognised.
 func SamePathIdentity(left, right string) (bool, error) {
+	// Ask the filesystem first, using the paths exactly as written. This is the
+	// authoritative answer and it is immune to spelling: the kernel resolves
+	// symlinks and ".." in the order they appear, so it catches an alias that no
+	// amount of string comparison would.
+	//
+	// Lexical normalization must NOT decide identity, because filepath.Clean
+	// collapses ".." BEFORE any symlink is resolved and the filesystem does not.
+	// With "a/link" a symlink to "b/sub", the path "a/link/../license.key"
+	// resolves to "b/license.key" on disk while Clean yields "a/license.key".
+	// Deciding on the cleaned string therefore misses a real alias.
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	if leftErr == nil && rightErr == nil {
+		return os.SameFile(leftInfo, rightInfo), nil
+	}
+
+	// One side does not exist, so there is no identity to compare and the output
+	// is usually a file about to be created. Fall back to comparing resolved
+	// names, which is the only thing available for a path with no inode yet. A
+	// stat failure is not reported as an error here: it would replace the
+	// caller's real failure, such as an output path whose parent is not a
+	// directory, with a confusing resolution error.
 	leftPath, err := resolvedPath(left)
 	if err != nil {
 		return false, err
@@ -61,22 +83,7 @@ func SamePathIdentity(left, right string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if leftPath == rightPath {
-		return true, nil
-	}
-	// Identity can only match when both paths resolve to an existing file, so a
-	// stat failure on either side means they are not the same file and is not an
-	// error here. Reporting it would replace the caller's real failure, such as
-	// an output path whose parent is not a directory, with a resolution error.
-	leftInfo, leftErr := os.Stat(leftPath)
-	if leftErr != nil {
-		return false, nil
-	}
-	rightInfo, rightErr := os.Stat(rightPath)
-	if rightErr != nil {
-		return false, nil
-	}
-	return os.SameFile(leftInfo, rightInfo), nil
+	return leftPath == rightPath, nil
 }
 
 func resolvedPath(path string) (string, error) {

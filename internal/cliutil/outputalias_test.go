@@ -6,6 +6,7 @@ package cliutil
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,13 +20,16 @@ func TestRefuseOutputAliases(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Feature-detect rather than assume: an unprivileged Windows agent cannot
+	// create these, and a fixture that cannot be built is not a failure of the
+	// code under test.
 	linkToKey := filepath.Join(dir, "link-to-key")
 	if err := os.Symlink(keyPath, linkToKey); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlinks unsupported here: %v", err)
 	}
 	hardLinkToKey := filepath.Join(dir, "hardlink-to-key")
 	if err := os.Link(keyPath, hardLinkToKey); err != nil {
-		t.Fatal(err)
+		t.Skipf("hard links unsupported here: %v", err)
 	}
 	protected := map[string]string{"--key": keyPath}
 
@@ -107,6 +111,9 @@ func TestRefuseOutputAliases_ResolutionEdges(t *testing.T) {
 	})
 
 	t.Run("untraversable parent is reported", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("directory mode does not control traversal on Windows")
+		}
 		if os.Geteuid() == 0 {
 			t.Skip("root traverses unreadable directories")
 		}
@@ -124,4 +131,47 @@ func TestRefuseOutputAliases_ResolutionEdges(t *testing.T) {
 			t.Fatalf("error = %v, want a resolution failure", err)
 		}
 	})
+}
+
+// TestRefuseOutputAliases_SymlinkThenDotDot pins the spelling that lexical
+// normalization gets wrong. filepath.Clean collapses ".." before any symlink is
+// resolved; the filesystem does not. With an intermediate symlink followed by
+// "..", a cleaned string names a different file than the kernel opens, so
+// deciding identity lexically would let an alias through.
+func TestRefuseOutputAliases_SymlinkThenDotDot(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	subDir := filepath.Join(realDir, "sub")
+	if err := os.MkdirAll(subDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	viaDir := filepath.Join(dir, "via")
+	if err := os.Mkdir(viaDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(realDir, "signing.key")
+	if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(viaDir, "link")
+	if err := os.Symlink(subDir, link); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+
+	// Build the spelling by hand: filepath.Join cleans its result, which would
+	// collapse the ".." here and destroy the very case under test. The kernel
+	// resolves this to realDir/signing.key, while a cleaned string names
+	// viaDir/signing.key, which does not exist.
+	aliased := link + string(filepath.Separator) + ".." + string(filepath.Separator) + "signing.key"
+	if _, err := os.Stat(aliased); err != nil {
+		t.Fatalf("fixture is wrong, the aliased spelling should reach the key: %v", err)
+	}
+
+	err := RefuseOutputAliases(map[string]string{"the signing key": keyPath}, map[string]string{"--out": aliased})
+	if err == nil {
+		t.Fatal("RefuseOutputAliases accepted a symlink-then-dotdot alias of the protected file")
+	}
+	if !strings.Contains(err.Error(), "must not name the signing key") {
+		t.Fatalf("error = %v, want the protected input named", err)
+	}
 }

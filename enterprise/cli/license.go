@@ -13,8 +13,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -139,6 +141,12 @@ func licenseIssueCmd() *cobra.Command {
 			if email == "" {
 				return fmt.Errorf("--email is required")
 			}
+			// Resolve the ledger default before validating it. Checking the flag
+			// value alone would skip the effective path whenever --ledger is
+			// omitted, which is the common case.
+			if ledgerPath == "" {
+				ledgerPath = filepath.Join(filepath.Dir(keyPath), licenseLedgerFile)
+			}
 			// An output path that resolves to the signing key destroys it. The
 			// export writer renames over its target and the ledger writer appends
 			// to it, so both would replace the key with issuance output and report
@@ -224,10 +232,8 @@ func licenseIssueCmd() *cobra.Command {
 			}
 
 			// Append to ledger for tracking.
-			if ledgerPath == "" {
-				ledgerPath = filepath.Join(filepath.Dir(keyPath), licenseLedgerFile)
-			}
-			if err := appendLedger(ledgerPath, lic, token); err != nil {
+			if err := appendLedger(ledgerPath, lic, token,
+				map[string]string{"the signing key": keyPath}); err != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: failed to write ledger: %v\n", err)
 			}
 
@@ -756,7 +762,7 @@ type ledgerEntry struct {
 	TokenHash      string   `json:"token_hash"`
 }
 
-func appendLedger(path string, lic license.License, token string) error {
+func appendLedger(path string, lic license.License, token string, protected map[string]string) error {
 	// Store a truncated SHA-256 hash instead of the raw token.
 	// 16 bytes (32 hex chars) is enough for log correlation but
 	// not enough to reconstruct the credential.
@@ -793,6 +799,18 @@ func appendLedger(path string, lic license.License, token string) error {
 	if err != nil {
 		return err
 	}
+	// The pathname checks above happen before this open, so a writable ledger
+	// directory leaves a window in which the path can be swapped for a link to a
+	// protected file. Re-verify what was actually opened, by descriptor, and
+	// refuse before writing. A pathname check alone cannot pin a mutable
+	// namespace; this closes the window between the check and the write.
+	if err := refuseOpenedLedgerAliases(f, protected); err != nil {
+		closeErr := f.Close()
+		if closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
+		return err
+	}
 	if _, err = f.Write(data); err != nil {
 		closeErr := f.Close()
 		if closeErr != nil {
@@ -801,4 +819,31 @@ func appendLedger(path string, lic license.License, token string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// refuseOpenedLedgerAliases compares the opened ledger descriptor against every
+// protected input and refuses when they are the same file. The caller validated
+// pathnames before opening; this checks what the open actually produced.
+func refuseOpenedLedgerAliases(f *os.File, protected map[string]string) error {
+	if len(protected) == 0 {
+		return nil
+	}
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat opened ledger file: %w", err)
+	}
+	for _, label := range slices.Sorted(maps.Keys(protected)) {
+		protectedPath := protected[label]
+		if protectedPath == "" {
+			continue
+		}
+		protectedInfo, statErr := os.Stat(protectedPath)
+		if statErr != nil {
+			continue
+		}
+		if os.SameFile(openedInfo, protectedInfo) {
+			return fmt.Errorf("ledger path resolved to %s: refusing to append issuance data to it", label)
+		}
+	}
+	return nil
 }

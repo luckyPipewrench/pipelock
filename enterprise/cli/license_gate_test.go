@@ -372,3 +372,42 @@ func TestIssue_ExportNamingKey_Refused(t *testing.T) {
 		})
 	}
 }
+
+// TestAppendLedger_RefusesOpenedAliasOfProtectedFile covers the window between
+// the pathname checks and the open. A writable ledger directory lets the path be
+// swapped for a link to the signing key after validation, so the writer
+// re-verifies what it actually opened before appending.
+func TestAppendLedger_RefusesOpenedAliasOfProtectedFile(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, licensePrivKeyFile)
+	if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A hard link is the swap an attacker performs: the pathname is not a
+	// symlink, so a pre-open Lstat check passes, yet it opens the key.
+	ledgerPath := filepath.Join(dir, "licenses.jsonl")
+	if err := os.Link(keyPath, ledgerPath); err != nil {
+		t.Skipf("hard links unsupported here: %v", err)
+	}
+
+	lic := license.License{ID: "lic_test", Email: "ops@vendor.example"}
+	err = appendLedger(ledgerPath, lic, "token", map[string]string{"the signing key": keyPath})
+	if err == nil {
+		t.Fatal("appendLedger appended to a file that is the signing key")
+	}
+	if !strings.Contains(err.Error(), "the signing key") {
+		t.Fatalf("error = %v, want the protected input named", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signing key was modified despite the refusal")
+	}
+}

@@ -29,7 +29,7 @@ func TestAppendLedger_CreatesNewFile(t *testing.T) {
 		Features: []string{license.FeatureAgents},
 	}
 
-	if err := appendLedger(path, lic, "token-abc"); err != nil {
+	if err := appendLedger(path, lic, "token-abc", nil); err != nil {
 		t.Fatalf("appendLedger new file: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestAppendLedger_AppendsToExisting(t *testing.T) {
 		IssuedAt: time.Now().Unix(),
 		Features: []string{license.FeatureAgents},
 	}
-	if err := appendLedger(path, lic1, "token-1"); err != nil {
+	if err := appendLedger(path, lic1, "token-1", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,7 +71,7 @@ func TestAppendLedger_AppendsToExisting(t *testing.T) {
 		IssuedAt: time.Now().Unix(),
 		Features: []string{license.FeatureAgents},
 	}
-	if err := appendLedger(path, lic2, "token-2"); err != nil {
+	if err := appendLedger(path, lic2, "token-2", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -104,7 +104,7 @@ func TestAppendLedger_WithExpiryField(t *testing.T) {
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour).Unix(),
 		Features:  []string{license.FeatureAgents},
 	}
-	if err := appendLedger(path, lic, "token-exp"); err != nil {
+	if err := appendLedger(path, lic, "token-exp", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -133,7 +133,7 @@ func TestAppendLedger_NoExpiry(t *testing.T) {
 		Features: []string{license.FeatureAgents},
 		// ExpiresAt = 0 (perpetual)
 	}
-	if err := appendLedger(path, lic, "token-perp"); err != nil {
+	if err := appendLedger(path, lic, "token-perp", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,7 +161,7 @@ func TestAppendLedger_TokenHashPresent(t *testing.T) {
 		IssuedAt: time.Now().Unix(),
 		Features: []string{license.FeatureAgents},
 	}
-	if err := appendLedger(path, lic, "secret-token-value"); err != nil {
+	if err := appendLedger(path, lic, "secret-token-value", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +202,7 @@ func TestAppendLedger_WithTierAndSubscription(t *testing.T) {
 		Tier:           "founding_pro",
 		SubscriptionID: "sub_abc123",
 	}
-	if err := appendLedger(path, lic, "token-tier"); err != nil {
+	if err := appendLedger(path, lic, "token-tier", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -235,7 +235,7 @@ func TestAppendLedger_UnwritableDirectory(t *testing.T) {
 		IssuedAt: time.Now().Unix(),
 		Features: []string{license.FeatureAgents},
 	}
-	err := appendLedger(path, lic, "token")
+	err := appendLedger(path, lic, "token", nil)
 	if err == nil {
 		t.Fatal("expected error for unwritable directory")
 	}
@@ -259,7 +259,7 @@ func TestAppendLedger_SymlinkRejected(t *testing.T) {
 		IssuedAt: time.Now().Unix(),
 		Features: []string{license.FeatureAgents},
 	}
-	err := appendLedger(link, lic, "token")
+	err := appendLedger(link, lic, "token", nil)
 	if err == nil {
 		t.Fatal("expected error for symlink ledger path")
 	}

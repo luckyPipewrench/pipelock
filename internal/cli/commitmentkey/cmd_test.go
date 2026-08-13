@@ -643,6 +643,43 @@ func TestLifecycleCommandsRejectUnavailableDurableSink(t *testing.T) {
 	}
 }
 
+func TestLifecycleCommandsRejectGroupWritableAuditParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("durable lifecycle audit files are unsupported on Windows")
+	}
+	dir := t.TempDir()
+	auditDir := filepath.Join(dir, "audit")
+	if err := os.Mkdir(auditDir, 0o700); err != nil {
+		t.Fatalf("create audit directory: %v", err)
+	}
+	if err := os.Chmod(auditDir, 0o770); err != nil {
+		t.Fatalf("make audit directory group writable: %v", err)
+	}
+	keyringPath := filepath.Join(dir, "keyring.json")
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, filepath.Join(auditDir, "audit.jsonl"), "file", "")
+
+	for _, tc := range []struct {
+		operation string
+		args      []string
+	}{
+		{operation: "initialize"},
+		{operation: "rotate"},
+		{operation: "retire", args: []string{"--key-id", "ck_test", "--epoch", "1"}},
+		{operation: "backup", args: []string{"--out", filepath.Join(dir, "backup.json")}},
+		{operation: "restore", args: []string{"--from", filepath.Join(dir, "backup.json")}},
+	} {
+		t.Run(tc.operation, func(t *testing.T) {
+			args := append([]string{tc.operation, "--config", configPath}, tc.args...)
+			if _, _, err := execute(t, args...); err == nil || !strings.Contains(err.Error(), "group or world writable") {
+				t.Fatalf("%s error = %v, want unsafe-audit-parent refusal", tc.operation, err)
+			}
+			if _, err := os.Stat(keyringPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s modified the keyring with an unsafe audit parent: %v", tc.operation, err)
+			}
+		})
+	}
+}
+
 func TestLifecycleAuditHelpersRejectUnavailableSink(t *testing.T) {
 	t.Run("mutation without prepared sink", func(t *testing.T) {
 		cmd := &cobra.Command{}

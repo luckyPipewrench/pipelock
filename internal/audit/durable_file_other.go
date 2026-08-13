@@ -7,6 +7,7 @@ package audit
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 )
 
@@ -16,3 +17,5 @@ import (
 func openDurableAuditFile(string) (*os.File, bool, error) {
 	return nil, false, errors.New("durable audit sink is unsupported on this platform; commitment-key lifecycle mutations require Unix no-follow descriptor binding")
 }
+
+func validateDurableAuditPath(fs.FileInfo, string) error { return nil }

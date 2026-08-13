@@ -113,6 +113,11 @@ When Pipelock creates a new audit file on Unix, it also syncs the parent
 directory before a lifecycle mutation can proceed, so the file name as well as
 the record survives a power loss.
 
+On Unix, the lifecycle sink requires the open audit file and its containing
+directories to be owned by the service user or root and not group- or
+world-writable. Root-owned sticky directories such as `/tmp` remain usable when
+the audit file itself is securely owned and mode-restricted.
+
 The command verifies that the open file still names `logging.file` before and
 after each durable record. It also rechecks every protected keyring, config,
 backup, restore, and view path immediately before each record write, rejecting

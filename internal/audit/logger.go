@@ -624,6 +624,10 @@ func NewDurableFile(format, filePath string, includeAllowed, includeBlocked bool
 		_ = file.Close()
 		return nil, fmt.Errorf("audit log file must be a regular file; set logging.file to a writable regular file: %s", cleanPath)
 	}
+	if err := validateDurableAuditPath(info, cleanPath); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("sync audit log file: %w", err)

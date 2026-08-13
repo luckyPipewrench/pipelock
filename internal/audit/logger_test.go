@@ -236,6 +236,94 @@ func TestNewDurableFileResyncsParentAfterFailedCreation(t *testing.T) {
 	}
 }
 
+func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
+	requireDurableAuditFile(t)
+
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, path string)
+		want    string
+	}{
+		{
+			name: "group writable file",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatalf("write audit file: %v", err)
+				}
+				if err := os.Chmod(path, 0o620); err != nil {
+					t.Fatalf("make audit file group writable: %v", err)
+				}
+			},
+			want: "audit log file must not be group or world writable",
+		},
+		{
+			name: "world writable file",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatalf("write audit file: %v", err)
+				}
+				if err := os.Chmod(path, 0o602); err != nil {
+					t.Fatalf("make audit file world writable: %v", err)
+				}
+			},
+			want: "audit log file must not be group or world writable",
+		},
+		{
+			name: "group writable parent",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				parent := filepath.Dir(path)
+				if err := os.Mkdir(parent, 0o700); err != nil {
+					t.Fatalf("create audit parent: %v", err)
+				}
+				if err := os.Chmod(parent, 0o770); err != nil {
+					t.Fatalf("make audit parent group writable: %v", err)
+				}
+			},
+			want: "audit log directory must not be group or world writable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit-parent", "audit.jsonl")
+			if tc.name != "group writable parent" {
+				path = filepath.Join(t.TempDir(), "audit.jsonl")
+			}
+			tc.prepare(t, path)
+			logger, err := NewDurableFile("json", path, false, false)
+			if logger != nil {
+				logger.Close()
+				t.Fatal("NewDurableFile accepted an unsafe audit path")
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewDurableFile error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	if os.Geteuid() != 0 {
+		t.Skip("ownership mismatch requires a root test process")
+	}
+	t.Run("untrusted file owner", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatalf("write audit file: %v", err)
+		}
+		if err := os.Chown(path, 1, -1); err != nil {
+			t.Fatalf("change audit file owner: %v", err)
+		}
+		logger, err := NewDurableFile("json", path, false, false)
+		if logger != nil {
+			logger.Close()
+			t.Fatal("NewDurableFile accepted an audit file owned by another user")
+		}
+		if err == nil || !strings.Contains(err.Error(), "audit log file must be owned by the service user or root") {
+			t.Fatalf("NewDurableFile error = %v, want untrusted-owner refusal", err)
+		}
+	})
+}
+
 func TestLogCommitmentKeyLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, err := New("json", "file", path, false, false)

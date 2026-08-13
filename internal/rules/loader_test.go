@@ -99,7 +99,7 @@ func TestLoadBundles_ExemptDomainsParseAndVanish(t *testing.T) {
 	bundle := testBundle(testBundleName, []Rule{rule})
 	writeUnsignedBundle(t, bundleDir, bundle)
 
-	raw, err := os.ReadFile(filepath.Join(bundleDir, bundleFilename))
+	raw, err := os.ReadFile(filepath.Clean(filepath.Join(bundleDir, bundleFilename)))
 	if err != nil {
 		t.Fatalf("read bundle.yaml: %v", err)
 	}

@@ -157,6 +157,22 @@ func TestNewDurableFileRejectsUnopenablePaths(t *testing.T) {
 	}
 }
 
+func TestNewDurableFileUnsupportedOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific durable audit support boundary")
+	}
+	if _, err := NewDurableFile("json", filepath.Join(t.TempDir(), "audit.jsonl"), false, false); err == nil || !strings.Contains(err.Error(), "unsupported on this platform") {
+		t.Fatalf("NewDurableFile error = %v, want unsupported-platform refusal", err)
+	}
+}
+
+func requireDurableAuditFile(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("durable lifecycle audit files are unsupported on Windows")
+	}
+}
+
 func TestNewReusesExistingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	if err := os.WriteFile(path, []byte("existing\n"), 0o600); err != nil {
@@ -222,6 +238,7 @@ func TestLogCommitmentKeyLifecycle(t *testing.T) {
 }
 
 func TestWriteDurableCommitmentKeyLifecycleSyncsJSONRecord(t *testing.T) {
+	requireDurableAuditFile(t)
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, err := NewDurableFile("json", path, false, false)
 	if err != nil {
@@ -252,7 +269,70 @@ func TestWriteDurableCommitmentKeyLifecycleSyncsJSONRecord(t *testing.T) {
 	}
 }
 
+func TestWriteDurableCommitmentKeyLifecycleInterleavesWithOrdinaryJSONLines(t *testing.T) {
+	requireDurableAuditFile(t)
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := NewDurableFile("json", path, false, false)
+	if err != nil {
+		t.Fatalf("NewDurableFile: %v", err)
+	}
+	defer logger.Close()
+
+	appendOrdinaryJSONLine := func(name string) {
+		t.Helper()
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatalf("open ordinary JSON Lines sink: %v", err)
+		}
+		defer file.Close()
+		data, err := json.Marshal(map[string]string{"event": "ordinary", "name": name})
+		if err != nil {
+			t.Fatalf("marshal ordinary JSON Lines record: %v", err)
+		}
+		data = append(data, '\n')
+		if n, err := file.Write(data); err != nil || n != len(data) {
+			t.Fatalf("write ordinary JSON Lines record: n=%d err=%v", n, err)
+		}
+	}
+
+	appendOrdinaryJSONLine("before")
+	if err := logger.WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{Operation: "rotate", Phase: "intent", Outcome: "pending", OperationID: "cka_interleave"}); err != nil {
+		t.Fatalf("write intent: %v", err)
+	}
+	appendOrdinaryJSONLine("between")
+	if err := logger.WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{Operation: "rotate", Phase: "outcome", Outcome: "succeeded", OperationID: "cka_interleave"}); err != nil {
+		t.Fatalf("write outcome: %v", err)
+	}
+	appendOrdinaryJSONLine("after")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if !strings.HasSuffix(string(data), "\n") {
+		t.Fatalf("audit log does not end with a record delimiter: %q", data)
+	}
+	var records []map[string]any
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("non-empty JSON Lines record %q did not parse independently: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 5 {
+		t.Fatalf("parsed %d records, want 5: %#v", len(records), records)
+	}
+	if records[0]["name"] != "before" || records[1]["phase"] != "intent" || records[2]["name"] != "between" || records[3]["phase"] != "outcome" || records[4]["name"] != "after" {
+		t.Fatalf("record order = %#v", records)
+	}
+}
+
 func TestWriteDurableCommitmentKeyLifecycleFailurePaths(t *testing.T) {
+	requireDurableAuditFile(t)
 	t.Run("no durable file is open", func(t *testing.T) {
 		if err := (&Logger{}).WriteDurableCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{}); err == nil || !strings.Contains(err.Error(), "not open") {
 			t.Fatalf("WriteDurableCommitmentKeyLifecycle error = %v, want unopened-file refusal", err)
@@ -316,6 +396,7 @@ func TestWriteDurableCommitmentKeyLifecycleFailurePaths(t *testing.T) {
 }
 
 func TestRejectDurableFileAliases(t *testing.T) {
+	requireDurableAuditFile(t)
 	newLogger := func(t *testing.T) (*Logger, string) {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -489,6 +570,7 @@ func TestWriteAndSyncLifecycleRecordFailurePaths(t *testing.T) {
 }
 
 func TestWriteDurableCommitmentKeyLifecycleRejectsDeletedOrRotatedSink(t *testing.T) {
+	requireDurableAuditFile(t)
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, path string)
@@ -532,6 +614,7 @@ func TestWriteDurableCommitmentKeyLifecycleRejectsDeletedOrRotatedSink(t *testin
 }
 
 func TestWriteDurableCommitmentKeyLifecycleConcurrentAppends(t *testing.T) {
+	requireDurableAuditFile(t)
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	const writers = 32
 

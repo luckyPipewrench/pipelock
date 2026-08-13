@@ -60,7 +60,11 @@ No evidence producer consumes these keys yet. Nothing is currently being
 committed with this keyring.
 
 Lifecycle mutations require --config with logging.output set to file or both.
-A stdout-only log is a stream, not a file-backed lifecycle record.`,
+A stdout-only log is a stream, not a file-backed lifecycle record.
+
+Windows does not support durable lifecycle audit binding, so mutating lifecycle
+commands are unavailable there. Read-only commands continue without a durable
+sink and warn the operator.`,
 	}
 	cmd.AddCommand(initializeCmd(), inspectCmd(), rotateCmd(), retireCmd(), backupCmd(), restoreCmd(), testCmd())
 	return cmd
@@ -83,7 +87,7 @@ func initializeCmd() *cobra.Command {
 			if err != nil {
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "initialize", Outcome: "denied", Err: err})
 			}
-			if err := beginMutationAudit(cmd, "initialize", "", 0); err != nil {
+			if err := beginMutationAudit(cmd, "initialize", "", 0, ""); err != nil {
 				err = fmt.Errorf("initialize: durable lifecycle audit intent: %w", err)
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "initialize", Outcome: "denied", Err: err})
 			}
@@ -142,7 +146,7 @@ func rotateCmd() *cobra.Command {
 			if err != nil {
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "rotate", Outcome: "denied", Err: err})
 			}
-			if err := beginMutationAudit(cmd, "rotate", "", 0); err != nil {
+			if err := beginMutationAudit(cmd, "rotate", "", 0, ""); err != nil {
 				err = fmt.Errorf("rotate: durable lifecycle audit intent: %w", err)
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "rotate", Outcome: "denied", Err: err})
 			}
@@ -229,7 +233,7 @@ func backupCmd() *cobra.Command {
 			if err != nil {
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "denied", Err: err})
 			}
-			if err := beginMutationAudit(cmd, "backup", "", 0); err != nil {
+			if err := beginMutationAudit(cmd, "backup", "", 0, ""); err != nil {
 				err = fmt.Errorf("backup: durable lifecycle audit intent: %w", err)
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "backup", Outcome: "denied", Err: err})
 			}
@@ -269,7 +273,7 @@ func restoreCmd() *cobra.Command {
 			if err != nil {
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
 			}
-			if err := beginMutationAudit(cmd, "restore", "", 0); err != nil {
+			if err := beginMutationAudit(cmd, "restore", "", 0, ""); err != nil {
 				err = fmt.Errorf("restore: durable lifecycle audit intent: %w", err)
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
 			}
@@ -380,9 +384,21 @@ type pathFlags struct {
 type lifecycleAuditSinkContextKey struct{}
 
 type lifecycleAuditSink struct {
-	logger      *audit.Logger
-	operationID string
-	writeFailed bool
+	logger         *audit.Logger
+	operationID    string
+	protectedPaths []string
+	writeFailed    bool
+}
+
+// writeLifecycleRecord rechecks protected paths immediately before every
+// record write. These pathname checks cannot pin a hostile mutable namespace
+// after they complete, but they fail closed when an audit inode currently
+// aliases a lifecycle input or output.
+func (s *lifecycleAuditSink) writeLifecycleRecord(event audit.CommitmentKeyLifecycleEvent) error {
+	if err := s.logger.RejectDurableFileAliases(s.protectedPaths...); err != nil {
+		return fmt.Errorf("revalidate protected lifecycle paths: %w", err)
+	}
+	return s.logger.WriteDurableCommitmentKeyLifecycle(event)
 }
 
 var (
@@ -437,7 +453,7 @@ func (f *pathFlags) prepareReadOnlyLifecycleAudit(cmd *cobra.Command, protectedP
 }
 
 func (f *pathFlags) prepareLifecycleAudit(cmd *cobra.Command, mutating bool, protectedPaths ...string) error {
-	logger, err := f.durableAuditSink(protectedPaths...)
+	sink, err := f.durableAuditSink(protectedPaths...)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", errLifecycleAuditSinkUnavailable, err)
 		if mutating {
@@ -446,33 +462,27 @@ func (f *pathFlags) prepareLifecycleAudit(cmd *cobra.Command, mutating bool, pro
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: file-backed lifecycle audit sink unavailable: %v; proceeding because this operation is read-only\n", err)
 		return nil
 	}
-	cmd.SetContext(context.WithValue(cmd.Context(), lifecycleAuditSinkContextKey{}, &lifecycleAuditSink{
-		logger:      logger,
-		operationID: "cka_" + cryptorand.Text(),
-	}))
+	sink.operationID = "cka_" + cryptorand.Text()
+	cmd.SetContext(context.WithValue(cmd.Context(), lifecycleAuditSinkContextKey{}, sink))
 	return nil
 }
 
 // beginMutationAudit durably records intent before the operation can change a
 // keyring or lifecycle artifact. An outcome alone cannot account for a crash
 // after the mutation but before the command reports its result.
-func beginMutationAudit(cmd *cobra.Command, operation, keyID string, epoch uint64, authorization ...string) error {
+func beginMutationAudit(cmd *cobra.Command, operation, keyID string, epoch uint64, authorization string) error {
 	sink, ok := lifecycleAuditSinkFromCommand(cmd)
 	if !ok {
 		return fmt.Errorf("%w: durable lifecycle audit sink is not prepared", errLifecycleAuditSinkUnavailable)
 	}
-	var auth string
-	if len(authorization) != 0 {
-		auth = authorization[0]
-	}
-	if err := sink.logger.WriteDurableCommitmentKeyLifecycle(audit.CommitmentKeyLifecycleEvent{
+	if err := sink.writeLifecycleRecord(audit.CommitmentKeyLifecycleEvent{
 		Operation:     operation,
 		Phase:         "intent",
 		Outcome:       "pending",
 		OperationID:   sink.operationID,
 		KeyID:         keyID,
 		Epoch:         epoch,
-		Authorization: auth,
+		Authorization: authorization,
 	}); err != nil {
 		sink.writeFailed = true
 		return err
@@ -491,7 +501,7 @@ func closeLifecycleAudit(cmd *cobra.Command) {
 	}
 }
 
-func (f *pathFlags) durableAuditSink(protectedPaths ...string) (*audit.Logger, error) {
+func (f *pathFlags) durableAuditSink(protectedPaths ...string) (*lifecycleAuditSink, error) {
 	if f.configFile == "" {
 		return nil, errors.New("--config is required to configure a file-backed lifecycle audit sink")
 	}
@@ -535,7 +545,7 @@ func (f *pathFlags) durableAuditSink(protectedPaths ...string) (*audit.Logger, e
 		logger.Close()
 		return nil, fmt.Errorf("verify logging.file after open: %w", err)
 	}
-	return logger, nil
+	return &lifecycleAuditSink{logger: logger, protectedPaths: protectedPaths}, nil
 }
 
 // loadConfig reads the command config once. In particular, --config - is a
@@ -665,7 +675,7 @@ func emitAudit(cmd *cobra.Command, opts lifecycleAuditOptions) error {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), string(data))
 	}
 	if hasSink && !sink.writeFailed {
-		if err := sink.logger.WriteDurableCommitmentKeyLifecycle(audit.CommitmentKeyLifecycleEvent{
+		if err := sink.writeLifecycleRecord(audit.CommitmentKeyLifecycleEvent{
 			Operation:     opts.Operation,
 			Phase:         event.Phase,
 			Outcome:       opts.Outcome,

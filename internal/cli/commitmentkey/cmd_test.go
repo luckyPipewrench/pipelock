@@ -647,7 +647,7 @@ func TestLifecycleAuditHelpersRejectUnavailableSink(t *testing.T) {
 	t.Run("mutation without prepared sink", func(t *testing.T) {
 		cmd := &cobra.Command{}
 		cmd.SetContext(context.Background())
-		if err := beginMutationAudit(cmd, "rotate", "", 0); err == nil || !strings.Contains(err.Error(), "not prepared") {
+		if err := beginMutationAudit(cmd, "rotate", "", 0, ""); err == nil || !strings.Contains(err.Error(), "not prepared") {
 			t.Fatalf("beginMutationAudit error = %v, want unprepared-sink refusal", err)
 		}
 	})
@@ -661,7 +661,7 @@ func TestLifecycleAuditHelpersRejectUnavailableSink(t *testing.T) {
 		logger.Close()
 		cmd := &cobra.Command{}
 		cmd.SetContext(context.WithValue(context.Background(), lifecycleAuditSinkContextKey{}, &lifecycleAuditSink{logger: logger, operationID: "cka_test"}))
-		if err := beginMutationAudit(cmd, "rotate", "", 0); err == nil || !strings.Contains(err.Error(), "not open") {
+		if err := beginMutationAudit(cmd, "rotate", "", 0, ""); err == nil || !strings.Contains(err.Error(), "not open") {
 			t.Fatalf("beginMutationAudit error = %v, want closed-sink refusal", err)
 		}
 
@@ -1013,6 +1013,41 @@ func TestLifecycleAuditRejectsSinkSwappedToKeyringAfterPreflight(t *testing.T) {
 	assertTestFileSnapshot(t, keyringPath, before)
 }
 
+func TestLifecycleAuditSinkRevalidatesProtectedAliasesBeforeWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("durable lifecycle audit files are unsupported on Windows")
+	}
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	keyringPath := filepath.Join(dir, "keyring.json")
+	if err := os.WriteFile(keyringPath, []byte("keyring"), 0o600); err != nil {
+		t.Fatalf("write protected keyring: %v", err)
+	}
+	logger, err := audit.NewDurableFile("json", auditPath, false, false)
+	if err != nil {
+		t.Fatalf("NewDurableFile: %v", err)
+	}
+	defer logger.Close()
+	if err := logger.RejectDurableFileAliases(keyringPath); err != nil {
+		t.Fatalf("initial protected-path check: %v", err)
+	}
+	if err := os.Remove(keyringPath); err != nil {
+		t.Fatalf("remove protected keyring: %v", err)
+	}
+	if err := os.Link(auditPath, keyringPath); err != nil {
+		t.Fatalf("link audit inode to protected path: %v", err)
+	}
+
+	sink := &lifecycleAuditSink{logger: logger, protectedPaths: []string{keyringPath}}
+	err = sink.writeLifecycleRecord(audit.CommitmentKeyLifecycleEvent{Operation: "rotate", Phase: "intent", Outcome: "pending", OperationID: "cka_alias"})
+	if err == nil || !strings.Contains(err.Error(), "must not refer") {
+		t.Fatalf("writeLifecycleRecord error = %v, want protected-alias refusal", err)
+	}
+	if data := mustReadFile(t, auditPath); len(data) != 0 {
+		t.Fatalf("audit data = %q, want no lifecycle write after alias refusal", data)
+	}
+}
+
 func TestLifecycleAuditConfigCachePreservesErrorWrapping(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "malformed.yaml")
 	if err := os.WriteFile(path, []byte("mode: [\n"), 0o600); err != nil {
@@ -1260,6 +1295,9 @@ func TestLifecycleCommandsSurfaceInertCapabilityNotice(t *testing.T) {
 	cmd := Cmd()
 	if !strings.Contains(cmd.Long, "Nothing is currently being") {
 		t.Fatalf("commitment-key help omits inert-capability notice: %q", cmd.Long)
+	}
+	if !strings.Contains(cmd.Long, "Windows does not support durable lifecycle audit binding") {
+		t.Fatalf("commitment-key help omits Windows lifecycle support boundary: %q", cmd.Long)
 	}
 }
 

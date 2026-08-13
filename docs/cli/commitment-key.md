@@ -114,11 +114,19 @@ directory before a lifecycle mutation can proceed, so the file name as well as
 the record survives a power loss.
 
 The command verifies that the open file still names `logging.file` before and
-after each durable record. A deleted or rotated sink makes the command fail
-instead of silently appending to an unlinked old file. Each record is appended
-and synced as one write. Concurrent lifecycle commands can interleave whole
-records without mixing them into one record; a failed partial append is
-isolated from the next record by a fresh line boundary.
+after each durable record. It also rechecks every protected keyring, config,
+backup, restore, and view path immediately before each record write, rejecting
+an audit inode that currently aliases one of them. A deleted or rotated sink
+makes the command fail instead of silently appending to an unlinked old file.
+Each record is appended and synced as one write. Concurrent lifecycle commands
+can interleave whole records without mixing them into one record; a failed
+partial append is isolated from the next lifecycle record by a fresh line
+boundary.
+
+These are pathname checks, not a lock on a mutable filesystem namespace. An
+actor able to replace names after a check can still race a later operation.
+Keep the audit and lifecycle directories owned and writable only by the
+Pipelock service account, and coordinate log rotation with lifecycle commands.
 
 Pipelock opens the configured audit file in append mode and attempts a
 filesystem sync after writing each lifecycle record. A newly created file uses
@@ -133,11 +141,10 @@ tamper-evidence matters.
 On Unix, keyring, backup, restore, view, and lock paths are opened relative to
 validated directory descriptors; final symlinks are refused, opened files must
 be owned by the effective user with exact `0600` mode, and each parent must be
-owned by root or the effective user and not group/world-writable. On Windows,
-reparse-point checks cover existing parents and opened final files, but Unix
-owner/mode rules have no direct ACL equivalent and parent replacement cannot be
-pinned across the complete operation. Use an ACL-restricted directory owned by
-the Pipelock service account.
+owned by root or the effective user and not group/world-writable.
 
-Other operating-system targets fail closed because they do not provide the
-filesystem primitives required for these storage guarantees.
+Windows does not provide the no-follow, nonblocking descriptor binding used for
+the required lifecycle audit sink. `initialize`, `rotate`, `retire`, `backup`,
+and `restore` therefore fail closed on Windows. Read-only `inspect` and `test`
+still run, but warn when a durable lifecycle sink cannot be opened. Use a Unix
+host for lifecycle mutations. Other unsupported targets also fail closed.

@@ -11,7 +11,8 @@ import (
 )
 
 // openDurableAuditFile fails closed where the platform cannot bind the final
-// path component to an O_NOFOLLOW, non-blocking descriptor.
+// path component to an O_NOFOLLOW, non-blocking descriptor. Commitment-key
+// lifecycle mutations are therefore unavailable on these platforms.
 func openDurableAuditFile(string) (*os.File, bool, error) {
-	return nil, false, errors.New("durable audit sink requires Unix no-follow descriptor binding")
+	return nil, false, errors.New("durable audit sink is unsupported on this platform; commitment-key lifecycle mutations require Unix no-follow descriptor binding")
 }

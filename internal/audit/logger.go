@@ -634,7 +634,7 @@ func NewDurableFile(format, filePath string, includeAllowed, includeBlocked bool
 			return nil, fmt.Errorf("sync audit log directory: %w", err)
 		}
 	}
-	return newLogger(loggerOpts{
+	logger, err := newLogger(loggerOpts{
 		IdentifierEntropyLoggerOpts: IdentifierEntropyLoggerOpts{
 			Format:         format,
 			Output:         "file",
@@ -647,6 +647,11 @@ func NewDurableFile(format, filePath string, includeAllowed, includeBlocked bool
 		openedFile:       file,
 		fileCreated:      created,
 	})
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return logger, nil
 }
 
 // NewWithStream creates an audit logger whose stream output uses stream rather
@@ -898,16 +903,18 @@ type lifecycleRecordFile interface {
 	Sync() error
 }
 
-// writeAndSyncLifecycleRecord uses a leading newline as a record boundary.
-// A failed append can leave one malformed record, but the next record starts
-// on a fresh line instead of being glued to it. Each lifecycle record is one
-// Write call, so O_APPEND preserves the boundary between concurrent commands.
+// writeAndSyncLifecycleRecord uses leading and trailing newlines as record
+// boundaries. The trailing newline makes each successful record independently
+// parseable by ordinary JSON Lines producers. The leading newline still
+// isolates the next lifecycle record after a partial append. Each lifecycle
+// record is one Write call, so O_APPEND preserves boundaries between concurrent
+// commands.
 func writeAndSyncLifecycleRecord(file lifecycleRecordFile, record durableCommitmentKeyLifecycleRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal lifecycle audit record: %w", err)
 	}
-	data = append([]byte{'\n'}, data...)
+	data = append(append([]byte{'\n'}, data...), '\n')
 	n, err := file.Write(data)
 	if err != nil {
 		return fmt.Errorf("write lifecycle audit record: %w", err)

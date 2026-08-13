@@ -62,6 +62,10 @@ const (
 	doctorCheckSuppressSemantics  = "config_suppress_semantics"
 	doctorCheckExemptionSemantics = "config_exemption_semantics"
 	doctorCheckActionDivergence   = "config_action_divergence"
+	// doctorCheckSemanticsUnclassified carries a finding whose scope has no
+	// recorded check name. It names no knob on purpose: an operator sent to
+	// the wrong knob is worse off than one told only that something is wrong.
+	doctorCheckSemanticsUnclassified = "config_semantics"
 
 	ConfigSemanticKindInert       = "inert"
 	ConfigSemanticKindMisdirected = "misdirected"
@@ -210,29 +214,46 @@ func normalizeConfigSemanticSubject(scope, subject string) string {
 	}
 }
 
+// configScopeCheckNames records, for every scope, the doctor check it reports
+// under. Each entry is a decision about what an operator will be told to go and
+// look at, so every scope is listed rather than inferred.
+//
+// Membership in the exemption family is not derivable from the scope string, and
+// treating it as the fallback is what produced the original defect: action
+// divergence was added to the scope table, inherited the exemption name it never
+// matched, and sent operators to audit exemptions that were correct.
+var configScopeCheckNames = map[string]string{
+	ConfigScopeSuppress:                   doctorCheckSuppressSemantics,
+	ConfigScopeActionDivergence:           doctorCheckActionDivergence,
+	ConfigScopeResponseExemptDomains:      doctorCheckExemptionSemantics,
+	ConfigScopeResponseMCPServers:         doctorCheckExemptionSemantics,
+	ConfigScopeAdaptiveExemptDomains:      doctorCheckExemptionSemantics,
+	ConfigScopeCrossRequestEntropyExempt:  doctorCheckExemptionSemantics,
+	ConfigScopeBrowserShieldExemptDomains: doctorCheckExemptionSemantics,
+	ConfigScopeTLSPassthroughDomains:      doctorCheckExemptionSemantics,
+	ConfigScopeRequestBodyIgnoreHeaders:   doctorCheckExemptionSemantics,
+	ConfigScopeBodyEntropyExclusions:      doctorCheckExemptionSemantics,
+	ConfigScopeWSEntropyExclusions:        doctorCheckExemptionSemantics,
+}
+
 // doctorCheckNameForScope maps a semantic finding's scope to the doctor check it
 // is reported under.
 //
 // The name is what an operator reads first and what automation keys on, so it
-// has to describe the same thing the detail does. Every scope except the two
-// named here is a member of the exemption family — exempt_domains,
-// passthrough_domains, ignore_headers, content_entropy_exclusions, mcp_servers —
-// so that remains the default.
+// has to describe the same thing the detail does.
 //
-// A scope that is NOT about an exemption must be listed explicitly. Action
-// divergence was reported as config_exemption_semantics because it was added to
-// the scope table without a case here, which sent an operator to audit
-// exemptions that were correct and made a warning about enforcement strength
-// look like a warning about a suppression that had not applied.
+// An unmapped scope reports under the neutral doctorCheckSemanticsUnclassified
+// rather than inheriting a family it may not belong to. A neutral name is
+// honest about what is known: something is wrong with the configuration, and the
+// report does not claim which knob to go and edit. Defaulting to the exemption
+// check instead would reintroduce the original defect for whichever scope is
+// added next, and would additionally hide the clean suppress/exemption status by
+// making that surface look like it had a finding.
 func doctorCheckNameForScope(scope string) string {
-	switch scope {
-	case ConfigScopeSuppress:
-		return doctorCheckSuppressSemantics
-	case ConfigScopeActionDivergence:
-		return doctorCheckActionDivergence
-	default:
-		return doctorCheckExemptionSemantics
+	if name, ok := configScopeCheckNames[scope]; ok {
+		return name
 	}
+	return doctorCheckSemanticsUnclassified
 }
 
 func semanticFindingsToDoctorChecks(findings []ConfigSemanticFinding) []doctorReportCheck {

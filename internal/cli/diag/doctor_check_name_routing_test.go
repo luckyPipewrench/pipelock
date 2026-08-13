@@ -77,6 +77,84 @@ func TestDoctorCheckNameForScopeRoutesEveryScope(t *testing.T) {
 	}
 }
 
+// TestUnknownScopeNeverReportsAsAnExemption is the negative control for the
+// routing default.
+//
+// The original defect was not that action divergence lacked a case; it was that
+// an unmapped scope inherited the exemption name. A scope this package does not
+// recognise must never claim a knob, because an operator sent to audit correct
+// exemptions is worse off than one told only that something is wrong.
+func TestUnknownScopeNeverReportsAsAnExemption(t *testing.T) {
+	for _, scope := range []string{"", "future_scope_not_yet_mapped", "totally_unknown"} {
+		t.Run(scope, func(t *testing.T) {
+			got := doctorCheckNameForScope(scope)
+			if got == doctorCheckExemptionSemantics {
+				t.Errorf("unknown scope %q routed to %q: an unmapped scope must not claim the exemption family", scope, got)
+			}
+			if got == doctorCheckSuppressSemantics {
+				t.Errorf("unknown scope %q routed to %q: an unmapped scope must not claim the suppression family", scope, got)
+			}
+			if got != doctorCheckSemanticsUnclassified {
+				t.Errorf("unknown scope %q routed to %q, want the neutral %q", scope, got, doctorCheckSemanticsUnclassified)
+			}
+		})
+	}
+}
+
+// TestUnknownScopeDoesNotHideTheCleanSuppressSurface covers the second half of
+// the same defect. A finding whose scope is unmapped must not be counted as a
+// suppress or exemption finding, or it silently removes the ok check that tells
+// an operator those surfaces were analysed and came back clean.
+func TestUnknownScopeDoesNotHideTheCleanSuppressSurface(t *testing.T) {
+	findings := []ConfigSemanticFinding{
+		newConfigSemanticFinding(
+			ConfigSemanticKindAdvisory,
+			"future_scope_not_yet_mapped",
+			"some.field",
+			"something is off",
+			"look at it",
+		),
+	}
+	checks := semanticFindingsToDoctorChecks(findings)
+	for _, c := range checks {
+		if c.Name == doctorCheckExemptionSemantics || c.Name == doctorCheckSuppressSemantics {
+			t.Fatalf("unmapped scope produced a %q check", c.Name)
+		}
+	}
+}
+
+// TestEveryDeclaredScopeHasARecordedCheckName is the forcing function. Adding a
+// scope constant without recording its check name fails here, at the change that
+// introduced it, instead of reaching an operator as a mislabeled warning.
+//
+// The list is maintained by hand because Go cannot enumerate the constants, so
+// treat a failure as the reminder it is: add the scope to configScopeCheckNames
+// and to this list, having decided which check it belongs under.
+func TestEveryDeclaredScopeHasARecordedCheckName(t *testing.T) {
+	declared := []string{
+		ConfigScopeSuppress,
+		ConfigScopeResponseExemptDomains,
+		ConfigScopeResponseMCPServers,
+		ConfigScopeAdaptiveExemptDomains,
+		ConfigScopeCrossRequestEntropyExempt,
+		ConfigScopeBrowserShieldExemptDomains,
+		ConfigScopeTLSPassthroughDomains,
+		ConfigScopeRequestBodyIgnoreHeaders,
+		ConfigScopeBodyEntropyExclusions,
+		ConfigScopeWSEntropyExclusions,
+		ConfigScopeActionDivergence,
+	}
+	for _, scope := range declared {
+		if _, ok := configScopeCheckNames[scope]; !ok {
+			t.Errorf("scope %q has no recorded check name; add it to configScopeCheckNames", scope)
+		}
+	}
+	if len(configScopeCheckNames) != len(declared) {
+		t.Errorf("configScopeCheckNames has %d entries, this test lists %d: keep them in step so a new scope cannot skip a routing decision",
+			len(configScopeCheckNames), len(declared))
+	}
+}
+
 // TestSuppressSurfaceStillReportedAlongsideAnAdvisory pins that the
 // suppress/exemption surface is represented in the report even when an
 // unrelated advisory is present.

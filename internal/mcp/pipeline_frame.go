@@ -241,8 +241,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	}
 	if json.Unmarshal(decoded.Params, &paramsMeta) == nil && paramsMeta.Meta != nil {
 		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/protocolVersion"]; ok {
-			frame.ProtocolVersionPresent = true
-			_ = json.Unmarshal(raw, &frame.ProtocolVersion)
+			frame.ProtocolVersionPresent = json.Unmarshal(raw, &frame.ProtocolVersion) == nil
 		}
 		if raw, ok := paramsMeta.Meta["io.modelcontextprotocol/clientCapabilities"]; ok {
 			var capabilities map[string]json.RawMessage

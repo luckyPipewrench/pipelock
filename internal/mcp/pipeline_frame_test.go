@@ -127,6 +127,49 @@ func TestParseMCPFrame_ToolsCallNullArgs(t *testing.T) {
 	}
 }
 
+func TestParseMCPFrame_ProtocolVersionMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		msg         string
+		wantPresent bool
+		wantVersion string
+	}{
+		{
+			name:        "valid string",
+			msg:         `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-06-18"}}}`,
+			wantPresent: true,
+			wantVersion: "2025-06-18",
+		},
+		{
+			name: "number",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":1}}}`,
+		},
+		{
+			name: "object",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":{}}}}`,
+		},
+		{
+			name: "array",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":[]}}}`,
+		},
+		{
+			name: "malformed JSON",
+			msg:  `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := ParseMCPFrame([]byte(tt.msg))
+			if frame.ProtocolVersionPresent != tt.wantPresent {
+				t.Errorf("ProtocolVersionPresent = %v, want %v", frame.ProtocolVersionPresent, tt.wantPresent)
+			}
+			if frame.ProtocolVersion != tt.wantVersion {
+				t.Errorf("ProtocolVersion = %q, want %q", frame.ProtocolVersion, tt.wantVersion)
+			}
+		})
+	}
+}
+
 func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -18,9 +18,9 @@ var externalTransferURLCandidateRE = regexp.MustCompile(`(?im)(?:^|[.!?:]\s+)\s*
 
 var externalTransferURLStartRE = regexp.MustCompile(`(?i)https?://`)
 
-var externalTransferUploadArgRE = regexp.MustCompile(`(?i)(?:^|\s)(-F|--form|--upload-file|-T|--post-file|--body-file)(?:=|\s+)([^\s;|&]{1,160})`)
+var externalTransferUploadArgRE = regexp.MustCompile(`(?i)(?:^|\s)(?:(-F|-T)([^\s;|&]{1,160})|(-F|-T|--form|--upload-file|--post-file|--body-file)(?:=|\s+)([^\s;|&]{1,160}))`)
 
-var externalTransferSensitiveFilenameRE = regexp.MustCompile(`(?i)^(?:session[_.-]?(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?|id)|diagnostic[_.-]?data|credentials?|secrets?|tokens?|cookies?|passwords?|passwd|api[_.-]?keys?)(?:\.[a-z0-9_-]{1,16})?$`)
+var externalTransferSensitiveFilenameRE = regexp.MustCompile(`(?i)^(?:(?:session[_.-]?(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?|id)|diagnostic[_.-]?data|credentials?|secrets?|tokens?|cookies?|passwords?|passwd|api[_.-]?keys?|(?:private|ssh)[_.-]?keys?)(?:\.[a-z0-9_-]{1,16})?|id_(?:rsa|dsa|ecdsa|ed25519)|\.env(?:\.[a-z0-9_-]{1,16})?)$`)
 
 func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
 	locs := p.re.FindAllStringIndex(content, -1)
@@ -40,8 +40,12 @@ func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
 
 func externalTransferHasSensitiveUploadSource(candidate string) bool {
 	for _, match := range externalTransferUploadArgRE.FindAllStringSubmatch(candidate, -1) {
-		flag := strings.ToLower(match[1])
-		arg := strings.Trim(match[2], "'\"`")
+		flag, arg := match[1], match[2]
+		if flag == "" {
+			flag, arg = match[3], match[4]
+		}
+		flag = strings.ToLower(flag)
+		arg = strings.Trim(arg, "'\"`")
 		if flag == "-f" || flag == "--form" {
 			if !strings.Contains(arg, "@") {
 				continue

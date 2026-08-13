@@ -1094,6 +1094,64 @@ func TestLifecycleAuditResolvesRelativeLogFileFromConfig(t *testing.T) {
 	}
 }
 
+func TestLifecycleAuditRejectsRelativeKeyringAuditAliasesOutsideConfigDirectory(t *testing.T) {
+	configDir := t.TempDir()
+	runnerDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(configDir, "state"), 0o700); err != nil {
+		t.Fatalf("create keyring state directory: %v", err)
+	}
+	keyringPath := filepath.Join(configDir, "state", "keyring.json")
+	setupConfig := filepath.Join(configDir, "setup.yaml")
+	if err := os.WriteFile(setupConfig, []byte(lifecycleAuditConfig("state/keyring.json", "audit.jsonl", "file", "")), 0o600); err != nil {
+		t.Fatalf("write setup config: %v", err)
+	}
+	if _, _, err := execute(t, "initialize", "--config", setupConfig); err != nil {
+		t.Fatalf("initialize fixture: %v", err)
+	}
+	before := snapshotTestFile(t, keyringPath)
+
+	collisionConfig := filepath.Join(configDir, "collision.yaml")
+	if err := os.WriteFile(collisionConfig, []byte(lifecycleAuditConfig("state/keyring.json", "state/keyring.json", "file", "")), 0o600); err != nil {
+		t.Fatalf("write collision config: %v", err)
+	}
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(runnerDir); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	if _, stderr, err := execute(t, "inspect", "--config", collisionConfig); err != nil || !strings.Contains(stderr, "proceeding because this operation is read-only") {
+		t.Fatalf("inspect err=%v stderr=%q, want read-only warning and success", err, stderr)
+	}
+	assertTestFileSnapshot(t, keyringPath, before)
+
+	for _, tc := range []struct {
+		operation string
+		args      []string
+	}{
+		{operation: "initialize"},
+		{operation: "rotate"},
+		{operation: "retire", args: []string{"--key-id", "ck_test", "--epoch", "1"}},
+		{operation: "backup", args: []string{"--out", filepath.Join(runnerDir, "backup.json")}},
+		{operation: "restore", args: []string{"--from", filepath.Join(runnerDir, "backup.json")}},
+	} {
+		t.Run(tc.operation, func(t *testing.T) {
+			args := append([]string{tc.operation, "--config", collisionConfig}, tc.args...)
+			if _, _, err := execute(t, args...); err == nil || !strings.Contains(err.Error(), "file-backed lifecycle audit sink") {
+				t.Fatalf("%s error = %v, want durable-sink refusal", tc.operation, err)
+			}
+			assertTestFileSnapshot(t, keyringPath, before)
+		})
+	}
+}
+
 func writeLifecycleAuditConfig(t *testing.T, dir, keyringPath, auditPath, output, includeBlocked string) string {
 	t.Helper()
 	path := filepath.Join(dir, "pipelock-"+strings.ReplaceAll(filepath.Base(keyringPath), ".", "-")+".yaml")

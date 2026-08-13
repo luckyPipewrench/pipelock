@@ -131,6 +131,57 @@ func TestRefuseOutputAliases_ResolutionEdges(t *testing.T) {
 			t.Fatalf("error = %v, want a resolution failure", err)
 		}
 	})
+
+	t.Run("untraversable output parent is reported", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("directory mode does not control traversal on Windows")
+		}
+		if os.Geteuid() == 0 {
+			t.Skip("root traverses unreadable directories")
+		}
+		keyPath := filepath.Join(dir, "present.key")
+		if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		blocked := filepath.Join(dir, "blocked-output")
+		if err := os.Mkdir(blocked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(blocked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) }) // #nosec G302 -- restores the fixture so TempDir cleanup can remove it.
+		err := RefuseOutputAliases(map[string]string{"--key": keyPath},
+			map[string]string{"--out": filepath.Join(blocked, "sub", "out.json")})
+		if err == nil || !strings.Contains(err.Error(), "resolve --out against --key") {
+			t.Fatalf("error = %v, want a resolution failure", err)
+		}
+	})
+
+	t.Run("unresolvable current directory is reported", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not permit removing the current directory")
+		}
+		originalWD, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		vanishedWD := t.TempDir()
+		if err := os.Chdir(vanishedWD); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if restoreErr := os.Chdir(originalWD); restoreErr != nil {
+				t.Errorf("restore working directory: %v", restoreErr)
+			}
+		})
+		if err := os.Remove(vanishedWD); err != nil {
+			t.Skipf("cannot remove current directory on this platform: %v", err)
+		}
+		if _, err := SamePathIdentity("missing-left", "missing-right"); err == nil {
+			t.Fatal("SamePathIdentity accepted paths when the working directory cannot be resolved")
+		}
+	})
 }
 
 // TestRefuseOutputAliases_SymlinkThenDotDot pins the spelling that lexical

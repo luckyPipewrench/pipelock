@@ -449,11 +449,145 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 			report.Notes = append(report.Notes,
 				"this config's SSRF layer (layer 8) resolves DNS at runtime; explain did not resolve, so a private/metadata IP or DNS failure could still block this URL when proxied")
 		}
+		report.Notes = append(report.Notes, explainUnevaluatedLayerNotes(cfg, report.Host)...)
 		return report, nil
 	}
 
 	report.Remediation = explainRemediationFor(result)
 	return report, nil
+}
+
+// explainUnevaluatedContentLayers names the enabled scanners that inspect
+// fetched content, which explain cannot evaluate because it never issues the
+// request.
+//
+// Without this, an allowed verdict reads as a promise the command cannot make.
+// A vendor documentation page that the proxy blocks with
+// `response contains prompt injection` still explains as ALLOWED, because
+// every layer explain does evaluate genuinely passes: the block comes from the
+// response body, which only exists after a fetch. An operator who hits a block
+// and runs the command named explain is then told the opposite of what they
+// just saw, and the tool built to make a block understandable becomes the
+// reason they cannot understand it.
+//
+// Only enabled scanners are named. Listing a disabled one would be its own
+// false alarm, and an advisory that cries wolf gets ignored along with the
+// ones that matter.
+// explainUnevaluatedLayerNotes reports every enabled control that can deny this
+// request but that explain did not evaluate.
+//
+// explain runs one URL through the pre-resolution layers with no network access
+// and no session history, so it cannot evaluate anything that depends on state
+// it does not hold. There are three such kinds, and they fail an operator
+// differently, so they are reported differently:
+//
+//   - fetched content: response and request-body scanning, which need the
+//     response or body that explain never requests;
+//   - accumulated state: cross-request detection and adaptive enforcement,
+//     which decide from request history rather than from this one URL;
+//   - runtime activation: the kill switch, which is different in kind because
+//     explain CAN see it in the config it already loaded, and while it is
+//     active every request is denied regardless of any verdict printed here.
+//
+// Naming only the content layers, which is where this started, fixed two
+// instances of one class and left the rest reporting ALLOWED over controls that
+// deny. Only enabled controls are named; listing a switched-off one would be
+// the false alarm that gets the whole disclosure ignored.
+func explainUnevaluatedLayerNotes(cfg *config.Config, host string) []string {
+	if cfg == nil {
+		return nil
+	}
+	var notes []string
+
+	// Reported first and stated as fact rather than possibility: this is not a
+	// caveat about something that might apply, it is a control that is denying
+	// traffic right now.
+	if cfg.KillSwitch.Enabled {
+		notes = append(notes,
+			"`kill_switch.enabled` is set: the kill switch is ACTIVE and denies every request except exempt endpoints and allowlisted IPs, so this URL is refused at runtime regardless of the verdict above")
+	}
+
+	if layers := explainUnevaluatedContentLayers(cfg, host); len(layers) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"this verdict covers URL-layer checks only; explain does not fetch the URL, so %s did not run and can still block this request at runtime",
+			strings.Join(layers, " and ")))
+	}
+
+	if layers := explainUnevaluatedStatefulLayers(cfg); len(layers) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"explain evaluates this URL on its own, so %s did not run; those decide from accumulated request history and can block a URL that is allowed in isolation",
+			strings.Join(layers, " and ")))
+	}
+
+	return notes
+}
+
+// explainUnevaluatedStatefulLayers names enabled controls whose verdict depends
+// on request history rather than on this URL.
+//
+// A single-URL evaluation cannot reach them even in principle: the entropy
+// budget accumulates across a session, and adaptive enforcement escalates from
+// prior signals. Both routinely block a URL that is individually clean, which
+// is exactly the surprise this disclosure exists to prevent.
+func explainUnevaluatedStatefulLayers(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var layers []string
+	if cfg.CrossRequestDetection.Enabled {
+		layers = append(layers, "cross-request detection")
+	}
+	if cfg.AdaptiveEnforcement.Enabled {
+		layers = append(layers, "adaptive enforcement")
+	}
+	return layers
+}
+
+func explainUnevaluatedContentLayers(cfg *config.Config, host string) []string {
+	if cfg == nil {
+		return nil
+	}
+	var layers []string
+	// An exempt host narrows what response scanning does; it does not switch it
+	// off. `response_scanning.exempt_domains` skips INJECTION scanning only and
+	// response DLP still applies (internal/config/schema.go on the field, and
+	// internal/mcp/sse_generic.go where the flag gates injection findings
+	// alone). Dropping the whole disclosure here would hide a check that can
+	// still block this request, so the exemption changes the WORDING rather
+	// than removing the entry.
+	if cfg.ResponseScanning.Enabled {
+		layer := "response scanning"
+		if _, exempt := explainResponseScanExemptDomain(cfg, host); exempt {
+			layer = "response DLP (injection scanning is exempt for this host, DLP is not)"
+		}
+		layers = append(layers, layer)
+	}
+	// Request body scanning has no whole-scanner host exemption. Its host
+	// patterns (content_entropy_exclusions) narrow one sub-check rather than
+	// the credential matching, so the scanner can still block an exempted host.
+	if cfg.RequestBodyScanning.Enabled {
+		layers = append(layers, "request body scanning")
+	}
+	return layers
+}
+
+// explainResponseScanExemptDomain reports the configured exempt domain matching
+// this host, if any.
+//
+// One predicate, shared with the exemption advisory below, so the two cannot
+// disagree about whether a host is exempt. An empty host is NOT treated as
+// exempt: with nothing to match, exemption is unproven, and the honest default
+// is to keep disclosing the scanner rather than quietly drop it.
+func explainResponseScanExemptDomain(cfg *config.Config, host string) (string, bool) {
+	if cfg == nil || host == "" {
+		return "", false
+	}
+	for _, domain := range cfg.ResponseScanning.ExemptDomains {
+		if scanner.MatchDomain(host, domain) {
+			return domain, true
+		}
+	}
+	return "", false
 }
 
 func explainResponseScanExemptNotes(cfg *config.Config, host string) []string {
@@ -464,14 +598,8 @@ func explainResponseScanExemptNotes(cfg *config.Config, host string) []string {
 		return []string{explainResponseScanExemptNarrowAdvice + " " + explainResponseScanExemptDisabled}
 	}
 	notes := []string{explainResponseScanExemptNarrowAdvice + " " + explainResponseScanExemptBlastRadius}
-	if host == "" {
-		return notes
-	}
-	for _, domain := range cfg.ResponseScanning.ExemptDomains {
-		if scanner.MatchDomain(host, domain) {
-			notes = append(notes, fmt.Sprintf("this host matches `response_scanning.exempt_domains` (%s): responses are fully unscanned for injection, including oversized over-cap responses that stream unscanned", domain))
-			return notes
-		}
+	if domain, exempt := explainResponseScanExemptDomain(cfg, host); exempt {
+		notes = append(notes, fmt.Sprintf("this host matches `response_scanning.exempt_domains` (%s): responses are fully unscanned for injection, including oversized over-cap responses that stream unscanned", domain))
 	}
 	return notes
 }

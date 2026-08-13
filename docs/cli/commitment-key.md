@@ -109,14 +109,9 @@ lifecycle audit sink and cannot authorize a mutation. Read-only `inspect` and
 durable sink is available but its outcome record cannot be written, both
 commands return that error rather than reporting a successful operation.
 
-When Pipelock creates a new audit file on Unix, it also syncs the parent
-directory before a lifecycle mutation can proceed, so the file name as well as
-the record survives a power loss.
-
-On Unix, the lifecycle sink requires the open audit file and its containing
-directories to be owned by the service user or root and not group- or
-world-writable. Root-owned sticky directories such as `/tmp` remain usable when
-the audit file itself is securely owned and mode-restricted.
+On Unix, Pipelock syncs the audit file's parent directory on every successful
+sink open before a lifecycle mutation can proceed. That covers a newly created
+file name and a name left behind by an earlier failed attempt.
 
 The command verifies that the open file still names `logging.file` before and
 after each durable record. It also rechecks every protected keyring, config,
@@ -144,9 +139,11 @@ stream to an independently protected audit system when retention or
 tamper-evidence matters.
 
 On Unix, keyring, backup, restore, view, and lock paths are opened relative to
-validated directory descriptors; final symlinks are refused, opened files must
-be owned by the effective user with exact `0600` mode, and each parent must be
-owned by root or the effective user and not group/world-writable.
+validated directory descriptors; final symlinks are refused. The lifecycle
+audit sink's opened file and containing directories must be owned by root or
+the effective user and not group/world-writable. Sticky directories owned by
+root or the effective user, such as `/tmp`, remain usable when the audit file
+itself is securely owned and mode-restricted.
 
 Windows does not provide the no-follow, nonblocking descriptor binding used for
 the required lifecycle audit sink. `initialize`, `rotate`, `retire`, `backup`,

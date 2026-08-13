@@ -1,0 +1,287 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Pipelock Gauntlet Candidate
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * *'
+
+concurrency:
+  group: pipelock-gauntlet-candidate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AEB_REF: 6586cd8fc69e61a69874c67b0a6dbeb2d1c344b7
+
+jobs:
+  candidate:
+    name: Released Pipelock candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35 # Keep synchronized with JOB_TIMEOUT_MINUTES below.
+    env:
+      JOB_TIMEOUT_MINUTES: "35"
+    steps:
+      - name: Record job budget start
+        shell: bash
+        run: |
+          {
+            echo "JOB_STARTED_EPOCH=$(date +%s)"
+            echo "AEB_ROOT=$GITHUB_WORKSPACE/_agent-egress-bench"
+            echo "GAUNTLET_ARTIFACT_DIR=$RUNNER_TEMP/pipelock-gauntlet-candidate"
+            echo "PIPELOCK_RELEASE_PIN=$GITHUB_WORKSPACE/benchmark/gauntlet-release.env"
+          } >> "$GITHUB_ENV"
+
+      - name: Check out Pipelock release policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned Agent Egress Bench
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: luckyPipewrench/agent-egress-bench
+          ref: ${{ env.AEB_REF }}
+          path: _agent-egress-bench
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25"
+
+      - name: Verify immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$AEB_ROOT" rev-parse HEAD)" = "$AEB_REF"
+          test ! -L "$PIPELOCK_RELEASE_PIN"
+          test -f "$PIPELOCK_RELEASE_PIN"
+
+      - name: Run portable canonical benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          job_deadline=$((JOB_STARTED_EPOCH + JOB_TIMEOUT_MINUTES * 60))
+          cd "$AEB_ROOT"
+          ./scripts/run-pipelock-gauntlet.sh \
+            --release-pin "$PIPELOCK_RELEASE_PIN" \
+            --output-dir "$GAUNTLET_ARTIFACT_DIR" \
+            --deadline-epoch "$job_deadline" \
+            --reserve-seconds $((6 * 60)) \
+            --benchmark-timeout-seconds $((24 * 60))
+
+      - name: Finalize GitHub provenance artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_json="$GAUNTLET_ARTIFACT_DIR/continuous-gauntlet-pipelock.json"
+          python3 "$AEB_ROOT/scripts/build_gauntlet_provenance.py" finalize \
+            --repo-root "$AEB_ROOT" \
+            --bundle "$GAUNTLET_ARTIFACT_DIR/run-bundle.json" \
+            --artifact-id "github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}" \
+            --canonical-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --output "$artifact_json"
+          {
+            echo "ARTIFACT_JSON=$artifact_json"
+            echo "DECISION_PATH=$GAUNTLET_ARTIFACT_DIR/promotion-decision.json"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate generated provenance artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ARTIFACT_JSON:-}" || { echo "provenance artifact path was not published by the finalizer"; exit 1; }
+          test -f "$ARTIFACT_JSON" || { echo "provenance artifact missing at $ARTIFACT_JSON"; exit 1; }
+          python3 "$AEB_ROOT/scripts/validate_gauntlet_scope.py" "$ARTIFACT_JSON"
+
+      - name: Evaluate candidate without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" evaluate \
+            --candidate "$ARTIFACT_JSON" \
+            --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+            --evidence "raw_summary=$GAUNTLET_ARTIFACT_DIR/raw-summary.json" \
+            --evidence "results=$GAUNTLET_ARTIFACT_DIR/results.jsonl" \
+            --evidence "runner_stderr=$GAUNTLET_ARTIFACT_DIR/runner.stderr" \
+            --evidence "command=$GAUNTLET_ARTIFACT_DIR/command.txt" \
+            --evidence "stats=$GAUNTLET_ARTIFACT_DIR/make-stats.txt" \
+            --evidence "case_index=$GAUNTLET_ARTIFACT_DIR/case-index.json" \
+            --evidence "entrypoint_command=$GAUNTLET_ARTIFACT_DIR/entrypoint-command.txt" \
+            --evidence "run_metadata=$GAUNTLET_ARTIFACT_DIR/run-metadata.json" \
+            --evidence "pipelock_release=$GAUNTLET_ARTIFACT_DIR/pipelock-release.json" \
+            --evidence "release_checksums=$GAUNTLET_ARTIFACT_DIR/checksums.txt" \
+            --evidence "pipelock_version_output=$GAUNTLET_ARTIFACT_DIR/pipelock-version.txt" \
+            --evidence "corpus_manifest=$GAUNTLET_ARTIFACT_DIR/corpus-manifest.txt" \
+            --evidence "tool_profile=$GAUNTLET_ARTIFACT_DIR/tool-profile.json" \
+            --evidence "capability_registry=$GAUNTLET_ARTIFACT_DIR/capability-registry.json" \
+            --evidence "receipt_profile=$GAUNTLET_ARTIFACT_DIR/receipt-profile.json" \
+            --evidence "execution_decision=$GAUNTLET_ARTIFACT_DIR/execution-decision.json" \
+            --evidence "run_bundle=$GAUNTLET_ARTIFACT_DIR/run-bundle.json" \
+            --decision "$DECISION_PATH"
+
+      # Earlier failures skip the normal evaluator. Still emit a blocked,
+      # machine-readable decision before upload instead of losing the evidence.
+      - name: Ensure fail-closed decision exists
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_path="$GAUNTLET_ARTIFACT_DIR/continuous-gauntlet-pipelock.json"
+          decision_path="$GAUNTLET_ARTIFACT_DIR/promotion-decision.json"
+          mkdir -p "$GAUNTLET_ARTIFACT_DIR"
+          if [[ ! -f "$decision_path" ]]; then
+            if [[ -f "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" ]]; then
+              python3 "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" evaluate \
+                --candidate "$candidate_path" \
+                --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+                --evidence "raw_summary=$GAUNTLET_ARTIFACT_DIR/raw-summary.json" \
+                --evidence "results=$GAUNTLET_ARTIFACT_DIR/results.jsonl" \
+                --evidence "runner_stderr=$GAUNTLET_ARTIFACT_DIR/runner.stderr" \
+                --evidence "command=$GAUNTLET_ARTIFACT_DIR/command.txt" \
+                --evidence "stats=$GAUNTLET_ARTIFACT_DIR/make-stats.txt" \
+                --evidence "case_index=$GAUNTLET_ARTIFACT_DIR/case-index.json" \
+                --evidence "entrypoint_command=$GAUNTLET_ARTIFACT_DIR/entrypoint-command.txt" \
+                --evidence "run_metadata=$GAUNTLET_ARTIFACT_DIR/run-metadata.json" \
+                --evidence "pipelock_release=$GAUNTLET_ARTIFACT_DIR/pipelock-release.json" \
+                --evidence "release_checksums=$GAUNTLET_ARTIFACT_DIR/checksums.txt" \
+                --evidence "pipelock_version_output=$GAUNTLET_ARTIFACT_DIR/pipelock-version.txt" \
+                --evidence "corpus_manifest=$GAUNTLET_ARTIFACT_DIR/corpus-manifest.txt" \
+                --evidence "tool_profile=$GAUNTLET_ARTIFACT_DIR/tool-profile.json" \
+                --evidence "capability_registry=$GAUNTLET_ARTIFACT_DIR/capability-registry.json" \
+                --evidence "receipt_profile=$GAUNTLET_ARTIFACT_DIR/receipt-profile.json" \
+                --evidence "execution_decision=$GAUNTLET_ARTIFACT_DIR/execution-decision.json" \
+                --evidence "run_bundle=$GAUNTLET_ARTIFACT_DIR/run-bundle.json" \
+                --decision "$decision_path"
+            else
+              temporary_decision="$decision_path.tmp"
+              jq -n '{
+                schema_version: 1,
+                candidate_sha256: null,
+                baseline_sha256: null,
+                evidence_sha256: {},
+                blocked: true,
+                promotion_status: "blocked",
+                failures: ["pinned benchmark evaluator unavailable after an earlier workflow failure"],
+                review_notes: []
+              }' > "$temporary_decision"
+              mv "$temporary_decision" "$decision_path"
+            fi
+          fi
+          {
+            echo "DECISION_PATH=$decision_path"
+            echo "ARTIFACT_JSON=$candidate_path"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload candidate evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pipelock-gauntlet-candidate
+          if-no-files-found: error
+          path: |
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/continuous-gauntlet-pipelock.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/promotion-decision.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/execution-decision.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/run-bundle.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/run-metadata.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/pipelock-release.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/pipelock-version.txt
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/corpus-manifest.txt
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/checksums.txt
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/entrypoint-command.txt
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/raw-summary.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/results.jsonl
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/runner.stderr
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/command.txt
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/make-stats.txt
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/case-index.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/tool-profile.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/capability-registry.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/receipt-profile.json
+          retention-days: 14
+
+      # Enforce only after upload so a blocked candidate remains inspectable.
+      - name: Enforce candidate decision
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          test -n "${DECISION_PATH:-}" || { echo "candidate decision was not produced" >&2; exit 1; }
+          test -n "${ARTIFACT_JSON:-}" || { echo "candidate artifact was not produced" >&2; exit 1; }
+          decision_exit=0
+          python3 "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" enforce "$DECISION_PATH" \
+            --candidate "$ARTIFACT_JSON" \
+            --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+            --result "$GAUNTLET_ARTIFACT_DIR/enforcement-result.json" \
+            --evidence "raw_summary=$GAUNTLET_ARTIFACT_DIR/raw-summary.json" \
+            --evidence "results=$GAUNTLET_ARTIFACT_DIR/results.jsonl" \
+            --evidence "runner_stderr=$GAUNTLET_ARTIFACT_DIR/runner.stderr" \
+            --evidence "command=$GAUNTLET_ARTIFACT_DIR/command.txt" \
+            --evidence "stats=$GAUNTLET_ARTIFACT_DIR/make-stats.txt" \
+            --evidence "case_index=$GAUNTLET_ARTIFACT_DIR/case-index.json" \
+            --evidence "entrypoint_command=$GAUNTLET_ARTIFACT_DIR/entrypoint-command.txt" \
+            --evidence "run_metadata=$GAUNTLET_ARTIFACT_DIR/run-metadata.json" \
+            --evidence "pipelock_release=$GAUNTLET_ARTIFACT_DIR/pipelock-release.json" \
+            --evidence "release_checksums=$GAUNTLET_ARTIFACT_DIR/checksums.txt" \
+            --evidence "pipelock_version_output=$GAUNTLET_ARTIFACT_DIR/pipelock-version.txt" \
+            --evidence "corpus_manifest=$GAUNTLET_ARTIFACT_DIR/corpus-manifest.txt" \
+            --evidence "tool_profile=$GAUNTLET_ARTIFACT_DIR/tool-profile.json" \
+            --evidence "capability_registry=$GAUNTLET_ARTIFACT_DIR/capability-registry.json" \
+            --evidence "receipt_profile=$GAUNTLET_ARTIFACT_DIR/receipt-profile.json" \
+            --evidence "execution_decision=$GAUNTLET_ARTIFACT_DIR/execution-decision.json" \
+            --evidence "run_bundle=$GAUNTLET_ARTIFACT_DIR/run-bundle.json" || decision_exit=$?
+          exit "$decision_exit"
+
+      - name: Render owner-facing run summary
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GAUNTLET_ARTIFACT_DIR"
+          candidate_path="${ARTIFACT_JSON:-$GAUNTLET_ARTIFACT_DIR/continuous-gauntlet-pipelock.json}"
+          decision_path="${DECISION_PATH:-$GAUNTLET_ARTIFACT_DIR/promotion-decision.json}"
+          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          summary_path="$GAUNTLET_ARTIFACT_DIR/owner-summary.md"
+          summary_exit=0
+          if [[ -f "$AEB_ROOT/scripts/render_gauntlet_run_summary.py" ]]; then
+            python3 "$AEB_ROOT/scripts/render_gauntlet_run_summary.py" \
+              --candidate "$candidate_path" \
+              --decision "$decision_path" \
+              --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+              --enforcement-result "$GAUNTLET_ARTIFACT_DIR/enforcement-result.json" \
+              --repository "$GITHUB_REPOSITORY" \
+              --run-url "$run_url" > "$summary_path" || summary_exit=$?
+            if [[ ! -s "$summary_path" ]]; then
+              summary_exit=1
+            fi
+          else
+            summary_exit=1
+          fi
+          if (( summary_exit != 0 )) && [[ ! -s "$summary_path" ]]; then
+            {
+              echo '## Pipelock Gauntlet candidate: BLOCKED'
+              echo
+              echo 'The owner summary could not be rendered after an earlier workflow failure. No public result changed.'
+            } > "$summary_path"
+          fi
+          cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
+          exit "$summary_exit"
+
+      - name: Upload owner review artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pipelock-gauntlet-owner-review
+          if-no-files-found: error
+          path: |
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/enforcement-result.json
+            ${{ env.GAUNTLET_ARTIFACT_DIR }}/owner-summary.md
+          retention-days: 14

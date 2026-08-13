@@ -5,12 +5,10 @@ package mcp
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"math/big"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 )
@@ -86,26 +84,22 @@ func argumentAtPath(arguments json.RawMessage, path []string) (json.RawMessage, 
 }
 
 func decodeMCPHeaderValue(value string) (string, bool) {
-	const prefix = "=?base64?"
-	if strings.HasPrefix(value, prefix) || strings.HasSuffix(value, "?=") {
-		if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, "?=") {
-			return "", false
-		}
-		raw, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(value, prefix), "?="))
-		if err != nil || !utf8.Valid(raw) {
-			return "", false
-		}
-		return string(raw), true
-	}
-	if value == "" || strings.TrimSpace(value) != value {
+	decoded, ok := decodeMCPWireValue(value)
+	if !ok {
 		return "", false
 	}
-	for i := range len(value) {
-		if (value[i] < 0x20 || value[i] > 0x7e) && value[i] != '\t' {
+	if strings.HasPrefix(value, "=?base64?") {
+		return decoded, true
+	}
+	if decoded == "" || strings.TrimSpace(decoded) != decoded {
+		return "", false
+	}
+	for i := range len(decoded) {
+		if (decoded[i] < 0x20 || decoded[i] > 0x7e) && decoded[i] != '\t' {
 			return "", false
 		}
 	}
-	return value, true
+	return decoded, true
 }
 
 func mcpParamValueMatches(header string, raw json.RawMessage, valueType string) bool {

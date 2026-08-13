@@ -29,7 +29,7 @@ func openDurableAuditFile(path string) (*os.File, bool, error) {
 		fd, err = syscall.Open(cleanPath, syscall.O_APPEND|syscall.O_WRONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("open durable audit log file %s: %w", cleanPath, err)
 	}
 	file := os.NewFile(uintptr(fd), cleanPath)
 	if file == nil {

@@ -73,8 +73,8 @@ func scanMCPListenerHeadersForDLP(
 				if response := sc.ScanResponse(ctx, decoded); !response.Clean {
 					return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.PromptInjection}
 				}
+				decodedParamValues = append(decodedParamValues, namedHeaderValue{name: strings.ToLower(name), value: decoded})
 				if decoded != value {
-					decodedParamValues = append(decodedParamValues, namedHeaderValue{name: strings.ToLower(name), value: decoded})
 					result = sc.ScanTextForDLP(ctx, decoded)
 					if !result.Clean {
 						return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}

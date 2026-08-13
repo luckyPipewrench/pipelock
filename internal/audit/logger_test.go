@@ -326,32 +326,45 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 }
 
 func TestLogCommitmentKeyLifecycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	logger, err := New("json", "file", path, false, false)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	logger.LogCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{
-		Operation:     "retire",
-		Outcome:       "denied",
-		KeyID:         "ck_0123456789abcdef0123456789abcdef",
-		Epoch:         2,
-		Timestamp:     "2026-08-12T21:00:00Z",
-		Reason:        "missing_required_flag",
-		Authorization: "operator_accept_loss",
-	})
-	logger.Close()
+	for _, tc := range []struct {
+		name    string
+		outcome string
+		level   string
+	}{
+		{name: "denied is warn", outcome: "denied", level: "warn"},
+		{name: "non-denied is info", outcome: "succeeded", level: "info"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			logger, err := New("json", "file", path, false, false)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			logger.LogCommitmentKeyLifecycle(CommitmentKeyLifecycleEvent{
+				Operation:     "retire",
+				Phase:         "outcome",
+				Outcome:       tc.outcome,
+				OperationID:   "cka_test",
+				KeyID:         "ck_0123456789abcdef0123456789abcdef",
+				Epoch:         2,
+				Timestamp:     "2026-08-12T21:00:00Z",
+				Reason:        "missing_required_flag",
+				Authorization: "operator_accept_loss",
+			})
+			logger.Close()
 
-	var event map[string]any
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if err := json.Unmarshal(bytes.TrimSpace(data), &event); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if event["event"] != string(EventCommitmentKeyLifecycle) || event["event_type"] != string(EventCommitmentKeyLifecycle) || event["outcome"] != "denied" || event["epoch"] != float64(2) || event["timestamp"] != "2026-08-12T21:00:00Z" || event["reason"] != "missing_required_flag" {
-		t.Fatalf("event = %#v", event)
+			var event map[string]any
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if err := json.Unmarshal(bytes.TrimSpace(data), &event); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if event["event"] != string(EventCommitmentKeyLifecycle) || event["event_type"] != string(EventCommitmentKeyLifecycle) || event["level"] != tc.level || event["phase"] != "outcome" || event["operation_id"] != "cka_test" || event["outcome"] != tc.outcome || event["epoch"] != float64(2) || event["timestamp"] != "2026-08-12T21:00:00Z" || event["reason"] != "missing_required_flag" {
+				t.Fatalf("event = %#v", event)
+			}
+		})
 	}
 }
 

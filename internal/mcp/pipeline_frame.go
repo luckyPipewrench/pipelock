@@ -200,6 +200,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 		}
 		if err := json.Unmarshal(decoded.Params, &params); err != nil {
 			frame.RoutingNameErr = err
+			frame.ParseErr = err
 			return frame
 		}
 		if len(params.Name) > 0 {

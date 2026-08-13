@@ -134,12 +134,14 @@ func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
 		wantParseErr bool
 	}{
 		{
-			name: "params array",
-			msg:  `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":["not","object"]}`,
+			name:         "params array",
+			msg:          `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":["not","object"]}`,
+			wantParseErr: true,
 		},
 		{
-			name: "params string",
-			msg:  `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":"not-object"}`,
+			name:         "params string",
+			msg:          `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":"not-object"}`,
+			wantParseErr: true,
 		},
 		{
 			name:         "non-string tool name",

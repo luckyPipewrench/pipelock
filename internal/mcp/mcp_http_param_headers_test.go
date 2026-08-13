@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 )
 
@@ -21,7 +22,7 @@ func paramContractOpts(t *testing.T) MCPProxyOpts {
 	return MCPProxyOpts{
 		Scanner:             testScannerForHTTP(t),
 		ListenerBearerToken: "current-client-token",
-		ToolCfg:             &tools.ToolScanConfig{Action: "block", Baseline: tools.NewToolBaseline()},
+		ToolCfg:             &tools.ToolScanConfig{Action: config.ActionBlock, Baseline: tools.NewToolBaseline()},
 	}
 }
 
@@ -142,7 +143,7 @@ func TestMCPParamHeaderScanJoinsDecodedValues(t *testing.T) {
 	scanner := testScannerForHTTP(t)
 	headers := http.Header{
 		"Mcp-Param-A": []string{"=?base64?QUtJQUFBQUFBQUFB?="},
-		"Mcp-Param-B": []string{"=?base64?QUFBQUFBQUE=?="},
+		"Mcp-Param-B": []string{"AAAAAAAAA"},
 	}
 	if result := scanMCPListenerHeadersForDLP(context.Background(), headers, scanner, nil); result == nil {
 		t.Fatal("credential split across encoded parameter headers was not blocked")

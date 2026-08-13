@@ -1776,12 +1776,7 @@ func hasMCPPOSTOnlyHeaders(headers http.Header) bool {
 	if headers.Get(listenerMCPMethod) != "" || headers.Get(listenerMCPName) != "" {
 		return true
 	}
-	for name := range headers {
-		if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
-			return true
-		}
-	}
-	return false
+	return hasMCPParamHeaders(headers)
 }
 
 func hasMCPParamHeaders(headers http.Header) bool {
@@ -1906,26 +1901,36 @@ func listenerAuthenticationForRequest(r *http.Request, opts MCPProxyOpts, states
 		}
 	}
 	principal, err := listenerPrincipalForRequest(principalRequest, opts, states)
-	if err != nil || principal.key != "" {
+	if err != nil {
 		return token, consumed, authorized, principal, err
 	}
 
-	// A resolver may perform network I/O, so it must run outside authMu. If it
-	// declines the request, refresh and authenticate the bearer again under the
-	// lock before deriving its generation. Rotation cannot race this fallback
-	// into admitting a retired credential epoch.
+	// A resolver may perform network I/O, so it must run outside authMu. Refresh
+	// the bearer afterward for both resolver and bearer principals: rotation
+	// cannot admit a retired credential epoch or leave either generation in an
+	// Authorization header forwarded to the upstream.
 	states.authMu.Lock()
 	defer states.authMu.Unlock()
-	token, err = listenerBearerTokenForRequest(opts)
+	refreshedToken, err := listenerBearerTokenForRequest(opts)
 	if err != nil {
 		return "", "", false, mcpListenerPrincipal{}, err
 	}
-	consumed, authorized = listenerBearerAuthHeader(r.Header, token)
-	if token == "" || !authorized {
-		return token, consumed, authorized, mcpListenerPrincipal{}, nil
+	refreshedConsumed, refreshedAuthorized := listenerBearerAuthHeader(r.Header, refreshedToken)
+	// The handler removes Proxy-Authorization unconditionally. Scrub matching
+	// Authorization values here as well, while both the pre-resolver and
+	// refreshed token generations are still known.
+	if listenerBearerAnyValueMatches(r.Header.Values(listenerAuthorization), token) ||
+		listenerBearerAnyValueMatches(r.Header.Values(listenerAuthorization), refreshedToken) {
+		r.Header.Del(listenerAuthorization)
 	}
-	principal, err = states.bearerPrincipal(token)
-	return token, consumed, authorized, principal, err
+	if principal.key != "" {
+		return refreshedToken, refreshedConsumed, refreshedAuthorized, principal, nil
+	}
+	if refreshedToken == "" || !refreshedAuthorized {
+		return refreshedToken, refreshedConsumed, refreshedAuthorized, mcpListenerPrincipal{}, nil
+	}
+	principal, err = states.bearerPrincipal(refreshedToken)
+	return refreshedToken, refreshedConsumed, refreshedAuthorized, principal, err
 }
 
 func listenerPrincipalForRequest(r *http.Request, opts MCPProxyOpts, states *mcpListenerClientStates) (mcpListenerPrincipal, error) {
@@ -2068,22 +2073,7 @@ func listenerHasStatefulControls(opts MCPProxyOpts) bool {
 			return true
 		}
 	}
-	if opts.chainMatcher() != nil || opts.cee() != nil {
-		return true
-	}
-	if opts.Store == nil {
-		return false
-	}
-	if airlockCfg := opts.airlockCfg(); airlockCfg != nil && airlockCfg.Enabled {
-		return true
-	}
-	if adaptiveCfg := opts.adaptiveCfg(); adaptiveCfg != nil && adaptiveCfg.Enabled {
-		return true
-	}
-	if taintCfg := opts.taintCfg(); taintCfg != nil && taintCfg.Enabled {
-		return true
-	}
-	return false
+	return listenerHasSessionScopedControls(opts)
 }
 
 func listenerMethodRequiresPrincipal(method string) bool {
@@ -2100,6 +2090,13 @@ func listenerHasPrincipalScopedControls(opts MCPProxyOpts) bool {
 		(toolCfg.BindingUnknownAction != "" || toolCfg.BindingNoBaselineAction != "") {
 		return true
 	}
+	return listenerHasSessionScopedControls(opts)
+}
+
+// listenerHasSessionScopedControls reports stateful controls whose state is
+// keyed by a client partition. Both stateful predicates use it so new controls
+// cannot be accounted for by one and missed by the other.
+func listenerHasSessionScopedControls(opts MCPProxyOpts) bool {
 	if opts.chainMatcher() != nil || opts.cee() != nil {
 		return true
 	}
@@ -2269,17 +2266,9 @@ func routingHeaderMatchesFrame(headers http.Header, frame MCPFrame) bool {
 	if method != "" && method != frame.Method {
 		return false
 	}
-	// Only tools/call carries a name Pipelock can compare, and it is the method
-	// whose name drives tool policy and per-tool accounting, so it is enforced
-	// strictly: a tools/call naming a tool the body does not is refused, INCLUDING
-	// the case where the body omits the name entirely. A missing body value is
-	// the worst case, not a tolerance, because the upstream still routes on the
-	// header while Pipelock sees no tool at all.
-	//
-	// Residual: other methods may legitimately carry Mcp-Name for an entity with
-	// no comparable body field, so those are left to the upstream rather than
-	// refused. Refusing them would break spec-legal requests to buy a check
-	// Pipelock cannot actually perform.
+	// Mcp-Name is accepted only when the body contains a recognized routing name
+	// that Pipelock can compare. Otherwise the upstream could route a request on
+	// data Pipelock never inspected, so it is refused rather than forwarded.
 	if name != "" {
 		if frame.RoutingNameErr != nil || !frame.RoutingNamePresent || frame.RoutingName == "" {
 			return false
@@ -2313,15 +2302,30 @@ func currentProtocolHeadersMatchFrame(headers http.Header, frame MCPFrame) bool 
 }
 
 func decodeMCPRoutingName(value string) (string, bool) {
-	const prefix = "=?base64?"
-	if !strings.HasPrefix(value, prefix) {
-		return value, value != ""
-	}
-	if !strings.HasSuffix(value, "?=") {
+	decoded, ok := decodeMCPWireValue(value)
+	if !ok || decoded == "" {
 		return "", false
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(value, prefix), "?="))
-	if err != nil || !utf8.Valid(raw) || len(raw) == 0 {
+	return decoded, true
+}
+
+// decodeMCPWireValue decodes the encoded-value form shared by MCP routing and
+// parameter headers. Callers retain their own plaintext character policies.
+func decodeMCPWireValue(value string) (string, bool) {
+	const (
+		prefix = "=?base64?"
+		suffix = "?="
+	)
+	hasPrefix := strings.HasPrefix(value, prefix)
+	hasSuffix := strings.HasSuffix(value, suffix)
+	if !hasPrefix && !hasSuffix {
+		return value, true
+	}
+	if !hasPrefix || !hasSuffix {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(value, prefix), suffix))
+	if err != nil || !utf8.Valid(raw) {
 		return "", false
 	}
 	return string(raw), true

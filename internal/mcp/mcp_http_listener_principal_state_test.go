@@ -53,15 +53,14 @@ func principalStateUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 // no initialize request, no Mcp-Session-Id, and no Pipelock-Session-Token.
 // The bearer proves one shared credential trust domain; it is not a claim that
 // Pipelock can distinguish individual humans holding that credential.
-func principalStateToolCall(t *testing.T, baseURL, bearer string, id int, tool string, extra http.Header) (int, string) {
-	t.Helper()
+func principalStateToolCallRequest(baseURL, bearer string, id int, tool string, extra http.Header) (int, string, error) {
 	if extra != nil && (extra.Get("Mcp-Session-Id") != "" || extra.Get(listenerSessionTokenHeader) != "") {
-		t.Fatal("current-spec principal-state test must not carry an MCP or Pipelock session token")
+		return 0, "", fmt.Errorf("current-spec principal-state request must not carry an MCP or Pipelock session token")
 	}
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":%q,"io.modelcontextprotocol/clientCapabilities":{}}}}`, id, tool, currentMCPVersion)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
 	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
+		return 0, "", fmt.Errorf("NewRequest: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -79,14 +78,23 @@ func principalStateToolCall(t *testing.T, baseURL, bearer string, id int, tool s
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST listener: %v", err)
+		return 0, "", fmt.Errorf("POST listener: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("ReadAll(listener response): %v", err)
+		return 0, "", fmt.Errorf("ReadAll(listener response): %w", err)
 	}
-	return resp.StatusCode, string(payload)
+	return resp.StatusCode, string(payload), nil
+}
+
+func principalStateToolCall(t *testing.T, baseURL, bearer string, id int, tool string, extra http.Header) (int, string) {
+	t.Helper()
+	status, payload, err := principalStateToolCallRequest(baseURL, bearer, id, tool, extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return status, payload
 }
 
 func principalStateDelete(t *testing.T, baseURL, bearer string) (int, string) {
@@ -307,9 +315,14 @@ func TestHTTPListener_PrincipalState_SlowVerifierDoesNotSerializeRequests(t *tes
 	}
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 	slowDone := make(chan struct{})
+	slowResult := make(chan error, 1)
 	go func() {
 		defer close(slowDone)
-		principalStateToolCall(t, baseURL, "", 1, "read_file", http.Header{"X-Verified-Subject": []string{"slow"}})
+		status, body, err := principalStateToolCallRequest(baseURL, "", 1, "read_file", http.Header{"X-Verified-Subject": []string{"slow"}})
+		if err == nil && status != http.StatusOK {
+			err = fmt.Errorf("slow verifier request = status %d body %s, want 200", status, body)
+		}
+		slowResult <- err
 	}()
 	<-entered
 	status, body := principalStateToolCall(t, baseURL, "", 2, "read_file", http.Header{"X-Verified-Subject": []string{"fast"}})
@@ -318,8 +331,77 @@ func TestHTTPListener_PrincipalState_SlowVerifierDoesNotSerializeRequests(t *tes
 	}
 	releaseVerifier()
 	<-slowDone
+	if err := <-slowResult; err != nil {
+		t.Fatal(err)
+	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+}
+
+func TestHTTPListener_PrincipalState_ResolverRotationScrubsBothBearerGenerations(t *testing.T) {
+	oldBearer := strings.Join([]string{"resolver", "rotation", "old"}, "-")
+	newBearer := strings.Join([]string{"resolver", "rotation", "new"}, "-")
+	var active atomic.Value
+	active.Store(oldBearer)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	upstreamHeaders := make(chan http.Header, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHeaders <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+	}))
+	t.Cleanup(upstream.Close)
+	opts := principalStateOpts(t, "")
+	opts.ListenerBearerTokenFn = func() (string, error) { return active.Load().(string), nil }
+	opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) {
+		close(entered)
+		<-release
+		return ListenerPrincipal{Provider: "test", Subject: "resolver-subject"}, nil
+	}
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	result := make(chan error, 1)
+	go func() {
+		status, body, err := principalStateToolCallRequest(baseURL, "", 1, "read_file", http.Header{
+			"X-Verified-Subject":       []string{"resolver-subject"},
+			listenerProxyAuthorization: []string{"Bearer " + newBearer},
+			listenerAuthorization:      []string{"Bearer " + oldBearer, "Bearer " + newBearer},
+		})
+		if err == nil && status != http.StatusOK {
+			err = fmt.Errorf("rotated resolver request = status %d body %s, want 200", status, body)
+		}
+		result <- err
+	}()
+	<-entered
+	active.Store(newBearer)
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case headers := <-upstreamHeaders:
+		if headers.Get(listenerAuthorization) != "" || headers.Get(listenerProxyAuthorization) != "" {
+			t.Fatalf("upstream received listener bearer headers: Authorization=%q Proxy-Authorization=%q", headers.Get(listenerAuthorization), headers.Get(listenerProxyAuthorization))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rotated resolver request did not reach upstream")
+	}
+}
+
+func TestRoutingHeaderMatchesFrame_RejectsNameForUnsupportedMethod(t *testing.T) {
+	headers := http.Header{}
+	headers.Set(listenerMCPMethod, "resources/subscribe")
+	headers.Set(listenerMCPName, "unscanned-entity")
+	if routingHeaderMatchesFrame(headers, MCPFrame{Method: "resources/subscribe"}) {
+		t.Fatal("Mcp-Name on an unsupported routing method must be rejected")
 	}
 }
 

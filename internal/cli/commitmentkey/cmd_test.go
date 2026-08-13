@@ -1183,8 +1183,8 @@ func TestLifecycleAuditRejectsRelativeKeyringAuditAliasesOutsideConfigDirectory(
 	} {
 		t.Run(tc.operation, func(t *testing.T) {
 			args := append([]string{tc.operation, "--config", collisionConfig}, tc.args...)
-			if _, _, err := execute(t, args...); err == nil || !strings.Contains(err.Error(), "file-backed lifecycle audit sink") {
-				t.Fatalf("%s error = %v, want durable-sink refusal", tc.operation, err)
+			if _, _, err := execute(t, args...); err == nil || !strings.Contains(err.Error(), "must not refer") {
+				t.Fatalf("%s error = %v, want protected-alias refusal", tc.operation, err)
 			}
 			assertTestFileSnapshot(t, keyringPath, before)
 		})

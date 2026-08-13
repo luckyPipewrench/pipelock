@@ -240,9 +240,10 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 	requireDurableAuditFile(t)
 
 	for _, tc := range []struct {
-		name    string
-		prepare func(t *testing.T, path string)
-		want    string
+		name        string
+		prepare     func(t *testing.T, path string)
+		want        string
+		inParentDir bool
 	}{
 		{
 			name: "group writable file",
@@ -271,7 +272,8 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 			want: "audit log file must not be group or world writable",
 		},
 		{
-			name: "group writable parent",
+			name:        "group writable parent",
+			inParentDir: true,
 			prepare: func(t *testing.T, path string) {
 				t.Helper()
 				parent := filepath.Dir(path)
@@ -286,9 +288,9 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "audit-parent", "audit.jsonl")
-			if tc.name != "group writable parent" {
-				path = filepath.Join(t.TempDir(), "audit.jsonl")
+			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			if tc.inParentDir {
+				path = filepath.Join(t.TempDir(), "audit-parent", "audit.jsonl")
 			}
 			tc.prepare(t, path)
 			logger, err := NewDurableFile("json", path, false, false)

@@ -458,13 +458,16 @@ func (f *pathFlags) prepareReadOnlyLifecycleAudit(cmd *cobra.Command, protectedP
 }
 
 func (f *pathFlags) prepareLifecycleAudit(cmd *cobra.Command, mutating bool, protectedPaths ...string) error {
-	sink, err := f.durableAuditSink(protectedPaths...)
-	if err != nil {
-		err = fmt.Errorf("%w: %w", errLifecycleAuditSinkUnavailable, err)
+	sink, cause := f.durableAuditSink(protectedPaths...)
+	if cause != nil {
+		err := fmt.Errorf("%w: %w", errLifecycleAuditSinkUnavailable, cause)
 		if mutating || errors.Is(err, errLifecycleAuditSinkProtectedAlias) {
 			return err
 		}
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: file-backed lifecycle audit sink unavailable: %v; proceeding because this operation is read-only\n", err)
+		// Print the cause, not the wrapped error: the wrapper already says
+		// "lifecycle audit sink unavailable", so printing it after this prefix
+		// shows the operator the same phrase twice.
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: file-backed lifecycle audit sink unavailable: %v; proceeding because this operation is read-only\n", cause)
 		return nil
 	}
 	sink.operationID = "cka_" + cryptorand.Text()

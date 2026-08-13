@@ -50,6 +50,14 @@ Examples:
 				return err
 			}
 			if outPath != "" {
+				// Writing the public key hex over the private key it was derived
+				// from would destroy that key and still report success.
+				if err := cliutil.RefuseOutputAliases(
+					map[string]string{"the signing key": keyPath},
+					map[string]string{"--out": outPath},
+				); err != nil {
+					return err
+				}
 				if err := writeRecorderPublicKeyHex(outPath, pubHex); err != nil {
 					return err
 				}

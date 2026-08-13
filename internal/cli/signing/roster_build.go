@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -85,6 +86,17 @@ Examples:
 				return fmt.Errorf("--out must be absolute, got %q", outPath)
 			}
 			cleanOut := filepath.Clean(outPath)
+
+			// --force means "overwrite an existing roster", never "overwrite the
+			// key that signs it". Without this the roster JSON is written over the
+			// root private key and the command still prints a success summary,
+			// including the fingerprint of the key it just destroyed.
+			if err := cliutil.RefuseOutputAliases(
+				map[string]string{"the roster root key": rootPath},
+				map[string]string{"--out": cleanOut},
+			); err != nil {
+				return err
+			}
 
 			if !force {
 				if _, statErr := os.Stat(cleanOut); statErr == nil {

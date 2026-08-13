@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
@@ -73,6 +74,18 @@ Example:
 				return fmt.Errorf("--out must be absolute, got %q", outPath)
 			}
 			cleanOut := filepath.Clean(outPath)
+			// The endorsement is written atomically over its target, so an --out
+			// naming either rotation key would destroy that key mid-ceremony and
+			// still report success.
+			if err := cliutil.RefuseOutputAliases(
+				map[string]string{
+					"the retiring signing key":  priorKeyFile,
+					"the successor signing key": newKeyFile,
+				},
+				map[string]string{"--out": cleanOut},
+			); err != nil {
+				return err
+			}
 			ceremonyLock, err := recorder.AcquireEvidenceCeremonyLock(filepath.Clean(chainDir))
 			if err != nil {
 				return fmt.Errorf("lock stopped receipt chain: %w", err)

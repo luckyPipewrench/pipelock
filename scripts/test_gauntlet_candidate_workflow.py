@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Structural tests for the Pipelock-owned candidate-only Gauntlet lane."""
 
 import re
@@ -125,6 +128,14 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         for action, revision in re.findall(r"uses:\s+([^@\s]+)@([^\s]+)", self.workflow):
             self.assertRegex(revision, r"^[0-9a-f]{40}$", action)
 
+    def test_benchmark_runner_and_go_patch_are_fixed(self):
+        candidate_job = self.workflow[self.workflow.index("  candidate:") :]
+        self.assertIn("runs-on: ubuntu-24.04", candidate_job)
+        self.assertNotIn("ubuntu-latest", candidate_job)
+        setup = step_block(self.workflow, "Set up Go")
+        self.assertIn('go-version: "1.25.12"', setup)
+        self.assertNotIn('go-version: "1.25"', setup)
+
     def test_fail_closed_decision_precedes_upload_and_enforcement(self):
         ensure = self.workflow.index("      - name: Ensure fail-closed decision exists")
         upload = self.workflow.index("      - name: Upload candidate evidence")
@@ -143,6 +154,17 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
             "Upload owner review artifact",
         ):
             self.assertIn("if: ${{ !cancelled() }}", step_block(self.workflow, name))
+
+    def test_evaluator_failure_is_converted_to_an_atomic_blocked_decision(self):
+        ensure = step_block(self.workflow, "Ensure fail-closed decision exists")
+        self.assertIn("evaluation_exit=0", ensure)
+        self.assertIn("|| evaluation_exit=$?", ensure)
+        self.assertIn('rm -f "$decision_path"', ensure)
+        self.assertGreaterEqual(ensure.count('if [[ ! -f "$decision_path" ]]'), 2)
+        self.assertIn('jq -n --arg failure "$fallback_failure"', ensure)
+        self.assertIn("failures: [$failure]", ensure)
+        self.assertLess(ensure.index("|| evaluation_exit=$?"), ensure.rindex("jq -n"))
+        self.assertLess(ensure.rindex("jq -n"), ensure.index('mv "$temporary_decision" "$decision_path"'))
 
     def test_candidate_upload_retains_every_verification_input(self):
         upload = step_block(self.workflow, "Upload candidate evidence")

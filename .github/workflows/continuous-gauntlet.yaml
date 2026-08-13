@@ -20,7 +20,7 @@ env:
 jobs:
   candidate:
     name: Released Pipelock candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35 # Keep synchronized with JOB_TIMEOUT_MINUTES below.
     env:
       JOB_TIMEOUT_MINUTES: "35"
@@ -52,7 +52,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.25"
+          go-version: "1.25.12"
 
       - name: Verify immutable inputs
         shell: bash
@@ -137,8 +137,10 @@ jobs:
           candidate_path="$GAUNTLET_ARTIFACT_DIR/continuous-gauntlet-pipelock.json"
           decision_path="$GAUNTLET_ARTIFACT_DIR/promotion-decision.json"
           mkdir -p "$GAUNTLET_ARTIFACT_DIR"
+          fallback_failure="pinned benchmark evaluator unavailable after an earlier workflow failure"
           if [[ ! -f "$decision_path" ]]; then
             if [[ -f "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" ]]; then
+              evaluation_exit=0
               python3 "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" evaluate \
                 --candidate "$candidate_path" \
                 --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
@@ -159,17 +161,25 @@ jobs:
                 --evidence "receipt_profile=$GAUNTLET_ARTIFACT_DIR/receipt-profile.json" \
                 --evidence "execution_decision=$GAUNTLET_ARTIFACT_DIR/execution-decision.json" \
                 --evidence "run_bundle=$GAUNTLET_ARTIFACT_DIR/run-bundle.json" \
-                --decision "$decision_path"
-            else
+                --decision "$decision_path" || evaluation_exit=$?
+              if (( evaluation_exit != 0 )); then
+                echo "pinned benchmark evaluator failed with exit $evaluation_exit" >&2
+                rm -f "$decision_path"
+                fallback_failure="pinned benchmark evaluator failed after an earlier workflow failure"
+              else
+                fallback_failure="pinned benchmark evaluator completed without a decision"
+              fi
+            fi
+            if [[ ! -f "$decision_path" ]]; then
               temporary_decision="$decision_path.tmp"
-              jq -n '{
+              jq -n --arg failure "$fallback_failure" '{
                 schema_version: 1,
                 candidate_sha256: null,
                 baseline_sha256: null,
                 evidence_sha256: {},
                 blocked: true,
                 promotion_status: "blocked",
-                failures: ["pinned benchmark evaluator unavailable after an earlier workflow failure"],
+                failures: [$failure],
                 review_notes: []
               }' > "$temporary_decision"
               mv "$temporary_decision" "$decision_path"

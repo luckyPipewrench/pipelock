@@ -136,6 +136,13 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertIn('go-version: "1.25.12"', setup)
         self.assertNotIn('go-version: "1.25"', setup)
 
+    def test_each_run_attempt_keeps_its_own_evidence_identity(self):
+        for name in ("Upload candidate evidence", "Upload owner review artifact"):
+            upload = step_block(self.workflow, name)
+            self.assertIn("attempt-${{ github.run_attempt }}", upload, name)
+        finalize = step_block(self.workflow, "Finalize GitHub provenance artifact")
+        self.assertIn("${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}", finalize)
+
     def test_fail_closed_decision_precedes_upload_and_enforcement(self):
         ensure = self.workflow.index("      - name: Ensure fail-closed decision exists")
         upload = self.workflow.index("      - name: Upload candidate evidence")
@@ -197,9 +204,13 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
 
     def test_provenance_names_the_pipelock_actions_run(self):
         finalize = step_block(self.workflow, "Finalize GitHub provenance artifact")
-        self.assertIn('--artifact-id "github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}"', finalize)
         self.assertIn(
-            '--canonical-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"',
+            '--artifact-id "github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"',
+            finalize,
+        )
+        self.assertIn(
+            '--canonical-url "https://github.com/${GITHUB_REPOSITORY}'
+            '/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"',
             finalize,
         )
 

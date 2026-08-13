@@ -85,8 +85,8 @@ jobs:
           python3 "$AEB_ROOT/scripts/build_gauntlet_provenance.py" finalize \
             --repo-root "$AEB_ROOT" \
             --bundle "$GAUNTLET_ARTIFACT_DIR/run-bundle.json" \
-            --artifact-id "github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}" \
-            --canonical-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --artifact-id "github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}" \
+            --canonical-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
             --output "$artifact_json"
           {
             echo "ARTIFACT_JSON=$artifact_json"
@@ -194,7 +194,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pipelock-gauntlet-candidate
+          name: pipelock-gauntlet-candidate-attempt-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
             ${{ env.GAUNTLET_ARTIFACT_DIR }}/continuous-gauntlet-pipelock.json
@@ -289,7 +289,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pipelock-gauntlet-owner-review
+          name: pipelock-gauntlet-owner-review-attempt-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
             ${{ env.GAUNTLET_ARTIFACT_DIR }}/enforcement-result.json

@@ -157,9 +157,9 @@ func TestNewDurableFileRejectsUnopenablePaths(t *testing.T) {
 	}
 }
 
-func TestNewDurableFileUnsupportedOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows-specific durable audit support boundary")
+func TestNewDurableFileUnsupportedOnNonUnix(t *testing.T) {
+	if DurableAuditFileSupported() {
+		t.Skip("Unix durable audit support boundary")
 	}
 	if _, err := NewDurableFile("json", filepath.Join(t.TempDir(), "audit.jsonl"), false, false); err == nil || !strings.Contains(err.Error(), "unsupported on this platform") {
 		t.Fatalf("NewDurableFile error = %v, want unsupported-platform refusal", err)
@@ -168,8 +168,8 @@ func TestNewDurableFileUnsupportedOnWindows(t *testing.T) {
 
 func requireDurableAuditFile(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("durable lifecycle audit files are unsupported on Windows")
+	if !DurableAuditFileSupported() {
+		t.Skip("durable lifecycle audit files are unsupported on this platform")
 	}
 }
 

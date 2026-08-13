@@ -25,6 +25,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
+func requireUnixDurableAuditFile(t *testing.T) {
+	t.Helper()
+	if !audit.DurableAuditFileSupported() {
+		t.Skip("durable lifecycle audit files are unsupported on this platform")
+	}
+}
+
 func TestCommandLifecycleAndAudit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state", "keyring.json")
@@ -644,9 +651,7 @@ func TestLifecycleCommandsRejectUnavailableDurableSink(t *testing.T) {
 }
 
 func TestLifecycleCommandsRejectGroupWritableAuditParent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("durable lifecycle audit files are unsupported on Windows")
-	}
+	requireUnixDurableAuditFile(t)
 	dir := t.TempDir()
 	auditDir := filepath.Join(dir, "audit")
 	if err := os.Mkdir(auditDir, 0o700); err != nil {
@@ -690,6 +695,7 @@ func TestLifecycleAuditHelpersRejectUnavailableSink(t *testing.T) {
 	})
 
 	t.Run("closed sink makes intent and outcome fail", func(t *testing.T) {
+		requireUnixDurableAuditFile(t)
 		path := filepath.Join(t.TempDir(), "audit.jsonl")
 		logger, err := audit.NewDurableFile("json", path, false, false)
 		if err != nil {
@@ -1013,9 +1019,7 @@ func TestLifecycleAuditRejectsProtectedFileAliases(t *testing.T) {
 }
 
 func TestLifecycleAuditRejectsSinkSwappedToKeyringAfterPreflight(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("hard-link fixture needs Unix filesystem semantics")
-	}
+	requireUnixDurableAuditFile(t)
 	dir := t.TempDir()
 	keyringPath := filepath.Join(dir, "keyring.json")
 	auditPath := filepath.Join(dir, "audit.jsonl")
@@ -1051,9 +1055,7 @@ func TestLifecycleAuditRejectsSinkSwappedToKeyringAfterPreflight(t *testing.T) {
 }
 
 func TestLifecycleAuditSinkRevalidatesProtectedAliasesBeforeWrite(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("durable lifecycle audit files are unsupported on Windows")
-	}
+	requireUnixDurableAuditFile(t)
 	dir := t.TempDir()
 	auditPath := filepath.Join(dir, "audit.jsonl")
 	keyringPath := filepath.Join(dir, "keyring.json")

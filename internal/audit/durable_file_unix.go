@@ -14,6 +14,10 @@ import (
 	"syscall"
 )
 
+// DurableAuditFileSupported reports whether this target can bind the final
+// lifecycle audit path to a no-follow file descriptor.
+func DurableAuditFileSupported() bool { return true }
+
 // openDurableAuditFile binds a lifecycle sink to a non-blocking, final-symlink
 // refusing descriptor before callers inspect its type or identity.
 func openDurableAuditFile(path string) (*os.File, bool, error) {

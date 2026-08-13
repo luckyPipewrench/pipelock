@@ -11,6 +11,10 @@ import (
 	"os"
 )
 
+// DurableAuditFileSupported reports whether this target can bind the final
+// lifecycle audit path to a no-follow file descriptor.
+func DurableAuditFileSupported() bool { return false }
+
 // openDurableAuditFile fails closed where the platform cannot bind the final
 // path component to an O_NOFOLLOW, non-blocking descriptor. Commitment-key
 // lifecycle mutations are therefore unavailable on these platforms.

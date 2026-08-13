@@ -933,8 +933,8 @@ func TestLifecycleAuditRejectsProtectedFileAliases(t *testing.T) {
 		before := snapshotTestFile(t, keyringPath)
 		collisionConfig := writeLifecycleAuditConfig(t, dir, keyringPath, keyringPath, "file", "")
 
-		if _, stderr, err := execute(t, "inspect", "--config", collisionConfig); err != nil || !strings.Contains(stderr, "proceeding because this operation is read-only") {
-			t.Fatalf("inspect err=%v stderr=%q, want warning and success", err, stderr)
+		if _, _, err := execute(t, "inspect", "--config", collisionConfig); err == nil || !strings.Contains(err.Error(), "must not refer") {
+			t.Fatalf("inspect error = %v, want protected-alias refusal", err)
 		}
 		assertTestFileSnapshot(t, keyringPath, before)
 	})
@@ -1011,8 +1011,8 @@ func TestLifecycleAuditRejectsProtectedFileAliases(t *testing.T) {
 		before := snapshotTestFile(t, viewPath)
 		collisionConfig := writeLifecycleAuditConfig(t, dir, keyringPath, viewPath, "file", "")
 
-		if _, stderr, err := execute(t, "test", "--config", collisionConfig, "--key-id", handle.KeyID, "--epoch", "1", "--source-id", "source-1", "--commitment", commitment, "--view-file", viewPath); err != nil || !strings.Contains(stderr, "proceeding because this operation is read-only") {
-			t.Fatalf("test err=%v stderr=%q, want warning and success", err, stderr)
+		if _, _, err := execute(t, "test", "--config", collisionConfig, "--key-id", handle.KeyID, "--epoch", "1", "--source-id", "source-1", "--commitment", commitment, "--view-file", viewPath); err == nil || !strings.Contains(err.Error(), "must not refer") {
+			t.Fatalf("test error = %v, want protected-alias refusal", err)
 		}
 		assertTestFileSnapshot(t, viewPath, before)
 	})
@@ -1166,8 +1166,8 @@ func TestLifecycleAuditRejectsRelativeKeyringAuditAliasesOutsideConfigDirectory(
 		}
 	})
 
-	if _, stderr, err := execute(t, "inspect", "--config", collisionConfig); err != nil || !strings.Contains(stderr, "proceeding because this operation is read-only") {
-		t.Fatalf("inspect err=%v stderr=%q, want read-only warning and success", err, stderr)
+	if _, _, err := execute(t, "inspect", "--config", collisionConfig); err == nil || !strings.Contains(err.Error(), "must not refer") {
+		t.Fatalf("inspect error = %v, want protected-alias refusal", err)
 	}
 	assertTestFileSnapshot(t, keyringPath, before)
 

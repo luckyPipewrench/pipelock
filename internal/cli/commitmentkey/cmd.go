@@ -113,7 +113,9 @@ func inspectCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
-			flags.prepareReadOnlyLifecycleAudit(cmd)
+			if err := flags.prepareReadOnlyLifecycleAudit(cmd); err != nil {
+				return err
+			}
 			defer closeLifecycleAudit(cmd)
 			keyring, err := flags.load()
 			if err != nil {
@@ -302,7 +304,9 @@ func testCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
-			flags.prepareReadOnlyLifecycleAudit(cmd, viewFile)
+			if err := flags.prepareReadOnlyLifecycleAudit(cmd, viewFile); err != nil {
+				return err
+			}
 			defer closeLifecycleAudit(cmd)
 			if err := requireFlags(cmd, "key-id", "epoch", "source-id", "commitment"); err != nil {
 				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "test", Outcome: "denied", KeyID: keyID, Epoch: epoch, Err: err})
@@ -402,9 +406,10 @@ func (s *lifecycleAuditSink) writeLifecycleRecord(event audit.CommitmentKeyLifec
 }
 
 var (
-	errMissingRequiredFlags          = errors.New("required flag(s)")
-	errLifecycleAuditSinkUnavailable = errors.New("lifecycle audit sink unavailable")
-	newDurableAuditFile              = audit.NewDurableFile
+	errMissingRequiredFlags             = errors.New("required flag(s)")
+	errLifecycleAuditSinkUnavailable    = errors.New("lifecycle audit sink unavailable")
+	errLifecycleAuditSinkProtectedAlias = errors.New("lifecycle audit sink aliases a protected file")
+	newDurableAuditFile                 = audit.NewDurableFile
 )
 
 func (f *pathFlags) bind(cmd *cobra.Command) {
@@ -444,19 +449,19 @@ func (f *pathFlags) load() (*domkey.Keyring, error) {
 	return domkey.Load(path)
 }
 
-// prepareReadOnlyLifecycleAudit attaches a lifecycle sink when one is available
-// and warns when it is not. A read-only operation never fails on an unavailable
-// sink, so it deliberately returns nothing rather than an error its callers
-// could not act on.
-func (f *pathFlags) prepareReadOnlyLifecycleAudit(cmd *cobra.Command, protectedPaths ...string) {
-	_ = f.prepareLifecycleAudit(cmd, false, protectedPaths...)
+// prepareReadOnlyLifecycleAudit attaches a lifecycle sink when one is
+// available. It tolerates an unavailable sink, but rejects a protected-file
+// collision: allowing that configuration would make a future audit write able
+// to overwrite a keyring or other lifecycle artifact.
+func (f *pathFlags) prepareReadOnlyLifecycleAudit(cmd *cobra.Command, protectedPaths ...string) error {
+	return f.prepareLifecycleAudit(cmd, false, protectedPaths...)
 }
 
 func (f *pathFlags) prepareLifecycleAudit(cmd *cobra.Command, mutating bool, protectedPaths ...string) error {
 	sink, err := f.durableAuditSink(protectedPaths...)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", errLifecycleAuditSinkUnavailable, err)
-		if mutating {
+		if mutating || errors.Is(err, errLifecycleAuditSinkProtectedAlias) {
 			return err
 		}
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: file-backed lifecycle audit sink unavailable: %v; proceeding because this operation is read-only\n", err)
@@ -534,7 +539,7 @@ func (f *pathFlags) durableAuditSink(protectedPaths ...string) (*lifecycleAuditS
 			return nil, err
 		}
 		if same {
-			return nil, errors.New("logging.file must not refer to the commitment keyring or a lifecycle input/output file")
+			return nil, fmt.Errorf("%w: logging.file must not refer to the commitment keyring or a lifecycle input/output file", errLifecycleAuditSinkProtectedAlias)
 		}
 	}
 	logger, err := newDurableAuditFile(cfg.Logging.Format, cfg.Logging.File, cfg.Logging.IncludeAllowed, cfg.Logging.IncludeBlocked)
@@ -543,7 +548,7 @@ func (f *pathFlags) durableAuditSink(protectedPaths ...string) (*lifecycleAuditS
 	}
 	if err := logger.RejectDurableFileAliases(protectedPaths...); err != nil {
 		logger.Close()
-		return nil, fmt.Errorf("verify logging.file after open: %w", err)
+		return nil, fmt.Errorf("%w: verify logging.file after open: %w", errLifecycleAuditSinkProtectedAlias, err)
 	}
 	return &lifecycleAuditSink{logger: logger, protectedPaths: protectedPaths}, nil
 }

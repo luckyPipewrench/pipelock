@@ -109,14 +109,18 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 	if err != nil {
 		return err
 	}
+	compileOutputs := map[string]string{
+		"--output":           output,
+		"--review":           reviewPath,
+		"--compile-manifest": manifestPath,
+	}
+	if err := cliutil.RefuseOutputAliases(cliutil.ExistingFileLabels("--input", inputs), compileOutputs); err != nil {
+		return err
+	}
 	if !flags.deterministic {
 		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
 			"the compile signing key": signer.keyID,
-		}, map[string]string{
-			"--output":           output,
-			"--review":           reviewPath,
-			"--compile-manifest": manifestPath,
-		}); err != nil {
+		}, compileOutputs); err != nil {
 			return err
 		}
 	}

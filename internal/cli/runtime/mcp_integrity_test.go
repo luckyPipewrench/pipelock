@@ -294,6 +294,40 @@ func TestSignMCPIntegrityManifestRefusesOutputAliasingSignerKey(t *testing.T) {
 	}
 }
 
+func TestSignMCPIntegrityManifestRefusesOutputAliasingManifest(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{"/bin/example": strings.Repeat("a", 64)},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(manifestPath))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	_, err = signMCPIntegrityManifest(manifestPath, manifestPath, "alice", ksDir)
+	after, readErr := os.ReadFile(filepath.Clean(manifestPath))
+	if readErr != nil {
+		t.Fatalf("re-read manifest: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("sign succeeded writing --sig over --manifest")
+	}
+	if !strings.Contains(err.Error(), "--sig must not name --manifest") {
+		t.Fatalf("sign error = %v, want manifest alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("integrity manifest was overwritten")
+	}
+}
+
 func TestMCPIntegrityManifestVerifySignatureReportsTamper(t *testing.T) {
 	dir := t.TempDir()
 	ksDir := filepath.Join(dir, "keys")

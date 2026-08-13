@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
@@ -240,7 +241,7 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 
 	if opts.outFile != "" {
 		cleanOut := filepath.Clean(opts.outFile)
-		if writeErr := os.WriteFile(cleanOut, data, 0o600); writeErr != nil {
+		if writeErr := atomicfile.Write(cleanOut, data, 0o600); writeErr != nil {
 			return fmt.Errorf("--out: %w", writeErr)
 		}
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "coverage certificate written to %s\n", cleanOut)

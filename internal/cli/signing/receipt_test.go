@@ -1157,6 +1157,33 @@ func TestVerifyReceiptCmd_CleanReportRefusesKeyFileAlias(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_CleanReportRefusesReceiptInputAlias(t *testing.T) {
+	t.Parallel()
+	path, pubKey := buildDeferredCleanChainJSONL(t)
+	before, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read receipts: %v", err)
+	}
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", hex.EncodeToString(pubKey), "--clean-report", path})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(path))
+	if readErr != nil {
+		t.Fatalf("re-read receipts: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("verify-receipt succeeded writing --clean-report over the receipt input; stdout=%q", buf.String())
+	}
+	if !strings.Contains(err.Error(), "--clean-report must not name the receipt input") {
+		t.Fatalf("verify-receipt error = %v, want receipt-input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("receipt input was overwritten")
+	}
+}
+
 func TestVerifyReceiptCmd_CleanReportRejectsSingleReceipt(t *testing.T) {
 	t.Parallel()
 

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
@@ -89,8 +91,10 @@ Examples:
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
 			}
 			if cleanReport != "" {
+				protected := cliutil.ExistingFileLabels("--key", expectedKeys)
+				maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", args))
 				if err := cliutil.RefuseOutputAliases(
-					cliutil.ExistingFileLabels("--key", expectedKeys),
+					protected,
 					map[string]string{"--clean-report": cleanReport},
 				); err != nil {
 					return err
@@ -514,7 +518,7 @@ func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, 
 	if err != nil {
 		return fmt.Errorf("marshal clean report: %w", err)
 	}
-	if err := os.WriteFile(filepath.Clean(reportPath), append(data, '\n'), 0o600); err != nil {
+	if err := atomicfile.Write(filepath.Clean(reportPath), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write clean report: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "CLEAN REPORT VALID: %s\n", label)

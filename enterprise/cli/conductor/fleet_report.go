@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/fleetreport"
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -273,7 +274,7 @@ func writeFleetReportEnvelope(path string, envelope any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Clean(path), data, 0o600); err != nil {
+	if err := atomicfile.Write(filepath.Clean(path), data, 0o600); err != nil {
 		return fmt.Errorf("write --out: %w", err)
 	}
 	return nil

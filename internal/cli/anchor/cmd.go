@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +104,7 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 		return err
 	}
 	protected := cliutil.ExistingFileLabels("--key", opts.keys)
+	maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", []string{target}))
 	if opts.rekorKey != "" {
 		protected["--rekor-key"] = opts.rekorKey
 	}

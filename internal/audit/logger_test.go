@@ -302,26 +302,25 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 		})
 	}
 
-	if os.Geteuid() != 0 {
-		t.Skip("ownership mismatch requires a root test process")
+	if os.Geteuid() == 0 {
+		t.Run("untrusted file owner", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatalf("write audit file: %v", err)
+			}
+			if err := os.Chown(path, 1, -1); err != nil {
+				t.Fatalf("change audit file owner: %v", err)
+			}
+			logger, err := NewDurableFile("json", path, false, false)
+			if logger != nil {
+				logger.Close()
+				t.Fatal("NewDurableFile accepted an audit file owned by another user")
+			}
+			if err == nil || !strings.Contains(err.Error(), "audit log file must be owned by the service user or root") {
+				t.Fatalf("NewDurableFile error = %v, want untrusted-owner refusal", err)
+			}
+		})
 	}
-	t.Run("untrusted file owner", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "audit.jsonl")
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
-			t.Fatalf("write audit file: %v", err)
-		}
-		if err := os.Chown(path, 1, -1); err != nil {
-			t.Fatalf("change audit file owner: %v", err)
-		}
-		logger, err := NewDurableFile("json", path, false, false)
-		if logger != nil {
-			logger.Close()
-			t.Fatal("NewDurableFile accepted an audit file owned by another user")
-		}
-		if err == nil || !strings.Contains(err.Error(), "audit log file must be owned by the service user or root") {
-			t.Fatalf("NewDurableFile error = %v, want untrusted-owner refusal", err)
-		}
-	})
 }
 
 func TestLogCommitmentKeyLifecycle(t *testing.T) {

@@ -280,11 +280,11 @@ func TestWriteDurableCommitmentKeyLifecycleInterleavesWithOrdinaryJSONLines(t *t
 
 	appendOrdinaryJSONLine := func(name string) {
 		t.Helper()
-		file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		file, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_WRONLY, 0)
 		if err != nil {
 			t.Fatalf("open ordinary JSON Lines sink: %v", err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		data, err := json.Marshal(map[string]string{"event": "ordinary", "name": name})
 		if err != nil {
 			t.Fatalf("marshal ordinary JSON Lines record: %v", err)
@@ -305,7 +305,7 @@ func TestWriteDurableCommitmentKeyLifecycleInterleavesWithOrdinaryJSONLines(t *t
 	}
 	appendOrdinaryJSONLine("after")
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatalf("read audit log: %v", err)
 	}

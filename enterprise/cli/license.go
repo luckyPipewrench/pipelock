@@ -13,8 +13,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +140,16 @@ func licenseIssueCmd() *cobra.Command {
 			}
 			if email == "" {
 				return fmt.Errorf("--email is required")
+			}
+			// An output path that resolves to the signing key destroys it. The
+			// export writer renames over its target and the ledger writer appends
+			// to it, so both would replace the key with issuance output and report
+			// success. Refuse before anything is signed or written.
+			if err := refuseKeyPathAliases(keyPath, map[string]string{
+				"--export": exportPath,
+				"--ledger": ledgerPath,
+			}); err != nil {
+				return err
 			}
 			// Drop empty feature entries (e.g. from `--features ""`) so a blank
 			// flag yields a genuinely featureless free token rather than a token
@@ -791,4 +803,75 @@ func appendLedger(path string, lic license.License, token string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// refuseKeyPathAliases rejects an output path that names the signing key.
+//
+// The export writer renames its temporary file over the target and the ledger
+// writer appends to it, so either would overwrite the private key with issuance
+// output and still report success. Paths are compared after symlink resolution
+// and by file identity, so a symlink or hard link to the key is refused too.
+func refuseKeyPathAliases(keyPath string, outputs map[string]string) error {
+	if keyPath == "" {
+		return nil
+	}
+	for _, flag := range slices.Sorted(maps.Keys(outputs)) {
+		outputPath := outputs[flag]
+		if outputPath == "" {
+			continue
+		}
+		same, err := samePathIdentity(keyPath, outputPath)
+		if err != nil {
+			return fmt.Errorf("resolve %s against --key: %w", flag, err)
+		}
+		if same {
+			return fmt.Errorf("%s must not name the signing key %s: writing it would destroy the key", flag, filepath.Clean(keyPath))
+		}
+	}
+	return nil
+}
+
+// samePathIdentity reports whether two paths name the same file, resolving
+// symlinks on the parent directory so a not-yet-created output is still
+// comparable, and falling back to inode identity when both paths exist.
+func samePathIdentity(left, right string) (bool, error) {
+	leftPath, err := resolvedPath(left)
+	if err != nil {
+		return false, err
+	}
+	rightPath, err := resolvedPath(right)
+	if err != nil {
+		return false, err
+	}
+	if leftPath == rightPath {
+		return true, nil
+	}
+	// Identity can only match when both paths resolve to an existing file, so a
+	// stat failure on either side means they are not the same file and is not an
+	// error here. Reporting it would replace the caller's real failure, such as
+	// an output path whose parent is not a directory, with a resolution error.
+	leftInfo, leftErr := os.Stat(leftPath)
+	if leftErr != nil {
+		return false, nil
+	}
+	rightInfo, rightErr := os.Stat(rightPath)
+	if rightErr != nil {
+		return false, nil
+	}
+	return os.SameFile(leftInfo, rightInfo), nil
+}
+
+func resolvedPath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return abs, nil
+		}
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(abs)), nil
 }

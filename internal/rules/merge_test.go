@@ -650,7 +650,8 @@ func TestCompiledStandardNames_SyncWithDefaults(t *testing.T) {
 	// Core response names (from scanner/core.go).
 	coreResp := map[string]bool{
 		"Prompt Injection": true, "System Override": true,
-		"Role Override": true, "Hidden Instruction": true,
+		"External Data Transfer Directive": true,
+		"Role Override":                    true, "Hidden Instruction": true,
 		"Credential Solicitation": true, "Credential Path Directive": true,
 		"Covert Action Directive": true, "Instruction Boundary": true,
 	}

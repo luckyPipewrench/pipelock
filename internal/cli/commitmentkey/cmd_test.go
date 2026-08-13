@@ -545,7 +545,7 @@ func TestLifecycleAuditSinkFailureDirections(t *testing.T) {
 		tests = append(tests, struct {
 			name       string
 			configBody string
-		}{name: "character device is not a regular file", configBody: lifecycleAuditConfig(keyringPath, "/dev/full", "file", "")})
+		}{name: "full device", configBody: lifecycleAuditConfig(keyringPath, "/dev/full", "file", "")})
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

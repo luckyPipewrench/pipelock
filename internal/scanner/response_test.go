@@ -34,6 +34,7 @@ func testResponseConfig() *config.Config {
 			{Name: "Behavior Override", Regex: `(?i)from\s+now\s+on\s+(you\s+)?(will|must|should|shall)\s+`},
 			{Name: "Encoded Payload", Regex: `(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()`},
 			{Name: "Tool Invocation", Regex: `(?i)you\s+must\s+(\w+\s+)?(call|execute|run|invoke)\s+(the|this|a)\s+(\w+\s+)?(function|tool|command|api|endpoint)`},
+			{Name: externalDataTransferDirectivePatternName, Regex: config.ExternalDataTransferDirectiveRegex},
 			{Name: "Authority Escalation", Regex: `(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)`},
 			{Name: "Pliny Divider", Regex: `(?i)={1,3}/?[A-Z\-]{2,}(/[A-Z\-]{1,4}){3,}=+`},
 			{Name: "Meta-Command Activation", Regex: `(?i)(\{GODMODE\s*:\s*(ENABLED|ON|TRUE)\}|!OMNI\b|RESET_CORTEX|LIBERTAS\s+FACTOR|ENABLE\s+DEV(ELOPER)?\s+MODE|JAILBREAK\s+(ENABLED|ACTIVATED|ON))`},

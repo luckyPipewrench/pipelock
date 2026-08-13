@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -278,7 +279,11 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 func redactResponsePatterns(content string, patterns []*compiledPattern) string {
 	for _, p := range patterns {
 		replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-		content = p.re.ReplaceAllString(content, replacement)
+		locs := responsePatternMatchLocations(p, content)
+		sort.Slice(locs, func(i, j int) bool { return locs[i][0] > locs[j][0] })
+		for _, loc := range locs {
+			content = content[:loc[0]] + replacement + content[loc[1]:]
+		}
 	}
 	return content
 }
@@ -528,7 +533,7 @@ func matchPatternsAgainst(patterns []*compiledPattern, content string) []Respons
 		if !responsePatternCanMatch(p, content) {
 			continue
 		}
-		locs := p.re.FindAllStringIndex(content, -1)
+		locs := responsePatternMatchLocations(p, content)
 		for _, loc := range locs {
 			matchText := content[loc[0]:loc[1]]
 			if runes := []rune(matchText); len(runes) > 100 {
@@ -610,7 +615,7 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 		if !responsePatternCanMatch(p, content) {
 			continue
 		}
-		locs := p.re.FindAllStringIndex(content, -1)
+		locs := responsePatternMatchLocations(p, content)
 		for _, loc := range locs {
 			matchText := content[loc[0]:loc[1]]
 			if runes := []rune(matchText); len(runes) > 100 {

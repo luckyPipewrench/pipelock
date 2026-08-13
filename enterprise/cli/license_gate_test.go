@@ -320,3 +320,132 @@ func TestIssue_ExportFileShape(t *testing.T) {
 		t.Fatal("export missing payload or signature")
 	}
 }
+
+// TestIssue_ExportNamingKey_Refused drives the guard through the real command so
+// the CLI wiring is exercised, not only the helper. Writing an issuance export
+// over the signing key destroys it, so the command must refuse before signing.
+func TestIssue_ExportNamingKey_Refused(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyPath := filepath.Join(dir, licensePrivKeyFile)
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		flag string
+	}{
+		{name: "export", flag: "--export"},
+		{name: "ledger", flag: "--ledger"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{
+				"--key", keyPath,
+				"--email", "ops@vendor.example",
+				"--features", "agents",
+				"--expires", time.Now().Add(24 * time.Hour).Format(time.DateOnly),
+				"--break-glass",
+				tc.flag, keyPath,
+			}
+			if tc.flag == "--ledger" {
+				args = append(args, "--export", filepath.Join(dir, "export.json"))
+			}
+			out, err := runIssue(t, args...)
+			if err == nil {
+				t.Fatalf("expected refusal when %s names the signing key:\n%s", tc.flag, out)
+			}
+			if !strings.Contains(err.Error(), "must not name the signing key") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			after, err := os.ReadFile(filepath.Clean(keyPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("signing key was modified despite the refusal")
+			}
+		})
+	}
+}
+
+// TestRefuseKeyPathAliases_UnresolvablePath covers the resolution-error branch:
+// an output path whose parent cannot be traversed cannot be compared, and that
+// ambiguity is reported rather than silently treated as safe.
+func TestRefuseKeyPathAliases_UnresolvablePath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses unreadable directories")
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, licensePrivKeyFile)
+	if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) }) // #nosec G302 -- restores the fixture directory so TempDir cleanup can remove it.
+
+	err := refuseKeyPathAliases(keyPath, map[string]string{"--export": filepath.Join(blocked, "sub", "export.json")})
+	if err == nil {
+		t.Fatal("expected a resolution error for an untraversable output parent")
+	}
+	if !strings.Contains(err.Error(), "resolve --export against --key") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestRefuseKeyPathAliases_ResolutionEdges covers the comparison branches that a
+// normal issuance reaches: a key that does not exist yet, an output whose parent
+// directory does not exist, and a key path that cannot be traversed.
+func TestRefuseKeyPathAliases_ResolutionEdges(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("missing key is not an alias", func(t *testing.T) {
+		if err := refuseKeyPathAliases(filepath.Join(dir, "absent.key"), map[string]string{
+			"--export": filepath.Join(dir, "export.json"),
+		}); err != nil {
+			t.Fatalf("refuseKeyPathAliases errored on a missing key: %v", err)
+		}
+	})
+
+	t.Run("output parent does not exist", func(t *testing.T) {
+		keyPath := filepath.Join(dir, "present.key")
+		if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := refuseKeyPathAliases(keyPath, map[string]string{
+			"--ledger": filepath.Join(dir, "no-such-dir", "licenses.jsonl"),
+		}); err != nil {
+			t.Fatalf("refuseKeyPathAliases errored on an absent output parent: %v", err)
+		}
+	})
+
+	t.Run("untraversable key parent is reported", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root traverses unreadable directories")
+		}
+		blocked := filepath.Join(dir, "blocked-key")
+		if err := os.Mkdir(blocked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(blocked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) }) // #nosec G302 -- restores the fixture directory so TempDir cleanup can remove it.
+		err := refuseKeyPathAliases(filepath.Join(blocked, "sub", "license.key"), map[string]string{
+			"--export": filepath.Join(dir, "export.json"),
+		})
+		if err == nil || !strings.Contains(err.Error(), "resolve --export against --key") {
+			t.Fatalf("error = %v, want a key-path resolution failure", err)
+		}
+	})
+}

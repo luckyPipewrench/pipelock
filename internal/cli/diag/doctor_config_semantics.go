@@ -139,7 +139,17 @@ func analyzeDoctorActionDivergence(cfg *config.Config) []ConfigSemanticFinding {
 // existed — action divergence is the first — the suppress/exemption surface
 // disappeared from the report even though it had run and found nothing.
 func checkDoctorConfigSemantics(cfg *config.Config) []doctorReportCheck {
-	findings := AnalyzeConfigSemantics(cfg)
+	return semanticChecksWithCleanSurface(AnalyzeConfigSemantics(cfg))
+}
+
+// semanticChecksWithCleanSurface converts findings to checks and adds the ok
+// check for the suppress/exemption surface when no finding reports against it.
+//
+// It takes findings rather than a config so the clean-surface decision can be
+// exercised for scopes the analyzer cannot currently produce, including an
+// unmapped one. Testing that through a config would only cover the scopes that
+// exist today, which is the case least likely to regress.
+func semanticChecksWithCleanSurface(findings []ConfigSemanticFinding) []doctorReportCheck {
 	checks := semanticFindingsToDoctorChecks(findings)
 
 	suppressOrExemptionReported := false

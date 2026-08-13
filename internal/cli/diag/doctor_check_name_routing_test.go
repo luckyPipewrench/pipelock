@@ -105,6 +105,10 @@ func TestUnknownScopeNeverReportsAsAnExemption(t *testing.T) {
 // the same defect. A finding whose scope is unmapped must not be counted as a
 // suppress or exemption finding, or it silently removes the ok check that tells
 // an operator those surfaces were analysed and came back clean.
+//
+// This drives the full report builder rather than the finding-to-check
+// conversion, because the ok check is added by the builder. Asserting on the
+// conversion alone would pass while the surface was still being hidden.
 func TestUnknownScopeDoesNotHideTheCleanSuppressSurface(t *testing.T) {
 	findings := []ConfigSemanticFinding{
 		newConfigSemanticFinding(
@@ -115,11 +119,23 @@ func TestUnknownScopeDoesNotHideTheCleanSuppressSurface(t *testing.T) {
 			"look at it",
 		),
 	}
-	checks := semanticFindingsToDoctorChecks(findings)
+
+	checks := semanticChecksWithCleanSurface(findings)
+
+	var suppressOK, findingLevelSuppressOrExemption int
 	for _, c := range checks {
-		if c.Name == doctorCheckExemptionSemantics || c.Name == doctorCheckSuppressSemantics {
-			t.Fatalf("unmapped scope produced a %q check", c.Name)
+		switch {
+		case c.Name == doctorCheckSuppressSemantics && c.Status == doctorStatusOK:
+			suppressOK++
+		case c.Name == doctorCheckSuppressSemantics, c.Name == doctorCheckExemptionSemantics:
+			findingLevelSuppressOrExemption++
 		}
+	}
+	if suppressOK != 1 {
+		t.Errorf("suppress-semantics ok checks = %d, want exactly 1: an unmapped advisory must not hide the clean surface", suppressOK)
+	}
+	if findingLevelSuppressOrExemption != 0 {
+		t.Errorf("unmapped scope produced %d finding-level suppress/exemption check(s), want 0", findingLevelSuppressOrExemption)
 	}
 }
 

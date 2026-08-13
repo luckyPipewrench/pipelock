@@ -73,6 +73,15 @@ request_body_scanning:
   enabled: true
   action: block
   content_entropy_enabled: true
+  # DELIBERATE, and weaker than the block above. `pipelock doctor` reports the
+  # difference so an operator reading `action: block` learns that opaque
+  # high-entropy bodies only warn.
+  #
+  # A named credential pattern is high-confidence and blocks. Raw entropy is
+  # not: an editor legitimately posts base64 images, minified bundles and long
+  # hashes, all of which cross this threshold. Blocking on entropy alone breaks
+  # normal use, and an operator who hits that turns request body scanning off
+  # entirely, which loses the credential detection too.
   content_entropy_action: warn
   content_entropy_threshold: 5.0
   content_entropy_min_length: 32

@@ -611,6 +611,19 @@ cross_request_detection:
     enabled: true
     bits_per_window: 4096
     window_minutes: 5
+    # DELIBERATE, and weaker than the block above. `pipelock doctor` reports
+    # this difference, which is the point: an operator reading `action: block`
+    # should be told that budget crossings only warn.
+    #
+    # Entropy alone is medium-confidence and crosses on ordinary developer
+    # traffic. A 1.3 KB base64 image exceeds this budget on its first
+    # legitimate call, and UUIDs, git SHAs and minified JavaScript reach tens of
+    # thousands of bits in a handful of normal requests. Blocking on that denies
+    # real work, and the operator switches the whole control off, which costs
+    # more than the warning does.
+    #
+    # Raise it to block only alongside `exempt_domains` for the endpoints your
+    # agents legitimately push high-entropy payloads to.
     action: warn
   fragment_reassembly:
     enabled: true

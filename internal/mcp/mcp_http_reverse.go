@@ -1004,9 +1004,13 @@ func RunHTTPListenerProxy(
 				// history shared by that principal's later requests.
 			} else if requireStateToken {
 				listenerClients.forget(listenerSessionToken)
-			} else {
+			} else if listenerPrincipal.key == "" {
 				listenerClients.forgetLegacySession(r.Header.Get("Mcp-Session-Id"))
 			}
+			// An authenticated principal whose state was not admitted holds no
+			// partition of its own, so it must not erase a legacy partition
+			// selected by a client-supplied session header that belongs to
+			// someone else.
 			w.WriteHeader(upResp.StatusCode)
 			return
 		}
@@ -1189,7 +1193,12 @@ func RunHTTPListenerProxy(
 		if stateBound {
 			bindStateRequestContext()
 		}
-		if requireStateToken && !stateBound {
+		if !stateBound && (requireStateToken || listenerPrincipal.key != "") {
+			// An authenticated principal degraded to stateless reports here too.
+			// Reporting only under requireStateToken would make the compatibility
+			// -mode degradation silent, which is the failure this report exists
+			// to make visible.
+			//
 			// Emitting per request lets any reachable client amplify one
 			// request into one log line and one audit record. Aggregate
 			// instead: the first degraded request reports immediately, later

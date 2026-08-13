@@ -251,7 +251,7 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 				if err := os.WriteFile(path, nil, 0o600); err != nil {
 					t.Fatalf("write audit file: %v", err)
 				}
-				if err := os.Chmod(path, 0o620); err != nil {
+				if err := os.Chmod(path, 0o620); err != nil { // #nosec G302 -- test requires an intentionally group-writable fixture.
 					t.Fatalf("make audit file group writable: %v", err)
 				}
 			},
@@ -264,7 +264,7 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 				if err := os.WriteFile(path, nil, 0o600); err != nil {
 					t.Fatalf("write audit file: %v", err)
 				}
-				if err := os.Chmod(path, 0o602); err != nil {
+				if err := os.Chmod(path, 0o602); err != nil { // #nosec G302 -- test requires an intentionally world-writable fixture.
 					t.Fatalf("make audit file world writable: %v", err)
 				}
 			},
@@ -278,7 +278,7 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 				if err := os.Mkdir(parent, 0o700); err != nil {
 					t.Fatalf("create audit parent: %v", err)
 				}
-				if err := os.Chmod(parent, 0o770); err != nil {
+				if err := os.Chmod(parent, 0o770); err != nil { // #nosec G302 -- test requires an intentionally group-writable fixture.
 					t.Fatalf("make audit parent group writable: %v", err)
 				}
 			},

@@ -657,7 +657,7 @@ func TestLifecycleCommandsRejectGroupWritableAuditParent(t *testing.T) {
 	if err := os.Mkdir(auditDir, 0o700); err != nil {
 		t.Fatalf("create audit directory: %v", err)
 	}
-	if err := os.Chmod(auditDir, 0o770); err != nil {
+	if err := os.Chmod(auditDir, 0o770); err != nil { // #nosec G302 -- test requires an intentionally group-writable fixture.
 		t.Fatalf("make audit directory group writable: %v", err)
 	}
 	keyringPath := filepath.Join(dir, "keyring.json")

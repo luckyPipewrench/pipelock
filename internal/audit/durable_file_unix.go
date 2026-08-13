@@ -40,9 +40,9 @@ func openDurableAuditFile(path string) (*os.File, bool, error) {
 }
 
 // validateDurableAuditPath ensures that the opened sink and each containing
-// directory cannot be modified by a lower-privileged Unix identity. A
-// root-owned sticky directory remains safe for a securely owned file, which
-// permits ordinary single-user paths below /tmp.
+// directory cannot be modified by a lower-privileged Unix identity. A trusted
+// sticky directory remains safe for a securely owned file, which permits
+// ordinary single-user paths below /tmp.
 func validateDurableAuditPath(fileInfo fs.FileInfo, path string) error {
 	if err := validateDurableAuditOwnership(fileInfo, "audit log file", false); err != nil {
 		return err

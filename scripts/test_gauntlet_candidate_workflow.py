@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
-EXPECTED_AEB_REF = "b7adf5770e7d4c639c68cfcf25f075b69656de60"
+EXPECTED_AEB_REF = "53c95da15268447709914834a716516fd682bf1d"
 EVIDENCE_FILES = (
     "continuous-gauntlet-pipelock.json",
     "promotion-decision.json",

@@ -252,7 +252,7 @@ func TestRefuseOpenedFileAliases(t *testing.T) {
 	}
 	newOutput := func(t *testing.T, path string) *os.File {
 		t.Helper()
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}

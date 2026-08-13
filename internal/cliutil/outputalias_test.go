@@ -20,18 +20,19 @@ func TestRefuseOutputAliases(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Feature-detect rather than assume: an unprivileged Windows agent cannot
-	// create these, and a fixture that cannot be built is not a failure of the
-	// code under test.
-	linkToKey := filepath.Join(dir, "link-to-key")
-	if err := os.Symlink(keyPath, linkToKey); err != nil {
-		t.Skipf("symlinks unsupported here: %v", err)
-	}
-	hardLinkToKey := filepath.Join(dir, "hardlink-to-key")
-	if err := os.Link(keyPath, hardLinkToKey); err != nil {
-		t.Skipf("hard links unsupported here: %v", err)
-	}
 	protected := map[string]string{"--key": keyPath}
+
+	// Link fixtures are built inside the subtests that need them. Building them
+	// here would skip the whole function on a host without link support, taking
+	// the platform-neutral cases down with it.
+	linkFixture := func(t *testing.T, name string, create func(string) error) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := create(path); err != nil {
+			t.Skipf("%s unsupported here: %v", name, err)
+		}
+		return path
+	}
 
 	for _, tc := range []struct {
 		name    string
@@ -40,8 +41,6 @@ func TestRefuseOutputAliases(t *testing.T) {
 	}{
 		{name: "output names the key", outputs: map[string]string{"--out": keyPath}, wantErr: "--out must not name --key"},
 		{name: "second output names the key", outputs: map[string]string{"--ledger": keyPath}, wantErr: "--ledger must not name --key"},
-		{name: "output symlinks to the key", outputs: map[string]string{"--out": linkToKey}, wantErr: "--out must not name --key"},
-		{name: "output hard links to the key", outputs: map[string]string{"--out": hardLinkToKey}, wantErr: "--out must not name --key"},
 		{name: "relative path names the key", outputs: map[string]string{"--out": filepath.Join(dir, "..", filepath.Base(dir), "signing.key")}, wantErr: "--out must not name --key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +53,22 @@ func TestRefuseOutputAliases(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("output symlinks to the key", func(t *testing.T) {
+		link := linkFixture(t, "link-to-key", func(p string) error { return os.Symlink(keyPath, p) })
+		if err := RefuseOutputAliases(protected, map[string]string{"--out": link}); err == nil ||
+			!strings.Contains(err.Error(), "--out must not name --key") {
+			t.Fatalf("error = %v, want a refusal", err)
+		}
+	})
+
+	t.Run("output hard links to the key", func(t *testing.T) {
+		link := linkFixture(t, "hardlink-to-key", func(p string) error { return os.Link(keyPath, p) })
+		if err := RefuseOutputAliases(protected, map[string]string{"--out": link}); err == nil ||
+			!strings.Contains(err.Error(), "--out must not name --key") {
+			t.Fatalf("error = %v, want a refusal", err)
+		}
+	})
 
 	t.Run("distinct paths are allowed", func(t *testing.T) {
 		if err := RefuseOutputAliases(protected, map[string]string{
@@ -225,4 +240,67 @@ func TestRefuseOutputAliases_SymlinkThenDotDot(t *testing.T) {
 	if !strings.Contains(err.Error(), "must not name the signing key") {
 		t.Fatalf("error = %v, want the protected input named", err)
 	}
+}
+
+// TestRefuseOpenedFileAliases covers the descriptor check that closes the window
+// between validating a pathname and opening it.
+func TestRefuseOpenedFileAliases(t *testing.T) {
+	dir := t.TempDir()
+	protectedPath := filepath.Join(dir, "signing.key")
+	if err := os.WriteFile(protectedPath, []byte("key-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newOutput := func(t *testing.T, path string) *os.File {
+		t.Helper()
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return f
+	}
+
+	t.Run("opened file that is the protected file is refused", func(t *testing.T) {
+		// A hard link is the swap that defeats a pre-open symlink check: the
+		// pathname is not a symlink, yet the open reaches the protected file.
+		aliased := filepath.Join(dir, "ledger-alias.jsonl")
+		if err := os.Link(protectedPath, aliased); err != nil {
+			t.Skipf("hard links unsupported here: %v", err)
+		}
+		err := RefuseOpenedFileAliases(newOutput(t, aliased), map[string]string{"the signing key": protectedPath})
+		if err == nil || !strings.Contains(err.Error(), "the signing key") {
+			t.Fatalf("error = %v, want a refusal naming the protected input", err)
+		}
+	})
+
+	t.Run("distinct opened file is allowed", func(t *testing.T) {
+		if err := RefuseOpenedFileAliases(newOutput(t, filepath.Join(dir, "ledger.jsonl")),
+			map[string]string{"the signing key": protectedPath}); err != nil {
+			t.Fatalf("RefuseOpenedFileAliases rejected a distinct output: %v", err)
+		}
+	})
+
+	t.Run("no protected inputs is allowed", func(t *testing.T) {
+		if err := RefuseOpenedFileAliases(newOutput(t, filepath.Join(dir, "none.jsonl")), nil); err != nil {
+			t.Fatalf("RefuseOpenedFileAliases errored with no protected inputs: %v", err)
+		}
+		if err := RefuseOpenedFileAliases(newOutput(t, filepath.Join(dir, "empty.jsonl")),
+			map[string]string{"the signing key": ""}); err != nil {
+			t.Fatalf("RefuseOpenedFileAliases errored on an empty protected path: %v", err)
+		}
+	})
+
+	t.Run("unstattable protected input fails closed", func(t *testing.T) {
+		// The caller has already read this file to sign with it, so a stat
+		// failure means the filesystem changed underneath the command. That is
+		// exactly when writing is unsafe, so it must refuse rather than proceed.
+		err := RefuseOpenedFileAliases(newOutput(t, filepath.Join(dir, "closed.jsonl")),
+			map[string]string{"the signing key": filepath.Join(dir, "vanished.key")})
+		if err == nil {
+			t.Fatal("RefuseOpenedFileAliases proceeded despite an unverifiable protected input")
+		}
+		if !strings.Contains(err.Error(), "verify the opened output file is not the signing key") {
+			t.Fatalf("error = %v, want a fail-closed verification error", err)
+		}
+	})
 }

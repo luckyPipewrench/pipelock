@@ -100,3 +100,38 @@ func resolvedPath(path string) (string, error) {
 	}
 	return filepath.Join(parent, filepath.Base(abs)), nil
 }
+
+// RefuseOpenedFileAliases compares an already-opened output file against every
+// protected input and refuses when they are the same file.
+//
+// Pathname validation happens before an open, which leaves a window in which a
+// writable output directory lets the path be swapped for a link to a protected
+// file. This checks what the open actually produced, so it closes that window.
+// A pathname check alone cannot pin a mutable namespace.
+//
+// It fails CLOSED on a protected path it cannot stat. A caller reaching this
+// point has already read that file, so a stat failure means the filesystem
+// changed underneath the command, which is exactly when writing is unsafe.
+func RefuseOpenedFileAliases(opened *os.File, protected map[string]string) error {
+	if len(protected) == 0 {
+		return nil
+	}
+	openedInfo, err := opened.Stat()
+	if err != nil {
+		return fmt.Errorf("stat opened output file: %w", err)
+	}
+	for _, label := range slices.Sorted(maps.Keys(protected)) {
+		protectedPath := protected[label]
+		if protectedPath == "" {
+			continue
+		}
+		protectedInfo, statErr := os.Stat(protectedPath)
+		if statErr != nil {
+			return fmt.Errorf("verify the opened output file is not %s: %w", label, statErr)
+		}
+		if os.SameFile(openedInfo, protectedInfo) {
+			return fmt.Errorf("the output file resolved to %s: refusing to write over it", label)
+		}
+	}
+	return nil
+}

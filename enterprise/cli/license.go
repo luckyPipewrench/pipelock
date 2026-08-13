@@ -13,10 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -804,7 +802,7 @@ func appendLedger(path string, lic license.License, token string, protected map[
 	// protected file. Re-verify what was actually opened, by descriptor, and
 	// refuse before writing. A pathname check alone cannot pin a mutable
 	// namespace; this closes the window between the check and the write.
-	if err := refuseOpenedLedgerAliases(f, protected); err != nil {
+	if err := cliutil.RefuseOpenedFileAliases(f, protected); err != nil {
 		closeErr := f.Close()
 		if closeErr != nil {
 			return errors.Join(err, closeErr)
@@ -819,31 +817,4 @@ func appendLedger(path string, lic license.License, token string, protected map[
 		return err
 	}
 	return f.Close()
-}
-
-// refuseOpenedLedgerAliases compares the opened ledger descriptor against every
-// protected input and refuses when they are the same file. The caller validated
-// pathnames before opening; this checks what the open actually produced.
-func refuseOpenedLedgerAliases(f *os.File, protected map[string]string) error {
-	if len(protected) == 0 {
-		return nil
-	}
-	openedInfo, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat opened ledger file: %w", err)
-	}
-	for _, label := range slices.Sorted(maps.Keys(protected)) {
-		protectedPath := protected[label]
-		if protectedPath == "" {
-			continue
-		}
-		protectedInfo, statErr := os.Stat(protectedPath)
-		if statErr != nil {
-			continue
-		}
-		if os.SameFile(openedInfo, protectedInfo) {
-			return fmt.Errorf("ledger path resolved to %s: refusing to append issuance data to it", label)
-		}
-	}
-	return nil
 }

@@ -907,3 +907,45 @@ func TestRunCoverageCertGenerate_RejectsBlankAgent(t *testing.T) {
 		t.Fatal("expected error for blank --agent, got nil")
 	}
 }
+
+func TestRunCoverageCertGenerate_RefusesOutputAliasingSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertEvidenceSession(t, dir, priv, "alias", "agent-a", 3)
+
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyFile))
+	if err != nil {
+		t.Fatalf("read signing key: %v", err)
+	}
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err = runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+		agent:          "agent-a",
+		receiptDir:     dir,
+		signingKeyFile: keyFile,
+		windowStart:    start.Format(time.RFC3339),
+		windowEnd:      start.Add(24 * time.Hour).Format(time.RFC3339),
+		outFile:        keyFile,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(keyFile))
+	if readErr != nil {
+		t.Fatalf("re-read signing key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("generate succeeded writing --out over --signing-key; key bytes changed=%v stdout=%q", !bytes.Equal(before, after), out.String())
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signing key was overwritten")
+	}
+}

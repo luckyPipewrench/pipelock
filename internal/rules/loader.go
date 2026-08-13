@@ -435,6 +435,12 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 			patternName = r.Name
 		}
 
+		if len(r.Pattern.ExemptDomains) > 0 {
+			ctx.Result.Warnings = append(ctx.Result.Warnings, fmt.Sprintf(
+				"bundle %q rule %q sets pattern.exempt_domains, which is ignored; exemptions belong in the local pipelock config, not in a deny-only bundle",
+				bundle.Name, r.ID))
+		}
+
 		// Convert rule to config-compatible type.
 		switch r.Type {
 		case RuleTypeDLP:

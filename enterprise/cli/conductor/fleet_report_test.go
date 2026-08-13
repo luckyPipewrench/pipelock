@@ -453,6 +453,61 @@ func TestWriteFleetReportEnvelopeRejectsUnmarshalableEnvelope(t *testing.T) {
 	}
 }
 
+func TestRunFleetReport_RefusesOutputAliasingSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controlplane.OpenSQLiteAuditStore(context.Background(), filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteAuditStore() error = %v", err)
+	}
+	auditPub, auditPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(audit) error = %v", err)
+	}
+	if _, err := store.IngestAuditBatch(context.Background(), cliTestAcceptedAuditBatch(t, auditPriv)); err != nil {
+		t.Fatalf("IngestAuditBatch() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close(store) error = %v", err)
+	}
+
+	_, reportPriv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(report) error = %v", err)
+	}
+	keyPath := writeFleetReportKeyFile(t, dir, "report.key", "report-key-1", signing.PurposeFleetReportSigning, reportPriv)
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("ReadFile(key) error = %v", err)
+	}
+
+	cmd := fleetReportCmd()
+	cmd.SetContext(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	err = runFleetReport(cmd, fleetReportOptions{
+		storageDir:       dir,
+		orgID:            "org-main",
+		fleetID:          "prod",
+		from:             "2026-06-13T00:00:00Z",
+		to:               "2026-06-13T01:00:00Z",
+		signingKey:       keyPath,
+		out:              keyPath,
+		conductorID:      "conductor-1",
+		trustedAuditKeys: []string{"id=audit-key-1,inline=" + hex.EncodeToString(auditPub) + ",org=org-main,fleet=prod,instance=pl-1"},
+		limit:            10,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read signing key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("fleet report succeeded writing --out over --signing-key; key bytes changed=%v stdout=%q", !bytes.Equal(before, after), stdout.String())
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signing key was overwritten")
+	}
+}
+
 func writeFleetReportKeyFile(t *testing.T, dir, name, keyID string, purpose signing.KeyPurpose, priv ed25519.PrivateKey) string {
 	t.Helper()
 	pub := priv.Public().(ed25519.PublicKey)

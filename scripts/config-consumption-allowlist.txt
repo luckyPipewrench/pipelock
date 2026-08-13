@@ -41,9 +41,9 @@ MCPDataClassLabels  # RESERVED foundation; follow-up slice wires scanner-derived
 UnknownClass  # RESERVED foundation; hard-validated fail-closed label for unknown/truncated/uncertain derivation
 
 # --- INERT-BASELINE (2026-06-10 audit; wire or remove, tracked in ops state.md) ---
-OnSeverity  # INERT airlock severity trigger; recordSessionActivityWithUserAgent wires only OnElevated/OnHigh/OnCritical
-AnomalyCount  # INERT airlock anomaly trigger; no consumer
-AnomalyWindowMinutes  # INERT airlock anomaly window; no consumer
+OnSeverity  # REJECTED at validate when set; recordSessionActivityWithUserAgent wires only OnElevated/OnHigh/OnCritical
+AnomalyCount  # REJECTED at validate when nonzero; no consumer
+AnomalyWindowMinutes  # INERT airlock anomaly window; no consumer; default 5 remains for wire shape
 ToolFreeze  # INERT struct; freeze runs via proxy FrozenTools wiring regardless of these knobs
 SnapshotOnEntry  # INERT; freeze mechanism does not consult it
 AllowCachedTools  # INERT; freeze mechanism does not consult it

@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/fleetreport"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -91,6 +92,14 @@ into the offline verifier:
 func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	if err := validateFleetReportOptions(opts); err != nil {
 		return err
+	}
+	if opts.out != stdoutSentinel {
+		if err := cliutil.RefuseOutputAliases(
+			map[string]string{"the signing key": opts.signingKey},
+			map[string]string{"--out": opts.out},
+		); err != nil {
+			return err
+		}
 	}
 	start, err := time.Parse(time.RFC3339, opts.from)
 	if err != nil {

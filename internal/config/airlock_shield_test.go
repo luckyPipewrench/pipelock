@@ -4,6 +4,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -61,14 +62,15 @@ func TestValidateAirlock_InvalidSeverity(t *testing.T) {
 	}
 }
 
-func TestValidateAirlock_ValidSeverity(t *testing.T) {
+func TestValidateAirlock_OnSeverityIsRejected(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
 	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnSeverity = SeverityCritical
-	if err := cfg.validateAirlock(); err != nil {
-		t.Errorf("critical severity should validate: %v", err)
+	err := cfg.validateAirlock()
+	if err == nil || !strings.Contains(err.Error(), "on_severity is not enforced") {
+		t.Fatalf("validateAirlock() error = %v, want reserved on_severity refusal", err)
 	}
 }
 
@@ -94,14 +96,15 @@ func TestValidateAirlock_NegativeDrainTimeout(t *testing.T) {
 	}
 }
 
-func TestValidateAirlock_NegativeAnomalyCount(t *testing.T) {
+func TestValidateAirlock_AnomalyCountIsRejected(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
 	cfg.SessionProfiling.Enabled = true
-	cfg.Airlock.Triggers.AnomalyCount = -1
-	if err := cfg.validateAirlock(); err == nil {
-		t.Error("negative anomaly count should fail validation")
+	cfg.Airlock.Triggers.AnomalyCount = 3
+	err := cfg.validateAirlock()
+	if err == nil || !strings.Contains(err.Error(), "anomaly_count is not enforced") {
+		t.Fatalf("validateAirlock() error = %v, want reserved anomaly_count refusal", err)
 	}
 }
 

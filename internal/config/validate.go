@@ -3674,12 +3674,7 @@ func (c *Config) validateAirlock() error {
 	}
 
 	if c.Airlock.Triggers.OnSeverity != "" {
-		switch c.Airlock.Triggers.OnSeverity {
-		case SeverityCritical, SeverityHigh:
-			// valid
-		default:
-			return fmt.Errorf("invalid airlock.triggers.on_severity %q: must be critical, high, or empty", c.Airlock.Triggers.OnSeverity)
-		}
+		return fmt.Errorf("airlock.triggers.on_severity is not enforced; use on_elevated, on_high, and on_critical")
 	}
 
 	if c.Airlock.Timers.SoftMinutes < 0 || c.Airlock.Timers.HardMinutes < 0 || c.Airlock.Timers.DrainMinutes < 0 {
@@ -3692,8 +3687,8 @@ func (c *Config) validateAirlock() error {
 		return fmt.Errorf("airlock.timers.drain_timeout_seconds must be non-negative")
 	}
 
-	if c.Airlock.Triggers.AnomalyCount < 0 {
-		return fmt.Errorf("airlock.triggers.anomaly_count must be non-negative")
+	if c.Airlock.Triggers.AnomalyCount != 0 {
+		return fmt.Errorf("airlock.triggers.anomaly_count is not enforced; airlock fires from on_elevated, on_high, and on_critical")
 	}
 	if c.Airlock.Triggers.AnomalyWindowMinutes < 0 {
 		return fmt.Errorf("airlock.triggers.anomaly_window_minutes must be non-negative")

@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
@@ -115,6 +116,13 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	agent := strings.TrimSpace(opts.agent)
 	if agent == "" {
 		return fmt.Errorf("--agent must not be empty")
+	}
+
+	if err := cliutil.RefuseOutputAliases(
+		map[string]string{"the signing key": opts.signingKeyFile},
+		map[string]string{"--out": opts.outFile},
+	); err != nil {
+		return err
 	}
 
 	cleanDir := filepath.Clean(opts.receiptDir)

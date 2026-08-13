@@ -515,16 +515,24 @@ jobs:
         with:
           # Pin the exact patched release. govulncheck analyzes the active
           # toolchain's stdlib (go env GOVERSION), so the setup-go version is the
-          # lever, not the go.mod directive. go1.26.5 (2026-07-07) fixes
-          # GO-2026-5856 crypto/tls + GO-2026-4970 os after go1.26.4 fixed
-          # GO-2026-5039 net/textproto + GO-2026-5037 crypto/x509. A float to
-          # '1.26' can lag on the actions/go-versions manifest, so the scan stays
-          # red until the manifest publishes the patched toolchain. An EXACT
-          # version makes setup-go fall back to a direct download from the
-          # official Go distribution, bypassing the manifest. Revert to '1.26'
-          # + check-latest for steady-state self-healing once the manifest
-          # includes 1.26.5.
-          go-version: '1.26.5'
+          # lever, not the go.mod directive. go1.26.6 fixes six stdlib advisories
+          # that go1.26.5 carries across crypto/tls, html/template, net/http and
+          # net/url (GO-2026-5026, GO-2026-5972, GO-2026-6089, GO-2026-6090,
+          # GO-2026-6091, GO-2026-6218), reached here through the proxy and MCP
+          # transport call paths. A float to '1.26' can lag on the
+          # actions/go-versions manifest, so the scan stays red until the
+          # manifest publishes the patched toolchain. An EXACT version makes
+          # setup-go fall back to a direct download from the official Go
+          # distribution, bypassing the manifest.
+          #
+          # THIS PIN GOES STALE BY DESIGN. Every Go patch release that fixes a
+          # reachable stdlib advisory turns this job red repo-wide until the pin
+          # moves, which is what happened on 2026-08-13. Bump it here and in the
+          # assertion below, together; they are asserted equal on purpose so a
+          # half-done bump fails loudly instead of scanning the wrong toolchain.
+          # Revert to '1.26' + check-latest for steady-state self-healing once
+          # the manifest reliably carries the newest patch.
+          go-version: '1.26.6'
           check-latest: true
 
       - name: Verify Go version
@@ -533,7 +541,7 @@ jobs:
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.26.5"
+          test "$got" = "go1.26.6"
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4

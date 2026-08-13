@@ -61,6 +61,7 @@ func configDefaults() *config.Config {
 const (
 	doctorCheckSuppressSemantics  = "config_suppress_semantics"
 	doctorCheckExemptionSemantics = "config_exemption_semantics"
+	doctorCheckActionDivergence   = "config_action_divergence"
 
 	ConfigSemanticKindInert       = "inert"
 	ConfigSemanticKindMisdirected = "misdirected"
@@ -124,18 +125,33 @@ func analyzeDoctorActionDivergence(cfg *config.Config) []ConfigSemanticFinding {
 }
 
 // checkDoctorConfigSemantics runs the semantic config-validation checks and
-// returns one doctorReportCheck per finding. When the config has no semantic
-// problems it returns a single ok check so the surface is always represented
-// in the report.
+// returns one doctorReportCheck per finding, plus an explicit ok check for the
+// suppress/exemption surface whenever that surface produced no findings.
+//
+// The ok check is not decoration. "No warning" and "the check never ran" look
+// identical in a report otherwise, and an operator reading a clean report has to
+// be able to tell which one they are looking at. Emitting it only when the
+// findings list was entirely empty was a latent gap: once any unrelated advisory
+// existed — action divergence is the first — the suppress/exemption surface
+// disappeared from the report even though it had run and found nothing.
 func checkDoctorConfigSemantics(cfg *config.Config) []doctorReportCheck {
-	checks := semanticFindingsToDoctorChecks(AnalyzeConfigSemantics(cfg))
-	if len(checks) == 0 {
-		return []doctorReportCheck{{
+	findings := AnalyzeConfigSemantics(cfg)
+	checks := semanticFindingsToDoctorChecks(findings)
+
+	suppressOrExemptionReported := false
+	for _, f := range findings {
+		switch doctorCheckNameForScope(f.Scope) {
+		case doctorCheckSuppressSemantics, doctorCheckExemptionSemantics:
+			suppressOrExemptionReported = true
+		}
+	}
+	if !suppressOrExemptionReported {
+		checks = append(checks, doctorReportCheck{
 			Name:    doctorCheckSuppressSemantics,
 			Surface: doctorSurfaceConfig,
 			Status:  doctorStatusOK,
 			Detail:  "suppress entries and scanner exemptions are consistent with enabled scanners",
-		}}
+		})
 	}
 	return checks
 }
@@ -194,13 +210,35 @@ func normalizeConfigSemanticSubject(scope, subject string) string {
 	}
 }
 
+// doctorCheckNameForScope maps a semantic finding's scope to the doctor check it
+// is reported under.
+//
+// The name is what an operator reads first and what automation keys on, so it
+// has to describe the same thing the detail does. Every scope except the two
+// named here is a member of the exemption family — exempt_domains,
+// passthrough_domains, ignore_headers, content_entropy_exclusions, mcp_servers —
+// so that remains the default.
+//
+// A scope that is NOT about an exemption must be listed explicitly. Action
+// divergence was reported as config_exemption_semantics because it was added to
+// the scope table without a case here, which sent an operator to audit
+// exemptions that were correct and made a warning about enforcement strength
+// look like a warning about a suppression that had not applied.
+func doctorCheckNameForScope(scope string) string {
+	switch scope {
+	case ConfigScopeSuppress:
+		return doctorCheckSuppressSemantics
+	case ConfigScopeActionDivergence:
+		return doctorCheckActionDivergence
+	default:
+		return doctorCheckExemptionSemantics
+	}
+}
+
 func semanticFindingsToDoctorChecks(findings []ConfigSemanticFinding) []doctorReportCheck {
 	checks := make([]doctorReportCheck, 0, len(findings))
 	for _, finding := range findings {
-		name := doctorCheckExemptionSemantics
-		if finding.Scope == ConfigScopeSuppress {
-			name = doctorCheckSuppressSemantics
-		}
+		name := doctorCheckNameForScope(finding.Scope)
 		status := doctorStatusWarn
 		if finding.Severity != "" {
 			status = finding.Severity

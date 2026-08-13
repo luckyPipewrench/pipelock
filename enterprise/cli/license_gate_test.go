@@ -411,3 +411,84 @@ func TestAppendLedger_RefusesOpenedAliasOfProtectedFile(t *testing.T) {
 		t.Fatal("signing key was modified despite the refusal")
 	}
 }
+
+func TestRefuseOpenedLedgerAliases_Edges(t *testing.T) {
+	dir := t.TempDir()
+
+	newLedger := func(t *testing.T) *os.File {
+		t.Helper()
+		ledgerPath := filepath.Clean(filepath.Join(dir, strings.ReplaceAll(t.Name(), "/", "-")+".jsonl"))
+		f, err := os.OpenFile(ledgerPath, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "empty protected set does not inspect descriptor",
+			run: func(t *testing.T) {
+				f := newLedger(t)
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := refuseOpenedLedgerAliases(f, map[string]string{}); err != nil {
+					t.Fatalf("refuseOpenedLedgerAliases: %v", err)
+				}
+			},
+		},
+		{
+			name: "closed opened descriptor is reported",
+			run: func(t *testing.T) {
+				f := newLedger(t)
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
+				err := refuseOpenedLedgerAliases(f, map[string]string{"the signing key": filepath.Join(dir, "missing.key")})
+				if err == nil || !strings.Contains(err.Error(), "stat opened ledger file") {
+					t.Fatalf("error = %v, want opened-descriptor stat failure", err)
+				}
+			},
+		},
+		{
+			name: "empty protected path is ignored",
+			run: func(t *testing.T) {
+				f := newLedger(t)
+				t.Cleanup(func() { _ = f.Close() })
+				if err := refuseOpenedLedgerAliases(f, map[string]string{"the signing key": ""}); err != nil {
+					t.Fatalf("refuseOpenedLedgerAliases: %v", err)
+				}
+			},
+		},
+		{
+			name: "missing protected path is ignored",
+			run: func(t *testing.T) {
+				f := newLedger(t)
+				t.Cleanup(func() { _ = f.Close() })
+				if err := refuseOpenedLedgerAliases(f, map[string]string{"the signing key": filepath.Join(dir, "missing.key")}); err != nil {
+					t.Fatalf("refuseOpenedLedgerAliases: %v", err)
+				}
+			},
+		},
+		{
+			name: "distinct protected path does not match",
+			run: func(t *testing.T) {
+				f := newLedger(t)
+				t.Cleanup(func() { _ = f.Close() })
+				protectedPath := filepath.Join(dir, "protected.key")
+				if err := os.WriteFile(protectedPath, []byte("key-material"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := refuseOpenedLedgerAliases(f, map[string]string{"the signing key": protectedPath}); err != nil {
+					t.Fatalf("refuseOpenedLedgerAliases: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}

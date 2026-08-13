@@ -197,25 +197,25 @@ jobs:
           name: pipelock-gauntlet-candidate-attempt-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/continuous-gauntlet-pipelock.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/promotion-decision.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/execution-decision.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/run-bundle.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/run-metadata.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/pipelock-release.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/pipelock-version.txt
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/corpus-manifest.txt
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/checksums.txt
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/entrypoint-command.txt
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/raw-summary.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/results.jsonl
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/runner.stderr
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/command.txt
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/make-stats.txt
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/case-index.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/tool-profile.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/capability-registry.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/receipt-profile.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/continuous-gauntlet-pipelock.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/promotion-decision.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/execution-decision.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/run-bundle.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/run-metadata.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/pipelock-release.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/pipelock-version.txt
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/corpus-manifest.txt
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/checksums.txt
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/entrypoint-command.txt
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/raw-summary.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/results.jsonl
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/runner.stderr
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/command.txt
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/make-stats.txt
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/case-index.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/tool-profile.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/capability-registry.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/receipt-profile.json
           retention-days: 14
 
       # Enforce only after upload so a blocked candidate remains inspectable.
@@ -292,6 +292,6 @@ jobs:
           name: pipelock-gauntlet-owner-review-attempt-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/enforcement-result.json
-            ${{ env.GAUNTLET_ARTIFACT_DIR }}/owner-summary.md
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/enforcement-result.json
+            ${{ runner.temp }}/pipelock-gauntlet-candidate/owner-summary.md
           retention-days: 14

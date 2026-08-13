@@ -184,8 +184,11 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
     def test_candidate_upload_retains_every_verification_input(self):
         upload = step_block(self.workflow, "Upload candidate evidence")
         self.assertIn("if-no-files-found: error", upload)
+        self.assertNotIn("env.GAUNTLET_ARTIFACT_DIR", upload)
         for filename in EVIDENCE_FILES:
-            self.assertIn(filename, upload)
+            self.assertIn(
+                f"${{{{ runner.temp }}}}/pipelock-gauntlet-candidate/{filename}", upload
+            )
         evaluate = step_block(self.workflow, "Evaluate candidate without publishing")
         enforce = step_block(self.workflow, "Enforce candidate decision")
         for label in (
@@ -209,6 +212,15 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         ):
             self.assertIn(f'--evidence "{label}=', evaluate)
             self.assertIn(f'--evidence "{label}=', enforce)
+
+    def test_owner_review_upload_uses_runner_temp_context(self):
+        upload = step_block(self.workflow, "Upload owner review artifact")
+        self.assertIn("if-no-files-found: error", upload)
+        self.assertNotIn("env.GAUNTLET_ARTIFACT_DIR", upload)
+        for filename in ("enforcement-result.json", "owner-summary.md"):
+            self.assertIn(
+                f"${{{{ runner.temp }}}}/pipelock-gauntlet-candidate/{filename}", upload
+            )
 
     def test_provenance_names_the_pipelock_actions_run(self):
         finalize = step_block(self.workflow, "Finalize GitHub provenance artifact")

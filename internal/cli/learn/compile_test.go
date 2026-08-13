@@ -441,6 +441,41 @@ func TestResolveCompileSignerDeterministic(t *testing.T) {
 	}
 }
 
+func TestRefuseOutputsOverKeystoreKeys(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.ForceGenerateAgent("alice"); err != nil {
+		t.Fatalf("ForceGenerateAgent: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("alice")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	err = refuseOutputsOverKeystoreKeys(dir, map[string]string{
+		"the compile signing key": "alice",
+	}, map[string]string{"--output": keyPath})
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("refuseOutputsOverKeystoreKeys error = %v, want alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("keystore key was overwritten")
+	}
+	if err := refuseOutputsOverKeystoreKeys(dir, map[string]string{
+		"the compile signing key": "alice",
+	}, map[string]string{"--output": filepath.Join(dir, "candidate.yaml")}); err != nil {
+		t.Fatalf("distinct output rejected: %v", err)
+	}
+}
+
 func TestRunCompileRefusesOutputAliasingSigningKey(t *testing.T) {
 	dir := t.TempDir()
 	ks := signing.NewKeystore(dir)

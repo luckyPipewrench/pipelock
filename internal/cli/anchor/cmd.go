@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -99,6 +100,16 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	}
 	output, err := resolveBundleOutput(target, opts)
 	if err != nil {
+		return err
+	}
+	protected := cliutil.ExistingFileLabels("--key", opts.keys)
+	if opts.rekorKey != "" {
+		protected["--rekor-key"] = opts.rekorKey
+	}
+	if err := cliutil.RefuseOutputAliases(protected, map[string]string{
+		"--out":       output.bundlePath,
+		"--local-log": opts.logPath,
+	}); err != nil {
 		return err
 	}
 	checkpoint, err := anchorpkg.BuildCheckpoint(sessionID, receipts, trustedKeys)

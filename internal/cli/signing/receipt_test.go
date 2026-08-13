@@ -1129,6 +1129,34 @@ func TestVerifyReceiptCmd_CleanReportJSONLWithDeferPair(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_CleanReportRefusesKeyFileAlias(t *testing.T) {
+	t.Parallel()
+	path, pubKey := buildDeferredCleanChainJSONL(t)
+	keyFile := filepath.Join(t.TempDir(), "trusted.key")
+	if err := os.WriteFile(keyFile, []byte(hex.EncodeToString(pubKey)+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyFile))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", keyFile, "--clean-report", keyFile})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(keyFile))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("verify-receipt succeeded writing --clean-report over --key; stdout=%q", buf.String())
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("trusted signer key file was overwritten")
+	}
+}
+
 func TestVerifyReceiptCmd_CleanReportRejectsSingleReceipt(t *testing.T) {
 	t.Parallel()
 

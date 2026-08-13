@@ -321,3 +321,19 @@ func TestRefuseOpenedFileAliases(t *testing.T) {
 		}
 	})
 }
+
+func TestExistingFileLabelsIgnoresHexAndMissingPaths(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "trusted.key")
+	if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ExistingFileLabels("--key", []string{
+		"4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678",
+		keyPath,
+		filepath.Join(dir, "missing.key"),
+	})
+	if len(got) != 1 || got["--key[1]"] != keyPath {
+		t.Fatalf("ExistingFileLabels = %#v, want --key[1] = %q", got, keyPath)
+	}
+}

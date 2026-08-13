@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
@@ -86,6 +87,14 @@ Examples:
 			}
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
+			}
+			if cleanReport != "" {
+				if err := cliutil.RefuseOutputAliases(
+					cliutil.ExistingFileLabels("--key", expectedKeys),
+					map[string]string{"--clean-report": cleanReport},
+				); err != nil {
+					return err
+				}
 			}
 			if len(endorsementPaths) > 0 {
 				switch {

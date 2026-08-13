@@ -628,11 +628,9 @@ func NewDurableFile(format, filePath string, includeAllowed, includeBlocked bool
 		_ = file.Close()
 		return nil, fmt.Errorf("sync audit log file: %w", err)
 	}
-	if created {
-		if err := syncDurableAuditParent(cleanPath); err != nil {
-			_ = file.Close()
-			return nil, fmt.Errorf("sync audit log directory: %w", err)
-		}
+	if err := syncDurableAuditParent(cleanPath); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("sync audit log directory: %w", err)
 	}
 	logger, err := newLogger(loggerOpts{
 		IdentifierEntropyLoggerOpts: IdentifierEntropyLoggerOpts{

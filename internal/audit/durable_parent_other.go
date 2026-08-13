@@ -7,4 +7,4 @@ package audit
 
 // Unsupported targets cannot provide the Unix directory-sync durability
 // checkpoint. File sync still runs before a lifecycle command proceeds.
-func syncDurableAuditParent(string) error { return nil }
+var syncDurableAuditParent = func(string) error { return nil }

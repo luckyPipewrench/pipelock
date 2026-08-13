@@ -207,6 +207,35 @@ func TestNewDurableFileRejectsFilesystemSyncFailure(t *testing.T) {
 	}
 }
 
+func TestNewDurableFileResyncsParentAfterFailedCreation(t *testing.T) {
+	requireDurableAuditFile(t)
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	originalSync := syncDurableAuditParent
+	var syncCalls int
+	syncDurableAuditParent = func(string) error {
+		syncCalls++
+		return errors.New("injected parent sync failure")
+	}
+	t.Cleanup(func() { syncDurableAuditParent = originalSync })
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		logger, err := NewDurableFile("json", path, false, false)
+		if logger != nil {
+			logger.Close()
+			t.Fatalf("attempt %d returned a logger after parent sync failure", attempt)
+		}
+		if err == nil || !strings.Contains(err.Error(), "sync audit log directory") {
+			t.Fatalf("attempt %d error = %v, want parent sync refusal", attempt, err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("attempt %d did not leave the created audit path behind: %v", attempt, err)
+		}
+	}
+	if syncCalls != 2 {
+		t.Fatalf("parent sync calls = %d, want a check on both the create and retry opens", syncCalls)
+	}
+}
+
 func TestLogCommitmentKeyLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, err := New("json", "file", path, false, false)

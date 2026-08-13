@@ -11,10 +11,12 @@ import (
 	"path/filepath"
 )
 
-// syncDurableAuditParent persists the directory entry for a newly created
-// durable audit log. Syncing the file alone does not guarantee that a new name
-// survives a power failure on Unix filesystems.
-func syncDurableAuditParent(path string) error {
+var syncDurableAuditParent = syncDurableAuditParentDirectory
+
+// syncDurableAuditParentDirectory persists the directory entry for a durable
+// audit log. Syncing the file alone does not guarantee that a name survives a
+// power failure, including a name left behind by an earlier failed attempt.
+func syncDurableAuditParentDirectory(path string) error {
 	dir, err := os.Open(filepath.Dir(filepath.Clean(path)))
 	if err != nil {
 		return fmt.Errorf("open parent directory: %w", err)

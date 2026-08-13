@@ -145,6 +145,12 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			mutate: func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Enabled = true
 				cfg.RequestBodyScanning.Action = config.ActionBlock
+				// Keep the section internally consistent so this case counts
+				// only suppress findings. Leaving content entropy at its warn
+				// default under a blocking section is a real divergence and
+				// correctly raises its own advisory, which is not what this
+				// case is about.
+				cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
 				cfg.Suppress = []config.SuppressEntry{
 					{Rule: testDLPPatternName, Path: "*" + testExemptHost + "*", Reason: "known FP"},
 				}
@@ -266,6 +272,12 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			mutate: func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Enabled = true
 				cfg.RequestBodyScanning.Action = config.ActionBlock
+				// Keep the section internally consistent so this case counts
+				// only suppress findings. Leaving content entropy at its warn
+				// default under a blocking section is a real divergence and
+				// correctly raises its own advisory, which is not what this
+				// case is about.
+				cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
 				cfg.Suppress = []config.SuppressEntry{
 					// lowercased name must still match the active DLP pattern.
 					{Rule: strings.ToLower(testDLPPatternName), Path: "*" + testExemptHost + "*"},

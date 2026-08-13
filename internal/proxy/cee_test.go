@@ -392,6 +392,55 @@ func TestCeeAdmit_EntropyBudgetWarn(t *testing.T) {
 	}
 }
 
+// TestCeeAdmit_EntropyBudgetActionWinsOverSectionAction is the production-
+// behavior proof behind the config action-divergence advisory in
+// internal/config/action_divergence.go. The sibling tests above set only the
+// entropy-budget action and leave the section action empty, so none of them
+// covers the case an operator actually hits: the section set to block while
+// the nested budget stays warn, which is what configs/strict.yaml ships.
+//
+// The advisory claims the child action decides. This asserts that against the
+// real admit path rather than against YAML: a crossing is detected and
+// recorded, and the request is still forwarded.
+//
+// NON-VACUITY: point the consumer at internal/proxy/cee.go:381 to the section
+// action (ceeCfg.Action instead of ceeCfg.EntropyBudget.Action) and this test
+// must fail by blocking. If it still passes, the advisory is describing
+// something that is not happening.
+func TestCeeAdmit_EntropyBudgetActionWinsOverSectionAction(t *testing.T) {
+	// 1-bit budget: any real payload exceeds immediately.
+	et := scanner.NewEntropyTracker(1.0, 300)
+	defer et.Close()
+	m := metrics.New()
+	logger, _ := audit.New("json", "stdout", "", false, false)
+
+	ceeCfg := config.CrossRequestDetection{
+		Enabled: true,
+		// The operator configured enforcement at the section level.
+		Action: config.ActionBlock,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1.0,
+			WindowMinutes: 5,
+			// The nested sub-detector is weaker, and it is the one consulted.
+			Action: config.ActionWarn,
+		},
+	}
+
+	payload := []byte("outbound data that exceeds budget")
+	result := ceeAdmit(context.Background(),
+		testCEESessionKey, payload, nil, "http://example.com", testCEEAgent,
+		testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m,
+	)
+
+	if result.Blocked {
+		t.Fatal("entropy budget action warn must decide; a section action of block does not apply to budget crossings")
+	}
+	if !result.EntropyHit {
+		t.Error("expected EntropyHit = true: the crossing is detected and recorded, it is simply not enforced")
+	}
+}
+
 func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

@@ -23,4 +23,5 @@ const (
 	ConfigScopeRequestBodyIgnoreHeaders   = "request_body_scanning.ignore_headers"
 	ConfigScopeBodyEntropyExclusions      = "request_body_scanning.content_entropy_exclusions"
 	ConfigScopeWSEntropyExclusions        = "websocket_proxy.content_entropy_exclusions"
+	ConfigScopeActionDivergence           = "action_divergence"
 )

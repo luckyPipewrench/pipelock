@@ -97,6 +97,29 @@ func AnalyzeConfigSemantics(cfg *config.Config) []ConfigSemanticFinding {
 	var findings []ConfigSemanticFinding
 	findings = append(findings, analyzeDoctorSuppressEntries(cfg)...)
 	findings = append(findings, analyzeDoctorInertExemptions(cfg)...)
+	findings = append(findings, analyzeDoctorActionDivergence(cfg)...)
+	return findings
+}
+
+// analyzeDoctorActionDivergence surfaces sub-detectors whose action is weaker
+// than the section enclosing them, so an operator who configured a section to
+// block learns which findings inside it only warn.
+//
+// The analysis itself lives in internal/config and is shared with the startup
+// and reload warning paths, so doctor cannot disagree with what the server
+// printed at boot. This is the reporting adapter only; adding a new
+// sub-detector happens in exactly one place, the config membership table.
+func analyzeDoctorActionDivergence(cfg *config.Config) []ConfigSemanticFinding {
+	var findings []ConfigSemanticFinding
+	for _, w := range cfg.ActionDivergenceWarnings() {
+		findings = append(findings, newConfigSemanticFinding(
+			ConfigSemanticKindAdvisory,
+			ConfigScopeActionDivergence,
+			w.Field,
+			w.Message,
+			"raise the sub-detector action to match its section to enforce, or leave it and treat those findings as advisory",
+		))
+	}
 	return findings
 }
 

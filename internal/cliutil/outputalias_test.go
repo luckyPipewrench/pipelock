@@ -303,4 +303,21 @@ func TestRefuseOpenedFileAliases(t *testing.T) {
 			t.Fatalf("error = %v, want a fail-closed verification error", err)
 		}
 	})
+
+	t.Run("uninspectable opened file is refused", func(t *testing.T) {
+		// Identity is unknowable when the output itself cannot be inspected, so
+		// the write must not proceed. Closing the descriptor first is the
+		// deterministic stand-in for a file that cannot be stat'd.
+		f := newOutput(t, filepath.Join(dir, "uninspectable.jsonl"))
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		err := RefuseOpenedFileAliases(f, map[string]string{"the signing key": protectedPath})
+		if err == nil {
+			t.Fatal("RefuseOpenedFileAliases proceeded despite an uninspectable output file")
+		}
+		if !strings.Contains(err.Error(), "stat opened output file") {
+			t.Fatalf("error = %v, want the stat failure reported", err)
+		}
+	})
 }

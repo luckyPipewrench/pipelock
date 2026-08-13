@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +130,15 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if err != nil {
 		return err
 	}
+	outputs := map[string]string{
+		"--out":      flags.outPath,
+		"--out-json": flags.outJSONPath,
+	}
+	protected := cliutil.ExistingFileLabels("--contract", []string{contractPath})
+	maps.Copy(protected, cliutil.ExistingFileLabels("--config", []string{flags.configPath}))
+	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
+		return err
+	}
 	if !flags.deterministic {
 		keyAgent := flags.receiptKey
 		if keyAgent == "" {
@@ -136,10 +146,7 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 		}
 		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
 			"the receipt signing key": keyAgent,
-		}, map[string]string{
-			"--out":      flags.outPath,
-			"--out-json": flags.outJSONPath,
-		}); err != nil {
+		}, outputs); err != nil {
 			return err
 		}
 	}

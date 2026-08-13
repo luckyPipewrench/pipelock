@@ -122,7 +122,9 @@ func TestLoadBundles_ExemptDomainsParseAndVanish(t *testing.T) {
 		t.Fatalf("loaded ExemptDomains = %v, want dropped", got)
 	}
 	for _, warning := range result.Warnings {
-		if strings.Contains(strings.ToLower(warning), "exempt") {
+		if strings.Contains(warning, testBundleName) &&
+			strings.Contains(warning, "dlp-exempt") &&
+			strings.Contains(warning, "pattern.exempt_domains") {
 			return
 		}
 	}

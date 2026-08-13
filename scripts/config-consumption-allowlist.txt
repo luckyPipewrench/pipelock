@@ -43,7 +43,7 @@ UnknownClass  # RESERVED foundation; hard-validated fail-closed label for unknow
 # --- INERT-BASELINE (2026-06-10 audit; wire or remove, tracked in ops state.md) ---
 OnSeverity  # REJECTED at validate when set; recordSessionActivityWithUserAgent wires only OnElevated/OnHigh/OnCritical
 AnomalyCount  # REJECTED at validate when nonzero; no consumer
-AnomalyWindowMinutes  # INERT airlock anomaly window; no consumer; default 5 remains for wire shape
+AnomalyWindowMinutes  # REJECTED at validate when nonzero; no consumer; default 0
 ToolFreeze  # INERT struct; freeze runs via proxy FrozenTools wiring regardless of these knobs
 SnapshotOnEntry  # INERT; freeze mechanism does not consult it
 AllowCachedTools  # INERT; freeze mechanism does not consult it

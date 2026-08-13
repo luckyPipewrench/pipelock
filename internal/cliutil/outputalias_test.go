@@ -337,3 +337,21 @@ func TestExistingFileLabelsIgnoresHexAndMissingPaths(t *testing.T) {
 		t.Fatalf("ExistingFileLabels = %#v, want --key[1] = %q", got, keyPath)
 	}
 }
+
+func TestExistingRegularFilesLabelsOnlyRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "evidence.jsonl")
+	if err := os.WriteFile(filePath, []byte("receipt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	got := ExistingRegularFiles("receipt input", dir)
+	if len(got) != 1 || got["receipt input"] != filePath {
+		t.Fatalf("ExistingRegularFiles = %#v, want receipt input = %q", got, filePath)
+	}
+	if got := ExistingRegularFiles("receipt input", filepath.Join(dir, "missing")); len(got) != 0 {
+		t.Fatalf("ExistingRegularFiles missing dir = %#v, want empty", got)
+	}
+}

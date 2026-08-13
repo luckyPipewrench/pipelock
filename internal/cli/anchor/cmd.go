@@ -105,6 +105,7 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	}
 	protected := cliutil.ExistingFileLabels("--key", opts.keys)
 	maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", []string{target}))
+	maps.Copy(protected, cliutil.ExistingRegularFiles("the receipt input", output.receiptDir))
 	if opts.rekorKey != "" {
 		protected["--rekor-key"] = opts.rekorKey
 	}

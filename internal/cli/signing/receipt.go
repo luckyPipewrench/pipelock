@@ -93,6 +93,7 @@ Examples:
 			if cleanReport != "" {
 				protected := cliutil.ExistingFileLabels("--key", expectedKeys)
 				maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", args))
+				maps.Copy(protected, cliutil.ExistingRegularFiles("the receipt input", chainDir))
 				if err := cliutil.RefuseOutputAliases(
 					protected,
 					map[string]string{"--clean-report": cleanReport},

@@ -380,9 +380,11 @@ func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
 	if dual != nil {
 		protected["the dual-control signing key"] = dual.keyID
 	}
-	if err := refuseOutputsOverKeystoreKeys(flags.keystore, protected, map[string]string{
-		"--receipt-out": receiptOut,
-	}); err != nil {
+	outputs := map[string]string{"--receipt-out": receiptOut}
+	if err := cliutil.RefuseOutputAliases(cliutil.ExistingFileLabels("--roster", []string{flags.rosterPath}), outputs); err != nil {
+		return lifecycleContext{}, err
+	}
+	if err := refuseOutputsOverKeystoreKeys(flags.keystore, protected, outputs); err != nil {
 		return lifecycleContext{}, err
 	}
 	return lifecycleContext{

@@ -67,6 +67,7 @@ into the offline verifier:
     pipelock verify-receipt /dev/stdin --fleet-report --key fleet-report.pub`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts.licenseCRLFile = effectiveLicenseCRLFile(opts.licenseCRLFile)
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
@@ -95,10 +96,12 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 		return err
 	}
 	if opts.out != stdoutSentinel {
+		crlFile := effectiveLicenseCRLFile(opts.licenseCRLFile)
 		if err := cliutil.RefuseOutputAliases(
 			map[string]string{
-				"the signing key":    opts.signingKey,
-				"--license-crl-file": opts.licenseCRLFile,
+				"the signing key":       opts.signingKey,
+				"--license-crl-file":    crlFile,
+				"the fleet audit store": filepath.Join(opts.storageDir, "audit.db"),
 			},
 			map[string]string{"--out": opts.out},
 		); err != nil {
@@ -177,6 +180,13 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 // stdoutSentinel is the conventional "-" value for --out meaning "write to
 // stdout" rather than a file path.
 const stdoutSentinel = "-"
+
+func effectiveLicenseCRLFile(flag string) string {
+	if v := strings.TrimSpace(flag); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(license.EnvLicenseCRLFile))
+}
 
 func openFleetReportAuditStore(cmd *cobra.Command, storageDir string) (*controlplane.SQLiteAuditStore, error) {
 	auditPath := filepath.Join(storageDir, "audit.db")

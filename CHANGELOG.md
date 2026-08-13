@@ -7,27 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking Changes / Upgrade Notes
-
-- **ACTION REQUIRED — `airlock.triggers.on_severity` and a nonzero
-  `airlock.triggers.anomaly_count` now refuse to load.** Earlier releases
-  accepted both fields and then ignored them. Airlock still fires only from
-  `on_elevated`, `on_high`, and `on_critical`. Remove the unused keys and set
-  those three if you want a trigger. `pipelock check --config` names the
-  field. Commands that load config fail the same way until it is corrected.
-
 ### Added
 
 - Recorder readers accept the v3 outer-chain namespace fields
   `chain_kind` and `writer_instance_id`. The recorder continues to emit v2
   entries during the compatibility window.
-
-### Fixed
-
-- Signing and report CLI commands refuse an output path that names the
-  signing key, license CRL, or consumed input they just opened. The write
-  itself is a temp-file rename, so a swapped symlink at the destination
-  cannot replace the protected file.
 
 ## [3.3.0] - 2026-07-30
 

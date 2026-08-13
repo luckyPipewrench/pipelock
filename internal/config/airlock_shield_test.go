@@ -99,13 +99,27 @@ func TestValidateAirlock_NegativeDrainTimeout(t *testing.T) {
 
 func TestValidateAirlock_AnomalyCountIsRejected(t *testing.T) {
 	t.Parallel()
+	for _, count := range []int{3, -3} {
+		cfg := Defaults()
+		cfg.Airlock.Enabled = true
+		cfg.SessionProfiling.Enabled = true
+		cfg.Airlock.Triggers.AnomalyCount = count
+		err := cfg.validateAirlock()
+		if err == nil || !strings.Contains(err.Error(), "anomaly_count is not enforced") {
+			t.Fatalf("validateAirlock(count=%d) error = %v, want reserved anomaly_count refusal", count, err)
+		}
+	}
+}
+
+func TestValidateAirlock_AnomalyWindowIsRejected(t *testing.T) {
+	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
 	cfg.SessionProfiling.Enabled = true
-	cfg.Airlock.Triggers.AnomalyCount = 3
+	cfg.Airlock.Triggers.AnomalyWindowMinutes = 5
 	err := cfg.validateAirlock()
-	if err == nil || !strings.Contains(err.Error(), "anomaly_count is not enforced") {
-		t.Fatalf("validateAirlock() error = %v, want reserved anomaly_count refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "anomaly_window_minutes is not enforced") {
+		t.Fatalf("validateAirlock() error = %v, want reserved anomaly_window_minutes refusal", err)
 	}
 }
 

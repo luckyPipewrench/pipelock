@@ -3690,8 +3690,8 @@ func (c *Config) validateAirlock() error {
 	if c.Airlock.Triggers.AnomalyCount != 0 {
 		return fmt.Errorf("airlock.triggers.anomaly_count is not enforced; airlock fires from on_elevated, on_high, and on_critical")
 	}
-	if c.Airlock.Triggers.AnomalyWindowMinutes < 0 {
-		return fmt.Errorf("airlock.triggers.anomaly_window_minutes must be non-negative")
+	if c.Airlock.Triggers.AnomalyWindowMinutes != 0 {
+		return fmt.Errorf("airlock.triggers.anomaly_window_minutes is not enforced; airlock fires from on_elevated, on_high, and on_critical")
 	}
 
 	return nil

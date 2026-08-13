@@ -46,6 +46,25 @@ func ExistingFileLabels(flag string, paths []string) map[string]string {
 	return out
 }
 
+// ExistingRegularFiles labels every regular file in dir. A missing or
+// unlistable directory yields an empty map so callers can pass optional roots.
+func ExistingRegularFiles(label, dir string) map[string]string {
+	if dir == "" {
+		return map[string]string{}
+	}
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return map[string]string{}
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return ExistingFileLabels(label, paths)
+}
+
 func RefuseOutputAliases(protectedPaths map[string]string, outputs map[string]string) error {
 	for _, outputFlag := range slices.Sorted(maps.Keys(outputs)) {
 		outputPath := outputs[outputFlag]

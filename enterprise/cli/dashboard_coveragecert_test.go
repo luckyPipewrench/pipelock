@@ -993,3 +993,46 @@ func TestRunCoverageCertGenerate_RefusesOutputAliasingLicenseCRL(t *testing.T) {
 		t.Fatal("license CRL was overwritten")
 	}
 }
+
+func TestRunCoverageCertGenerate_RefusesOutputAliasingReceiptFile(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertEvidenceSession(t, dir, priv, "receipt-alias", "agent-a", 3)
+	keyFile := filepath.Join(dir, "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	receiptFile := filepath.Join(dir, "evidence-receipt-alias-000000.jsonl")
+	before, err := os.ReadFile(filepath.Clean(receiptFile))
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+		agent:          "agent-a",
+		receiptDir:     dir,
+		signingKeyFile: keyFile,
+		windowStart:    start.Format(time.RFC3339),
+		windowEnd:      start.Add(24 * time.Hour).Format(time.RFC3339),
+		outFile:        receiptFile,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(receiptFile))
+	if readErr != nil {
+		t.Fatalf("re-read receipt: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("generate succeeded writing --out over a receipt input")
+	}
+	if !strings.Contains(err.Error(), "must not name receipt input") {
+		t.Fatalf("generate error = %v, want receipt-input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("receipt input was overwritten")
+	}
+}

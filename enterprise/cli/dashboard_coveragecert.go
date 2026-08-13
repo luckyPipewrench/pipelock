@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -67,6 +68,7 @@ the Ed25519 private key specified by --signing-key.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// License gate: fail closed before any file IO.
+			opts.licenseCRLFile = effectiveCoverageLicenseCRLFile(opts.licenseCRLFile)
 			_, err := license.VerifyAgentsWithOptions(license.FleetVerifyInputs{
 				CRLFile: opts.licenseCRLFile,
 			})
@@ -119,17 +121,16 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 		return fmt.Errorf("--agent must not be empty")
 	}
 
-	if err := cliutil.RefuseOutputAliases(
-		map[string]string{
-			"the signing key":    opts.signingKeyFile,
-			"--license-crl-file": opts.licenseCRLFile,
-		},
-		map[string]string{"--out": opts.outFile},
-	); err != nil {
+	cleanDir := filepath.Clean(opts.receiptDir)
+	protected := map[string]string{
+		"the signing key":    opts.signingKeyFile,
+		"--license-crl-file": effectiveCoverageLicenseCRLFile(opts.licenseCRLFile),
+	}
+	maps.Copy(protected, cliutil.ExistingRegularFiles("receipt input", cleanDir))
+	if err := cliutil.RefuseOutputAliases(protected, map[string]string{"--out": opts.outFile}); err != nil {
 		return err
 	}
 
-	cleanDir := filepath.Clean(opts.receiptDir)
 	info, dirErr := os.Stat(cleanDir)
 	if dirErr != nil {
 		return fmt.Errorf("--receipt-dir: %w", dirErr)
@@ -251,6 +252,13 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", data)
 	return nil
+}
+
+func effectiveCoverageLicenseCRLFile(flag string) string {
+	if v := strings.TrimSpace(flag); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(license.EnvLicenseCRLFile))
 }
 
 func parseCoverageCertTrustedReceiptSigners(raw []string) ([]string, error) {

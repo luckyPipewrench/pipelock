@@ -313,7 +313,10 @@ const (
 	// Re-bumped for shell-boundary handling, dotted paths, and additional
 	// sensitive query-key aliases in external data-transfer directives.
 	// Re-bumped for natural-language password and private-key transfers.
-	goldenHashDefaults = "25cbe6c74358e04c76485244009be0acae9e5eec7208e540584b33cd9c2939fe"
+	// Re-bumped for airlock.triggers.anomaly_window_minutes default 0:
+	// the reserved window is now rejected when nonzero, so the default
+	// cannot stay at the previous inert 5.
+	goldenHashDefaults = "b30392fd23d378ddb33ba25884b54ad0c419cf91c3d6f5b33e8c51b8570a2990"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

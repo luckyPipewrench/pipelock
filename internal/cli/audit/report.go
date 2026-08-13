@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,10 @@ Examples:
 
 			// Load signing key if requested.
 			var privKey ed25519.PrivateKey
+			protected := map[string]string{}
+			if input != "" && input != "-" {
+				maps.Copy(protected, cliutil.ExistingFileLabels("--input", []string{input}))
+			}
 			if sign {
 				agentName, err := cliutil.ResolveAgentName(agent)
 				if err != nil {
@@ -152,12 +157,10 @@ Examples:
 				if pathErr != nil {
 					return pathErr
 				}
-				if err := cliutil.RefuseOutputAliases(
-					map[string]string{"the signing key": keyPath},
-					map[string]string{"--output": output},
-				); err != nil {
-					return err
-				}
+				protected["the signing key"] = keyPath
+			}
+			if err := cliutil.RefuseOutputAliases(protected, map[string]string{"--output": output}); err != nil {
+				return err
 			}
 
 			// Output.

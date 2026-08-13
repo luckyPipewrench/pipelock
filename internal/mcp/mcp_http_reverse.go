@@ -475,7 +475,12 @@ func RunHTTPListenerProxy(
 				principalBound = true
 			}
 		}
-		if statefulControls && !requireStateToken && !stateBound {
+		// The legacy session-header partition is only safe for a client that
+		// presented no authenticated principal. An authenticated principal whose
+		// state the registry could not admit must never fall back to a partition
+		// keyed by client-controlled routing data; it goes to the unbound
+		// stateless path below instead.
+		if statefulControls && !requireStateToken && !stateBound && listenerPrincipal.key == "" {
 			setClientState(listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")))
 			stateBound = true
 		}
@@ -485,10 +490,13 @@ func RunHTTPListenerProxy(
 				stateBound = true
 			}
 		}
-		if requireStateToken && !stateBound {
+		if !stateBound && (requireStateToken || listenerPrincipal.key != "") {
 			// An unbound client receives stateless content and tool-poison scanning,
 			// plus its resulting evidence. It never enters a state partition
-			// selected by client-controlled routing data.
+			// selected by client-controlled routing data. An authenticated
+			// principal reaches here when the registry could not admit its state,
+			// which degrades that request to stateless rather than denying it; a
+			// saturated registry must not become an outage for every principal.
 			clientState = listenerClients.newUnboundState()
 			clientStateKey = clientState.key
 			defer listenerClients.discardUnboundState(clientState)
@@ -802,7 +810,7 @@ func RunHTTPListenerProxy(
 			if blockedByA2AHeaders() {
 				return
 			}
-			if principalControls && !stateBound {
+			if principalControls && !stateBound && listenerPrincipal.key == "" {
 				rejectMissingListenerState(nil)
 				return
 			}
@@ -942,7 +950,7 @@ func RunHTTPListenerProxy(
 			if blockedByA2AHeaders() {
 				return
 			}
-			if principalControls && !stateBound {
+			if principalControls && !stateBound && listenerPrincipal.key == "" {
 				rejectMissingListenerState(nil)
 				return
 			}
@@ -1350,7 +1358,7 @@ func RunHTTPListenerProxy(
 		// A request that cannot access configured principal-scoped controls is
 		// still body/header scanned below, but it must not spend a legitimate
 		// caller's DoW budget before the listener refuses it for missing identity.
-		if principalControls && !stateBound && listenerMethodRequiresPrincipal(frame.Method) {
+		if principalControls && !stateBound && listenerPrincipal.key == "" && listenerMethodRequiresPrincipal(frame.Method) {
 			scanOpts.DoWCheck = nil
 			scanOpts.DoWEnabledFn = nil
 		}
@@ -1370,7 +1378,7 @@ func RunHTTPListenerProxy(
 			}
 			return
 		}
-		if principalControls && !stateBound && listenerMethodRequiresPrincipal(frame.Method) {
+		if principalControls && !stateBound && listenerPrincipal.key == "" && listenerMethodRequiresPrincipal(frame.Method) {
 			rejectMissingListenerState(frame.ID)
 			return
 		}

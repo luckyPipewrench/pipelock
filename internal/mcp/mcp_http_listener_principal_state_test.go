@@ -11,12 +11,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -198,6 +201,119 @@ func TestHTTPListener_PrincipalState_BearerRotationStartsNewEpoch(t *testing.T) 
 	}
 	if got := calls.Load(); got != 4 {
 		t.Fatalf("upstream calls = %d, want 4: old read, new exec, new read, reused-old fresh exec", got)
+	}
+}
+
+// TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionState
+// holds a request after bearer authentication, rotates the bearer on another
+// request, then resumes the original request in explicit compatibility mode.
+// The original principal is still authenticated, but its retired epoch cannot
+// be admitted. A client-supplied Mcp-Session-Id must not select the preexisting
+// legacy chain state; the request proceeds with stateless controls instead.
+func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionState(t *testing.T) {
+	const (
+		oldBearer     = "legacy-fallback-rotation-old"
+		newBearer     = "legacy-fallback-rotation-new"
+		legacySession = "legacy-partition-that-must-not-bind"
+	)
+
+	var active atomic.Value
+	active.Store(oldBearer)
+	var holdOld atomic.Bool
+	oldReachedConfig := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var oldConfigOnce sync.Once
+
+	upstream, calls := principalStateUpstream(t)
+	auditPath := filepath.Join(t.TempDir(), "listener-audit.jsonl")
+	auditLogger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("new audit logger: %v", err)
+	}
+	defer auditLogger.Close()
+
+	chainMatcher := buildBlockChainMatcher()
+	legacyStateKey := mcpListenerStateKey(legacySession)
+	if verdict := chainMatcher.Record(legacyStateKey, "read_file"); verdict.Matched {
+		t.Fatalf("legacy chain seed unexpectedly matched: %+v", verdict)
+	}
+
+	compatibilityMode := false
+	adaptiveCfg := adaptiveCfgEnabled()
+	adaptiveCfg.EscalationThreshold = 1
+	opts := principalStateOpts(t, "")
+	opts.ListenerBearerTokenFn = func() (string, error) { return active.Load().(string), nil }
+	opts.listenerStateTokenRequired = &compatibilityMode
+	opts.ChainMatcher = chainMatcher
+	opts.InputCfg = newHTTPInputCfg(config.ActionWarn)
+	opts.AdaptiveCfgFn = func() *config.AdaptiveEnforcement {
+		if holdOld.Load() {
+			oldConfigOnce.Do(func() { close(oldReachedConfig) })
+			<-releaseOld
+		}
+		return adaptiveCfg
+	}
+	opts.Store = &listenerDiagnosisStore{}
+	opts.AuditLogger = auditLogger
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+
+	holdOld.Store(true)
+	type result struct {
+		status int
+		body   string
+		err    error
+	}
+	oldResult := make(chan result, 1)
+	go func() {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash_exec","arguments":{"token":%q},"_meta":{"io.modelcontextprotocol/protocolVersion":%q,"io.modelcontextprotocol/clientCapabilities":{}}}}`, "sk-ant-"+strings.Repeat("x", 25), currentMCPVersion)
+		req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+		if reqErr != nil {
+			oldResult <- result{err: fmt.Errorf("new old-bearer request: %w", reqErr)}
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Mcp-Protocol-Version", currentMCPVersion)
+		req.Header.Set("Mcp-Method", "tools/call")
+		req.Header.Set("Mcp-Name", "bash_exec")
+		req.Header.Set("Mcp-Session-Id", legacySession)
+		req.Header.Set("Proxy-Authorization", "Bearer "+oldBearer)
+		resp, doErr := http.DefaultClient.Do(req)
+		if doErr != nil {
+			oldResult <- result{err: fmt.Errorf("old-bearer request: %w", doErr)}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		payload, readErr := io.ReadAll(resp.Body)
+		oldResult <- result{status: resp.StatusCode, body: string(payload), err: readErr}
+	}()
+
+	<-oldReachedConfig
+	active.Store(newBearer)
+	holdOld.Store(false)
+	if status, body := principalStateToolCall(t, baseURL, newBearer, 2, "read_file", nil); status != http.StatusOK || strings.Contains(body, "chain pattern") {
+		t.Fatalf("rotating bearer request = status %d body %s, want new state admission", status, body)
+	}
+	close(releaseOld)
+
+	got := <-oldResult
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.status != http.StatusOK || strings.Contains(got.body, "chain pattern") {
+		t.Fatalf("retired-but-authenticated request = status %d body %s, want stateless forward", got.status, got.body)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2; the retired request must not select the legacy chain partition", calls.Load())
+	}
+
+	auditLogger.Close()
+	auditData, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if !strings.Contains(string(auditData), `"session":"`+legacySession+`"`) {
+		t.Fatalf("unbound request audit key did not retain its compatibility session header: %s", auditData)
 	}
 }
 

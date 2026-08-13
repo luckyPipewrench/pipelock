@@ -129,8 +129,9 @@ func TestParseMCPFrame_ToolsCallNullArgs(t *testing.T) {
 
 func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
 	tests := []struct {
-		name string
-		msg  string
+		name         string
+		msg          string
+		wantParseErr bool
 	}{
 		{
 			name: "params array",
@@ -141,15 +142,16 @@ func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
 			msg:  `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":"not-object"}`,
 		},
 		{
-			name: "non-string tool name",
-			msg:  `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":42,"arguments":{"q":"x"}}}`,
+			name:         "non-string tool name",
+			msg:          `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":42,"arguments":{"q":"x"}}}`,
+			wantParseErr: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			frame := ParseMCPFrame([]byte(tt.msg))
-			if frame.ParseErr != nil {
-				t.Fatalf("ParseErr = %v, want nil", frame.ParseErr)
+			if got := frame.ParseErr != nil; got != tt.wantParseErr {
+				t.Fatalf("ParseErr = %v, present = %v, want present = %v", frame.ParseErr, got, tt.wantParseErr)
 			}
 			if frame.ID == nil {
 				t.Fatal("ID = nil, want preserved request ID")

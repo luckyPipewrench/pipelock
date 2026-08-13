@@ -441,6 +441,56 @@ func TestResolveCompileSignerDeterministic(t *testing.T) {
 	}
 }
 
+func TestRunCompileRefusesOutputAliasingSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.ForceGenerateAgent("agent-a"); err != nil {
+		t.Fatalf("ForceGenerateAgent: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("agent-a")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	input := filepath.Join(dir, "capture.jsonl")
+	if err := os.WriteFile(input, []byte(compileFixtureJSONL(t)), 0o600); err != nil {
+		t.Fatalf("WriteFile input: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("learn:\n  inference:\n    floors:\n      min_sessions: 1\n      min_events: 1\n      min_windows: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runCompile(cmd, compileFlags{
+		agent:         "agent-a",
+		inputGlob:     input,
+		output:        keyPath,
+		review:        filepath.Join(dir, "candidate.review.md"),
+		manifest:      filepath.Join(dir, "candidate.manifest.json"),
+		configPath:    cfgPath,
+		keystore:      dir,
+		deterministic: false,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runCompile succeeded writing --output over the compile signing key")
+	}
+	if !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("runCompile error = %v, want alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("compile signing key was overwritten")
+	}
+}
+
 func TestResolveCompileSignerLoadsKeystoreAgent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

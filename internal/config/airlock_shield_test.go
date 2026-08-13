@@ -57,8 +57,9 @@ func TestValidateAirlock_InvalidSeverity(t *testing.T) {
 	cfg.Airlock.Enabled = true
 	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnSeverity = "low"
-	if err := cfg.validateAirlock(); err == nil {
-		t.Error("invalid severity should fail validation")
+	err := cfg.validateAirlock()
+	if err == nil || !strings.Contains(err.Error(), "on_severity is not enforced") {
+		t.Fatalf("validateAirlock() error = %v, want reserved on_severity refusal", err)
 	}
 }
 

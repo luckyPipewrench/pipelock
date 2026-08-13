@@ -596,6 +596,23 @@ func TestValidateAgentName(t *testing.T) {
 	}
 }
 
+func TestPrivateKeyPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ks := NewKeystore(dir)
+	got, err := ks.PrivateKeyPath("alice")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	want := filepath.Join(dir, "agents", "alice", "id_ed25519")
+	if got != want {
+		t.Fatalf("PrivateKeyPath = %q, want %q", got, want)
+	}
+	if _, err := ks.PrivateKeyPath("../escape"); err == nil {
+		t.Fatal("PrivateKeyPath accepted a traversal name")
+	}
+}
+
 func TestSanitizeAgentName(t *testing.T) {
 	tests := []struct {
 		input string

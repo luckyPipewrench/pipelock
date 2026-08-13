@@ -109,6 +109,17 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 	if err != nil {
 		return err
 	}
+	if !flags.deterministic {
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the compile signing key": signer.keyID,
+		}, map[string]string{
+			"--output":           output,
+			"--review":           reviewPath,
+			"--compile-manifest": manifestPath,
+		}); err != nil {
+			return err
+		}
+	}
 
 	result, err := contractcompile.Compile(contractcompile.CompileInput{
 		Stream:           stream,

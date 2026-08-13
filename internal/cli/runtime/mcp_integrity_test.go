@@ -251,6 +251,49 @@ func TestMCPIntegrityManifestSignAndVerifySignature(t *testing.T) {
 	}
 }
 
+func TestSignMCPIntegrityManifestRefusesOutputAliasingSignerKey(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("alice")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	beforeInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{"/bin/example": strings.Repeat("a", 64)},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	_, err = signMCPIntegrityManifest(manifestPath, keyPath, "alice", ksDir)
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	afterInfo, _ := os.Stat(keyPath)
+	if err == nil {
+		t.Fatal("sign succeeded writing --sig over the signer private key")
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signer private key was overwritten")
+	}
+	if afterInfo.Mode().Perm() != beforeInfo.Mode().Perm() {
+		t.Fatalf("key mode changed from %v to %v", beforeInfo.Mode().Perm(), afterInfo.Mode().Perm())
+	}
+}
+
 func TestMCPIntegrityManifestVerifySignatureReportsTamper(t *testing.T) {
 	dir := t.TempDir()
 	ksDir := filepath.Join(dir, "keys")

@@ -95,7 +95,10 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	}
 	if opts.out != stdoutSentinel {
 		if err := cliutil.RefuseOutputAliases(
-			map[string]string{"the signing key": opts.signingKey},
+			map[string]string{
+				"the signing key":    opts.signingKey,
+				"--license-crl-file": opts.licenseCRLFile,
+			},
 			map[string]string{"--out": opts.out},
 		); err != nil {
 			return err

@@ -147,6 +147,16 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("loading signing key for agent %q: %w", agentName, err)
 				}
+				keyPath, pathErr := ks.PrivateKeyPath(agentName)
+				if pathErr != nil {
+					return pathErr
+				}
+				if err := cliutil.RefuseOutputAliases(
+					map[string]string{"the signing key": keyPath},
+					map[string]string{"--output": output},
+				); err != nil {
+					return err
+				}
 			}
 
 			// Output.

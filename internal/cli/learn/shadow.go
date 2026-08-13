@@ -129,6 +129,20 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if err != nil {
 		return err
 	}
+	if !flags.deterministic {
+		keyAgent := flags.receiptKey
+		if keyAgent == "" {
+			keyAgent = defaultReceiptKeyAgent
+		}
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the receipt signing key": keyAgent,
+		}, map[string]string{
+			"--out":      flags.outPath,
+			"--out-json": flags.outJSONPath,
+		}); err != nil {
+			return err
+		}
+	}
 	if err := writeShadowReports(cmd, report, flags); err != nil {
 		return err
 	}

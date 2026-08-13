@@ -124,6 +124,18 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	if err != nil {
 		return err
 	}
+	if !flags.deterministic {
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the compile signing key":    compileSigner.keyID,
+			"the activation signing key": activationSigner.keyID,
+		}, map[string]string{
+			"--out":         dest,
+			"tombstone":     tombstonePath,
+			"--receipt-out": receiptOut,
+		}); err != nil {
+			return err
+		}
+	}
 	receipt, err := activation.SignReceipt(
 		contractreceipt.PayloadContractRedactionRequest,
 		contractreceipt.PayloadContractRedactionRequestStruct{

@@ -949,3 +949,47 @@ func TestRunCoverageCertGenerate_RefusesOutputAliasingSigningKey(t *testing.T) {
 		t.Fatal("signing key was overwritten")
 	}
 }
+
+func TestRunCoverageCertGenerate_RefusesOutputAliasingLicenseCRL(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertEvidenceSession(t, dir, priv, "crl-alias", "agent-a", 3)
+	keyFile := filepath.Join(dir, "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	crlFile := filepath.Join(dir, "license.crl")
+	if err := os.WriteFile(crlFile, []byte("crl-bytes"), 0o600); err != nil {
+		t.Fatalf("WriteFile crl: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(crlFile))
+	if err != nil {
+		t.Fatalf("read crl: %v", err)
+	}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+		agent:          "agent-a",
+		receiptDir:     dir,
+		signingKeyFile: keyFile,
+		licenseCRLFile: crlFile,
+		windowStart:    start.Format(time.RFC3339),
+		windowEnd:      start.Add(24 * time.Hour).Format(time.RFC3339),
+		outFile:        crlFile,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(crlFile))
+	if readErr != nil {
+		t.Fatalf("re-read crl: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("generate succeeded writing --out over --license-crl-file")
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("license CRL was overwritten")
+	}
+}

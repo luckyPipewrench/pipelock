@@ -284,6 +284,16 @@ func (k *Keystore) recoverAgentTransactionForRead(name string) error {
 	})
 }
 
+// PrivateKeyPath returns the on-disk path of an agent's private key
+// without opening it. Commands that sign and then write an output file
+// use this to refuse a destination that names the key they just loaded.
+func (k *Keystore) PrivateKeyPath(name string) (string, error) {
+	if err := ValidateAgentName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(k.agentDir(name), privateKeyFile), nil
+}
+
 // LoadPrivateKey loads an agent's private key from the keystore.
 func (k *Keystore) LoadPrivateKey(name string) (ed25519.PrivateKey, error) {
 	if err := ValidateAgentName(name); err != nil {

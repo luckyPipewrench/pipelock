@@ -136,6 +136,17 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	if err != nil {
 		return err
 	}
+	if !flags.deterministic {
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the compile signing key": compileSigner.keyID,
+			"the receipt signing key": receiptSigner.keyID,
+		}, map[string]string{
+			"--out":         dest,
+			"--receipt-out": receiptOut,
+		}); err != nil {
+			return err
+		}
+	}
 	now := ratifyNow(flags.deterministic)
 	eventID := lifecycleID("", flags.deterministic, "contract-ratified")
 	receipt, err := activation.SignReceipt(

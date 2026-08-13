@@ -119,7 +119,10 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	}
 
 	if err := cliutil.RefuseOutputAliases(
-		map[string]string{"the signing key": opts.signingKeyFile},
+		map[string]string{
+			"the signing key":    opts.signingKeyFile,
+			"--license-crl-file": opts.licenseCRLFile,
+		},
 		map[string]string{"--out": opts.outFile},
 	); err != nil {
 		return err

@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
-EXPECTED_AEB_REF = "6586cd8fc69e61a69874c67b0a6dbeb2d1c344b7"
+EXPECTED_AEB_REF = "b7adf5770e7d4c639c68cfcf25f075b69656de60"
 EVIDENCE_FILES = (
     "continuous-gauntlet-pipelock.json",
     "promotion-decision.json",
@@ -86,9 +86,17 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
                 "PIPELOCK_REPO": "luckyPipewrench/pipelock",
                 "PIPELOCK_TAG": "v3.3.0",
                 "PIPELOCK_VERSION": "3.3.0",
+                "PIPELOCK_ASSET_SHA256_AMD64": (
+                    "cbc03ba3a5cc1400e288f4a2782ffd59ca162f5f0120d972ab82717ad5519dfc"
+                ),
+                "PIPELOCK_ASSET_SHA256_ARM64": (
+                    "d682ffb0f81138099a14f8c991880688ea692f80cd114d75010eb9a622e1fbf6"
+                ),
             },
         )
         self.assertEqual(assignments["PIPELOCK_TAG"], "v" + assignments["PIPELOCK_VERSION"])
+        self.assertRegex(assignments["PIPELOCK_ASSET_SHA256_AMD64"], r"^[0-9a-f]{64}$")
+        self.assertRegex(assignments["PIPELOCK_ASSET_SHA256_ARM64"], r"^[0-9a-f]{64}$")
         self.assertNotIn("v3.3.0", self.workflow)
 
     def test_shipped_portable_runner_is_the_only_execution_path(self):

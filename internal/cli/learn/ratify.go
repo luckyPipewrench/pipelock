@@ -159,10 +159,7 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
 			"the compile signing key": compileSigner.keyID,
 			"the receipt signing key": receiptSigner.keyID,
-		}, map[string]string{
-			"--out":         dest,
-			"--receipt-out": receiptOut,
-		}); err != nil {
+		}, outputs); err != nil {
 			return err
 		}
 	}

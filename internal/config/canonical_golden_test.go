@@ -321,7 +321,7 @@ const (
 	// above required a literal ":" or "-" between the phrase and its context,
 	// so a period, newline, comma, or em-dash evaded it. Proximity keeps the
 	// context requirement without depending on one punctuation mark.
-	goldenHashDefaults = "00687d54ef0fca3cd555bfa997ae0432e81beb861bb91d562ff8e4c36092e2dc"
+	goldenHashDefaults = "4025c2d6fd31333bf1054aa0a6aa4a6457cf02afecba047cb69b9a7c54fe8078"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

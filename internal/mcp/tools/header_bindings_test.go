@@ -5,6 +5,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -118,12 +119,11 @@ func TestToolBaseline_HeaderBindingsRespectCaps(t *testing.T) {
 	for i := range defs {
 		defs[i] = ToolDef{Name: fmt.Sprintf("tool-%d", i), InputSchema: schema}
 	}
-	baseline.SetToolHeaderBindings(defs)
-	if got := len(baseline.headerBindings); got != maxBaselineTools {
-		t.Fatalf("header contract tools = %d, want cap %d", got, maxBaselineTools)
+	if err := baseline.SetToolHeaderBindings(defs); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("header binding overflow error = %v, want ErrBaselineCapacity", err)
 	}
-	if _, ok := baseline.HeaderBindings(fmt.Sprintf("tool-%d", maxBaselineTools)); ok {
-		t.Fatal("tool beyond baseline cap received a header contract")
+	if got := len(baseline.headerBindings); got != 0 {
+		t.Fatalf("partial header contracts committed: %d", got)
 	}
 
 	properties := make([]string, maxToolHeaderBindings+1)

@@ -9,6 +9,7 @@ package mcp
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -89,6 +90,35 @@ func TestForwardScanned_ToolScanClean(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "safe") {
 		t.Error("clean response should be forwarded")
+	}
+}
+
+func TestForwardScanned_ToolInventoryCapacityAlwaysBlocks(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	baseline := tools.NewToolBaseline()
+	names := make([]string, 10000)
+	for i := range names {
+		names[i] = fmt.Sprintf("tool-%d", i)
+	}
+	if err := baseline.SetKnownTools(names); err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
+	line := string(makeToolsResponse(`[{"name":"overflow","description":"safe"}]`)) + "\n"
+
+	var out, log strings.Builder
+	found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found || strings.Contains(out.String(), `"overflow"`) {
+		t.Fatalf("capacity response forwarded: found=%v output=%q", found, out.String())
+	}
+	if !strings.Contains(out.String(), "tool_inventory_capacity") || !strings.Contains(log.String(), "tool_inventory_capacity") {
+		t.Fatalf("capacity block was not operator-visible: output=%q log=%q", out.String(), log.String())
+	}
+	if baseline.IsKnownTool("overflow") {
+		t.Fatal("blocked overflow tool became a trusted baseline entry")
 	}
 }
 

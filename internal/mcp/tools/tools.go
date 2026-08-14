@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -69,9 +70,13 @@ type ToolScanMatch struct {
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
 type ToolScanResult struct {
-	IsToolsList bool            `json:"is_tools_list"`
-	Clean       bool            `json:"clean"`
-	Matches     []ToolScanMatch `json:"matches,omitempty"`
+	IsToolsList bool `json:"is_tools_list"`
+	Clean       bool `json:"clean"`
+	// ResourceLimit identifies a baseline resource limit that made this
+	// tools/list response uninspectable. It is never a warning: allowing a
+	// definition that cannot be recorded creates a permanent blind spot.
+	ResourceLimit string          `json:"resource_limit,omitempty"`
+	Matches       []ToolScanMatch `json:"matches,omitempty"`
 	// Observations carry non-blocking drift notices: a definition changed but
 	// introduced no risk cue. They never affect Clean or the verdict; they
 	// exist so an accepted change is visible to the operator rather than
@@ -132,6 +137,7 @@ type ToolBaseline struct {
 	knownTools     map[string]bool                     // session binding: tool name set from first tools/list
 	knownA2A       map[string]bool                     // session binding: A2A method identity set from trusted inventory
 	headerBindings map[string]map[string]HeaderBinding // tool name -> lower-case Mcp-Param name -> schema binding
+	pendingTools   map[string]struct{}                 // names admitted for a response that has not forwarded yet
 	hasBaseline    bool                                // true after first SetKnownTools call
 	hasA2A         bool                                // true after first SetKnownA2AMethods call
 }
@@ -144,12 +150,18 @@ func NewToolBaseline() *ToolBaseline {
 		descs:          make(map[string]string),
 		params:         make(map[string][]string),
 		headerBindings: make(map[string]map[string]HeaderBinding),
+		pendingTools:   make(map[string]struct{}),
 	}
 }
 
 // maxBaselineTools caps the number of tracked tools to prevent unbounded
 // memory growth from a malicious server sending unlimited unique tool names.
 const maxBaselineTools = 10000
+
+// ErrBaselineCapacity means a definition or inventory cannot be recorded
+// without exceeding the baseline limit. Callers must treat it as an
+// uninspectable security outcome, not as a cache miss.
+var ErrBaselineCapacity = errors.New("tool baseline capacity exceeded")
 
 const a2aMethodIdentityPrefix = "a2a:"
 
@@ -168,6 +180,70 @@ func (tb *ToolBaseline) ShouldSkip(name string) bool {
 	defer tb.mu.Unlock()
 	_, exists := tb.hashes[name]
 	return !exists && len(tb.hashes) >= maxBaselineTools
+}
+
+func namesFitCapacity[T any](stored map[string]T, names []string) bool {
+	needed := len(stored)
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, exists := stored[name]; exists {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		needed++
+		if needed > maxBaselineTools {
+			return false
+		}
+	}
+	return true
+}
+
+func namesFitCapacityWithPending[T any](stored map[string]T, pending map[string]struct{}, names []string) bool {
+	needed := len(stored) + len(pending)
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, exists := stored[name]; exists {
+			continue
+		}
+		if _, reserved := pending[name]; reserved {
+			return false
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		needed++
+		if needed > maxBaselineTools {
+			return false
+		}
+	}
+	return true
+}
+
+// CanTrackDefinitions reports whether every definition in names can remain
+// under the drift baseline cap. It has no side effects so callers can reject
+// an oversized response before scanning or promoting any partial baseline.
+func (tb *ToolBaseline) CanTrackDefinitions(names []string) bool {
+	if tb == nil {
+		return true
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return namesFitCapacity(tb.hashes, names)
+}
+
+// CanAdmitKnownTools reports whether a tools/list inventory can be committed
+// in full. A partial inventory is not a baseline.
+func (tb *ToolBaseline) CanAdmitKnownTools(names []string) bool {
+	if tb == nil {
+		return true
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return namesFitCapacity(tb.knownTools, names)
 }
 
 // CheckAndUpdate stores a tool's hash and reports whether it changed.
@@ -213,33 +289,38 @@ func (tb *ToolBaseline) CheckAndUpdatePromote(name, hash string, promoteNew, pro
 
 // StoreDesc saves a tool's description text for later diff generation.
 // Called alongside CheckAndUpdate. Respects maxBaselineTools capacity.
-func (tb *ToolBaseline) StoreDesc(name, desc string) {
+func (tb *ToolBaseline) StoreDesc(name, desc string) error {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	if _, exists := tb.descs[name]; !exists && len(tb.descs) >= maxBaselineTools {
-		return
+		return ErrBaselineCapacity
 	}
 	tb.descs[name] = desc
+	return nil
 }
 
 // StoreParams saves a tool's parameter names for later diff generation.
 // Called alongside CheckAndUpdate. Respects maxBaselineTools capacity.
 // Names should be pre-sorted for deterministic comparison.
-func (tb *ToolBaseline) StoreParams(name string, paramNames []string) {
+func (tb *ToolBaseline) StoreParams(name string, paramNames []string) error {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	if _, exists := tb.params[name]; !exists && len(tb.params) >= maxBaselineTools {
-		return
+		return ErrBaselineCapacity
 	}
 	// Store a copy to prevent mutation.
 	cp := make([]string, len(paramNames))
 	copy(cp, paramNames)
 	tb.params[name] = cp
+	return nil
 }
 
 // DriftEvaluation is the outcome of one atomic compare-and-promote against the
 // baseline.
 type DriftEvaluation struct {
+	// CapacityExceeded reports that the definition could not be represented in
+	// the baseline. It is a fail-closed outcome, never an empty evaluation.
+	CapacityExceeded bool
 	// Drifted reports that a stored definition changed.
 	Drifted bool
 	// Cues lists what the change introduced. Empty means the change was
@@ -308,7 +389,7 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 
 	prevHash, exists := tb.hashes[name]
 	if !exists && len(tb.hashes) >= maxBaselineTools {
-		return DriftEvaluation{}
+		return DriftEvaluation{CapacityExceeded: true}
 	}
 
 	promote := func() {
@@ -514,19 +595,20 @@ func (d *DetectDriftRisingEdge) Observe(curr bool) bool {
 // Called on the first tools/list to lock the baseline. Subsequent calls
 // add newly seen tools to the known set. Respects maxBaselineTools to
 // prevent unbounded memory growth from malicious servers.
-func (tb *ToolBaseline) SetKnownTools(names []string) {
+func (tb *ToolBaseline) SetKnownTools(names []string) error {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	if tb.knownTools == nil {
 		tb.knownTools = make(map[string]bool, baselineInventoryMapCapacity(len(names)))
 	}
+	if !namesFitCapacity(tb.knownTools, names) {
+		return ErrBaselineCapacity
+	}
 	for _, n := range names {
-		if !tb.knownTools[n] && len(tb.knownTools) >= maxBaselineTools {
-			break
-		}
 		tb.knownTools[n] = true
 	}
 	tb.hasBaseline = true
+	return nil
 }
 
 // SetKnownA2AMethods sets the session baseline from a trusted response-derived
@@ -594,20 +676,126 @@ func (tb *ToolBaseline) IsKnownA2AMethod(method string) bool {
 // CheckNewTools compares a list of tool names against the baseline and returns
 // any that were not previously known. Newly seen tools are added to the baseline.
 // Respects maxBaselineTools to prevent unbounded memory growth.
-func (tb *ToolBaseline) CheckNewTools(names []string) []string {
+func (tb *ToolBaseline) CheckNewTools(names []string) ([]string, error) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
+	if !namesFitCapacity(tb.knownTools, names) {
+		return nil, ErrBaselineCapacity
+	}
 	var added []string
 	for _, n := range names {
 		if !tb.knownTools[n] {
-			if len(tb.knownTools) >= maxBaselineTools {
-				continue
-			}
 			added = append(added, n)
 			tb.knownTools[n] = true
 		}
 	}
-	return added
+	return added, nil
+}
+
+// ToolInventoryReservation holds capacity reserved for one tools/list
+// response until its downstream write succeeds. It prevents two concurrent
+// responses from both observing the final slot as available, while keeping a
+// failed downstream write out of the trusted baseline.
+type ToolInventoryReservation struct {
+	baseline *ToolBaseline
+	names    []string
+	defs     []ToolDef
+	bindings map[string]map[string]HeaderBinding
+	reserved []string
+}
+
+// ReserveToolInventory reserves all state that a clean tools/list response
+// needs before it can forward. Call Commit after the downstream write succeeds
+// or Release when it does not. A partial reservation is never created.
+func (tb *ToolBaseline) ReserveToolInventory(names []string, defs []ToolDef) (*ToolInventoryReservation, error) {
+	if tb == nil {
+		return nil, nil
+	}
+	bindings := headerBindingsForDefs(defs)
+	bindingNames := make([]string, 0, len(bindings))
+	for name := range bindings {
+		bindingNames = append(bindingNames, name)
+	}
+
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if tb.pendingTools == nil {
+		tb.pendingTools = make(map[string]struct{})
+	}
+	if !namesFitCapacityWithPending(tb.knownTools, tb.pendingTools, names) ||
+		!namesFitCapacityWithPending(tb.headerBindings, tb.pendingTools, bindingNames) {
+		return nil, ErrBaselineCapacity
+	}
+
+	reserved := make([]string, 0, len(names))
+	for _, name := range names {
+		if _, known := tb.knownTools[name]; known {
+			continue
+		}
+		if _, duplicate := tb.pendingTools[name]; duplicate {
+			return nil, ErrBaselineCapacity
+		}
+		tb.pendingTools[name] = struct{}{}
+		reserved = append(reserved, name)
+	}
+	return &ToolInventoryReservation{baseline: tb, names: names, defs: defs, bindings: bindings, reserved: reserved}, nil
+}
+
+// Release discards a reservation after the response did not reach the client.
+func (r *ToolInventoryReservation) Release() {
+	if r == nil || r.baseline == nil {
+		return
+	}
+	r.baseline.mu.Lock()
+	defer r.baseline.mu.Unlock()
+	for _, name := range r.reserved {
+		delete(r.baseline.pendingTools, name)
+	}
+	r.reserved = nil
+}
+
+// Commit makes a reserved tools/list response trusted after it has forwarded.
+// It never rechecks capacity: Reserve held every slot this response needs.
+func (r *ToolInventoryReservation) Commit(clean bool) ([]string, error) {
+	if r == nil || r.baseline == nil {
+		return nil, nil
+	}
+	tb := r.baseline
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	defer func() {
+		for _, name := range r.reserved {
+			delete(tb.pendingTools, name)
+		}
+		r.reserved = nil
+	}()
+
+	if tb.knownTools == nil {
+		tb.knownTools = make(map[string]bool, baselineInventoryMapCapacity(len(r.names)))
+	}
+	added := make([]string, 0, len(r.reserved))
+	for _, name := range r.names {
+		if !tb.knownTools[name] {
+			if tb.hasBaseline {
+				added = append(added, name)
+			}
+			tb.knownTools[name] = true
+		}
+	}
+	tb.hasBaseline = true
+
+	if tb.headerBindings == nil {
+		tb.headerBindings = make(map[string]map[string]HeaderBinding)
+	}
+	for _, def := range r.defs {
+		bindings, valid := r.bindings[def.Name]
+		if !clean || !valid {
+			delete(tb.headerBindings, def.Name)
+			continue
+		}
+		tb.headerBindings[def.Name] = bindings
+	}
+	return added, nil
 }
 
 func a2aMethodIdentity(method string) string {
@@ -1259,7 +1447,14 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		names[i] = t.Name
 	}
 
-	matches, observations := scanToolDefs(tools, sc, cfg)
+	if resourceLimit := toolScanCapacityLimit(tools, names, cfg); resourceLimit != "" {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
+	}
+
+	matches, observations, capacityExceeded := scanToolDefs(tools, sc, cfg)
+	if capacityExceeded {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_capacity", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
+	}
 
 	if len(matches) == 0 {
 		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
@@ -1280,6 +1475,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	var allObservations []ToolScanMatch
 	var allNames []string
 	var allDefs []ToolDef
+	resourceLimit := ""
 	var firstID json.RawMessage
 	isToolsList := false
 
@@ -1294,11 +1490,18 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 			allObservations = append(allObservations, r.Observations...)
 			allNames = append(allNames, r.ToolNames...)
 			allDefs = append(allDefs, r.ToolDefs...)
+			if resourceLimit == "" {
+				resourceLimit = r.ResourceLimit
+			}
 		}
 	}
 
 	if !isToolsList {
 		return ToolScanResult{IsToolsList: false, Clean: true}
+	}
+
+	if resourceLimit != "" {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs, Observations: allObservations}
 	}
 
 	if len(allMatches) == 0 {
@@ -1309,7 +1512,27 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 }
 
 // scanToolDefs scans a slice of tool definitions for injection, poisoning, and drift.
-func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch) {
+func toolScanCapacityLimit(defs []ToolDef, names []string, cfg *ToolScanConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.Baseline != nil && !cfg.Baseline.CanAdmitKnownTools(names) {
+		return "tool_inventory_capacity"
+	}
+	if cfg.Baseline != nil && !cfg.Baseline.CanAdmitHeaderBindings(defs) {
+		return "tool_header_binding_capacity"
+	}
+	driftBaseline := cfg.DriftBaseline
+	if driftBaseline == nil {
+		driftBaseline = cfg.Baseline
+	}
+	if cfg.DetectDrift && driftBaseline != nil && !driftBaseline.CanTrackDefinitions(names) {
+		return "tool_definition_baseline_capacity"
+	}
+	return ""
+}
+
+func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded bool) {
 	confusableNames := confusableToolNameCollisions(tools)
 
 	for _, tool := range tools {
@@ -1401,7 +1624,11 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		if driftBaseline == nil {
 			driftBaseline = cfg.Baseline
 		}
-		if cfg.DetectDrift && driftBaseline != nil && !driftBaseline.ShouldSkip(tool.Name) {
+		if cfg.DetectDrift && driftBaseline != nil && driftBaseline.ShouldSkip(tool.Name) {
+			capacityExceeded = true
+			continue
+		}
+		if cfg.DetectDrift && driftBaseline != nil {
 			hash := hashTool(tool)
 			promoteNew := cfg.Action != "block" || !hasFinding
 			promoteChanged := cfg.Action != "block"
@@ -1424,6 +1651,10 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},
 			})
+			if eval.CapacityExceeded {
+				capacityExceeded = true
+				continue
+			}
 
 			if eval.Drifted {
 				match.PreviousHash = eval.PreviousHash
@@ -1451,7 +1682,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 	}
 
-	return matches, observations
+	return matches, observations, capacityExceeded
 }
 
 func confusableToolNameCollisions(tools []ToolDef) map[string]bool {
@@ -1473,6 +1704,9 @@ func confusableToolNameCollisions(tools []ToolDef) map[string]bool {
 
 // LogToolFindings writes per-tool scan findings to the log writer.
 func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
+	if result.ResourceLimit != "" {
+		_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list cannot be safely inspected: %s\n", lineNum, result.ResourceLimit)
+	}
 	for _, m := range result.Matches {
 		var reasons []string
 		for _, inj := range m.Injection {

@@ -427,37 +427,40 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// allowed through. A blocked tools/list must not become a trusted
 		// session-binding baseline merely because tool scanning runs before the
 		// response scanner.
-		commitToolInventory := func() {
+		var toolInventoryReservation *tools.ToolInventoryReservation
+		reserveToolInventory := func() error {
 			if !isToolsList || toolCfg == nil || toolCfg.Baseline == nil || len(toolResult.ToolNames) == 0 {
-				return
+				return nil
 			}
-
+			var err error
+			toolInventoryReservation, err = toolCfg.Baseline.ReserveToolInventory(toolResult.ToolNames, toolResult.ToolDefs)
+			return err
+		}
+		commitToolInventory := func() error {
+			if toolInventoryReservation == nil {
+				return nil
+			}
+			added, err := toolInventoryReservation.Commit(toolResult.Clean)
+			if err != nil {
+				return err
+			}
 			decision := ""
-			if !toolCfg.Baseline.HasBaseline() {
-				// An MCP tools/list inventory is not an A2A capability source;
-				// SetKnownTools leaves the A2A method inventory untouched.
-				toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)
-			} else {
-				added := toolCfg.Baseline.CheckNewTools(toolResult.ToolNames)
-				for _, name := range added {
-					_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
-				}
-				if len(added) > 0 {
-					decision = config.ActionBlock
-				} else {
-					decision = config.ActionAllow
-				}
+			for _, name := range added {
+				_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
 			}
-			// Header bindings are security state for the exact accepted tool
-			// definitions, just like the inventory. Commit them only after the
-			// tools/list response survives poisoning, DLP, provenance, and output.
-			if toolResult.Clean {
-				toolCfg.Baseline.SetToolHeaderBindings(toolResult.ToolDefs)
-			} else {
-				toolCfg.Baseline.ClearToolHeaderBindings(toolResult.ToolDefs)
+			if len(added) > 0 {
+				decision = config.ActionBlock
+			} else if toolCfg.Baseline.HasBaseline() {
+				decision = config.ActionAllow
 			}
 			if !toolInventoryResolved {
 				resolveToolInventory(decision)
+			}
+			return nil
+		}
+		releaseToolInventory := func() {
+			if toolInventoryReservation != nil {
+				toolInventoryReservation.Release()
 			}
 		}
 		// toolPoisonDetected tracks whether a tool-poisoning finding was raised
@@ -507,7 +510,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if toolResult.IsToolsList {
 				toolCaptureAction := config.ActionAllow
 				if !toolResult.Clean {
-					if toolCfg.Action != "" {
+					if toolResult.ResourceLimit != "" {
+						toolCaptureAction = config.ActionBlock
+					} else if toolCfg.Action != "" {
 						toolCaptureAction = toolCfg.Action
 					} else {
 						toolCaptureAction = config.ActionBlock
@@ -544,6 +549,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 				originalToolAction := toolCfg.Action
 				toolAction := originalToolAction
+				if toolResult.ResourceLimit != "" {
+					// A capacity result means the response cannot become a complete
+					// security baseline. Policy warn/strip would forward an
+					// uninspectable definition, so this outcome is always a block.
+					toolAction = config.ActionBlock
+				}
 				// Escalation upgrade for tool poison detection.
 				if rec != nil {
 					toolAction = decide.UpgradeAction(toolAction, rec.EscalationLevel(), adaptiveCfg)
@@ -560,7 +571,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				if toolAction == config.ActionBlock {
 					_ = emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionBlock)
 					blockReason := "tool poisoning detected in tools/list"
-					if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
+					if toolResult.ResourceLimit != "" {
+						blockReason = "tools/list cannot be safely inspected: " + toolResult.ResourceLimit
+						if m != nil {
+							m.RecordBlocked("mcp", toolResult.ResourceLimit, 0, "")
+						}
+					} else if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
 						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
 					}
 					if opts.AuditLogger != nil {
@@ -630,10 +646,28 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					metrics:    m,
 				}, opts.warnContext()))
 			}
+			if err := reserveToolInventory(); err != nil {
+				resolveToolInventory(config.ActionBlock)
+				foundInjection = true
+				blockReason := "tools/list cannot be safely inspected: tool_inventory_capacity"
+				_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, blockReason)
+				if m != nil {
+					m.RecordBlocked("mcp", "tool_inventory_capacity", 0, "")
+				}
+				resp := blockResponseReason(toolResult.RPCID, blockReason)
+				if writeErr := writer.WriteMessage(resp); writeErr != nil {
+					return foundInjection, fmt.Errorf("writing inventory-capacity block: %w", writeErr)
+				}
+				emitTrackedOutcome("error", "tool_inventory_capacity", resp)
+				continue
+			}
 			if err := writer.WriteMessage(line); err != nil {
+				releaseToolInventory()
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
-			commitToolInventory()
+			if err := commitToolInventory(); err != nil {
+				return foundInjection, fmt.Errorf("committing tool inventory after forward: %w", err)
+			}
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
 			observeMCPResponseTaint(taintOpts, toolPoisonDetected)
 			continue
@@ -828,11 +862,30 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if effectiveAction != config.ActionWarn && effectiveAction != config.ActionAllow {
 			resolveToolInventory(config.ActionBlock)
 		}
+		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
+			if err := reserveToolInventory(); err != nil {
+				resolveToolInventory(config.ActionBlock)
+				blockReason := "tools/list cannot be safely inspected: tool_inventory_capacity"
+				_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, blockReason)
+				if m != nil {
+					m.RecordBlocked("mcp", "tool_inventory_capacity", 0, "")
+				}
+				resp := blockResponseReason(toolResult.RPCID, blockReason)
+				if writeErr := writer.WriteMessage(resp); writeErr != nil {
+					return foundInjection, fmt.Errorf("writing inventory-capacity block: %w", writeErr)
+				}
+				emitTrackedOutcome("error", "tool_inventory_capacity", resp)
+				continue
+			}
+		}
 		if err := writer.WriteMessage(outbound); err != nil {
+			releaseToolInventory()
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
 		}
 		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
-			commitToolInventory()
+			if err := commitToolInventory(); err != nil {
+				return foundInjection, fmt.Errorf("committing tool inventory after forward: %w", err)
+			}
 		}
 		emitTrackedOutcome(mcpResponseStatus(outbound), "mcp_response_scan", outbound)
 
@@ -900,6 +953,9 @@ func emitMCPToolScanReceipt(
 	}
 	requestID := canonicalID(result.RPCID)
 	pattern := "tool_poisoning"
+	if result.ResourceLimit != "" {
+		pattern = result.ResourceLimit
+	}
 	for _, match := range result.Matches {
 		if len(match.ToolPoison) > 0 {
 			pattern = match.ToolPoison[0]

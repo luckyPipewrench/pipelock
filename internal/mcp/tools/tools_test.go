@@ -5,6 +5,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -2071,29 +2072,48 @@ func BenchmarkExtractSchemaDescriptions_AllFields(b *testing.B) {
 
 // --- Baseline cap ---
 
-func TestToolBaseline_Cap(t *testing.T) {
+func TestToolBaseline_CapacityIsExplicit(t *testing.T) {
 	tb := NewToolBaseline()
 	// Fill to capacity.
 	for i := 0; i < maxBaselineTools; i++ {
 		tb.CheckAndUpdate(fmt.Sprintf("tool-%d", i), "hash")
 	}
-	// New tool beyond cap should be silently dropped.
-	drifted, prev := tb.CheckAndUpdate("overflow-tool", "hash")
-	if drifted {
-		t.Error("overflow tool should not report drift")
-	}
-	if prev != "" {
-		t.Error("overflow tool should have no previous hash")
+	if got := tb.EvaluateDefinition(DefinitionEvaluation{Name: "overflow-tool", Hash: "hash", PromoteNew: true}); !got.CapacityExceeded {
+		t.Fatal("overflow definition must report an uninspectable capacity outcome")
 	}
 
 	// Existing tools can still be updated.
 	tb.CheckAndUpdate("tool-0", "new-hash")
-	drifted, prev = tb.CheckAndUpdate("tool-0", "newer-hash")
+	drifted, prev := tb.CheckAndUpdate("tool-0", "newer-hash")
 	if !drifted {
 		t.Error("existing tool update should detect drift")
 	}
 	if prev != "new-hash" {
 		t.Errorf("expected new-hash, got %q", prev)
+	}
+}
+
+func TestScanTools_BaselineCapacityIsUninspectable(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	names := make([]string, maxBaselineTools)
+	for i := range names {
+		names[i] = fmt.Sprintf("tool-%d", i)
+	}
+	if err := baseline.SetKnownTools(names); err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+
+	result := ScanTools(
+		[]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"overflow","description":"safe"}]}}`),
+		sc,
+		&ToolScanConfig{Action: "warn", Baseline: baseline},
+	)
+	if result.Clean || result.ResourceLimit != "tool_inventory_capacity" {
+		t.Fatalf("capacity result = %+v, want non-clean tool_inventory_capacity", result)
+	}
+	if baseline.IsKnownTool("overflow") {
+		t.Fatal("uninspectable tool must not be added to the trusted inventory")
 	}
 }
 
@@ -2525,11 +2545,8 @@ func TestToolBaseline_StoreDesc_CapacityLimit(t *testing.T) {
 	for i := range maxBaselineTools {
 		tb.StoreDesc(fmt.Sprintf("tool_%d", i), "desc")
 	}
-	// New tool should be silently dropped.
-	tb.StoreDesc("overflow_tool", "should not be stored")
-	summary := tb.DiffSummary("overflow_tool", "anything", nil)
-	if summary != "" {
-		t.Errorf("expected empty summary for overflow tool, got %q", summary)
+	if err := tb.StoreDesc("overflow_tool", "should not be stored"); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("overflow description error = %v, want ErrBaselineCapacity", err)
 	}
 }
 
@@ -2606,7 +2623,10 @@ func TestToolBaseline_PostBaselineNewTool(t *testing.T) {
 	tb.SetKnownTools([]string{"read_file", "write_file"})
 
 	// Second tools/list with a new tool added.
-	added := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
+	added, err := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
+	if err != nil {
+		t.Fatalf("CheckNewTools: %v", err)
+	}
 
 	if len(added) != 1 || added[0] != "exec_command" {
 		t.Errorf("expected [exec_command] added, got %v", added)
@@ -2618,7 +2638,10 @@ func TestToolBaseline_PostBaselineNewTool(t *testing.T) {
 	}
 
 	// Second check should return nothing new.
-	added2 := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
+	added2, err := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
+	if err != nil {
+		t.Fatalf("CheckNewTools repeat: %v", err)
+	}
 	if len(added2) != 0 {
 		t.Errorf("expected no new tools on second check, got %v", added2)
 	}
@@ -2638,19 +2661,12 @@ func TestToolBaseline_KnownToolsCap(t *testing.T) {
 		t.Fatal("expected baseline after SetKnownTools")
 	}
 
-	// New tool beyond capacity should be dropped by SetKnownTools.
-	tb.SetKnownTools([]string{"overflow_tool"})
-	if tb.IsKnownTool("overflow_tool") {
-		t.Error("expected overflow_tool to be dropped at capacity")
+	if err := tb.SetKnownTools([]string{"overflow_tool"}); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("SetKnownTools overflow error = %v, want ErrBaselineCapacity", err)
 	}
 
-	// CheckNewTools should also respect the cap.
-	added := tb.CheckNewTools([]string{"another_overflow"})
-	if len(added) != 0 {
-		t.Errorf("expected no tools added at capacity, got %v", added)
-	}
-	if tb.IsKnownTool("another_overflow") {
-		t.Error("expected another_overflow to be dropped at capacity")
+	if _, err := tb.CheckNewTools([]string{"another_overflow"}); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("CheckNewTools overflow error = %v, want ErrBaselineCapacity", err)
 	}
 }
 
@@ -3234,13 +3250,8 @@ func TestToolBaseline_StoreParams_Cap(t *testing.T) {
 	for i := range maxBaselineTools {
 		tb.StoreParams(fmt.Sprintf("tool_%d", i), []string{"p"})
 	}
-	// Overflow tool should be silently dropped.
-	tb.StoreParams("overflow", []string{"x"})
-	tb.StoreDesc("overflow", "desc")
-	summary := tb.DiffSummary("overflow", "desc", []string{"y"})
-	// No previous params stored = no param diff.
-	if strings.Contains(summary, "parameters") {
-		t.Errorf("overflow tool should have no param diff, got %q", summary)
+	if err := tb.StoreParams("overflow", []string{"x"}); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("overflow params error = %v, want ErrBaselineCapacity", err)
 	}
 }
 

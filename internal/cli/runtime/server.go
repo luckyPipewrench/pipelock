@@ -98,10 +98,12 @@ type ServerOpts struct {
 type Server struct {
 	opts ServerOpts
 
-	runtimeMode       config.RuntimeMode
-	hasMCPListen      bool
-	apiOnSeparatePort bool
-	hasApprover       bool
+	runtimeMode        config.RuntimeMode
+	hasMCPListen       bool
+	apiOnSeparatePort  bool
+	hasApprover        bool
+	containmentManaged bool
+	metricsDisabled    bool
 
 	cfg          *config.Config
 	bundleResult *rules.LoadResult
@@ -320,8 +322,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 
 	s := &Server{
-		opts:         opts,
-		hasMCPListen: hasMCPListen,
+		opts:               opts,
+		hasMCPListen:       hasMCPListen,
+		containmentManaged: containmentManagedRuntime(),
 	}
 	s.mcpListenerBearerToken = mcpAuthToken
 	if cfg.EvidenceProvenance.CommitmentKeyringPath != "" {
@@ -377,6 +380,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	logger.SetEmitter(emitter)
 	s.emitter = emitter
 	s.emitSinks = append([]emit.Sink(nil), emitSinks...)
+	if s.containmentManaged {
+		if containmentErr := validateContainmentMetricsConfig(cfg); containmentErr != nil {
+			s.metricsDisabled = true
+			s.reportContainmentMetricsDrift(cfg, "startup", containmentErr)
+		}
+	}
 	emitLicenseExpiryWarning(cfg, logger, sentryClient, opts.Stderr)
 
 	runtimeMode := config.RuntimeForward

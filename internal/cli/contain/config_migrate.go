@@ -8,13 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"gopkg.in/yaml.v3"
 )
@@ -85,7 +84,7 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	metricsListen := strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen")))
 	if metricsListen == "" {
 		setMappingScalar(mapping, "metrics_listen", containMetricsListen)
-	} else if err := validateContainMetricsListen(metricsListen, env.proxyPort); err != nil {
+	} else if err := config.ValidateContainmentMetricsListen(metricsListen, env.proxyPort); err != nil {
 		return nil, nil, err
 	}
 
@@ -161,7 +160,7 @@ func containServiceReadOnlyPaths(data []byte, proxyPort int) ([]string, error) {
 	if metricsListen == "" {
 		return nil, errors.New("metrics_listen must use a dedicated loopback port; rerun contain install with --config to migrate the managed config safely")
 	}
-	if err := validateContainMetricsListen(metricsListen, proxyPort); err != nil {
+	if err := config.ValidateContainmentMetricsListen(metricsListen, proxyPort); err != nil {
 		return nil, err
 	}
 	return containServiceReadOnlyPathsFromMapping(mapping)
@@ -225,22 +224,6 @@ func isProtectedHomePath(path string) bool {
 		}
 	}
 	return false
-}
-
-func validateContainMetricsListen(listen string, proxyPort int) error {
-	host, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return fmt.Errorf("metrics_listen %q is unsafe for containment: %w", listen, err)
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("metrics_listen %q is unsafe for containment: use a numeric loopback address on a dedicated port", listen)
-	}
-	parsedPort, err := strconv.ParseUint(port, 10, 16)
-	if err != nil || parsedPort == 0 || int(parsedPort) == proxyPort {
-		return fmt.Errorf("metrics_listen %q is unsafe for containment: use a port other than the agent-accessible proxy port %d", listen, proxyPort)
-	}
-	return nil
 }
 
 func parseSingleYAMLDocument(data []byte) (*yaml.Node, error) {

@@ -416,7 +416,9 @@ func (s *Server) Start(ctx context.Context) error {
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Listen: %s\n", boundFetchAddr)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", boundFetchAddr)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Health: http://%s/health\n", boundFetchAddr)
-	if cfg.MetricsListen != "" {
+	if s.metricsDisabled {
+		_, _ = fmt.Fprintln(s.opts.Stderr, "  Stats:  disabled (containment managed-config drift)")
+	} else if cfg.MetricsListen != "" {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Stats:  http://%s/stats (separate port)\n", cfg.MetricsListen)
 	} else {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Stats:  http://%s/stats\n", boundFetchAddr)
@@ -678,7 +680,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	var metricsErr chan error
-	if cfg.MetricsListen != "" {
+	if cfg.MetricsListen != "" && !s.metricsDisabled {
 		metricsMux := http.NewServeMux()
 		metricsMux.Handle("/metrics", s.metrics.PrometheusHandler())
 		metricsMux.HandleFunc("/stats", s.metrics.StatsHandler())

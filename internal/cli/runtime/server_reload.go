@@ -94,8 +94,17 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// Block metrics_listen changes via reload. The metrics server
 		// binds at startup and can't rebind at runtime.
 		if oldCfg.MetricsListen != newCfg.MetricsListen {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
-				oldCfg.MetricsListen, newCfg.MetricsListen)
+			if s.containmentManaged {
+				if containmentErr := validateContainmentMetricsConfig(newCfg); containmentErr != nil {
+					s.reportContainmentMetricsDrift(newCfg, "reload", containmentErr)
+				} else {
+					_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
+						oldCfg.MetricsListen, newCfg.MetricsListen)
+				}
+			} else {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
+					oldCfg.MetricsListen, newCfg.MetricsListen)
+			}
 			newCfg.MetricsListen = oldCfg.MetricsListen
 		}
 		// Block scan_api listener setting changes via reload. The Scan

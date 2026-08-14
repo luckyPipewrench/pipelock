@@ -383,6 +383,9 @@ func TestRenderSystemUnit_WithoutFileSentryKeepsHomeInaccessible(t *testing.T) {
 	if !strings.Contains(body, "ProtectHome=true") || strings.Contains(body, "BindReadOnlyPaths=") {
 		t.Fatalf("system unit weakens home isolation without file-sentry paths:\n%s", body)
 	}
+	if !strings.Contains(body, "Environment=PIPELOCK_CONTAINMENT_MANAGED=1") {
+		t.Fatalf("system unit does not mark its process as containment-managed:\n%s", body)
+	}
 }
 
 func TestRenderSystemUnit_FileSentryPrivateTmpPathIsVisibleReadOnly(t *testing.T) {

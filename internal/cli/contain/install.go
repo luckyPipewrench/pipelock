@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // installOpts collects the flag-derived state for runInstall. Mirrored as
@@ -1426,6 +1427,7 @@ func renderSystemUnit(env *installEnv) string {
 		"Type=simple",
 		"User=" + env.proxyUserName,
 		"Group=" + env.proxyUserName,
+		"Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue,
 		"ExecStart=" + env.pipelockTarget + " run --config " + configPath + " --capture-output " + capturePath,
 		"Restart=on-failure",
 		"RestartSec=5",

@@ -72,16 +72,21 @@ func TestConsumeAdaptiveResetFileAcceptsSignedDelegationOnce(t *testing.T) {
 
 func TestConsumeAdaptiveResetFileIgnoresOwnershipAndMode(t *testing.T) {
 	authority, privateKey := newAdaptiveResetAuthority(t)
-	for index, mode := range []os.FileMode{0o600, 0o666} {
-		t.Run(mode.String(), func(t *testing.T) {
+	for _, test := range []struct {
+		mode  os.FileMode
+		nonce string
+	}{
+		{mode: 0o600, nonce: strings.Repeat("c", 31) + "0"},
+		{mode: 0o666, nonce: strings.Repeat("c", 31) + "1"},
+	} {
+		t.Run(test.mode.String(), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "reset")
-			nonce := strings.Repeat("c", 31) + string(rune('0'+index))
-			writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, uint64(mode), nonce)
-			if err := os.Chmod(path, mode); err != nil {
+			writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, uint64(test.mode), test.nonce)
+			if err := os.Chmod(path, test.mode); err != nil {
 				t.Fatal(err)
 			}
-			if got := consumeAdaptiveResetFile(path, authority, uint64(mode), nil).Result; got != ResetAuthorityAccepted {
-				t.Fatalf("mode %o result = %q, want accepted", mode, got)
+			if got := consumeAdaptiveResetFile(path, authority, uint64(test.mode), nil).Result; got != ResetAuthorityAccepted {
+				t.Fatalf("mode %o result = %q, want accepted", test.mode, got)
 			}
 		})
 	}

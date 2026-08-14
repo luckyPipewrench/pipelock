@@ -129,7 +129,7 @@ func newResetAuthority(publicKey ed25519.PublicKey, target, instanceID string, n
 	if err := validateResetTarget(target); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("instance_id", instanceID, resetInstanceBytes); err != nil {
+	if err := validateResetHex("instance_id", instanceID); err != nil {
 		return nil, err
 	}
 	if now == nil {
@@ -176,10 +176,10 @@ func MintResetDelegation(privateKey ed25519.PrivateKey, issuer string, kind Rese
 	if err := validateResetTarget(target); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("instance_id", instanceID, resetInstanceBytes); err != nil {
+	if err := validateResetHex("instance_id", instanceID); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("nonce", nonce, resetNonceBytes); err != nil {
+	if err := validateResetHex("nonce", nonce); err != nil {
 		return ResetDelegation{}, err
 	}
 	if err := validateResetIssuer(issuer); err != nil {
@@ -353,10 +353,10 @@ func (d ResetDelegation) signingInput() ([]byte, error) {
 	if err := validateResetTarget(d.Target); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("instance_id", d.InstanceID, resetInstanceBytes); err != nil {
+	if err := validateResetHex("instance_id", d.InstanceID); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("nonce", d.Nonce, resetNonceBytes); err != nil {
+	if err := validateResetHex("nonce", d.Nonce); err != nil {
 		return nil, err
 	}
 	if err := validateResetIssuer(d.Issuer); err != nil {
@@ -457,9 +457,9 @@ func validateResetIssuer(issuer string) error {
 	return nil
 }
 
-func validateResetHex(label, value string, wantBytes int) error {
+func validateResetHex(label, value string) error {
 	decoded, err := hex.DecodeString(value)
-	if err != nil || len(decoded) != wantBytes || strings.ToLower(value) != value {
+	if err != nil || len(decoded) != resetNonceBytes || strings.ToLower(value) != value {
 		return fmt.Errorf("invalid reset delegation %s", label)
 	}
 	return nil

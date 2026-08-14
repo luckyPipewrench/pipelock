@@ -3517,11 +3517,26 @@ func (p *Proxy) blockIfConfiguredMetricsTarget(ctx context.Context, host, port s
 		return nil
 	}
 	metricsHost, metricsPort, err := net.SplitHostPort(cfg.MetricsListen)
-	if err != nil || metricsPort != port {
+	if err != nil {
+		return nil
+	}
+	wantPort, wantErr := strconv.ParseUint(metricsPort, 10, 16)
+	gotPort, gotErr := strconv.ParseUint(port, 10, 16)
+	if wantErr != nil || gotErr != nil || wantPort == 0 || wantPort != gotPort || ip == nil {
 		return nil
 	}
 	metricsIP := net.ParseIP(metricsHost)
-	if metricsIP == nil || ip == nil {
+	if strings.TrimSpace(metricsHost) == "" || (metricsIP != nil && metricsIP.IsUnspecified()) {
+		local, localErr := isLocalInterfaceIP(ip)
+		if localErr != nil {
+			return newSSRFDialBlockError(ctx, host, ip, fmt.Sprintf("SSRF blocked: cannot verify whether %s:%s reaches the wildcard metrics listener: %v", host, port, localErr))
+		}
+		if !local {
+			return nil
+		}
+		return newSSRFDialBlockError(ctx, host, ip, fmt.Sprintf("SSRF blocked: %s:%s is the configured metrics listener", host, port))
+	}
+	if metricsIP == nil {
 		return nil
 	}
 	if metricsV4 := metricsIP.To4(); metricsV4 != nil {
@@ -3531,6 +3546,29 @@ func (p *Proxy) blockIfConfiguredMetricsTarget(ctx context.Context, host, port s
 		return nil
 	}
 	return newSSRFDialBlockError(ctx, host, ip, fmt.Sprintf("SSRF blocked: %s:%s is the configured metrics listener", host, port))
+}
+
+func isLocalInterfaceIP(ip net.IP) (bool, error) {
+	if ip.IsLoopback() {
+		return true, nil
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false, fmt.Errorf("list local interface addresses: %w", err)
+	}
+	for _, addr := range addrs {
+		var localIP net.IP
+		switch value := addr.(type) {
+		case *net.IPNet:
+			localIP = value.IP
+		case *net.IPAddr:
+			localIP = value.IP
+		}
+		if localIP != nil && localIP.Equal(ip) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {

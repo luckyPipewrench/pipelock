@@ -2885,6 +2885,32 @@ func newLoggerWithEmitter(t *testing.T) (*Logger, *collectingSink) {
 	return logger, sink
 }
 
+func TestLogContainmentMetricsDenyEmitsStructuredFields(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogContainmentMetricsDeny("/metrics", "192.0.2.42", "192.0.2.20:9091", "source_cidr_mismatch")
+	event, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted containment metrics denial")
+	}
+	if event.Type != string(EventContainmentMetricsDeny) || event.Severity != emit.SeverityWarn {
+		t.Fatalf("event type/severity = %q/%v", event.Type, event.Severity)
+	}
+	want := map[string]any{
+		"endpoint":            "/metrics",
+		"client_ip":           "192.0.2.42",
+		"configured_listener": "192.0.2.20:9091",
+		"reason":              "source_cidr_mismatch",
+		"outcome":             "denied",
+	}
+	for field, value := range want {
+		if got := event.Fields[field]; got != value {
+			t.Errorf("%s = %v, want %v", field, got, value)
+		}
+	}
+}
+
 func mustHTTPLogContext(t *testing.T, method, targetURL, requestID string) LogContext {
 	t.Helper()
 	ctx, err := NewHTTPLogContext(method, targetURL, testClientIP, requestID, testAgentName)

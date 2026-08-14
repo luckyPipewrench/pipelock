@@ -91,6 +91,9 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 		return nil, nil, err
 	}
 	if metricsListen == "" {
+		if metricsExposure != nil {
+			return nil, nil, fmt.Errorf("containment.metrics_exposure requires an explicit non-loopback metrics_listen; set metrics_listen or remove the exposure policy")
+		}
 		// The value we are about to write gets the same check as one the
 		// operator wrote. It is a fixed port, so on a host whose proxy already
 		// runs there the default collides, and inserting it unchecked would

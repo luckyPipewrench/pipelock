@@ -495,7 +495,7 @@ func TestProbeManagedConfigMetrics(t *testing.T) {
 				return []byte("metrics_listen: 192.0.2.20:9091\ncontainment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2099-01-01T00:00:00Z\n    typo: true\n"), nil
 			},
 			wantStatus: statusFail,
-			wantDetail: "field typo not found",
+			wantDetail: "parse containment.metrics_exposure",
 		},
 		{
 			name: "expired metrics exposure policy fails",

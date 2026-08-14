@@ -210,6 +210,26 @@ func TestMigratePipelockConfigForContain_PreservesApprovedMetricsExposure(t *tes
 	}
 }
 
+func TestMigratePipelockConfigForContain_RequiresExplicitListenerForMetricsExposure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	origLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == containInstallOperatorUser {
+			return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+		}
+		return origLookup(name)
+	}
+	configBody := []byte("containment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2099-01-01T00:00:00Z\n")
+	_, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), configBody)
+	if err == nil || !strings.Contains(err.Error(), "requires an explicit non-loopback metrics_listen") {
+		t.Fatalf("migrate error = %v, want explicit-listener remediation", err)
+	}
+	if strings.Contains(err.Error(), "collides") {
+		t.Fatalf("migrate error misreported a proxy-port collision: %v", err)
+	}
+}
+
 func TestMigratePipelockConfigForContain_RejectsAgentReachableMetricsListener(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	home := t.TempDir()

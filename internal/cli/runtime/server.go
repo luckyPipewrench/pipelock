@@ -40,6 +40,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"golang.org/x/time/rate"
 )
 
 // ServerOpts carries the CLI-flag surface and I/O bindings for a runtime
@@ -108,6 +109,9 @@ type Server struct {
 	// invalid metrics listener or policy. The bound listener stays up, but its handler
 	// denies every request until a valid policy is reloaded.
 	containmentMetricsDenied atomic.Bool
+	// containmentMetricsDenyLog bounds attacker-driven audit volume from the
+	// unauthenticated observability listener.
+	containmentMetricsDenyLog *rate.Limiter
 
 	cfg          *config.Config
 	bundleResult *rules.LoadResult
@@ -326,9 +330,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 
 	s := &Server{
-		opts:               opts,
-		hasMCPListen:       hasMCPListen,
-		containmentManaged: containmentManagedRuntime(),
+		opts:                      opts,
+		hasMCPListen:              hasMCPListen,
+		containmentManaged:        containmentManagedRuntime(),
+		containmentMetricsDenyLog: rate.NewLimiter(rate.Every(time.Second), 5),
 	}
 	s.mcpListenerBearerToken = mcpAuthToken
 	if cfg.EvidenceProvenance.CommitmentKeyringPath != "" {

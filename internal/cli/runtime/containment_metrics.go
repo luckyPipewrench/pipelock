@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -45,9 +46,16 @@ func validateContainmentMetricsConfig(cfg *config.Config) error {
 // containmentMetricsHandler enforces the source policy at request time. The
 // policy is read from the live config for every scrape so expiry and an
 // accepted hot reload take effect without rebinding the metrics listener.
-func containmentMetricsHandler(currentConfig func() *config.Config, denyAll func() bool, next http.Handler) http.Handler {
+func containmentMetricsHandler(currentConfig func() *config.Config, denyAll func() bool, report containmentMetricsDenyReporter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if denyAll() || !containmentMetricsRequestAllowed(currentConfig(), r.RemoteAddr, time.Now()) {
+		if denyAll() {
+			reportContainmentMetricsRequestDenied(report, "/metrics", r.RemoteAddr, "deny_all")
+			http.Error(w, "metrics access denied", http.StatusForbidden)
+			return
+		}
+		allowed, reason := containmentMetricsRequestDecision(currentConfig(), r.RemoteAddr, time.Now())
+		if !allowed {
+			reportContainmentMetricsRequestDenied(report, "/metrics", r.RemoteAddr, reason)
 			http.Error(w, "metrics access denied", http.StatusForbidden)
 			return
 		}
@@ -57,9 +65,10 @@ func containmentMetricsHandler(currentConfig func() *config.Config, denyAll func
 
 // containmentLoopbackHandler keeps the more detailed /stats endpoint local
 // even when an operator has approved remote Prometheus metrics collection.
-func containmentLoopbackHandler(next http.Handler) http.Handler {
+func containmentLoopbackHandler(report containmentMetricsDenyReporter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !containmentRequestSourceIP(r.RemoteAddr).IsLoopback() {
+			reportContainmentMetricsRequestDenied(report, "/stats", r.RemoteAddr, "non_loopback_stats")
 			http.Error(w, "stats access denied", http.StatusForbidden)
 			return
 		}
@@ -68,36 +77,50 @@ func containmentLoopbackHandler(next http.Handler) http.Handler {
 }
 
 func containmentMetricsRequestAllowed(cfg *config.Config, remoteAddr string, now time.Time) bool {
+	allowed, _ := containmentMetricsRequestDecision(cfg, remoteAddr, now)
+	return allowed
+}
+
+func containmentMetricsRequestDecision(cfg *config.Config, remoteAddr string, now time.Time) (bool, string) {
 	if cfg == nil {
-		return false
+		return false, "malformed_live_config"
 	}
 	_, port, err := net.SplitHostPort(cfg.FetchProxy.Listen)
 	if err != nil {
-		return false
+		return false, "malformed_live_config"
 	}
 	proxyPort, err := strconv.Atoi(port)
 	if err != nil || proxyPort < 1 || proxyPort > 65535 {
-		return false
+		return false, "malformed_live_config"
 	}
 	if err := config.ValidateContainmentMetricsExposure(cfg.MetricsListen, proxyPort, cfg.Containment.MetricsExposure, now); err != nil {
-		return false
+		if strings.Contains(err.Error(), "expired at") {
+			return false, "expired_policy"
+		}
+		return false, "malformed_live_config"
 	}
 	source := containmentRequestSourceIP(remoteAddr)
 	if source == nil {
-		return false
+		return false, "malformed_source"
 	}
 	host, _, err := net.SplitHostPort(cfg.MetricsListen)
 	if err != nil {
-		return false
+		return false, "malformed_live_config"
 	}
 	metricsIP := net.ParseIP(host)
 	if metricsIP == nil {
-		return false
+		return false, "malformed_live_config"
 	}
 	if metricsIP.IsLoopback() {
-		return source.IsLoopback()
+		if source.IsLoopback() {
+			return true, ""
+		}
+		return false, "source_cidr_mismatch"
 	}
-	return config.ContainmentMetricsExposureAllowsSource(cfg.Containment.MetricsExposure, source)
+	if config.ContainmentMetricsExposureAllowsSource(cfg.Containment.MetricsExposure, source) {
+		return true, ""
+	}
+	return false, "source_cidr_mismatch"
 }
 
 func containmentRequestSourceIP(remoteAddr string) net.IP {
@@ -106,6 +129,29 @@ func containmentRequestSourceIP(remoteAddr string) net.IP {
 		return nil
 	}
 	return net.ParseIP(host)
+}
+
+type containmentMetricsDenyReporter func(endpoint, remoteAddr, reason string)
+
+func reportContainmentMetricsRequestDenied(reporter containmentMetricsDenyReporter, endpoint, remoteAddr, reason string) {
+	if reporter != nil {
+		reporter(endpoint, remoteAddr, reason)
+	}
+}
+
+func (s *Server) reportContainmentMetricsRequestDenied(endpoint, remoteAddr, reason string) {
+	if s == nil || s.logger == nil || s.containmentMetricsDenyLog == nil || !s.containmentMetricsDenyLog.Allow() {
+		return
+	}
+	source := containmentRequestSourceIP(remoteAddr)
+	if source == nil {
+		source = net.IPv4zero
+	}
+	configured := ""
+	if cfg := s.proxy.CurrentConfig(); cfg != nil {
+		configured = cfg.MetricsListen
+	}
+	s.logger.LogContainmentMetricsDeny(endpoint, source.String(), configured, reason)
 }
 
 // reportContainmentMetricsDrift makes the degraded state visible to both the

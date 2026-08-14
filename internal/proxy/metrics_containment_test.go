@@ -29,7 +29,9 @@ import (
 // containment oracle cannot be reopened by the generic SSRF IP allowlist.
 // Each subtest reaches the same configured metrics address through a separate
 // proxy transport surface and requires the dial path to refuse it before any
-// request reaches the endpoint.
+// request reaches the endpoint. WebSocket, MCP stdio, and MCP HTTP/SSE are not
+// repeated here because their network paths converge on the same
+// ssrfSafeDialContext covered below.
 func TestConfiguredMetricsListenerBlocksMediatedAgentTraffic(t *testing.T) {
 	var hits atomic.Int64
 	metricsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -212,5 +214,32 @@ func TestConfiguredMetricsListenerDenyPrecedesGenericExceptions(t *testing.T) {
 		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 		p, _ := newMetricsProxy(t, cfg, scanner.Options{})
 		assertBlocked(t, p, t.Context(), metricsAddr)
+	})
+}
+
+func TestConfiguredWildcardMetricsListenerBlocksLocalAddressesOnNumericPort(t *testing.T) {
+	for _, listen := range []string{":09091", "0.0.0.0:9091", "[::]:9091"} {
+		t.Run(listen, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.MetricsListen = listen
+			p := &Proxy{}
+			p.ConfigPtr().Store(cfg)
+
+			err := p.blockIfConfiguredMetricsTarget(t.Context(), "127.0.0.1", "9091", net.ParseIP("127.0.0.1"))
+			var blocked *ssrfDialBlockError
+			if !errors.As(err, &blocked) || !strings.Contains(blocked.detail, "configured metrics listener") {
+				t.Fatalf("blockIfConfiguredMetricsTarget error = %T %v, want configured-metrics denial", err, err)
+			}
+		})
+	}
+
+	t.Run("different port remains available", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.MetricsListen = ":9091"
+		p := &Proxy{}
+		p.ConfigPtr().Store(cfg)
+		if err := p.blockIfConfiguredMetricsTarget(t.Context(), "127.0.0.1", "9092", net.ParseIP("127.0.0.1")); err != nil {
+			t.Fatalf("different port blocked: %v", err)
+		}
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,18 +43,20 @@ func TestContainmentMetricsRequestAllowedFailureDirections(t *testing.T) {
 		cfg        *config.Config
 		remoteAddr string
 		want       bool
+		wantReason string
 	}{
 		{name: "allowed source succeeds", cfg: newConfig(validPolicy()), remoteAddr: "192.0.2.42:49152", want: true},
-		{name: "source mismatch denies", cfg: newConfig(validPolicy()), remoteAddr: "192.0.2.43:49152"},
-		{name: "absent policy denies", cfg: newConfig(nil), remoteAddr: "192.0.2.42:49152"},
-		{name: "malformed policy denies", cfg: newConfig(&config.ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: []string{"not-a-cidr"}, Owner: "observability", Reason: "Prometheus scrape", ExpiresAt: "2026-08-15T12:00:00Z"}), remoteAddr: "192.0.2.42:49152"},
-		{name: "expired policy denies", cfg: newConfig(&config.ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: []string{"192.0.2.42/32"}, Owner: "observability", Reason: "Prometheus scrape", ExpiresAt: "2026-08-14T12:00:00Z"}), remoteAddr: "192.0.2.42:49152"},
+		{name: "source mismatch denies", cfg: newConfig(validPolicy()), remoteAddr: "192.0.2.43:49152", wantReason: "source_cidr_mismatch"},
+		{name: "absent policy denies", cfg: newConfig(nil), remoteAddr: "192.0.2.42:49152", wantReason: "malformed_live_config"},
+		{name: "malformed policy denies", cfg: newConfig(&config.ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: []string{"not-a-cidr"}, Owner: "observability", Reason: "Prometheus scrape", ExpiresAt: "2026-08-15T12:00:00Z"}), remoteAddr: "192.0.2.42:49152", wantReason: "malformed_live_config"},
+		{name: "expired policy denies", cfg: newConfig(&config.ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: []string{"192.0.2.42/32"}, Owner: "observability", Reason: "Prometheus scrape", ExpiresAt: "2026-08-14T12:00:00Z"}), remoteAddr: "192.0.2.42:49152", wantReason: "expired_policy"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := containmentMetricsRequestAllowed(tt.cfg, tt.remoteAddr, now); got != tt.want {
-				t.Fatalf("containmentMetricsRequestAllowed = %v, want %v", got, tt.want)
+			got, reason := containmentMetricsRequestDecision(tt.cfg, tt.remoteAddr, now)
+			if got != tt.want || reason != tt.wantReason {
+				t.Fatalf("containmentMetricsRequestDecision = %v, %q; want %v, %q", got, reason, tt.want, tt.wantReason)
 			}
 		})
 	}
@@ -72,7 +75,11 @@ func TestContainmentMetricsHandlersEnforceSourcePolicyAndStatsLoopback(t *testin
 		ExpiresAt:          now,
 	}
 	var metricsHits atomic.Int64
-	metricsHandler := containmentMetricsHandler(func() *config.Config { return cfg }, func() bool { return false }, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var denials []string
+	report := func(endpoint, _, reason string) {
+		denials = append(denials, endpoint+":"+reason)
+	}
+	metricsHandler := containmentMetricsHandler(func() *config.Config { return cfg }, func() bool { return false }, report, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		metricsHits.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -98,7 +105,7 @@ func TestContainmentMetricsHandlersEnforceSourcePolicyAndStatsLoopback(t *testin
 		t.Fatalf("metrics handler calls = %d, want 1", got)
 	}
 
-	statsHandler := containmentLoopbackHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	statsHandler := containmentLoopbackHandler(report, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	for _, tt := range []struct {
@@ -118,6 +125,9 @@ func TestContainmentMetricsHandlersEnforceSourcePolicyAndStatsLoopback(t *testin
 				t.Fatalf("stats status = %d, want %d", rec.Code, tt.wantStatus)
 			}
 		})
+	}
+	if got, want := denials, []string{"/metrics:source_cidr_mismatch", "/stats:non_loopback_stats"}; !slices.Equal(got, want) {
+		t.Fatalf("denial reports = %v, want %v", got, want)
 	}
 }
 
@@ -154,7 +164,14 @@ containment:
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- s.Start(ctx) }()
-	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
+	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(host)}}
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:       nil,
+			DialContext: dialer.DialContext,
+		},
+		Timeout: time.Second,
+	}
 	get := func(path string) int {
 		t.Helper()
 		status := 0

@@ -399,6 +399,7 @@ const (
 	EventLicenseExpiry          EventType = "license_expiry"
 	EventRuleBundleDegraded     EventType = "rule_bundle_degraded"
 	EventCommitmentKeyLifecycle EventType = "commitment_key_lifecycle"
+	EventContainmentMetricsDeny EventType = "containment_metrics_access_denied"
 )
 
 const responseScanExemptFullTrustEffect = "response_scanning.exempt_domains is a full-trust valve: injection scanning is disabled for ALL responses from this host, including oversized over-cap responses that stream unscanned"
@@ -1152,6 +1153,23 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventAnomaly), e.fields)
+	}
+}
+
+// LogContainmentMetricsDeny records a refused read of the containment-managed
+// observability listener. Callers pass only the parsed peer IP and fixed
+// endpoint path; request headers and metric contents are intentionally absent.
+func (l *Logger) LogContainmentMetricsDeny(endpoint, sourceIP, configuredListener, reason string) {
+	e := newLogEntry(l.zl.Warn(), EventContainmentMetricsDeny).
+		str("endpoint", endpoint).
+		str("client_ip", sourceIP).
+		str("configured_listener", configuredListener).
+		str("reason", reason).
+		str("outcome", "denied")
+	e.msg("containment metrics access denied")
+
+	if l.emitter != nil {
+		l.emitter.EmitWithSeverity(context.Background(), emit.SeverityWarn, string(EventContainmentMetricsDeny), e.fields)
 	}
 }
 

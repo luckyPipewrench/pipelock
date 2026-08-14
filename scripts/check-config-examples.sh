@@ -164,6 +164,15 @@ environment_failure_reason() {
         return
     fi
 
+    # RFC 5737 documentation addresses are valid numeric examples but are not
+    # assigned to the CI host. Skip only when runtime reached the bind and the
+    # kernel refused that exact environmental precondition.
+    if grep -qE '^[[:space:]]*metrics_listen:[[:space:]]*["'"'"']?(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)' "$cfg" \
+        && grep -qiE 'metrics_listen bind .*cannot assign requested address' "$out"; then
+        echo "placeholder listener address is unavailable"
+        return
+    fi
+
     if grep -qE '^[[:space:]-]*required:[[:space:]]*true([[:space:]]*(#.*)?)?$' "$cfg" \
         && grep -qiE '(file sentry|watch).*(failed|missing|no such file|permission denied)' "$out"; then
         echo "required resource is unavailable"

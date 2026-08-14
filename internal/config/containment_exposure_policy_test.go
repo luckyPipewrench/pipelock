@@ -129,14 +129,24 @@ func TestContainmentMetricsExposureAllowsSourceDeniesOnAnythingUnusable(t *testi
 		{"source outside every range", policy, net.ParseIP("10.20.0.99"), false},
 		{"source inside a range", policy, net.ParseIP("10.20.0.42"), true},
 		{
-			// A malformed entry is skipped rather than treated as a wildcard, and
-			// a later valid entry still decides.
+			// A malformed entry is skipped rather than treated as a wildcard and
+			// cannot open the range by itself.
 			name: "an unparsable entry does not open the range",
 			policy: &ContainmentMetricsExposure{
 				AllowedSourceCIDRs: []string{"not-a-cidr", "10.20.0.42/32"},
 			},
 			source: net.ParseIP("10.20.0.99"),
 			want:   false,
+		},
+		{
+			// Evaluation continues after a malformed entry, so a later valid
+			// entry still decides.
+			name: "a valid entry after an unparsable entry still allows",
+			policy: &ContainmentMetricsExposure{
+				AllowedSourceCIDRs: []string{"not-a-cidr", "10.20.0.42/32"},
+			},
+			source: net.ParseIP("10.20.0.42"),
+			want:   true,
 		},
 	}
 

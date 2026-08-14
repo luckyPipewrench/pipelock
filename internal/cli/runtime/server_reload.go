@@ -57,6 +57,13 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
+	if s.containmentManaged {
+		if containmentErr := validateContainmentMetricsConfig(newCfg); containmentErr != nil {
+			s.containmentMetricsDenied.Store(true)
+			s.reportContainmentMetricsDrift(newCfg, "reload", containmentErr)
+			return fmt.Errorf("rejected: invalid containment metrics configuration: %w", containmentErr)
+		}
+	}
 
 	oldCfg := s.proxy.CurrentConfig()
 	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
@@ -94,18 +101,12 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// Block metrics_listen changes via reload. The metrics server
 		// binds at startup and can't rebind at runtime.
 		if oldCfg.MetricsListen != newCfg.MetricsListen {
-			if s.containmentManaged {
-				if containmentErr := validateContainmentMetricsConfig(newCfg); containmentErr != nil {
-					s.reportContainmentMetricsDrift(newCfg, "reload", containmentErr)
-				} else {
-					_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
-						oldCfg.MetricsListen, newCfg.MetricsListen)
-				}
-			} else {
-				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
-					oldCfg.MetricsListen, newCfg.MetricsListen)
-			}
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
+				oldCfg.MetricsListen, newCfg.MetricsListen)
 			newCfg.MetricsListen = oldCfg.MetricsListen
+			if s.containmentManaged {
+				newCfg.Containment.MetricsExposure = oldCfg.Containment.MetricsExposure
+			}
 		}
 		// Block scan_api listener setting changes via reload. The Scan
 		// API server binds at startup and cannot rebind or reconfigure
@@ -491,6 +492,9 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	})
 	if !s.proxy.Reload(newCfg, newSc) {
 		return errors.New("reload failed: proxy kept previous config")
+	}
+	if s.containmentManaged {
+		s.containmentMetricsDenied.Store(false)
 	}
 	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())

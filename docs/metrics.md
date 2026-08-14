@@ -1,8 +1,8 @@
 # Metrics Reference
 
-Pipelock exposes Prometheus metrics at `/metrics` on the proxy listen port
-(default 8888). All metric names are prefixed with `pipelock_` (or
-`pipelock_learn_` for the observation-pipeline family).
+Pipelock exposes Prometheus metrics at `/metrics` on the proxy listen port (default 8888). Set `metrics_listen` to move `/metrics` and `/stats` to a dedicated address and port. All metric names are prefixed with `pipelock_` (or `pipelock_learn_` for the observation-pipeline family).
+
+Contained deployments keep the dedicated listener on loopback by default. A contained listener on another numeric address needs a current `containment.metrics_exposure` policy that lists the exact scraper source CIDRs. That policy permits `/metrics` only. `/stats` remains loopback-only because it includes blocked domains and scanner categories. See [`pipelock contain`](contain-cli.md#managed-metrics-invariant) for the required policy fields and expiry behavior.
 
 ## Scrape Configuration
 

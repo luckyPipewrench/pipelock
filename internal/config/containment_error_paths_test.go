@@ -6,6 +6,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestValidateContainmentMetricsListenRefusals covers every refusal branch.
@@ -43,21 +44,21 @@ func TestValidateContainmentMetricsListenRefusals(t *testing.T) {
 		},
 		{
 			name:       "LAN address",
-			listen:     "10.20.0.20:9091",
+			listen:     "192.0.2.20:9091",
 			wantErr:    true,
-			wantDetail: "numeric loopback address",
+			wantDetail: "metrics_exposure",
 		},
 		{
 			name:       "wildcard address",
 			listen:     "0.0.0.0:9091",
 			wantErr:    true,
-			wantDetail: "numeric loopback address",
+			wantDetail: "wildcard binds",
 		},
 		{
 			name:       "hostname rather than a numeric address",
 			listen:     "localhost:9091",
 			wantErr:    true,
-			wantDetail: "numeric loopback address",
+			wantDetail: "numeric address, not a hostname",
 		},
 		{
 			name:       "loopback on the proxy port is refused",
@@ -97,6 +98,48 @@ func TestValidateContainmentMetricsListenRefusals(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.wantDetail) {
 				t.Errorf("error %q does not carry the remediation %q; an operator reads this to know what to change",
 					err.Error(), tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestValidateContainmentMetricsExposurePolicy(t *testing.T) {
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	valid := &ContainmentMetricsExposure{
+		AllowFullMetrics:   true,
+		AllowedSourceCIDRs: []string{"192.0.2.42/32"},
+		Owner:              "observability",
+		Reason:             "Prometheus scrape",
+		ExpiresAt:          "2026-08-15T12:00:00Z",
+	}
+	tests := []struct {
+		name       string
+		policy     *ContainmentMetricsExposure
+		wantDetail string
+	}{
+		{name: "complete current policy", policy: valid},
+		{name: "absent policy", wantDetail: "requires containment.metrics_exposure"},
+		{name: "allow is not explicit", policy: &ContainmentMetricsExposure{AllowedSourceCIDRs: valid.AllowedSourceCIDRs, Owner: valid.Owner, Reason: valid.Reason, ExpiresAt: valid.ExpiresAt}, wantDetail: "allow_full_metrics"},
+		{name: "missing owner", policy: &ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: valid.AllowedSourceCIDRs, Reason: valid.Reason, ExpiresAt: valid.ExpiresAt}, wantDetail: "owner is required"},
+		{name: "missing reason", policy: &ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: valid.AllowedSourceCIDRs, Owner: valid.Owner, ExpiresAt: valid.ExpiresAt}, wantDetail: "reason is required"},
+		{name: "malformed expiry", policy: &ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: valid.AllowedSourceCIDRs, Owner: valid.Owner, Reason: valid.Reason, ExpiresAt: "tomorrow"}, wantDetail: "expires_at must use RFC3339"},
+		{name: "expired", policy: &ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: valid.AllowedSourceCIDRs, Owner: valid.Owner, Reason: valid.Reason, ExpiresAt: "2026-08-14T12:00:00Z"}, wantDetail: "expired at"},
+		{name: "malformed source CIDR", policy: &ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: []string{"not-a-cidr"}, Owner: valid.Owner, Reason: valid.Reason, ExpiresAt: valid.ExpiresAt}, wantDetail: "is invalid"},
+		{name: "source CIDR with host bits", policy: &ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: []string{"192.0.2.42/24"}, Owner: valid.Owner, Reason: valid.Reason, ExpiresAt: valid.ExpiresAt}, wantDetail: "network address"},
+		{name: "all sources", policy: &ContainmentMetricsExposure{AllowFullMetrics: true, AllowedSourceCIDRs: []string{"0.0.0.0/0"}, Owner: valid.Owner, Reason: valid.Reason, ExpiresAt: valid.ExpiresAt}, wantDetail: "must not allow every source"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateContainmentMetricsExposure("192.0.2.20:9091", 8888, tt.policy, now)
+			if tt.wantDetail == "" {
+				if err != nil {
+					t.Fatalf("ValidateContainmentMetricsExposure = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("ValidateContainmentMetricsExposure = %v, want error containing %q", err, tt.wantDetail)
 			}
 		})
 	}

@@ -407,7 +407,8 @@ type Config struct {
 	KillSwitch               KillSwitch              `yaml:"kill_switch"`
 	HealthWatchdog           HealthWatchdog          `yaml:"health_watchdog" json:"-"` // operational liveness, excluded from canonical policy hash
 	Sentry                   SentryConfig            `yaml:"sentry"`
-	MetricsListen            string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
+	MetricsListen            string                  `yaml:"metrics_listen"`       // separate listen address for /metrics and /stats
+	Containment              ContainmentConfig       `yaml:"containment" json:"-"` // containment service listener policy, excluded from request-policy hash
 	Emit                     EmitConfig              `yaml:"emit"`
 	ToolChainDetection       ToolChainDetection      `yaml:"tool_chain_detection"`
 	MCPWSListener            MCPWSListener           `yaml:"mcp_ws_listener"`

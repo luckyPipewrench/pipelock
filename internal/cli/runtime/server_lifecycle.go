@@ -682,8 +682,13 @@ func (s *Server) Start(ctx context.Context) error {
 	var metricsErr chan error
 	if cfg.MetricsListen != "" && !s.metricsDisabled {
 		metricsMux := http.NewServeMux()
-		metricsMux.Handle("/metrics", s.metrics.PrometheusHandler())
-		metricsMux.HandleFunc("/stats", s.metrics.StatsHandler())
+		if s.containmentManaged {
+			metricsMux.Handle("/metrics", containmentMetricsHandler(s.proxy.CurrentConfig, s.containmentMetricsDenied.Load, s.metrics.PrometheusHandler()))
+			metricsMux.Handle("/stats", containmentLoopbackHandler(s.metrics.StatsHandler()))
+		} else {
+			metricsMux.Handle("/metrics", s.metrics.PrometheusHandler())
+			metricsMux.HandleFunc("/stats", s.metrics.StatsHandler())
+		}
 
 		metricsLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.MetricsListen)
 		if lnErr != nil {

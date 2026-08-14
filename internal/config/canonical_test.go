@@ -97,6 +97,18 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 			mut:  func(c *Config) { c.MetricsListen = ":19997" },
 		},
 		{
+			name: "containment.metrics_exposure",
+			mut: func(c *Config) {
+				c.Containment.MetricsExposure = &ContainmentMetricsExposure{
+					AllowFullMetrics:   true,
+					AllowedSourceCIDRs: []string{"192.0.2.42/32"},
+					Owner:              "observability",
+					Reason:             "Prometheus scrape",
+					ExpiresAt:          "2026-12-01T00:00:00Z",
+				}
+			},
+		},
+		{
 			// fetch_proxy.listen is operational plumbing - rebinding the
 			// port does not change any enforcement decision. Explicitly
 			// excluded in policySemanticView so ops can move the listen

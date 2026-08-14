@@ -178,11 +178,11 @@ pipelock contain verify
 | 10 | `binary_integrity_pin` | The installed pipelock binary hash matches `/etc/pipelock/integrity/binary-pin.sha256`. |
 | 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
-| 13 | `managed_config_metrics` | The managed config keeps `metrics_listen` on a dedicated numeric loopback port. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
+| 13 | `managed_config_metrics` | The managed config keeps metrics on a dedicated numeric loopback port or verifies a current, source-scoped remote metrics exception. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
 
 ### Managed metrics invariant
 
-Containment requires `metrics_listen` to remain a numeric loopback address on a port other than the agent-accessible proxy port. Keep the key present. Removing it registers `/metrics` and `/stats` on the proxy listener, where the contained agent can reach them.
+Containment keeps `metrics_listen` on a numeric loopback address and a port other than the agent-accessible proxy port by default. Keep the key present. Removing it registers `/metrics` and `/stats` on the proxy listener, where the contained agent can reach them.
 
 Repair the managed config with a dedicated loopback listener such as:
 
@@ -191,6 +191,25 @@ metrics_listen: 127.0.0.1:9091
 ```
 
 Choose another unused non-proxy port if `9091` is unavailable. Do not delete `metrics_listen` to disable metrics.
+
+When a Prometheus server must scrape from another host, declare a short-lived exception with the listener's assigned numeric address and the exact source CIDRs that may scrape it. `allow_full_metrics` is deliberately explicit because `/metrics` contains live enforcement data. `owner` and `reason` record who accepted that exposure and why. `expires_at` uses RFC3339 and must remain in the future.
+
+```yaml
+metrics_listen: 192.0.2.20:9091
+
+containment:
+  metrics_exposure:
+    allow_full_metrics: true
+    allowed_source_cidrs:
+      - 192.0.2.42/32
+    owner: observability
+    reason: Prometheus scrape from the monitoring host
+    expires_at: 2026-12-01T00:00:00Z
+```
+
+Replace the documentation addresses with addresses assigned to the host and scraper. Wildcard and hostname binds are rejected. An absent, malformed, or expired exception denies remote metrics requests, and probe 13 fails. `/metrics` returns 403 to every source outside `allowed_source_cidrs`. `/stats` remains loopback-only because it includes blocked domains and scanner categories.
+
+The proxy also refuses to dial its configured metrics address and port. An `ssrf.ip_allowlist`, trusted domain, or grant cannot reopen this path through the agent's permitted proxy connection.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking

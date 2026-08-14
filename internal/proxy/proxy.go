@@ -3507,6 +3507,32 @@ func blockIfNonOverridableSSRFTarget(ctx context.Context, host string, ip net.IP
 	return nil
 }
 
+// blockIfConfiguredMetricsTarget keeps the contained agent from using a broad
+// SSRF exception to query the proxy's own metrics listener. This check belongs
+// in the dial path, before trusted-domain, IP-allowlist, and grant exceptions,
+// because every mediated transport that can reach an address converges here.
+func (p *Proxy) blockIfConfiguredMetricsTarget(ctx context.Context, host, port string, ip net.IP) error {
+	cfg := p.CurrentConfig()
+	if cfg == nil || cfg.MetricsListen == "" {
+		return nil
+	}
+	metricsHost, metricsPort, err := net.SplitHostPort(cfg.MetricsListen)
+	if err != nil || metricsPort != port {
+		return nil
+	}
+	metricsIP := net.ParseIP(metricsHost)
+	if metricsIP == nil || ip == nil {
+		return nil
+	}
+	if metricsV4 := metricsIP.To4(); metricsV4 != nil {
+		metricsIP = metricsV4
+	}
+	if !metricsIP.Equal(ip) {
+		return nil
+	}
+	return newSSRFDialBlockError(ctx, host, ip, fmt.Sprintf("SSRF blocked: %s:%s is the configured metrics listener", host, port))
+}
+
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	currentSc, _ := ctx.Value(ctxKeyAgentScanner).(*scanner.Scanner)
 	if currentSc == nil {
@@ -3530,6 +3556,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		// consistent with the DNS resolution path below.
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
+		}
+		if err := p.blockIfConfiguredMetricsTarget(ctx, host, port, ip); err != nil {
+			return nil, err
 		}
 		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
 			return nil, err
@@ -3561,6 +3590,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
+		}
+		if err := p.blockIfConfiguredMetricsTarget(ctx, host, port, ip); err != nil {
+			return nil, err
 		}
 		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
 			return nil, err

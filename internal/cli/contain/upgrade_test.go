@@ -145,7 +145,7 @@ func TestUpgrade_UnsafeManagedConfigRefusesBeforeMutation(t *testing.T) {
 	if !errors.Is(err, errUpgradeConfig) {
 		t.Fatalf("error = %v, want errUpgradeConfig", err)
 	}
-	if !strings.Contains(err.Error(), "dedicated port") {
+	if !strings.Contains(err.Error(), "wildcard binds") {
 		t.Fatalf("error = %q, want containment metrics remediation", err)
 	}
 	if len(calls) != 0 {

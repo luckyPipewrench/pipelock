@@ -476,6 +476,36 @@ func TestProbeManagedConfigMetrics(t *testing.T) {
 			wantDetail: "keeps metrics off",
 		},
 		{
+			name: "current metrics exposure policy passes",
+			read: func(string) ([]byte, error) {
+				return []byte("metrics_listen: 192.0.2.20:9091\ncontainment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2099-01-01T00:00:00Z\n"), nil
+			},
+			wantStatus: statusPass,
+			wantDetail: "keeps metrics off",
+		},
+		{
+			name:       "non-loopback listener without exposure policy fails",
+			read:       func(string) ([]byte, error) { return []byte("metrics_listen: 192.0.2.20:9091\n"), nil },
+			wantStatus: statusFail,
+			wantDetail: "requires containment.metrics_exposure",
+		},
+		{
+			name: "malformed metrics exposure policy fails",
+			read: func(string) ([]byte, error) {
+				return []byte("metrics_listen: 192.0.2.20:9091\ncontainment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2099-01-01T00:00:00Z\n    typo: true\n"), nil
+			},
+			wantStatus: statusFail,
+			wantDetail: "field typo not found",
+		},
+		{
+			name: "expired metrics exposure policy fails",
+			read: func(string) ([]byte, error) {
+				return []byte("metrics_listen: 192.0.2.20:9091\ncontainment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2000-01-01T00:00:00Z\n"), nil
+			},
+			wantStatus: statusFail,
+			wantDetail: "expired at",
+		},
+		{
 			name:       "wildcard listener fails",
 			read:       func(string) ([]byte, error) { return []byte("metrics_listen: 0.0.0.0:9091\n"), nil },
 			wantStatus: statusFail,

@@ -157,15 +157,15 @@ func TestNewServer_ContainmentLoopbackMetricsRemainEnabled(t *testing.T) {
 	}
 }
 
-func TestServer_ReloadContainmentUnsafeMetricsPreservesLiveListenerAndReportsCritical(t *testing.T) {
+func TestServer_ReloadContainmentUnsafeMetricsRejectsAndReportsCritical(t *testing.T) {
 	t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
 	s, stderr := newContainmentMetricsTestServer(t, "127.0.0.1:19091", "")
 	oldCfg := s.proxy.CurrentConfig()
 	newCfg := oldCfg.Clone()
 	newCfg.MetricsListen = "0.0.0.0:19092"
 
-	if err := s.Reload(newCfg); err != nil {
-		t.Fatalf("Reload: %v", err)
+	if err := s.Reload(newCfg); err == nil {
+		t.Fatal("Reload accepted an unsafe containment metrics listener")
 	}
 	if got := s.proxy.CurrentConfig().MetricsListen; got != oldCfg.MetricsListen {
 		t.Fatalf("live metrics listener = %q, want preserved %q", got, oldCfg.MetricsListen)

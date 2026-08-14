@@ -104,6 +104,10 @@ type Server struct {
 	hasApprover        bool
 	containmentManaged bool
 	metricsDisabled    bool
+	// containmentMetricsDenied is set when a containment reload presents an
+	// invalid metrics listener or policy. The bound listener stays up, but its handler
+	// denies every request until a valid policy is reloaded.
+	containmentMetricsDenied atomic.Bool
 
 	cfg          *config.Config
 	bundleResult *rules.LoadResult

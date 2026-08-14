@@ -1405,6 +1405,29 @@ When a session is at a `block_all` level, blocked retries do not refresh the ses
 
 Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, the anomaly is signaled once per window with the configured score. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own. IP-wide domain bursts are tracked separately to catch agent-identity rotation from a single client IP. When `cooperative_tool_downweight` is enabled, burst signals from known cooperative tool user agents are reduced instead of scored at full browser-like weight.
 
+## Metrics listener
+
+Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. An ordinary deployment may use its own network controls for that listener.
+
+Containment uses loopback by default. A contained runtime can expose `/metrics` on an assigned numeric non-loopback address only with this explicit, time-limited policy:
+
+```yaml
+metrics_listen: 192.0.2.20:9091
+
+containment:
+  metrics_exposure:
+    allow_full_metrics: true
+    allowed_source_cidrs:
+      - 192.0.2.42/32
+    owner: observability
+    reason: Prometheus scrape from the monitoring host
+    expires_at: 2026-12-01T00:00:00Z
+```
+
+`allowed_source_cidrs` lists the only sources that may read `/metrics`. Use exact CIDRs for the scraper hosts. Wildcard source ranges, wildcard binds, and hostname binds are rejected. `owner`, `reason`, and `expires_at` make the exception reviewable during an incident. The expiry is RFC3339 and the listener stops serving remote metrics when it passes. `/stats` remains loopback-only.
+
+The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
+
 ## Kill Switch
 
 Emergency deny-all with six independent activation sources: `enabled`,

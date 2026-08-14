@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -85,6 +86,10 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	// port and drop agent-owned traffic to other loopback ports.
 	metricsListen := strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen")))
 	proxyPort := effectiveProxyPort(mapping, env.proxyPort)
+	metricsExposure, err := containmentMetricsExposureFromMapping(mapping)
+	if err != nil {
+		return nil, nil, err
+	}
 	if metricsListen == "" {
 		// The value we are about to write gets the same check as one the
 		// operator wrote. It is a fixed port, so on a host whose proxy already
@@ -92,13 +97,13 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 		// have the installer produce a config its own runtime refuses: metrics
 		// come up disabled and the reason points at a line the operator never
 		// typed.
-		if err := config.ValidateContainmentMetricsListen(containMetricsListen, proxyPort); err != nil {
+		if err := config.ValidateContainmentMetricsExposure(containMetricsListen, proxyPort, metricsExposure, time.Now()); err != nil {
 			return nil, nil, fmt.Errorf("cannot migrate %s: the default containment metrics listener %s collides with this host's proxy port %d; "+
 				"set metrics_listen to another loopback port, or move fetch_proxy.listen: %w",
 				"metrics_listen", containMetricsListen, proxyPort, err)
 		}
 		setMappingScalar(mapping, "metrics_listen", containMetricsListen)
-	} else if err := config.ValidateContainmentMetricsListen(metricsListen, proxyPort); err != nil {
+	} else if err := config.ValidateContainmentMetricsExposure(metricsListen, proxyPort, metricsExposure, time.Now()); err != nil {
 		return nil, nil, err
 	}
 
@@ -174,10 +179,42 @@ func containServiceReadOnlyPaths(data []byte, proxyPort int) ([]string, error) {
 	if metricsListen == "" {
 		return nil, errors.New("metrics_listen must use a dedicated loopback port; rerun contain install with --config to migrate the managed config safely")
 	}
-	if err := config.ValidateContainmentMetricsListen(metricsListen, effectiveProxyPort(mapping, proxyPort)); err != nil {
+	metricsExposure, err := containmentMetricsExposureFromMapping(mapping)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.ValidateContainmentMetricsExposure(metricsListen, effectiveProxyPort(mapping, proxyPort), metricsExposure, time.Now()); err != nil {
 		return nil, err
 	}
 	return containServiceReadOnlyPathsFromMapping(mapping)
+}
+
+func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.ContainmentMetricsExposure, error) {
+	containment := mappingValue(root, "containment")
+	if containment == nil {
+		return nil, nil
+	}
+	if containment.Kind != yaml.MappingNode {
+		return nil, errors.New("containment must be a mapping")
+	}
+	exposure := mappingValue(containment, "metrics_exposure")
+	if exposure == nil {
+		return nil, nil
+	}
+	if exposure.Kind != yaml.MappingNode {
+		return nil, errors.New("containment.metrics_exposure must be a mapping")
+	}
+	data, err := yaml.Marshal(exposure)
+	if err != nil {
+		return nil, fmt.Errorf("encode containment.metrics_exposure: %w", err)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	var policy config.ContainmentMetricsExposure
+	if err := decoder.Decode(&policy); err != nil {
+		return nil, fmt.Errorf("parse containment.metrics_exposure: %w", err)
+	}
+	return &policy, nil
 }
 
 // effectiveProxyPort returns the port the contained agent can actually reach.

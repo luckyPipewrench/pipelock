@@ -188,6 +188,28 @@ func TestMigratePipelockConfigForContain_PreservesExplicitMetricsListener(t *tes
 	}
 }
 
+func TestMigratePipelockConfigForContain_PreservesApprovedMetricsExposure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	origLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == containInstallOperatorUser {
+			return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+		}
+		return origLookup(name)
+	}
+	configBody := []byte("metrics_listen: 192.0.2.20:9191\ncontainment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2099-01-01T00:00:00Z\n")
+	out, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), configBody)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, want := range []string{"192.0.2.20:9191", "metrics_exposure", "192.0.2.42/32", "observability"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestMigratePipelockConfigForContain_RejectsAgentReachableMetricsListener(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	home := t.TempDir()

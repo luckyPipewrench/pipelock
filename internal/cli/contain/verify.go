@@ -336,7 +336,7 @@ func allProbes() []probe {
 		{10, "binary_integrity_pin", "deployed and running pipelock binary match TOFU pin", probeBinaryIntegrity},
 		{11, "cc_launch_allow_list_enforced", "plk-launch rejects tools missing from the allow-list", probeCCLaunchAllowList},
 		{12, "listed_tool_targets_resolvable", "tools.list entries resolve for pipelock-agent", probeListedToolTargets},
-		{13, "managed_config_metrics", "managed config keeps metrics on a dedicated loopback port", probeManagedConfigMetrics},
+		{13, "managed_config_metrics", "managed config keeps metrics on loopback or a current, source-scoped exception", probeManagedConfigMetrics},
 	}
 }
 
@@ -766,7 +766,7 @@ directly; the operator user must still reach the internet), verify the
 deployed and running service binaries match the TOFU integrity pin written at
 install time, exercise plk-launch end-to-end with a sentinel tool to confirm
 the allow-list enforcement path actually fires, and check that the managed
-config keeps metrics on a dedicated loopback port. Pass --workspace to also
+config keeps metrics on loopback or uses a current, source-scoped exception. Pass --workspace to also
 verify that pipelock-agent can read/traverse real project directories.
 Pass --enforcement-only when another process owns the proxy lifecycle;
 that mode verifies the kernel/user/wrapper controls and the pinned file at the

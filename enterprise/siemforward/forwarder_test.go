@@ -879,6 +879,7 @@ func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = f.Close() })
 	var accepted atomic.Int32
 	var acceptedMu sync.Mutex
 	acceptedSequences := make(map[int]struct{})

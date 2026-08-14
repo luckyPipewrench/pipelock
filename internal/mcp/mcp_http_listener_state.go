@@ -619,8 +619,12 @@ func auditResetAuthorityDecision(logger *audit.Logger, resource string, decision
 
 func resetAuthorityDecisionSummary(decision ResetAuthorityDecision) string {
 	d := decision.Delegation
-	return fmt.Sprintf("MCP reset authority issuer=%q target=%q epoch=%d expiry=%d nonce=%q result=%s",
+	summary := fmt.Sprintf("MCP reset authority issuer=%q target=%q epoch=%d expiry=%d nonce=%q result=%s",
 		d.Issuer, d.Target, d.Epoch, d.ExpiresUnix, d.Nonce, decision.Result)
+	if decision.Result == ResetAuthorityWrongEpoch {
+		summary += fmt.Sprintf(" expected_epoch=%d", decision.ExpectedEpoch)
+	}
+	return summary
 }
 
 func (s *mcpListenerClientStates) touchLocked(state *mcpListenerClientState) {

@@ -65,6 +65,26 @@ func TestResetAuthorityRejectsInvalidDelegations(t *testing.T) {
 			want: ResetAuthorityUnsigned,
 		},
 		{
+			// An operator machine running ahead of the proxy mints a delegation
+			// stamped in the future. Inside the skew tolerance it must still be
+			// accepted, because refusing it strands the operator with a control
+			// they cannot reset and no way to tell why.
+			name: "future issue time within clock skew is accepted",
+			raw: func(t *testing.T) []byte {
+				issued := resetAuthorityTestNow.Add(resetDelegationClockSkew / 2)
+				return resetDelegationBytes(t, mint(t, privateKey, ResetKindDrift, target, instanceID, 7, issued, issued.Add(time.Minute), 21))
+			},
+			want: ResetAuthorityAccepted,
+		},
+		{
+			name: "issued beyond clock skew",
+			raw: func(t *testing.T) []byte {
+				issued := resetAuthorityTestNow.Add(2 * resetDelegationClockSkew)
+				return resetDelegationBytes(t, mint(t, privateKey, ResetKindDrift, target, instanceID, 7, issued, issued.Add(time.Minute), 22))
+			},
+			want: ResetAuthorityNotYetValid,
+		},
+		{
 			name: "expired",
 			raw: func(t *testing.T) []byte {
 				return resetDelegationBytes(t, mint(t, privateKey, ResetKindDrift, target, instanceID, 7, resetAuthorityTestNow.Add(-2*time.Minute), resetAuthorityTestNow.Add(-time.Minute), 2))

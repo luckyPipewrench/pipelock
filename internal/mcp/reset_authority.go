@@ -99,6 +99,13 @@ const (
 type ResetAuthorityDecision struct {
 	Result     ResetAuthorityResult
 	Delegation ResetDelegation
+	// ExpectedEpoch is the epoch the proxy required. It is reported on a
+	// mismatch because the delegation only carries the epoch the operator
+	// supplied, and echoing a wrong value back gives them nothing to correct
+	// with. The epoch advances on every accepted reset, so an operator who
+	// mints a second delegation from a stale number otherwise has no way to
+	// learn the current one short of restarting the proxy.
+	ExpectedEpoch uint64
 }
 
 // ResetAuthority keeps the live target and in-process consumed-nonce ledger.
@@ -129,7 +136,7 @@ func newResetAuthority(publicKey ed25519.PublicKey, target, instanceID string, n
 	if err := validateResetTarget(target); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("instance_id", instanceID); err != nil {
+	if err := validateResetHex("instance_id", instanceID, resetInstanceBytes); err != nil {
 		return nil, err
 	}
 	if now == nil {
@@ -176,10 +183,10 @@ func MintResetDelegation(privateKey ed25519.PrivateKey, issuer string, kind Rese
 	if err := validateResetTarget(target); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("instance_id", instanceID); err != nil {
+	if err := validateResetHex("instance_id", instanceID, resetInstanceBytes); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("nonce", nonce); err != nil {
+	if err := validateResetHex("nonce", nonce, resetNonceBytes); err != nil {
 		return ResetDelegation{}, err
 	}
 	if err := validateResetIssuer(issuer); err != nil {
@@ -241,7 +248,7 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch uint64) 
 		_ = removeResetDelegationFile(path, opened)
 		return ResetAuthorityDecision{Result: ResetAuthorityMalformed}
 	}
-	decision := ResetAuthorityDecision{Delegation: d}
+	decision := ResetAuthorityDecision{Delegation: d, ExpectedEpoch: epoch}
 	if result := a.verify(d, kind, epoch); result != ResetAuthorityAccepted {
 		decision.Result = result
 		_ = removeResetDelegationFile(path, opened)
@@ -353,10 +360,10 @@ func (d ResetDelegation) signingInput() ([]byte, error) {
 	if err := validateResetTarget(d.Target); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("instance_id", d.InstanceID); err != nil {
+	if err := validateResetHex("instance_id", d.InstanceID, resetInstanceBytes); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("nonce", d.Nonce); err != nil {
+	if err := validateResetHex("nonce", d.Nonce, resetNonceBytes); err != nil {
 		return nil, err
 	}
 	if err := validateResetIssuer(d.Issuer); err != nil {
@@ -457,9 +464,18 @@ func validateResetIssuer(issuer string) error {
 	return nil
 }
 
-func validateResetHex(label, value string) error {
+// validateResetHex checks one lowercase hex field against the exact byte length
+// its generator produced.
+//
+// The length is a parameter rather than a single shared constant because the
+// instance ID and the nonce are generated from separate constants. Validating
+// both against one of them happens to work only while the two are equal, and
+// the failure if they ever diverge is silent and total: the proxy generates an
+// instance ID it then refuses as malformed, every reset fails, and the error
+// names a field the operator never typed.
+func validateResetHex(label, value string, wantBytes int) error {
 	decoded, err := hex.DecodeString(value)
-	if err != nil || len(decoded) != resetNonceBytes || strings.ToLower(value) != value {
+	if err != nil || len(decoded) != wantBytes || strings.ToLower(value) != value {
 		return fmt.Errorf("invalid reset delegation %s", label)
 	}
 	return nil

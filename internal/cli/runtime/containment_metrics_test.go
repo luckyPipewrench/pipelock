@@ -72,13 +72,17 @@ func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) 
 	go func() { done <- s.Start(ctx) }()
 
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 200 * time.Millisecond}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+fetchListen+"/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	testwait.For(t, 2*time.Second, func() bool {
 		select {
 		case startErr := <-done:
 			t.Fatalf("Start returned before serving the proxy: %v", startErr)
 		default:
 		}
-		resp, requestErr := client.Get("http://" + fetchListen + "/health")
+		resp, requestErr := client.Do(request)
 		if requestErr != nil {
 			return false
 		}

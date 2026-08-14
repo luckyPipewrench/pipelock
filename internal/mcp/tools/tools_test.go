@@ -4,6 +4,7 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3898,5 +3899,229 @@ func TestToolDefUnmarshalJSON(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`{"name":{}}`), &td); err == nil {
 		t.Error("expected an error unmarshaling wrong-shaped JSON")
+	}
+}
+
+func TestToolBaseline_ReserveToolInventoryCommitsOnlyForwardedState(t *testing.T) {
+	baseline := NewToolBaseline()
+	defs := []ToolDef{
+		{
+			Name:        "read",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`),
+		},
+		{
+			Name:        "invalid",
+			InputSchema: json.RawMessage(`{"type":"object","properties":[]}`),
+		},
+	}
+
+	reservation, err := baseline.ReserveToolInventory([]string{"read", "invalid"}, defs)
+	if err != nil {
+		t.Fatalf("reserve first response: %v", err)
+	}
+	reservation.Release()
+	if baseline.HasBaseline() || baseline.IsKnownTool("read") {
+		t.Fatal("released response became trusted baseline state")
+	}
+
+	reservation, err = baseline.ReserveToolInventory([]string{"read", "invalid"}, defs)
+	if err != nil {
+		t.Fatalf("reserve after release: %v", err)
+	}
+	added, err := reservation.Commit(true)
+	if err != nil {
+		t.Fatalf("commit first response: %v", err)
+	}
+	if len(added) != 0 {
+		t.Fatalf("first baseline added = %v, want none", added)
+	}
+	if !baseline.HasBaseline() || !baseline.IsKnownTool("read") || !baseline.IsKnownTool("invalid") {
+		t.Fatal("committed response did not establish its full tool inventory")
+	}
+	if bindings, ok := baseline.HeaderBindings("read"); !ok || bindings["region"].HeaderName != "Region" {
+		t.Fatalf("committed read bindings = %#v ok=%v", bindings, ok)
+	}
+	if _, ok := baseline.HeaderBindings("invalid"); ok {
+		t.Fatal("invalid schema acquired a header contract")
+	}
+
+	reservation, err = baseline.ReserveToolInventory([]string{"read", "write"}, []ToolDef{{Name: "read"}, {Name: "write"}})
+	if err != nil {
+		t.Fatalf("reserve updated response: %v", err)
+	}
+	added, err = reservation.Commit(false)
+	if err != nil {
+		t.Fatalf("commit warned response: %v", err)
+	}
+	if !slices.Equal(added, []string{"write"}) {
+		t.Fatalf("updated baseline added = %v, want [write]", added)
+	}
+	if _, ok := baseline.HeaderBindings("read"); ok {
+		t.Fatal("non-clean response retained a stale header contract")
+	}
+}
+
+func TestToolBaseline_ReserveToolInventoryRejectsCompetingAndOverCapacityState(t *testing.T) {
+	baseline := NewToolBaseline()
+	first, err := baseline.ReserveToolInventory([]string{"pending"}, []ToolDef{{Name: "pending"}})
+	if err != nil {
+		t.Fatalf("reserve pending tool: %v", err)
+	}
+	if _, err := baseline.ReserveToolInventory([]string{"pending"}, []ToolDef{{Name: "pending"}}); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("duplicate in-flight reservation error = %v, want ErrBaselineCapacity", err)
+	}
+	first.Release()
+
+	known := make([]string, maxBaselineTools)
+	for i := range known {
+		known[i] = fmt.Sprintf("known-%d", i)
+	}
+	requireKnownTools(t, baseline, known)
+	if _, err := baseline.ReserveToolInventory([]string{"overflow"}, []ToolDef{{Name: "overflow"}}); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("inventory overflow error = %v, want ErrBaselineCapacity", err)
+	}
+	if baseline.IsKnownTool("overflow") {
+		t.Fatal("rejected inventory overflow changed trusted state")
+	}
+
+	headerBaseline := NewToolBaseline()
+	headerBaseline.headerBindings = make(map[string]map[string]HeaderBinding, maxBaselineTools)
+	for i := 0; i < maxBaselineTools; i++ {
+		headerBaseline.headerBindings[fmt.Sprintf("bound-%d", i)] = map[string]HeaderBinding{}
+	}
+	overflowDef := ToolDef{
+		Name:        "overflow-binding",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`),
+	}
+	if _, err := headerBaseline.ReserveToolInventory([]string{overflowDef.Name}, []ToolDef{overflowDef}); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("header-binding overflow error = %v, want ErrBaselineCapacity", err)
+	}
+	if headerBaseline.IsKnownTool(overflowDef.Name) {
+		t.Fatal("rejected header-binding overflow changed trusted inventory")
+	}
+}
+
+func TestToolBaseline_CapacityPreflightHandlesDuplicatesAndNil(t *testing.T) {
+	var nilBaseline *ToolBaseline
+	if !nilBaseline.CanTrackDefinitions([]string{"one"}) || !nilBaseline.CanAdmitKnownTools([]string{"one"}) {
+		t.Fatal("nil baseline rejected an untracked response")
+	}
+
+	baseline := NewToolBaseline()
+	baseline.hashes["known"] = "hash"
+	requireKnownTools(t, baseline, []string{"known"})
+	if !baseline.CanTrackDefinitions([]string{"known", "new", "new"}) {
+		t.Fatal("definition preflight double-counted an existing or duplicate name")
+	}
+	if !baseline.CanAdmitKnownTools([]string{"known", "new", "new"}) {
+		t.Fatal("inventory preflight double-counted an existing or duplicate name")
+	}
+
+	for i := len(baseline.hashes); i < maxBaselineTools; i++ {
+		baseline.hashes[fmt.Sprintf("hash-%d", i)] = "hash"
+	}
+	for i := len(baseline.knownTools); i < maxBaselineTools; i++ {
+		baseline.knownTools[fmt.Sprintf("tool-%d", i)] = true
+	}
+	if baseline.CanTrackDefinitions([]string{"overflow"}) || baseline.CanAdmitKnownTools([]string{"overflow"}) {
+		t.Fatal("full baseline admitted an unrepresentable name")
+	}
+}
+
+func TestScanTools_ResourceLimitResponsesFailClosed(t *testing.T) {
+	sc := testScanner(t)
+	validDef := `{"name":"overflow","description":"safe","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}`
+
+	tests := []struct {
+		name  string
+		cfg   *ToolScanConfig
+		want  string
+		input []byte
+	}{
+		{
+			name: "header binding capacity",
+			cfg: func() *ToolScanConfig {
+				baseline := NewToolBaseline()
+				baseline.headerBindings = make(map[string]map[string]HeaderBinding, maxBaselineTools)
+				for i := 0; i < maxBaselineTools; i++ {
+					baseline.headerBindings[fmt.Sprintf("bound-%d", i)] = map[string]HeaderBinding{}
+				}
+				return &ToolScanConfig{Action: "warn", Baseline: baseline}
+			}(),
+			want:  "tool_header_binding_capacity",
+			input: makeToolsResponse("[" + validDef + "]"),
+		},
+		{
+			name: "definition capacity",
+			cfg: func() *ToolScanConfig {
+				baseline := NewToolBaseline()
+				for i := 0; i < maxBaselineTools; i++ {
+					baseline.hashes[fmt.Sprintf("hash-%d", i)] = "hash"
+				}
+				return &ToolScanConfig{Action: "warn", Baseline: baseline, DetectDrift: true}
+			}(),
+			want:  "tool_definition_baseline_capacity",
+			input: makeToolsResponse("[" + validDef + "]"),
+		},
+		{
+			name: "batch retains resource-limit verdict",
+			cfg: func() *ToolScanConfig {
+				baseline := NewToolBaseline()
+				known := make([]string, maxBaselineTools)
+				for i := range known {
+					known[i] = fmt.Sprintf("known-%d", i)
+				}
+				requireKnownTools(t, baseline, known)
+				return &ToolScanConfig{Action: "warn", Baseline: baseline}
+			}(),
+			want: "tool_inventory_capacity",
+			input: makeBatchToolsResponse(
+				`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe","description":"safe"}]}}`,
+				`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"overflow","description":"safe"}]}}`,
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ScanTools(tt.input, sc, tt.cfg)
+			if result.Clean || result.ResourceLimit != tt.want {
+				t.Fatalf("resource result = %+v, want non-clean %q", result, tt.want)
+			}
+		})
+	}
+}
+
+func TestScanToolDefsReportsConcurrentCapacityExhaustion(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	for i := 0; i < maxBaselineTools; i++ {
+		baseline.hashes[fmt.Sprintf("tool-%d", i)] = "hash"
+	}
+	matches, observations, capacityExceeded, epochChanged := scanToolDefs(
+		[]ToolDef{{Name: "overflow", Description: "safe"}},
+		sc,
+		&ToolScanConfig{Action: "warn", Baseline: baseline, DetectDrift: true},
+	)
+	if len(matches) != 0 || len(observations) != 0 || !capacityExceeded || epochChanged {
+		t.Fatalf("post-preflight capacity result = matches=%v observations=%v capacity=%v epoch=%v", matches, observations, capacityExceeded, epochChanged)
+	}
+}
+
+func TestLogToolFindings_ResourceLimitAndDriftDetail(t *testing.T) {
+	var out bytes.Buffer
+	LogToolFindings(&out, 7, ToolScanResult{
+		ResourceLimit: "tool_inventory_capacity",
+		Matches: []ToolScanMatch{{
+			ToolName:      "read",
+			DriftDetected: true,
+			DriftCues:     []string{"credential"},
+			DriftDetail:   "description grew from 4 to 10 chars",
+		}},
+	})
+	for _, want := range []string{"cannot be safely inspected", "tool_inventory_capacity", "definition-drift", "introduced: credential", "description grew"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("findings output %q missing %q", out.String(), want)
+		}
 	}
 }

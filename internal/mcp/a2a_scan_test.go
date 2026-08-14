@@ -1223,6 +1223,39 @@ func TestContextTracker_EvictionAndReentry(t *testing.T) {
 	ct.mu.Unlock()
 }
 
+func TestContextTracker_EvictionBoundsAuxiliaryState(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.MaxContexts = 3
+	ct := NewContextTracker(cfg)
+	sc := testA2AScanner(t)
+
+	for i := range 50 {
+		contextID := fmt.Sprintf("context-%d", i)
+		taskID := fmt.Sprintf("task-%d", i)
+		if smuggling, reason := ct.TrackAndScan(context.Background(), contextID, taskID, []string{"benign"}, sc); smuggling {
+			t.Fatalf("context %d unexpectedly flagged smuggling: %s", i, reason)
+		}
+	}
+
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	if got := len(ct.contexts); got > cfg.MaxContexts {
+		t.Fatalf("contexts = %d, want <= %d", got, cfg.MaxContexts)
+	}
+	if got := len(ct.order); got > cfg.MaxContexts {
+		t.Fatalf("context LRU entries = %d, want <= %d", got, cfg.MaxContexts)
+	}
+	if got := len(ct.taskMap); got > cfg.MaxContexts {
+		t.Fatalf("task aliases = %d, want <= %d after context eviction", got, cfg.MaxContexts)
+	}
+	if got := len(ct.evicted); got > cfg.MaxContexts {
+		t.Fatalf("evicted markers = %d, want <= %d", got, cfg.MaxContexts)
+	}
+	if got := len(ct.evictedOrder); got > cfg.MaxContexts {
+		t.Fatalf("evicted LRU entries = %d, want <= %d", got, cfg.MaxContexts)
+	}
+}
+
 func TestContextTracker_SmugglingDetected(t *testing.T) {
 	cfg := enabledA2ACfg()
 	ct := NewContextTracker(cfg)

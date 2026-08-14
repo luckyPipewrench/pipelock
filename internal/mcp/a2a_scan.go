@@ -540,12 +540,13 @@ func applyCardSignatureVerification(result *AgentCardScanResult, body []byte, ke
 // ContextTracker maintains A2A context sessions for smuggling detection.
 // Thread-safe.
 type ContextTracker struct {
-	mu       sync.Mutex
-	contexts map[string]*contextSession
-	taskMap  map[string]string   // taskID → contextID
-	evicted  map[string]struct{} // IDs that were evicted (taint on re-entry)
-	order    []string            // LRU order of context IDs
-	cfg      *config.A2AScanning
+	mu           sync.Mutex
+	contexts     map[string]*contextSession
+	taskMap      map[string]string   // taskID → contextID
+	evicted      map[string]struct{} // bounded recent evictions (taint on re-entry)
+	order        []string            // LRU order of context IDs
+	evictedOrder []string            // LRU order of evicted IDs
+	cfg          *config.A2AScanning
 }
 
 // contextSession tracks accumulated text within a single A2A context.
@@ -658,7 +659,8 @@ func (ct *ContextTracker) getOrCreateLocked(id string) *contextSession {
 		oldest := ct.order[0]
 		ct.order = ct.order[1:]
 		delete(ct.contexts, oldest)
-		ct.evicted[oldest] = struct{}{} // track for re-entry tainting
+		ct.dropContextTasksLocked(oldest)
+		ct.markEvictedLocked(oldest, maxCtx)
 	}
 
 	sess = &contextSession{}
@@ -667,11 +669,46 @@ func (ct *ContextTracker) getOrCreateLocked(id string) *contextSession {
 	if _, wasEvicted := ct.evicted[id]; wasEvicted {
 		sess.tainted = true
 		delete(ct.evicted, id)
+		ct.removeEvictedOrderLocked(id)
 	}
 	ct.contexts[id] = sess
 	ct.order = append(ct.order, id)
 
 	return sess
+}
+
+// dropContextTasksLocked removes task aliases that cannot resolve after their
+// context is evicted. Keeping them would make MaxContexts an unbounded memory
+// claim under a stream of unique context/task pairs.
+func (ct *ContextTracker) dropContextTasksLocked(contextID string) {
+	for taskID, mappedContextID := range ct.taskMap {
+		if mappedContextID == contextID {
+			delete(ct.taskMap, taskID)
+		}
+	}
+}
+
+// markEvictedLocked preserves a bounded re-entry taint window without turning
+// the eviction history itself into an unbounded ledger.
+func (ct *ContextTracker) markEvictedLocked(contextID string, maxContexts int) {
+	if _, exists := ct.evicted[contextID]; !exists {
+		ct.evicted[contextID] = struct{}{}
+		ct.evictedOrder = append(ct.evictedOrder, contextID)
+	}
+	for len(ct.evictedOrder) > maxContexts {
+		oldest := ct.evictedOrder[0]
+		ct.evictedOrder = ct.evictedOrder[1:]
+		delete(ct.evicted, oldest)
+	}
+}
+
+func (ct *ContextTracker) removeEvictedOrderLocked(contextID string) {
+	for i, id := range ct.evictedOrder {
+		if id == contextID {
+			ct.evictedOrder = append(ct.evictedOrder[:i], ct.evictedOrder[i+1:]...)
+			return
+		}
+	}
 }
 
 // touchOrderLocked moves a context to the end of the LRU order. Must hold ct.mu.

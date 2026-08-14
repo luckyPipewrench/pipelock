@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
@@ -109,6 +110,37 @@ type ResetAuthorityDecision struct {
 	// mints a second delegation from a stale number otherwise has no way to
 	// learn the current one short of restarting the proxy.
 	ExpectedEpoch uint64
+}
+
+// ResetEpoch is the live reset generation that a delegation consumes. The
+// authority reads and advances it while holding its own nonce ledger lock, and
+// AdvanceEpoch must atomically advance only the expected generation.
+//
+// A caller must pass the one live epoch holder for its reset state. Supplying
+// an already-read integer would let distinct valid delegations race past the
+// same generation check.
+type ResetEpoch interface {
+	CurrentEpoch() uint64
+	AdvanceEpoch(expected uint64) bool
+}
+
+type resetAtomicEpoch struct {
+	epoch *atomic.Uint64
+}
+
+func newResetAtomicEpoch(epoch *atomic.Uint64) ResetEpoch {
+	if epoch == nil {
+		return nil
+	}
+	return resetAtomicEpoch{epoch: epoch}
+}
+
+func (e resetAtomicEpoch) CurrentEpoch() uint64 {
+	return e.epoch.Load()
+}
+
+func (e resetAtomicEpoch) AdvanceEpoch(expected uint64) bool {
+	return e.epoch.CompareAndSwap(expected, expected+1)
 }
 
 // ResetAuthority keeps the live target and in-process consumed-nonce ledger.
@@ -238,9 +270,14 @@ func MarshalResetDelegation(d ResetDelegation) ([]byte, error) {
 
 // ConsumeFile verifies and unlinks one delegation. Ownership and mode do not
 // confer authority: only the signature and live binding fields can authorize.
-func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch uint64) ResetAuthorityDecision {
+// The nonce check and the epoch compare-and-advance are one operation under
+// the authority lock, so a delegation epoch is spendable exactly once.
+func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch ResetEpoch) ResetAuthorityDecision {
 	if a == nil || strings.TrimSpace(path) == "" {
 		return ResetAuthorityDecision{Result: ResetAuthorityAbsent}
+	}
+	if epoch == nil {
+		return ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
 	}
 	raw, opened, err := readResetDelegationFile(path)
 	if err != nil {
@@ -251,14 +288,15 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch uint64) 
 		_ = removeResetDelegationFile(path, opened)
 		return ResetAuthorityDecision{Result: ResetAuthorityMalformed}
 	}
-	decision := ResetAuthorityDecision{Delegation: d, ExpectedEpoch: epoch}
-	if result := a.verify(d, kind, epoch); result != ResetAuthorityAccepted {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	expectedEpoch := epoch.CurrentEpoch()
+	decision := ResetAuthorityDecision{Delegation: d, ExpectedEpoch: expectedEpoch}
+	if result := a.verify(d, kind, expectedEpoch); result != ResetAuthorityAccepted {
 		decision.Result = result
 		_ = removeResetDelegationFile(path, opened)
 		return decision
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	if _, used := a.consumed[d.Nonce]; used {
 		decision.Result = ResetAuthorityReplayed
 		_ = removeResetDelegationFile(path, opened)
@@ -266,6 +304,11 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch uint64) 
 	}
 	if err := removeResetDelegationFile(path, opened); err != nil {
 		decision.Result = removeResetResult(err)
+		return decision
+	}
+	if !epoch.AdvanceEpoch(expectedEpoch) {
+		decision.Result = ResetAuthorityWrongEpoch
+		decision.ExpectedEpoch = epoch.CurrentEpoch()
 		return decision
 	}
 	a.consumed[d.Nonce] = struct{}{}

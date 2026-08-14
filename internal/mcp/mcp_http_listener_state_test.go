@@ -62,7 +62,7 @@ func TestMCPListenerClientStates_EdgeTransitions(t *testing.T) {
 	if cfg := states.toolConfig(duplicate, &tools.ToolScanConfig{DetectDrift: true}); cfg == nil {
 		t.Fatal("drift config was discarded")
 	}
-	states.resetDriftState()
+	states.upstreamToolBaseline.ResetDriftState()
 	if got := listenerAuditSessionKey("", duplicate.key); got == "" {
 		t.Fatal("state key did not produce audit fallback")
 	}

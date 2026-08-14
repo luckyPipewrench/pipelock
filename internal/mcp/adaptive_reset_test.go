@@ -54,8 +54,9 @@ func TestConsumeAdaptiveResetFileAcceptsSignedDelegationOnce(t *testing.T) {
 	authority, privateKey := newAdaptiveResetAuthority(t)
 	path := filepath.Join(t.TempDir(), "reset")
 	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, 4, strings.Repeat("b", 32))
+	epoch := resetAuthorityEpoch(4)
 	var logW bytes.Buffer
-	if got := consumeAdaptiveResetFile(path, authority, 4, &logW).Result; got != ResetAuthorityAccepted {
+	if got := consumeAdaptiveResetFile(path, authority, epoch, &logW).Result; got != ResetAuthorityAccepted {
 		t.Fatalf("consume result = %q, want accepted; log=%q", got, logW.String())
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -65,7 +66,7 @@ func TestConsumeAdaptiveResetFileAcceptsSignedDelegationOnce(t *testing.T) {
 		t.Fatalf("accepted reset was not fully audited: %q", logW.String())
 	}
 	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, 4, strings.Repeat("b", 32))
-	if got := consumeAdaptiveResetFile(path, authority, 4, &logW).Result; got != ResetAuthorityReplayed {
+	if got := consumeAdaptiveResetFile(path, authority, resetAuthorityEpoch(4), &logW).Result; got != ResetAuthorityReplayed {
 		t.Fatalf("second use result = %q, want replayed", got)
 	}
 }
@@ -85,7 +86,7 @@ func TestConsumeAdaptiveResetFileIgnoresOwnershipAndMode(t *testing.T) {
 			if err := os.Chmod(path, test.mode); err != nil {
 				t.Fatal(err)
 			}
-			if got := consumeAdaptiveResetFile(path, authority, uint64(test.mode), nil).Result; got != ResetAuthorityAccepted {
+			if got := consumeAdaptiveResetFile(path, authority, resetAuthorityEpoch(uint64(test.mode)), nil).Result; got != ResetAuthorityAccepted {
 				t.Fatalf("mode %o result = %q, want accepted", test.mode, got)
 			}
 		})

@@ -13,11 +13,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 var resetAuthorityTestNow = time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+
+func resetAuthorityEpoch(value uint64) *atomic.Uint64 {
+	var epoch atomic.Uint64
+	epoch.Store(value)
+	return &epoch
+}
 
 func TestResetAuthorityRejectsInvalidDelegations(t *testing.T) {
 	pub, privateKey, err := ed25519.GenerateKey(nil)
@@ -170,7 +178,7 @@ func TestResetAuthorityRejectsInvalidDelegations(t *testing.T) {
 			if err := os.WriteFile(path, tt.raw(t), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if got := authority.ConsumeFile(path, ResetKindDrift, 7).Result; got != tt.want {
+			if got := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(7))).Result; got != tt.want {
 				t.Fatalf("result = %q, want %q", got, tt.want)
 			}
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -203,13 +211,13 @@ func TestResetAuthorityConsumesNonceOnceAndRejectsAfterRestart(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := authority.ConsumeFile(path, ResetKindDrift, 7).Result; got != ResetAuthorityAccepted {
+	if got := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(7))).Result; got != ResetAuthorityAccepted {
 		t.Fatalf("first consume = %q, want accepted", got)
 	}
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := authority.ConsumeFile(path, ResetKindDrift, 7).Result; got != ResetAuthorityReplayed {
+	if got := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(7))).Result; got != ResetAuthorityReplayed {
 		t.Fatalf("replay consume = %q, want replayed", got)
 	}
 
@@ -220,8 +228,67 @@ func TestResetAuthorityConsumesNonceOnceAndRejectsAfterRestart(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := restarted.ConsumeFile(path, ResetKindDrift, 7).Result; got != ResetAuthorityWrongInstance {
+	if got := restarted.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(7))).Result; got != ResetAuthorityWrongInstance {
 		t.Fatalf("post-restart consume = %q, want wrong instance", got)
+	}
+}
+
+func TestResetAuthorityConsumesEpochExactlyOnceUnderConcurrentDelegations(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(publicKey, "mcp://concurrent-reset", strings.Repeat("a", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths := make([]string, 2)
+	for i := range paths {
+		paths[i] = filepath.Join(t.TempDir(), fmt.Sprintf("reset-%d", i))
+		delegation, err := MintResetDelegation(
+			privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
+			resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), fmt.Sprintf("%032x", i+1),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(paths[i], resetDelegationBytes(t, delegation), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var epoch atomic.Uint64
+	gate := make(chan struct{})
+	results := make(chan ResetAuthorityResult, len(paths))
+	var wg sync.WaitGroup
+	for _, path := range paths {
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			<-gate
+			results <- authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch)).Result
+		}(path)
+	}
+	close(gate)
+	wg.Wait()
+	close(results)
+
+	var accepted, wrongEpoch int
+	for result := range results {
+		switch result {
+		case ResetAuthorityAccepted:
+			accepted++
+		case ResetAuthorityWrongEpoch:
+			wrongEpoch++
+		default:
+			t.Fatalf("concurrent reset result = %q, want accepted or wrong_epoch", result)
+		}
+	}
+	if accepted != 1 || wrongEpoch != 1 || epoch.Load() != 1 {
+		t.Fatalf("concurrent reset accepted=%d wrong_epoch=%d epoch=%d, want 1/1/1", accepted, wrongEpoch, epoch.Load())
 	}
 }
 
@@ -503,10 +570,10 @@ func TestResetDelegationFileOperationsAreBoundedAndPathSafe(t *testing.T) {
 		t.Fatal("replacement at reset path was removed")
 	}
 
-	if decision := authority.ConsumeFile("", ResetKindDrift, 0); decision.Result != ResetAuthorityAbsent {
+	if decision := authority.ConsumeFile("", ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(0))); decision.Result != ResetAuthorityAbsent {
 		t.Fatalf("empty reset path decision = %+v", decision)
 	}
-	if decision := (*ResetAuthority)(nil).ConsumeFile(path, ResetKindDrift, 0); decision.Result != ResetAuthorityAbsent {
+	if decision := (*ResetAuthority)(nil).ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(0))); decision.Result != ResetAuthorityAbsent {
 		t.Fatalf("nil reset authority decision = %+v", decision)
 	}
 }
@@ -623,7 +690,7 @@ func TestResetAuthorityRejectsSignedOverlongDelegationAndPreservesRemovalFailure
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if decision := authority.ConsumeFile(path, ResetKindDrift, 0); decision.Result != ResetAuthorityRemoveFailed {
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(0))); decision.Result != ResetAuthorityRemoveFailed {
 		t.Fatalf("readable but non-removable reset decision = %+v", decision)
 	}
 	if _, err := os.Lstat(path); err != nil {

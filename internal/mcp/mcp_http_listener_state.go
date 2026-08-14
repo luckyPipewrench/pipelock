@@ -556,8 +556,16 @@ func (s *mcpListenerClientStates) upstreamDriftEpoch() uint64 {
 	return s.upstreamToolBaseline.DriftEpoch()
 }
 
-func (s *mcpListenerClientStates) resetDriftState() {
-	s.upstreamToolBaseline.ResetDriftState()
+type listenerDriftResetEpoch struct {
+	states *mcpListenerClientStates
+}
+
+func (e listenerDriftResetEpoch) CurrentEpoch() uint64 {
+	return e.states.upstreamDriftEpoch()
+}
+
+func (e listenerDriftResetEpoch) AdvanceEpoch(expected uint64) bool {
+	return e.states.upstreamToolBaseline.ResetDriftStateAtEpoch(expected)
 }
 
 // resetUpstreamToolDriftStateIfRequested consumes a signed operator delegation
@@ -572,11 +580,7 @@ func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *to
 		_, _ = fmt.Fprintf(logW, "pipelock: tool drift reset authority unavailable: %v\n", err)
 		return ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
 	}
-	decision := consumeToolDriftResetFile(cfg.ListenerDriftResetFile, authority, s.upstreamDriftEpoch(), logW)
-	if decision.Result == ResetAuthorityAccepted {
-		s.resetDriftState()
-	}
-	return decision
+	return consumeToolDriftResetFile(cfg.ListenerDriftResetFile, authority, listenerDriftResetEpoch{states: s}, logW)
 }
 
 func (s *mcpListenerClientStates) authorityForToolDriftReset(cfg *tools.ToolScanConfig) (*ResetAuthority, error) {

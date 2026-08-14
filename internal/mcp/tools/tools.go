@@ -547,6 +547,26 @@ func diffStringSlices(a, b []string) (added, removed []string) {
 func (tb *ToolBaseline) ResetDriftState() {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
+	tb.resetDriftStateLocked()
+}
+
+// ResetDriftStateAtEpoch clears drift state only when the requested generation
+// is still current. It makes an operator reset's generation check and advance
+// indivisible even when authorities are replaced during a listener reload.
+func (tb *ToolBaseline) ResetDriftStateAtEpoch(expected uint64) bool {
+	if tb == nil {
+		return false
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if tb.driftEpoch != expected {
+		return false
+	}
+	tb.resetDriftStateLocked()
+	return true
+}
+
+func (tb *ToolBaseline) resetDriftStateLocked() {
 	tb.driftEpoch++
 	tb.hashes = make(map[string]string)
 	tb.structural = make(map[string]string)

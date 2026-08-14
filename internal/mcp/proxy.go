@@ -239,11 +239,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// the existing escalation in place.
 		if resetFile != "" && rec != nil && opts.AdaptiveResetAuthority != nil && opts.AdaptiveResetEpoch != nil {
 			if r, ok := rec.(adaptiveResetter); ok {
-				decision := consumeAdaptiveResetFile(resetFile, opts.AdaptiveResetAuthority, opts.AdaptiveResetEpoch.Load(), logW)
+				decision := consumeAdaptiveResetFile(resetFile, opts.AdaptiveResetAuthority, opts.AdaptiveResetEpoch, logW)
 				auditResetAuthorityDecision(opts.AuditLogger, opts.AdaptiveResetAuthority.Target(), decision)
 				if decision.Result == ResetAuthorityAccepted {
 					prevScore, prevLevel := r.Reset()
-					opts.AdaptiveResetEpoch.Add(1)
 					blockAll = false
 					_, _ = fmt.Fprintf(logW,
 						"pipelock: adaptive enforcement reset by operator (score %.1f to 0, level %s to normal)\n",

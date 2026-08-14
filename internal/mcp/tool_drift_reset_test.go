@@ -17,7 +17,7 @@ func TestConsumeToolDriftResetFileAcceptsSignedDelegationOnce(t *testing.T) {
 	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindDrift, 7, strings.Repeat("1", 32))
 
 	var logW bytes.Buffer
-	if got := consumeToolDriftResetFile(path, authority, 7, &logW).Result; got != ResetAuthorityAccepted {
+	if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(7)), &logW).Result; got != ResetAuthorityAccepted {
 		t.Fatalf("consume result = %q, want accepted; log=%q", got, logW.String())
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -28,7 +28,7 @@ func TestConsumeToolDriftResetFileAcceptsSignedDelegationOnce(t *testing.T) {
 	}
 
 	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindDrift, 7, strings.Repeat("1", 32))
-	if got := consumeToolDriftResetFile(path, authority, 7, &logW).Result; got != ResetAuthorityReplayed {
+	if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(7)), &logW).Result; got != ResetAuthorityReplayed {
 		t.Fatalf("replay result = %q, want replayed", got)
 	}
 }
@@ -39,7 +39,7 @@ func TestConsumeToolDriftResetFileRejectsWrongKindAndUnreadablePath(t *testing.T
 	t.Run("wrong kind", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "drift-reset")
 		writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, 0, strings.Repeat("2", 32))
-		if got := consumeToolDriftResetFile(path, authority, 0, nil).Result; got != ResetAuthorityWrongKind {
+		if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(0)), nil).Result; got != ResetAuthorityWrongKind {
 			t.Fatalf("wrong kind result = %q, want wrong_kind", got)
 		}
 	})
@@ -52,7 +52,7 @@ func TestConsumeToolDriftResetFileRejectsWrongKindAndUnreadablePath(t *testing.T
 		if err := os.Symlink(target, path); err != nil {
 			t.Fatal(err)
 		}
-		if got := consumeToolDriftResetFile(path, authority, 0, nil).Result; got != ResetAuthorityUnreadable {
+		if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(0)), nil).Result; got != ResetAuthorityUnreadable {
 			t.Fatalf("symlink result = %q, want unreadable", got)
 		}
 		if _, err := os.Lstat(path); err != nil {

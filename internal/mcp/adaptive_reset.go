@@ -3,7 +3,10 @@
 
 package mcp
 
-import "io"
+import (
+	"io"
+	"sync/atomic"
+)
 
 // adaptiveResetter clears one adaptive-enforcement session without importing
 // the proxy package into MCP.
@@ -13,15 +16,15 @@ type adaptiveResetter interface {
 
 // consumeAdaptiveResetFile and consumeToolDriftResetFile deliberately share
 // the same signed-delegation gate. File owner and mode are no longer authority.
-func consumeAdaptiveResetFile(path string, authority *ResetAuthority, epoch uint64, logW io.Writer) ResetAuthorityDecision {
-	return consumeMCPResetDelegation(path, authority, ResetKindAdaptive, epoch, logW)
+func consumeAdaptiveResetFile(path string, authority *ResetAuthority, epoch *atomic.Uint64, logW io.Writer) ResetAuthorityDecision {
+	return consumeMCPResetDelegation(path, authority, ResetKindAdaptive, newResetAtomicEpoch(epoch), logW)
 }
 
-func consumeToolDriftResetFile(path string, authority *ResetAuthority, epoch uint64, logW io.Writer) ResetAuthorityDecision {
+func consumeToolDriftResetFile(path string, authority *ResetAuthority, epoch ResetEpoch, logW io.Writer) ResetAuthorityDecision {
 	return consumeMCPResetDelegation(path, authority, ResetKindDrift, epoch, logW)
 }
 
-func consumeMCPResetDelegation(path string, authority *ResetAuthority, kind ResetKind, epoch uint64, logW io.Writer) ResetAuthorityDecision {
+func consumeMCPResetDelegation(path string, authority *ResetAuthority, kind ResetKind, epoch ResetEpoch, logW io.Writer) ResetAuthorityDecision {
 	if authority == nil {
 		return ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
 	}

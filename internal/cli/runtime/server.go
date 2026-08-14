@@ -667,6 +667,14 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		_, _ = fmt.Fprintf(opts.Stderr, "  Envelope: enabled (mediation envelopes injected)\n")
 	}
 
+	// A containment refusal has to reach the proxy's own routes too. Skipping
+	// the dedicated listener alone leaves /metrics and /stats served on the
+	// proxy port whenever metrics_listen is empty, which is the address the
+	// contained agent can reach, while startup reports metrics disabled.
+	if s.metricsDisabled {
+		proxyOpts = append(proxyOpts, proxy.WithMetricsSuppressed())
+	}
+
 	p, pErr := proxy.New(cfg, logger, sc, m, proxyOpts...)
 	if pErr != nil {
 		s.cleanup()

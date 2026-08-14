@@ -178,7 +178,7 @@ pipelock contain verify
 | 10 | `binary_integrity_pin` | The installed pipelock binary hash matches `/etc/pipelock/integrity/binary-pin.sha256`. |
 | 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
-| 13 | `managed_config_metrics` | The managed config keeps `metrics_listen` on a dedicated numeric loopback port. It skips when the config cannot be read and reports unknown for other read failures. |
+| 13 | `managed_config_metrics` | The managed config keeps `metrics_listen` on a dedicated numeric loopback port. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
 
 ### Managed metrics invariant
 

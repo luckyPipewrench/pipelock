@@ -129,3 +129,34 @@ func TestPreflightUpgradeManagedConfigAcceptsACompliantHost(t *testing.T) {
 		t.Fatalf("preflight refused a compliant host: %v", err)
 	}
 }
+
+// TestPreflightUpgradeManagedConfigRefusesAConfigThatChangedMidCheck pins the
+// re-read that makes the two inspections describe the same file.
+//
+// Preflight validates bytes it already holds, then has the deployed binary
+// check the same path. If the file changes in between, neither verdict
+// describes what the service will load, and the upgrade would proceed on a
+// config nothing actually approved. The binary is compared across the same
+// window; this is the config half of that pair.
+func TestPreflightUpgradeManagedConfigRefusesAConfigThatChangedMidCheck(t *testing.T) {
+	env := testUpgradeEnv(t)
+	if err := writeFileAtomic(env.configPath, []byte("metrics_listen: 127.0.0.1:9091\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		// Stand in for anything that rewrites the managed config while the
+		// deployed binary is checking it.
+		if err := writeFileAtomic(env.configPath, []byte("metrics_listen: 0.0.0.0:9091\n"), 0o600); err != nil {
+			return "", 1, err
+		}
+		return "Config validation: OK", 0, nil
+	}
+
+	err := preflightUpgradeManagedConfig(context.Background(), env)
+	if err == nil {
+		t.Fatal("preflight accepted a config that changed during its own validation")
+	}
+	if !strings.Contains(err.Error(), "changed during its own validation") {
+		t.Errorf("error = %q, want it to name the mid-check change", err.Error())
+	}
+}

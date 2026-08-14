@@ -16,6 +16,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/hex"
@@ -541,15 +542,52 @@ func upgradePostVerify(ctx context.Context, env *upgradeEnv) error {
 // A missing unit is an error rather than a skip: this command is upgrading a
 // containment-managed host, and one without a unit is not in the state the rest of
 // the upgrade assumes.
+// unitHasActiveContainmentMarker reports whether the unit already carries the
+// marker somewhere systemd will actually read it.
+//
+// A plain substring search is wrong in the unsafe direction. systemd applies
+// Environment= only inside [Service], so the same text sitting in [Unit], in
+// [Install], or in a comment means nothing at runtime. Treating it as present
+// would skip the insertion and leave the host unguarded while the upgrade
+// reported success, which is the exact failure this migration exists to fix.
+func unitHasActiveContainmentMarker(body, marker string) bool {
+	section := ""
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		if section == "Service" && line == marker {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureContainmentMarkerInUnit(env *upgradeEnv) error {
 	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
+
+	// This is a root-privileged write to a path under /etc, so refuse anything
+	// that is not a plain file before touching it. A symlink here would
+	// redirect the write to a target of someone else's choosing.
+	if info, err := env.lstat(env.unitPath); err != nil {
+		return fmt.Errorf("inspect service unit %s: %w", env.unitPath, err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("service unit %s is a symlink; refusing privileged write", env.unitPath)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("service unit %s is not a regular file; refusing privileged write", env.unitPath)
+	}
 
 	current, err := env.readFile(env.unitPath)
 	if err != nil {
 		return fmt.Errorf("read service unit %s: %w", env.unitPath, err)
 	}
 	body := string(current)
-	if strings.Contains(body, marker) {
+	if unitHasActiveContainmentMarker(body, marker) {
 		return nil
 	}
 
@@ -567,7 +605,7 @@ func ensureContainmentMarkerInUnit(env *upgradeEnv) error {
 		return fmt.Errorf("service unit %s has no [Service] section; refusing to guess where the containment marker belongs", env.unitPath)
 	}
 
-	if err := env.writeFile(env.unitPath, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+	if err := env.writeFile(env.unitPath, []byte(strings.Join(out, "\n")), modeUnitFile); err != nil {
 		return fmt.Errorf("write service unit %s: %w", env.unitPath, err)
 	}
 	_, _ = fmt.Fprintf(env.out, "  containment marker added to %s\n", env.unitPath)
@@ -609,6 +647,19 @@ func preflightUpgradeManagedConfig(ctx context.Context, env *upgradeEnv) error {
 	}
 	if binaryHashAfter != binaryHashBefore {
 		return errors.New("deployed binary changed during managed config check")
+	}
+	// The config gets the same treatment as the binary above. Two separate
+	// things inspected this file, the containment validator on bytes already in
+	// memory and the deployed binary on the path, so a config that changed in
+	// between would mean neither verdict describes the file the service is
+	// about to load. Comparing the bytes does not make the sequence atomic, but
+	// it turns a silent disagreement into a refusal.
+	dataAfter, err := env.readFile(configPath)
+	if err != nil {
+		return fmt.Errorf("re-read managed config %s after config check: %w", configPath, err)
+	}
+	if !bytes.Equal(dataAfter, data) {
+		return fmt.Errorf("managed config %s changed during its own validation; refusing to upgrade against a config neither check describes", configPath)
 	}
 	return nil
 }

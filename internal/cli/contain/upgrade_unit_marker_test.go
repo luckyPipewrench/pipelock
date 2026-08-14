@@ -80,6 +80,42 @@ func TestEnsureContainmentMarkerInUnitMigratesALegacyUnit(t *testing.T) {
 	}
 }
 
+// TestEnsureContainmentMarkerInUnitIgnoresAMarkerSystemdWouldNotApply covers the
+// direction a substring search gets wrong.
+//
+// systemd applies Environment= only inside [Service]. The same text in [Unit],
+// [Install], or a comment does nothing at runtime, so treating it as present
+// skips the insertion and leaves the host unguarded while the upgrade reports
+// success.
+func TestEnsureContainmentMarkerInUnitIgnoresAMarkerSystemdWouldNotApply(t *testing.T) {
+	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"marker in [Unit]", "[Unit]\nDescription=Pipelock\n" + marker + "\n\n[Service]\nType=simple\n"},
+		{"marker in [Install]", "[Service]\nType=simple\n\n[Install]\n" + marker + "\n"},
+		{"marker only in a comment", "[Service]\nType=simple\n# migrated from " + marker + "\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env, unit := unitEnv(t, tt.body)
+			if err := ensureContainmentMarkerInUnit(env); err != nil {
+				t.Fatalf("ensureContainmentMarkerInUnit: %v", err)
+			}
+			updated, err := os.ReadFile(filepath.Clean(unit))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !unitHasActiveContainmentMarker(string(updated), marker) {
+				t.Errorf("no active [Service] marker was added; systemd would not apply the one already present:\n%s", updated)
+			}
+		})
+	}
+}
+
 func TestEnsureContainmentMarkerInUnitIsIdempotent(t *testing.T) {
 	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
 	current := strings.Replace(legacyUnitWithoutMarker, "[Service]\n", "[Service]\n"+marker+"\n", 1)
@@ -133,8 +169,47 @@ func TestEnsureContainmentMarkerInUnitRefusesAnUnusableUnit(t *testing.T) {
 		if err == nil {
 			t.Fatal("a missing unit was accepted; this command upgrades a containment-managed host")
 		}
-		if !strings.Contains(err.Error(), "read service unit") {
-			t.Errorf("error = %q, want it to name the unread unit", err.Error())
+		if !strings.Contains(err.Error(), "inspect service unit") {
+			t.Errorf("error = %q, want it to name the unit it could not inspect", err.Error())
+		}
+	})
+
+	t.Run("symlinked unit", func(t *testing.T) {
+		env, unit := unitEnv(t, "")
+		target := filepath.Join(filepath.Dir(unit), "elsewhere.service")
+		if err := os.WriteFile(target, []byte(legacyUnitWithoutMarker), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, unit); err != nil {
+			t.Fatal(err)
+		}
+		err := ensureContainmentMarkerInUnit(env)
+		if err == nil {
+			t.Fatal("a symlinked unit was accepted; a root write would land wherever the link points")
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("error = %q, want it to say it refused a symlink", err.Error())
+		}
+		after, readErr := os.ReadFile(filepath.Clean(target))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(after) != legacyUnitWithoutMarker {
+			t.Error("the symlink target was modified; the refusal must happen before any write")
+		}
+	})
+
+	t.Run("unit path is a directory", func(t *testing.T) {
+		env, unit := unitEnv(t, "")
+		if err := os.MkdirAll(unit, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		err := ensureContainmentMarkerInUnit(env)
+		if err == nil {
+			t.Fatal("a directory was accepted as a service unit")
+		}
+		if !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("error = %q, want it to say the path is not a regular file", err.Error())
 		}
 	})
 

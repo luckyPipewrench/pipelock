@@ -54,6 +54,21 @@ func TestValidateContainmentMetricsConfigRefusals(t *testing.T) {
 			wantDetail: "parse fetch_proxy.listen port",
 		},
 		{
+			// Split out from the parse failure above: a port that parses but
+			// cannot be listened on is a different fault and says so, rather
+			// than being reported as an unparsable one.
+			name: "proxy port outside the valid range",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.ApplyDefaults()
+				c.FetchProxy.Listen = "127.0.0.1:70000"
+				c.MetricsListen = "127.0.0.1:9091"
+				return c
+			}(),
+			wantErr:    true,
+			wantDetail: "out of range",
+		},
+		{
 			name: "metrics on the proxy port",
 			cfg: func() *config.Config {
 				c := config.Defaults()

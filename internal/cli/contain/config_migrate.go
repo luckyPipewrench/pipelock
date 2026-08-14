@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -84,7 +86,7 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	metricsListen := strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen")))
 	if metricsListen == "" {
 		setMappingScalar(mapping, "metrics_listen", containMetricsListen)
-	} else if err := config.ValidateContainmentMetricsListen(metricsListen, env.proxyPort); err != nil {
+	} else if err := config.ValidateContainmentMetricsListen(metricsListen, effectiveProxyPort(mapping, env.proxyPort)); err != nil {
 		return nil, nil, err
 	}
 
@@ -160,10 +162,42 @@ func containServiceReadOnlyPaths(data []byte, proxyPort int) ([]string, error) {
 	if metricsListen == "" {
 		return nil, errors.New("metrics_listen must use a dedicated loopback port; rerun contain install with --config to migrate the managed config safely")
 	}
-	if err := config.ValidateContainmentMetricsListen(metricsListen, proxyPort); err != nil {
+	if err := config.ValidateContainmentMetricsListen(metricsListen, effectiveProxyPort(mapping, proxyPort)); err != nil {
 		return nil, err
 	}
 	return containServiceReadOnlyPathsFromMapping(mapping)
+}
+
+// effectiveProxyPort returns the port the contained agent can actually reach.
+//
+// The caller passes the installer's port, which is the default on almost every
+// host and therefore right almost every time. On a host that configures its own
+// fetch_proxy.listen it is wrong, and wrong in the permissive direction: the
+// check would compare the metrics listener against 8888 while the agent reaches
+// the proxy somewhere else, so a metrics_listen equal to the real proxy port
+// passes here and is refused by the runtime. Reading the port out of the same
+// config being validated keeps every caller agreeing with the runtime.
+//
+// The passed port remains the fallback, because a config that omits
+// fetch_proxy.listen genuinely runs on the installer's port.
+func effectiveProxyPort(mapping *yaml.Node, fallback int) int {
+	fetchProxy := getMappingPath(mapping, []string{"fetch_proxy"})
+	if fetchProxy == nil {
+		return fallback
+	}
+	listen := strings.TrimSpace(scalarValue(mappingValue(fetchProxy, "listen")))
+	if listen == "" {
+		return fallback
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(port)
+	if err != nil || parsed < 1 || parsed > 65535 {
+		return fallback
+	}
+	return parsed
 }
 
 func containServiceReadOnlyPathsFromMapping(root *yaml.Node) ([]string, error) {

@@ -31,8 +31,11 @@ func validateContainmentMetricsConfig(cfg *config.Config) error {
 		return fmt.Errorf("parse fetch_proxy.listen %q for containment metrics policy: %w", cfg.FetchProxy.Listen, err)
 	}
 	proxyPort, err := strconv.Atoi(port)
-	if err != nil || proxyPort < 1 || proxyPort > 65535 {
-		return fmt.Errorf("parse fetch_proxy.listen port %q for containment metrics policy", port)
+	if err != nil {
+		return fmt.Errorf("parse fetch_proxy.listen port %q for containment metrics policy: %w", port, err)
+	}
+	if proxyPort < 1 || proxyPort > 65535 {
+		return fmt.Errorf("fetch_proxy.listen port %d is out of range for containment metrics policy", proxyPort)
 	}
 	return config.ValidateContainmentMetricsListen(cfg.MetricsListen, proxyPort)
 }

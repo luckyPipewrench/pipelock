@@ -383,6 +383,7 @@ type Proxy struct {
 	shieldEngine         *shield.Engine                        // browser shield HTML/JS rewriter (nil = not initialized)
 	frozenTools          *FrozenToolRegistry                   // frozen tool inventories for airlock hard tier
 	wd                   *health.Watchdog                      // wedge-detection watchdog (nil = disabled)
+	metricsSuppressed    bool                                  // never publish /metrics or /stats on this listener
 	probeInflight        atomic.Bool                           // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
 }
 
@@ -464,6 +465,22 @@ func WithEnvelopeEmitter(e *envelope.Emitter) Option {
 // cfg.HealthWatchdog.Enabled is false.
 func WithHealthWatchdog(wd *health.Watchdog) Option {
 	return func(p *Proxy) { p.wd = wd }
+}
+
+// WithMetricsSuppressed stops the proxy publishing /metrics and /stats on its
+// own listener.
+//
+// The proxy serves those two routes itself only when metrics_listen is empty,
+// which normally means "no dedicated port, so use this one". A contained
+// runtime that refuses an unsafe metrics configuration reaches the same empty
+// value by a different route, and there the fallback is exactly wrong: the
+// proxy port is the one the contained agent can reach, so falling back hands
+// the agent the endpoints the refusal was meant to withhold.
+//
+// The caller decides, because only the caller knows which of those two
+// situations produced the empty value.
+func WithMetricsSuppressed() Option {
+	return func(p *Proxy) { p.metricsSuppressed = true }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -3658,8 +3675,11 @@ func (p *Proxy) buildMux() *http.ServeMux {
 	mux.HandleFunc("/ws", p.handleWebSocket)
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.HandleFunc(envelope.WellKnownPath, p.handleEnvelopeDirectory)
-	// Register metrics/stats only when NOT running on a separate port.
-	if cfg.MetricsListen == "" {
+	// Register metrics/stats only when NOT running on a separate port, and
+	// never when the caller suppressed them. An empty metrics_listen means
+	// "serve them here" for an ordinary deployment and "refuse to serve them
+	// at all" for a contained one; see WithMetricsSuppressed.
+	if cfg.MetricsListen == "" && !p.metricsSuppressed {
 		mux.Handle("/metrics", p.metrics.PrometheusHandler())
 		mux.HandleFunc("/stats", p.metrics.StatsHandler())
 	}
@@ -3800,8 +3820,10 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 	}()
 
 	// Warn if listen address exposes metrics/stats to the network.
-	// Skip when metrics_listen is set - metrics are on a separate port.
-	if cfg.MetricsListen == "" {
+	// Skip when metrics_listen is set - metrics are on a separate port - and
+	// when they are suppressed, since then this listener serves neither route
+	// and the warning would name an exposure that does not exist.
+	if cfg.MetricsListen == "" && !p.metricsSuppressed {
 		if host, _, splitErr := net.SplitHostPort(listenAddr); splitErr == nil {
 			ip := net.ParseIP(host)
 			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {

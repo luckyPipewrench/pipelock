@@ -97,6 +97,13 @@ func TestConsumeAdaptiveResetFileIgnoresOwnershipAndMode(t *testing.T) {
 	}
 }
 
+func TestConsumeMCPResetDelegationRejectsMissingAuthority(t *testing.T) {
+	decision := consumeMCPResetDelegation(filepath.Join(t.TempDir(), "reset"), nil, ResetKindAdaptive, newResetAtomicEpoch(resetAuthorityEpoch(0)), io.Discard)
+	if decision.Result != ResetAuthorityUnreadable {
+		t.Fatalf("missing authority decision = %+v, want unreadable", decision)
+	}
+}
+
 // resettableRecorder is a mockRecorder that also satisfies adaptiveResetter, so
 // ForwardScanned can clear its escalation when the operator reset file appears.
 type resettableRecorder struct {

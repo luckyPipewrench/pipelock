@@ -332,6 +332,25 @@ func TestResetAuthorityRejectsDelegationAfterEpochAdvances(t *testing.T) {
 	}
 }
 
+func TestResetAuthorityRejectsMissingEpoch(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(publicKey, "mcp://missing-epoch", strings.Repeat("a", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch := newResetAtomicEpoch(nil); epoch != nil {
+		t.Fatal("nil atomic epoch produced a reset epoch")
+	}
+	if decision := authority.ConsumeFile(filepath.Join(t.TempDir(), "reset"), ResetKindDrift, nil); decision.Result != ResetAuthorityUnreadable {
+		t.Fatalf("missing epoch decision = %+v, want unreadable", decision)
+	}
+}
+
 func TestResetAuthorityEvictsExpiredNonceWithoutPermittingExpiredReplay(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {

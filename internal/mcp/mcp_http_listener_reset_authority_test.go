@@ -340,3 +340,60 @@ func TestMCPListenerReloadDisablingResetAuthorityRejectsInFlightDelegation(t *te
 		t.Fatalf("disabled authority delegation advanced epoch to %d, want 0", got)
 	}
 }
+
+func TestListenerDriftResetEpochReportsReplacementAuthorityBinding(t *testing.T) {
+	oldPublicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := newMCPListenerClientStates(nil)
+	oldCfg := &tools.ToolScanConfig{
+		DetectDrift:                          true,
+		ListenerDriftResetFile:               filepath.Join(t.TempDir(), "old-reset"),
+		ListenerDriftResetAuthorityPublicKey: oldPublicKey,
+		ListenerDriftResetTarget:             "mcp://listener-before-replacement",
+	}
+	oldAuthority, err := states.authorityForToolDriftReset(oldCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentPublicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentCfg := &tools.ToolScanConfig{
+		DetectDrift:                          true,
+		ListenerDriftResetFile:               filepath.Join(t.TempDir(), "current-reset"),
+		ListenerDriftResetAuthorityPublicKey: currentPublicKey,
+		ListenerDriftResetTarget:             "mcp://listener-after-replacement",
+	}
+	currentAuthority, err := states.authorityForToolDriftReset(currentCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	epoch := listenerDriftResetEpoch{states: states, authority: oldAuthority, resetFile: oldCfg.ListenerDriftResetFile}
+	if epoch.AdvanceEpoch(0) {
+		t.Fatal("replaced authority advanced the listener epoch")
+	}
+	target, instanceID, gotEpoch := epoch.CurrentBinding()
+	if target != currentAuthority.Target() || instanceID != currentAuthority.InstanceID() || gotEpoch != 0 {
+		t.Fatalf("current replacement binding = %q/%q/%d, want %q/%q/0", target, instanceID, gotEpoch, currentAuthority.Target(), currentAuthority.InstanceID())
+	}
+}
+
+func TestListenerDriftResetEpochFailsClosedWhenReloadConfigIsInvalid(t *testing.T) {
+	states := newMCPListenerClientStates(nil)
+	states.resetAuthorityToolCfgFn = func() *tools.ToolScanConfig {
+		return &tools.ToolScanConfig{
+			DetectDrift:                          true,
+			ListenerDriftResetFile:               filepath.Join(t.TempDir(), "reset"),
+			ListenerDriftResetAuthorityPublicKey: []byte("wrong-length"),
+			ListenerDriftResetTarget:             "mcp://listener-invalid-reload",
+		}
+	}
+	target, instanceID, epoch := (listenerDriftResetEpoch{states: states}).CurrentBinding()
+	if target != "" || instanceID != "" || epoch != 0 {
+		t.Fatalf("invalid reload binding = %q/%q/%d, want empty/empty/0", target, instanceID, epoch)
+	}
+}

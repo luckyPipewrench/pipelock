@@ -527,7 +527,11 @@ func readBoundedLine(r *bufio.Reader, limit int) (line []byte, overLimit bool, e
 	var buf []byte
 	for {
 		chunk, readErr := r.ReadSlice('\n')
-		if len(buf)+len(chunk) > limit {
+		// The limit bounds the RECORD, not the record plus its terminator.
+		// Counting the newline would reject a record of exactly limit content
+		// bytes, which is a legal record, and reject it differently depending on
+		// whether the sender used LF or CRLF.
+		if terminatedLen(buf, chunk) > limit {
 			overLimit = true
 			// Keep draining to the newline so the next read starts at a record
 			// boundary rather than mid-record.
@@ -543,6 +547,20 @@ func readBoundedLine(r *bufio.Reader, limit int) (line []byte, overLimit bool, e
 		}
 		return trimTrailingNewline(buf), overLimit, nil
 	}
+}
+
+// terminatedLen reports the content length of buf plus chunk, excluding a
+// trailing line terminator on chunk. Both LF and CRLF are excluded so the two
+// line endings admit the same maximum record.
+func terminatedLen(buf, chunk []byte) int {
+	n := len(buf) + len(chunk)
+	if bytes.HasSuffix(chunk, []byte("\n")) {
+		n--
+		if bytes.HasSuffix(chunk, []byte("\r\n")) {
+			n--
+		}
+	}
+	return n
 }
 
 func trimTrailingNewline(b []byte) []byte {

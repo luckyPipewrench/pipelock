@@ -136,15 +136,30 @@ func TestExternalTransferFileDirective(t *testing.T) {
 // copy of the filename vocabulary would drift, and the two phrasings would disagree
 // about the same file again.
 func TestExternalTransferFileDirectiveUsesTheSharedFilenameVocabulary(t *testing.T) {
-	for _, name := range []string{".env", ".env.production", "id_rsa", "credentials", "secrets.json"} {
-		if !externalTransferSensitiveFilenameRE.MatchString(name) {
-			t.Errorf("%q is not on the shared sensitive-filename list; the prose arm and the command form would disagree about it", name)
-		}
+	tests := []struct {
+		name      string
+		onTheList bool
+	}{
+		{".env", true},
+		{".env.production", true},
+		{"id_rsa", true},
+		{"credentials", true},
+		{"secrets.json", true},
+		{"README.md", false},
+		{"config.yaml", false},
+		{"main.go", false},
 	}
-	for _, name := range []string{"README.md", "config.yaml", "main.go"} {
-		if externalTransferSensitiveFilenameRE.MatchString(name) {
-			t.Errorf("%q is on the sensitive-filename list; ordinary project files must not be", name)
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := externalTransferSensitiveFilenameRE.MatchString(tt.name)
+			switch {
+			case tt.onTheList && !got:
+				t.Errorf("%q is not on the shared sensitive-filename list; the prose arm and the command form would disagree about it", tt.name)
+			case !tt.onTheList && got:
+				t.Errorf("%q is on the sensitive-filename list; ordinary project files must not be", tt.name)
+			}
+		})
 	}
 }
 
@@ -158,18 +173,33 @@ func TestExternalTransferFileDirectiveUsesTheSharedFilenameVocabulary(t *testing
 // turns the check off. An operator who legitimately uploads an example file
 // suppresses the pattern for that destination, which is narrower and stays visible.
 func TestSensitiveTransferFilenameKeepsTheWholeEnvFamily(t *testing.T) {
-	for _, name := range []string{
-		".env", ".env.local", ".env.production",
-		".env.example", ".env.sample", ".env.template", ".env.dist",
-		"id_rsa", "credentials",
-	} {
-		if !isSensitiveTransferFilename(name) {
-			t.Errorf("%q is not treated as sensitive; no filename may exempt itself from this check", name)
-		}
+	tests := []struct {
+		name      string
+		sensitive bool
+	}{
+		{".env", true},
+		{".env.local", true},
+		{".env.production", true},
+		{".env.example", true},
+		{".env.sample", true},
+		{".env.template", true},
+		{".env.dist", true},
+		{"id_rsa", true},
+		{"credentials", true},
+		{"README.md", false},
+		{"config.yaml", false},
+		{"main.go", false},
 	}
-	for _, name := range []string{"README.md", "config.yaml", "main.go"} {
-		if isSensitiveTransferFilename(name) {
-			t.Errorf("%q is treated as sensitive; ordinary project files must not be", name)
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSensitiveTransferFilename(tt.name)
+			switch {
+			case tt.sensitive && !got:
+				t.Errorf("%q is not treated as sensitive; no filename may exempt itself from this check", tt.name)
+			case !tt.sensitive && got:
+				t.Errorf("%q is treated as sensitive; ordinary project files must not be", tt.name)
+			}
+		})
 	}
 }

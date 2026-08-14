@@ -839,6 +839,14 @@ Key-free evidence capture:
 				}
 			}
 
+			// A wrapped same-UID MCP server must not be able to recover proxy
+			// environment values through /proc/<ppid>/environ. This runs before
+			// any wrapped subprocess starts. It is not an authority mechanism:
+			// a bearer credential remains insufficient for operator-only reset.
+			if err := mcp.HardenProxyProcess(); err != nil {
+				return fmt.Errorf("harden MCP proxy process: %w", err)
+			}
+
 			// Validate upstream URL scheme.
 			var isWSUpstream bool
 			if hasUpstream {

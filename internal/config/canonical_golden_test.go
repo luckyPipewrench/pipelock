@@ -316,7 +316,8 @@ const (
 	// Re-bumped for airlock.triggers.anomaly_window_minutes default 0:
 	// the reserved window is now rejected when nonzero, so the default
 	// cannot stay at the previous inert 5.
-	goldenHashDefaults = "b30392fd23d378ddb33ba25884b54ad0c419cf91c3d6f5b33e8c51b8570a2990"
+	// Re-bumped for New Instructions authority/action context narrowing.
+	goldenHashDefaults = "d7a337543e86a3e00f1bfbc1ad0ed1a5262f3dbdb54387507d45fa8a49098a3b"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -470,7 +471,8 @@ const (
 	// Re-bumped for cookie query keys plus curl/wget upload-form coverage.
 	// Re-bumped for URL-first curl and wget upload-command coverage.
 	// Re-bumped for natural-language password and private-key transfers.
-	goldenHashRichConfig = "3b8492e676ab7527987ad8fccf4be9375015b785108c8852893fccc2f7fa5ddc"
+	// Re-bumped for New Instructions authority/action context narrowing.
+	goldenHashRichConfig = "d58e393ec6c742bd8a8060f9b1d60c50cc9d4657541e0a3b834effb9606710bb"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

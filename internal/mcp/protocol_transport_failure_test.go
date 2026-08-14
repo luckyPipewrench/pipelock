@@ -425,13 +425,17 @@ func TestA2AStateTransitionsPreserveReviewedBoundaries(t *testing.T) {
 		first := CardCacheKeyFromRequest("https://api.vendor.example/card/one", "Bearer one")
 		second := CardCacheKeyFromRequest("https://api.vendor.example/card/two", "Bearer two")
 		cb.Check(first, "old", []string{"read"})
-		cb.ResetBaseline(first, "new", []string{"write"})
-		if drift, _ := cb.Check(first, "new", nil); drift {
+		if err := cb.ResetBaseline(first, "new", []string{"write"}); err != nil {
+			t.Fatalf("ResetBaseline existing: %v", err)
+		}
+		if drift, _, capacityExceeded := cb.Check(first, "new", nil); drift || capacityExceeded {
 			t.Fatal("reviewed replacement still reports drift")
 		}
-		cb.ResetBaseline(second, "second", []string{"search"})
-		if drift, firstSeen := cb.Check(second, "second", nil); drift || firstSeen {
-			t.Fatalf("inserted reset = drift %v, firstSeen %v", drift, firstSeen)
+		if err := cb.ResetBaseline(second, "second", []string{"search"}); err != nil {
+			t.Fatalf("ResetBaseline new: %v", err)
+		}
+		if drift, firstSeen, capacityExceeded := cb.Check(second, "second", nil); drift || firstSeen || capacityExceeded {
+			t.Fatalf("inserted reset = drift %v, firstSeen %v, capacityExceeded %v", drift, firstSeen, capacityExceeded)
 		}
 	})
 

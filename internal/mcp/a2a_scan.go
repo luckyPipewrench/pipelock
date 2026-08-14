@@ -30,6 +30,10 @@ import (
 // allow the stream to continue.
 var ErrA2AStreamFinding = errors.New("a2a stream finding")
 
+// ErrCardBaselineCapacity reports that a card baseline cannot accept a new
+// card without losing another trusted baseline.
+var ErrCardBaselineCapacity = errors.New("agent card baseline capacity exhausted")
+
 // A2AScanResult describes the outcome of scanning A2A protocol traffic.
 type A2AScanResult struct {
 	Clean          bool
@@ -315,7 +319,8 @@ type cardEntry struct {
 }
 
 // CardBaseline tracks Agent Card hashes by origin, for drift detection.
-// Thread-safe, LRU eviction at maxSize.
+// Thread-safe. A trusted baseline is a security ledger, not a disposable
+// cache: capacity preserves existing entries and refuses a new one.
 type CardBaseline struct {
 	mu      sync.Mutex
 	entries map[cardCacheKey]*cardEntry
@@ -335,38 +340,43 @@ func NewCardBaseline(maxSize int) *CardBaseline {
 }
 
 // Check compares a card hash against the baseline for the given key.
-// Returns (driftDetected, isFirstSeen). First-seen cards are accepted (TOFU).
-func (cb *CardBaseline) Check(key cardCacheKey, hash string, skillNames []string) (bool, bool) {
+// Returns (driftDetected, isFirstSeen, capacityExceeded). First-seen cards
+// are accepted only when the baseline has room to preserve them (TOFU).
+func (cb *CardBaseline) Check(key cardCacheKey, hash string, skillNames []string) (bool, bool, bool) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	existing, ok := cb.entries[key]
 	if !ok {
+		if len(cb.entries) >= cb.maxSize {
+			return false, false, true
+		}
 		// First-seen: store baseline (TOFU).
-		cb.evictIfFull()
 		cb.entries[key] = &cardEntry{hash: hash, skillNames: skillNames}
 		cb.touchLocked(key)
-		return false, true
+		return false, true, false
 	}
 
 	// Update LRU position.
 	cb.touchLocked(key)
 
 	if existing.hash == hash {
-		return false, false
+		return false, false, false
 	}
 
 	// Drift detected - do NOT auto-promote the baseline. The existing
 	// baseline is preserved so repeated fetches of a drifted card
 	// continue to report drift until explicitly reset. Operators must
 	// call ResetBaseline to accept the new card.
-	return true, false
+	return true, false, false
 }
 
 // ResetBaseline explicitly updates the stored baseline for a key.
 // Use after reviewing and accepting a drifted Agent Card. This is the
-// only path that promotes a new hash; Check never auto-promotes.
-func (cb *CardBaseline) ResetBaseline(key cardCacheKey, hash string, skillNames []string) {
+// only path that promotes a new hash; Check never auto-promotes. Resetting a
+// missing entry at capacity is refused so an operator action cannot discard a
+// different trusted baseline.
+func (cb *CardBaseline) ResetBaseline(key cardCacheKey, hash string, skillNames []string) error {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
@@ -375,13 +385,16 @@ func (cb *CardBaseline) ResetBaseline(key cardCacheKey, hash string, skillNames 
 		existing.hash = hash
 		existing.skillNames = skillNames
 		cb.touchLocked(key)
-		return
+		return nil
 	}
 
-	// Key not present (evicted or never seen): insert as new baseline.
-	cb.evictIfFull()
+	if len(cb.entries) >= cb.maxSize {
+		return ErrCardBaselineCapacity
+	}
+	// Key not present: insert as a reviewed baseline.
 	cb.entries[key] = &cardEntry{hash: hash, skillNames: skillNames}
 	cb.touchLocked(key)
+	return nil
 }
 
 // touchLocked moves a key to the end of the LRU order. Must hold mu.
@@ -396,18 +409,6 @@ func (cb *CardBaseline) touchLocked(key cardCacheKey) {
 	cb.order = append(cb.order, key)
 }
 
-// evictIfFull removes the least-recently-used entry if at capacity. Must hold mu.
-func (cb *CardBaseline) evictIfFull() {
-	if len(cb.entries) < cb.maxSize {
-		return
-	}
-	if len(cb.order) > 0 {
-		oldest := cb.order[0]
-		cb.order = cb.order[1:]
-		delete(cb.entries, oldest)
-	}
-}
-
 // AgentCardScanResult describes the outcome of scanning an Agent Card.
 type AgentCardScanResult struct {
 	Clean         bool
@@ -415,7 +416,10 @@ type AgentCardScanResult struct {
 	Reason        string
 	DriftDetected bool
 	FirstSeen     bool
-	Findings      A2AScanResult // field-level scan findings
+	// BaselineCapacityExceeded reports that this card could not be safely
+	// verified without replacing a different trusted baseline.
+	BaselineCapacityExceeded bool
+	Findings                 A2AScanResult // field-level scan findings
 
 	// SignatureVerified is true when the card carried a signature that verified
 	// against a trusted key scoped to the card's origin. SignatureKeyID is the
@@ -470,9 +474,15 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		for _, s := range card.Skills {
 			skillNames = append(skillNames, s.Name)
 		}
-		drift, firstSeen := baseline.Check(key, hash, skillNames)
+		drift, firstSeen, capacityExceeded := baseline.Check(key, hash, skillNames)
 		result.DriftDetected = drift
 		result.FirstSeen = firstSeen
+		result.BaselineCapacityExceeded = capacityExceeded
+		if capacityExceeded {
+			result.Clean = false
+			result.Action = config.ActionBlock
+			result.Reason = "a2a: Agent Card baseline capacity exhausted; card cannot be safely verified"
+		}
 		if drift {
 			result.Clean = false
 			if result.Action == "" {

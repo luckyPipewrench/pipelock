@@ -575,12 +575,15 @@ func TestScanA2AHeaders_Disabled(t *testing.T) {
 func TestCardBaseline_FirstSeen(t *testing.T) {
 	cb := NewCardBaseline(10)
 	key := cardCacheKey{cardURL: "https://agent.example/.well-known/agent-card.json"}
-	drift, firstSeen := cb.Check(key, "hash1", []string{"skill1"})
+	drift, firstSeen, capacityExceeded := cb.Check(key, "hash1", []string{"skill1"})
 	if drift {
 		t.Error("expected no drift on first seen")
 	}
 	if !firstSeen {
 		t.Error("expected firstSeen=true")
+	}
+	if capacityExceeded {
+		t.Error("first baseline entry must fit")
 	}
 }
 
@@ -588,12 +591,15 @@ func TestCardBaseline_NoDriftSameHash(t *testing.T) {
 	cb := NewCardBaseline(10)
 	key := cardCacheKey{cardURL: "https://agent.example/.well-known/agent-card.json"}
 	cb.Check(key, "hash1", []string{"skill1"})
-	drift, firstSeen := cb.Check(key, "hash1", []string{"skill1"})
+	drift, firstSeen, capacityExceeded := cb.Check(key, "hash1", []string{"skill1"})
 	if drift {
 		t.Error("expected no drift for same hash")
 	}
 	if firstSeen {
 		t.Error("expected firstSeen=false on second check")
+	}
+	if capacityExceeded {
+		t.Error("known baseline entry must remain inspectable")
 	}
 }
 
@@ -601,9 +607,12 @@ func TestCardBaseline_DriftDetected(t *testing.T) {
 	cb := NewCardBaseline(10)
 	key := cardCacheKey{cardURL: "https://agent.example/.well-known/agent-card.json"}
 	cb.Check(key, "hash1", []string{"skill1"})
-	drift, _ := cb.Check(key, "hash2", []string{"skill1_changed"})
+	drift, _, capacityExceeded := cb.Check(key, "hash2", []string{"skill1_changed"})
 	if !drift {
 		t.Error("expected drift when hash changes")
+	}
+	if capacityExceeded {
+		t.Error("known baseline entry must remain inspectable")
 	}
 }
 
@@ -614,25 +623,58 @@ func TestCardBaseline_PerAuthVariant(t *testing.T) {
 	cb.Check(key1, "hash1", nil)
 	cb.Check(key2, "hash2", nil)
 	// Each auth variant has its own baseline - no cross-drift.
-	drift1, _ := cb.Check(key1, "hash1", nil)
-	drift2, _ := cb.Check(key2, "hash2", nil)
+	drift1, _, capacity1 := cb.Check(key1, "hash1", nil)
+	drift2, _, capacity2 := cb.Check(key2, "hash2", nil)
 	if drift1 || drift2 {
 		t.Error("expected no drift — different auth variants are independent")
 	}
+	if capacity1 || capacity2 {
+		t.Error("known auth variants must remain inspectable")
+	}
 }
 
-func TestCardBaseline_LRUEviction(t *testing.T) {
+func TestCardBaseline_CapacityDeniesNewCardAndPreservesTrustedBaseline(t *testing.T) {
 	cb := NewCardBaseline(2)
 	key1 := cardCacheKey{cardURL: "https://a.example/"}
 	key2 := cardCacheKey{cardURL: "https://b.example/"}
 	key3 := cardCacheKey{cardURL: "https://c.example/"}
 	cb.Check(key1, "h1", nil)
 	cb.Check(key2, "h2", nil)
-	cb.Check(key3, "h3", nil) // evicts key1
-	// key1 re-entry should be first-seen (lost history).
-	_, firstSeen := cb.Check(key1, "h1_new", nil)
-	if !firstSeen {
-		t.Error("expected first-seen after eviction")
+	drift, firstSeen, capacityExceeded := cb.Check(key3, "h3", nil)
+	if drift || firstSeen || !capacityExceeded {
+		t.Fatalf("new card at capacity = drift=%v firstSeen=%v capacityExceeded=%v, want false false true", drift, firstSeen, capacityExceeded)
+	}
+	if drift, _, capacityExceeded = cb.Check(key1, "h1_changed", nil); !drift || capacityExceeded {
+		t.Fatalf("trusted baseline after capacity refusal = drift=%v capacityExceeded=%v, want true false", drift, capacityExceeded)
+	}
+	if err := cb.ResetBaseline(key3, "h3", nil); !errors.Is(err, ErrCardBaselineCapacity) {
+		t.Fatalf("ResetBaseline capacity error = %v, want ErrCardBaselineCapacity", err)
+	}
+}
+
+func TestScanAgentCard_BaselineCapacityFailsClosedWithVisibleReason(t *testing.T) {
+	baseline := NewCardBaseline(1)
+	first := CardCacheKeyFromRequest("https://first.example/card", "")
+	if _, _, capacityExceeded := baseline.Check(first, "trusted", nil); capacityExceeded {
+		t.Fatal("seed card did not fit")
+	}
+	cfg := enabledA2ACfg()
+	cfg.DetectCardDrift = true
+	second := CardCacheKeyFromRequest("https://second.example/card", "")
+	body, err := json.Marshal(A2AAgentCard{Name: "Second", Description: "safe"})
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	result := ScanAgentCard(context.Background(), body, testA2AScanner(t), baseline, second, cfg)
+	if result.Clean || !result.BaselineCapacityExceeded || result.Action != config.ActionBlock {
+		t.Fatalf("capacity result = %+v, want blocked baseline-capacity outcome", result)
+	}
+	if !strings.Contains(result.Reason, "baseline capacity exhausted") {
+		t.Fatalf("capacity reason = %q, want operator-visible capacity detail", result.Reason)
+	}
+	verdict := agentCardToVerdict(json.RawMessage(`1`), result, cfg)
+	if verdict.Clean || verdict.Action != config.ActionBlock || len(verdict.Matches) != 1 || verdict.Matches[0].PatternName != "a2a_card_baseline_capacity" {
+		t.Fatalf("capacity verdict = %+v, want block with visible capacity match", verdict)
 	}
 }
 

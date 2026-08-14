@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,7 +23,7 @@ func TestNewServerLoadsConfiguredCommitmentKeyring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	cfgPath := writeCommitmentRuntimeConfig(t, dir, "commitment-keyring.json")
+	cfgPath := writeCommitmentRuntimeConfig(t, dir)
 	server, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -47,9 +48,22 @@ func TestNewServerFailsClosedOnConfiguredCommitmentKeyringErrors(t *testing.T) {
 	if err := os.Chmod(path, unsafeMode); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
-	cfgPath := writeCommitmentRuntimeConfig(t, dir, "commitment-keyring.json")
+	cfgPath := writeCommitmentRuntimeConfig(t, dir)
 	if _, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}}); err == nil || !strings.Contains(err.Error(), "unsafe permissions") {
 		t.Fatalf("NewServer error = %v, want unsafe-permission refusal", err)
+	}
+}
+
+func TestNewServerFailsClosedOnCommitmentKeyringCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "commitment-keyring.json")
+	if _, err := commitmentkey.Initialize(path, time.Now()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	corruptCommitmentKeyringMaterial(t, path)
+	cfgPath := writeCommitmentRuntimeConfig(t, dir)
+	if _, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}}); err == nil || !strings.Contains(err.Error(), "content check") {
+		t.Fatalf("NewServer corruption error = %v, want content-check refusal", err)
 	}
 }
 
@@ -89,7 +103,7 @@ func TestReloadPreservesStartupCommitmentKeyring(t *testing.T) {
 				t.Fatalf("Initialize: %v", err)
 			}
 			stderr := &syncBuffer{}
-			server, err := NewServer(ServerOpts{ConfigFile: writeCommitmentRuntimeConfig(t, dir, "commitment-keyring.json"), Stdout: &syncBuffer{}, Stderr: stderr})
+			server, err := NewServer(ServerOpts{ConfigFile: writeCommitmentRuntimeConfig(t, dir), Stdout: &syncBuffer{}, Stderr: stderr})
 			if err != nil {
 				t.Fatalf("NewServer: %v", err)
 			}
@@ -112,12 +126,48 @@ func TestReloadPreservesStartupCommitmentKeyring(t *testing.T) {
 	}
 }
 
-func writeCommitmentRuntimeConfig(t *testing.T, dir, keyringPath string) string {
+func writeCommitmentRuntimeConfig(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "pipelock.yaml")
-	body := "mode: balanced\nevidence_provenance:\n  commitment_keyring_path: " + keyringPath + "\n"
+	body := "mode: balanced\nevidence_provenance:\n  commitment_keyring_path: commitment-keyring.json\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return path
+}
+
+func corruptCommitmentKeyringMaterial(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var keyring map[string]any
+	if err := json.Unmarshal(raw, &keyring); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	keys, ok := keyring["keys"].([]any)
+	if !ok || len(keys) == 0 {
+		t.Fatalf("keys = %#v, want first key", keyring["keys"])
+	}
+	entry, ok := keys[0].(map[string]any)
+	if !ok {
+		t.Fatalf("keys[0] = %#v, want key entry", keys[0])
+	}
+	material, ok := entry["key"].(string)
+	if !ok || material == "" {
+		t.Fatalf("keys[0].key = %#v, want encoded key material", entry["key"])
+	}
+	if material[0] == 'A' {
+		entry["key"] = "B" + material[1:]
+	} else {
+		entry["key"] = "A" + material[1:]
+	}
+	data, err := json.MarshalIndent(keyring, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 }

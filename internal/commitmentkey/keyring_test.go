@@ -5,6 +5,7 @@ package commitmentkey
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -233,6 +234,113 @@ func TestLifecycleBackupDestroyRestoreAndOpen(t *testing.T) {
 	assertMode(t, path, 0o600)
 }
 
+func TestLoadRejectsKeyMaterialCorruption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	corrupted := cloneKeyring(keyring)
+	corrupted.Keys[0].Key = flipBase64Character(t, corrupted.Keys[0].Key)
+	writeRawKeyring(t, path, corrupted)
+
+	if _, err := Load(path); !errors.Is(err, ErrInvalidKeyring) || !strings.Contains(err.Error(), "content check") {
+		t.Fatalf("Load corrupted keyring error = %v, want content-check refusal", err)
+	}
+}
+
+func TestContentCheckExcludesCheckField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	withDifferentStoredCheck := cloneKeyring(keyring)
+	withDifferentStoredCheck.ContentCheck = "sha256:" + strings.Repeat("0", 64)
+	got, err := withDifferentStoredCheck.expectedContentCheck()
+	if err != nil {
+		t.Fatalf("expectedContentCheck: %v", err)
+	}
+	if got != keyring.ContentCheck {
+		t.Fatalf("content check including itself: got %q, want %q", got, keyring.ContentCheck)
+	}
+}
+
+func TestLoadRejectsLegacyOrChecklessKeyring(t *testing.T) {
+	for name, mutate := range map[string]func(*Keyring){
+		"v1": func(k *Keyring) {
+			k.Format = FormatV1
+			k.ContentCheck = ""
+		},
+		"checkless v2": func(k *Keyring) {
+			k.ContentCheck = ""
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+			keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+			if err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			mutate(keyring)
+			writeRawKeyring(t, path, keyring)
+			if _, err := Load(path); !errors.Is(err, ErrInvalidKeyring) {
+				t.Fatalf("Load %s keyring error = %v, want ErrInvalidKeyring", name, err)
+			}
+		})
+	}
+}
+
+func TestRestoreLegacyRecoveryStaysUnverified(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "legacy.json")
+	destination := filepath.Join(dir, "restored.json")
+	keyring, err := Initialize(source, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	keyring.Format = FormatV1
+	keyring.ContentCheck = ""
+	writeRawKeyring(t, source, keyring)
+
+	restored, err := RestoreLegacyUnverified(source, destination)
+	if err != nil {
+		t.Fatalf("RestoreLegacyUnverified: %v", err)
+	}
+	if restored.Format != FormatV2 || restored.ContentCheck == "" || !restored.LegacyRecoveryUnverified {
+		t.Fatalf("legacy restoration = %+v, want v2 with a content check and unverified legacy status", restored)
+	}
+	if got := restored.Metadata().Validation; got.Structural != "valid" || got.Corruption != "unverified_legacy_recovery" || got.Authenticity != "not_established" {
+		t.Fatalf("legacy recovery validation = %+v", got)
+	}
+	loaded, err := Load(destination)
+	if err != nil {
+		t.Fatalf("Load legacy recovery: %v", err)
+	}
+	if got := loaded.Metadata().Validation.Corruption; got != "unverified_legacy_recovery" {
+		t.Fatalf("persisted legacy recovery corruption status = %q, want unverified_legacy_recovery", got)
+	}
+}
+
+func TestRestoreLegacyRecoveryRejectsCheckedCorruption(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "corrupted-v2.json")
+	destination := filepath.Join(dir, "restored.json")
+	keyring, err := Initialize(source, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	keyring.Keys[0].Key = flipBase64Character(t, keyring.Keys[0].Key)
+	writeRawKeyring(t, source, keyring)
+
+	if _, err := RestoreLegacyUnverified(source, destination); !errors.Is(err, ErrInvalidKeyring) || !strings.Contains(err.Error(), "content check") {
+		t.Fatalf("RestoreLegacyUnverified corrupted v2 error = %v, want content-check refusal", err)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy recovery wrote destination after corruption refusal: %v", err)
+	}
+}
+
 func TestLoadFailsClosedOnPermissionsAndSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows ACL and symlink behavior differs from Unix mode semantics")
@@ -290,13 +398,7 @@ func TestPurposeValidationRejectsReceiptSigning(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	keyring.Purpose = "receipt-signing"
-	data, err := marshal(keyring)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write wrong-purpose keyring: %v", err)
-	}
+	writeRawKeyring(t, path, keyring)
 	if _, err := Load(path); !errors.Is(err, ErrInvalidKeyring) {
 		t.Fatalf("Load receipt-signing keyring error = %v, want ErrInvalidKeyring", err)
 	}
@@ -522,6 +624,28 @@ func cloneKeyring(keyring *Keyring) *Keyring {
 	clone := *keyring
 	clone.Keys = append([]Entry(nil), keyring.Keys...)
 	return &clone
+}
+
+func flipBase64Character(t *testing.T, value string) string {
+	t.Helper()
+	if value == "" {
+		t.Fatal("cannot corrupt an empty key")
+	}
+	if value[0] == 'A' {
+		return "B" + value[1:]
+	}
+	return "A" + value[1:]
+}
+
+func writeRawKeyring(t *testing.T, path string, keyring *Keyring) {
+	t.Helper()
+	data, err := json.MarshalIndent(keyring, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 }
 
 func commitTestReceipt(t *testing.T, keyring *Keyring, view string) committedReceipt {

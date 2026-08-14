@@ -28,8 +28,11 @@ const (
 	resetDelegationMaxBytes      = 16 * 1024
 	resetDelegationMaxTTL        = 15 * time.Minute
 	resetDelegationClockSkew     = time.Minute
-	resetNonceBytes              = 16
-	resetInstanceBytes           = 16
+	// resetHexBytes is the byte length of BOTH the nonce and the instance ID.
+	// One constant, deliberately: they are generated and validated by the same
+	// helper, and two equal constants with nothing holding them equal would let
+	// generation and validation drift into refusing our own instance ID.
+	resetHexBytes = 16
 )
 
 // ResetKind scopes a delegation to one de-escalation.
@@ -122,7 +125,7 @@ type ResetAuthority struct {
 
 // NewResetAuthority makes a verifier for one proxy process.
 func NewResetAuthority(publicKey ed25519.PublicKey, target string) (*ResetAuthority, error) {
-	instanceID, err := randomResetHex(resetInstanceBytes)
+	instanceID, err := randomResetHex(resetHexBytes)
 	if err != nil {
 		return nil, fmt.Errorf("generate reset authority instance ID: %w", err)
 	}
@@ -136,7 +139,7 @@ func newResetAuthority(publicKey ed25519.PublicKey, target, instanceID string, n
 	if err := validateResetTarget(target); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("instance_id", instanceID, resetInstanceBytes); err != nil {
+	if err := validateResetHex("instance_id", instanceID); err != nil {
 		return nil, err
 	}
 	if now == nil {
@@ -166,7 +169,7 @@ func (a *ResetAuthority) InstanceID() string {
 }
 
 // NewResetNonce creates the random one-shot nonce carried in a delegation.
-func NewResetNonce() (string, error) { return randomResetHex(resetNonceBytes) }
+func NewResetNonce() (string, error) { return randomResetHex(resetHexBytes) }
 
 // MintResetDelegation signs a short-lived canonical delegation. The caller
 // retains the private key, which never enters the MCP proxy.
@@ -183,10 +186,10 @@ func MintResetDelegation(privateKey ed25519.PrivateKey, issuer string, kind Rese
 	if err := validateResetTarget(target); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("instance_id", instanceID, resetInstanceBytes); err != nil {
+	if err := validateResetHex("instance_id", instanceID); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("nonce", nonce, resetNonceBytes); err != nil {
+	if err := validateResetHex("nonce", nonce); err != nil {
 		return ResetDelegation{}, err
 	}
 	if err := validateResetIssuer(issuer); err != nil {
@@ -360,10 +363,10 @@ func (d ResetDelegation) signingInput() ([]byte, error) {
 	if err := validateResetTarget(d.Target); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("instance_id", d.InstanceID, resetInstanceBytes); err != nil {
+	if err := validateResetHex("instance_id", d.InstanceID); err != nil {
 		return nil, err
 	}
-	if err := validateResetHex("nonce", d.Nonce, resetNonceBytes); err != nil {
+	if err := validateResetHex("nonce", d.Nonce); err != nil {
 		return nil, err
 	}
 	if err := validateResetIssuer(d.Issuer); err != nil {
@@ -473,9 +476,9 @@ func validateResetIssuer(issuer string) error {
 // the failure if they ever diverge is silent and total: the proxy generates an
 // instance ID it then refuses as malformed, every reset fails, and the error
 // names a field the operator never typed.
-func validateResetHex(label, value string, wantBytes int) error {
+func validateResetHex(label, value string) error {
 	decoded, err := hex.DecodeString(value)
-	if err != nil || len(decoded) != wantBytes || strings.ToLower(value) != value {
+	if err != nil || len(decoded) != resetHexBytes || strings.ToLower(value) != value {
 		return fmt.Errorf("invalid reset delegation %s", label)
 	}
 	return nil

@@ -65,6 +65,126 @@ func TestRunRatifyRefusesOutputAliasingSigningKey(t *testing.T) {
 	}
 }
 
+func TestRunRatifyRefusesReceiptOutAliasingCandidate(t *testing.T) {
+	dir := t.TempDir()
+	candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
+	before, err := os.ReadFile(filepath.Clean(candidate))
+	if err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	cmd, _ := learnTestCmd("")
+	err = runRatify(cmd, ratifyFlags{
+		candidatePath:       candidate,
+		outPath:             filepath.Join(dir, "ratified.yaml"),
+		receiptOut:          candidate,
+		deterministic:       true,
+		acceptLowConfidence: true,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(candidate))
+	if readErr != nil {
+		t.Fatalf("re-read candidate: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runRatify succeeded writing --receipt-out over the loaded candidate")
+	}
+	if !strings.Contains(err.Error(), "--receipt-out must not name the loaded candidate") {
+		t.Fatalf("runRatify error = %v, want candidate receipt alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("loaded candidate was overwritten")
+	}
+}
+
+func TestRunForgetRefusesOutputsAliasingCandidate(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		set  func(*forgetFlags, string)
+		want string
+	}{
+		{name: "receipt-out", set: func(f *forgetFlags, candidate string) { f.receiptOut = candidate }, want: "--receipt-out must not name the loaded candidate"},
+		{name: "out", set: func(f *forgetFlags, candidate string) { f.outPath = candidate }, want: "--out must not name the loaded candidate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
+			before, err := os.ReadFile(filepath.Clean(candidate))
+			if err != nil {
+				t.Fatalf("read candidate: %v", err)
+			}
+			flags := forgetFlags{
+				candidatePath: candidate,
+				ruleID:        "r-enforce",
+				reason:        "legal-ticket-123",
+				outPath:       filepath.Join(dir, "forgotten-"+tc.name+".yaml"),
+				tombstoneDir:  filepath.Join(dir, "tombstones-"+tc.name),
+				receiptOut:    filepath.Join(dir, "redaction-"+tc.name+".jsonl"),
+				deterministic: true,
+			}
+			tc.set(&flags, candidate)
+			cmd, _ := learnTestCmd("")
+			err = runForget(cmd, flags)
+			after, readErr := os.ReadFile(filepath.Clean(candidate))
+			if readErr != nil {
+				t.Fatalf("re-read candidate: %v", readErr)
+			}
+			if err == nil {
+				t.Fatalf("runForget succeeded writing %s over the loaded candidate", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runForget error = %v, want %q", err, tc.want)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("loaded candidate was overwritten")
+			}
+		})
+	}
+}
+
+func TestRunForgetRefusesOutputAliasingSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.ForceGenerateAgent("compile-signer"); err != nil {
+		t.Fatalf("ForceGenerateAgent compile: %v", err)
+	}
+	if _, err := ks.ForceGenerateAgent("activation-signer"); err != nil {
+		t.Fatalf("ForceGenerateAgent activation: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("compile-signer")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
+	cmd, _ := learnTestCmd("")
+	err = runForget(cmd, forgetFlags{
+		candidatePath:   candidate,
+		ruleID:          "r-enforce",
+		reason:          "legal-ticket-123",
+		outPath:         keyPath,
+		tombstoneDir:    filepath.Join(dir, "tombstones"),
+		receiptOut:      filepath.Join(dir, "redaction.jsonl"),
+		keystore:        dir,
+		compileKeyAgent: "compile-signer",
+		activationKey:   "activation-signer",
+	})
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runForget succeeded writing --out over the compile signing key")
+	}
+	if !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("runForget error = %v, want alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("compile signing key was overwritten")
+	}
+}
+
 func TestLearnCmdRegistersRatifyAndForget(t *testing.T) {
 	cmd := Cmd()
 	for _, name := range []string{"ratify", "forget"} {

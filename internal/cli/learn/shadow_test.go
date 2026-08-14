@@ -87,6 +87,48 @@ func TestRunShadowRefusesOutAliasingOutJSON(t *testing.T) {
 	}
 }
 
+func TestRunShadowRefusesOutAliasingRecorderDest(t *testing.T) {
+	dir := t.TempDir()
+	contractPath := writeCandidateEnvelope(t, dir, testRatifyContract())
+	recorderDir := filepath.Join(dir, "receipts")
+	if err := os.Mkdir(recorderDir, 0o750); err != nil {
+		t.Fatalf("Mkdir recorder: %v", err)
+	}
+	receiptPath := filepath.Join(recorderDir, shadowRecorderEvidenceFile)
+	if err := os.WriteFile(receiptPath, []byte("keep-me\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile recorder dest: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(receiptPath))
+	if err != nil {
+		t.Fatalf("read recorder dest: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runShadow(cmd, shadowFlags{
+		contractPath:  contractPath,
+		allowUnsigned: true,
+		duration:      time.Hour,
+		outPath:       receiptPath,
+		recorderDir:   recorderDir,
+		deterministic: true,
+		sessionsDir:   dir,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(receiptPath))
+	if readErr != nil {
+		t.Fatalf("re-read recorder dest: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runShadow succeeded writing --out over the shadow receipt shard")
+	}
+	if !strings.Contains(err.Error(), "--out must not name shadow receipts") {
+		t.Fatalf("runShadow error = %v, want recorder dest alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("shadow receipt shard was overwritten")
+	}
+}
+
 func TestResolveShadowSessionsUsesExplicitDirAndRejectsSymlink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

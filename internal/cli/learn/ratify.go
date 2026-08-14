@@ -39,6 +39,8 @@ const (
 	ratifyConfidenceBrittle        = "brittle"
 	ratifyConfidenceNeverConfirmed = "never_confirmed"
 	ratifyConfidenceRefuted        = "refuted"
+
+	loadedCandidateLabel = "the loaded candidate"
 )
 
 // ErrLowConfidenceRatification is returned when ratify would promote
@@ -137,8 +139,18 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := cliutil.RefuseOutputCollisions(map[string]string{
+	outputs := map[string]string{
 		"--out":         dest,
+		"--receipt-out": receiptOut,
+	}
+	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
+		return err
+	}
+	// dest may equal the candidate when --out is omitted (in-place rewrite).
+	// The receipt must still not replace the loaded candidate.
+	if err := cliutil.RefuseOutputAliases(map[string]string{
+		loadedCandidateLabel: clean,
+	}, map[string]string{
 		"--receipt-out": receiptOut,
 	}); err != nil {
 		return err

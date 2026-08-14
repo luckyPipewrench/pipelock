@@ -125,22 +125,27 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := cliutil.RefuseOutputCollisions(map[string]string{
+	outputs := map[string]string{
 		"--out":         dest,
 		"tombstone":     tombstonePath,
 		"--receipt-out": receiptOut,
-	}); err != nil {
+	}
+	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
+		return err
+	}
+	// dest is a new forgotten artifact by design. Refuse any of these
+	// outputs naming the loaded candidate so the original is not replaced
+	// by a receipt, a tombstone, or an in-place --out.
+	if err := cliutil.RefuseOutputAliases(map[string]string{
+		loadedCandidateLabel: clean,
+	}, outputs); err != nil {
 		return err
 	}
 	if !flags.deterministic {
 		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
 			"the compile signing key":    compileSigner.keyID,
 			"the activation signing key": activationSigner.keyID,
-		}, map[string]string{
-			"--out":         dest,
-			"tombstone":     tombstonePath,
-			"--receipt-out": receiptOut,
-		}); err != nil {
+		}, outputs); err != nil {
 			return err
 		}
 	}

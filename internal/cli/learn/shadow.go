@@ -27,7 +27,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-const defaultReceiptKeyAgent = "receipt-signing"
+const (
+	defaultReceiptKeyAgent     = "receipt-signing"
+	shadowRecorderEvidenceFile = "evidence-proxy-0.jsonl"
+	shadowReceiptsLabel        = "shadow receipts"
+)
 
 type shadowFlags struct {
 	contractPath  string
@@ -106,10 +110,27 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	}
 	protected := cliutil.ExistingFileLabels("--contract", []string{contractPath})
 	maps.Copy(protected, cliutil.ExistingFileLabels("--config", []string{flags.configPath}))
+	if flags.recorderDir != "" {
+		// emitShadowReceipts appends the first signed receipt to this shard
+		// after writeShadowReports. A report path that names it mixes the
+		// report with recorder JSONL.
+		outputs[shadowReceiptsLabel] = filepath.Join(filepath.Clean(flags.recorderDir), shadowRecorderEvidenceFile)
+	}
 	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
 		return err
 	}
-	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
+	if err := cliutil.RefuseOutputCollisions(map[string]string{
+		"--out":      flags.outPath,
+		"--out-json": flags.outJSONPath,
+	}); err != nil {
+		return err
+	}
+	if err := cliutil.RefuseOutputAliases(map[string]string{
+		shadowReceiptsLabel: outputs[shadowReceiptsLabel],
+	}, map[string]string{
+		"--out":      flags.outPath,
+		"--out-json": flags.outJSONPath,
+	}); err != nil {
 		return err
 	}
 	sessionsDir, err := resolveShadowSessions(cfg, flags)
@@ -149,10 +170,7 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 		}
 		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
 			"the receipt signing key": keyAgent,
-		}, map[string]string{
-			"--out":      flags.outPath,
-			"--out-json": flags.outJSONPath,
-		}); err != nil {
+		}, outputs); err != nil {
 			return err
 		}
 	}

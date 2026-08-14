@@ -361,7 +361,7 @@ response_scanning:
     - name: "Role Override"
       regex: '(?i)you\s+are\s+(now\s+)?(a\s+)?((?-i:\bDAN\b)|evil|unrestricted|jailbroken|unfiltered)'
     - name: "New Instructions"
-      regex: '(?i)(\b(system|developer|administrator|admin)\s*(message|prompt|instruction|directive)?\s*[:\-]\s*(new|updated|revised)\s+(instructions|directives|rules|prompt)\b|\b(new|updated|revised)\s+(instructions|directives|rules|prompt)\s*[:\-]\s*(you\s+)?(must|should|will|need\s+to|are\s+to|follow|obey|execute|apply|override|replace|supersede|ignore|disregard|forget|abandon)\b)'
+      regex: '(?i)(\b(system|developer|administrator|admin)\s*(message|prompt|instruction|directive)?[\s\W]{0,4}(new|updated|revised)\s+(instructions|directives|rules|prompt)\b|\b(new|updated|revised)\s+(instructions|directives|rules|prompt)\b[\s\W]{0,4}(you\s+)?(must|should|will|need\s+to|are\s+to|obey|execute|override|replace|supersede|ignore|disregard|forget|abandon)\b)'
     - name: "Jailbreak Attempt"
       regex: '(?i)((?-i:\bDAN\b)|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
     - name: "Hidden Instruction"

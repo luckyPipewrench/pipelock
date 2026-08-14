@@ -317,7 +317,11 @@ const (
 	// the reserved window is now rejected when nonzero, so the default
 	// cannot stay at the previous inert 5.
 	// Re-bumped for New Instructions authority/action context narrowing.
-	goldenHashDefaults = "d7a337543e86a3e00f1bfbc1ad0ed1a5262f3dbdb54387507d45fa8a49098a3b"
+	// Re-bumped again for the New Instructions proximity form: the narrowing
+	// above required a literal ":" or "-" between the phrase and its context,
+	// so a period, newline, comma, or em-dash evaded it. Proximity keeps the
+	// context requirement without depending on one punctuation mark.
+	goldenHashDefaults = "00687d54ef0fca3cd555bfa997ae0432e81beb861bb91d562ff8e4c36092e2dc"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -472,7 +476,11 @@ const (
 	// Re-bumped for URL-first curl and wget upload-command coverage.
 	// Re-bumped for natural-language password and private-key transfers.
 	// Re-bumped for New Instructions authority/action context narrowing.
-	goldenHashRichConfig = "d58e393ec6c742bd8a8060f9b1d60c50cc9d4657541e0a3b834effb9606710bb"
+	// Re-bumped again for the New Instructions proximity form; see the
+	// goldenHashDefaults note. Both invariance tests compare against this
+	// constant and produced this same hash, so ops-field and allowlist-order
+	// invariance are intact and only the shared baseline moved.
+	goldenHashRichConfig = "a4b307de43a2dd5ff2314d02a245b8b63c0fe61d450661eb86de195593268b24"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

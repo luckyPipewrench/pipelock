@@ -995,6 +995,12 @@ func TestResponsePatterns_NewInstructionsRegexParity(t *testing.T) {
 		"cursor yaml":        yamlResponsePatternRegex(t, "../../configs/cursor.yaml", patternName),
 		"generic-agent yaml": yamlResponsePatternRegex(t, "../../configs/generic-agent.yaml", patternName),
 		"hostile-model yaml": yamlResponsePatternRegex(t, "../../configs/hostile-model.yaml", patternName),
+		// The quickstart is a shipped executable claim and was NOT covered here,
+		// so it silently kept the original bare-prose pattern through a narrowing
+		// that touched every other surface. A new user's first contact with the
+		// product would have been the exact false positive this pattern was
+		// changed to remove.
+		"quickstart example": yamlResponsePatternRegex(t, "../../examples/quickstart/pipelock.yaml", patternName),
 	}
 	for surface, got := range surfaces {
 		t.Run(surface, func(t *testing.T) {

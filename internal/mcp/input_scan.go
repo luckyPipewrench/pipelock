@@ -20,6 +20,8 @@ import (
 
 const uninspectableJSONDepthReason = "input exceeds maximum inspectable nesting depth"
 
+const uninspectableSplitSecretFieldsReason = "input exceeds maximum inspectable split-secret fields"
+
 // extractToolCallName extracts the tool name from a tools/call JSON-RPC request.
 // Returns "" if the message is not a tools/call or the name cannot be extracted.
 func extractToolCallName(line []byte) string {
@@ -79,6 +81,11 @@ func mcpWarnResource(method string, line []byte) string {
 func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, injMatches []scanner.ResponseMatch) string {
 	if scanner.ContainsHostnameExfilMatch(dlpMatches) {
 		return config.ActionBlock
+	}
+	for _, match := range dlpMatches {
+		if match.PatternName == uninspectableSplitSecretFieldsReason {
+			return config.ActionBlock
+		}
 	}
 	if len(dlpMatches) > 0 || len(injMatches) > 0 {
 		return action
@@ -581,10 +588,9 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 	return v
 }
 
-// maxPairwiseSplitFields caps the number of field values considered for
-// pairwise split-secret scanning. O(n^2) pairs, but each DLP scan is fast.
-// When field count exceeds this cap, edge sampling takes the first and last
-// half (32 each) so the effective pairwise coverage is 64 fields.
+// maxPairwiseSplitFields caps exhaustive pairwise split-secret scanning.
+// The pairwise strategy is O(n^2), so larger inputs cannot be safely inspected
+// without a first-class denial. Sampling a subset would create an evasion gap.
 const maxPairwiseSplitFields = 64
 
 // scanSplitSecret checks for secrets split across multiple JSON fields.
@@ -620,32 +626,30 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 			return r
 		}
 	}
+	if len(vals) > maxPairwiseSplitFields {
+		return scanner.TextDLPResult{
+			Clean: false,
+			Matches: []scanner.TextDLPMatch{{
+				PatternName: uninspectableSplitSecretFieldsReason,
+				Severity:    config.SeverityCritical,
+			}},
+		}
+	}
 
 	// Strategy 2: pairwise concatenation (catches 2-field splits regardless of key order).
-	// When field count exceeds the cap, scan edges (first + last N/2 fields)
-	// rather than truncating. Attackers padding with filler fields likely place
-	// the secret halves near the edges of the sorted key space.
-	pairVals := vals
-	if len(pairVals) > maxPairwiseSplitFields {
-		half := maxPairwiseSplitFields / 2
-		edge := make([]string, 0, maxPairwiseSplitFields)
-		edge = append(edge, vals[:half]...)
-		edge = append(edge, vals[len(vals)-half:]...)
-		pairVals = edge
-	}
-	for i := 0; i < len(pairVals); i++ {
-		if len(pairVals[i]) == 0 {
+	for i := 0; i < len(vals); i++ {
+		if len(vals[i]) == 0 {
 			continue
 		}
-		for j := i + 1; j < len(pairVals); j++ {
-			if len(pairVals[j]) == 0 {
+		for j := i + 1; j < len(vals); j++ {
+			if len(vals[j]) == 0 {
 				continue
 			}
 			// Try both orderings: vals[i]+vals[j] and vals[j]+vals[i].
-			if r := sc.ScanTextForDLP(ctx, pairVals[i]+pairVals[j]); !r.Clean {
+			if r := sc.ScanTextForDLP(ctx, vals[i]+vals[j]); !r.Clean {
 				return r
 			}
-			if r := sc.ScanTextForDLP(ctx, pairVals[j]+pairVals[i]); !r.Clean {
+			if r := sc.ScanTextForDLP(ctx, vals[j]+vals[i]); !r.Clean {
 				return r
 			}
 		}

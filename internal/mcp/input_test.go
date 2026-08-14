@@ -2489,35 +2489,96 @@ func TestScanSplitSecret_ConcatEqualsJoined(t *testing.T) {
 	}
 }
 
-func TestScanSplitSecret_EdgeFieldFallback(t *testing.T) {
-	// Exercise the edge-field fallback path: >64 fields, secret in first+last.
+func TestScanRequest_SplitSecretFieldCapacityFailsClosed(t *testing.T) {
+	// A benign payload above the pairwise field cap must still fail closed with
+	// an operator-visible reason; a partial pair scan is not safe evidence.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
-	// Build JSON with 66 fields. Secret prefix in field "aaa_first" (sorts to
-	// position 0) and suffix in "zzz_last" (sorts to position 65). Strategy 1
-	// concat puts them at opposite ends with 64 noise values between, so the
-	// sorted concat does NOT produce a match. Only edge pairwise (first 32 +
-	// last 32) catches this because both halves land in the edge window.
-	prefix := testSecretPrefix
-	suffix := "api03-" + strings.Repeat("H", 25)
 	var fields []string
-	fields = append(fields, fmt.Sprintf(`"aaa_first":%q`, prefix))
-	for i := 0; i < 64; i++ {
-		fields = append(fields, fmt.Sprintf(`"m_pad%02d":"noise"`, i))
+	for i := 0; i < 66; i++ {
+		fields = append(fields, fmt.Sprintf(`"field_%02d":"benign"`, i))
 	}
-	fields = append(fields, fmt.Sprintf(`"zzz_last":%q`, suffix))
-	raw := json.RawMessage("{" + strings.Join(fields, ",") + "}")
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{` + strings.Join(fields, ",") + `}}}`
+	verdict := ScanRequest(context.Background(), []byte(msg), sc, config.ActionWarn, config.ActionWarn)
+	if verdict.Clean || verdict.Action != config.ActionBlock {
+		t.Fatalf("over-cap split-secret verdict = %+v, want explicit block", verdict)
+	}
+	if len(verdict.Matches) != 1 || verdict.Matches[0].PatternName != uninspectableSplitSecretFieldsReason {
+		t.Fatalf("over-cap split-secret matches = %+v, want %q", verdict.Matches, uninspectableSplitSecretFieldsReason)
+	}
+}
 
-	// joined has the values in sorted key order with \n separators.
-	joined := prefix + "\n" + strings.Repeat("noise\n", 64) + suffix
-	clean := scanner.TextDLPResult{Clean: true}
-	result := scanSplitSecret(context.Background(), raw, joined, sc, clean)
+func TestScanSplitSecret_InteriorFieldsAreNotSilentlySkipped(t *testing.T) {
+	// At 66 fields, the old edge sampler inspected only the first and last 32
+	// sorted values. These two halves sit in the omitted interior, so neither
+	// sorted concatenation nor the old pairwise sampler could see the secret.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:     "pairwise-capacity-test",
+		Regex:    `pair-left-right-token`,
+		Severity: config.SeverityCritical,
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	prefix := "pair-left-"
+	suffix := "right-token"
+	var fields []string
+	values := make([]string, 0, 66)
+	for i := 0; i < 66; i++ {
+		value := "noise"
+		switch i {
+		case 20:
+			value = prefix
+		case 45:
+			value = suffix
+		}
+		fields = append(fields, fmt.Sprintf(`"field_%02d":%q`, i, value))
+		values = append(values, value)
+	}
+	raw := json.RawMessage("{" + strings.Join(fields, ",") + "}")
+	result := scanSplitSecret(context.Background(), raw, strings.Join(values, "\n"), sc, scanner.TextDLPResult{Clean: true})
+	if result.Clean || len(result.Matches) != 1 || result.Matches[0].PatternName != uninspectableSplitSecretFieldsReason {
+		t.Fatalf("interior-field split secret = %+v, want explicit capacity denial", result)
+	}
+}
+
+func TestScanSplitSecret_AllFieldConcatenationPrecedesCapacityGuard(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:     "pairwise-capacity-test",
+		Regex:    `pair-left-right-token`,
+		Severity: config.SeverityCritical,
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	// Strategy 1 deliberately has no field-count cap. The 65 values form a
+	// secret only after every sorted value is concatenated, so this test proves
+	// that the capacity guard runs after that full-value scan.
+	prefix := "pair-left-"
+	suffix := "right-token"
+	fields := []string{fmt.Sprintf(`"a_prefix":%q`, prefix), fmt.Sprintf(`"b_suffix":%q`, suffix)}
+	for i := 0; i < 63; i++ {
+		fields = append(fields, fmt.Sprintf(`"pad_%02d":""`, i))
+	}
+	raw := json.RawMessage("{" + strings.Join(fields, ",") + "}")
+	result := scanSplitSecret(context.Background(), raw, prefix+"\n"+suffix, sc, scanner.TextDLPResult{Clean: true})
 	if result.Clean {
-		t.Error("edge-field pairwise should catch split secret at opposite ends of 66 fields")
+		t.Fatal("all-value concatenation should detect the 65-field split secret")
+	}
+	for _, match := range result.Matches {
+		if match.PatternName == uninspectableSplitSecretFieldsReason {
+			t.Fatalf("full-value concatenation was skipped in favor of capacity denial: %+v", result)
+		}
 	}
 }
 

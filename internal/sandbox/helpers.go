@@ -64,7 +64,7 @@ func waitForParentHardening() error {
 	if ready == nil {
 		return fmt.Errorf("opening readiness descriptor %d", fd)
 	}
-	defer ready.Close()
+	defer func() { _ = ready.Close() }()
 
 	var token [1]byte
 	if _, err := io.ReadFull(ready, token[:]); err != nil {

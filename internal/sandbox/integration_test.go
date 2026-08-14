@@ -231,7 +231,7 @@ func TestIntegration_McpProxy_Sandbox(t *testing.T) {
 	serverScript := "#!/bin/sh\n" +
 		"IFS= read -r _ || exit 1\n" +
 		"printf '%s' '" + response[:len(response)-1] + "'\n"
-	if err := os.WriteFile(server, []byte(serverScript), 0o700); err != nil {
+	if err := os.WriteFile(server, []byte(serverScript), 0o600); err != nil {
 		t.Fatalf("write MCP server fixture: %v", err)
 	}
 

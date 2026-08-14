@@ -77,7 +77,7 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 		"if not sys.stdin.readline():\n" +
 		"    raise SystemExit(1)\n" +
 		"sys.stdout.write('{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"result\\\":{\\\"proxy_environ\\\":\\\"' + result + '\\\",\\\"parent_hardening\\\":\\\"' + parent_hardening + '\\\"}}\\n')\n"
-	if err := os.WriteFile(server, []byte(serverScript), 0o700); err != nil {
+	if err := os.WriteFile(server, []byte(serverScript), 0o600); err != nil {
 		t.Fatalf("write MCP environ proof server: %v", err)
 	}
 	config := filepath.Join(t.TempDir(), "pipelock.yaml")
@@ -166,7 +166,7 @@ func runMCPEnvironProofHelper(t *testing.T, mode string) {
 		"--env", mcpEnvironProofMarkerEnv+"="+marker,
 		"--", "python3", server,
 	)
-	if err := syscall.Exec(binary, append([]string{binary}, args...), os.Environ()); err != nil {
+	if err := syscall.Exec(binary, append([]string{binary}, args...), os.Environ()); err != nil { //nolint:gosec // controlled test helper re-execs its fixture binary
 		t.Fatalf("exec MCP environ proof: %v", err)
 	}
 }

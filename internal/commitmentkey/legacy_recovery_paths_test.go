@@ -36,6 +36,20 @@ func TestRestoreLegacyUnverifiedRefusesEveryUnusableSource(t *testing.T) {
 			wantIs:  fs.ErrNotExist,
 		},
 		{
+			// The downgrade direction. A backup that carries a correct check has
+			// nothing to recover, so accepting it here would let a verified
+			// keyring be relabelled unverified_legacy_recovery and quietly widen
+			// the hatch from "recover an old keyring" to "skip the check".
+			name: "source is a valid checked v2 backup",
+			prepare: func(t *testing.T, source string) {
+				if _, err := Initialize(source, time.Unix(1_700_000_000, 0)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:   "legacy recovery only accepts",
+			wantIs: ErrInvalidKeyring,
+		},
+		{
 			name: "source is not JSON",
 			prepare: func(t *testing.T, source string) {
 				if err := os.WriteFile(source, []byte("not json at all"), 0o600); err != nil {

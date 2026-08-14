@@ -79,7 +79,6 @@ type mcpListenerClientStates struct {
 	upstreamToolBaseline    *tools.ToolBaseline
 	resetAuthority          *ResetAuthority
 	resetAuthorityConfig    string
-	driftEdge               tools.DetectDriftRisingEdge
 	degradationReporter     mcpListenerDegradationReporter
 	principalSecret         [32]byte
 	principalSecretErr      error
@@ -525,9 +524,6 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 	if state == nil || cfg == nil ||
 		(cfg.Action == "" && cfg.BindingUnknownAction == "" && cfg.BindingNoBaselineAction == "" && !cfg.DetectDrift) {
 		return nil
-	}
-	if s.driftEdge.Observe(cfg.DetectDrift) {
-		s.resetDriftState()
 	}
 	return &tools.ToolScanConfig{
 		Baseline:                state.baseline,

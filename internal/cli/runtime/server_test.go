@@ -1602,6 +1602,22 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	if toolCfg.BindingUnknownAction != config.ActionBlock || toolCfg.BindingNoBaselineAction != config.ActionWarn {
 		t.Fatalf("tool binding actions = %q/%q, want block/warn", toolCfg.BindingUnknownAction, toolCfg.BindingNoBaselineAction)
 	}
+	// server_lifecycle calls this builder again after reload. A detect_drift
+	// false->true change must retain prior hashes until a signed reset is
+	// consumed, rather than silently accepting a new baseline.
+	if drifted, _ := baseline.CheckAndUpdate("approved", "hash-before-disable"); drifted {
+		t.Fatal("initial tool baseline unexpectedly drifted")
+	}
+	cfg.MCPToolScanning.DetectDrift = false
+	_ = buildMCPToolCfg(cfg, extra, baseline)
+	cfg.MCPToolScanning.DetectDrift = true
+	_ = buildMCPToolCfg(cfg, extra, baseline)
+	if got := baseline.DriftEpoch(); got != 0 {
+		t.Fatalf("server reload reset tool baseline epoch to %d without authority", got)
+	}
+	if drifted, previous, _ := baseline.CheckAndUpdatePromote("approved", "hash-after-reload", false, false); !drifted || previous != "hash-before-disable" {
+		t.Fatalf("server reload discarded trusted baseline: drifted=%v previous=%q", drifted, previous)
+	}
 	if chain := buildMCPChainMatcher(cfg, metrics.New()); chain == nil {
 		t.Fatal("expected chain matcher when tool chain detection is enabled")
 	}

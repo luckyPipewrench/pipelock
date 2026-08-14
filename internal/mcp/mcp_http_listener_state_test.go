@@ -68,6 +68,31 @@ func TestMCPListenerClientStates_EdgeTransitions(t *testing.T) {
 	}
 }
 
+func TestMCPListenerDetectDriftReloadCannotResetBaseline(t *testing.T) {
+	states := newMCPListenerClientStates(nil)
+	state := newMCPListenerClientState("reload", mcpListenerStateKey("reload"))
+	cfg := &tools.ToolScanConfig{Action: "block", DetectDrift: true}
+	if states.toolConfig(state, cfg) == nil {
+		t.Fatal("enabled drift config was discarded")
+	}
+	if drifted, _ := states.upstreamToolBaseline.CheckAndUpdate("approved", "hash-before-disable"); drifted {
+		t.Fatal("initial baseline unexpectedly drifted")
+	}
+
+	// A false->true reload used to clear this baseline without authority. It
+	// now preserves the last trusted hash until a signed reset is consumed.
+	cfg.DetectDrift = false
+	_ = states.toolConfig(state, cfg)
+	cfg.DetectDrift = true
+	_ = states.toolConfig(state, cfg)
+	if got := states.upstreamDriftEpoch(); got != 0 {
+		t.Fatalf("detect_drift reload reset epoch to %d without authority", got)
+	}
+	if drifted, previous, _ := states.upstreamToolBaseline.CheckAndUpdatePromote("approved", "hash-after-reload", false, false); !drifted || previous != "hash-before-disable" {
+		t.Fatalf("detect_drift reload discarded trusted baseline: drifted=%v previous=%q", drifted, previous)
+	}
+}
+
 func TestMCPListenerTokenHelpers_EdgeCases(t *testing.T) {
 	valid := strings.Repeat("a", 43)
 	for _, tc := range []struct {

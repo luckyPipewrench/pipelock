@@ -525,13 +525,17 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 // read error. A final record without a trailing newline is returned with io.EOF.
 func readBoundedLine(r *bufio.Reader, limit int) (line []byte, overLimit bool, err error) {
 	var buf []byte
+	// During accumulation the terminator has not necessarily arrived yet:
+	// ReadSlice can hand back "\r" at the end of one fragment and "\n" at the
+	// start of the next, so a per-fragment terminator test misclassifies a legal
+	// CRLF record sitting exactly on the boundary. Accumulate against a two-byte
+	// grace, which is the longest terminator, and make the exact decision once the
+	// whole record is in hand. The grace bounds memory; the final check bounds the
+	// record.
+	const maxTerminator = 2
 	for {
 		chunk, readErr := r.ReadSlice('\n')
-		// The limit bounds the RECORD, not the record plus its terminator.
-		// Counting the newline would reject a record of exactly limit content
-		// bytes, which is a legal record, and reject it differently depending on
-		// whether the sender used LF or CRLF.
-		if terminatedLen(buf, chunk) > limit {
+		if len(buf)+len(chunk) > limit+maxTerminator {
 			overLimit = true
 			// Keep draining to the newline so the next read starts at a record
 			// boundary rather than mid-record.
@@ -542,25 +546,18 @@ func readBoundedLine(r *bufio.Reader, limit int) (line []byte, overLimit bool, e
 		if errors.Is(readErr, bufio.ErrBufferFull) {
 			continue
 		}
+		// The record is complete. Decide against its content length, with the
+		// terminator removed, so LF and CRLF senders get the same maximum.
+		record := trimTrailingNewline(buf)
+		if !overLimit && len(record) > limit {
+			overLimit = true
+			record = nil
+		}
 		if readErr != nil {
-			return trimTrailingNewline(buf), overLimit, readErr
+			return record, overLimit, readErr
 		}
-		return trimTrailingNewline(buf), overLimit, nil
+		return record, overLimit, nil
 	}
-}
-
-// terminatedLen reports the content length of buf plus chunk, excluding a
-// trailing line terminator on chunk. Both LF and CRLF are excluded so the two
-// line endings admit the same maximum record.
-func terminatedLen(buf, chunk []byte) int {
-	n := len(buf) + len(chunk)
-	if bytes.HasSuffix(chunk, []byte("\n")) {
-		n--
-		if bytes.HasSuffix(chunk, []byte("\r\n")) {
-			n--
-		}
-	}
-	return n
 }
 
 func trimTrailingNewline(b []byte) []byte {

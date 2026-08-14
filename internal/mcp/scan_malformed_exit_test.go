@@ -240,10 +240,22 @@ func TestReadBoundedLineExcludesTheTerminator(t *testing.T) {
 		{"one over the limit, CRLF", strings.Repeat("a", limit+1), "\r\n", true},
 		{"exactly the limit, unterminated", strings.Repeat("a", limit), "", false},
 		{"one over the limit, unterminated", strings.Repeat("a", limit+1), "", true},
+		{
+			// With a 16-byte reader, 63 content bytes puts the CR at the last
+			// position of a fragment and the LF at the start of the next, so the
+			// terminator is split across two ReadSlice calls. A per-fragment
+			// terminator test counted that CR as content and marked this legal
+			// record over-limit.
+			name: "CRLF split across fragments at the boundary", record: strings.Repeat("a", limit-1),
+			terminate: "\r\n", wantOver: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// A small reader forces ReadSlice to fragment, which is the condition
+			// that split a CRLF terminator across two fragments and made a legal
+			// record on the boundary look over-limit.
 			r := bufio.NewReaderSize(strings.NewReader(tt.record+tt.terminate), 16)
 			line, overLimit, err := readBoundedLine(r, limit)
 			if err != nil && !errors.Is(err, io.EOF) {

@@ -108,6 +108,10 @@ type ToolScanConfig struct {
 	// DriftBaseline, when set, is used only for definition-drift detection.
 	// It must never be used for session binding decisions.
 	DriftBaseline *ToolBaseline
+	// ExpectedDriftEpoch binds a response to the listener baseline generation
+	// captured before it was sent upstream. A response from before an operator
+	// re-baseline must not seed the new baseline after it returns.
+	ExpectedDriftEpoch *uint64
 	// DriftRemediation is included in a drift block so an operator has a
 	// narrow recovery action instead of disabling drift detection.
 	DriftRemediation string
@@ -140,6 +144,7 @@ type ToolBaseline struct {
 	pendingTools   map[string]struct{}                 // names admitted for a response that has not forwarded yet
 	hasBaseline    bool                                // true after first SetKnownTools call
 	hasA2A         bool                                // true after first SetKnownA2AMethods call
+	driftEpoch     uint64                              // increments when operator reset clears drift state
 }
 
 // NewToolBaseline creates a new empty tool baseline.
@@ -321,6 +326,9 @@ type DriftEvaluation struct {
 	// CapacityExceeded reports that the definition could not be represented in
 	// the baseline. It is a fail-closed outcome, never an empty evaluation.
 	CapacityExceeded bool
+	// EpochChanged reports that an operator re-baselined after the response
+	// left the upstream. Its stale definition must not be committed.
+	EpochChanged bool
 	// Drifted reports that a stored definition changed.
 	Drifted bool
 	// Cues lists what the change introduced. Empty means the change was
@@ -361,6 +369,9 @@ type DefinitionEvaluation struct {
 	Params []string
 	// Structural is the digest of everything except the description.
 	Structural string
+	// ExpectedDriftEpoch, when non-nil, rejects a response if the baseline was
+	// reset after this response was sent upstream.
+	ExpectedDriftEpoch *uint64
 	// PromoteNew stores a first sighting. Block mode withholds it when the
 	// definition already carries a finding.
 	PromoteNew bool
@@ -386,6 +397,9 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 	promoteNew, promoteChanged, classify := in.PromoteNew, in.PromoteChanged, in.Classify
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
+	if in.ExpectedDriftEpoch != nil && tb.driftEpoch != *in.ExpectedDriftEpoch {
+		return DriftEvaluation{EpochChanged: true}
+	}
 
 	prevHash, exists := tb.hashes[name]
 	if !exists && len(tb.hashes) >= maxBaselineTools {
@@ -529,10 +543,31 @@ func diffStringSlices(a, b []string) (added, removed []string) {
 func (tb *ToolBaseline) ResetDriftState() {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
+	tb.driftEpoch++
 	tb.hashes = make(map[string]string)
 	tb.structural = make(map[string]string)
 	tb.descs = make(map[string]string)
 	tb.params = make(map[string][]string)
+}
+
+// DriftEpoch returns the generation of the drift baseline. A listener captures
+// it before upstream work and binds any returned tools/list to that generation.
+func (tb *ToolBaseline) DriftEpoch() uint64 {
+	if tb == nil {
+		return 0
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.driftEpoch
+}
+
+func (tb *ToolBaseline) matchesDriftEpoch(expected uint64) bool {
+	if tb == nil {
+		return true
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.driftEpoch == expected
 }
 
 // DetectDriftRisingEdge tracks the previous detect_drift value across
@@ -1451,7 +1486,10 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
 	}
 
-	matches, observations, capacityExceeded := scanToolDefs(tools, sc, cfg)
+	matches, observations, capacityExceeded, epochChanged := scanToolDefs(tools, sc, cfg)
+	if epochChanged {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
+	}
 	if capacityExceeded {
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_capacity", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
 	}
@@ -1526,13 +1564,16 @@ func toolScanCapacityLimit(defs []ToolDef, names []string, cfg *ToolScanConfig) 
 	if driftBaseline == nil {
 		driftBaseline = cfg.Baseline
 	}
+	if cfg.ExpectedDriftEpoch != nil && !driftBaseline.matchesDriftEpoch(*cfg.ExpectedDriftEpoch) {
+		return "tool_definition_baseline_reset"
+	}
 	if cfg.DetectDrift && driftBaseline != nil && !driftBaseline.CanTrackDefinitions(names) {
 		return "tool_definition_baseline_capacity"
 	}
 	return ""
 }
 
-func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded bool) {
+func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool) {
 	confusableNames := confusableToolNameCollisions(tools)
 
 	for _, tool := range tools {
@@ -1637,13 +1678,14 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// change that only adds descriptive text so a legitimate vendor
 			// update does not re-report forever.
 			eval := driftBaseline.EvaluateDefinition(DefinitionEvaluation{
-				Name:           tool.Name,
-				Hash:           hash,
-				Desc:           tool.Description,
-				Params:         paramNames,
-				Structural:     structuralDigest(tool),
-				PromoteNew:     promoteNew,
-				PromoteChanged: promoteChanged,
+				Name:               tool.Name,
+				Hash:               hash,
+				Desc:               tool.Description,
+				Params:             paramNames,
+				Structural:         structuralDigest(tool),
+				ExpectedDriftEpoch: cfg.ExpectedDriftEpoch,
+				PromoteNew:         promoteNew,
+				PromoteChanged:     promoteChanged,
 				// hasFinding carries every earlier per-tool verdict in this
 				// loop: injection, poison, confusable name, exfil parameter.
 				PromoteAccepted: cfg.Action != "block" || !hasFinding,
@@ -1651,6 +1693,9 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},
 			})
+			if eval.EpochChanged {
+				return matches, observations, false, true
+			}
 			if eval.CapacityExceeded {
 				capacityExceeded = true
 				continue
@@ -1682,7 +1727,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 	}
 
-	return matches, observations, capacityExceeded
+	return matches, observations, capacityExceeded, false
 }
 
 func confusableToolNameCollisions(tools []ToolDef) map[string]bool {

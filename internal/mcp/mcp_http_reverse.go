@@ -449,6 +449,7 @@ func RunHTTPListenerProxy(
 				)
 			}
 		}
+		var upstreamDriftEpoch uint64
 		statefulControls := listenerHasStatefulControls(opts)
 		principalControls := listenerHasPrincipalScopedControls(opts)
 		requireStateToken := listenerRequiresStateToken(opts)
@@ -462,11 +463,16 @@ func RunHTTPListenerProxy(
 			clientState = state
 			clientStateKey = state.key
 			listenerToolCfgFn := func() *tools.ToolScanConfig {
-				return listenerClients.toolConfig(clientState, opts.toolCfg())
+				return listenerClients.toolConfigAtDriftEpoch(clientState, opts.toolCfg(), upstreamDriftEpoch)
 			}
 			requestBaseOpts.ToolCfg = listenerToolCfgFn()
 			requestBaseOpts.ToolCfgFn = listenerToolCfgFn
 		}
+		setClientState(clientState)
+		// toolConfig can consume a detect-drift rising edge and reset the shared
+		// baseline. Capture only after that configuration transition, but still
+		// before this request reaches the upstream.
+		upstreamDriftEpoch = listenerClients.upstreamDriftEpoch()
 		setClientState(clientState)
 		if statefulControls && listenerPrincipal.key != "" {
 			if state, ok := listenerClients.stateForPrincipal(listenerPrincipal); ok {
@@ -2189,6 +2195,7 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 		// tokenless request could mutate or reuse.
 		opts.ToolCfg = &tools.ToolScanConfig{
 			DriftBaseline:           toolCfg.DriftBaseline,
+			ExpectedDriftEpoch:      toolCfg.ExpectedDriftEpoch,
 			DriftRemediation:        toolCfg.DriftRemediation,
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,

@@ -2117,6 +2117,48 @@ func TestScanTools_BaselineCapacityIsUninspectable(t *testing.T) {
 	}
 }
 
+func TestScanTools_StaleDriftEpochFailsClosedWithoutCommitting(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	epoch := baseline.DriftEpoch()
+	baseline.ResetDriftState()
+
+	result := ScanTools(
+		[]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"stale_tool","description":"safe"}]}}`),
+		sc,
+		&ToolScanConfig{Action: "warn", Baseline: baseline, DetectDrift: true, ExpectedDriftEpoch: &epoch},
+	)
+	if result.Clean || result.ResourceLimit != "tool_definition_baseline_reset" {
+		t.Fatalf("stale epoch result = %+v, want non-clean baseline reset outcome", result)
+	}
+	baseline.mu.Lock()
+	defer baseline.mu.Unlock()
+	if len(baseline.hashes) != 0 {
+		t.Fatalf("stale response committed hashes = %#v", baseline.hashes)
+	}
+}
+
+func TestToolBaseline_EvaluateDefinitionRejectsStaleDriftEpoch(t *testing.T) {
+	baseline := NewToolBaseline()
+	epoch := baseline.DriftEpoch()
+	baseline.ResetDriftState()
+
+	eval := baseline.EvaluateDefinition(DefinitionEvaluation{
+		Name:               "stale_tool",
+		Hash:               "stale-hash",
+		ExpectedDriftEpoch: &epoch,
+		PromoteNew:         true,
+	})
+	if !eval.EpochChanged {
+		t.Fatalf("stale definition evaluation = %+v, want epoch change", eval)
+	}
+	baseline.mu.Lock()
+	defer baseline.mu.Unlock()
+	if len(baseline.hashes) != 0 {
+		t.Fatalf("stale definition committed hashes = %#v", baseline.hashes)
+	}
+}
+
 // --- Both injection and poison ---
 
 // --- Batch response ---

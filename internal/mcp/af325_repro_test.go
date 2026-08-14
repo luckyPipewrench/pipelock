@@ -269,6 +269,99 @@ func TestAF328_OperatorResetRebaselinesListenerInventory(t *testing.T) {
 	}
 }
 
+func TestAF330_ListenerResetRejectsPreResetToolsListResponse(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var calls atomic.Int32
+	const stale = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"stale_tool","description":"Stale inventory."}]}}`
+	const fresh = `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"fresh_tool","description":"Fresh inventory."}]}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll(upstream request): %v", err)
+			return
+		}
+		if !strings.Contains(string(body), `"method":"tools/list"`) {
+			t.Errorf("unexpected upstream request: %s", body)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if calls.Add(1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			_, _ = w.Write([]byte(stale))
+			return
+		}
+		response := fresh
+		if strings.Contains(string(body), `"id":3`) {
+			response = strings.Replace(fresh, `"id":2`, `"id":3`, 1)
+		}
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(upstream.Close)
+
+	resetPath := filepath.Join(t.TempDir(), "drift-reset")
+	toolCfg := af325ToolCfg()
+	toolCfg.ListenerDriftResetFile = resetPath
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:  testScannerForHTTP(t),
+		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+		ToolCfg:  toolCfg,
+	})
+
+	type postResult struct {
+		body string
+		err  error
+	}
+	firstResult := make(chan postResult, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+		if err != nil {
+			firstResult <- postResult{err: err}
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			firstResult <- postResult{err: err}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		firstResult <- postResult{body: string(body), err: err}
+	}()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first tools/list did not reach upstream")
+	}
+	if err := os.WriteFile(resetPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rebaselined := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); strings.Contains(rebaselined, `"error"`) || !strings.Contains(rebaselined, "fresh_tool") {
+		t.Fatalf("post-reset tools/list = %s, want fresh inventory", rebaselined)
+	}
+
+	close(releaseFirst)
+	select {
+	case result := <-firstResult:
+		if result.err != nil {
+			t.Fatalf("read pre-reset tools/list response: %v", result.err)
+		}
+		if !strings.Contains(result.body, `"error"`) || !strings.Contains(result.body, "tool_definition_baseline_reset") {
+			t.Fatalf("pre-reset tools/list = %s, want explicit stale-baseline block", result.body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pre-reset tools/list did not complete")
+	}
+
+	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`); strings.Contains(again, `"error"`) || !strings.Contains(again, "fresh_tool") {
+		t.Fatalf("fresh inventory after stale response = %s, want unchanged post-reset baseline", again)
+	}
+}
+
 // TestAF325_PlainClientRugPullIsRecordedAsDegraded pins the DEGRADATION
 // reporting for a tokenless client: the per-client controls that need retained
 // state are unavailable, and the listener says so once per window with a count

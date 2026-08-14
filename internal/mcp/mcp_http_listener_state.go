@@ -540,6 +540,23 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 	}
 }
 
+// toolConfigAtDriftEpoch binds this request's tools/list response to the
+// shared listener drift baseline as it existed before upstream work began.
+func (s *mcpListenerClientStates) toolConfigAtDriftEpoch(state *mcpListenerClientState, cfg *tools.ToolScanConfig, epoch uint64) *tools.ToolScanConfig {
+	toolCfg := s.toolConfig(state, cfg)
+	if toolCfg != nil && toolCfg.DetectDrift {
+		toolCfg.ExpectedDriftEpoch = &epoch
+	}
+	return toolCfg
+}
+
+func (s *mcpListenerClientStates) upstreamDriftEpoch() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.upstreamToolBaseline.DriftEpoch()
+}
+
 func (s *mcpListenerClientStates) resetDriftState() {
 	s.upstreamToolBaseline.ResetDriftState()
 }

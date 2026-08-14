@@ -1291,18 +1291,39 @@ func assertDurableAudit(t *testing.T, path, operation, outcome string) {
 	t.Fatalf("durable audit %s/%s not found in %s", operation, outcome, path)
 }
 
+// assertDurableAuditAuthorization requires the authorization on BOTH the intent
+// and the outcome record.
+//
+// Accepting either one is not enough. The intent record is written before the
+// operation runs, so a version that recorded the exceptional authorization on
+// the way in and dropped it from the successful outcome would still satisfy a
+// match-any check, and the durable record of WHAT WAS ACTUALLY ALLOWED is the
+// outcome. That is the record an operator reads after an incident.
 func assertDurableAuditAuthorization(t *testing.T, path, operation, authorization string) {
 	t.Helper()
+	seen := make(map[string]bool, 2)
 	for _, line := range strings.Split(strings.TrimSpace(string(mustReadFile(t, path))), "\n") {
 		var event map[string]any
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-		if event["event"] == "commitment_key_lifecycle" && event["operation"] == operation && event["authorization"] == authorization {
-			return
+		if event["event"] != "commitment_key_lifecycle" || event["operation"] != operation {
+			continue
+		}
+		if event["authorization"] != authorization {
+			continue
+		}
+		if phase, ok := event["phase"].(string); ok {
+			seen[phase] = true
 		}
 	}
-	t.Fatalf("durable audit %s with authorization %q not found in %s", operation, authorization, path)
+	for _, phase := range []string{"intent", "outcome"} {
+		if !seen[phase] {
+			t.Fatalf("durable audit %s %s record does not carry authorization %q in %s; "+
+				"the exceptional authorization has to survive onto the record of what was allowed",
+				operation, phase, authorization, path)
+		}
+	}
 }
 
 func assertDurableMutationAuditPair(t *testing.T, path, operation, outcome string) {

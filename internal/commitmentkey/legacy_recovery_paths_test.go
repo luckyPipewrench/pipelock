@@ -5,8 +5,10 @@ package commitmentkey
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,11 +25,15 @@ func TestRestoreLegacyUnverifiedRefusesEveryUnusableSource(t *testing.T) {
 		name    string
 		prepare func(t *testing.T, source string)
 		want    string
+		wantIs  error
 	}{
 		{
+			// Matched by class, not by message: the operating system chooses the
+			// wording, so a text match fails on a platform without any product
+			// regression behind it.
 			name:    "source does not exist",
 			prepare: func(*testing.T, string) {},
-			want:    "no such file",
+			wantIs:  fs.ErrNotExist,
 		},
 		{
 			name: "source is not JSON",
@@ -58,8 +64,11 @@ func TestRestoreLegacyUnverifiedRefusesEveryUnusableSource(t *testing.T) {
 			if err == nil {
 				t.Fatal("legacy recovery accepted an unusable source; the escape hatch must stay narrow")
 			}
-			if got := err.Error(); !contains(got, tt.want) {
-				t.Errorf("error = %q, want it to mention %q", got, tt.want)
+			if tt.wantIs != nil && !errors.Is(err, tt.wantIs) {
+				t.Errorf("error = %v, want it to wrap %v", err, tt.wantIs)
+			}
+			if tt.want != "" && !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), tt.want)
 			}
 		})
 	}
@@ -129,16 +138,4 @@ func TestRestoreLegacyUnverifiedRefusesAnUnwritableDestination(t *testing.T) {
 	} else if errors.Is(err, ErrInvalidKeyring) {
 		t.Errorf("error = %v, want a write failure rather than an invalid-keyring verdict", err)
 	}
-}
-
-func contains(haystack, needle string) bool {
-	return len(needle) == 0 || (len(haystack) >= len(needle) &&
-		func() bool {
-			for i := 0; i+len(needle) <= len(haystack); i++ {
-				if haystack[i:i+len(needle)] == needle {
-					return true
-				}
-			}
-			return false
-		}())
 }

@@ -6,6 +6,7 @@
 package sandbox
 
 import (
+	"context"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -18,7 +19,7 @@ func TestCmdNeedsHardeningGate(t *testing.T) {
 		want bool
 	}{
 		{name: "nil command", want: false},
-		{name: "ordinary command", cmd: exec.Command("true"), want: false}, // #nosec G204 G702 -- fixed literal test command
+		{name: "ordinary command", cmd: exec.CommandContext(context.Background(), "true"), want: false}, // #nosec G204 G702 -- fixed literal test command
 		{
 			name: "uid mapping",
 			cmd: &exec.Cmd{SysProcAttr: &syscall.SysProcAttr{

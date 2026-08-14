@@ -814,10 +814,10 @@ func TestResetAuthorityRejectsSignedOverlongDelegationAndPreservesRemovalFailure
 	if err := os.WriteFile(path, resetDelegationBytes(t, delegation), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
+	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- test needs a searchable but unwritable directory.
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the directory so t.TempDir cleanup can remove it.
 	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(0))); decision.Result != ResetAuthorityRemoveFailed {
 		t.Fatalf("readable but non-removable reset decision = %+v", decision)
 	}

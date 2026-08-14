@@ -6,6 +6,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -108,7 +109,7 @@ func TestPreparedSandboxCmd_EagerHardeningOrderingAndFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	startFailure := &PreparedSandboxCmd{
-		Cmd:             exec.Command("/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
+		Cmd:             exec.CommandContext(context.Background(), "/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
 		readinessReader: startFailureReader,
 		readinessWriter: startFailureWriter,
 	}
@@ -124,7 +125,7 @@ func TestPreparedSandboxCmd_EagerHardeningOrderingAndFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	mappedStartFailure := &PreparedSandboxCmd{
-		Cmd:                       exec.Command("/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
+		Cmd:                       exec.CommandContext(context.Background(), "/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
 		ParentHardeningAfterStart: true,
 		readinessReader:           mappedStartReader,
 		readinessWriter:           mappedStartWriter,

@@ -104,7 +104,7 @@ func TestRunProxyWithSandboxLaunchRejectsNilAndFailedMappedLaunch(t *testing.T) 
 	}
 
 	launch := &sandbox.PreparedSandboxCmd{
-		Cmd:                       exec.Command("/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
+		Cmd:                       exec.CommandContext(context.Background(), "/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
 		ParentHardeningAfterStart: true,
 	}
 	err := RunProxyWithSandboxLaunch(context.Background(), launch, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})

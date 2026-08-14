@@ -953,7 +953,7 @@ func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) 
 		t.Fatalf("capacity reason = %q, want visible fail-closed denial", reason)
 	}
 	logger.Close()
-	auditRaw, err := os.ReadFile(auditPath)
+	auditRaw, err := os.ReadFile(auditPath) // #nosec G304 -- auditPath is inside t.TempDir.
 	if err != nil {
 		t.Fatalf("read capacity audit: %v", err)
 	}

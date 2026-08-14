@@ -193,7 +193,7 @@ func TestKeyExportPublicRejectsUnsafePathsAndWriteFailures(t *testing.T) {
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("export-public overwrote an existing file without --force")
 	}
-	if got, err := os.ReadFile(existing); err != nil || string(got) != "keep" {
+	if got, err := os.ReadFile(existing); err != nil || string(got) != "keep" { // #nosec G304 -- existing is inside t.TempDir.
 		t.Fatalf("existing public key changed = %q, %v", got, err)
 	}
 
@@ -277,7 +277,7 @@ func TestResetMintRejectsOperatorInputAndWriteFailures(t *testing.T) {
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("mint overwrote an existing delegation without --force")
 	}
-	if got, err := os.ReadFile(existing); err != nil || string(got) != "keep" {
+	if got, err := os.ReadFile(existing); err != nil || string(got) != "keep" { // #nosec G304 -- existing is inside t.TempDir.
 		t.Fatalf("existing delegation changed = %q, %v", got, err)
 	}
 

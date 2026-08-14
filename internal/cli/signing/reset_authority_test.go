@@ -113,3 +113,252 @@ func TestResetMintRejectsWrongPurposeKey(t *testing.T) {
 		t.Fatalf("mint wrote a delegation with the wrong key purpose: %v", err)
 	}
 }
+
+func newResetAuthorityKey(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "reset-authority.json")
+	cmd := keyGenerateCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--purpose", "mcp-reset-authority", "--out", path, "--id", "operator-primary"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("generate reset authority key: %v", err)
+	}
+	return path
+}
+
+func TestKeyExportPublicRejectsUnsafePathsAndWriteFailures(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := newResetAuthorityKey(t, dir)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "relative key",
+			args: []string{"--key", "relative.json", "--out", filepath.Join(dir, "public")},
+		},
+		{
+			name: "relative output",
+			args: []string{"--key", keyPath, "--out", "relative.pub"},
+		},
+		{
+			name: "malformed key",
+			args: func() []string {
+				bad := filepath.Join(dir, "bad-key")
+				if err := os.WriteFile(bad, []byte("not a key"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return []string{"--key", bad, "--out", filepath.Join(dir, "bad.pub")}
+			}(),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := keyExportPublicCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err == nil {
+				t.Fatalf("export-public accepted %s", test.name)
+			}
+		})
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeKey, err := filepath.Rel(cwd, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := keyExportPublicCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--key", relativeKey, "--out", filepath.Join(dir, "relative-key.pub")})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("export-public accepted an existing key via a relative path")
+	}
+
+	existing := filepath.Join(dir, "existing.pub")
+	if err := os.WriteFile(existing, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = keyExportPublicCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--key", keyPath, "--out", existing})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("export-public overwrote an existing file without --force")
+	}
+	if got, err := os.ReadFile(existing); err != nil || string(got) != "keep" {
+		t.Fatalf("existing public key changed = %q, %v", got, err)
+	}
+
+	parent := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(parent, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = keyExportPublicCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--key", keyPath, "--out", filepath.Join(parent, "public")})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "stat output file") {
+		t.Fatalf("export-public file-as-parent error = %v", err)
+	}
+}
+
+func TestResetMintRejectsOperatorInputAndWriteFailures(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := newResetAuthorityKey(t, dir)
+	validArgs := []string{
+		"--key", keyPath,
+		"--kind", "drift",
+		"--target", "mcp://fixture",
+		"--instance", strings.Repeat("a", 32),
+		"--epoch", "4",
+		"--out", filepath.Join(dir, "delegation"),
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "relative key", args: []string{"--key", "relative", "--kind", "drift", "--target", "mcp://fixture", "--instance", strings.Repeat("a", 32), "--out", filepath.Join(dir, "out")}},
+		{name: "zero ttl", args: append(append([]string(nil), validArgs...), "--ttl", "0s")},
+		{name: "invalid kind", args: append(append([]string(nil), validArgs...), "--kind", "other")},
+		{name: "ttl above authority limit", args: append(append([]string(nil), validArgs...), "--ttl", "16m")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := resetMintCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err == nil {
+				t.Fatalf("mint accepted %s", test.name)
+			}
+		})
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeKey, err := filepath.Rel(cwd, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := resetMintCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--key", relativeKey,
+		"--kind", "drift",
+		"--target", "mcp://fixture",
+		"--instance", strings.Repeat("a", 32),
+		"--out", filepath.Join(dir, "relative-key-delegation"),
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("mint accepted an existing key via a relative path")
+	}
+
+	existing := filepath.Join(dir, "existing-delegation")
+	if err := os.WriteFile(existing, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = resetMintCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--key", keyPath, "--kind", "drift", "--target", "mcp://fixture", "--instance", strings.Repeat("a", 32), "--out", existing,
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("mint overwrote an existing delegation without --force")
+	}
+	if got, err := os.ReadFile(existing); err != nil || string(got) != "keep" {
+		t.Fatalf("existing delegation changed = %q, %v", got, err)
+	}
+
+	parent := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(parent, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = resetMintCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--key", keyPath, "--kind", "drift", "--target", "mcp://fixture", "--instance", strings.Repeat("a", 32), "--out", filepath.Join(parent, "delegation"),
+	})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "stat output file") {
+		t.Fatalf("mint file-as-parent error = %v", err)
+	}
+}
+
+func TestResetInspectAndRevokeRejectUntrustedFilesystemState(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := newResetAuthorityKey(t, dir)
+	publicPath := filepath.Join(dir, "authority.pub")
+	export := keyExportPublicCmd()
+	export.SetOut(&bytes.Buffer{})
+	export.SetErr(&bytes.Buffer{})
+	export.SetArgs([]string{"--key", keyPath, "--out", publicPath})
+	if err := export.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name string
+		file string
+		key  string
+	}{
+		{name: "missing delegation", file: filepath.Join(dir, "missing"), key: publicPath},
+		{name: "malformed public key", file: filepath.Join(dir, "missing"), key: filepath.Join(dir, "missing-key")},
+		{name: "malformed delegation", file: filepath.Join(dir, "malformed"), key: publicPath},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "malformed delegation" {
+				if err := os.WriteFile(test.file, []byte("{bad"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := resetInspectCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--file", test.file, "--public-key-file", test.key})
+			if err := cmd.Execute(); err == nil {
+				t.Fatalf("inspect accepted %s", test.name)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name string
+		path func(t *testing.T) string
+	}{
+		{name: "missing", path: func(t *testing.T) string { return filepath.Join(dir, "missing-reset") }},
+		{name: "directory", path: func(t *testing.T) string { return dir }},
+		{name: "symlink", path: func(t *testing.T) string {
+			target := filepath.Join(dir, "target")
+			if err := os.WriteFile(target, []byte("pending"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(dir, "reset-link")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := resetRevokeCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--file", test.path(t)})
+			if err := cmd.Execute(); err == nil {
+				t.Fatalf("revoke accepted %s path", test.name)
+			}
+		})
+	}
+}

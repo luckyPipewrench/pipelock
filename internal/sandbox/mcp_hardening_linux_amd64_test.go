@@ -27,7 +27,6 @@ const (
 	mcpEnvironProofConfigEnv     = "PIPELOCK_MCP_ENVIRON_PROOF_CONFIG"
 	mcpEnvironProofMarkerEnv     = "PIPELOCK_SANDBOX_HARDENING_PROOF_MARKER"
 	mcpEnvironProofMarkerPathEnv = "PIPELOCK_MCP_ENVIRON_PROOF_MARKER_PATH"
-	mcpEnvironProofProxyPIDEnv   = "PIPELOCK_TEST_PROXY_PID"
 )
 
 const mcpEnvironProofDenied = `{"jsonrpc":"2.0","id":1,"result":{"proxy_environ":"denied","parent_hardening":"released"}}` + "\n"
@@ -64,7 +63,7 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 	server := filepath.Join(workspace, "mcp-environ-server.py")
 	serverScript := "import os\n" +
 		"import sys\n" +
-		"proxy_pid = int(os.environ[\"" + mcpEnvironProofProxyPIDEnv + "\"])\n" +
+		"proxy_pid = os.getppid()\n" +
 		"marker = os.environ[\"" + mcpEnvironProofMarkerEnv + "\"]\n" +
 		"try:\n" +
 		"    fd = os.open(f\"/proc/{proxy_pid}/environ\", os.O_RDONLY)\n" +
@@ -162,7 +161,6 @@ func runMCPEnvironProofHelper(t *testing.T, mode string) {
 		t.Fatalf("unknown MCP environ proof mode %q", mode)
 	}
 	args = append(args,
-		"--env", mcpEnvironProofProxyPIDEnv+"="+proxyPID,
 		"--env", mcpEnvironProofMarkerEnv+"="+marker,
 		"--", "python3", server,
 	)

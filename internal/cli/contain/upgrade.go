@@ -69,9 +69,11 @@ type upgradeEnv struct {
 	// Paths.
 	proxyUserName  string
 	pipelockTarget string
+	configPath     string
 	integrityDir   string
 	integrityPin   string
 	serviceName    string
+	proxyPort      int
 
 	// Readiness.
 	readinessTimeout time.Duration
@@ -94,9 +96,11 @@ func defaultUpgradeEnv(out, errOut io.Writer) *upgradeEnv {
 		chmod:            os.Chmod,
 		proxyUserName:    defaultProxyUser,
 		pipelockTarget:   defaultPipelockTarget,
+		configPath:       filepath.Join(defaultConfigDir, "pipelock.yaml"),
 		integrityDir:     defaultIntegrityDir,
 		integrityPin:     defaultIntegrityPin,
 		serviceName:      defaultServiceName,
+		proxyPort:        defaultProxyPort,
 		readinessTimeout: installReadinessTimeout,
 	}
 }
@@ -161,6 +165,7 @@ var (
 	errUpgradeRollback  = errors.New("rollback failed")
 	errUpgradeUpdate    = errors.New("pipelock update failed")
 	errUpgradeIntegrity = errors.New("pre-upgrade integrity check failed")
+	errUpgradeConfig    = errors.New("managed config preflight failed")
 )
 
 func runUpgrade(ctx context.Context, env *upgradeEnv, opts upgradeOpts) error {
@@ -232,6 +237,16 @@ func runUpgrade(ctx context.Context, env *upgradeEnv, opts upgradeOpts) error {
 				"an unreadable pin may indicate tampering)",
 			errUpgradeIntegrity, env.integrityPin, oldPinErr))
 	}
+
+	// The deployed binary was verified against its pin above before this check
+	// executes it. Keep this before backup, replacement, re-pinning, or service
+	// restart so a host whose managed config drifted out of containment posture
+	// stops with its running service untouched.
+	_, _ = fmt.Fprintln(w, "validating containment managed config...")
+	if err := preflightUpgradeManagedConfig(ctx, env); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%w: %w", errUpgradeConfig, err))
+	}
+	_, _ = fmt.Fprintln(w, "  managed config accepted")
 
 	// ── Step 3: back up the current binary ──────────────────────────────
 	_, _ = fmt.Fprintln(w, "backing up current binary...")
@@ -479,7 +494,10 @@ func upgradeRestartAndWait(ctx context.Context, env *upgradeEnv) error {
 	}
 }
 
-// upgradePostVerify runs the newly deployed binary's contain verify command.
+// upgradePostVerify runs the newly deployed binary's containment probes and
+// rechecks the managed config. The latter repeats the pre-mutation condition:
+// a concurrent config edit cannot make an otherwise successful binary upgrade
+// bless a host whose metrics surface no longer satisfies containment policy.
 func upgradePostVerify(ctx context.Context, env *upgradeEnv) error {
 	out, code, err := env.runCmd(ctx, env.pipelockTarget, "contain", "verify")
 	if err != nil {
@@ -487,6 +505,48 @@ func upgradePostVerify(ctx context.Context, env *upgradeEnv) error {
 	}
 	if code != 0 {
 		return fmt.Errorf("contain verify exited %d: %s", code, truncateForErr(out))
+	}
+	if err := preflightUpgradeManagedConfig(ctx, env); err != nil {
+		return err
+	}
+	return nil
+}
+
+// preflightUpgradeManagedConfig proves that the managed config remains valid
+// for both the deployed runtime binary and the containment service sandbox.
+// It intentionally runs only after runUpgrade verified the deployed binary's
+// integrity pin, because this invokes that binary as root.
+func preflightUpgradeManagedConfig(ctx context.Context, env *upgradeEnv) error {
+	configPath := filepath.Clean(env.configPath)
+	data, err := env.readFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read managed config %s: %w", configPath, err)
+	}
+	if _, err := containServiceReadOnlyPaths(data, env.proxyPort); err != nil {
+		return fmt.Errorf("validate managed config %s for containment: %w", configPath, err)
+	}
+
+	binaryHashBefore, err := env.hashFile(env.pipelockTarget)
+	if err != nil {
+		return fmt.Errorf("hash deployed binary before config check: %w", err)
+	}
+	out, code, err := env.runCmd(ctx, env.pipelockTarget, "check", "--config", configPath)
+	if err != nil {
+		return fmt.Errorf("run deployed binary config check for %s: %w", configPath, err)
+	}
+	if code != 0 {
+		detail := strings.TrimSpace(out)
+		if detail == "" {
+			detail = fmt.Sprintf("pipelock check exited %d", code)
+		}
+		return fmt.Errorf("deployed binary rejected managed config %s: %s", configPath, oneLine(detail))
+	}
+	binaryHashAfter, err := env.hashFile(env.pipelockTarget)
+	if err != nil {
+		return fmt.Errorf("hash deployed binary after config check: %w", err)
+	}
+	if binaryHashAfter != binaryHashBefore {
+		return errors.New("deployed binary changed during managed config check")
 	}
 	return nil
 }

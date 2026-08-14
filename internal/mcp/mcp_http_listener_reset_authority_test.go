@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 )
 
@@ -101,5 +102,23 @@ func TestMCPListenerSignedDriftResetCachesAuthorityAndAdvancesEpoch(t *testing.T
 	summary := resetAuthorityDecisionSummary(ResetAuthorityDecision{Result: ResetAuthorityWrongEpoch, ExpectedEpoch: 4})
 	if !strings.Contains(summary, "expected_epoch=4") {
 		t.Fatalf("wrong epoch summary = %q", summary)
+	}
+}
+
+func TestMCPListenerLogsUnavailableSignedDriftResetAuthority(t *testing.T) {
+	upstream, _ := principalStateUpstream(t)
+	opts := MCPProxyOpts{
+		Scanner:  testScannerForHTTP(t),
+		InputCfg: newHTTPInputCfg(config.ActionBlock),
+		ToolCfg: &tools.ToolScanConfig{
+			DetectDrift:                          true,
+			ListenerDriftResetFile:               filepath.Join(t.TempDir(), "reset"),
+			ListenerDriftResetAuthorityPublicKey: []byte("wrong-length"),
+			ListenerDriftResetTarget:             "mcp://listener-reset-test",
+		},
+	}
+	_, log := startListenerProxyWithOpts(t, upstream.URL, opts)
+	if !strings.Contains(log.String(), "tool drift reset authority unavailable") {
+		t.Fatalf("listener startup log = %q, want unavailable authority", log.String())
 	}
 }

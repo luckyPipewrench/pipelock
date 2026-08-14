@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 const principalStateTestBearer = "shared-listener-credential"
@@ -295,6 +296,105 @@ func TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed(t *t
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1; state-capacity block must not forward", calls.Load())
+	}
+}
+
+func TestHTTPListener_PrincipalState_RotatedBearerCapacityDeniesReadAndDelete(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			const (
+				oldBearer     = "principal-capacity-old"
+				newBearer     = "principal-capacity-new"
+				legacySession = "principal-capacity-legacy-session"
+			)
+
+			var active atomic.Value
+			active.Store(oldBearer)
+			var holdOld atomic.Bool
+			oldReachedConfig := make(chan struct{})
+			releaseOld := make(chan struct{})
+			defer func() {
+				select {
+				case <-releaseOld:
+				default:
+					close(releaseOld)
+				}
+			}()
+			var oldConfigOnce sync.Once
+
+			upstream, calls := principalStateUpstream(t)
+			compatibilityMode := false
+			adaptiveCfg := adaptiveCfgEnabled()
+			adaptiveCfg.EscalationThreshold = 1
+			listenerMetrics := metrics.New()
+			opts := principalStateOpts(t, "")
+			opts.ListenerBearerTokenFn = func() (string, error) { return active.Load().(string), nil }
+			opts.listenerStateTokenRequired = &compatibilityMode
+			opts.InputCfg = newHTTPInputCfg(config.ActionWarn)
+			opts.AdaptiveCfgFn = func() *config.AdaptiveEnforcement {
+				if holdOld.Load() {
+					oldConfigOnce.Do(func() { close(oldReachedConfig) })
+					<-releaseOld
+				}
+				return adaptiveCfg
+			}
+			opts.Store = &listenerDiagnosisStore{}
+			opts.Metrics = listenerMetrics
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+
+			holdOld.Store(true)
+			type result struct {
+				status int
+				body   string
+				err    error
+			}
+			oldResult := make(chan result, 1)
+			go func() {
+				req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", nil)
+				if err != nil {
+					oldResult <- result{err: fmt.Errorf("new old-bearer %s request: %w", method, err)}
+					return
+				}
+				if method == http.MethodGet {
+					req.Header.Set("Accept", "text/event-stream")
+				}
+				req.Header.Set("Mcp-Session-Id", legacySession)
+				req.Header.Set("Proxy-Authorization", "Bearer "+oldBearer)
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					oldResult <- result{err: fmt.Errorf("old-bearer %s request: %w", method, err)}
+					return
+				}
+				defer func() { _ = resp.Body.Close() }()
+				body, readErr := io.ReadAll(resp.Body)
+				oldResult <- result{status: resp.StatusCode, body: string(body), err: readErr}
+			}()
+
+			<-oldReachedConfig
+			active.Store(newBearer)
+			holdOld.Store(false)
+			if status, body := principalStateToolCall(t, baseURL, newBearer, 2, "read_file", nil); status != http.StatusOK || strings.Contains(body, "chain pattern") {
+				t.Fatalf("rotating bearer request = status %d body %s, want new state admission", status, body)
+			}
+			close(releaseOld)
+
+			got := <-oldResult
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.status != http.StatusServiceUnavailable || !strings.Contains(got.body, "state capacity exhausted") {
+				t.Fatalf("retired %s request = status %d body %s, want explicit state-capacity block", method, got.status, got.body)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("upstream calls = %d, want 1; capacity block must not forward", calls.Load())
+			}
+
+			rec := httptest.NewRecorder()
+			listenerMetrics.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+			if !strings.Contains(rec.Body.String(), `pipelock_scanner_hits_total{agent="",scanner="listener_principal_state_capacity"} 1`) {
+				t.Fatalf("capacity metric missing from listener output:\n%s", rec.Body.String())
+			}
+		})
 	}
 }
 

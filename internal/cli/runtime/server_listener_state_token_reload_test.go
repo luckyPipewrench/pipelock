@@ -122,6 +122,41 @@ logging:
 			t.Fatalf("upstream calls after enable = %d, want 1", got)
 		}
 
+		matcher := s.currentMCPChainMatcher()
+		if matcher == nil {
+			t.Fatal("token-required listener lost the chain matcher")
+		}
+		const chainSession = "mcp-listener-token-reload"
+		if got := matcher.Record(chainSession, "list_issues"); got.Matched {
+			t.Fatalf("untrusted-source prefix = %+v, want no match", got)
+		}
+		if got := matcher.Record(chainSession, "read_private_repo"); got.Matched {
+			t.Fatalf("two-step trifecta prefix = %+v, want no match", got)
+		}
+
+		unrelated := s.proxy.CurrentConfig().Clone()
+		unrelated.MCPSessionBinding.ListenerRequireStateToken = &required
+		unrelated.ToolChainDetection.WindowSize = 30
+		if err := reloadListenerStateToken(s, unrelated); err != nil {
+			t.Fatalf("unrelated reload: %v", err)
+		}
+		if !s.proxy.CurrentConfig().MCPSessionBinding.RequiresListenerStateToken() {
+			t.Fatal("unrelated reload dropped listener_require_state_token")
+		}
+		if s.proxy.CurrentConfig().ToolChainDetection.WindowSize != 30 {
+			t.Fatal("unrelated reload did not apply tool_chain_detection.window_size")
+		}
+		if got := s.currentMCPChainMatcher(); got != matcher {
+			t.Fatal("unrelated reload replaced the chain matcher")
+		}
+		if got := matcher.Record(chainSession, "create_pull_request"); !got.Matched || got.PatternName != "lethal-trifecta" {
+			t.Fatalf("chain state after unrelated reload = %+v, want preserved lethal trifecta", got)
+		}
+		unrelatedDenied := postTokenlessListenerToolCall(t, mcpAddr, 4)
+		if !strings.Contains(unrelatedDenied, "authenticated principal") {
+			t.Fatalf("unrelated reload dropped the token requirement: %s", unrelatedDenied)
+		}
+
 		compat := false
 		disabled := s.proxy.CurrentConfig().Clone()
 		disabled.MCPSessionBinding.ListenerRequireStateToken = &compat
@@ -131,7 +166,7 @@ logging:
 		if s.proxy.CurrentConfig().MCPSessionBinding.RequiresListenerStateToken() {
 			t.Fatal("disable reload left listener_require_state_token required")
 		}
-		restored := postTokenlessListenerToolCall(t, mcpAddr, 4)
+		restored := postTokenlessListenerToolCall(t, mcpAddr, 5)
 		if strings.Contains(restored, "authenticated principal") {
 			t.Fatalf("post-disable request was refused: %s", restored)
 		}
@@ -143,14 +178,18 @@ logging:
 }
 
 func reloadListenerStateToken(s *Server, cfg *config.Config) error {
+	s.stateMu.Lock()
 	s.lastReloadAt = time.Time{}
+	s.stateMu.Unlock()
 	return s.Reload(cfg)
 }
 
 func postTokenlessListenerToolCall(t *testing.T, addr string, id int) string {
 	t.Helper()
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`, id)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+addr+"/", strings.NewReader(body))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}

@@ -708,24 +708,13 @@ func (tb *ToolBaseline) IsKnownA2AMethod(method string) bool {
 	return tb.knownA2A[a2aMethodIdentity(method)]
 }
 
-// CheckNewTools compares a list of tool names against the baseline and returns
-// any that were not previously known. Newly seen tools are added to the baseline.
-// Respects maxBaselineTools to prevent unbounded memory growth.
-func (tb *ToolBaseline) CheckNewTools(names []string) ([]string, error) {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-	if !namesFitCapacity(tb.knownTools, names) {
-		return nil, ErrBaselineCapacity
-	}
-	var added []string
-	for _, n := range names {
-		if !tb.knownTools[n] {
-			added = append(added, n)
-			tb.knownTools[n] = true
-		}
-	}
-	return added, nil
-}
+// CheckNewTools was removed when tool-inventory admission moved to
+// ToolInventoryReservation below. It had no production caller after that change
+// and returned ([]string, error), so a future caller that ignored the error
+// would have read an empty "added" slice as "nothing was added" and allowed the
+// response - reintroducing exactly the capacity fail-open the reservation
+// exists to close. Reserve/commit is the only supported path; it cannot report
+// success without having taken the capacity it needs.
 
 // ToolInventoryReservation holds capacity reserved for one tools/list
 // response until its downstream write succeeds. It prevents two concurrent

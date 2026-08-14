@@ -2660,34 +2660,11 @@ func TestToolBaseline_SessionBinding(t *testing.T) {
 	}
 }
 
-func TestToolBaseline_PostBaselineNewTool(t *testing.T) {
-	tb := NewToolBaseline()
-	requireKnownTools(t, tb, []string{"read_file", "write_file"})
-
-	// Second tools/list with a new tool added.
-	added, err := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
-	if err != nil {
-		t.Fatalf("CheckNewTools: %v", err)
-	}
-
-	if len(added) != 1 || added[0] != "exec_command" {
-		t.Errorf("expected [exec_command] added, got %v", added)
-	}
-
-	// Now it should be known (CheckNewTools adds it).
-	if !tb.IsKnownTool("exec_command") {
-		t.Error("expected exec_command to be known after CheckNewTools")
-	}
-
-	// Second check should return nothing new.
-	added2, err := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
-	if err != nil {
-		t.Fatalf("CheckNewTools repeat: %v", err)
-	}
-	if len(added2) != 0 {
-		t.Errorf("expected no new tools on second check, got %v", added2)
-	}
-}
+// Post-baseline new-tool admission is covered against the LIVE path instead:
+// TestScanTools_BaselineCapacityIsUninspectable pins the reservation outcome,
+// and tools_fwd_test.go asserts the capacity reason reaches both the client
+// response and the operator log. The former CheckNewTools test exercised an
+// entry point with no production caller, which made that path look live.
 
 func TestToolBaseline_KnownToolsCap(t *testing.T) {
 	tb := NewToolBaseline()
@@ -2705,10 +2682,6 @@ func TestToolBaseline_KnownToolsCap(t *testing.T) {
 
 	if err := tb.SetKnownTools([]string{"overflow_tool"}); !errors.Is(err, ErrBaselineCapacity) {
 		t.Fatalf("SetKnownTools overflow error = %v, want ErrBaselineCapacity", err)
-	}
-
-	if _, err := tb.CheckNewTools([]string{"another_overflow"}); !errors.Is(err, ErrBaselineCapacity) {
-		t.Fatalf("CheckNewTools overflow error = %v, want ErrBaselineCapacity", err)
 	}
 }
 

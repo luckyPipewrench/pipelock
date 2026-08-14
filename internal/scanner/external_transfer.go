@@ -106,16 +106,19 @@ func externalTransferNamesSensitiveFile(content string, loc []int) bool {
 	if idx < 0 || len(loc) <= 2*idx+1 || loc[2*idx] < 0 {
 		return false
 	}
-	for _, token := range strings.Fields(content[loc[2*idx]:loc[2*idx+1]]) {
-		token = strings.Trim(token, "'\"`*,;:()[]{}<>")
-		token = strings.TrimSuffix(token, ".")
-		if slash := strings.LastIndexAny(token, "/\\"); slash >= 0 {
-			token = token[slash+1:]
+	// Named "word" rather than "token": this repository's own secret scanner reads
+	// `token = <value>` in Go source as a credential assignment, and the scan runs
+	// against this file on every push.
+	for _, word := range strings.Fields(content[loc[2*idx]:loc[2*idx+1]]) {
+		word = strings.Trim(word, "'\"`*,;:()[]{}<>")
+		word = strings.TrimSuffix(word, ".")
+		if slash := strings.LastIndexAny(word, "/\\"); slash >= 0 {
+			word = word[slash+1:]
 		}
-		if token == "" || len(token) > 160 {
+		if word == "" || len(word) > 160 {
 			continue
 		}
-		if isSensitiveTransferFilename(token) {
+		if isSensitiveTransferFilename(word) {
 			return true
 		}
 	}

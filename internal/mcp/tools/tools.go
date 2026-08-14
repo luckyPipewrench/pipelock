@@ -8,6 +8,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,11 +116,16 @@ type ToolScanConfig struct {
 	// DriftRemediation is included in a drift block so an operator has a
 	// narrow recovery action instead of disabling drift detection.
 	DriftRemediation string
-	// ListenerDriftResetFile is a root-owned, one-shot control file honored
+	// ListenerDriftResetFile contains a signed one-shot control file honored
 	// by the HTTP reverse listener to re-baseline its upstream tool inventory.
 	ListenerDriftResetFile string
-	Action                 string // warn, block
-	DetectDrift            bool
+	// ListenerDriftResetAuthorityPublicKey is the configured public half of an
+	// mcp-reset-authority key. The private half stays outside the proxy.
+	ListenerDriftResetAuthorityPublicKey ed25519.PublicKey
+	// ListenerDriftResetTarget is the stable identity a delegation must bind.
+	ListenerDriftResetTarget string
+	Action                   string // warn, block
+	DetectDrift              bool
 
 	// Session binding (optional). When BindingUnknownAction is non-empty,
 	// RunProxy wires tools/call validation into the input scanner.

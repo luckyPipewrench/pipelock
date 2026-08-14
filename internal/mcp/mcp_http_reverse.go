@@ -197,6 +197,13 @@ func RunHTTPListenerProxy(
 	}
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
+	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.ListenerDriftResetFile != "" {
+		if authority, authorityErr := listenerClients.authorityForToolDriftReset(toolCfg); authorityErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: tool drift reset authority unavailable: %v\n", authorityErr)
+		} else {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reset authority target=%q instance=%q epoch=0\n", authority.Target(), authority.InstanceID())
+		}
+	}
 
 	// Base opts shared across requests. Per-request fields (Rec) are
 	// overridden on a copy inside each request handler. The static
@@ -437,8 +444,8 @@ func RunHTTPListenerProxy(
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
 		fullRequestBaseOpts := requestBaseOpts
-		if listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW) {
-			resetReason := "operator re-baselined the HTTP listener tool inventory using mcp_tool_scanning.listener_drift_reset_file"
+		if reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW); reset.Result == ResetAuthorityAccepted {
+			resetReason := "operator re-baselined the HTTP listener tool inventory with a signed mcp-reset-authority delegation"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", resetReason)
 			if requestBaseOpts.AuditLogger != nil {
 				requestBaseOpts.AuditLogger.LogAnomaly(

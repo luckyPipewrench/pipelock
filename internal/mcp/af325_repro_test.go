@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/ed25519"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -197,10 +198,9 @@ func TestAF328_PlainClientAllowsBenignRefinement(t *testing.T) {
 	}
 }
 
-// TestAF328_SameUIDResetFileDoesNotRebaselineListenerInventory proves a wrapped
-// agent cannot re-baseline the listener's upstream inventory with a same-UID
-// owner-only file.
-func TestAF328_SameUIDResetFileDoesNotRebaselineListenerInventory(t *testing.T) {
+// TestAF328_SignedResetDelegationRebaselinesListenerInventory proves that the
+// listener reset path consumes the same signed authority gate as stdio.
+func TestAF328_SignedResetDelegationRebaselinesListenerInventory(t *testing.T) {
 	upstream, _ := af325Upstream(t, af325RugPullOnly)
 
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -211,10 +211,17 @@ func TestAF328_SameUIDResetFileDoesNotRebaselineListenerInventory(t *testing.T) 
 	t.Cleanup(auditLogger.Close)
 
 	resetPath := filepath.Join(t.TempDir(), "drift-reset")
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const target = "mcp://af328-listener"
 	toolCfg := af325ToolCfg()
 	toolCfg.ListenerDriftResetFile = resetPath
+	toolCfg.ListenerDriftResetAuthorityPublicKey = publicKey
+	toolCfg.ListenerDriftResetTarget = target
 
-	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+	baseURL, logBuf := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
 		Scanner:     testScannerForHTTP(t),
 		InputCfg:    &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
 		ToolCfg:     toolCfg,
@@ -229,20 +236,31 @@ func TestAF328_SameUIDResetFileDoesNotRebaselineListenerInventory(t *testing.T) 
 		t.Fatalf("changed inventory was not blocked with its remediation: %s", blocked)
 	}
 
-	// A same-UID control file is not an operator authorization.
-	if err := os.WriteFile(resetPath, nil, 0o600); err != nil {
+	instanceID := listenerResetInstance(t, logBuf.String())
+	now := time.Now()
+	delegation, err := MintResetDelegation(
+		privateKey, "af328-operator", ResetKindDrift, target, instanceID, 0,
+		now, now.Add(time.Minute), strings.Repeat("4", 32),
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	stillBlocked := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	if !strings.Contains(stillBlocked, `"error"`) || !strings.Contains(stillBlocked, "listener_drift_reset_file") {
-		t.Fatalf("same-UID reset unexpectedly re-baselined listener: %s", stillBlocked)
+	raw, err := MarshalResetDelegation(delegation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resetPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rebaselined := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	if strings.Contains(rebaselined, `"error"`) || !strings.Contains(rebaselined, "lookup_invoice") {
+		t.Fatalf("signed reset did not re-baseline listener: %s", rebaselined)
 	}
 	if _, err := os.Stat(resetPath); !os.IsNotExist(err) {
-		t.Errorf("the rejected reset file must be removed, not left to re-fire (err=%v)", err)
+		t.Errorf("accepted reset file must be removed, not left to re-fire (err=%v)", err)
 	}
-
-	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); !strings.Contains(again, `"error"`) {
-		t.Fatalf("listener baseline changed after rejecting reset file: %s", again)
+	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); strings.Contains(again, `"error"`) {
+		t.Fatalf("new listener baseline did not persist: %s", again)
 	}
 
 	auditLogger.Close()
@@ -254,9 +272,24 @@ func TestAF328_SameUIDResetFileDoesNotRebaselineListenerInventory(t *testing.T) 
 	if !strings.Contains(audited, "tool definition drift detected") {
 		t.Errorf("the drift block was not audited: %s", audited)
 	}
-	if strings.Contains(audited, "operator re-baselined") {
-		t.Errorf("same-UID file must not produce a re-baseline audit record: %s", audited)
+	if !strings.Contains(audited, "operator re-baselined") {
+		t.Errorf("signed delegation must produce a re-baseline audit record: %s", audited)
 	}
+}
+
+func listenerResetInstance(t *testing.T, log string) string {
+	t.Helper()
+	const marker = "instance=\""
+	start := strings.Index(log, marker)
+	if start < 0 {
+		t.Fatalf("listener did not expose reset authority instance: %s", log)
+	}
+	rest := log[start+len(marker):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		t.Fatalf("listener reset authority instance was malformed: %s", log)
+	}
+	return rest[:end]
 }
 
 func TestAF330_ListenerResetRejectsPreResetToolsListResponse(t *testing.T) {

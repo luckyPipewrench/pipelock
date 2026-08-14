@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -711,6 +712,8 @@ func mcpProxyCmdWithAuditLoggerFactory(newAuditLogger mcpAuditLoggerFactory) *co
 	var agentName string
 	var serverName string
 	var adaptiveResetFile string
+	var adaptiveResetAuthorityPublicKeyFile string
+	var adaptiveResetTarget string
 	var sandboxEnabled bool
 	var sandboxStrict bool
 	var sandboxBestEffort bool
@@ -808,6 +811,9 @@ Key-free evidence capture:
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
 			}
+			if adaptiveResetFile == "" && (adaptiveResetAuthorityPublicKeyFile != "" || adaptiveResetTarget != "") {
+				return errors.New("--adaptive-reset-authority-public-key-file and --adaptive-reset-target require --adaptive-reset-file")
+			}
 			if !hasListen && (listenerAuthTokenFile != "" || len(listenerAllowedOrigins) > 0 || listenerAllowUnauthenticated) {
 				return errors.New("MCP listener authentication flags require --listen")
 			}
@@ -820,14 +826,6 @@ Key-free evidence capture:
 			}
 			if err := validateMCPListenerBoundary(listenAddr, listenerAuthToken, listenerAllowUnauthenticated); err != nil {
 				return err
-			}
-			if adaptiveResetFile != "" && runtime.GOOS == "windows" {
-				// The reset file authorizes a privilege de-escalation; its owner
-				// cannot be verified via file mode on Windows (the bits never
-				// reflect the NTFS ACL), so honoring it would not be secure.
-				// Fail closed at the door rather than silently no-op. Restart the
-				// proxy to clear an escalation on Windows.
-				return errors.New("--adaptive-reset-file is not supported on Windows: file ownership cannot be verified; restart the proxy to clear an adaptive escalation")
 			}
 			// Reject sandbox CLI flag with remote modes.
 			if sandboxEnabled {
@@ -991,11 +989,41 @@ Key-free evidence capture:
 					ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 					ExtraPoison:            extraPoison,
 				}
+				resetKeyPath := cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile
+				resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
+				if resetKeyPath != "" || resetTarget != "" {
+					if resetKeyPath == "" || resetTarget == "" {
+						return errors.New("mcp_tool_scanning listener drift reset requires both listener_drift_reset_authority_public_key_file and listener_drift_reset_target")
+					}
+					publicKey, err := signing.LoadPublicKey(resetKeyPath)
+					if err != nil {
+						return fmt.Errorf("load listener drift reset authority public key: %w", err)
+					}
+					toolCfg.ListenerDriftResetAuthorityPublicKey = publicKey
+					toolCfg.ListenerDriftResetTarget = resetTarget
+				}
 				// Wire session binding into tool scanning when enabled.
 				if cfg.MCPSessionBinding.Enabled {
 					toolCfg.BindingUnknownAction = cfg.MCPSessionBinding.UnknownToolAction
 					toolCfg.BindingNoBaselineAction = cfg.MCPSessionBinding.NoBaselineAction
 				}
+			}
+
+			var adaptiveResetAuthority *mcp.ResetAuthority
+			var adaptiveResetEpoch atomic.Uint64
+			if adaptiveResetFile != "" {
+				if adaptiveResetAuthorityPublicKeyFile == "" || adaptiveResetTarget == "" {
+					return errors.New("--adaptive-reset-file requires --adaptive-reset-authority-public-key-file and --adaptive-reset-target")
+				}
+				publicKey, err := signing.LoadPublicKey(adaptiveResetAuthorityPublicKeyFile)
+				if err != nil {
+					return fmt.Errorf("load adaptive reset authority public key: %w", err)
+				}
+				adaptiveResetAuthority, err = mcp.NewResetAuthority(publicKey, adaptiveResetTarget)
+				if err != nil {
+					return fmt.Errorf("create adaptive reset authority: %w", err)
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reset authority target=%q instance=%q epoch=0\n", adaptiveResetAuthority.Target(), adaptiveResetAuthority.InstanceID())
 			}
 
 			var policyCfg *policy.Config
@@ -1646,6 +1674,8 @@ Key-free evidence capture:
 					ContractLoader:         contractLoader,
 					ContractAgent:          contractAgent,
 					AdaptiveResetFile:      adaptiveResetFile,
+					AdaptiveResetAuthority: adaptiveResetAuthority,
+					AdaptiveResetEpoch:     &adaptiveResetEpoch,
 					DeferManager:           deferManager,
 				}
 				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
@@ -1771,10 +1801,12 @@ Key-free evidence capture:
 				RedactProfile:          cfg.Redaction.DefaultProfile,
 				TaintCfg:               &cfg.Taint,
 				Lineage:                lin, OnChildReady: onChildReady,
-				ContractLoader:    contractLoader,
-				ContractAgent:     contractAgent,
-				AdaptiveResetFile: adaptiveResetFile,
-				DeferManager:      deferManager,
+				ContractLoader:         contractLoader,
+				ContractAgent:          contractAgent,
+				AdaptiveResetFile:      adaptiveResetFile,
+				AdaptiveResetAuthority: adaptiveResetAuthority,
+				AdaptiveResetEpoch:     &adaptiveResetEpoch,
+				DeferManager:           deferManager,
 			}
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
@@ -1806,7 +1838,9 @@ Key-free evidence capture:
 	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	cmd.Flags().StringVar(&serverName, "server-name", "", "stable identity for this MCP server; enables per-server response suppression via target 'mcp://<name>/response'")
-	cmd.Flags().StringVar(&adaptiveResetFile, "adaptive-reset-file", "", "local control file (must be regular, mode 0600, owned by the proxy user); when it appears the proxy clears this session's adaptive-enforcement escalation and removes it")
+	cmd.Flags().StringVar(&adaptiveResetFile, "adaptive-reset-file", "", "signed adaptive reset delegation control file")
+	cmd.Flags().StringVar(&adaptiveResetAuthorityPublicKeyFile, "adaptive-reset-authority-public-key-file", "", "exported mcp-reset-authority public key for --adaptive-reset-file")
+	cmd.Flags().StringVar(&adaptiveResetTarget, "adaptive-reset-target", "", "stable target identity for --adaptive-reset-file delegations")
 	cmd.Flags().StringVar(&captureOutput, "capture-output", "", "directory for key-free evidence capture (evidence-*.jsonl); mirrors 'pipelock run --capture-output'")
 	cmd.Flags().StringVar(&captureEscrowKey, "capture-escrow-public-key", "", "X25519 public key (64 hex chars) to encrypt captured payload sidecars; requires --capture-output")
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")

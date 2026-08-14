@@ -25,7 +25,7 @@ const (
 	listenerPrincipalIdleTTL          = 24 * time.Hour
 	listenerLegacyIdleTTL             = 24 * time.Hour
 	listenerDegradationReportInterval = time.Minute
-	listenerToolDriftRemediation      = "have an authorized operator create the root-owned control file configured by mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
+	listenerToolDriftRemediation      = "have an authorized operator place a signed reset delegation at mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
 )
 
 const listenerSessionTokenHeader = "Pipelock-Session-Token"
@@ -77,6 +77,8 @@ type mcpListenerClientStates struct {
 	clock                   uint64
 	store                   session.Store
 	upstreamToolBaseline    *tools.ToolBaseline
+	resetAuthority          *ResetAuthority
+	resetAuthorityConfig    string
 	driftEdge               tools.DetectDriftRisingEdge
 	degradationReporter     mcpListenerDegradationReporter
 	principalSecret         [32]byte
@@ -561,15 +563,51 @@ func (s *mcpListenerClientStates) resetDriftState() {
 	s.upstreamToolBaseline.ResetDriftState()
 }
 
-// resetUpstreamToolDriftStateIfRequested consumes the operator-controlled,
-// one-shot reset file before a request reaches the upstream. It resets only
-// definition hashes; per-token known-tool binding state remains intact.
-func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *tools.ToolScanConfig, logW io.Writer) bool {
-	if cfg == nil || !cfg.DetectDrift || cfg.ListenerDriftResetFile == "" || !consumeToolDriftResetFile(cfg.ListenerDriftResetFile, logW) {
-		return false
+// resetUpstreamToolDriftStateIfRequested consumes a signed operator delegation
+// before a request reaches the upstream. It resets only definition hashes;
+// per-token known-tool binding state remains intact.
+func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *tools.ToolScanConfig, logW io.Writer) ResetAuthorityDecision {
+	if cfg == nil || !cfg.DetectDrift || cfg.ListenerDriftResetFile == "" {
+		return ResetAuthorityDecision{Result: ResetAuthorityAbsent}
 	}
-	s.resetDriftState()
-	return true
+	authority, err := s.authorityForToolDriftReset(cfg)
+	if err != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: tool drift reset authority unavailable: %v\n", err)
+		return ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
+	}
+	decision := consumeToolDriftResetFile(cfg.ListenerDriftResetFile, authority, s.upstreamDriftEpoch(), logW)
+	if decision.Result == ResetAuthorityAccepted {
+		s.resetDriftState()
+	}
+	return decision
+}
+
+func (s *mcpListenerClientStates) authorityForToolDriftReset(cfg *tools.ToolScanConfig) (*ResetAuthority, error) {
+	if len(cfg.ListenerDriftResetAuthorityPublicKey) == 0 || cfg.ListenerDriftResetTarget == "" {
+		return nil, fmt.Errorf("configure listener_drift_reset_authority_public_key_file and listener_drift_reset_target")
+	}
+	configKey := fmt.Sprintf("%x:%s", cfg.ListenerDriftResetAuthorityPublicKey, cfg.ListenerDriftResetTarget)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resetAuthority != nil && s.resetAuthorityConfig == configKey {
+		return s.resetAuthority, nil
+	}
+	authority, err := NewResetAuthority(cfg.ListenerDriftResetAuthorityPublicKey, cfg.ListenerDriftResetTarget)
+	if err != nil {
+		return nil, err
+	}
+	s.resetAuthority = authority
+	s.resetAuthorityConfig = configKey
+	return authority, nil
+}
+
+func logResetAuthorityDecision(logW io.Writer, decision ResetAuthorityDecision) {
+	if logW == nil || decision.Result == ResetAuthorityAbsent {
+		return
+	}
+	d := decision.Delegation
+	_, _ = fmt.Fprintf(logW, "pipelock: MCP reset authority issuer=%q target=%q epoch=%d expiry=%d nonce=%q result=%s\n",
+		d.Issuer, d.Target, d.Epoch, d.ExpiresUnix, d.Nonce, decision.Result)
 }
 
 func (s *mcpListenerClientStates) touchLocked(state *mcpListenerClientState) {

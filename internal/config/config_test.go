@@ -5078,6 +5078,42 @@ func TestValidate_MCPToolScanningDisabledSkipsValidation(t *testing.T) {
 	}
 }
 
+func TestValidate_MCPToolScanningListenerDriftResetAuthority(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "reset-authority.pub")
+	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(publicKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	valid := Defaults()
+	valid.MCPToolScanning.ListenerDriftResetFile = "/run/pipelock/drift.reset"
+	valid.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = keyPath
+	valid.MCPToolScanning.ListenerDriftResetTarget = "mcp://listener-a"
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid listener reset authority rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"missing control file": func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetFile = "" },
+		"missing public key":   func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = "" },
+		"missing target":       func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetTarget = "" },
+		"invalid public key": func(cfg *Config) {
+			cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = "/missing/reset-authority.pub"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := valid.Clone()
+			mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("invalid listener reset authority accepted")
+			}
+		})
+	}
+}
+
 func TestValidateReload_MCPToolScanningDisabled(t *testing.T) {
 	old := Defaults()
 	old.MCPToolScanning.Enabled = true

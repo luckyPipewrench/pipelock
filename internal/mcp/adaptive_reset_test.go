@@ -5,106 +5,85 @@ package mcp
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
 
-// TestConsumeAdaptiveResetFile_RejectsSameUIDFile pins the authority boundary:
-// a regular owner-only file is not sufficient when the wrapped agent shares
-// the proxy UID.
-func TestConsumeAdaptiveResetFile_RejectsSameUIDFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "reset")
-	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+const adaptiveResetTestTarget = "mcp://adaptive-test"
+
+func newAdaptiveResetAuthority(t *testing.T) (*ResetAuthority, ed25519.PrivateKey) {
+	t.Helper()
+	pub, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var logW bytes.Buffer
+	authority, err := newResetAuthority(pub, adaptiveResetTestTarget, strings.Repeat("a", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authority, privateKey
+}
 
-	if consumeAdaptiveResetFile(path, &logW) {
-		t.Fatalf("same-UID reset file must not be honored, log=%q", logW.String())
+func writeAdaptiveResetDelegation(t *testing.T, path string, privateKey ed25519.PrivateKey, authority *ResetAuthority, kind ResetKind, epoch uint64, nonce string) {
+	t.Helper()
+	d, err := MintResetDelegation(privateKey, "adaptive-operator", kind, authority.Target(), authority.InstanceID(), epoch, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), nonce)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("rejected reset file must be removed (err=%v)", err)
+	raw, err := MarshalResetDelegation(d)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(logW.String(), "independent operator") {
-		t.Fatalf("same-UID rejection was not operator-visible: %q", logW.String())
-	}
-	// The removed file remains a no-op on a later check.
-	if consumeAdaptiveResetFile(path, &logW) {
-		t.Fatalf("missing file must not trigger a reset")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestConsumeAdaptiveResetFile_RejectsGroupOrWorldAccessible is the bypass test:
-// a reset file the wrapped agent could have written (group/world-accessible)
-// must NOT be honored, and must be removed so it cannot persist.
-func TestConsumeAdaptiveResetFile_RejectsGroupOrWorldAccessible(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("mode bits are not security-meaningful on Windows")
+func TestConsumeAdaptiveResetFileAcceptsSignedDelegationOnce(t *testing.T) {
+	authority, privateKey := newAdaptiveResetAuthority(t)
+	path := filepath.Join(t.TempDir(), "reset")
+	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, 4, strings.Repeat("b", 32))
+	var logW bytes.Buffer
+	if got := consumeAdaptiveResetFile(path, authority, 4, &logW).Result; got != ResetAuthorityAccepted {
+		t.Fatalf("consume result = %q, want accepted; log=%q", got, logW.String())
 	}
-	for _, mode := range []os.FileMode{0o660, 0o666, 0o604, 0o640, 0o620} {
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("accepted delegation remained at control path: %v", err)
+	}
+	if !strings.Contains(logW.String(), `issuer="adaptive-operator"`) || !strings.Contains(logW.String(), "result=accepted") {
+		t.Fatalf("accepted reset was not fully audited: %q", logW.String())
+	}
+	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, 4, strings.Repeat("b", 32))
+	if got := consumeAdaptiveResetFile(path, authority, 4, &logW).Result; got != ResetAuthorityReplayed {
+		t.Fatalf("second use result = %q, want replayed", got)
+	}
+}
+
+func TestConsumeAdaptiveResetFileIgnoresOwnershipAndMode(t *testing.T) {
+	authority, privateKey := newAdaptiveResetAuthority(t)
+	for index, mode := range []os.FileMode{0o600, 0o666} {
 		t.Run(mode.String(), func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "reset")
-			if err := os.WriteFile(path, []byte("x"), mode); err != nil {
-				t.Fatal(err)
-			}
-			// WriteFile honors umask; force the exact mode.
+			path := filepath.Join(t.TempDir(), "reset")
+			nonce := strings.Repeat("c", 31) + string(rune('0'+index))
+			writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, uint64(mode), nonce)
 			if err := os.Chmod(path, mode); err != nil {
 				t.Fatal(err)
 			}
-			var logW bytes.Buffer
-			if consumeAdaptiveResetFile(path, &logW) {
-				t.Fatalf("mode %o must NOT be honored (agent-writable bypass)", mode)
-			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("an unsafe reset file must be removed, not left to persist")
-			}
-			if logW.Len() == 0 {
-				t.Fatalf("expected a warning for the rejected reset file")
+			if got := consumeAdaptiveResetFile(path, authority, uint64(mode), nil).Result; got != ResetAuthorityAccepted {
+				t.Fatalf("mode %o result = %q, want accepted", mode, got)
 			}
 		})
-	}
-}
-
-// TestConsumeAdaptiveResetFile_RejectsSymlink ensures a symlink (which could
-// redirect the unlink or mask ownership) is ignored.
-func TestConsumeAdaptiveResetFile_RejectsSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink semantics differ on Windows")
-	}
-	dir := t.TempDir()
-	target := filepath.Join(dir, "real")
-	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "reset")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	var logW bytes.Buffer
-	if consumeAdaptiveResetFile(link, &logW) {
-		t.Fatalf("a symlink reset file must not be honored")
-	}
-}
-
-// TestConsumeAdaptiveResetFile_EmptyAndMissing are no-ops.
-func TestConsumeAdaptiveResetFile_EmptyAndMissing(t *testing.T) {
-	var logW bytes.Buffer
-	if consumeAdaptiveResetFile("", &logW) {
-		t.Fatalf("empty path must be a no-op")
-	}
-	if consumeAdaptiveResetFile(filepath.Join(t.TempDir(), "nope"), &logW) {
-		t.Fatalf("missing file must be a no-op")
-	}
-	if logW.Len() != 0 {
-		t.Fatalf("no-op cases must not warn, got %q", logW.String())
 	}
 }
 
@@ -133,83 +112,67 @@ func blockAllCriticalCfg() *config.AdaptiveEnforcement {
 	}
 }
 
-// TestForwardScanned_AdaptiveResetFile_SameUIDDoesNotClearAirlock proves that
-// a wrapped agent cannot clear its own airlock with an indistinguishable 0600
-// control file.
-func TestForwardScanned_AdaptiveResetFile_SameUIDDoesNotClearAirlock(t *testing.T) {
+func TestForwardScanned_AdaptiveResetFileConsumesSignedAuthority(t *testing.T) {
 	sc := newAdaptiveTestScanner()
 	defer sc.Close()
+	authority, privateKey := newAdaptiveResetAuthority(t)
+	resetPath := filepath.Join(t.TempDir(), "reset")
+	writeAdaptiveResetDelegation(t, resetPath, privateKey, authority, ResetKindAdaptive, 0, strings.Repeat("d", 32))
 
 	rec := &resettableRecorder{mockRecorder: mockRecorder{level: 3}}
-	resetPath := filepath.Join(t.TempDir(), "reset")
-	if err := os.WriteFile(resetPath, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	var epoch atomic.Uint64
+	opts := buildTestOpts(sc, withRec(rec), withAdaptive(blockAllCriticalCfg()), withResetFile(resetPath))
+	opts.AdaptiveResetAuthority = authority
+	opts.AdaptiveResetEpoch = &epoch
 	cleanResp := makeResponse(1, "clean safe content") + "\n"
 	var outBuf, logBuf bytes.Buffer
-	if _, err := ForwardScanned(
-		transport.NewStdioReader(strings.NewReader(cleanResp)),
-		transport.NewStdioWriter(&outBuf),
-		&logBuf, nil,
-		buildTestOpts(sc, withRec(rec), withAdaptive(blockAllCriticalCfg()), withResetFile(resetPath)),
-	); err != nil {
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(cleanResp)), transport.NewStdioWriter(&outBuf), &logBuf, nil, opts); err != nil {
 		t.Fatalf("ForwardScanned: %v", err)
 	}
-
-	if rec.resetCalls != 0 {
-		t.Fatalf("same-UID reset file must not call Reset, got %d calls", rec.resetCalls)
+	if rec.resetCalls != 1 || rec.EscalationLevel() != 0 || epoch.Load() != 1 {
+		t.Fatalf("authorized reset calls=%d level=%d epoch=%d, want 1/0/1", rec.resetCalls, rec.EscalationLevel(), epoch.Load())
 	}
-	if !strings.Contains(outBuf.String(), "-32001") {
-		t.Fatalf("same-UID reset file must leave the airlock active:\n%s", outBuf.String())
-	}
-	if _, err := os.Stat(resetPath); !os.IsNotExist(err) {
-		t.Fatalf("rejected reset file must be removed")
-	}
-	if !strings.Contains(logBuf.String(), "independent operator") {
-		t.Fatalf("expected an operator-authority rejection, got:\n%s", logBuf.String())
+	if strings.Contains(outBuf.String(), "-32001") || !strings.Contains(logBuf.String(), "result=accepted") {
+		t.Fatalf("authorized reset did not clear airlock: response=%s log=%s", outBuf.String(), logBuf.String())
 	}
 }
 
-// TestForwardScanned_AdaptiveResetFile_BypassFileDoesNotClear is the bypass
-// test: a reset file the wrapped agent could have written (group/world-
-// accessible) must NOT clear the airlock — the clean response stays denied.
-func TestForwardScanned_AdaptiveResetFile_BypassFileDoesNotClear(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("mode bits are not security-meaningful on Windows")
-	}
+func TestForwardScanned_AdaptiveResetAuthorityFailuresKeepAirlock(t *testing.T) {
 	sc := newAdaptiveTestScanner()
 	defer sc.Close()
-
-	rec := &resettableRecorder{mockRecorder: mockRecorder{level: 3}}
-	resetPath := filepath.Join(t.TempDir(), "reset")
-	if err := os.WriteFile(resetPath, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Deliberately group/world-accessible: simulates a file the wrapped agent
-	// could have written. A mode variable avoids gosec's octal-literal flag
-	// without a lint-suppression directive; the permissive mode is the whole
-	// point of the test.
-	agentWritable := os.FileMode(0o666)
-	if err := os.Chmod(resetPath, agentWritable); err != nil {
-		t.Fatal(err)
-	}
-
+	authority, privateKey := newAdaptiveResetAuthority(t)
 	cleanResp := makeResponse(1, "clean safe content") + "\n"
-	var outBuf, logBuf bytes.Buffer
-	if _, err := ForwardScanned(
-		transport.NewStdioReader(strings.NewReader(cleanResp)),
-		transport.NewStdioWriter(&outBuf),
-		&logBuf, nil,
-		buildTestOpts(sc, withRec(rec), withAdaptive(blockAllCriticalCfg()), withResetFile(resetPath)),
-	); err != nil {
-		t.Fatalf("ForwardScanned: %v", err)
-	}
 
-	if rec.resetCalls != 0 {
-		t.Fatalf("an agent-writable reset file must NOT trigger a reset, got %d calls", rec.resetCalls)
-	}
-	if !strings.Contains(outBuf.String(), "-32001") {
-		t.Fatalf("airlock should still deny the response (bypass file ignored), got:\n%s", outBuf.String())
-	}
+	t.Run("wrong kind", func(t *testing.T) {
+		resetPath := filepath.Join(t.TempDir(), "reset")
+		writeAdaptiveResetDelegation(t, resetPath, privateKey, authority, ResetKindDrift, 0, strings.Repeat("e", 32))
+		rec := &resettableRecorder{mockRecorder: mockRecorder{level: 3}}
+		var epoch atomic.Uint64
+		opts := buildTestOpts(sc, withRec(rec), withAdaptive(blockAllCriticalCfg()), withResetFile(resetPath))
+		opts.AdaptiveResetAuthority, opts.AdaptiveResetEpoch = authority, &epoch
+		var outBuf, logBuf bytes.Buffer
+		if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(cleanResp)), transport.NewStdioWriter(&outBuf), &logBuf, nil, opts); err != nil {
+			t.Fatalf("ForwardScanned: %v", err)
+		}
+		if rec.resetCalls != 0 || !strings.Contains(outBuf.String(), "-32001") || !strings.Contains(logBuf.String(), "result=wrong_kind") {
+			t.Fatalf("wrong kind cleared airlock: calls=%d response=%s log=%s", rec.resetCalls, outBuf.String(), logBuf.String())
+		}
+	})
+
+	t.Run("absent authority", func(t *testing.T) {
+		resetPath := filepath.Join(t.TempDir(), "reset")
+		writeAdaptiveResetDelegation(t, resetPath, privateKey, authority, ResetKindAdaptive, 0, strings.Repeat("f", 32))
+		rec := &resettableRecorder{mockRecorder: mockRecorder{level: 3}}
+		opts := buildTestOpts(sc, withRec(rec), withAdaptive(blockAllCriticalCfg()), withResetFile(resetPath))
+		var outBuf bytes.Buffer
+		if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(cleanResp)), transport.NewStdioWriter(&outBuf), io.Discard, nil, opts); err != nil {
+			t.Fatalf("ForwardScanned: %v", err)
+		}
+		if rec.resetCalls != 0 || !strings.Contains(outBuf.String(), "-32001") {
+			t.Fatalf("absent authority cleared airlock: calls=%d response=%s", rec.resetCalls, outBuf.String())
+		}
+		if _, err := os.Stat(resetPath); err != nil {
+			t.Fatalf("absent authority removed operator control file: %v", err)
+		}
+	})
 }

@@ -234,18 +234,20 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			metrics:    m,
 		}, opts.warnContext()))
 
-		// Operator-triggered local reset: when the adaptive reset file appears
-		// (root-owned, mode 0600) clear this session's adaptive
-		// escalation so an airlocked stdio session recovers without a restart.
-		// Invocation sessions are otherwise un-resettable, and stdio mounts no
-		// admin API. The file checks fail closed against an agent-planted file.
-		if resetFile != "" && rec != nil && consumeAdaptiveResetFile(resetFile, logW) {
+		// A signed operator delegation is the only path that clears a stdio
+		// airlock. A malformed, expired, replayed, or absent authority leaves
+		// the existing escalation in place.
+		if resetFile != "" && rec != nil && opts.AdaptiveResetAuthority != nil && opts.AdaptiveResetEpoch != nil {
 			if r, ok := rec.(adaptiveResetter); ok {
-				prevScore, prevLevel := r.Reset()
-				blockAll = false
-				_, _ = fmt.Fprintf(logW,
-					"pipelock: adaptive enforcement reset by operator (score %.1f to 0, level %s to normal)\n",
-					prevScore, session.EscalationLabel(prevLevel))
+				decision := consumeAdaptiveResetFile(resetFile, opts.AdaptiveResetAuthority, opts.AdaptiveResetEpoch.Load(), logW)
+				if decision.Result == ResetAuthorityAccepted {
+					prevScore, prevLevel := r.Reset()
+					opts.AdaptiveResetEpoch.Add(1)
+					blockAll = false
+					_, _ = fmt.Fprintf(logW,
+						"pipelock: adaptive enforcement reset by operator (score %.1f to 0, level %s to normal)\n",
+						prevScore, session.EscalationLabel(prevLevel))
+				}
 			}
 		}
 

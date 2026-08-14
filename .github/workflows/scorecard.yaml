@@ -14,7 +14,9 @@ jobs:
   analysis:
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
+      # No security-events: write. This job no longer uploads SARIF, so it needs
+      # no permission to write code-scanning alerts. id-token remains because
+      # publish_results signs the result for the public Scorecard API.
       id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -35,7 +37,22 @@ jobs:
           path: results.sarif
           retention-days: 5
 
-      - name: Upload to code-scanning
-        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4
-        with:
-          sarif_file: results.sarif
+      # Scorecard results are NOT uploaded to code scanning, deliberately.
+      #
+      # Scorecard grades repository practice: pinned dependencies, branch
+      # protection, what share of pull requests carried an approving review.
+      # Code scanning is the surface for defects in this repository's code, and
+      # routing a grade into it files each check as a dismissible alert with a
+      # severity attached.
+      #
+      # Those alerts also do not stay dismissed. GitHub matches results across
+      # uploads by rule and fingerprint, and a Scorecard result whose identity
+      # shifts arrives as a NEW alert that a previous dismissal does not cover.
+      # Two alerts here reported the same finding at the same file and line on
+      # consecutive days. The outcome was a standing queue of security-labelled
+      # items that no code change could close.
+      #
+      # The results remain public and retrievable: publish_results above sends
+      # them to the OpenSSF Scorecard API that backs the badge and the public
+      # viewer, and the artifact above keeps the raw SARIF. This narrows where
+      # the grade is displayed. It does not withhold it.

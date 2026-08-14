@@ -33,6 +33,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // upgradeOpts collects flag-derived state for the upgrade subcommand.
@@ -73,6 +74,7 @@ type upgradeEnv struct {
 	integrityDir   string
 	integrityPin   string
 	serviceName    string
+	unitPath       string
 	proxyPort      int
 
 	// Readiness.
@@ -100,6 +102,7 @@ func defaultUpgradeEnv(out, errOut io.Writer) *upgradeEnv {
 		integrityDir:     defaultIntegrityDir,
 		integrityPin:     defaultIntegrityPin,
 		serviceName:      defaultServiceName,
+		unitPath:         defaultSystemUnitPath,
 		proxyPort:        defaultProxyPort,
 		readinessTimeout: installReadinessTimeout,
 	}
@@ -334,6 +337,21 @@ func runUpgrade(ctx context.Context, env *upgradeEnv, opts upgradeOpts) error {
 	}
 	_, _ = fmt.Fprintln(w, "  integrity pin updated")
 
+	// ── Step 5b: carry the containment marker onto an older unit ────────
+	// A unit written before the containment runtime guard existed carries no
+	// marker, so the guard would stay inactive on exactly the hosts this command
+	// is meant to bring current. Upgrade already reloads and restarts, so this is
+	// the one moment the correction costs nothing extra.
+	if err := ensureContainmentMarkerInUnit(env); err != nil {
+		_, _ = fmt.Fprintf(env.errOut, "unit marker update failed: %v\n", err)
+		if rbErr := rollbackAll(); rbErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.Join(
+				fmt.Errorf("%w: %w", errUpgradeConfig, err),
+				fmt.Errorf("%w (backup retained at %s)", rbErr, backupPath)))
+		}
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%w: %w", errUpgradeConfig, err))
+	}
+
 	// ── Step 6: restart the pipelock service ────────────────────────────
 	_, _ = fmt.Fprintln(w, "restarting pipelock service...")
 	if err := upgradeRestartAndWait(ctx, env); err != nil {
@@ -509,6 +527,50 @@ func upgradePostVerify(ctx context.Context, env *upgradeEnv) error {
 	if err := preflightUpgradeManagedConfig(ctx, env); err != nil {
 		return err
 	}
+	return nil
+}
+
+// ensureContainmentMarkerInUnit adds the containment marker to a service unit
+// written before the runtime guard existed.
+//
+// Without this the guard protects only hosts installed after the change, which is
+// the failure mode where a release note is true of a fresh install and false of
+// every existing one. It edits a single Environment line rather than regenerating
+// the unit, so an operator's other adjustments to that file survive.
+//
+// A missing unit is an error rather than a skip: this command is upgrading a
+// containment-managed host, and one without a unit is not in the state the rest of
+// the upgrade assumes.
+func ensureContainmentMarkerInUnit(env *upgradeEnv) error {
+	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
+
+	current, err := env.readFile(env.unitPath)
+	if err != nil {
+		return fmt.Errorf("read service unit %s: %w", env.unitPath, err)
+	}
+	body := string(current)
+	if strings.Contains(body, marker) {
+		return nil
+	}
+
+	lines := strings.Split(body, "\n")
+	inserted := false
+	out := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		out = append(out, line)
+		if !inserted && strings.TrimSpace(line) == "[Service]" {
+			out = append(out, marker)
+			inserted = true
+		}
+	}
+	if !inserted {
+		return fmt.Errorf("service unit %s has no [Service] section; refusing to guess where the containment marker belongs", env.unitPath)
+	}
+
+	if err := env.writeFile(env.unitPath, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+		return fmt.Errorf("write service unit %s: %w", env.unitPath, err)
+	}
+	_, _ = fmt.Fprintf(env.out, "  containment marker added to %s\n", env.unitPath)
 	return nil
 }
 

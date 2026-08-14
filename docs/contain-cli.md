@@ -126,8 +126,9 @@ The sequence is:
 1. Validate the managed config with the integrity-pinned deployed binary and require containment-safe metrics before any binary or service change.
 2. Download and verify the candidate release by invoking the **deployed** binary's `pipelock update --yes` (Ed25519 manifest + checksums + optional cosign), which replaces the binary only after those checks pass.
 3. Re-pin the SHA-256 integrity hash against the newly deployed binary at `/etc/pipelock/integrity/binary-pin.sha256`.
-4. Restart the `pipelock.service` systemd unit and wait for readiness.
-5. Run `contain verify` and repeat the managed-config check. Exit 0 means every probe passed.
+4. Add the containment marker to `/etc/systemd/system/pipelock.service` if it is absent, so a host installed before the containment runtime guard existed gains that protection on upgrade rather than only on reinstall. This edits one `Environment=` line inside `[Service]` and leaves the rest of the unit alone; it is a no-op on a unit that already carries the marker.
+5. Restart the `pipelock.service` systemd unit and wait for readiness.
+6. Run `contain verify` and repeat the managed-config check. Exit 0 means every probe passed.
    A failing probe exits 1 and a skipped or inconclusive probe exits 2, so
    both roll the upgrade back.
 

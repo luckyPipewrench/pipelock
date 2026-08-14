@@ -81,6 +81,16 @@ func testUpgradeEnv(t *testing.T) *upgradeEnv {
 		t.Fatal(err)
 	}
 
+	// A managed host has a service unit, and upgrade now reads it to carry the
+	// containment marker forward. Point at a temp copy rather than the real
+	// /etc/systemd/system path so tests never touch the host.
+	env.unitPath = filepath.Join(dir, "pipelock.service")
+	unit := "[Unit]\nDescription=Pipelock proxy\n\n[Service]\nType=simple\nExecStart=" +
+		env.pipelockTarget + " run --config " + env.configPath + "\n\n[Install]\nWantedBy=multi-user.target\n"
+	if err := writeFileAtomic(env.unitPath, []byte(unit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	return env
 }
 

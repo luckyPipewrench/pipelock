@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	receiptFileName  = "candidate-receipt.json"
-	tamperedFileName = "candidate-receipt-tampered.json"
-	keyFileName      = "candidate-receipt-public-key.txt"
+	receiptFileName           = "candidate-receipt.json"
+	tamperedFileName          = "candidate-receipt-payload-tampered.json"
+	signatureTamperedFileName = "candidate-receipt-signature-tampered.json"
+	keyFileName               = "candidate-receipt-public-key.txt"
 )
 
 var (
@@ -107,12 +108,29 @@ func writeFixture(outDir string) error {
 	if tampered == string(raw) {
 		return fmt.Errorf("replace signed target in receipt")
 	}
+	signatureTampered := r
+	signatureHex := strings.TrimPrefix(signatureTampered.Signature, "ed25519:")
+	if signatureHex == signatureTampered.Signature || len(signatureHex) == 0 {
+		return fmt.Errorf("locate receipt signature")
+	}
+	replacement := byte('0')
+	if signatureHex[0] == replacement {
+		replacement = '1'
+	}
+	signatureTampered.Signature = "ed25519:" + string(replacement) + signatureHex[1:]
+	signatureTamperedRaw, err := marshalReceipt(signatureTampered)
+	if err != nil {
+		return fmt.Errorf("marshal signature-tampered receipt: %w", err)
+	}
 
 	if err := os.WriteFile(filepath.Join(outDir, receiptFileName), raw, 0o600); err != nil {
 		return fmt.Errorf("write receipt: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(outDir, tamperedFileName), []byte(tampered), 0o600); err != nil {
 		return fmt.Errorf("write tampered receipt: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, signatureTamperedFileName), signatureTamperedRaw, 0o600); err != nil {
+		return fmt.Errorf("write signature-tampered receipt: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(outDir, keyFileName), []byte(hex.EncodeToString(publicKey)+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write public key: %w", err)

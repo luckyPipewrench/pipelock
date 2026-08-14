@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func TestReleaseVerifierFixtureMain(t *testing.T) {
 	if code := releaseVerifierFixtureMain([]string{"--out-dir", outDir}, &stderr); code != 0 {
 		t.Fatalf("successful CLI exit = %d, stderr = %q", code, stderr.String())
 	}
-	for _, name := range []string{receiptFileName, tamperedFileName, keyFileName} {
+	for _, name := range []string{receiptFileName, tamperedFileName, signatureTamperedFileName, keyFileName} {
 		if _, err := os.Stat(filepath.Join(outDir, name)); err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}
@@ -126,6 +127,7 @@ func TestWriteFixtureReportsEachOutputFailure(t *testing.T) {
 	}{
 		{name: "receipt", blocker: receiptFileName, want: "write receipt"},
 		{name: "tampered receipt", blocker: tamperedFileName, want: "write tampered receipt"},
+		{name: "signature-tampered receipt", blocker: signatureTamperedFileName, want: "write signature-tampered receipt"},
 		{name: "public key", blocker: keyFileName, want: "write public key"},
 	}
 	for _, test := range tests {
@@ -180,6 +182,21 @@ func TestWriteFixtureProducesSignedReceiptAndTamperedRejection(t *testing.T) {
 	if err := receipt.VerifyWithKey(tampered, publicKey); err == nil {
 		t.Fatal("tampered fixture receipt verified")
 	}
+
+	signatureTamperedRaw, err := os.ReadFile(filepath.Join(dir, signatureTamperedFileName)) // #nosec G304 -- fixed fixture name under t.TempDir.
+	if err != nil {
+		t.Fatalf("read signature-tampered receipt: %v", err)
+	}
+	signatureTampered, err := receipt.Unmarshal(signatureTamperedRaw)
+	if err != nil {
+		t.Fatalf("unmarshal signature-tampered receipt: %v", err)
+	}
+	if !reflect.DeepEqual(signatureTampered.ActionRecord, valid.ActionRecord) {
+		t.Fatal("signature tamper changed the signed payload")
+	}
+	if err := receipt.VerifyWithKey(signatureTampered, publicKey); err == nil {
+		t.Fatal("signature-tampered fixture receipt verified")
+	}
 }
 
 func TestReleaseVerifierInventoryRejectsTrailingDuplicate(t *testing.T) {
@@ -190,8 +207,9 @@ func TestReleaseVerifierInventoryRejectsTrailingDuplicate(t *testing.T) {
 		t.Fatalf("read staged inventory: %v", err)
 	}
 	var inventory struct {
-		SchemaVersion int                      `json:"schema_version"`
-		Verifiers     []map[string]interface{} `json:"verifiers"`
+		SchemaVersion  int                      `json:"schema_version"`
+		ReleaseBlocked bool                     `json:"release_blocked"`
+		Verifiers      []map[string]interface{} `json:"verifiers"`
 	}
 	if err := json.Unmarshal(raw, &inventory); err != nil {
 		t.Fatalf("decode staged inventory: %v", err)
@@ -236,8 +254,9 @@ func TestReleaseVerifierInventoryRejectsPackageSubstitution(t *testing.T) {
 		t.Fatalf("read staged inventory: %v", err)
 	}
 	var inventory struct {
-		SchemaVersion int                      `json:"schema_version"`
-		Verifiers     []map[string]interface{} `json:"verifiers"`
+		SchemaVersion  int                      `json:"schema_version"`
+		ReleaseBlocked bool                     `json:"release_blocked"`
+		Verifiers      []map[string]interface{} `json:"verifiers"`
 	}
 	if err := json.Unmarshal(raw, &inventory); err != nil {
 		t.Fatalf("decode staged inventory: %v", err)
@@ -335,6 +354,23 @@ func TestReleaseVerifierInventoryRejectsLockRootDriftWithPythonOptimize(t *testi
 
 func TestReleaseVerifierInstallGateRejectsMissingVerifierTag(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
+	inventoryPath := filepath.Join(root, "release", "verifier-installers.json")
+	raw, err := os.ReadFile(inventoryPath) // #nosec G304 -- fixed inventory path under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged inventory: %v", err)
+	}
+	var inventory map[string]interface{}
+	if err := json.Unmarshal(raw, &inventory); err != nil {
+		t.Fatalf("decode staged inventory: %v", err)
+	}
+	inventory["release_blocked"] = false
+	raw, err = json.Marshal(inventory)
+	if err != nil {
+		t.Fatalf("encode staged inventory: %v", err)
+	}
+	if err := os.WriteFile(inventoryPath, raw, 0o600); err != nil {
+		t.Fatalf("write staged inventory: %v", err)
+	}
 	command := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "release-verifier-install-gate.sh"), // #nosec G204 -- executes the checked-in script copied under t.TempDir.
 		"--tag", "v3.4.0")
 	output, err := command.CombinedOutput()
@@ -346,6 +382,77 @@ func TestReleaseVerifierInstallGateRejectsMissingVerifierTag(t *testing.T) {
 	}
 }
 
+func TestReleaseVerifierInstallGateHonorsExplicitReleaseBlock(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	command := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "release-verifier-install-gate.sh"), // #nosec G204 -- executes the checked-in script copied under t.TempDir.
+		"--tag", "v3.4.0")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("explicitly blocked release passed:\n%s", output)
+	}
+	if !strings.Contains(string(output), "release is explicitly blocked") {
+		t.Fatalf("release block error = %q", output)
+	}
+}
+
+func TestReleaseVerifierInstallGateRejectsPostTagSourceDrift(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	gitHome := t.TempDir()
+	hooksDir := filepath.Join(gitHome, "empty-hooks")
+	if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+		t.Fatalf("create empty hooks directory: %v", err)
+	}
+	runGit := func(args ...string) string {
+		t.Helper()
+		gitArgs := append([]string{"-c", "core.hooksPath=" + hooksDir}, args...)
+		command := exec.CommandContext(t.Context(), "git", gitArgs...) // #nosec G204 -- arguments are fixed by this test.
+		command.Dir = root
+		command.Env = append(os.Environ(),
+			"HOME="+gitHome,
+			"GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull,
+		)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+
+	tagCommit := runGit("rev-parse", "HEAD")
+	runGit("tag", "verifier-v0.3.0")
+	inventoryPath := filepath.Join(root, "release", "verifier-installers.json")
+	raw, err := os.ReadFile(inventoryPath) // #nosec G304 -- fixed inventory path under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged inventory: %v", err)
+	}
+	raw = bytes.ReplaceAll(raw, []byte("REPLACE_WITH_VERIFIER_V0_3_0_TAG_COMMIT"), []byte(tagCommit))
+	raw = bytes.Replace(raw, []byte(`"release_blocked": true`), []byte(`"release_blocked": false`), 1)
+	if err := os.WriteFile(inventoryPath, raw, 0o600); err != nil {
+		t.Fatalf("write staged inventory: %v", err)
+	}
+	sourcePath := filepath.Join(root, "sdk", "verifiers", "ts", "src", "types.ts")
+	source, err := os.ReadFile(sourcePath) // #nosec G304 -- fixed source path under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged source: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, append(source, []byte("\n// post-tag drift\n")...), 0o600); err != nil {
+		t.Fatalf("write staged source drift: %v", err)
+	}
+	runGit("add", "release/verifier-installers.json", "sdk/verifiers/ts/src/types.ts")
+	runGit("-c", "user.name=Pipelock Test", "-c", "user.email=test@pipelock.invalid", "commit", "--no-gpg-sign", "-m", "post-tag drift")
+
+	command := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "release-verifier-install-gate.sh"), // #nosec G204 -- executes the checked-in script copied under t.TempDir.
+		"--tag", "v3.4.0")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("post-tag source drift passed:\n%s", output)
+	}
+	if !strings.Contains(string(output), "verifier package source differs from immutable tag") {
+		t.Fatalf("source drift error = %q", output)
+	}
+}
+
 func TestReleaseVerifierInstallGateRejectsVerifierThatAcceptsTampering(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	verifier := filepath.Join(root, "accept-all")
@@ -353,27 +460,62 @@ func TestReleaseVerifierInstallGateRejectsVerifierThatAcceptsTampering(t *testin
 		t.Fatalf("write verifier: %v", err)
 	}
 	valid := filepath.Join(root, "valid.json")
-	tampered := filepath.Join(root, "tampered.json")
-	for _, path := range []string{valid, tampered} {
+	payloadTampered := filepath.Join(root, "payload-tampered.json")
+	signatureTampered := filepath.Join(root, "signature-tampered.json")
+	for _, path := range []string{valid, payloadTampered, signatureTampered} {
 		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 			t.Fatalf("write receipt: %v", err)
 		}
 	}
 
 	command := exec.CommandContext(t.Context(), "bash", "-c", // #nosec G204 -- command text is constant and arguments are test-owned temp paths.
-		`source "$1"; verify_accepts_and_rejects Test "$2" "$3" "00" "$4"`,
-		"bash", filepath.Join(root, "scripts", "release-verifier-install-gate-lib.sh"), valid, tampered, verifier)
+		`source "$1"; verify_accepts_and_rejects Test "$2" "$3" "$4" "00" "$5"`,
+		"bash", filepath.Join(root, "scripts", "release-verifier-install-gate-lib.sh"), valid, payloadTampered, signatureTampered, verifier)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("verifier that accepts tampering passed:\n%s", output)
 	}
-	if !strings.Contains(string(output), "ACCEPTED the tampered candidate receipt") {
+	if !strings.Contains(string(output), "ACCEPTED the payload-tampered candidate receipt") {
 		t.Fatalf("tamper error = %q", output)
+	}
+}
+
+func TestReleaseVerifierInstallGateRejectsTargetAllowlistingFake(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	verifier := filepath.Join(root, "target-allowlist-only")
+	if err := os.WriteFile(verifier, []byte("#!/usr/bin/env bash\ngrep -q api.vendor.example \"$1\"\n"), 0o700); err != nil { // #nosec G306 -- executable permission is required for this test fixture.
+		t.Fatalf("write verifier: %v", err)
+	}
+	valid := filepath.Join(root, "valid.json")
+	payloadTampered := filepath.Join(root, "payload-tampered.json")
+	signatureTampered := filepath.Join(root, "signature-tampered.json")
+	for path, body := range map[string]string{
+		valid:             `{"target":"https://api.vendor.example","signature":"good"}`,
+		payloadTampered:   `{"target":"https://tampered.vendor.example","signature":"good"}`,
+		signatureTampered: `{"target":"https://api.vendor.example","signature":"bad"}`,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write receipt: %v", err)
+		}
+	}
+
+	command := exec.CommandContext(t.Context(), "bash", "-c", // #nosec G204 -- command text is constant and arguments are test-owned temp paths.
+		`source "$1"; verify_accepts_and_rejects Test "$2" "$3" "$4" "00" "$5"`,
+		"bash", filepath.Join(root, "scripts", "release-verifier-install-gate-lib.sh"), valid, payloadTampered, signatureTampered, verifier)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("target-allowlisting fake passed:\n%s", output)
+	}
+	if !strings.Contains(string(output), "ACCEPTED the signature-tampered candidate receipt") {
+		t.Fatalf("signature tamper error = %q", output)
 	}
 }
 
 func stageReleaseVerifierInventoryTest(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("release verifier gate tests require bash")
+	}
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate test source")
@@ -383,9 +525,11 @@ func stageReleaseVerifierInventoryTest(t *testing.T) string {
 	for _, relativePath := range []string{
 		"scripts/release-verifier-install-gate.sh",
 		"scripts/release-verifier-install-gate-lib.sh",
+		"scripts/ci-retry.sh",
 		"release/verifier-installers.json",
 		"sdk/verifiers/ts/package.json",
 		"sdk/verifiers/ts/package-lock.json",
+		"sdk/verifiers/ts/src/types.ts",
 		"sdk/verifiers/rust/Cargo.toml",
 		"sdk/verifiers/rust/Cargo.lock",
 	} {
@@ -401,15 +545,30 @@ func stageReleaseVerifierInventoryTest(t *testing.T) string {
 			t.Fatalf("stage %s: %v", relativePath, err)
 		}
 	}
+	gitHome := t.TempDir()
+	hooksDir := filepath.Join(gitHome, "empty-hooks")
+	templateDir := filepath.Join(gitHome, "empty-template")
+	if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+		t.Fatalf("create empty hooks directory: %v", err)
+	}
+	if err := os.MkdirAll(templateDir, 0o750); err != nil {
+		t.Fatalf("create empty template directory: %v", err)
+	}
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"config", "user.name", "Pipelock Test"},
 		{"config", "user.email", "test@pipelock.invalid"},
-		{"add", "scripts/release-verifier-install-gate.sh", "scripts/release-verifier-install-gate-lib.sh", "release/verifier-installers.json", "sdk/verifiers/ts/package.json", "sdk/verifiers/ts/package-lock.json", "sdk/verifiers/rust/Cargo.toml", "sdk/verifiers/rust/Cargo.lock"},
-		{"commit", "-q", "-m", "test fixture"},
+		{"add", "scripts/release-verifier-install-gate.sh", "scripts/release-verifier-install-gate-lib.sh", "scripts/ci-retry.sh", "release/verifier-installers.json", "sdk/verifiers/ts/package.json", "sdk/verifiers/ts/package-lock.json", "sdk/verifiers/ts/src/types.ts", "sdk/verifiers/rust/Cargo.toml", "sdk/verifiers/rust/Cargo.lock"},
+		{"commit", "-q", "--no-gpg-sign", "-m", "test fixture"},
 	} {
-		command := exec.CommandContext(t.Context(), "git", args...) // #nosec G204 -- args come from the fixed fixture command list above.
+		gitArgs := append([]string{"-c", "core.hooksPath=" + hooksDir, "-c", "init.templateDir=" + templateDir}, args...)
+		command := exec.CommandContext(t.Context(), "git", gitArgs...) // #nosec G204 -- args come from the fixed fixture command list above.
 		command.Dir = root
+		command.Env = append(os.Environ(),
+			"HOME="+gitHome,
+			"GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull,
+		)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 		}

@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "release_blocked": true,
   "verifiers": [
     {
       "language": "Go",

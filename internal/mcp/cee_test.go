@@ -941,11 +941,24 @@ func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) 
 	}
 
 	var logBuf bytes.Buffer
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("create audit logger: %v", err)
+	}
 	reason := ceeRecordMCP(ceeRecordMCPOptions{
-		sessionKey: testMCPSessionKey, entropyPayload: []byte("new fragment"), fragmentPayloads: map[string][]byte{"": []byte("new fragment")}, cee: cee, sc: sc, logW: &logBuf,
+		sessionKey: testMCPSessionKey, entropyPayload: []byte("new fragment"), fragmentPayloads: map[string][]byte{"": []byte("new fragment")}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
 	})
 	if !strings.Contains(reason, "fragment session capacity exhausted") {
 		t.Fatalf("capacity reason = %q, want visible fail-closed denial", reason)
+	}
+	logger.Close()
+	auditRaw, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read capacity audit: %v", err)
+	}
+	if !bytes.Contains(auditRaw, []byte("cross_request_fragment_capacity")) {
+		t.Fatalf("capacity audit = %s, want blocking event", auditRaw)
 	}
 
 	var count float64

@@ -225,6 +225,56 @@ func TestResetAuthorityConsumesNonceOnceAndRejectsAfterRestart(t *testing.T) {
 	}
 }
 
+func TestResetDelegationRejectsMalformedArtifactsAndMissingRemovalPath(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(publicKey, "mcp://fixture-listener", strings.Repeat("e", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegation, err := MintResetDelegation(
+		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
+		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("f", 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalidInput := delegation
+	invalidInput.Kind = "unknown"
+	if got := authority.verify(invalidInput, ResetKindDrift, 0); got != ResetAuthorityMalformed {
+		t.Fatalf("malformed delegation verification = %q, want malformed", got)
+	}
+	if _, err := MarshalResetDelegation(invalidInput); err == nil {
+		t.Fatal("MarshalResetDelegation accepted an invalid delegation kind")
+	}
+
+	invalidSignature := delegation
+	invalidSignature.Signature = "not-base64"
+	if err := VerifyResetDelegationSignature(publicKey, invalidSignature); err == nil {
+		t.Fatal("VerifyResetDelegationSignature accepted malformed signature encoding")
+	}
+
+	path := filepath.Join(t.TempDir(), "reset.json")
+	if err := os.WriteFile(path, []byte("delegation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeResetDelegationFile(path, opened); err == nil {
+		t.Fatal("remove reset delegation accepted a vanished control path")
+	}
+}
+
 func TestResetDelegationCanonicalInputIsStable(t *testing.T) {
 	pub, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {

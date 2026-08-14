@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
 // TestRunProxyWithSandbox_RefusesMappedCommand pins the refusal on the legacy
@@ -93,5 +95,20 @@ func TestRunProxyWithSandbox_AllowsUnmappedCommand(t *testing.T) {
 	err := RunProxyWithSandbox(context.Background(), cmd, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})
 	if err != nil && strings.Contains(err.Error(), "RunProxyWithSandboxLaunch") {
 		t.Fatalf("unmapped command must not hit the mapped-launch refusal: %v", err)
+	}
+}
+
+func TestRunProxyWithSandboxLaunchRejectsNilAndFailedMappedLaunch(t *testing.T) {
+	if err := RunProxyWithSandboxLaunch(context.Background(), nil, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{}); err == nil || !strings.Contains(err.Error(), "sandbox launch is nil") {
+		t.Fatalf("nil prepared launch error = %v", err)
+	}
+
+	launch := &sandbox.PreparedSandboxCmd{
+		Cmd:                       exec.Command("/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
+		ParentHardeningAfterStart: true,
+	}
+	err := RunProxyWithSandboxLaunch(context.Background(), launch, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})
+	if err == nil || !strings.Contains(err.Error(), "starting sandboxed MCP server") {
+		t.Fatalf("failed mapped launch error = %v", err)
 	}
 }

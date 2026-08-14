@@ -58,6 +58,12 @@ func TestMCPListenerSignedDriftResetCachesAuthorityAndAdvancesEpoch(t *testing.T
 	if err != nil || cached != authority {
 		t.Fatalf("listener reset authority cache = %p, %v; want %p", cached, err, authority)
 	}
+	if _, err := states.authorityForToolDriftReset(&tools.ToolScanConfig{
+		ListenerDriftResetAuthorityPublicKey: []byte("wrong-length"),
+		ListenerDriftResetTarget:             cfg.ListenerDriftResetTarget,
+	}); err == nil {
+		t.Fatal("listener reset authority accepted malformed public key")
+	}
 	delegation, err := MintResetDelegation(
 		privateKey,
 		"listener-operator",

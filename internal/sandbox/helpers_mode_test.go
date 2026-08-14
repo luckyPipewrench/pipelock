@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,42 @@ func TestWaitForParentHardening_DeniesEOF(t *testing.T) {
 	if err := waitForParentHardening(); err == nil {
 		t.Fatal("readiness EOF allowed sandbox target start")
 	}
+}
+
+func TestWaitForParentHardening_ValidatesAndConsumesRelease(t *testing.T) {
+	t.Run("no readiness descriptor", func(t *testing.T) {
+		t.Setenv(sandboxReadinessFDEnv, "")
+		if err := waitForParentHardening(); err != nil {
+			t.Fatalf("ungated launch wait: %v", err)
+		}
+	})
+
+	t.Run("invalid descriptor", func(t *testing.T) {
+		t.Setenv(sandboxReadinessFDEnv, "-1")
+		err := waitForParentHardening()
+		if err == nil || !strings.Contains(err.Error(), "invalid readiness descriptor") {
+			t.Fatalf("invalid descriptor wait = %v", err)
+		}
+	})
+
+	t.Run("one byte release", func(t *testing.T) {
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("create readiness pipe: %v", err)
+		}
+		if _, err := writer.Write([]byte{1}); err != nil {
+			_ = reader.Close()
+			t.Fatalf("write readiness release: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			_ = reader.Close()
+			t.Fatalf("close readiness writer: %v", err)
+		}
+		t.Setenv(sandboxReadinessFDEnv, strconv.Itoa(int(reader.Fd())))
+		if err := waitForParentHardening(); err != nil {
+			t.Fatalf("released launch wait: %v", err)
+		}
+	})
 }
 
 func TestEncodePolicyJSON_RoundTrip(t *testing.T) {

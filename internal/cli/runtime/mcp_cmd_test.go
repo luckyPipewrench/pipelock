@@ -6,15 +6,18 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -241,6 +244,11 @@ func TestMCPProxyCmdEarlyValidation(t *testing.T) {
 			args:    []string{"--adaptive-reset-file", "/tmp/reset", "--upstream", "http://127.0.0.1:8080/mcp"},
 			wantErr: "--adaptive-reset-file is only supported with local subprocess MCP servers",
 		},
+		{
+			name:    "adaptive reset authority without reset file",
+			args:    []string{"--adaptive-reset-authority-public-key-file", "/tmp/authority.pub", "--", "true"},
+			wantErr: "require --adaptive-reset-file",
+		},
 	}
 
 	for _, tt := range tests {
@@ -257,6 +265,57 @@ func TestMCPProxyCmdEarlyValidation(t *testing.T) {
 			err := cmd.Execute()
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("mcp proxy err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMCPProxyCmdAdaptiveResetAuthorityValidation(t *testing.T) {
+	dir := t.TempDir()
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate reset authority key: %v", err)
+	}
+	keyPath := filepath.Join(dir, "authority.pub")
+	if err := signing.SavePublicKey(publicKey, keyPath); err != nil {
+		t.Fatalf("write reset authority key: %v", err)
+	}
+	missingKeyPath := filepath.Join(dir, "missing.pub")
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "missing authority binding",
+			args:    []string{"--adaptive-reset-file", filepath.Join(dir, "reset"), "--", "true"},
+			wantErr: "--adaptive-reset-file requires --adaptive-reset-authority-public-key-file and --adaptive-reset-target",
+		},
+		{
+			name:    "unreadable authority key",
+			args:    []string{"--adaptive-reset-file", filepath.Join(dir, "reset"), "--adaptive-reset-authority-public-key-file", missingKeyPath, "--adaptive-reset-target", "mcp://runtime-test", "--", "true"},
+			wantErr: "load adaptive reset authority public key",
+		},
+		{
+			name:    "invalid authority target",
+			args:    []string{"--adaptive-reset-file", filepath.Join(dir, "reset"), "--adaptive-reset-authority-public-key-file", keyPath, "--adaptive-reset-target", "invalid\ntarget", "--", "true"},
+			wantErr: "create adaptive reset authority",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := mcpProxyCmd()
+			cmd.SilenceUsage = true
+			cmd.SetArgs(tt.args)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("mcp proxy err = %v, want containing %q\noutput:\n%s", err, tt.wantErr, out.String())
 			}
 		})
 	}

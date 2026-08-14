@@ -118,6 +118,23 @@ func TestPreparedSandboxCmd_EagerHardeningOrderingAndFailures(t *testing.T) {
 	if startFailure.readinessReader != nil || startFailure.readinessWriter != nil {
 		t.Fatal("failed eager start retained readiness descriptors")
 	}
+
+	mappedStartReader, mappedStartWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mappedStartFailure := &PreparedSandboxCmd{
+		Cmd:                       exec.Command("/definitely/not/a/pipelock-test-command"), // #nosec G204 G702 -- fixed literal test command
+		ParentHardeningAfterStart: true,
+		readinessReader:           mappedStartReader,
+		readinessWriter:           mappedStartWriter,
+	}
+	if err := mappedStartFailure.StartWithParentHardening(func() error { return nil }); err == nil || !strings.Contains(err.Error(), "starting mapped sandbox child") {
+		t.Fatalf("mapped start failure = %v", err)
+	}
+	if mappedStartFailure.readinessReader != nil || mappedStartFailure.readinessWriter != nil {
+		t.Fatal("failed mapped start retained readiness descriptors")
+	}
 }
 
 func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T) {

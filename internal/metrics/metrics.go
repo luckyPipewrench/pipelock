@@ -88,9 +88,10 @@ type Metrics struct {
 	requestPolicyDecisions *prometheus.CounterVec
 
 	// Cross-request exfiltration detection (cross_request.go).
-	CrossRequestEntropyExceeded prometheus.Counter
-	CrossRequestDLPMatch        prometheus.Counter
-	CrossRequestFragmentBytes   prometheus.Gauge
+	CrossRequestEntropyExceeded          prometheus.Counter
+	CrossRequestDLPMatch                 prometheus.Counter
+	CrossRequestFragmentCapacityExceeded prometheus.Counter
+	CrossRequestFragmentBytes            prometheus.Gauge
 
 	// Scan API (scan_api.go).
 	ScanAPIRequests *prometheus.CounterVec

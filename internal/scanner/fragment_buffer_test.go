@@ -157,8 +157,9 @@ func TestFragmentBuffer_MaxBytesEviction(t *testing.T) {
 	}
 }
 
-func TestFragmentBuffer_MaxSessionsCap(t *testing.T) {
-	// Max 3 sessions. Add 4. Verify LRU eviction keeps only 3.
+func TestFragmentBuffer_MaxSessionsCapacityDeniesNewSession(t *testing.T) {
+	// Max 3 sessions. A fourth session must be denied without discarding
+	// accumulated state for any existing session.
 	fb := NewFragmentBuffer(65536, 3, testWindowSecs)
 	defer fb.Close()
 
@@ -166,11 +167,13 @@ func TestFragmentBuffer_MaxSessionsCap(t *testing.T) {
 	fb.Append(testSessionB, []byte("data-b"))
 	fb.Append(testSessionC, []byte("data-c"))
 
-	// Access session A to make it recently used.
+	// Add more state to session A to prove known sessions remain admissible.
 	fb.Append(testSessionA, []byte("more-a"))
 
-	// Add session D, which should evict the least-recently-used (session B).
-	fb.Append(testSessionD, []byte("data-d"))
+	// A new session at capacity must fail closed rather than evict session B.
+	if result := fb.Append(testSessionD, []byte("data-d")); !result.CapacityExceeded {
+		t.Fatal("new fragment session at capacity was admitted")
+	}
 
 	fb.mu.Lock()
 	sessionCount := len(fb.sessions)
@@ -185,11 +188,11 @@ func TestFragmentBuffer_MaxSessionsCap(t *testing.T) {
 	if !hasA {
 		t.Error("session A should survive (recently used)")
 	}
-	if hasB {
-		t.Error("session B should have been evicted (least recently used)")
+	if !hasB {
+		t.Error("session B must remain after a new-session capacity refusal")
 	}
-	if !hasD {
-		t.Error("session D should exist (just added)")
+	if hasD {
+		t.Error("session D must not be created after capacity refusal")
 	}
 }
 

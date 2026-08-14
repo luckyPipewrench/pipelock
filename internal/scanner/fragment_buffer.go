@@ -29,6 +29,14 @@ type sessionBuffer struct {
 	lastAccess time.Time // for LRU eviction across sessions
 }
 
+// FragmentAppendResult describes whether a fragment became representable in the
+// cross-request session ledger.
+type FragmentAppendResult struct {
+	// CapacityExceeded means a new session could not be admitted without
+	// discarding another session's accumulated detection state.
+	CapacityExceeded bool
+}
+
 // FragmentBuffer accumulates outbound payloads per session in rolling buffers.
 // On each call to ScanForSecrets, the concatenated buffer is scanned against
 // DLP patterns synchronously. This guarantees pre-forward detection: a request
@@ -36,7 +44,7 @@ type sessionBuffer struct {
 type FragmentBuffer struct {
 	mu          sync.Mutex
 	maxBytes    int // per-session byte cap
-	maxSessions int // global session count cap (LRU eviction)
+	maxSessions int // global session count cap (new sessions are denied at capacity)
 	windowSecs  int // fragment retention window in seconds
 	sessions    map[string]*sessionBuffer
 	lastCleanup time.Time
@@ -57,17 +65,20 @@ func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *Fragmen
 
 // Append adds a payload fragment to the session's rolling buffer.
 // Evicts oldest fragments when the per-session byte cap is exceeded.
-// Evicts the least-recently-used session when the global session cap is exceeded.
-func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
+// Refuses a new session when the global session cap is reached: accumulated
+// fragment state is security evidence and must not be silently evicted.
+func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) FragmentAppendResult {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
 
 	sb, exists := fb.sessions[sessionKey]
 	if !exists {
-		// Check global session cap before creating a new session.
+		// Check global session cap before creating a new session. Do not evict
+		// another session: a later fragment could otherwise complete a secret
+		// in an empty bucket and pass uninspected.
 		if len(fb.sessions) >= fb.maxSessions {
-			fb.evictLRUSession()
+			return FragmentAppendResult{CapacityExceeded: true}
 		}
 		sb = &sessionBuffer{}
 		fb.sessions[sessionKey] = sb
@@ -97,7 +108,13 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 		sb.fragments[0].data = sb.fragments[0].data[len(sb.fragments[0].data)-fb.maxBytes:]
 		sb.totalBytes = fb.maxBytes
 	}
+	return FragmentAppendResult{}
 }
+
+// minFragmentsForMatch is the minimum number of in-window fragments a session
+// must hold to be a candidate cross-request secret. A single fragment is a
+// one-request secret handled by body DLP.
+const minFragmentsForMatch = 2
 
 // ScanForSecrets runs DLP on the concatenated fragment buffer for the given session.
 // Always scans synchronously to guarantee pre-forward detection. Returns nil if
@@ -260,51 +277,6 @@ func (fb *FragmentBuffer) concatenateFragments(sb *sessionBuffer) []byte {
 		buf = append(buf, f.data...)
 	}
 	return buf
-}
-
-// minFragmentsForMatch is the minimum number of in-window fragments a session
-// must hold to be a candidate cross-request secret (a single fragment is a
-// one-request secret handled by body DLP). A session at or above this count is
-// an in-progress accumulation and is protected from flood-to-evict.
-const minFragmentsForMatch = 2
-
-// evictLRUSession removes a session to stay within the global cap. To resist
-// the flood-to-evict bypass, it evicts the least-recently-used session AMONG
-// those that are NOT an in-progress multi-fragment accumulation; only if every
-// session is in-progress does it fall back to evicting the global LRU. Bounded
-// memory is preserved either way. Must be called with fb.mu held.
-func (fb *FragmentBuffer) evictLRUSession() {
-	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
-
-	var lruKey, lruProtectedKey string
-	var lruTime, lruProtectedTime time.Time
-
-	for key, sb := range fb.sessions {
-		active := 0
-		for _, f := range sb.fragments {
-			if !f.at.Before(cutoff) {
-				active++
-			}
-		}
-		if active >= minFragmentsForMatch {
-			// In-progress secret: only a candidate if nothing else can be evicted.
-			if lruProtectedKey == "" || sb.lastAccess.Before(lruProtectedTime) {
-				lruProtectedKey, lruProtectedTime = key, sb.lastAccess
-			}
-			continue
-		}
-		if lruKey == "" || sb.lastAccess.Before(lruTime) {
-			lruKey, lruTime = key, sb.lastAccess
-		}
-	}
-
-	victim := lruKey
-	if victim == "" {
-		victim = lruProtectedKey // all sessions in-progress; bound memory anyway
-	}
-	if victim != "" {
-		delete(fb.sessions, victim)
-	}
 }
 
 // cleanupInterval is derived from the configured window: at most 60s and at

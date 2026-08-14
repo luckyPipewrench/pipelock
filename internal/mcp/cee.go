@@ -446,7 +446,17 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				continue
 			}
 			fragmentKey := mcpCEEFragmentSessionKey(opts.sessionKey, path)
-			buffer.Append(fragmentKey, payload)
+			if appendResult := buffer.Append(fragmentKey, payload); appendResult.CapacityExceeded {
+				if m != nil {
+					m.RecordCrossRequestFragmentCapacityExceeded()
+				}
+				reason := "cross-request fragment session capacity exhausted; request cannot be safely inspected"
+				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
+				if opts.logger != nil {
+					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment_capacity", reason)
+				}
+				return reason
+			}
 			if matches := buffer.ScanForSecrets(context.Background(), fragmentKey, opts.sc); len(matches) > 0 {
 				findingKey, kind := mcpCEEFragmentFindingKey(path, payload, matches[0].PatternName)
 				if mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {

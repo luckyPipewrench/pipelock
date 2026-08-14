@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 )
 
@@ -57,6 +58,22 @@ func TestIsStandaloneInitMode(t *testing.T) {
 				t.Errorf("IsStandaloneInitMode() = %v, want %v (env=%q)", got, tt.want, tt.envVal)
 			}
 		})
+	}
+}
+
+func TestWaitForParentHardening_DeniesEOF(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create readiness pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close readiness writer: %v", err)
+	}
+	t.Setenv(sandboxReadinessFDEnv, strconv.Itoa(int(reader.Fd())))
+
+	if err := waitForParentHardening(); err == nil {
+		t.Fatal("readiness EOF allowed sandbox target start")
 	}
 }
 

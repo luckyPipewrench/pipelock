@@ -14,6 +14,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -79,7 +80,8 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	trimmed := bytes.TrimSpace(line)
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		return scanBatch(trimmed, sc, opts, includeDLP)
+		verdict, _ := scanBatch(trimmed, sc, opts, includeDLP)
+		return verdict
 	}
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
@@ -369,14 +371,14 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 // Returns a combined verdict aggregating matches from all elements. The
 // suppression options apply to every element so a per-server suppress rule
 // covers batched responses too.
-func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) jsonrpc.ScanVerdict {
+func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) (jsonrpc.ScanVerdict, bool) {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
-		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
+		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}, false
 	}
 
 	if len(batch) == 0 {
-		return jsonrpc.ScanVerdict{Clean: true}
+		return jsonrpc.ScanVerdict{Clean: true}, false
 	}
 
 	var allMatches []scanner.ResponseMatch
@@ -407,14 +409,14 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, inclu
 	}
 
 	if hasError {
-		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}, len(allMatches) > 0 || len(allDLPMatches) > 0
 	}
 	if len(allMatches) == 0 && len(allDLPMatches) == 0 {
-		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}, false
 	}
 	return jsonrpc.ScanVerdict{
 		ID: firstID, Clean: false, Action: action, Matches: allMatches, DLPMatches: allDLPMatches,
-	}
+	}, true
 }
 
 // ScanStream reads newline-delimited JSON-RPC 2.0 responses from r, scans each
@@ -424,48 +426,173 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, inclu
 // security finding was detected. Parse errors are reported but do not count as a
 // finding.
 func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (bool, error) {
-	lineScanner := bufio.NewScanner(r)
-	lineScanner.Buffer(make([]byte, 0, 64*1024), transport.MaxLineSize)
+	found, _, err := ScanStreamResult(r, w, sc, jsonOutput)
+	return found, err
+}
+
+// ScanStreamResult scans a stream and reports security findings and malformed
+// input separately.
+//
+// The two are different answers and must not share one. A line this command
+// could not fully inspect was not verified clean, so reporting it alongside
+// verified-clean input tells a caller the opposite of the truth. Callers that
+// gate on process status need to distinguish "nothing was found" from
+// "something could not be looked at".
+func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (found, malformed bool, err error) {
+	reader := bufio.NewReaderSize(r, 64*1024)
 
 	foundFinding := false
+	sawMalformed := false
 	lineNum := 0
 
-	for lineScanner.Scan() {
+	for {
+		raw, overLimit, readErr := readBoundedLine(reader, transport.MaxLineSize)
+		if len(raw) == 0 && !overLimit && readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
+		}
 		lineNum++
-		line := strings.TrimSpace(lineScanner.Text())
-		if line == "" {
+
+		// An over-limit record was drained rather than ending the stream. Ending
+		// it would let an upstream prepend one oversized record to stop every
+		// later line from being inspected, which downgrades a real finding after
+		// it into a bad-input result and destroys the exit-status distinction
+		// this function exists to provide.
+		if overLimit {
+			sawMalformed = true
+			verdict := jsonrpc.ScanVerdict{
+				Line:    lineNum,
+				Clean:   false,
+				Error:   fmt.Sprintf("line exceeds the %d byte scan limit and was not inspected", transport.MaxLineSize),
+				Scanned: scanVerdictScopes(),
+			}
+			if writeErr := emitVerdict(w, verdict, jsonOutput); writeErr != nil {
+				return foundFinding, sawMalformed, writeErr
+			}
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
+			}
 			continue
 		}
 
-		verdict := ScanResponse([]byte(line), sc)
+		line := strings.TrimSpace(string(raw))
+		if line == "" {
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			continue
+		}
+
+		verdict, lineFound := scanStreamResponse([]byte(line), sc)
 		verdict.Line = lineNum
 		verdict.Scanned = scanVerdictScopes()
 
-		if !verdict.Clean && verdict.Error == "" {
+		if verdict.Error != "" {
+			sawMalformed = true
+		}
+		if lineFound {
 			foundFinding = true
 		}
 
-		if jsonOutput {
-			data, err := json.Marshal(verdict)
-			if err != nil {
-				return foundFinding, fmt.Errorf("marshaling verdict: %w", err)
+		if writeErr := emitVerdict(w, verdict, jsonOutput); writeErr != nil {
+			return foundFinding, sawMalformed, writeErr
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
 			}
-			data = append(data, '\n')
-			if _, err := w.Write(data); err != nil {
-				return foundFinding, fmt.Errorf("writing verdict: %w", err)
-			}
-		} else {
-			if err := writeTextVerdict(w, verdict); err != nil {
-				return foundFinding, err
-			}
+			return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
 		}
 	}
 
-	if err := lineScanner.Err(); err != nil {
-		return foundFinding, fmt.Errorf("reading input: %w", err)
+	return foundFinding, sawMalformed, nil
+}
+
+// readBoundedLine reads one newline-terminated record, capped at limit bytes.
+//
+// A record longer than the cap is DRAINED to its newline and reported as
+// over-limit, so the stream continues. bufio.Scanner cannot do this: it fails
+// permanently on an over-long token, which would let one oversized record
+// suppress inspection of everything after it.
+//
+// Returns the record without its newline, whether it exceeded the cap, and any
+// read error. A final record without a trailing newline is returned with io.EOF.
+func readBoundedLine(r *bufio.Reader, limit int) (line []byte, overLimit bool, err error) {
+	var buf []byte
+	// During accumulation the terminator has not necessarily arrived yet:
+	// ReadSlice can hand back "\r" at the end of one fragment and "\n" at the
+	// start of the next, so a per-fragment terminator test misclassifies a legal
+	// CRLF record sitting exactly on the boundary. Accumulate against a two-byte
+	// grace, which is the longest terminator, and make the exact decision once the
+	// whole record is in hand. The grace bounds memory; the final check bounds the
+	// record.
+	const maxTerminator = 2
+	for {
+		chunk, readErr := r.ReadSlice('\n')
+		if len(buf)+len(chunk) > limit+maxTerminator {
+			overLimit = true
+			// Keep draining to the newline so the next read starts at a record
+			// boundary rather than mid-record.
+			buf = nil
+		} else if !overLimit {
+			buf = append(buf, chunk...)
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		// The record is complete. Decide against its content length, with the
+		// terminator removed, so LF and CRLF senders get the same maximum.
+		record := trimTrailingNewline(buf)
+		if !overLimit && len(record) > limit {
+			overLimit = true
+			record = nil
+		}
+		if readErr != nil {
+			return record, overLimit, readErr
+		}
+		return record, overLimit, nil
+	}
+}
+
+func trimTrailingNewline(b []byte) []byte {
+	b = bytes.TrimSuffix(b, []byte("\n"))
+	return bytes.TrimSuffix(b, []byte("\r"))
+}
+
+func emitVerdict(w io.Writer, verdict jsonrpc.ScanVerdict, jsonOutput bool) error {
+	if !jsonOutput {
+		return writeTextVerdict(w, verdict)
+	}
+	data, err := json.Marshal(verdict)
+	if err != nil {
+		return fmt.Errorf("marshaling verdict: %w", err)
+	}
+	data = append(data, '\n')
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("writing verdict: %w", err)
+	}
+	return nil
+}
+
+// scanStreamResponse returns the regular stream verdict and whether any
+// successfully inspected batch element contained a security finding. A batch
+// parse error still owns the public verdict so callers retain the existing
+// fail-closed parse semantics, while the stream result preserves a sibling
+// finding for its exit-status contract.
+func scanStreamResponse(line []byte, sc *scanner.Scanner) (jsonrpc.ScanVerdict, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return scanBatch(trimmed, sc, ResponseScanOptions{}, true)
 	}
 
-	return foundFinding, nil
+	verdict := ScanResponse(line, sc)
+	return verdict, !verdict.Clean && verdict.Error == ""
 }
 
 func scanVerdictScopes() []string {

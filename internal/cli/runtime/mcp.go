@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -532,6 +533,16 @@ var ErrMCPResponseSecurityFinding = errors.New("MCP response security finding de
 // ErrMCPResponseSecurityFinding.
 var ErrInjectionDetected = ErrMCPResponseSecurityFinding
 
+// ErrMCPScanMalformedInput is returned when pipelock mcp scan could not fully
+// inspect a line. It carries the exit code this binary reserves for bad input
+// rather than the security-finding code, because "this could not be scanned"
+// and "this was scanned and something was found" are different answers for a
+// caller.
+var ErrMCPScanMalformedInput = cliutil.ExitCodeError(
+	cliutil.ExitConfig,
+	errors.New("malformed MCP input: one or more lines could not be fully inspected and were not verified clean"),
+)
+
 // safeWriter wraps an io.Writer with a mutex for concurrent use.
 // Used to synchronize file sentry goroutines and RunProxy stderr output.
 type safeWriter struct {
@@ -614,9 +625,14 @@ For bidirectional MCP protection, use pipelock mcp proxy: responses are scanned
 before forwarding, and requests are scanned for DLP leaks and injection in tool
 arguments.
 
-Exit code 0 if all responses are clean, 1 if any response security finding
-(prompt injection or generic inbound credential) is detected.
-In text mode, only findings are printed. In JSON mode, every line produces a verdict.
+Exit code 0 only if every response was scanned and all were clean, 1 if any
+response security finding (prompt injection or generic inbound credential) is
+detected, and 2 if any line could not be fully inspected and was therefore not
+verified clean. A finding outranks an inspection failure. Scanning covers response
+injection and inbound DLP; it does not include tool scanning or tool policy,
+which are proxy features.
+In text mode, findings and input-inspection errors are printed. In JSON mode,
+each line that can be read produces a verdict.
 
 Examples:
   mcp-server | pipelock mcp scan
@@ -654,12 +670,22 @@ Examples:
 			}
 			defer sc.Close()
 
-			found, err := mcp.ScanStream(cmd.InOrStdin(), cmd.OutOrStdout(), sc, jsonOutput)
-			if err != nil {
+			found, malformed, err := mcp.ScanStreamResult(cmd.InOrStdin(), cmd.OutOrStdout(), sc, jsonOutput)
+			if err != nil && !errors.Is(err, bufio.ErrTooLong) {
 				return err
 			}
 			if found {
 				return ErrMCPResponseSecurityFinding
+			}
+			// A line that could not be fully inspected was not verified clean, so
+			// it must not share an exit code with verified-clean input. A caller
+			// gating CI on process status would otherwise read incomplete scanning
+			// as safe.
+			// Exit 2 is the code this binary already reserves for bad input, and
+			// `pipelock explain mcp-response` already returns it for the same
+			// input, so this makes the two agree rather than inventing a scheme.
+			if malformed {
+				return ErrMCPScanMalformedInput
 			}
 
 			return nil

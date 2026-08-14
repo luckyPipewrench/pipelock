@@ -14,10 +14,10 @@ import (
 
 // The tool-drift reset file re-baselines the listener's shared upstream tool
 // inventory, so it is a security-relevant operator action and carries the same
-// owner-only, one-shot contract as the adaptive reset. These pin that contract
-// on the drift path specifically: a file the wrapped agent could plant must
-// never clear the baseline that agent's own upstream is being measured against.
-func TestConsumeToolDriftResetFile_HonorsOwnerOnlyFileOnce(t *testing.T) {
+// root-owned, one-shot contract as the adaptive reset. These pin that contract
+// on the drift path specifically: a same-UID file the wrapped agent could plant
+// must never clear the baseline that agent's own upstream is being measured against.
+func TestConsumeToolDriftResetFile_RejectsSameUIDFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "drift-reset")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
@@ -25,11 +25,14 @@ func TestConsumeToolDriftResetFile_HonorsOwnerOnlyFileOnce(t *testing.T) {
 	}
 	var logW bytes.Buffer
 
-	if !consumeToolDriftResetFile(path, &logW) {
-		t.Fatalf("owner-only drift reset was not honored, log=%q", logW.String())
+	if consumeToolDriftResetFile(path, &logW) {
+		t.Fatalf("same-UID drift reset must not be honored, log=%q", logW.String())
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("drift reset file must be removed after honoring (err=%v)", err)
+		t.Fatalf("rejected drift reset file must be removed (err=%v)", err)
+	}
+	if !strings.Contains(logW.String(), "independent operator") {
+		t.Fatalf("same-UID rejection was not operator-visible: %q", logW.String())
 	}
 	if consumeToolDriftResetFile(path, &logW) {
 		t.Fatal("drift reset must be one-shot")

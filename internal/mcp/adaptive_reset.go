@@ -30,17 +30,18 @@ const resetFileDisallowedBits = 0o077
 // the request is one-shot.
 //
 // It is fail-safe: a missing/unreadable file is a silent no-op; a file that is
-// a symlink, not a regular file, group/other-accessible, or not owned by this
-// process's user is IGNORED and removed with a warning - such a file may have
-// been planted by the wrapped agent to clear its own airlock, which must never
-// be honored. On Windows, mode bits are not security-meaningful
+// a symlink, not a regular file, group/other-accessible, or not owned by an
+// independent operator is IGNORED and removed with a warning - a same-UID file
+// may have been planted by the wrapped agent to clear its own airlock. On Unix
+// the independent operator boundary is a root-owned control file. On Windows,
+// mode bits are not security-meaningful
 // (secperm.Enforced() is false); access control there is the deployment's NTFS
 // ACL responsibility, matching the rest of pipelock's secret-file handling.
 func consumeAdaptiveResetFile(path string, logW io.Writer) bool {
 	return consumeMCPResetFile(path, "adaptive", logW)
 }
 
-// consumeToolDriftResetFile uses the same owner-only, one-shot control-file
+// consumeToolDriftResetFile uses the same root-owned, one-shot control-file
 // contract as adaptive reset. Re-baselining is a security-relevant operator
 // action, so a file an MCP client could plant must never be honored.
 func consumeToolDriftResetFile(path string, logW io.Writer) bool {
@@ -77,8 +78,8 @@ func consumeMCPResetFile(path, kind string, logW io.Writer) bool {
 		_ = os.Remove(path)
 		return false
 	}
-	if !resetFileOwnedBySelf(info) {
-		warnResetFile(logW, kind, path, "is not owned by the proxy user")
+	if !resetFileOwnedByOperator(info) {
+		warnResetFile(logW, kind, path, "is not owned by an independent operator (must be root-owned)")
 		_ = os.Remove(path)
 		return false
 	}

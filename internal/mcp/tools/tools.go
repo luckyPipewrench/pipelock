@@ -115,7 +115,7 @@ type ToolScanConfig struct {
 	// DriftRemediation is included in a drift block so an operator has a
 	// narrow recovery action instead of disabling drift detection.
 	DriftRemediation string
-	// ListenerDriftResetFile is an owner-only, one-shot control file honored
+	// ListenerDriftResetFile is a root-owned, one-shot control file honored
 	// by the HTTP reverse listener to re-baseline its upstream tool inventory.
 	ListenerDriftResetFile string
 	Action                 string // warn, block

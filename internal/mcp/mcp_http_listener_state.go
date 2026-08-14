@@ -25,7 +25,7 @@ const (
 	listenerPrincipalIdleTTL          = 24 * time.Hour
 	listenerLegacyIdleTTL             = 24 * time.Hour
 	listenerDegradationReportInterval = time.Minute
-	listenerToolDriftRemediation      = "have an authorized operator create the owner-only control file configured by mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
+	listenerToolDriftRemediation      = "have an authorized operator create the root-owned control file configured by mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
 )
 
 const listenerSessionTokenHeader = "Pipelock-Session-Token"

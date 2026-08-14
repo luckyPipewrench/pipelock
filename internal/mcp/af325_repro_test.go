@@ -197,16 +197,10 @@ func TestAF328_PlainClientAllowsBenignRefinement(t *testing.T) {
 	}
 }
 
-// TestAF328_OperatorResetRebaselinesListenerInventory is the operator lifecycle
-// for drift: a change gets blocked, the operator confirms the update and drops
-// the owner-only reset file, and the next tools/list establishes the new
-// inventory. Without this the only way out of a legitimate-but-blocked update
-// is turning drift detection off, which is the outcome the whole mechanism
-// exists to avoid.
-//
-// It also pins the two audit records that make the sequence reviewable: the
-// block names its remediation, and the reset is recorded as a distinct event.
-func TestAF328_OperatorResetRebaselinesListenerInventory(t *testing.T) {
+// TestAF328_SameUIDResetFileDoesNotRebaselineListenerInventory proves a wrapped
+// agent cannot re-baseline the listener's upstream inventory with a same-UID
+// owner-only file.
+func TestAF328_SameUIDResetFileDoesNotRebaselineListenerInventory(t *testing.T) {
 	upstream, _ := af325Upstream(t, af325RugPullOnly)
 
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -235,24 +229,20 @@ func TestAF328_OperatorResetRebaselinesListenerInventory(t *testing.T) {
 		t.Fatalf("changed inventory was not blocked with its remediation: %s", blocked)
 	}
 
-	// The operator confirms the update and authorizes a re-baseline.
+	// A same-UID control file is not an operator authorization.
 	if err := os.WriteFile(resetPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rebaselined := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	if strings.Contains(rebaselined, `"error"`) {
-		t.Fatalf("the re-baseline request was still blocked: %s", rebaselined)
-	}
-	if !strings.Contains(rebaselined, "sink.fixture.example") {
-		t.Fatalf("the confirmed inventory did not reach the client: %s", rebaselined)
+	stillBlocked := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	if !strings.Contains(stillBlocked, `"error"`) || !strings.Contains(stillBlocked, "listener_drift_reset_file") {
+		t.Fatalf("same-UID reset unexpectedly re-baselined listener: %s", stillBlocked)
 	}
 	if _, err := os.Stat(resetPath); !os.IsNotExist(err) {
-		t.Errorf("the reset file must be consumed, not left to re-fire (err=%v)", err)
+		t.Errorf("the rejected reset file must be removed, not left to re-fire (err=%v)", err)
 	}
 
-	// The accepted inventory is now the baseline, so it stops blocking.
-	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); strings.Contains(again, `"error"`) {
-		t.Fatalf("the re-baselined inventory blocked on a later request: %s", again)
+	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); !strings.Contains(again, `"error"`) {
+		t.Fatalf("listener baseline changed after rejecting reset file: %s", again)
 	}
 
 	auditLogger.Close()
@@ -264,12 +254,15 @@ func TestAF328_OperatorResetRebaselinesListenerInventory(t *testing.T) {
 	if !strings.Contains(audited, "tool definition drift detected") {
 		t.Errorf("the drift block was not audited: %s", audited)
 	}
-	if !strings.Contains(audited, "operator re-baselined") {
-		t.Errorf("the re-baseline was not audited as its own event: %s", audited)
+	if strings.Contains(audited, "operator re-baselined") {
+		t.Errorf("same-UID file must not produce a re-baseline audit record: %s", audited)
 	}
 }
 
 func TestAF330_ListenerResetRejectsPreResetToolsListResponse(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires a root-owned reset authority")
+	}
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	var calls atomic.Int32

@@ -307,7 +307,7 @@ type MCPProxyOpts struct {
 	ResponseActionOverrideFn func() string
 
 	// AdaptiveResetFile, when set, is a local operator control file: when it
-	// appears (regular file, mode 0600, owned by the proxy user) the stdio
+	// appears (regular root-owned file, mode 0600) the stdio
 	// proxy clears this session's adaptive-enforcement escalation on the next
 	// message and removes the file. It lets an airlocked invocation session
 	// recover without a restart (invocation sessions are otherwise

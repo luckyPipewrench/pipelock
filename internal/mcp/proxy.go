@@ -235,7 +235,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}, opts.warnContext()))
 
 		// Operator-triggered local reset: when the adaptive reset file appears
-		// (owner-only, owned by the proxy user) clear this session's adaptive
+		// (root-owned, mode 0600) clear this session's adaptive
 		// escalation so an airlocked stdio session recovers without a restart.
 		// Invocation sessions are otherwise un-resettable, and stdio mounts no
 		// admin API. The file checks fail closed against an agent-planted file.

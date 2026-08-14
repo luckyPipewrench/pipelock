@@ -15,10 +15,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
 
-// TestConsumeAdaptiveResetFile_HonorsOwnerOnlyFile proves the happy path: a
-// regular, owner-only (0600) file owned by this process is honored once and
-// removed.
-func TestConsumeAdaptiveResetFile_HonorsOwnerOnlyFile(t *testing.T) {
+// TestConsumeAdaptiveResetFile_RejectsSameUIDFile pins the authority boundary:
+// a regular owner-only file is not sufficient when the wrapped agent shares
+// the proxy UID.
+func TestConsumeAdaptiveResetFile_RejectsSameUIDFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "reset")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
@@ -26,13 +26,16 @@ func TestConsumeAdaptiveResetFile_HonorsOwnerOnlyFile(t *testing.T) {
 	}
 	var logW bytes.Buffer
 
-	if !consumeAdaptiveResetFile(path, &logW) {
-		t.Fatalf("expected reset honored, log=%q", logW.String())
+	if consumeAdaptiveResetFile(path, &logW) {
+		t.Fatalf("same-UID reset file must not be honored, log=%q", logW.String())
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("reset file must be removed after honoring (err=%v)", err)
+		t.Fatalf("rejected reset file must be removed (err=%v)", err)
 	}
-	// One-shot: a second call with the file gone is a no-op.
+	if !strings.Contains(logW.String(), "independent operator") {
+		t.Fatalf("same-UID rejection was not operator-visible: %q", logW.String())
+	}
+	// The removed file remains a no-op on a later check.
 	if consumeAdaptiveResetFile(path, &logW) {
 		t.Fatalf("missing file must not trigger a reset")
 	}
@@ -130,11 +133,10 @@ func blockAllCriticalCfg() *config.AdaptiveEnforcement {
 	}
 }
 
-// TestForwardScanned_AdaptiveResetFile_ClearsAirlock proves the end-to-end
-// recovery path: a session pre-escalated to a block_all critical tier denies a
-// clean response, but when a valid (0600, owner) reset file is present the
-// proxy resets the session and forwards the response instead.
-func TestForwardScanned_AdaptiveResetFile_ClearsAirlock(t *testing.T) {
+// TestForwardScanned_AdaptiveResetFile_SameUIDDoesNotClearAirlock proves that
+// a wrapped agent cannot clear its own airlock with an indistinguishable 0600
+// control file.
+func TestForwardScanned_AdaptiveResetFile_SameUIDDoesNotClearAirlock(t *testing.T) {
 	sc := newAdaptiveTestScanner()
 	defer sc.Close()
 
@@ -155,20 +157,17 @@ func TestForwardScanned_AdaptiveResetFile_ClearsAirlock(t *testing.T) {
 		t.Fatalf("ForwardScanned: %v", err)
 	}
 
-	if rec.resetCalls != 1 {
-		t.Fatalf("expected Reset called once, got %d", rec.resetCalls)
+	if rec.resetCalls != 0 {
+		t.Fatalf("same-UID reset file must not call Reset, got %d calls", rec.resetCalls)
 	}
-	if strings.Contains(outBuf.String(), "-32001") {
-		t.Fatalf("response was session-denied despite a valid reset file:\n%s", outBuf.String())
-	}
-	if !strings.Contains(outBuf.String(), "clean safe content") {
-		t.Fatalf("expected the clean response forwarded after reset, got:\n%s", outBuf.String())
+	if !strings.Contains(outBuf.String(), "-32001") {
+		t.Fatalf("same-UID reset file must leave the airlock active:\n%s", outBuf.String())
 	}
 	if _, err := os.Stat(resetPath); !os.IsNotExist(err) {
-		t.Fatalf("reset file must be consumed (removed)")
+		t.Fatalf("rejected reset file must be removed")
 	}
-	if !strings.Contains(logBuf.String(), "reset by operator") {
-		t.Fatalf("expected an operator-reset log line, got:\n%s", logBuf.String())
+	if !strings.Contains(logBuf.String(), "independent operator") {
+		t.Fatalf("expected an operator-authority rejection, got:\n%s", logBuf.String())
 	}
 }
 

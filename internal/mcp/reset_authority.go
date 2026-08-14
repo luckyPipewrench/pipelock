@@ -273,15 +273,7 @@ func (a *ResetAuthority) verify(d ResetDelegation, kind ResetKind, epoch uint64)
 	if d.Signature == "" {
 		return ResetAuthorityUnsigned
 	}
-	sig, err := decodeResetSignature(d.Signature)
-	if err != nil {
-		return ResetAuthorityMalformed
-	}
-	input, _ := d.signingInput()
-	if !ed25519.Verify(a.publicKey, input, sig) {
-		return ResetAuthorityWrongKey
-	}
-	if err := signing.VerifyFingerprint(a.publicKey, d.IssuerFingerprint); err != nil {
+	if err := VerifyResetDelegationSignature(a.publicKey, d); err != nil {
 		return ResetAuthorityWrongKey
 	}
 	now := a.now().UTC().Truncate(time.Second)
@@ -308,6 +300,44 @@ func (a *ResetAuthority) verify(d ResetDelegation, kind ResetKind, epoch uint64)
 		return ResetAuthorityWrongEpoch
 	}
 	return ResetAuthorityAccepted
+}
+
+// ParseResetDelegation strictly decodes one control-file envelope and validates
+// its signed fields. It does not treat the result as authorized until the
+// caller verifies it against the configured public key and live state.
+func ParseResetDelegation(raw []byte) (ResetDelegation, error) {
+	var d ResetDelegation
+	if err := contract.DecodeStrictJSON(raw, &d); err != nil {
+		return ResetDelegation{}, fmt.Errorf("decode reset delegation: %w", err)
+	}
+	if _, err := d.signingInput(); err != nil {
+		return ResetDelegation{}, err
+	}
+	return d, nil
+}
+
+// VerifyResetDelegationSignature proves a parsed delegation came from the
+// configured reset-authority key. It does not consume the nonce or evaluate
+// target, epoch, or expiry.
+func VerifyResetDelegationSignature(publicKey ed25519.PublicKey, d ResetDelegation) error {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("reset authority public key length %d, want %d", len(publicKey), ed25519.PublicKeySize)
+	}
+	input, err := d.signingInput()
+	if err != nil {
+		return err
+	}
+	sig, err := decodeResetSignature(d.Signature)
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(publicKey, input, sig) {
+		return errors.New("reset delegation signature does not match configured authority key")
+	}
+	if err := signing.VerifyFingerprint(publicKey, d.IssuerFingerprint); err != nil {
+		return fmt.Errorf("reset delegation issuer fingerprint: %w", err)
+	}
+	return nil
 }
 
 func (d ResetDelegation) signingInput() ([]byte, error) {

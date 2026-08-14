@@ -109,6 +109,9 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
 		return err
 	}
+	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
+		return err
+	}
 	sessionsDir, err := resolveShadowSessions(cfg, flags)
 	if err != nil {
 		return err

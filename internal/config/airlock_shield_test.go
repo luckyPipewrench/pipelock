@@ -99,15 +99,23 @@ func TestValidateAirlock_NegativeDrainTimeout(t *testing.T) {
 
 func TestValidateAirlock_AnomalyCountIsRejected(t *testing.T) {
 	t.Parallel()
-	for _, count := range []int{3, -3} {
-		cfg := Defaults()
-		cfg.Airlock.Enabled = true
-		cfg.SessionProfiling.Enabled = true
-		cfg.Airlock.Triggers.AnomalyCount = count
-		err := cfg.validateAirlock()
-		if err == nil || !strings.Contains(err.Error(), "anomaly_count is not enforced") {
-			t.Fatalf("validateAirlock(count=%d) error = %v, want reserved anomaly_count refusal", count, err)
-		}
+	for _, tc := range []struct {
+		name  string
+		count int
+	}{
+		{name: "positive", count: 3},
+		{name: "negative", count: -3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Airlock.Enabled = true
+			cfg.SessionProfiling.Enabled = true
+			cfg.Airlock.Triggers.AnomalyCount = tc.count
+			err := cfg.validateAirlock()
+			if err == nil || !strings.Contains(err.Error(), "anomaly_count is not enforced") {
+				t.Fatalf("validateAirlock(count=%d) error = %v, want reserved anomaly_count refusal", tc.count, err)
+			}
+		})
 	}
 }
 
@@ -148,13 +156,23 @@ func TestValidateAirlock_ReservedFieldsRejectedWhenDisabled(t *testing.T) {
 
 func TestValidateAirlock_AnomalyWindowIsRejected(t *testing.T) {
 	t.Parallel()
-	cfg := Defaults()
-	cfg.Airlock.Enabled = true
-	cfg.SessionProfiling.Enabled = true
-	cfg.Airlock.Triggers.AnomalyWindowMinutes = 5
-	err := cfg.validateAirlock()
-	if err == nil || !strings.Contains(err.Error(), "anomaly_window_minutes is not enforced") {
-		t.Fatalf("validateAirlock() error = %v, want reserved anomaly_window_minutes refusal", err)
+	for _, tc := range []struct {
+		name    string
+		minutes int
+	}{
+		{name: "positive", minutes: 5},
+		{name: "negative", minutes: -5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Airlock.Enabled = true
+			cfg.SessionProfiling.Enabled = true
+			cfg.Airlock.Triggers.AnomalyWindowMinutes = tc.minutes
+			err := cfg.validateAirlock()
+			if err == nil || !strings.Contains(err.Error(), "anomaly_window_minutes is not enforced") {
+				t.Fatalf("validateAirlock(minutes=%d) error = %v, want reserved anomaly_window_minutes refusal", tc.minutes, err)
+			}
+		})
 	}
 }
 

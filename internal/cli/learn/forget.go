@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/activation"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -122,6 +123,13 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	}
 	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "redaction-receipts.jsonl")
 	if err != nil {
+		return err
+	}
+	if err := cliutil.RefuseOutputCollisions(map[string]string{
+		"--out":         dest,
+		"tombstone":     tombstonePath,
+		"--receipt-out": receiptOut,
+	}); err != nil {
 		return err
 	}
 	if !flags.deterministic {

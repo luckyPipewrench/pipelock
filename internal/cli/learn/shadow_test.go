@@ -63,6 +63,30 @@ func TestRunShadowRefusesOutputAliasingContract(t *testing.T) {
 	}
 }
 
+func TestRunShadowRefusesOutAliasingOutJSON(t *testing.T) {
+	dir := t.TempDir()
+	contractPath := writeCandidateEnvelope(t, dir, testRatifyContract())
+	shared := filepath.Join(dir, "shadow-out")
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runShadow(cmd, shadowFlags{
+		contractPath:  contractPath,
+		allowUnsigned: true,
+		duration:      time.Hour,
+		outPath:       shared,
+		outJSONPath:   shared,
+		deterministic: true,
+		sessionsDir:   dir,
+	})
+	if err == nil {
+		t.Fatal("runShadow succeeded writing --out over --out-json")
+	}
+	if !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("runShadow error = %v, want --out/--out-json collision", err)
+	}
+}
+
 func TestResolveShadowSessionsUsesExplicitDirAndRejectsSymlink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

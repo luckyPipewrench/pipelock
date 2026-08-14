@@ -22,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/activation"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -134,6 +135,12 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	}
 	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "ratification-receipts.jsonl")
 	if err != nil {
+		return err
+	}
+	if err := cliutil.RefuseOutputCollisions(map[string]string{
+		"--out":         dest,
+		"--receipt-out": receiptOut,
+	}); err != nil {
 		return err
 	}
 	if !flags.deterministic {

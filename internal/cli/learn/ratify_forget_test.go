@@ -19,7 +19,206 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestRunRatifyRefusesOutputAliasingSigningKey(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		keyAgent string
+		set      func(*ratifyFlags, string)
+	}{
+		{name: "out-compile", keyAgent: "compile-signer", set: func(f *ratifyFlags, key string) { f.outPath = key }},
+		{name: "receipt-out-compile", keyAgent: "compile-signer", set: func(f *ratifyFlags, key string) { f.receiptOut = key }},
+		{name: "out-receipt", keyAgent: defaultReceiptKeyAgent, set: func(f *ratifyFlags, key string) { f.outPath = key }},
+		{name: "receipt-out-receipt", keyAgent: defaultReceiptKeyAgent, set: func(f *ratifyFlags, key string) { f.receiptOut = key }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ks := signing.NewKeystore(dir)
+			if _, err := ks.ForceGenerateAgent("compile-signer"); err != nil {
+				t.Fatalf("ForceGenerateAgent compile: %v", err)
+			}
+			if _, err := ks.ForceGenerateAgent(defaultReceiptKeyAgent); err != nil {
+				t.Fatalf("ForceGenerateAgent receipt: %v", err)
+			}
+			keyPath, err := ks.PrivateKeyPath(tc.keyAgent)
+			if err != nil {
+				t.Fatalf("PrivateKeyPath %s: %v", tc.keyAgent, err)
+			}
+			before, err := os.ReadFile(filepath.Clean(keyPath))
+			if err != nil {
+				t.Fatalf("read key: %v", err)
+			}
+			flags := ratifyFlags{
+				candidatePath:       writeCandidateEnvelope(t, dir, testRatifyContract()),
+				outPath:             filepath.Join(dir, "ratified.yaml"),
+				receiptOut:          filepath.Join(dir, "ratify.jsonl"),
+				keystore:            dir,
+				compileKeyAgent:     "compile-signer",
+				receiptKey:          defaultReceiptKeyAgent,
+				acceptLowConfidence: true,
+			}
+			tc.set(&flags, keyPath)
+			cmd, _ := learnTestCmd("")
+			err = runRatify(cmd, flags)
+			after, readErr := os.ReadFile(filepath.Clean(keyPath))
+			if readErr != nil {
+				t.Fatalf("re-read key: %v", readErr)
+			}
+			if err == nil {
+				t.Fatalf("runRatify succeeded writing over the %s key", tc.keyAgent)
+			}
+			if !strings.Contains(err.Error(), "must not name") {
+				t.Fatalf("runRatify error = %v, want alias refusal", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("signing key was overwritten")
+			}
+		})
+	}
+}
+
+func TestRunRatifyRefusesReceiptOutAliasingCandidate(t *testing.T) {
+	dir := t.TempDir()
+	candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
+	before, err := os.ReadFile(filepath.Clean(candidate))
+	if err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	cmd, _ := learnTestCmd("")
+	err = runRatify(cmd, ratifyFlags{
+		candidatePath:       candidate,
+		outPath:             filepath.Join(dir, "ratified.yaml"),
+		receiptOut:          candidate,
+		deterministic:       true,
+		acceptLowConfidence: true,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(candidate))
+	if readErr != nil {
+		t.Fatalf("re-read candidate: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runRatify succeeded writing --receipt-out over the loaded candidate")
+	}
+	if !strings.Contains(err.Error(), "--receipt-out must not name the loaded candidate") {
+		t.Fatalf("runRatify error = %v, want candidate receipt alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("loaded candidate was overwritten")
+	}
+}
+
+func TestRunForgetRefusesOutputsAliasingCandidate(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		set  func(*forgetFlags, string)
+		want string
+	}{
+		{name: "receipt-out", set: func(f *forgetFlags, candidate string) { f.receiptOut = candidate }, want: "--receipt-out must not name the loaded candidate"},
+		{name: "out", set: func(f *forgetFlags, candidate string) { f.outPath = candidate }, want: "--out must not name the loaded candidate"},
+		{name: "tombstone", set: func(f *forgetFlags, candidate string) { f.tombstoneDir = filepath.Dir(candidate) }, want: "tombstone must not name the loaded candidate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
+			if tc.name == "tombstone" {
+				candidate = candidateAtDerivedTombstonePath(t, dir)
+			}
+			before, err := os.ReadFile(filepath.Clean(candidate))
+			if err != nil {
+				t.Fatalf("read candidate: %v", err)
+			}
+			flags := forgetFlags{
+				candidatePath: candidate,
+				ruleID:        "r-enforce",
+				reason:        "legal-ticket-123",
+				outPath:       filepath.Join(dir, "forgotten-"+tc.name+".yaml"),
+				tombstoneDir:  filepath.Join(dir, "tombstones-"+tc.name),
+				receiptOut:    filepath.Join(dir, "redaction-"+tc.name+".jsonl"),
+				deterministic: true,
+			}
+			tc.set(&flags, candidate)
+			cmd, _ := learnTestCmd("")
+			err = runForget(cmd, flags)
+			after, readErr := os.ReadFile(filepath.Clean(candidate))
+			if readErr != nil {
+				t.Fatalf("re-read candidate: %v", readErr)
+			}
+			if err == nil {
+				t.Fatalf("runForget succeeded writing %s over the loaded candidate", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runForget error = %v, want %q", err, tc.want)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("loaded candidate was overwritten")
+			}
+		})
+	}
+}
+
+func TestRunForgetRefusesOutputAliasingSigningKey(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		keyAgent string
+		set      func(*testing.T, *forgetFlags, string, string)
+	}{
+		{name: "out-compile", keyAgent: "compile-signer", set: func(_ *testing.T, f *forgetFlags, key, _ string) { f.outPath = key }},
+		{name: "receipt-out-compile", keyAgent: "compile-signer", set: func(_ *testing.T, f *forgetFlags, key, _ string) { f.receiptOut = key }},
+		{name: "out-activation", keyAgent: "activation-signer", set: func(_ *testing.T, f *forgetFlags, key, _ string) { f.outPath = key }},
+		{name: "receipt-out-activation", keyAgent: "activation-signer", set: func(_ *testing.T, f *forgetFlags, key, _ string) { f.receiptOut = key }},
+		{name: "tombstone-activation", keyAgent: "activation-signer", set: plantForgetTombstoneOverKey},
+		{name: "tombstone-compile", keyAgent: "compile-signer", set: plantForgetTombstoneOverKey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ks := signing.NewKeystore(dir)
+			if _, err := ks.ForceGenerateAgent("compile-signer"); err != nil {
+				t.Fatalf("ForceGenerateAgent compile: %v", err)
+			}
+			if _, err := ks.ForceGenerateAgent("activation-signer"); err != nil {
+				t.Fatalf("ForceGenerateAgent activation: %v", err)
+			}
+			keyPath, err := ks.PrivateKeyPath(tc.keyAgent)
+			if err != nil {
+				t.Fatalf("PrivateKeyPath %s: %v", tc.keyAgent, err)
+			}
+			before, err := os.ReadFile(filepath.Clean(keyPath))
+			if err != nil {
+				t.Fatalf("read key: %v", err)
+			}
+			candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
+			flags := forgetFlags{
+				candidatePath:   candidate,
+				ruleID:          "r-enforce",
+				reason:          "legal-ticket-123",
+				outPath:         filepath.Join(dir, "forgotten.yaml"),
+				tombstoneDir:    filepath.Join(dir, "tombstones"),
+				receiptOut:      filepath.Join(dir, "redaction.jsonl"),
+				keystore:        dir,
+				compileKeyAgent: "compile-signer",
+				activationKey:   "activation-signer",
+			}
+			tc.set(t, &flags, keyPath, candidate)
+			cmd, _ := learnTestCmd("")
+			err = runForget(cmd, flags)
+			after, readErr := os.ReadFile(filepath.Clean(keyPath))
+			if readErr != nil {
+				t.Fatalf("re-read key: %v", readErr)
+			}
+			if err == nil {
+				t.Fatalf("runForget succeeded writing over the %s key", tc.keyAgent)
+			}
+			if !strings.Contains(err.Error(), "must not name") {
+				t.Fatalf("runForget error = %v, want alias refusal", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("signing key was overwritten")
+			}
+		})
+	}
+}
 
 func TestLearnCmdRegistersRatifyAndForget(t *testing.T) {
 	cmd := Cmd()
@@ -190,6 +389,43 @@ func testRule(id, host, path string) contract.Rule {
 		RecurringSupport:     map[string]any{},
 		OpportunityHealth:    map[string]any{},
 	}
+}
+
+func plantForgetTombstoneOverKey(t *testing.T, flags *forgetFlags, keyPath, candidate string) {
+	t.Helper()
+	_, env, err := loadCandidateEnvelope(candidate)
+	if err != nil {
+		t.Fatalf("loadCandidateEnvelope: %v", err)
+	}
+	name := strings.NewReplacer(":", "-", "/", "-").Replace(env.Body.ContractHash) + ".tombstone.yaml"
+	tombDir := filepath.Join(filepath.Dir(candidate), "tombstones-key-alias")
+	if err := os.MkdirAll(tombDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll tombstone dir: %v", err)
+	}
+	dest := filepath.Join(tombDir, name)
+	if err := os.Link(keyPath, dest); err != nil {
+		t.Fatalf("Link tombstone dest to key: %v", err)
+	}
+	flags.tombstoneDir = tombDir
+}
+
+func candidateAtDerivedTombstonePath(t *testing.T, dir string) string {
+	t.Helper()
+	src := writeCandidateEnvelope(t, dir, testRatifyContract())
+	_, env, err := loadCandidateEnvelope(src)
+	if err != nil {
+		t.Fatalf("loadCandidateEnvelope: %v", err)
+	}
+	name := strings.NewReplacer(":", "-", "/", "-").Replace(env.Body.ContractHash) + ".tombstone.yaml"
+	dest := filepath.Join(dir, name)
+	raw, err := os.ReadFile(filepath.Clean(src))
+	if err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	if err := os.WriteFile(dest, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile tombstone-named candidate: %v", err)
+	}
+	return dest
 }
 
 func writeCandidateEnvelope(t *testing.T, dir string, c contract.Contract) string {

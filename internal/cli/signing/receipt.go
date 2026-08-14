@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
@@ -87,6 +90,28 @@ Examples:
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
 			}
+			var resolvedLocation *recorder.EvidenceLocation
+			if chainDir != "" && !fleetReport {
+				location, locationErr := recorder.ResolveEvidenceLocation(chainDir, locationID)
+				if locationErr != nil {
+					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
+				}
+				resolvedLocation = &location
+				chainDir = location.Dir
+			}
+			if cleanReport != "" {
+				protected := cliutil.ExistingFileLabels("--key", expectedKeys)
+				maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", args))
+				if resolvedLocation != nil {
+					maps.Copy(protected, cliutil.ExistingRegularFiles("the receipt input", resolvedLocation.Dir))
+				}
+				if err := cliutil.RefuseOutputAliases(
+					protected,
+					map[string]string{"--clean-report": cleanReport},
+				); err != nil {
+					return err
+				}
+			}
 			if len(endorsementPaths) > 0 {
 				switch {
 				case fleetReport:
@@ -128,20 +153,15 @@ Examples:
 				}
 				return verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned)
 			}
-			if chainDir != "" {
-				location, locationErr := recorder.ResolveEvidenceLocation(chainDir, locationID)
-				if locationErr != nil {
-					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
-				}
-				chainDir = location.Dir
+			if resolvedLocation != nil {
 				if cleanReport == "" {
-					return verifyChainFromResolvedSessionDirDetailed(out, location, sessionID, trustedKeys, verifyOpts)
+					return verifyChainFromResolvedSessionDirDetailed(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts)
 				}
-				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
+				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 				if extractErr != nil {
 					return fmt.Errorf("extracting session receipts: %w", extractErr)
 				}
-				label := fmt.Sprintf("%s (session %s)", chainDir, sessionID)
+				label := fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID)
 				return verifyCleanReport(out, label, receipts, trustedKeys, allowUnpinned, cleanReport)
 			}
 			if locationID != "" {
@@ -505,7 +525,7 @@ func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, 
 	if err != nil {
 		return fmt.Errorf("marshal clean report: %w", err)
 	}
-	if err := os.WriteFile(filepath.Clean(reportPath), append(data, '\n'), 0o600); err != nil {
+	if err := atomicfile.Write(filepath.Clean(reportPath), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write clean report: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "CLEAN REPORT VALID: %s\n", label)

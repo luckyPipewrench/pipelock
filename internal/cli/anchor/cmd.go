@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -99,6 +101,22 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	}
 	output, err := resolveBundleOutput(target, opts)
 	if err != nil {
+		return err
+	}
+	protected := cliutil.ExistingFileLabels("--key", opts.keys)
+	maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", []string{target}))
+	maps.Copy(protected, cliutil.ExistingRegularFiles("the receipt input", output.receiptDir))
+	if opts.rekorKey != "" {
+		protected["--rekor-key"] = opts.rekorKey
+	}
+	outputs := map[string]string{
+		"--out":       output.bundlePath,
+		"--local-log": opts.logPath,
+	}
+	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
+		return err
+	}
+	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
 		return err
 	}
 	checkpoint, err := anchorpkg.BuildCheckpoint(sessionID, receipts, trustedKeys)

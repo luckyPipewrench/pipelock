@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	mcpintegrity "github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -248,6 +249,123 @@ func TestMCPIntegrityManifestSignAndVerifySignature(t *testing.T) {
 	}
 	if !strings.Contains(verifyOut.String(), "signature verified") {
 		t.Fatalf("verify output = %q", verifyOut.String())
+	}
+}
+
+func TestSignMCPIntegrityManifestRefusesOutputAliasingSignerKey(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("alice")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	beforeInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{"/bin/example": strings.Repeat("a", 64)},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	_, err = signMCPIntegrityManifest(manifestPath, keyPath, "alice", ksDir)
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	afterInfo, _ := os.Stat(keyPath)
+	if err == nil {
+		t.Fatal("sign succeeded writing --sig over the signer private key")
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signer private key was overwritten")
+	}
+	if afterInfo.Mode().Perm() != beforeInfo.Mode().Perm() {
+		t.Fatalf("key mode changed from %v to %v", beforeInfo.Mode().Perm(), afterInfo.Mode().Perm())
+	}
+}
+
+func TestSaveSignatureAfterAliasCheckDoesNotFollowSwappedDest(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("symlink replacement semantics differ on Windows")
+	}
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("alice")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	dest := filepath.Join(dir, "manifest.sig")
+	if err := cliutil.RefuseOutputAliases(
+		map[string]string{"the signer private key": keyPath},
+		map[string]string{"--sig": dest},
+	); err != nil {
+		t.Fatalf("preflight refused a missing dest: %v", err)
+	}
+	if err := os.Symlink(keyPath, dest); err != nil {
+		t.Fatalf("Symlink dest: %v", err)
+	}
+	if err := domsigning.SaveSignature([]byte("signature-bytes-here"), dest); err != nil {
+		t.Fatalf("SaveSignature: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("re-read key: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signer private key was overwritten through a dest swapped in after the alias check")
+	}
+}
+
+func TestSignMCPIntegrityManifestRefusesOutputAliasingManifest(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{"/bin/example": strings.Repeat("a", 64)},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(manifestPath))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	_, err = signMCPIntegrityManifest(manifestPath, manifestPath, "alice", ksDir)
+	after, readErr := os.ReadFile(filepath.Clean(manifestPath))
+	if readErr != nil {
+		t.Fatalf("re-read manifest: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("sign succeeded writing --sig over --manifest")
+	}
+	if !strings.Contains(err.Error(), "--sig must not name --manifest") {
+		t.Fatalf("sign error = %v, want manifest alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("integrity manifest was overwritten")
 	}
 }
 

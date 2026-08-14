@@ -586,7 +586,7 @@ func Defaults() *Config {
 				OnElevated:           AirlockTierNone,
 				OnHigh:               AirlockTierSoft,
 				OnCritical:           AirlockTierHard,
-				AnomalyWindowMinutes: 5,
+				AnomalyWindowMinutes: 0,
 			},
 			Timers: AirlockTimers{
 				SoftMinutes:         10,

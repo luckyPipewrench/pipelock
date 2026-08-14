@@ -3626,6 +3626,15 @@ func (c *Config) validateBehavioralBaseline() error {
 }
 
 func (c *Config) validateAirlock() error {
+	if c.Airlock.Triggers.OnSeverity != "" {
+		return fmt.Errorf("airlock.triggers.on_severity is not enforced; use on_elevated, on_high, and on_critical")
+	}
+	if c.Airlock.Triggers.AnomalyCount != 0 {
+		return fmt.Errorf("airlock.triggers.anomaly_count is not enforced; airlock fires from on_elevated, on_high, and on_critical")
+	}
+	if c.Airlock.Triggers.AnomalyWindowMinutes != 0 {
+		return fmt.Errorf("airlock.triggers.anomaly_window_minutes is not enforced; airlock fires from on_elevated, on_high, and on_critical")
+	}
 	if !c.Airlock.Enabled {
 		return nil
 	}
@@ -3673,15 +3682,6 @@ func (c *Config) validateAirlock() error {
 			c.Airlock.Triggers.OnElevated, c.Airlock.Triggers.OnHigh, c.Airlock.Triggers.OnCritical)
 	}
 
-	if c.Airlock.Triggers.OnSeverity != "" {
-		switch c.Airlock.Triggers.OnSeverity {
-		case SeverityCritical, SeverityHigh:
-			// valid
-		default:
-			return fmt.Errorf("invalid airlock.triggers.on_severity %q: must be critical, high, or empty", c.Airlock.Triggers.OnSeverity)
-		}
-	}
-
 	if c.Airlock.Timers.SoftMinutes < 0 || c.Airlock.Timers.HardMinutes < 0 || c.Airlock.Timers.DrainMinutes < 0 {
 		return fmt.Errorf("airlock timer values must be non-negative")
 	}
@@ -3690,13 +3690,6 @@ func (c *Config) validateAirlock() error {
 	// the same as 30s. Warn but don't reject.
 	if c.Airlock.Timers.DrainTimeoutSeconds < 0 {
 		return fmt.Errorf("airlock.timers.drain_timeout_seconds must be non-negative")
-	}
-
-	if c.Airlock.Triggers.AnomalyCount < 0 {
-		return fmt.Errorf("airlock.triggers.anomaly_count must be non-negative")
-	}
-	if c.Airlock.Triggers.AnomalyWindowMinutes < 0 {
-		return fmt.Errorf("airlock.triggers.anomaly_window_minutes must be non-negative")
 	}
 
 	return nil

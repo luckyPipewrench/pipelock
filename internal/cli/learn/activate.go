@@ -373,6 +373,20 @@ func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
 	if err != nil {
 		return lifecycleContext{}, err
 	}
+	protected := map[string]string{
+		"the activation signing key": primary.keyID,
+		"the receipt signing key":    receiptKey.keyID,
+	}
+	if dual != nil {
+		protected["the dual-control signing key"] = dual.keyID
+	}
+	outputs := map[string]string{"--receipt-out": receiptOut}
+	if err := cliutil.RefuseOutputAliases(cliutil.ExistingFileLabels("--roster", []string{flags.rosterPath}), outputs); err != nil {
+		return lifecycleContext{}, err
+	}
+	if err := refuseOutputsOverKeystoreKeys(flags.keystore, protected, outputs); err != nil {
+		return lifecycleContext{}, err
+	}
 	return lifecycleContext{
 		store:         contractstore.New(storeDir),
 		opts:          contractstore.Options{Roster: roster, MinSignatures: activation.RequiredSignatures(policy), Now: func() time.Time { return now }},
@@ -399,6 +413,29 @@ func loadLifecycleSigner(keystoreDir, keyID string) (privateKeySigner, error) {
 		return privateKeySigner{}, fmt.Errorf("load lifecycle signing key for %q: %w", keyID, err)
 	}
 	return privateKeySigner{keyID: keyID, key: priv}, nil
+}
+
+func refuseOutputsOverKeystoreKeys(keystoreDir string, protectedAgents map[string]string, outputs map[string]string) error {
+	dir, err := cliutil.ResolveKeystoreDir(keystoreDir)
+	if err != nil {
+		return err
+	}
+	ks := signing.NewKeystore(dir)
+	protected := make(map[string]string, len(protectedAgents))
+	for label, agentName := range protectedAgents {
+		if agentName == "" {
+			continue
+		}
+		keyPath, err := ks.PrivateKeyPath(agentName)
+		if err != nil {
+			return err
+		}
+		protected[label] = keyPath
+	}
+	if len(protected) == 0 {
+		return nil
+	}
+	return cliutil.RefuseOutputAliases(protected, outputs)
 }
 
 func latestAccepted(st contractstore.Store, opts contractstore.Options) (contractstore.State, bool, error) {

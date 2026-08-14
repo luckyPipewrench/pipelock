@@ -1129,6 +1129,61 @@ func TestVerifyReceiptCmd_CleanReportJSONLWithDeferPair(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_CleanReportRefusesKeyFileAlias(t *testing.T) {
+	t.Parallel()
+	path, pubKey := buildDeferredCleanChainJSONL(t)
+	keyFile := filepath.Join(t.TempDir(), "trusted.key")
+	if err := os.WriteFile(keyFile, []byte(hex.EncodeToString(pubKey)+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyFile))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", keyFile, "--clean-report", keyFile})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(keyFile))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("verify-receipt succeeded writing --clean-report over --key; stdout=%q", buf.String())
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("trusted signer key file was overwritten")
+	}
+}
+
+func TestVerifyReceiptCmd_CleanReportRefusesReceiptInputAlias(t *testing.T) {
+	t.Parallel()
+	path, pubKey := buildDeferredCleanChainJSONL(t)
+	before, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read receipts: %v", err)
+	}
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", hex.EncodeToString(pubKey), "--clean-report", path})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(path))
+	if readErr != nil {
+		t.Fatalf("re-read receipts: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("verify-receipt succeeded writing --clean-report over the receipt input; stdout=%q", buf.String())
+	}
+	if !strings.Contains(err.Error(), "--clean-report must not name the receipt input") {
+		t.Fatalf("verify-receipt error = %v, want receipt-input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("receipt input was overwritten")
+	}
+}
+
 func TestVerifyReceiptCmd_CleanReportRejectsSingleReceipt(t *testing.T) {
 	t.Parallel()
 
@@ -1744,6 +1799,58 @@ func TestReceiptCommandsRejectAmbiguousEvidenceLocations(t *testing.T) {
 	transcript.SetArgs([]string{"--chain", root, "--key", strings.Repeat("a", 64)})
 	if err := transcript.Execute(); err == nil || !strings.Contains(err.Error(), "multiple evidence locations") {
 		t.Fatalf("transcript-root error = %v, want ambiguous-location failure", err)
+	}
+}
+
+func TestVerifyReceiptCmd_CleanReportRefusesLocationReceiptAlias(t *testing.T) {
+	t.Parallel()
+	source, pub := buildRestartChainDir(t, 1)
+	otherSource, _ := buildRestartChainDir(t, 1)
+	root := t.TempDir()
+	selectedID := "recorder-a/run-a"
+	otherID := "recorder-b/run-b"
+	selectedDir := filepath.Join(root, filepath.FromSlash(selectedID))
+	copyEvidenceFiles(t, source, selectedDir)
+	copyEvidenceFiles(t, otherSource, filepath.Join(root, filepath.FromSlash(otherID)))
+	entries, err := os.ReadDir(selectedDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var receiptFile string
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			receiptFile = filepath.Join(selectedDir, entry.Name())
+			break
+		}
+	}
+	if receiptFile == "" {
+		t.Fatal("selected location has no receipt file")
+	}
+	before, err := os.ReadFile(filepath.Clean(receiptFile))
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--chain", root,
+		"--location", selectedID,
+		"--key", hex.EncodeToString(pub),
+		"--clean-report", receiptFile,
+	})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(receiptFile))
+	if readErr != nil {
+		t.Fatalf("re-read receipt: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("verify-receipt succeeded writing --clean-report over a nested location receipt")
+	}
+	if !strings.Contains(err.Error(), "--clean-report must not name the receipt input") {
+		t.Fatalf("verify-receipt error = %v, want nested receipt-input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("nested receipt input was overwritten")
 	}
 }
 

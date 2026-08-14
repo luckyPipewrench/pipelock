@@ -22,7 +22,9 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/fleetreport"
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -65,6 +67,7 @@ into the offline verifier:
     pipelock verify-receipt /dev/stdin --fleet-report --key fleet-report.pub`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts.licenseCRLFile = effectiveLicenseCRLFile(opts.licenseCRLFile)
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
@@ -91,6 +94,19 @@ into the offline verifier:
 func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	if err := validateFleetReportOptions(opts); err != nil {
 		return err
+	}
+	if opts.out != stdoutSentinel {
+		crlFile := effectiveLicenseCRLFile(opts.licenseCRLFile)
+		if err := cliutil.RefuseOutputAliases(
+			map[string]string{
+				"the signing key":       opts.signingKey,
+				"--license-crl-file":    crlFile,
+				"the fleet audit store": filepath.Join(opts.storageDir, "audit.db"),
+			},
+			map[string]string{"--out": opts.out},
+		); err != nil {
+			return err
+		}
 	}
 	start, err := time.Parse(time.RFC3339, opts.from)
 	if err != nil {
@@ -164,6 +180,13 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 // stdoutSentinel is the conventional "-" value for --out meaning "write to
 // stdout" rather than a file path.
 const stdoutSentinel = "-"
+
+func effectiveLicenseCRLFile(flag string) string {
+	if v := strings.TrimSpace(flag); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(license.EnvLicenseCRLFile))
+}
 
 func openFleetReportAuditStore(cmd *cobra.Command, storageDir string) (*controlplane.SQLiteAuditStore, error) {
 	auditPath := filepath.Join(storageDir, "audit.db")
@@ -261,7 +284,7 @@ func writeFleetReportEnvelope(path string, envelope any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Clean(path), data, 0o600); err != nil {
+	if err := atomicfile.Write(filepath.Clean(path), data, 0o600); err != nil {
 		return fmt.Errorf("write --out: %w", err)
 	}
 	return nil

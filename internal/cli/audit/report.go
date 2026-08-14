@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/report"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -133,6 +135,10 @@ Examples:
 
 			// Load signing key if requested.
 			var privKey ed25519.PrivateKey
+			protected := map[string]string{}
+			if input != "" && input != "-" {
+				maps.Copy(protected, cliutil.ExistingFileLabels("--input", []string{input}))
+			}
 			if sign {
 				agentName, err := cliutil.ResolveAgentName(agent)
 				if err != nil {
@@ -147,6 +153,14 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("loading signing key for agent %q: %w", agentName, err)
 				}
+				keyPath, pathErr := ks.PrivateKeyPath(agentName)
+				if pathErr != nil {
+					return pathErr
+				}
+				protected["the signing key"] = keyPath
+			}
+			if err := cliutil.RefuseOutputAliases(protected, map[string]string{"--output": output}); err != nil {
+				return err
 			}
 
 			// Output.
@@ -196,12 +210,9 @@ Examples:
 // renderToTarget renders a report to a file (if output is set) or to stdout.
 func renderToTarget(cmd *cobra.Command, output string, rpt *report.Report, renderFn func(io.Writer, *report.Report) error) error {
 	if output != "" {
-		f, err := os.OpenFile(filepath.Clean(output), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			return fmt.Errorf("creating output file: %w", err)
-		}
-		defer func() { _ = f.Close() }()
-		return renderFn(f, rpt)
+		return atomicfile.WriteFunc(filepath.Clean(output), 0o600, func(w io.Writer) error {
+			return renderFn(w, rpt)
+		})
 	}
 	return renderFn(cmd.OutOrStdout(), rpt)
 }

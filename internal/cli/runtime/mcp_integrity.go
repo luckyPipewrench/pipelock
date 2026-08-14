@@ -286,6 +286,19 @@ func signMCPIntegrityManifest(manifestPath, sigPath, signer, keystoreDir string)
 	if sigPath == "" {
 		sigPath = manifestPath + domsigning.SigExtension
 	}
+	keyPath, err := ks.PrivateKeyPath(signerName)
+	if err != nil {
+		return mcpIntegrityReport{}, err
+	}
+	if err := cliutil.RefuseOutputAliases(
+		map[string]string{
+			"the signer private key": keyPath,
+			"--manifest":             manifestPath,
+		},
+		map[string]string{"--sig": sigPath},
+	); err != nil {
+		return mcpIntegrityReport{}, err
+	}
 	if err := domsigning.SaveSignature(sig, sigPath); err != nil {
 		return mcpIntegrityReport{}, err
 	}

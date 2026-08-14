@@ -118,6 +118,93 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 	}
 }
 
+func TestReceiptsCmdRefusesOutputAliasingKeyFile(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T13:00:00Z")
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	keyFile := filepath.Join(filepath.Dir(receiptsPath), "trusted.key")
+	if err := os.WriteFile(keyFile, []byte(keyHex+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyFile))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	cmd := receiptsCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyFile,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", keyFile,
+	})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(keyFile))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("anchor receipts succeeded writing --out over --key; stdout=%q", out.String())
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("trusted signer key file was overwritten")
+	}
+}
+
+func TestReceiptsCmdRefusesOutputAliasingReceiptInput(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T13:00:00Z")
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	before, err := os.ReadFile(filepath.Clean(receiptsPath))
+	if err != nil {
+		t.Fatalf("read receipts: %v", err)
+	}
+	cmd := receiptsCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyHex,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", receiptsPath,
+	})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(receiptsPath))
+	if readErr != nil {
+		t.Fatalf("re-read receipts: %v", readErr)
+	}
+	if err == nil {
+		t.Fatalf("anchor receipts succeeded writing --out over the receipt input; stdout=%q", out.String())
+	}
+	if !strings.Contains(err.Error(), "--out must not name the receipt input") {
+		t.Fatalf("anchor receipts error = %v, want receipt-input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("receipt input was overwritten")
+	}
+}
+
+func TestReceiptsCmdRefusesOutAliasingLocalLog(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T13:00:00Z")
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	shared := filepath.Join(filepath.Dir(receiptsPath), "same.json")
+	cmd := receiptsCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyHex,
+		"--local-log", shared,
+		"--out", shared,
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("anchor receipts succeeded writing --out over --local-log; stdout=%q", out.String())
+	}
+	if !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("anchor receipts error = %v, want --out/--local-log collision", err)
+	}
+}
+
 func TestWriteAnchorStateMarkerRejectsCheckpointWithoutSigner(t *testing.T) {
 	err := writeAnchorStateMarker(
 		bundleOutput{receiptDir: t.TempDir(), markerPath: "bundle.json"},

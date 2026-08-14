@@ -441,6 +441,245 @@ func TestResolveCompileSignerDeterministic(t *testing.T) {
 	}
 }
 
+func TestRefuseOutputsOverKeystoreKeys(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.ForceGenerateAgent("alice"); err != nil {
+		t.Fatalf("ForceGenerateAgent: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("alice")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	err = refuseOutputsOverKeystoreKeys(dir, map[string]string{
+		"the compile signing key": "alice",
+	}, map[string]string{"--output": keyPath})
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("refuseOutputsOverKeystoreKeys error = %v, want alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("keystore key was overwritten")
+	}
+	if err := refuseOutputsOverKeystoreKeys(dir, map[string]string{
+		"the compile signing key": "alice",
+	}, map[string]string{"--output": filepath.Join(dir, "candidate.yaml")}); err != nil {
+		t.Fatalf("distinct output rejected: %v", err)
+	}
+}
+
+func TestRunCompileRefusesOutputAliasingSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.ForceGenerateAgent("agent-a"); err != nil {
+		t.Fatalf("ForceGenerateAgent: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("agent-a")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	input := filepath.Join(dir, "capture.jsonl")
+	if err := os.WriteFile(input, []byte(compileFixtureJSONL(t)), 0o600); err != nil {
+		t.Fatalf("WriteFile input: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("learn:\n  inference:\n    floors:\n      min_sessions: 1\n      min_events: 1\n      min_windows: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runCompile(cmd, compileFlags{
+		agent:         "agent-a",
+		inputGlob:     input,
+		output:        keyPath,
+		review:        filepath.Join(dir, "candidate.review.md"),
+		manifest:      filepath.Join(dir, "candidate.manifest.json"),
+		configPath:    cfgPath,
+		keystore:      dir,
+		deterministic: false,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runCompile succeeded writing --output over the compile signing key")
+	}
+	if !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("runCompile error = %v, want alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("compile signing key was overwritten")
+	}
+}
+
+func TestRunCompileRefusesOutputAliasingInput(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "capture.jsonl")
+	if err := os.WriteFile(input, []byte(compileFixtureJSONL(t)), 0o600); err != nil {
+		t.Fatalf("WriteFile input: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(input))
+	if err != nil {
+		t.Fatalf("read input: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("learn:\n  inference:\n    floors:\n      min_sessions: 1\n      min_events: 1\n      min_windows: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runCompile(cmd, compileFlags{
+		agent:         "agent-a",
+		inputGlob:     input,
+		output:        input,
+		review:        filepath.Join(dir, "candidate.review.md"),
+		manifest:      filepath.Join(dir, "candidate.manifest.json"),
+		configPath:    cfgPath,
+		deterministic: true,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(input))
+	if readErr != nil {
+		t.Fatalf("re-read input: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runCompile succeeded writing --output over --input")
+	}
+	if !strings.Contains(err.Error(), "--output must not name --input") {
+		t.Fatalf("runCompile error = %v, want input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("compile input was overwritten")
+	}
+}
+
+func TestRunCompileRefusesOutputAliasingConfig(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "capture.jsonl")
+	if err := os.WriteFile(input, []byte(compileFixtureJSONL(t)), 0o600); err != nil {
+		t.Fatalf("WriteFile input: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("learn:\n  inference:\n    floors:\n      min_sessions: 1\n      min_events: 1\n      min_windows: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(cfgPath))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runCompile(cmd, compileFlags{
+		agent:         "agent-a",
+		inputGlob:     input,
+		output:        cfgPath,
+		review:        filepath.Join(dir, "candidate.review.md"),
+		manifest:      filepath.Join(dir, "candidate.manifest.json"),
+		configPath:    cfgPath,
+		deterministic: true,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(cfgPath))
+	if readErr != nil {
+		t.Fatalf("re-read config: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runCompile succeeded writing --output over --config")
+	}
+	if !strings.Contains(err.Error(), "--output must not name --config") {
+		t.Fatalf("runCompile error = %v, want config alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("compile config was overwritten")
+	}
+}
+
+func TestRunCompileRefusesEveryOutputAliasingProtectedFiles(t *testing.T) {
+	dir := t.TempDir()
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.ForceGenerateAgent("agent-a"); err != nil {
+		t.Fatalf("ForceGenerateAgent: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("agent-a")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	input := filepath.Join(dir, "capture.jsonl")
+	if err := os.WriteFile(input, []byte(compileFixtureJSONL(t)), 0o600); err != nil {
+		t.Fatalf("WriteFile input: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("learn:\n  inference:\n    floors:\n      min_sessions: 1\n      min_events: 1\n      min_windows: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	safeOutput := filepath.Join(dir, "candidate.yaml")
+	safeReview := filepath.Join(dir, "candidate.review.md")
+	safeManifest := filepath.Join(dir, "candidate.manifest.json")
+	for _, tc := range []struct {
+		name      string
+		target    string
+		set       func(*compileFlags, string)
+		want      string
+		needStore bool
+	}{
+		{name: "review-over-input", target: input, set: func(f *compileFlags, p string) { f.review = p }, want: "--review must not name --input"},
+		{name: "manifest-over-input", target: input, set: func(f *compileFlags, p string) { f.manifest = p }, want: "--compile-manifest must not name --input"},
+		{name: "review-over-config", target: cfgPath, set: func(f *compileFlags, p string) { f.review = p }, want: "--review must not name --config"},
+		{name: "manifest-over-config", target: cfgPath, set: func(f *compileFlags, p string) { f.manifest = p }, want: "--compile-manifest must not name --config"},
+		{name: "review-over-key", target: keyPath, set: func(f *compileFlags, p string) { f.review = p }, want: "must not name", needStore: true},
+		{name: "manifest-over-key", target: keyPath, set: func(f *compileFlags, p string) { f.manifest = p }, want: "must not name", needStore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before, err := os.ReadFile(filepath.Clean(tc.target))
+			if err != nil {
+				t.Fatalf("read protected: %v", err)
+			}
+			flags := compileFlags{
+				agent:         "agent-a",
+				inputGlob:     input,
+				output:        safeOutput,
+				review:        safeReview,
+				manifest:      safeManifest,
+				configPath:    cfgPath,
+				keystore:      dir,
+				deterministic: !tc.needStore,
+			}
+			tc.set(&flags, tc.target)
+			cmd := &cobra.Command{}
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			err = runCompile(cmd, flags)
+			after, readErr := os.ReadFile(filepath.Clean(tc.target))
+			if readErr != nil {
+				t.Fatalf("re-read protected: %v", readErr)
+			}
+			if err == nil {
+				t.Fatalf("runCompile succeeded writing over %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runCompile error = %v, want %q", err, tc.want)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("protected file for %s was overwritten", tc.name)
+			}
+		})
+	}
+}
+
 func TestResolveCompileSignerLoadsKeystoreAgent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

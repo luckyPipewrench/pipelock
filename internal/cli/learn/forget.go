@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/activation"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -123,6 +124,30 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "redaction-receipts.jsonl")
 	if err != nil {
 		return err
+	}
+	outputs := map[string]string{
+		"--out":         dest,
+		"tombstone":     tombstonePath,
+		"--receipt-out": receiptOut,
+	}
+	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
+		return err
+	}
+	// dest is a new forgotten artifact by design. Refuse any of these
+	// outputs naming the loaded candidate so the original is not replaced
+	// by a receipt, a tombstone, or an in-place --out.
+	if err := cliutil.RefuseOutputAliases(map[string]string{
+		loadedCandidateLabel: clean,
+	}, outputs); err != nil {
+		return err
+	}
+	if !flags.deterministic {
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the compile signing key":    compileSigner.keyID,
+			"the activation signing key": activationSigner.keyID,
+		}, outputs); err != nil {
+			return err
+		}
 	}
 	receipt, err := activation.SignReceipt(
 		contractreceipt.PayloadContractRedactionRequest,

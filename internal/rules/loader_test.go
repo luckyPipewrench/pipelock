@@ -88,6 +88,49 @@ func TestLoadBundles_PropagatesDLPValidator(t *testing.T) {
 	}
 }
 
+func TestLoadBundles_ExemptDomainsParseAndVanish(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	rule := testDLPRule("dlp-exempt", confidenceHigh, StatusStable)
+	rule.Pattern.ExemptDomains = []string{"safe.vendor.example"}
+	bundle := testBundle(testBundleName, []Rule{rule})
+	writeUnsignedBundle(t, bundleDir, bundle)
+
+	raw, err := os.ReadFile(filepath.Clean(filepath.Join(bundleDir, bundleFilename)))
+	if err != nil {
+		t.Fatalf("read bundle.yaml: %v", err)
+	}
+	parsed, err := ParseBundle(raw)
+	if err != nil {
+		t.Fatalf("ParseBundle rejected exempt_domains: %v", err)
+	}
+	if got := parsed.Rules[0].Pattern.ExemptDomains; len(got) != 1 || got[0] != "safe.vendor.example" {
+		t.Fatalf("parsed ExemptDomains = %v, want [safe.vendor.example]", got)
+	}
+
+	result := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: testPipelockVersion})
+	if len(result.Errors) != 0 {
+		t.Fatalf("LoadBundles errors = %v", result.Errors)
+	}
+	if len(result.DLP) != 1 {
+		t.Fatalf("DLP patterns = %d", len(result.DLP))
+	}
+	if got := result.DLP[0].ExemptDomains; len(got) != 0 {
+		t.Fatalf("loaded ExemptDomains = %v, want dropped", got)
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, testBundleName) &&
+			strings.Contains(warning, "dlp-exempt") &&
+			strings.Contains(warning, "pattern.exempt_domains") {
+			return
+		}
+	}
+	t.Fatalf("LoadBundles warnings = %v, want a warning that bundle exempt_domains were ignored", result.Warnings)
+}
+
 func TestLoadResultErrorHelpers(t *testing.T) {
 	var nilResult *LoadResult
 	if got := nilResult.IntegrityErrors(); got != nil {

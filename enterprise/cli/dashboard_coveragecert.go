@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
@@ -65,6 +68,7 @@ the Ed25519 private key specified by --signing-key.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// License gate: fail closed before any file IO.
+			opts.licenseCRLFile = effectiveCoverageLicenseCRLFile(opts.licenseCRLFile)
 			_, err := license.VerifyAgentsWithOptions(license.FleetVerifyInputs{
 				CRLFile: opts.licenseCRLFile,
 			})
@@ -118,6 +122,15 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	}
 
 	cleanDir := filepath.Clean(opts.receiptDir)
+	protected := map[string]string{
+		"the signing key":    opts.signingKeyFile,
+		"--license-crl-file": effectiveCoverageLicenseCRLFile(opts.licenseCRLFile),
+	}
+	maps.Copy(protected, cliutil.ExistingRegularFiles("receipt input", cleanDir))
+	if err := cliutil.RefuseOutputAliases(protected, map[string]string{"--out": opts.outFile}); err != nil {
+		return err
+	}
+
 	info, dirErr := os.Stat(cleanDir)
 	if dirErr != nil {
 		return fmt.Errorf("--receipt-dir: %w", dirErr)
@@ -229,7 +242,7 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 
 	if opts.outFile != "" {
 		cleanOut := filepath.Clean(opts.outFile)
-		if writeErr := os.WriteFile(cleanOut, data, 0o600); writeErr != nil {
+		if writeErr := atomicfile.Write(cleanOut, data, 0o600); writeErr != nil {
 			return fmt.Errorf("--out: %w", writeErr)
 		}
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "coverage certificate written to %s\n", cleanOut)
@@ -239,6 +252,13 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", data)
 	return nil
+}
+
+func effectiveCoverageLicenseCRLFile(flag string) string {
+	if v := strings.TrimSpace(flag); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(license.EnvLicenseCRLFile))
 }
 
 func parseCoverageCertTrustedReceiptSigners(raw []string) ([]string, error) {

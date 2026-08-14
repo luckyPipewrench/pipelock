@@ -265,11 +265,12 @@ func TestForgetReceiptFailureDoesNotPublishReducedCandidate(t *testing.T) {
 	before := mustReadTestFile(t, candidate)
 	receiptPath := unwritableReceiptPath(t)
 
+	out := filepath.Join(dir, "forgotten.yaml")
 	err := runForget(learnTestCommand(""), forgetFlags{
 		candidatePath: candidate,
 		ruleID:        "r-enforce",
 		reason:        "ticket-42",
-		outPath:       candidate,
+		outPath:       out,
 		tombstoneDir:  filepath.Join(dir, "tombstones"),
 		receiptOut:    receiptPath,
 		deterministic: true,
@@ -278,6 +279,7 @@ func TestForgetReceiptFailureDoesNotPublishReducedCandidate(t *testing.T) {
 		t.Fatalf("runForget err = %v, want receipt open failure", err)
 	}
 	assertFileBytes(t, candidate, before)
+	assertPathAbsent(t, out)
 	assertNoStagingFiles(t, dir, filepath.Base(candidate))
 }
 

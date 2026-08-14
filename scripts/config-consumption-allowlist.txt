@@ -32,6 +32,9 @@ HeartbeatInterval  # (A) FlightRecorder.HeartbeatIntervalDuration() schema.go:14
 MatchAbsPath  # (B) enforces absolute-path constraint on RedirectProfile.Exec[0] at validate.go:816; nothing to read after validation passes
 TrustedUpstream  # (B) config-time integrity assertion that declared upstream matches Upstream URL (validate.go:2148-2188)
 Added  # (B) audit-provenance date on ReverseProxy trusted_upstream, format-validated at validate.go:2184
+OnSeverity  # (B) rejected at validate when set, including when airlock is disabled
+AnomalyCount  # (B) rejected at validate when nonzero, including when airlock is disabled
+AnomalyWindowMinutes  # (B) rejected at validate when nonzero, including when airlock is disabled; default 0
 
 # --- RESERVED (documented as reserved in docs/configuration.md Conductor section) ---
 StalePolicy  # RESERVED conductor follower knob; DecideStale exists with 0 callers (verified 2026-06-10); documented reserved
@@ -41,9 +44,6 @@ MCPDataClassLabels  # RESERVED foundation; follow-up slice wires scanner-derived
 UnknownClass  # RESERVED foundation; hard-validated fail-closed label for unknown/truncated/uncertain derivation
 
 # --- INERT-BASELINE (2026-06-10 audit; wire or remove, tracked in ops state.md) ---
-OnSeverity  # INERT airlock severity trigger; recordSessionActivityWithUserAgent wires only OnElevated/OnHigh/OnCritical
-AnomalyCount  # INERT airlock anomaly trigger; no consumer
-AnomalyWindowMinutes  # INERT airlock anomaly window; no consumer
 ToolFreeze  # INERT struct; freeze runs via proxy FrozenTools wiring regardless of these knobs
 SnapshotOnEntry  # INERT; freeze mechanism does not consult it
 AllowCachedTools  # INERT; freeze mechanism does not consult it

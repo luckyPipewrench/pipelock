@@ -1879,9 +1879,9 @@ type AirlockTriggers struct {
 	OnElevated           string `yaml:"on_elevated"`            // none|soft|hard|drain
 	OnHigh               string `yaml:"on_high"`                // none|soft|hard|drain
 	OnCritical           string `yaml:"on_critical"`            // none|soft|hard|drain
-	OnSeverity           string `yaml:"on_severity"`            // scanner severity threshold ("critical", "high", or "")
-	AnomalyCount         int    `yaml:"anomaly_count"`          // N anomalies in window triggers soft (0 = disabled)
-	AnomalyWindowMinutes int    `yaml:"anomaly_window_minutes"` // rolling window for anomaly count
+	OnSeverity           string `yaml:"on_severity"`            // rejected when set; airlock fires from on_elevated/on_high/on_critical
+	AnomalyCount         int    `yaml:"anomaly_count"`          // rejected when nonzero; no anomaly-count trigger exists
+	AnomalyWindowMinutes int    `yaml:"anomaly_window_minutes"` // rejected when nonzero; no anomaly-window trigger exists
 }
 
 // AirlockTimers configures per-tier duration before automatic de-escalation.

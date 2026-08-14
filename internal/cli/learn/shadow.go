@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-const defaultReceiptKeyAgent = "receipt-signing"
+const (
+	defaultReceiptKeyAgent     = "receipt-signing"
+	shadowRecorderEvidenceFile = "evidence-proxy-0.jsonl"
+	shadowReceiptsLabel        = "shadow receipts"
+)
 
 type shadowFlags struct {
 	contractPath  string
@@ -99,6 +104,35 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if !verified {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: unverified contract accepted because --allow-unsigned-contract-for-diagnostics is set; shadow replay is diagnostic only")
 	}
+	outputs := map[string]string{
+		"--out":      flags.outPath,
+		"--out-json": flags.outJSONPath,
+	}
+	protected := cliutil.ExistingFileLabels("--contract", []string{contractPath})
+	maps.Copy(protected, cliutil.ExistingFileLabels("--config", []string{flags.configPath}))
+	if flags.recorderDir != "" {
+		// emitShadowReceipts appends the first signed receipt to this shard
+		// after writeShadowReports. A report path that names it mixes the
+		// report with recorder JSONL.
+		outputs[shadowReceiptsLabel] = filepath.Join(filepath.Clean(flags.recorderDir), shadowRecorderEvidenceFile)
+	}
+	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
+		return err
+	}
+	if err := cliutil.RefuseOutputCollisions(map[string]string{
+		"--out":      flags.outPath,
+		"--out-json": flags.outJSONPath,
+	}); err != nil {
+		return err
+	}
+	if err := cliutil.RefuseOutputAliases(map[string]string{
+		shadowReceiptsLabel: outputs[shadowReceiptsLabel],
+	}, map[string]string{
+		"--out":      flags.outPath,
+		"--out-json": flags.outJSONPath,
+	}); err != nil {
+		return err
+	}
 	sessionsDir, err := resolveShadowSessions(cfg, flags)
 	if err != nil {
 		return err
@@ -128,6 +162,17 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	})
 	if err != nil {
 		return err
+	}
+	if !flags.deterministic {
+		keyAgent := flags.receiptKey
+		if keyAgent == "" {
+			keyAgent = defaultReceiptKeyAgent
+		}
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the receipt signing key": keyAgent,
+		}, outputs); err != nil {
+			return err
+		}
 	}
 	if err := writeShadowReports(cmd, report, flags); err != nil {
 		return err

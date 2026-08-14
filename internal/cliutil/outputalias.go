@@ -24,6 +24,66 @@ import (
 // root key") to the path it protects. outputs maps an output flag name to the
 // path it will write. Empty paths on either side are ignored, so a caller can
 // pass optional flags without pre-filtering them.
+// ExistingFileLabels maps flag labels onto paths that currently exist as
+// regular files. Use it for --key values that may be hex or a file path so
+// a hex blob is not treated as a path to protect.
+func ExistingFileLabels(flag string, paths []string) map[string]string {
+	out := make(map[string]string, len(paths))
+	for i, path := range paths {
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		label := flag
+		if len(paths) > 1 {
+			label = fmt.Sprintf("%s[%d]", flag, i)
+		}
+		out[label] = path
+	}
+	return out
+}
+
+// ExistingRegularFiles labels every regular file in dir. A missing or
+// unlistable directory yields an empty map so callers can pass optional roots.
+func ExistingRegularFiles(label, dir string) map[string]string {
+	if dir == "" {
+		return map[string]string{}
+	}
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return map[string]string{}
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return ExistingFileLabels(label, paths)
+}
+
+// RefuseOutputCollisions rejects two output paths that name the same file.
+// RefuseOutputAliases only compares outputs to protected inputs, so two
+// outputs that collide with each other would both pass and then overwrite
+// each other.
+func RefuseOutputCollisions(outputs map[string]string) error {
+	flags := slices.Sorted(maps.Keys(outputs))
+	for i, left := range flags {
+		for _, right := range flags[i+1:] {
+			if err := RefuseOutputAliases(
+				map[string]string{left: outputs[left]},
+				map[string]string{right: outputs[right]},
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func RefuseOutputAliases(protectedPaths map[string]string, outputs map[string]string) error {
 	for _, outputFlag := range slices.Sorted(maps.Keys(outputs)) {
 		outputPath := outputs[outputFlag]

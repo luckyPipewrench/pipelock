@@ -22,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/activation"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -38,6 +39,8 @@ const (
 	ratifyConfidenceBrittle        = "brittle"
 	ratifyConfidenceNeverConfirmed = "never_confirmed"
 	ratifyConfidenceRefuted        = "refuted"
+
+	loadedCandidateLabel = "the loaded candidate"
 )
 
 // ErrLowConfidenceRatification is returned when ratify would promote
@@ -135,6 +138,30 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "ratification-receipts.jsonl")
 	if err != nil {
 		return err
+	}
+	outputs := map[string]string{
+		"--out":         dest,
+		"--receipt-out": receiptOut,
+	}
+	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
+		return err
+	}
+	// dest may equal the candidate when --out is omitted (in-place rewrite).
+	// The receipt must still not replace the loaded candidate.
+	if err := cliutil.RefuseOutputAliases(map[string]string{
+		loadedCandidateLabel: clean,
+	}, map[string]string{
+		"--receipt-out": receiptOut,
+	}); err != nil {
+		return err
+	}
+	if !flags.deterministic {
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the compile signing key": compileSigner.keyID,
+			"the receipt signing key": receiptSigner.keyID,
+		}, outputs); err != nil {
+			return err
+		}
 	}
 	now := ratifyNow(flags.deterministic)
 	eventID := lifecycleID("", flags.deterministic, "contract-ratified")

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -56,19 +57,21 @@ func TestValidateAirlock_InvalidSeverity(t *testing.T) {
 	cfg.Airlock.Enabled = true
 	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnSeverity = "low"
-	if err := cfg.validateAirlock(); err == nil {
-		t.Error("invalid severity should fail validation")
+	err := cfg.validateAirlock()
+	if err == nil || !strings.Contains(err.Error(), "on_severity is not enforced") {
+		t.Fatalf("validateAirlock() error = %v, want reserved on_severity refusal", err)
 	}
 }
 
-func TestValidateAirlock_ValidSeverity(t *testing.T) {
+func TestValidateAirlock_OnSeverityIsRejected(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
 	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnSeverity = SeverityCritical
-	if err := cfg.validateAirlock(); err != nil {
-		t.Errorf("critical severity should validate: %v", err)
+	err := cfg.validateAirlock()
+	if err == nil || !strings.Contains(err.Error(), "on_severity is not enforced") {
+		t.Fatalf("validateAirlock() error = %v, want reserved on_severity refusal", err)
 	}
 }
 
@@ -94,14 +97,82 @@ func TestValidateAirlock_NegativeDrainTimeout(t *testing.T) {
 	}
 }
 
-func TestValidateAirlock_NegativeAnomalyCount(t *testing.T) {
+func TestValidateAirlock_AnomalyCountIsRejected(t *testing.T) {
 	t.Parallel()
-	cfg := Defaults()
-	cfg.Airlock.Enabled = true
-	cfg.SessionProfiling.Enabled = true
-	cfg.Airlock.Triggers.AnomalyCount = -1
-	if err := cfg.validateAirlock(); err == nil {
-		t.Error("negative anomaly count should fail validation")
+	for _, tc := range []struct {
+		name  string
+		count int
+	}{
+		{name: "positive", count: 3},
+		{name: "negative", count: -3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Airlock.Enabled = true
+			cfg.SessionProfiling.Enabled = true
+			cfg.Airlock.Triggers.AnomalyCount = tc.count
+			err := cfg.validateAirlock()
+			if err == nil || !strings.Contains(err.Error(), "anomaly_count is not enforced") {
+				t.Fatalf("validateAirlock(count=%d) error = %v, want reserved anomaly_count refusal", tc.count, err)
+			}
+		})
+	}
+}
+
+func TestValidateAirlock_ReservedFieldsRejectedWhenDisabled(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		set  func(*Config)
+		want string
+	}{
+		{
+			name: "on_severity",
+			set:  func(c *Config) { c.Airlock.Triggers.OnSeverity = SeverityCritical },
+			want: "on_severity is not enforced",
+		},
+		{
+			name: "anomaly_count",
+			set:  func(c *Config) { c.Airlock.Triggers.AnomalyCount = 3 },
+			want: "anomaly_count is not enforced",
+		},
+		{
+			name: "anomaly_window_minutes",
+			set:  func(c *Config) { c.Airlock.Triggers.AnomalyWindowMinutes = 5 },
+			want: "anomaly_window_minutes is not enforced",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Airlock.Enabled = false
+			tc.set(cfg)
+			err := cfg.validateAirlock()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateAirlock(disabled, %s) error = %v, want %q", tc.name, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateAirlock_AnomalyWindowIsRejected(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		minutes int
+	}{
+		{name: "positive", minutes: 5},
+		{name: "negative", minutes: -5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Airlock.Enabled = true
+			cfg.SessionProfiling.Enabled = true
+			cfg.Airlock.Triggers.AnomalyWindowMinutes = tc.minutes
+			err := cfg.validateAirlock()
+			if err == nil || !strings.Contains(err.Error(), "anomaly_window_minutes is not enforced") {
+				t.Fatalf("validateAirlock(minutes=%d) error = %v, want reserved anomaly_window_minutes refusal", tc.minutes, err)
+			}
+		})
 	}
 }
 

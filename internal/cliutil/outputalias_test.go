@@ -321,3 +321,57 @@ func TestRefuseOpenedFileAliases(t *testing.T) {
 		}
 	})
 }
+
+func TestExistingFileLabelsIgnoresHexAndMissingPaths(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "trusted.key")
+	if err := os.WriteFile(keyPath, []byte("key-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ExistingFileLabels("--key", []string{
+		"4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678",
+		keyPath,
+		filepath.Join(dir, "missing.key"),
+	})
+	if len(got) != 1 || got["--key[1]"] != keyPath {
+		t.Fatalf("ExistingFileLabels = %#v, want --key[1] = %q", got, keyPath)
+	}
+}
+
+func TestRefuseOutputCollisions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "same.json")
+	if err := RefuseOutputCollisions(map[string]string{
+		"--out":       path,
+		"--local-log": path,
+	}); err == nil || !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("RefuseOutputCollisions error = %v, want output collision", err)
+	}
+	if err := RefuseOutputCollisions(map[string]string{
+		"--out":       filepath.Join(dir, "bundle.json"),
+		"--local-log": filepath.Join(dir, "anchor.jsonl"),
+	}); err != nil {
+		t.Fatalf("RefuseOutputCollisions rejected distinct outputs: %v", err)
+	}
+	if err := RefuseOutputCollisions(map[string]string{"--out": path, "--local-log": ""}); err != nil {
+		t.Fatalf("RefuseOutputCollisions rejected an empty output: %v", err)
+	}
+}
+
+func TestExistingRegularFilesLabelsOnlyRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "evidence.jsonl")
+	if err := os.WriteFile(filePath, []byte("receipt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	got := ExistingRegularFiles("receipt input", dir)
+	if len(got) != 1 || got["receipt input"] != filePath {
+		t.Fatalf("ExistingRegularFiles = %#v, want receipt input = %q", got, filePath)
+	}
+	if got := ExistingRegularFiles("receipt input", filepath.Join(dir, "missing")); len(got) != 0 {
+		t.Fatalf("ExistingRegularFiles missing dir = %#v, want empty", got)
+	}
+}

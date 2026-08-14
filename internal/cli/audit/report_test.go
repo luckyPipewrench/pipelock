@@ -233,6 +233,74 @@ func TestReportCmd_BundleSigned(t *testing.T) {
 	}
 }
 
+func TestReportCmd_RefusesOutputAliasingInput(t *testing.T) {
+	inputPath := writeFixtureFile(t)
+	before, err := os.ReadFile(filepath.Clean(inputPath))
+	if err != nil {
+		t.Fatalf("read input: %v", err)
+	}
+	cmd := ReportCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--input", inputPath, "--format", "json", "-o", inputPath})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(inputPath))
+	if readErr != nil {
+		t.Fatalf("re-read input: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("report succeeded writing --output over --input")
+	}
+	if !strings.Contains(err.Error(), "--output must not name --input") {
+		t.Fatalf("report error = %v, want input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("report input was overwritten")
+	}
+}
+
+func TestReportCmd_RefusesOutputAliasingSigningKey(t *testing.T) {
+	inputPath := writeFixtureFile(t)
+	ksDir := t.TempDir()
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("test-agent"); err != nil {
+		t.Fatalf("GenerateAgent: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("test-agent")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	cmd := ReportCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--input", inputPath,
+		"--format", "bundle",
+		"-o", keyPath,
+		"--sign",
+		"--agent", "test-agent",
+		"--keystore", ksDir,
+	})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("report succeeded writing --output over the signing key")
+	}
+	if !strings.Contains(err.Error(), "must not name the signing key") {
+		t.Fatalf("report error = %v, want signing-key alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signing key was overwritten")
+	}
+}
+
 func TestReportCmd_DaysFilter(t *testing.T) {
 	// Create events spanning 2 days: one today, one 3 days ago.
 	now := time.Now().UTC()

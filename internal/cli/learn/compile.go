@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,6 +109,23 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 	signer, err := resolveCompileSigner(flags)
 	if err != nil {
 		return err
+	}
+	compileOutputs := map[string]string{
+		"--output":           output,
+		"--review":           reviewPath,
+		"--compile-manifest": manifestPath,
+	}
+	protected := cliutil.ExistingFileLabels("--input", inputs)
+	maps.Copy(protected, cliutil.ExistingFileLabels("--config", []string{flags.configPath}))
+	if err := cliutil.RefuseOutputAliases(protected, compileOutputs); err != nil {
+		return err
+	}
+	if !flags.deterministic {
+		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
+			"the compile signing key": signer.keyID,
+		}, compileOutputs); err != nil {
+			return err
+		}
 	}
 
 	result, err := contractcompile.Compile(contractcompile.CompileInput{

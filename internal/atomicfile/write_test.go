@@ -92,6 +92,46 @@ func TestWrite_Success(t *testing.T) {
 	}
 }
 
+func TestWrite_ReplacingDestSymlinkLeavesTargetUnchanged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink replacement semantics differ on Windows")
+	}
+	dir := t.TempDir()
+	protected := filepath.Join(dir, "signing.key")
+	original := []byte("protected-key-bytes")
+	if err := os.WriteFile(protected, original, 0o600); err != nil {
+		t.Fatalf("WriteFile protected: %v", err)
+	}
+	dest := filepath.Join(dir, "report.json")
+	if err := os.Symlink(protected, dest); err != nil {
+		t.Fatalf("Symlink dest: %v", err)
+	}
+	if err := Write(dest, []byte("report-body"), 0o600); err != nil {
+		t.Fatalf("Write dest symlink: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(protected))
+	if err != nil {
+		t.Fatalf("read protected: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("protected file changed to %q", got)
+	}
+	info, err := os.Lstat(dest)
+	if err != nil {
+		t.Fatalf("Lstat dest: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("Write left dest as a symlink; rename should have replaced the directory entry")
+	}
+	written, err := os.ReadFile(filepath.Clean(dest))
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	if string(written) != "report-body" {
+		t.Fatalf("dest content = %q, want report-body", written)
+	}
+}
+
 func TestWriteNewCreatesAndRefusesReplacement(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "ceremony.json")

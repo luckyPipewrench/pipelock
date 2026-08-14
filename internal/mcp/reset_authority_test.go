@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -526,5 +527,69 @@ func TestResetDelegationParsingAndVerificationRejectsMalformedArtifacts(t *testi
 		if _, err := decodeResetSignature(encoded); err == nil {
 			t.Fatalf("decodeResetSignature(%q) succeeded", encoded)
 		}
+	}
+}
+
+func TestResetAuthorityRejectsSignedOverlongDelegationAndPreservesRemovalFailure(t *testing.T) {
+	pub, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(pub, "mcp://fixture", strings.Repeat("a", 32), func() time.Time { return resetAuthorityTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegation, err := MintResetDelegation(privateKey, "operator", ResetKindDrift, authority.Target(), authority.InstanceID(), 0, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("b", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	overlong := delegation
+	overlong.ExpiresUnix = resetAuthorityTestNow.Add(resetDelegationMaxTTL + time.Second).Unix()
+	overlong = resignResetDelegation(t, privateKey, overlong)
+	if got := authority.verify(overlong, ResetKindDrift, 0); got != ResetAuthorityMalformed {
+		t.Fatalf("signed overlong delegation result = %q, want malformed", got)
+	}
+	raw := resetDelegationRaw(t, overlong)
+	if parsed, err := ParseResetDelegation(raw); err != nil || parsed.ExpiresUnix != overlong.ExpiresUnix {
+		t.Fatalf("ParseResetDelegation(signed overlong) = %+v, %v", parsed, err)
+	}
+
+	invalid := delegation
+	invalid.Kind = ResetKind("invalid")
+	if err := VerifyResetDelegationSignature(pub, invalid); err == nil {
+		t.Fatal("VerifyResetDelegationSignature accepted an invalid signed payload")
+	}
+	if _, err := ParseResetDelegation(resetDelegationRaw(t, invalid)); err == nil {
+		t.Fatal("ParseResetDelegation accepted invalid signed fields")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reset")
+	if err := os.WriteFile(path, resetDelegationBytes(t, delegation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if decision := authority.ConsumeFile(path, ResetKindDrift, 0); decision.Result != ResetAuthorityRemoveFailed {
+		t.Fatalf("readable but non-removable reset decision = %+v", decision)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("remove failure deleted the delegation: %v", err)
+	}
+
+	if got := resetReadResult(os.ErrNotExist); got != ResetAuthorityAbsent {
+		t.Fatalf("not-exist read result = %q", got)
+	}
+	if got := resetReadResult(errors.New("read denied")); got != ResetAuthorityUnreadable {
+		t.Fatalf("read failure result = %q", got)
+	}
+	if got := removeResetResult(errors.New("reset delegation path changed before removal")); got != ResetAuthorityPathChanged {
+		t.Fatalf("path-changed remove result = %q", got)
+	}
+	if got := removeResetResult(errors.New("remove denied")); got != ResetAuthorityRemoveFailed {
+		t.Fatalf("remove failure result = %q", got)
 	}
 }

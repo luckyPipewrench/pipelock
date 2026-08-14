@@ -26,6 +26,13 @@ import (
 // RunProxyWithSandboxLaunch so target start is gated on parent hardening.
 // The optional strict parameter enables subreaper for orphan cleanup.
 func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
+	// Refuse a mapped command here rather than starting it ungated. This entry
+	// point calls Start directly, so a mapped launch would get neither the map
+	// ordering nor the parent hardening, and would get them missing silently.
+	// A gate with an unguarded door beside it is not a gate.
+	if sandbox.CmdNeedsHardeningGate(sandboxCmd) {
+		return fmt.Errorf("mapped sandbox command must start through RunProxyWithSandboxLaunch so target start is gated on parent hardening")
+	}
 	return runProxyWithSandbox(ctx, sandboxCmd, sandboxCmd.Start, clientIn, clientOut, logW, opts, strict...)
 }
 

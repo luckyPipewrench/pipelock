@@ -844,6 +844,7 @@ func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) 
 	var received atomic.Int32
 	var receivedMu sync.Mutex
 	receivedBySequence := make(map[int]int)
+	deliveryChanged := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = r.Body.Close() }()
 		var envelope Envelope
@@ -862,6 +863,10 @@ func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) 
 		receivedBySequence[int(sequence)]++
 		receivedMu.Unlock()
 		received.Add(1)
+		select {
+		case deliveryChanged <- struct{}{}:
+		default:
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
@@ -874,11 +879,17 @@ func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = f.Close() })
 	var accepted atomic.Int32
 	var acceptedMu sync.Mutex
 	acceptedSequences := make(map[int]struct{})
+	if err := f.Emit(t.Context(), testEvent(0)); err != nil {
+		t.Fatalf("seed Emit: %v", err)
+	}
+	accepted.Add(1)
+	acceptedSequences[0] = struct{}{}
 	var producers sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := 1; i <= 100; i++ {
 		producers.Add(1)
 		go func(sequence int) {
 			defer producers.Done()
@@ -905,18 +916,34 @@ func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New after shutdown: %v", err)
 	}
-	waitFor(t, func() bool {
-		acceptedMu.Lock()
-		defer acceptedMu.Unlock()
+	// Close is idempotent, so a cleanup guarantees the restarted forwarder's
+	// worker goroutines are released even if a t.Fatalf below aborts the test
+	// before the explicit Close; the explicit Close keeps asserting a clean
+	// shutdown on the success path.
+	t.Cleanup(func() { _ = f2.Close() })
+	acceptedMu.Lock()
+	pendingSequences := make(map[int]struct{}, len(acceptedSequences))
+	for sequence := range acceptedSequences {
+		pendingSequences[sequence] = struct{}{}
+	}
+	acceptedMu.Unlock()
+	for len(pendingSequences) > 0 {
 		receivedMu.Lock()
-		defer receivedMu.Unlock()
-		for sequence := range acceptedSequences {
-			if receivedBySequence[sequence] == 0 {
-				return false
+		for sequence := range pendingSequences {
+			if receivedBySequence[sequence] > 0 {
+				delete(pendingSequences, sequence)
 			}
 		}
-		return true
-	})
+		receivedMu.Unlock()
+		if len(pendingSequences) == 0 {
+			break
+		}
+		select {
+		case <-deliveryChanged:
+		case <-t.Context().Done():
+			t.Fatalf("test context ended with %d accepted sequences still undelivered", len(pendingSequences))
+		}
+	}
 	if err := f2.Close(); err != nil {
 		t.Fatalf("Close restarted forwarder: %v", err)
 	}

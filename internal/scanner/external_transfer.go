@@ -49,6 +49,27 @@ var externalTransferFileDirectiveRE = regexp.MustCompile(
 		`https?://`,
 )
 
+// externalTransferTemplateFilenameRE matches the .env-family filenames that are a
+// convention for a secret-free template rather than a populated secret file.
+//
+// Treating these as sensitive costs availability and buys nothing. A repository
+// commits .env.example precisely so it carries no secrets, and uploading one to a
+// validator is ordinary traffic. An attacker who names .env.example in an
+// exfiltration instruction receives the template, so excluding them removes a
+// false positive without opening a path.
+var externalTransferTemplateFilenameRE = regexp.MustCompile(`(?i)^\.env\.(?:example|sample|template|dist|defaults?)$`)
+
+// isSensitiveTransferFilename is the single decision point for both the prose arm
+// and the command-argument arm. Keeping one function means the two phrasings
+// cannot drift into disagreeing about the same filename, which is the defect the
+// prose arm was added to close.
+func isSensitiveTransferFilename(name string) bool {
+	if externalTransferTemplateFilenameRE.MatchString(name) {
+		return false
+	}
+	return externalTransferSensitiveFilenameRE.MatchString(name)
+}
+
 func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
 	locs := p.re.FindAllStringIndex(content, -1)
 	if p.name != externalDataTransferDirectivePatternName || p.re.String() != config.ExternalDataTransferDirectiveRegex {
@@ -86,7 +107,7 @@ func externalTransferNamesSensitiveFile(content string, loc []int) bool {
 		return false
 	}
 	for _, token := range strings.Fields(content[loc[2*idx]:loc[2*idx+1]]) {
-		token = strings.Trim(token, "'\"`,;:()[]{}")
+		token = strings.Trim(token, "'\"`*,;:()[]{}<>")
 		token = strings.TrimSuffix(token, ".")
 		if slash := strings.LastIndexAny(token, "/\\"); slash >= 0 {
 			token = token[slash+1:]
@@ -94,7 +115,7 @@ func externalTransferNamesSensitiveFile(content string, loc []int) bool {
 		if token == "" || len(token) > 160 {
 			continue
 		}
-		if externalTransferSensitiveFilenameRE.MatchString(token) {
+		if isSensitiveTransferFilename(token) {
 			return true
 		}
 	}
@@ -122,7 +143,7 @@ func externalTransferHasSensitiveUploadSource(candidate string) bool {
 		if len(arg) > 160 {
 			continue
 		}
-		if externalTransferSensitiveFilenameRE.MatchString(arg) {
+		if isSensitiveTransferFilename(arg) {
 			return true
 		}
 	}

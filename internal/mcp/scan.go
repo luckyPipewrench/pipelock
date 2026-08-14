@@ -14,6 +14,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -79,7 +80,8 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	trimmed := bytes.TrimSpace(line)
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		return scanBatch(trimmed, sc, opts, includeDLP)
+		verdict, _ := scanBatch(trimmed, sc, opts, includeDLP)
+		return verdict
 	}
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
@@ -369,14 +371,14 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 // Returns a combined verdict aggregating matches from all elements. The
 // suppression options apply to every element so a per-server suppress rule
 // covers batched responses too.
-func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) jsonrpc.ScanVerdict {
+func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) (jsonrpc.ScanVerdict, bool) {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
-		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
+		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}, false
 	}
 
 	if len(batch) == 0 {
-		return jsonrpc.ScanVerdict{Clean: true}
+		return jsonrpc.ScanVerdict{Clean: true}, false
 	}
 
 	var allMatches []scanner.ResponseMatch
@@ -407,14 +409,14 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, inclu
 	}
 
 	if hasError {
-		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}, len(allMatches) > 0 || len(allDLPMatches) > 0
 	}
 	if len(allMatches) == 0 && len(allDLPMatches) == 0 {
-		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}, false
 	}
 	return jsonrpc.ScanVerdict{
 		ID: firstID, Clean: false, Action: action, Matches: allMatches, DLPMatches: allDLPMatches,
-	}
+	}, true
 }
 
 // ScanStream reads newline-delimited JSON-RPC 2.0 responses from r, scans each
@@ -432,10 +434,10 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 // input separately.
 //
 // The two are different answers and must not share one. A line this command
-// could not decode was never scanned, so reporting it alongside verified-clean
-// input tells a caller the opposite of the truth. Callers that gate on process
-// status need to distinguish "nothing was found" from "something could not be
-// looked at".
+// could not fully inspect was not verified clean, so reporting it alongside
+// verified-clean input tells a caller the opposite of the truth. Callers that
+// gate on process status need to distinguish "nothing was found" from
+// "something could not be looked at".
 func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (found, malformed bool, err error) {
 	lineScanner := bufio.NewScanner(r)
 	lineScanner.Buffer(make([]byte, 0, 64*1024), transport.MaxLineSize)
@@ -451,14 +453,14 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 			continue
 		}
 
-		verdict := ScanResponse([]byte(line), sc)
+		verdict, lineFound := scanStreamResponse([]byte(line), sc)
 		verdict.Line = lineNum
 		verdict.Scanned = scanVerdictScopes()
 
 		if verdict.Error != "" {
 			sawMalformed = true
 		}
-		if !verdict.Clean && verdict.Error == "" {
+		if lineFound {
 			foundFinding = true
 		}
 
@@ -479,10 +481,28 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 	}
 
 	if err := lineScanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return foundFinding, true, fmt.Errorf("reading input: %w", err)
+		}
 		return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", err)
 	}
 
 	return foundFinding, sawMalformed, nil
+}
+
+// scanStreamResponse returns the regular stream verdict and whether any
+// successfully inspected batch element contained a security finding. A batch
+// parse error still owns the public verdict so callers retain the existing
+// fail-closed parse semantics, while the stream result preserves a sibling
+// finding for its exit-status contract.
+func scanStreamResponse(line []byte, sc *scanner.Scanner) (jsonrpc.ScanVerdict, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return scanBatch(trimmed, sc, ResponseScanOptions{}, true)
+	}
+
+	verdict := ScanResponse(line, sc)
+	return verdict, !verdict.Clean && verdict.Error == ""
 }
 
 func scanVerdictScopes() []string {

@@ -447,7 +447,7 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 
 	for {
 		raw, overLimit, readErr := readBoundedLine(reader, transport.MaxLineSize)
-		if len(raw) == 0 && overLimit == false && readErr != nil {
+		if len(raw) == 0 && !overLimit && readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
 			}

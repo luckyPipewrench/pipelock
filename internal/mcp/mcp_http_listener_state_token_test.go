@@ -36,12 +36,12 @@ func TestHTTPListener_DefaultUsesLegacySessionPartitionForStatefulScanning(t *te
 	baseURL := startStatefulListener(t, nil, &upstreamCalls)
 	const legacySessionID = "legacy-client-state"
 
-	first := postStatefulListenerJSONWithSession(t, baseURL, "", legacySessionID,
+	first := postStatefulListenerJSONWithSession(t, baseURL, legacySessionID,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`)
 	if strings.Contains(first, "chain pattern") {
 		t.Fatalf("first legacy-session request was unexpectedly blocked: %s", first)
 	}
-	second := postStatefulListenerJSONWithSession(t, baseURL, "", legacySessionID,
+	second := postStatefulListenerJSONWithSession(t, baseURL, legacySessionID,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
 	if !strings.Contains(second, "chain pattern") {
 		t.Fatalf("legacy session state did not retain the configured chain control: %s", second)
@@ -93,7 +93,35 @@ func TestHTTPListener_RequireStateTokenReloadsLive(t *testing.T) {
 		t.Fatalf("reload-without-change dropped the requirement: %s", stillDenied)
 	}
 	if got := upstreamCalls.Load(); got != 1 {
-		t.Fatalf("upstream calls = %d, want 1", got)
+		t.Fatalf("upstream calls after enable = %d, want 1", got)
+	}
+
+	required.Store(&off)
+	restored := postStatefulListenerJSON(t, baseURL, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`)
+	if strings.Contains(restored, "authenticated principal") {
+		t.Fatalf("post-disable request was refused: %s", restored)
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("upstream calls after disable = %d, want 2", got)
+	}
+}
+
+func TestHTTPListener_DefaultLegacySessionDoesNotRetainAcrossSessionIDs(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	baseURL := startStatefulListener(t, nil, &upstreamCalls)
+
+	first := postStatefulListenerJSONWithSession(t, baseURL, "legacy-client-a",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`)
+	if strings.Contains(first, "chain pattern") {
+		t.Fatalf("first legacy-session request was unexpectedly blocked: %s", first)
+	}
+	second := postStatefulListenerJSONWithSession(t, baseURL, "legacy-client-b",
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
+	if strings.Contains(second, "chain pattern") {
+		t.Fatalf("distinct legacy session IDs shared chain state: %s", second)
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
 	}
 }
 
@@ -137,9 +165,9 @@ func postStatefulListenerJSON(t *testing.T, baseURL, body string) string {
 	return payload
 }
 
-func postStatefulListenerJSONWithSession(t *testing.T, baseURL, token, sessionID, body string) string {
+func postStatefulListenerJSONWithSession(t *testing.T, baseURL, sessionID, body string) string {
 	t.Helper()
-	payload, _ := postStatefulListenerJSONHeadersWithSession(t, baseURL, token, sessionID, body)
+	payload, _ := postStatefulListenerJSONHeadersWithSession(t, baseURL, "", sessionID, body)
 	return payload
 }
 

@@ -388,13 +388,16 @@ func TestUpgrade_RepinFails_RollsBackBinaryAndPin(t *testing.T) {
 	newBinary := []byte("new-binary-content")
 	env.runCmd = successRunCmd(env, newBinary)
 
-	// Make hashFile fail to simulate re-pin failure.
+	// Make hashFile fail to simulate re-pin failure. The initial integrity
+	// check and the managed-config preflight each hash the deployed binary
+	// before re-pinning begins.
 	origHash := env.hashFile
-	firstCall := true
+	hashCalls := 0
 	env.hashFile = func(path string) (string, error) {
-		// Allow the pre-execution hash check but fail for repin.
-		if firstCall {
-			firstCall = false
+		hashCalls++
+		// Allow the pre-execution hash check and the before/after hashes that
+		// keep the integrity-pinned config check from executing a changed binary.
+		if hashCalls <= 3 {
 			return origHash(path)
 		}
 		return "", fmt.Errorf("disk I/O error")

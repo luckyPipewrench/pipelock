@@ -277,6 +277,33 @@ func TestMCPListenerClientStates_BoundedAdmissionDeletesEvictedRecorder(t *testi
 	}
 }
 
+func TestMCPListenerClientStates_PrincipalAdmissionFailsClosedAtCapacity(t *testing.T) {
+	states := newMCPListenerClientStates(nil)
+	var first mcpListenerPrincipal
+	for i := range maxMCPListenerClients {
+		principal, err := states.principal("test", fmt.Sprintf("subject-%d", i), 1)
+		if err != nil {
+			t.Fatalf("principal(%d): %v", i, err)
+		}
+		if i == 0 {
+			first = principal
+		}
+		if _, ok := states.stateForPrincipal(principal); !ok {
+			t.Fatalf("stateForPrincipal(%d) rejected before capacity", i)
+		}
+	}
+	overflow, err := states.principal("test", "overflow", 1)
+	if err != nil {
+		t.Fatalf("overflow principal: %v", err)
+	}
+	if state, ok := states.stateForPrincipal(overflow); ok || state != nil {
+		t.Fatal("principal state admission succeeded at capacity")
+	}
+	if state, ok := states.stateForPrincipal(first); !ok || state == nil {
+		t.Fatal("capacity admission forgot an existing principal state")
+	}
+}
+
 func TestMCPListenerClientStates_DiscardUnboundState(t *testing.T) {
 	store := &listenerStateBoundedStore{}
 	states := newMCPListenerClientStates(store)

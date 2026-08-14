@@ -493,15 +493,16 @@ func RunHTTPListenerProxy(
 		if !stateBound && (requireStateToken || listenerPrincipal.key != "") {
 			// An unbound client receives stateless content and tool-poison scanning,
 			// plus its resulting evidence. It never enters a state partition
-			// selected by client-controlled routing data. An authenticated
-			// principal reaches here when the registry could not admit its state,
-			// which degrades that request to stateless rather than denying it; a
-			// saturated registry must not become an outage for every principal.
+			// selected by client-controlled routing data. A verified principal that
+			// cannot obtain a required state partition is rejected below instead of
+			// forwarding without its baseline, chain matcher, taint, CEE, and tool
+			// freezer controls.
 			clientState = listenerClients.newUnboundState()
 			clientStateKey = clientState.key
 			defer listenerClients.discardUnboundState(clientState)
 			requestBaseOpts = listenerStatelessRequestOpts(requestBaseOpts)
 		}
+		principalStateAdmissionDenied := statefulControls && listenerPrincipal.key != "" && !stateBound
 		listenerStateAuditKey := func() string {
 			if requireStateToken || principalBound {
 				return listenerAuditSessionKey("", clientStateKey)
@@ -563,6 +564,25 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("stateful MCP listener request requires an authenticated principal or a legacy Pipelock session token")))
+		}
+		rejectPrincipalStateCapacity := func(id json.RawMessage) {
+			const pattern = "listener_principal_state_capacity"
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: verified principal state admission denied at listener capacity\n")
+			if opts.Metrics != nil {
+				opts.Metrics.RecordBlocked("mcp", pattern, 0, "")
+			}
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          blockreason.SessionBinding,
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryTransient,
+				layer:           "mcp_listener_session",
+				pattern:         pattern,
+				target:          "mcp:listener-principal-state",
+				receiptSeverity: config.SeverityHigh,
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("verified principal state capacity exhausted; retry after an existing principal state expires")))
 		}
 		rejectLegacyTokenForCurrentProtocol := func(id json.RawMessage) {
 			emitListenerBlockDecision(mcpListenerBlockDecision{
@@ -810,6 +830,10 @@ func RunHTTPListenerProxy(
 			if blockedByA2AHeaders() {
 				return
 			}
+			if principalStateAdmissionDenied {
+				rejectPrincipalStateCapacity(nil)
+				return
+			}
 			if principalControls && !stateBound && listenerPrincipal.key == "" {
 				rejectMissingListenerState(nil)
 				return
@@ -948,6 +972,10 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if blockedByA2AHeaders() {
+				return
+			}
+			if principalStateAdmissionDenied {
+				rejectPrincipalStateCapacity(nil)
 				return
 			}
 			if principalControls && !stateBound && listenerPrincipal.key == "" {
@@ -1167,6 +1195,10 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(invalidReq)
 				return
 			}
+		}
+		if principalStateAdmissionDenied {
+			rejectPrincipalStateCapacity(frame.ID)
+			return
 		}
 		if requireStateToken && !principalBound {
 			startSetup := func() bool {

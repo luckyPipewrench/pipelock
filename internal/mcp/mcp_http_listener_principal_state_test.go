@@ -11,15 +11,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -204,13 +201,14 @@ func TestHTTPListener_PrincipalState_BearerRotationStartsNewEpoch(t *testing.T) 
 	}
 }
 
-// TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionState
+// TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed
 // holds a request after bearer authentication, rotates the bearer on another
 // request, then resumes the original request in explicit compatibility mode.
 // The original principal is still authenticated, but its retired epoch cannot
 // be admitted. A client-supplied Mcp-Session-Id must not select the preexisting
-// legacy chain state; the request proceeds with stateless controls instead.
-func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionState(t *testing.T) {
+// legacy chain state. Required stateful controls deny the request rather than
+// forwarding it with the controls stripped.
+func TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed(t *testing.T) {
 	const (
 		oldBearer     = "legacy-fallback-rotation-old"
 		newBearer     = "legacy-fallback-rotation-new"
@@ -225,13 +223,6 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 	var oldConfigOnce sync.Once
 
 	upstream, calls := principalStateUpstream(t)
-	auditPath := filepath.Join(t.TempDir(), "listener-audit.jsonl")
-	auditLogger, err := audit.New("json", "file", auditPath, false, true)
-	if err != nil {
-		t.Fatalf("new audit logger: %v", err)
-	}
-	defer auditLogger.Close()
-
 	chainMatcher := buildBlockChainMatcher()
 	legacyStateKey := mcpListenerStateKey(legacySession)
 	if verdict := chainMatcher.Record(legacyStateKey, "read_file"); verdict.Matched {
@@ -254,7 +245,6 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 		return adaptiveCfg
 	}
 	opts.Store = &listenerDiagnosisStore{}
-	opts.AuditLogger = auditLogger
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 
 	holdOld.Store(true)
@@ -300,31 +290,11 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 	if got.err != nil {
 		t.Fatal(got.err)
 	}
-	if got.status != http.StatusOK || strings.Contains(got.body, "chain pattern") {
-		t.Fatalf("retired-but-authenticated request = status %d body %s, want stateless forward", got.status, got.body)
+	if got.status != http.StatusServiceUnavailable || !strings.Contains(got.body, "state capacity exhausted") {
+		t.Fatalf("retired-but-authenticated request = status %d body %s, want explicit state-capacity block", got.status, got.body)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("upstream calls = %d, want 2; the retired request must not select the legacy chain partition", calls.Load())
-	}
-
-	auditLogger.Close()
-	auditData, err := os.ReadFile(filepath.Clean(auditPath))
-	if err != nil {
-		t.Fatalf("read audit log: %v", err)
-	}
-	if !strings.Contains(string(auditData), `"session":"`+legacySession+`"`) {
-		t.Fatalf("unbound request audit key did not retain its compatibility session header: %s", auditData)
-	}
-
-	// Positive control. Every security assertion above is a negative one: the
-	// retired request was not blocked. That proves the retired principal avoided
-	// the legacy partition only if the matcher would have fired had it entered
-	// that partition. Complete the chain on the legacy key directly and require
-	// a match, so a matcher that silently stops recognising this pattern fails
-	// here instead of leaving the test green while proving nothing. Run it after
-	// the HTTP assertions so it cannot alter the state the listener observed.
-	if verdict := chainMatcher.Record(legacyStateKey, "bash_exec"); !verdict.Matched {
-		t.Fatalf("chain matcher did not match the completing step on the legacy partition, so the negative assertions above prove nothing: %+v", verdict)
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1; state-capacity block must not forward", calls.Load())
 	}
 }
 

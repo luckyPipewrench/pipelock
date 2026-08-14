@@ -100,6 +100,15 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if !verified {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: unverified contract accepted because --allow-unsigned-contract-for-diagnostics is set; shadow replay is diagnostic only")
 	}
+	outputs := map[string]string{
+		"--out":      flags.outPath,
+		"--out-json": flags.outJSONPath,
+	}
+	protected := cliutil.ExistingFileLabels("--contract", []string{contractPath})
+	maps.Copy(protected, cliutil.ExistingFileLabels("--config", []string{flags.configPath}))
+	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
+		return err
+	}
 	sessionsDir, err := resolveShadowSessions(cfg, flags)
 	if err != nil {
 		return err
@@ -130,15 +139,6 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if err != nil {
 		return err
 	}
-	outputs := map[string]string{
-		"--out":      flags.outPath,
-		"--out-json": flags.outJSONPath,
-	}
-	protected := cliutil.ExistingFileLabels("--contract", []string{contractPath})
-	maps.Copy(protected, cliutil.ExistingFileLabels("--config", []string{flags.configPath}))
-	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
-		return err
-	}
 	if !flags.deterministic {
 		keyAgent := flags.receiptKey
 		if keyAgent == "" {
@@ -146,7 +146,10 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 		}
 		if err := refuseOutputsOverKeystoreKeys(flags.keystore, map[string]string{
 			"the receipt signing key": keyAgent,
-		}, outputs); err != nil {
+		}, map[string]string{
+			"--out":      flags.outPath,
+			"--out-json": flags.outJSONPath,
+		}); err != nil {
 			return err
 		}
 	}

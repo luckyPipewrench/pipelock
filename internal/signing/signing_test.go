@@ -924,6 +924,39 @@ func TestLoadPublicKeyFile_NonexistentFile(t *testing.T) {
 	}
 }
 
+func TestSaveSignature_ReplacingDestSymlinkLeavesTargetUnchanged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink replacement semantics differ on Windows")
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "signing.key")
+	original := []byte("protected-key-bytes")
+	if err := os.WriteFile(keyPath, original, 0o600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+	dest := filepath.Join(dir, "manifest.sig")
+	if err := os.Symlink(keyPath, dest); err != nil {
+		t.Fatalf("Symlink dest: %v", err)
+	}
+	if err := SaveSignature([]byte("signature-bytes-here"), dest); err != nil {
+		t.Fatalf("SaveSignature: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("protected key changed to %q", got)
+	}
+	info, err := os.Lstat(dest)
+	if err != nil {
+		t.Fatalf("Lstat dest: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("SaveSignature left dest as a symlink; rename should have replaced the directory entry")
+	}
+}
+
 func TestSaveSignature_BadDirectory(t *testing.T) {
 	err := SaveSignature([]byte("fake-sig"), "/nonexistent/dir/test.sig")
 	if err == nil {

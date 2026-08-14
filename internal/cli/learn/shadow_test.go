@@ -30,6 +30,39 @@ import (
 
 const testUnknownContractHash = "sha256:unknown"
 
+func TestRunShadowRefusesOutputAliasingContract(t *testing.T) {
+	dir := t.TempDir()
+	contractPath := writeCandidateEnvelope(t, dir, testRatifyContract())
+	before, err := os.ReadFile(filepath.Clean(contractPath))
+	if err != nil {
+		t.Fatalf("read contract: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = runShadow(cmd, shadowFlags{
+		contractPath:  contractPath,
+		allowUnsigned: true,
+		duration:      time.Hour,
+		outPath:       contractPath,
+		deterministic: true,
+		sessionsDir:   dir,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(contractPath))
+	if readErr != nil {
+		t.Fatalf("re-read contract: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runShadow succeeded writing --out over --contract")
+	}
+	if !strings.Contains(err.Error(), "--out must not name --contract") {
+		t.Fatalf("runShadow error = %v, want contract alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("shadow contract was overwritten")
+	}
+}
+
 func TestResolveShadowSessionsUsesExplicitDirAndRejectsSymlink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -338,6 +338,26 @@ func TestExistingFileLabelsIgnoresHexAndMissingPaths(t *testing.T) {
 	}
 }
 
+func TestRefuseOutputCollisions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "same.json")
+	if err := RefuseOutputCollisions(map[string]string{
+		"--out":       path,
+		"--local-log": path,
+	}); err == nil || !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("RefuseOutputCollisions error = %v, want output collision", err)
+	}
+	if err := RefuseOutputCollisions(map[string]string{
+		"--out":       filepath.Join(dir, "bundle.json"),
+		"--local-log": filepath.Join(dir, "anchor.jsonl"),
+	}); err != nil {
+		t.Fatalf("RefuseOutputCollisions rejected distinct outputs: %v", err)
+	}
+	if err := RefuseOutputCollisions(map[string]string{"--out": path, "--local-log": ""}); err != nil {
+		t.Fatalf("RefuseOutputCollisions rejected an empty output: %v", err)
+	}
+}
+
 func TestExistingRegularFilesLabelsOnlyRegularFiles(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "evidence.jsonl")

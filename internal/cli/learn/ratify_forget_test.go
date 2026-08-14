@@ -19,7 +19,51 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestRunRatifyRefusesOutputAliasingSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.ForceGenerateAgent("compile-signer"); err != nil {
+		t.Fatalf("ForceGenerateAgent compile: %v", err)
+	}
+	if _, err := ks.ForceGenerateAgent(defaultReceiptKeyAgent); err != nil {
+		t.Fatalf("ForceGenerateAgent receipt: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("compile-signer")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
+	cmd, _ := learnTestCmd("")
+	err = runRatify(cmd, ratifyFlags{
+		candidatePath:       candidate,
+		outPath:             keyPath,
+		receiptOut:          filepath.Join(dir, "ratify.jsonl"),
+		keystore:            dir,
+		compileKeyAgent:     "compile-signer",
+		receiptKey:          defaultReceiptKeyAgent,
+		acceptLowConfidence: true,
+	})
+	after, readErr := os.ReadFile(filepath.Clean(keyPath))
+	if readErr != nil {
+		t.Fatalf("re-read key: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("runRatify succeeded writing --out over the compile signing key")
+	}
+	if !strings.Contains(err.Error(), "must not name") {
+		t.Fatalf("runRatify error = %v, want alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("compile signing key was overwritten")
+	}
+}
 
 func TestLearnCmdRegistersRatifyAndForget(t *testing.T) {
 	cmd := Cmd()

@@ -65,6 +65,25 @@ func ExistingRegularFiles(label, dir string) map[string]string {
 	return ExistingFileLabels(label, paths)
 }
 
+// RefuseOutputCollisions rejects two output paths that name the same file.
+// RefuseOutputAliases only compares outputs to protected inputs, so two
+// outputs that collide with each other would both pass and then overwrite
+// each other.
+func RefuseOutputCollisions(outputs map[string]string) error {
+	flags := slices.Sorted(maps.Keys(outputs))
+	for i, left := range flags {
+		for _, right := range flags[i+1:] {
+			if err := RefuseOutputAliases(
+				map[string]string{left: outputs[left]},
+				map[string]string{right: outputs[right]},
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func RefuseOutputAliases(protectedPaths map[string]string, outputs map[string]string) error {
 	for _, outputFlag := range slices.Sorted(maps.Keys(outputs)) {
 		outputPath := outputs[outputFlag]

@@ -109,10 +109,14 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	if opts.rekorKey != "" {
 		protected["--rekor-key"] = opts.rekorKey
 	}
-	if err := cliutil.RefuseOutputAliases(protected, map[string]string{
+	outputs := map[string]string{
 		"--out":       output.bundlePath,
 		"--local-log": opts.logPath,
-	}); err != nil {
+	}
+	if err := cliutil.RefuseOutputAliases(protected, outputs); err != nil {
+		return err
+	}
+	if err := cliutil.RefuseOutputCollisions(outputs); err != nil {
 		return err
 	}
 	checkpoint, err := anchorpkg.BuildCheckpoint(sessionID, receipts, trustedKeys)

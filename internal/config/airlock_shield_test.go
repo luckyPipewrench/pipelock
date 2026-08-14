@@ -111,6 +111,41 @@ func TestValidateAirlock_AnomalyCountIsRejected(t *testing.T) {
 	}
 }
 
+func TestValidateAirlock_ReservedFieldsRejectedWhenDisabled(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		set  func(*Config)
+		want string
+	}{
+		{
+			name: "on_severity",
+			set:  func(c *Config) { c.Airlock.Triggers.OnSeverity = SeverityCritical },
+			want: "on_severity is not enforced",
+		},
+		{
+			name: "anomaly_count",
+			set:  func(c *Config) { c.Airlock.Triggers.AnomalyCount = 3 },
+			want: "anomaly_count is not enforced",
+		},
+		{
+			name: "anomaly_window_minutes",
+			set:  func(c *Config) { c.Airlock.Triggers.AnomalyWindowMinutes = 5 },
+			want: "anomaly_window_minutes is not enforced",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Airlock.Enabled = false
+			tc.set(cfg)
+			err := cfg.validateAirlock()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateAirlock(disabled, %s) error = %v, want %q", tc.name, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateAirlock_AnomalyWindowIsRejected(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()

@@ -1802,6 +1802,58 @@ func TestReceiptCommandsRejectAmbiguousEvidenceLocations(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_CleanReportRefusesLocationReceiptAlias(t *testing.T) {
+	t.Parallel()
+	source, pub := buildRestartChainDir(t, 1)
+	otherSource, _ := buildRestartChainDir(t, 1)
+	root := t.TempDir()
+	selectedID := "recorder-a/run-a"
+	otherID := "recorder-b/run-b"
+	selectedDir := filepath.Join(root, filepath.FromSlash(selectedID))
+	copyEvidenceFiles(t, source, selectedDir)
+	copyEvidenceFiles(t, otherSource, filepath.Join(root, filepath.FromSlash(otherID)))
+	entries, err := os.ReadDir(selectedDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var receiptFile string
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			receiptFile = filepath.Join(selectedDir, entry.Name())
+			break
+		}
+	}
+	if receiptFile == "" {
+		t.Fatal("selected location has no receipt file")
+	}
+	before, err := os.ReadFile(filepath.Clean(receiptFile))
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--chain", root,
+		"--location", selectedID,
+		"--key", hex.EncodeToString(pub),
+		"--clean-report", receiptFile,
+	})
+	err = cmd.Execute()
+	after, readErr := os.ReadFile(filepath.Clean(receiptFile))
+	if readErr != nil {
+		t.Fatalf("re-read receipt: %v", readErr)
+	}
+	if err == nil {
+		t.Fatal("verify-receipt succeeded writing --clean-report over a nested location receipt")
+	}
+	if !strings.Contains(err.Error(), "--clean-report must not name the receipt input") {
+		t.Fatalf("verify-receipt error = %v, want nested receipt-input alias refusal", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("nested receipt input was overwritten")
+	}
+}
+
 func TestReceiptCommandsSelectEvidenceLocation(t *testing.T) {
 	t.Parallel()
 	source, pub := buildRestartChainDir(t, 1)

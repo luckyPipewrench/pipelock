@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	mcpintegrity "github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -291,6 +292,46 @@ func TestSignMCPIntegrityManifestRefusesOutputAliasingSignerKey(t *testing.T) {
 	}
 	if afterInfo.Mode().Perm() != beforeInfo.Mode().Perm() {
 		t.Fatalf("key mode changed from %v to %v", beforeInfo.Mode().Perm(), afterInfo.Mode().Perm())
+	}
+}
+
+func TestSaveSignatureAfterAliasCheckDoesNotFollowSwappedDest(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("symlink replacement semantics differ on Windows")
+	}
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	keyPath, err := ks.PrivateKeyPath("alice")
+	if err != nil {
+		t.Fatalf("PrivateKeyPath: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	dest := filepath.Join(dir, "manifest.sig")
+	if err := cliutil.RefuseOutputAliases(
+		map[string]string{"the signer private key": keyPath},
+		map[string]string{"--sig": dest},
+	); err != nil {
+		t.Fatalf("preflight refused a missing dest: %v", err)
+	}
+	if err := os.Symlink(keyPath, dest); err != nil {
+		t.Fatalf("Symlink dest: %v", err)
+	}
+	if err := domsigning.SaveSignature([]byte("signature-bytes-here"), dest); err != nil {
+		t.Fatalf("SaveSignature: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("re-read key: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("signer private key was overwritten through a dest swapped in after the alias check")
 	}
 }
 

@@ -90,10 +90,21 @@ Examples:
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
 			}
+			var resolvedLocation *recorder.EvidenceLocation
+			if chainDir != "" && !fleetReport {
+				location, locationErr := recorder.ResolveEvidenceLocation(chainDir, locationID)
+				if locationErr != nil {
+					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
+				}
+				resolvedLocation = &location
+				chainDir = location.Dir
+			}
 			if cleanReport != "" {
 				protected := cliutil.ExistingFileLabels("--key", expectedKeys)
 				maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", args))
-				maps.Copy(protected, cliutil.ExistingRegularFiles("the receipt input", chainDir))
+				if resolvedLocation != nil {
+					maps.Copy(protected, cliutil.ExistingRegularFiles("the receipt input", resolvedLocation.Dir))
+				}
 				if err := cliutil.RefuseOutputAliases(
 					protected,
 					map[string]string{"--clean-report": cleanReport},
@@ -142,20 +153,15 @@ Examples:
 				}
 				return verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned)
 			}
-			if chainDir != "" {
-				location, locationErr := recorder.ResolveEvidenceLocation(chainDir, locationID)
-				if locationErr != nil {
-					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
-				}
-				chainDir = location.Dir
+			if resolvedLocation != nil {
 				if cleanReport == "" {
-					return verifyChainFromResolvedSessionDirDetailed(out, location, sessionID, trustedKeys, verifyOpts)
+					return verifyChainFromResolvedSessionDirDetailed(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts)
 				}
-				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
+				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 				if extractErr != nil {
 					return fmt.Errorf("extracting session receipts: %w", extractErr)
 				}
-				label := fmt.Sprintf("%s (session %s)", chainDir, sessionID)
+				label := fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID)
 				return verifyCleanReport(out, label, receipts, trustedKeys, allowUnpinned, cleanReport)
 			}
 			if locationID != "" {

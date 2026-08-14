@@ -244,17 +244,20 @@ func TestReadBoundedLineExcludesTheTerminator(t *testing.T) {
 		{
 			// The split-terminator case has to reach the limit to be worth
 			// anything: a record comfortably under it would pass either way.
-			// A 13-byte reader puts the CR at the last position of a fragment for
-			// a record of exactly the limit (64 content bytes plus CR is 65, an
-			// exact multiple of 13), so the LF arrives in the next fragment. A
-			// per-fragment terminator test counted that CR as content and marked
-			// this legal boundary record over-limit.
+			//
+			// A reader of exactly len(record)+1 fills on the CR, so the LF
+			// arrives in the next fragment. That size is not cosmetic and it is
+			// not interchangeable between these two cases: bufio.NewReaderSize
+			// floors at 16, so any smaller number is silently ignored and the
+			// terminator stays whole, which leaves the case testing nothing.
+			// A per-fragment terminator test counted that CR as content and
+			// marked this legal boundary record over-limit.
 			name: "CRLF split across fragments at exactly the limit", record: strings.Repeat("a", limit),
-			terminate: "\r\n", wantOver: false, readerSize: 13,
+			terminate: "\r\n", wantOver: false, readerSize: limit + 1,
 		},
 		{
 			name: "CRLF split across fragments one over the limit", record: strings.Repeat("a", limit+1),
-			terminate: "\r\n", wantOver: true, readerSize: 13,
+			terminate: "\r\n", wantOver: true, readerSize: limit + 2,
 		},
 	}
 
@@ -266,6 +269,9 @@ func TestReadBoundedLineExcludesTheTerminator(t *testing.T) {
 			size := tt.readerSize
 			if size == 0 {
 				size = 16
+			}
+			if strings.Contains(tt.name, "split across fragments") {
+				assertTerminatorSplits(t, tt.record+tt.terminate, size)
 			}
 			r := bufio.NewReaderSize(strings.NewReader(tt.record+tt.terminate), size)
 			line, overLimit, err := readBoundedLine(r, limit)
@@ -280,6 +286,28 @@ func TestReadBoundedLineExcludesTheTerminator(t *testing.T) {
 				t.Errorf("record round-tripped as %d bytes, want %d", len(line), len(tt.record))
 			}
 		})
+	}
+}
+
+// assertTerminatorSplits fails unless the reader size really does put the CR at
+// the end of one fragment and the LF at the start of the next.
+//
+// Without it a split case is only claiming to split. bufio.NewReaderSize floors
+// at 16, so a smaller size is accepted and ignored, the terminator stays whole,
+// and the case passes while exercising nothing — which is what it did before.
+func assertTerminatorSplits(t *testing.T, input string, size int) {
+	t.Helper()
+	r := bufio.NewReaderSize(strings.NewReader(input), size)
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			if bytes.HasSuffix(chunk, []byte("\r")) {
+				return
+			}
+			continue
+		}
+		t.Fatalf("reader size %d does not split the terminator, so this case proves nothing "+
+			"(bufio.NewReaderSize floors at 16; the CR must land at a fragment boundary)", size)
 	}
 }
 

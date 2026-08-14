@@ -49,24 +49,25 @@ var externalTransferFileDirectiveRE = regexp.MustCompile(
 		`https?://`,
 )
 
-// externalTransferTemplateFilenameRE matches the .env-family filenames that are a
-// convention for a secret-free template rather than a populated secret file.
-//
-// Treating these as sensitive costs availability and buys nothing. A repository
-// commits .env.example precisely so it carries no secrets, and uploading one to a
-// validator is ordinary traffic. An attacker who names .env.example in an
-// exfiltration instruction receives the template, so excluding them removes a
-// false positive without opening a path.
-var externalTransferTemplateFilenameRE = regexp.MustCompile(`(?i)^\.env\.(?:example|sample|template|dist|defaults?)$`)
-
 // isSensitiveTransferFilename is the single decision point for both the prose arm
 // and the command-argument arm. Keeping one function means the two phrasings
 // cannot drift into disagreeing about the same filename, which is the defect the
 // prose arm was added to close.
+//
+// It deliberately does NOT exempt .env.example and its siblings. An earlier
+// revision did, reasoning that those names are a convention for a secret-free
+// template. That reasoning infers CONTENT from a NAME, which a detector must not
+// do: the convention is a habit, not a guarantee, and real values land in a
+// committed example file often enough to matter. The exemption was also a
+// regression, because `curl --upload-file .env.example` matched before it and
+// would have stopped matching, handing an attacker a filename that disables the
+// check without any content inspection.
+//
+// The availability cost is real and belongs to the operator, scoped: a
+// deployment that legitimately uploads an example file suppresses this pattern
+// for that destination. A scoped suppression is narrower than a global blind spot
+// and stays visible in the config.
 func isSensitiveTransferFilename(name string) bool {
-	if externalTransferTemplateFilenameRE.MatchString(name) {
-		return false
-	}
 	return externalTransferSensitiveFilenameRE.MatchString(name)
 }
 

@@ -439,17 +439,52 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 // gate on process status need to distinguish "nothing was found" from
 // "something could not be looked at".
 func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (found, malformed bool, err error) {
-	lineScanner := bufio.NewScanner(r)
-	lineScanner.Buffer(make([]byte, 0, 64*1024), transport.MaxLineSize)
+	reader := bufio.NewReaderSize(r, 64*1024)
 
 	foundFinding := false
 	sawMalformed := false
 	lineNum := 0
 
-	for lineScanner.Scan() {
+	for {
+		raw, overLimit, readErr := readBoundedLine(reader, transport.MaxLineSize)
+		if len(raw) == 0 && overLimit == false && readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
+		}
 		lineNum++
-		line := strings.TrimSpace(lineScanner.Text())
+
+		// An over-limit record was drained rather than ending the stream. Ending
+		// it would let an upstream prepend one oversized record to stop every
+		// later line from being inspected, which downgrades a real finding after
+		// it into a bad-input result and destroys the exit-status distinction
+		// this function exists to provide.
+		if overLimit {
+			sawMalformed = true
+			verdict := jsonrpc.ScanVerdict{
+				Line:    lineNum,
+				Clean:   false,
+				Error:   fmt.Sprintf("line exceeds the %d byte scan limit and was not inspected", transport.MaxLineSize),
+				Scanned: scanVerdictScopes(),
+			}
+			if writeErr := emitVerdict(w, verdict, jsonOutput); writeErr != nil {
+				return foundFinding, sawMalformed, writeErr
+			}
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
+			}
+			continue
+		}
+
+		line := strings.TrimSpace(string(raw))
 		if line == "" {
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
 
@@ -464,30 +499,70 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 			foundFinding = true
 		}
 
-		if jsonOutput {
-			data, err := json.Marshal(verdict)
-			if err != nil {
-				return foundFinding, sawMalformed, fmt.Errorf("marshaling verdict: %w", err)
-			}
-			data = append(data, '\n')
-			if _, err := w.Write(data); err != nil {
-				return foundFinding, sawMalformed, fmt.Errorf("writing verdict: %w", err)
-			}
-		} else {
-			if err := writeTextVerdict(w, verdict); err != nil {
-				return foundFinding, sawMalformed, err
-			}
+		if writeErr := emitVerdict(w, verdict, jsonOutput); writeErr != nil {
+			return foundFinding, sawMalformed, writeErr
 		}
-	}
 
-	if err := lineScanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			return foundFinding, true, fmt.Errorf("reading input: %w", err)
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", readErr)
 		}
-		return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", err)
 	}
 
 	return foundFinding, sawMalformed, nil
+}
+
+// readBoundedLine reads one newline-terminated record, capped at limit bytes.
+//
+// A record longer than the cap is DRAINED to its newline and reported as
+// over-limit, so the stream continues. bufio.Scanner cannot do this: it fails
+// permanently on an over-long token, which would let one oversized record
+// suppress inspection of everything after it.
+//
+// Returns the record without its newline, whether it exceeded the cap, and any
+// read error. A final record without a trailing newline is returned with io.EOF.
+func readBoundedLine(r *bufio.Reader, limit int) (line []byte, overLimit bool, err error) {
+	var buf []byte
+	for {
+		chunk, readErr := r.ReadSlice('\n')
+		if len(buf)+len(chunk) > limit {
+			overLimit = true
+			// Keep draining to the newline so the next read starts at a record
+			// boundary rather than mid-record.
+			buf = nil
+		} else if !overLimit {
+			buf = append(buf, chunk...)
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if readErr != nil {
+			return trimTrailingNewline(buf), overLimit, readErr
+		}
+		return trimTrailingNewline(buf), overLimit, nil
+	}
+}
+
+func trimTrailingNewline(b []byte) []byte {
+	b = bytes.TrimSuffix(b, []byte("\n"))
+	return bytes.TrimSuffix(b, []byte("\r"))
+}
+
+func emitVerdict(w io.Writer, verdict jsonrpc.ScanVerdict, jsonOutput bool) error {
+	if !jsonOutput {
+		return writeTextVerdict(w, verdict)
+	}
+	data, err := json.Marshal(verdict)
+	if err != nil {
+		return fmt.Errorf("marshaling verdict: %w", err)
+	}
+	data = append(data, '\n')
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("writing verdict: %w", err)
+	}
+	return nil
 }
 
 // scanStreamResponse returns the regular stream verdict and whether any

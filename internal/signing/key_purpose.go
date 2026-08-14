@@ -14,7 +14,7 @@ import (
 // every signed-artifact key entry. The wire form is the lowercase hyphenated
 // string representation; this typed wrapper centralises validation and helpers.
 //
-// Fourteen values are defined, drawn from the design doc Key Management section
+// Fifteen values are defined, drawn from the design doc Key Management section
 // (lines 758-870) and the Conductor control-plane spec:
 //
 //   - PurposeReceiptSigning:            runtime receipt keys (hot-loadable)
@@ -31,6 +31,7 @@ import (
 //   - PurposeEnrollmentTokenSigning:    Conductor enrollment-token signing keys
 //   - PurposeFleetReportSigning:        Fleet Receipt Report signing keys
 //   - PurposeCoverageCertSigning:       Coverage Certificate signing keys
+//   - PurposeMCPResetAuthority:         MCP reset delegation signing keys
 //
 // Wire stability: these strings are part of the signed-artifact wire format
 // and will not change without a schema_version bump.
@@ -96,6 +97,10 @@ const (
 	// PurposeCoverageCertSigning identifies keys used to sign Coverage
 	// Certificates. Verification is Apache/free; minting is Enterprise-gated.
 	PurposeCoverageCertSigning KeyPurpose = "coverage-cert-signing"
+
+	// PurposeMCPResetAuthority identifies offline operator keys that mint
+	// short-lived, one-shot MCP drift and adaptive-reset delegations.
+	PurposeMCPResetAuthority KeyPurpose = "mcp-reset-authority"
 )
 
 // ErrUnknownKeyPurpose indicates a key_purpose value is not one of the
@@ -118,6 +123,7 @@ var knownPurposes = [...]KeyPurpose{
 	PurposeEnrollmentTokenSigning,
 	PurposeFleetReportSigning,
 	PurposeCoverageCertSigning,
+	PurposeMCPResetAuthority,
 }
 
 // knownSet provides O(1) validation lookup.
@@ -213,6 +219,7 @@ func (p KeyPurpose) RequiresConductorThreshold() bool {
 //  12. PurposeEnrollmentTokenSigning
 //  13. PurposeFleetReportSigning
 //  14. PurposeCoverageCertSigning
+//  15. PurposeMCPResetAuthority
 //
 // Tests rely on this order; it will not change without a major version bump.
 func KnownPurposes() []KeyPurpose {

@@ -116,6 +116,9 @@ func (p *PreparedSandboxCmd) StartWithParentHardening(harden func() error) error
 		if err := harden(); err != nil {
 			return fmt.Errorf("hardening parent before sandbox start: %w", err)
 		}
+		if err := recordParentHardeningForTest(); err != nil {
+			return fmt.Errorf("recording parent hardening: %w", err)
+		}
 		if err := p.Cmd.Start(); err != nil {
 			p.Close()
 			return fmt.Errorf("starting sandbox child: %w", err)
@@ -133,6 +136,10 @@ func (p *PreparedSandboxCmd) StartWithParentHardening(harden func() error) error
 	if err := harden(); err != nil {
 		p.abortStartedChild()
 		return fmt.Errorf("hardening parent after sandbox mapping: %w", err)
+	}
+	if err := recordParentHardeningForTest(); err != nil {
+		p.abortStartedChild()
+		return fmt.Errorf("recording parent hardening: %w", err)
 	}
 	if err := p.releaseTargetStart(); err != nil {
 		p.abortStartedChild()

@@ -24,13 +24,45 @@ type LaunchConfig struct {
 	ExtraEnv   []string
 	// BridgeSocketPath is Linux-only.
 	BridgeSocketPath string
-	Stdin            io.Reader
-	Stdout           io.Writer
-	Stderr           io.Writer
+	// GateTargetStart is Linux-only.
+	GateTargetStart bool
+	Stdin           io.Reader
+	Stdout          io.Writer
+	Stderr          io.Writer
+}
+
+// PreparedSandboxCmd exists for cross-platform callers. Unsupported platforms
+// never produce one because PrepareSandboxLaunch returns ErrUnavailable.
+type PreparedSandboxCmd struct {
+	Cmd                       *exec.Cmd
+	ParentHardeningAfterStart bool
+}
+
+func (p *PreparedSandboxCmd) Close() {}
+
+func (p *PreparedSandboxCmd) StartWithParentHardening(harden func() error) error {
+	if p == nil || p.Cmd == nil {
+		return fmt.Errorf("sandbox launch is nil")
+	}
+	if harden == nil {
+		return fmt.Errorf("sandbox parent hardening callback is nil")
+	}
+	if err := harden(); err != nil {
+		return fmt.Errorf("hardening parent before sandbox start: %w", err)
+	}
+	if err := p.Cmd.Start(); err != nil {
+		return fmt.Errorf("starting sandbox child: %w", err)
+	}
+	return nil
 }
 
 // PrepareSandboxCmd returns ErrUnavailable on non-Linux platforms.
 func PrepareSandboxCmd(_ LaunchConfig) (*exec.Cmd, error) {
+	return nil, fmt.Errorf("%w: requires linux", ErrUnavailable)
+}
+
+// PrepareSandboxLaunch returns ErrUnavailable on non-Linux platforms.
+func PrepareSandboxLaunch(_ LaunchConfig) (*PreparedSandboxCmd, error) {
 	return nil, fmt.Errorf("%w: requires linux", ErrUnavailable)
 }
 

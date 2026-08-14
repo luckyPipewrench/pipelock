@@ -162,6 +162,14 @@ func RunInit() {
 		exitSandboxProcess(1)
 	}
 
+	// Mapped launches remain here until the parent has made itself
+	// non-dumpable. This gate covers both the direct exec below and bridge-mode
+	// target start, rather than relying on the scheduler after cmd.Start.
+	if err := waitForParentHardening(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: parent hardening gate: %v\n", err)
+		exitSandboxProcess(1)
+	}
+
 	if socketPath != "" {
 		runInitWithBridge(command, env, workspace, socketPath, bridgeSignals)
 		return

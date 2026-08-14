@@ -837,14 +837,6 @@ Key-free evidence capture:
 				}
 			}
 
-			// A wrapped same-UID MCP server must not be able to recover proxy
-			// environment values through /proc/<ppid>/environ. This runs before
-			// any wrapped subprocess starts. It is not an authority mechanism:
-			// a bearer credential remains insufficient for operator-only reset.
-			if err := mcp.HardenProxyProcess(); err != nil {
-				return fmt.Errorf("harden MCP proxy process: %w", err)
-			}
-
 			// Validate upstream URL scheme.
 			var isWSUpstream bool
 			if hasUpstream {
@@ -1600,12 +1592,13 @@ Key-free evidence capture:
 				}
 
 				launchCfg := sandbox.LaunchConfig{
-					Ctx:        ctx,
-					Command:    serverCmd,
-					Workspace:  workspace,
-					Strict:     mcpStrict,
-					BestEffort: mcpBestEffort,
-					ExtraEnv:   extraEnv,
+					Ctx:             ctx,
+					Command:         serverCmd,
+					Workspace:       workspace,
+					Strict:          mcpStrict,
+					BestEffort:      mcpBestEffort,
+					ExtraEnv:        extraEnv,
+					GateTargetStart: true,
 				}
 				if cfg.Sandbox.FS != nil {
 					p := sandbox.DefaultPolicy(workspace)
@@ -1646,11 +1639,11 @@ Key-free evidence capture:
 				}
 				defer closeBridge()
 
-				sandboxCmd, sErr := sandbox.PrepareSandboxCmd(launchCfg)
+				sandboxLaunch, sErr := sandbox.PrepareSandboxLaunch(launchCfg)
 				if sErr != nil {
 					return fmt.Errorf("sandbox prepare: %w", sErr)
 				}
-				sandboxCmd.Stderr = cmd.ErrOrStderr()
+				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
 
 				proxyOpts := mcp.MCPProxyOpts{
 					Scanner: sc, Approver: approver,
@@ -1685,7 +1678,7 @@ Key-free evidence capture:
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",
 					serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction, workspace)
-				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
+				if err := mcp.RunProxyWithSandboxLaunch(ctx, sandboxLaunch, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 						return heartbeatErr
 					}
@@ -1811,6 +1804,11 @@ Key-free evidence capture:
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
+			// The unsandboxed path has no UID/GID map setup. Harden before
+			// RunProxy can start its wrapped command.
+			if err := mcp.HardenProxyProcess(); err != nil {
+				return fmt.Errorf("harden MCP proxy process: %w", err)
+			}
 			respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 				serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)

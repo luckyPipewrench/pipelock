@@ -33,15 +33,54 @@ type LaunchConfig struct {
 
 	ExtraEnv         []string
 	BridgeSocketPath string // Linux-only; ignored by sandbox-exec.
+	GateTargetStart  bool   // Linux-only; no UID/GID mappings on macOS.
 	Stdin            io.Reader
 	Stdout           io.Writer
 	Stderr           io.Writer
+}
+
+// PreparedSandboxCmd records the parent hardening ordering for a sandbox
+// command. macOS has no user-namespace map phase, so hardening stays eager.
+type PreparedSandboxCmd struct {
+	Cmd                       *exec.Cmd
+	ParentHardeningAfterStart bool
+}
+
+func (p *PreparedSandboxCmd) Close() {}
+
+func (p *PreparedSandboxCmd) StartWithParentHardening(harden func() error) error {
+	if p == nil || p.Cmd == nil {
+		return fmt.Errorf("sandbox launch is nil")
+	}
+	if harden == nil {
+		return fmt.Errorf("sandbox parent hardening callback is nil")
+	}
+	if err := harden(); err != nil {
+		return fmt.Errorf("hardening parent before sandbox start: %w", err)
+	}
+	if err := p.Cmd.Start(); err != nil {
+		return fmt.Errorf("starting sandbox child: %w", err)
+	}
+	return nil
 }
 
 // PrepareSandboxCmd builds an exec.Cmd that wraps the child command with
 // sandbox-exec using a generated SBPL profile. No re-exec needed - the
 // child is launched directly under the sandbox profile.
 func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
+	if cfg.GateTargetStart {
+		return nil, fmt.Errorf("sandbox target-start gate requires PrepareSandboxLaunch")
+	}
+	launch, err := PrepareSandboxLaunch(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return launch.Cmd, nil
+}
+
+// PrepareSandboxLaunch builds a launch with its explicit parent-hardening
+// ordering. macOS has no UID/GID mapping phase, so it is always eager.
+func PrepareSandboxLaunch(cfg LaunchConfig) (*PreparedSandboxCmd, error) {
 	if _, err := os.Stat(seatbeltBinary); err != nil {
 		return nil, fmt.Errorf("%w: sandbox-exec not found at %s", ErrUnavailable, seatbeltBinary)
 	}
@@ -100,7 +139,7 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	env = append(env, sandboxRootEnvKey+"="+sandboxTmp)
 	cmd.Env = env
 
-	return cmd, nil
+	return &PreparedSandboxCmd{Cmd: cmd}, nil
 }
 
 // LaunchSandboxed prepares and starts a sandboxed child process.

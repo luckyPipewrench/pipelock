@@ -68,6 +68,43 @@ func TestRecorderNamespaceLimit(t *testing.T) {
 	}
 }
 
+func TestProducer_RecorderNamespaceCapacityHasDistinctDropReason(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := testOpen(t, Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := &transportMetricsRecorder{}
+	p := newTestProducer(t, q, metrics, priv)
+
+	for i := 0; i < maxActiveRecorderNamespaces; i++ {
+		entry := namespacedCheckpointSegment(uint64(i*2), fmt.Sprintf("writer-%d", i))[0]
+		p.ObserveRecorderEntry(entry)
+	}
+	overflow := namespacedCheckpointSegment(uint64(maxActiveRecorderNamespaces*2), "writer-overflow")[0]
+	p.ObserveRecorderEntry(overflow)
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := metrics.delivery["drop:"+producerDropNamespaceCapacity]; got != 1 {
+		t.Fatalf("namespace-capacity drop metric = %d, want 1", got)
+	}
+	if got := metrics.delivery["drop:"+producerDropInvalidCheckpoint]; got != 0 {
+		t.Fatalf("invalid-checkpoint drop metric = %d, want 0", got)
+	}
+	accounting := p.droppedAccounting()
+	for _, reason := range accounting.Reasons {
+		if reason.Reason == producerDropNamespaceCapacity && reason.Count == 1 {
+			return
+		}
+	}
+	t.Fatalf("namespace-capacity drop missing from accounting: %+v", accounting)
+}
+
 func TestProducerRejectsTransportUnsupportedV1Segment(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

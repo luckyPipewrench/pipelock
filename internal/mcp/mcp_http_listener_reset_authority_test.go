@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -379,6 +380,52 @@ func TestListenerDriftResetEpochReportsReplacementAuthorityBinding(t *testing.T)
 	target, instanceID, gotEpoch := epoch.CurrentBinding()
 	if target != currentAuthority.Target() || instanceID != currentAuthority.InstanceID() || gotEpoch != 0 {
 		t.Fatalf("current replacement binding = %q/%q/%d, want %q/%q/0", target, instanceID, gotEpoch, currentAuthority.Target(), currentAuthority.InstanceID())
+	}
+}
+
+func TestListenerDriftResetEpochChecksLiveConfigWhileAdvancing(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := newMCPListenerClientStates(nil)
+	oldCfg := &tools.ToolScanConfig{
+		DetectDrift:                          true,
+		ListenerDriftResetFile:               filepath.Join(t.TempDir(), "reset"),
+		ListenerDriftResetAuthorityPublicKey: publicKey,
+		ListenerDriftResetTarget:             "mcp://listener-before-reload",
+	}
+	authority, err := states.authorityForToolDriftReset(oldCfg)
+	if err != nil {
+		t.Fatalf("create reset authority: %v", err)
+	}
+	rotatedCfgValue := *oldCfg
+	rotatedCfgValue.ListenerDriftResetTarget = "mcp://listener-after-reload"
+	rotatedCfg := &rotatedCfgValue
+
+	var liveCfg atomic.Pointer[tools.ToolScanConfig]
+	liveCfg.Store(oldCfg)
+	states.resetAuthorityToolCfgFn = func() *tools.ToolScanConfig {
+		// If the config is sampled before taking the listener-state lock, this
+		// captures the old config then publishes the rotation before AdvanceEpoch
+		// can commit. The old ordering accepts the stale authority. The fixed
+		// ordering holds the lock, observes the rotation, and denies it.
+		if states.mu.TryLock() {
+			cfg := liveCfg.Load()
+			states.mu.Unlock()
+			liveCfg.Store(rotatedCfg)
+			return cfg
+		}
+		liveCfg.Store(rotatedCfg)
+		return liveCfg.Load()
+	}
+
+	epoch := listenerDriftResetEpoch{states: states, authority: authority, resetFile: oldCfg.ListenerDriftResetFile}
+	if epoch.AdvanceEpoch(0) {
+		t.Fatal("delegation sampled before a reload advanced the listener epoch")
+	}
+	if got := states.upstreamDriftEpoch(); got != 0 {
+		t.Fatalf("listener epoch after reload race = %d, want 0", got)
 	}
 }
 

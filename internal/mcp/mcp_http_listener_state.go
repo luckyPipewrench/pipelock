@@ -569,10 +569,7 @@ func (e listenerDriftResetEpoch) CurrentEpoch() uint64 {
 }
 
 func (e listenerDriftResetEpoch) AdvanceEpoch(expected uint64) bool {
-	if cfgFn := e.states.resetAuthorityToolCfgFn; cfgFn != nil && !resetAuthorityMatchesToolConfig(e.authority, e.resetFile, cfgFn()) {
-		return false
-	}
-	return e.states.advanceUpstreamDriftResetEpoch(e.authority, expected)
+	return e.states.advanceUpstreamDriftResetEpoch(e.authority, e.resetFile, e.states.resetAuthorityToolCfgFn, expected)
 }
 
 func (e listenerDriftResetEpoch) CurrentBinding() (target, instanceID string, epoch uint64) {
@@ -601,9 +598,12 @@ func resetAuthorityMatchesToolConfig(authority *ResetAuthority, resetFile string
 		bytes.Equal(authority.publicKey, cfg.ListenerDriftResetAuthorityPublicKey)
 }
 
-func (s *mcpListenerClientStates) advanceUpstreamDriftResetEpoch(authority *ResetAuthority, expected uint64) bool {
+func (s *mcpListenerClientStates) advanceUpstreamDriftResetEpoch(authority *ResetAuthority, resetFile string, cfgFn func() *tools.ToolScanConfig, expected uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if cfgFn != nil && !resetAuthorityMatchesToolConfig(authority, resetFile, cfgFn()) {
+		return false
+	}
 	if s.resetAuthority != authority {
 		return false
 	}

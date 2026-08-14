@@ -4,6 +4,9 @@
 package contain
 
 import (
+	"net"
+	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,6 +74,56 @@ func TestContainServiceReadOnlyPathsUsesTheConfiguredProxyPort(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestContainMetricsDefaultIsCheckedBeforeItIsWritten covers the host where the
+// inserted default is itself unsafe.
+//
+// The default metrics listener is a fixed port. On a host whose proxy already
+// runs there, writing it unchecked has the installer produce a config its own
+// runtime refuses, so metrics come up disabled and the stated reason points at
+// a line the operator never wrote. Refusing during migration puts the problem
+// in front of them while they can still choose a port.
+func TestContainMetricsDefaultIsCheckedBeforeItIsWritten(t *testing.T) {
+	_, defaultPort, err := net.SplitHostPort(containMetricsListen)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	migrate := func(t *testing.T, source string) ([]byte, error) {
+		t.Helper()
+		env, _, _ := newFakeEnv(t)
+		home := t.TempDir()
+		origLookup := env.lookupUser
+		env.lookupUser = func(name string) (*user.User, error) {
+			if name == containInstallOperatorUser {
+				return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+			}
+			return origLookup(name)
+		}
+		out, _, migrateErr := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte(source))
+		return out, migrateErr
+	}
+
+	t.Run("refuses when the proxy occupies the default metrics port", func(t *testing.T) {
+		out, err := migrate(t, "fetch_proxy:\n  listen: 127.0.0.1:"+defaultPort+"\n")
+		if err == nil {
+			t.Fatalf("migration wrote a config the runtime will refuse:\n%s", out)
+		}
+		if !strings.Contains(err.Error(), "collides") {
+			t.Errorf("error = %q, want it to name the collision so the operator can pick a port", err.Error())
+		}
+	})
+
+	t.Run("still inserts the default when there is no collision", func(t *testing.T) {
+		out, err := migrate(t, "fetch_proxy:\n  listen: 127.0.0.1:8888\n")
+		if err != nil {
+			t.Fatalf("migration refused an ordinary host: %v", err)
+		}
+		if !strings.Contains(string(out), containMetricsListen) {
+			t.Errorf("default metrics listener was not inserted:\n%s", out)
+		}
+	})
 }
 
 // TestEffectiveProxyPortFallsBackRatherThanGuessing covers each way the

@@ -84,9 +84,21 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	// distinct loopback listener; the containment rules allow only the proxy
 	// port and drop agent-owned traffic to other loopback ports.
 	metricsListen := strings.TrimSpace(scalarValue(mappingValue(mapping, "metrics_listen")))
+	proxyPort := effectiveProxyPort(mapping, env.proxyPort)
 	if metricsListen == "" {
+		// The value we are about to write gets the same check as one the
+		// operator wrote. It is a fixed port, so on a host whose proxy already
+		// runs there the default collides, and inserting it unchecked would
+		// have the installer produce a config its own runtime refuses: metrics
+		// come up disabled and the reason points at a line the operator never
+		// typed.
+		if err := config.ValidateContainmentMetricsListen(containMetricsListen, proxyPort); err != nil {
+			return nil, nil, fmt.Errorf("cannot migrate %s: the default containment metrics listener %s collides with this host's proxy port %d; "+
+				"set metrics_listen to another loopback port, or move fetch_proxy.listen: %w",
+				"metrics_listen", containMetricsListen, proxyPort, err)
+		}
 		setMappingScalar(mapping, "metrics_listen", containMetricsListen)
-	} else if err := config.ValidateContainmentMetricsListen(metricsListen, effectiveProxyPort(mapping, env.proxyPort)); err != nil {
+	} else if err := config.ValidateContainmentMetricsListen(metricsListen, proxyPort); err != nil {
 		return nil, nil, err
 	}
 

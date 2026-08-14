@@ -2138,6 +2138,18 @@ func TestScanTools_StaleDriftEpochFailsClosedWithoutCommitting(t *testing.T) {
 	}
 }
 
+func TestToolBaselineMatchesDriftEpoch(t *testing.T) {
+	baseline := NewToolBaseline()
+	epoch := baseline.DriftEpoch()
+	if !baseline.matchesDriftEpoch(epoch) {
+		t.Fatalf("fresh baseline did not match epoch %d", epoch)
+	}
+	baseline.ResetDriftState()
+	if baseline.matchesDriftEpoch(epoch) {
+		t.Fatalf("reset baseline still matched stale epoch %d", epoch)
+	}
+}
+
 func TestToolBaseline_EvaluateDefinitionRejectsStaleDriftEpoch(t *testing.T) {
 	baseline := NewToolBaseline()
 	epoch := baseline.DriftEpoch()

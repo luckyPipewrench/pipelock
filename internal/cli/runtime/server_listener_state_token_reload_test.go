@@ -130,13 +130,20 @@ logging:
 		if got := matcher.Record(chainSession, "list_issues"); got.Matched {
 			t.Fatalf("untrusted-source prefix = %+v, want no match", got)
 		}
-		if got := matcher.Record(chainSession, "read_private_repo"); got.Matched {
-			t.Fatalf("two-step trifecta prefix = %+v, want no match", got)
+		// 19 recorded fillers put the first trifecta step just inside the
+		// original 20-call window. After two more steps the first call is
+		// outside window 20 and inside window 30.
+		for i := range 19 {
+			if got := matcher.Record(chainSession, "view_status"); got.Matched {
+				t.Fatalf("filler %d matched = %+v, want no match", i, got)
+			}
 		}
 
+		maxGap := 20
 		unrelated := s.proxy.CurrentConfig().Clone()
 		unrelated.MCPSessionBinding.ListenerRequireStateToken = &required
 		unrelated.ToolChainDetection.WindowSize = 30
+		unrelated.ToolChainDetection.MaxGap = &maxGap
 		if err := reloadListenerStateToken(s, unrelated); err != nil {
 			t.Fatalf("unrelated reload: %v", err)
 		}
@@ -149,8 +156,11 @@ logging:
 		if got := s.currentMCPChainMatcher(); got != matcher {
 			t.Fatal("unrelated reload replaced the chain matcher")
 		}
+		if got := matcher.Record(chainSession, "read_private_repo"); got.Matched {
+			t.Fatalf("two-step trifecta prefix = %+v, want no match", got)
+		}
 		if got := matcher.Record(chainSession, "create_pull_request"); !got.Matched || got.PatternName != "lethal-trifecta" {
-			t.Fatalf("chain state after unrelated reload = %+v, want preserved lethal trifecta", got)
+			t.Fatalf("chain state after unrelated reload = %+v, want lethal trifecta only under window 30", got)
 		}
 		unrelatedDenied := postTokenlessListenerToolCall(t, mcpAddr, 4)
 		if !strings.Contains(unrelatedDenied, "authenticated principal") {

@@ -1631,6 +1631,28 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	}
 }
 
+func TestBuildMCPToolCfgWiresListenerResetAuthority(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate reset authority key: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "reset-authority.pub")
+	if err := signing.SavePublicKey(publicKey, keyPath); err != nil {
+		t.Fatalf("write reset authority key: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = config.ActionBlock
+	cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = keyPath
+	cfg.MCPToolScanning.ListenerDriftResetTarget = "mcp://listener-reset-test"
+	baseline := mcptools.NewToolBaseline()
+	toolCfg := buildMCPToolCfg(cfg, nil, baseline)
+	if toolCfg == nil || toolCfg.Baseline != baseline || !bytes.Equal(toolCfg.ListenerDriftResetAuthorityPublicKey, publicKey) || toolCfg.ListenerDriftResetTarget != cfg.MCPToolScanning.ListenerDriftResetTarget {
+		t.Fatalf("listener reset authority tool config = %+v", toolCfg)
+	}
+}
+
 func TestServer_RuntimeHelperFallbacksAndCopies(t *testing.T) {
 	s := &Server{}
 	if got := s.liveReceiptEmitter(); got != nil {

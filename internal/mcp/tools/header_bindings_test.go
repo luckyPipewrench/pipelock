@@ -62,6 +62,9 @@ func TestToolBaseline_HeaderBindingsErrorAndCopyBoundaries(t *testing.T) {
 	if bindings, ok := nilBaseline.HeaderBindings("echo"); ok || bindings != nil {
 		t.Fatalf("nil baseline returned bindings = %#v ok=%v", bindings, ok)
 	}
+	if !nilBaseline.CanAdmitHeaderBindings([]ToolDef{{Name: "echo"}}) {
+		t.Fatal("nil baseline rejected a header-binding contract")
+	}
 
 	baseline := &ToolBaseline{}
 	valid := ToolDef{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`)}

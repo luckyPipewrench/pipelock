@@ -4177,3 +4177,9 @@ func TestToolBaseline_NilEpochAndDirectStaleDefinitionScan(t *testing.T) {
 		t.Fatalf("direct stale scan = matches=%v observations=%v capacity=%v epoch=%v", matches, observations, capacityExceeded, epochChanged)
 	}
 }
+
+func TestNamesFitCapacityWithPendingCountsDuplicateNamesOnce(t *testing.T) {
+	if !namesFitCapacityWithPending(map[string]bool{}, map[string]struct{}{}, []string{"one", "one"}) {
+		t.Fatal("duplicate tool names consumed more than one inventory slot")
+	}
+}

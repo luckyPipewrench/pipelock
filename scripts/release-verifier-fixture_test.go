@@ -522,7 +522,7 @@ func stageReleaseVerifierInventoryTest(t *testing.T) string {
 	}
 	repoRoot := filepath.Dir(filepath.Dir(sourceFile))
 	root := t.TempDir()
-	for _, relativePath := range []string{
+	stagedPaths := []string{
 		"scripts/release-verifier-install-gate.sh",
 		"scripts/release-verifier-install-gate-lib.sh",
 		"scripts/ci-retry.sh",
@@ -532,7 +532,8 @@ func stageReleaseVerifierInventoryTest(t *testing.T) string {
 		"sdk/verifiers/ts/src/types.ts",
 		"sdk/verifiers/rust/Cargo.toml",
 		"sdk/verifiers/rust/Cargo.lock",
-	} {
+	}
+	for _, relativePath := range stagedPaths {
 		raw, err := os.ReadFile(filepath.Join(repoRoot, relativePath)) // #nosec G304 -- relativePath comes from the fixed list above.
 		if err != nil {
 			t.Fatalf("read %s: %v", relativePath, err)
@@ -558,7 +559,7 @@ func stageReleaseVerifierInventoryTest(t *testing.T) string {
 		{"init", "-q"},
 		{"config", "user.name", "Pipelock Test"},
 		{"config", "user.email", "test@pipelock.invalid"},
-		{"add", "scripts/release-verifier-install-gate.sh", "scripts/release-verifier-install-gate-lib.sh", "scripts/ci-retry.sh", "release/verifier-installers.json", "sdk/verifiers/ts/package.json", "sdk/verifiers/ts/package-lock.json", "sdk/verifiers/ts/src/types.ts", "sdk/verifiers/rust/Cargo.toml", "sdk/verifiers/rust/Cargo.lock"},
+		append([]string{"add"}, stagedPaths...),
 		{"commit", "-q", "--no-gpg-sign", "-m", "test fixture"},
 	} {
 		gitArgs := append([]string{"-c", "core.hooksPath=" + hooksDir, "-c", "init.templateDir=" + templateDir}, args...)

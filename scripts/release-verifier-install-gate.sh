@@ -425,14 +425,22 @@ go_version="$(go env GOVERSION)"
 # This is the exact candidate source. The Go binary uses the same standalone
 # command and release flags as GoReleaser, then is placed in an otherwise empty
 # customer-style bin directory.
-GOCACHE="$go_cache" GOMODCACHE="$go_mod_cache" go run "$ROOT_DIR/scripts/release-verifier-fixture.go" --out-dir "$fixture_dir"
-GOCACHE="$go_cache" GOMODCACHE="$go_mod_cache" go build -trimpath -buildvcs=false \
+if ! "$CI_RETRY" env GOCACHE="$go_cache" GOMODCACHE="$go_mod_cache" \
+	go run "$ROOT_DIR/scripts/release-verifier-fixture.go" --out-dir "$fixture_dir"; then
+	printf 'release verifier install gate: could not build the candidate receipt fixture after retries\n' >&2
+	exit 2
+fi
+if ! "$CI_RETRY" env GOCACHE="$go_cache" GOMODCACHE="$go_mod_cache" \
+	go build -trimpath -buildvcs=false \
 	-ldflags "-s -w \
 	-X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${tag#v} \
 	-X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate=$candidate_date \
 	-X github.com/luckyPipewrench/pipelock/internal/cliutil.GitCommit=$candidate_short_commit \
 	-X github.com/luckyPipewrench/pipelock/internal/cliutil.GoVersion=$go_version" \
-	-o "$go_bin_dir/pipelock-verifier" "$ROOT_DIR/cmd/pipelock-verifier"
+	-o "$go_bin_dir/pipelock-verifier" "$ROOT_DIR/cmd/pipelock-verifier"; then
+	printf 'release verifier install gate: could not build the Go verifier after retries\n' >&2
+	exit 2
+fi
 
 receipt="$fixture_dir/candidate-receipt.json"
 payload_tampered="$fixture_dir/candidate-receipt-payload-tampered.json"
@@ -447,7 +455,11 @@ fi
 # cache, and interpreter environment, so this detects bad package contents,
 # entrypoints, and runtime dependencies instead of exercising our source tree.
 printf '{"private":true}\n' >"$scratch_dir/typescript/package.json"
-npm_config_cache="$scratch_dir/npm-cache" npm install --ignore-scripts --omit=dev --prefix "$scratch_dir/typescript" "@pipelock/verifier-ts@$ts_version"
+if ! "$CI_RETRY" env npm_config_cache="$scratch_dir/npm-cache" \
+	npm install --ignore-scripts --omit=dev --prefix "$scratch_dir/typescript" "@pipelock/verifier-ts@$ts_version"; then
+	printf 'release verifier install gate: could not install the TypeScript verifier after retries\n' >&2
+	exit 2
+fi
 if [[ ! -f "$scratch_dir/typescript/package-lock.json" ]]; then
 	printf 'release verifier install gate: npm install did not produce the lockfile required for signature auditing\n' >&2
 	exit 2
@@ -463,7 +475,10 @@ if (withInstallScripts.length) {
   process.exit(2)
 }
 NODE
-npm_config_cache="$scratch_dir/npm-cache" npm audit signatures --prefix "$scratch_dir/typescript"
+if ! "$CI_RETRY" env npm_config_cache="$scratch_dir/npm-cache" npm audit signatures --prefix "$scratch_dir/typescript"; then
+	printf 'release verifier install gate: could not verify npm signatures after retries\n' >&2
+	exit 2
+fi
 if ! npm_attestations="$("$CI_RETRY" curl -fsSL \
 	"https://registry.npmjs.org/-/npm/v1/attestations/@pipelock%2fverifier-ts@$ts_version")"; then
 	printf 'release verifier install gate: could not fetch npm provenance for @pipelock/verifier-ts@%s\n' "$ts_version" >&2
@@ -509,17 +524,31 @@ if not any(
 ):
     raise SystemExit("npm provenance does not bind the pinned source commit")
 PY
-CARGO_HOME="$scratch_dir/cargo-home" cargo install --locked --root "$scratch_dir/rust" "pipelock-verifier-rs@$rust_version"
+if ! "$CI_RETRY" env CARGO_HOME="$scratch_dir/cargo-home" \
+	cargo install --locked --root "$scratch_dir/rust" "pipelock-verifier-rs@$rust_version"; then
+	printf 'release verifier install gate: could not install the Rust verifier after retries\n' >&2
+	exit 2
+fi
 python3 -m venv "$scratch_dir/python"
 mkdir -p "$scratch_dir/python-dist"
-PIP_DISABLE_PIP_VERSION_CHECK=1 "$scratch_dir/python/bin/python" -m pip download --isolated --no-deps \
-	--only-binary=:all: --dest "$scratch_dir/python-dist" "pipelock-verify==$python_version"
+if ! "$CI_RETRY" env PIP_DISABLE_PIP_VERSION_CHECK=1 \
+	"$scratch_dir/python/bin/python" -m pip download --isolated --no-deps \
+	--only-binary=:all: --dest "$scratch_dir/python-dist" "pipelock-verify==$python_version"; then
+	printf 'release verifier install gate: could not download the Python verifier after retries\n' >&2
+	exit 2
+fi
 mapfile -t python_wheels < <(find "$scratch_dir/python-dist" -maxdepth 1 -type f -name '*.whl')
 if ((${#python_wheels[@]} != 1)); then
 	printf 'release verifier install gate: expected one Python wheel, found %d\n' "${#python_wheels[@]}" >&2
 	exit 2
 fi
-printf '%s  %s\n' "${python_artifact_digest#sha256:}" "${python_wheels[0]}" | sha256sum --check --status
+calculated_python_digest="$(sha256sum "${python_wheels[0]}")"
+calculated_python_digest="${calculated_python_digest%% *}"
+if [[ "$calculated_python_digest" != "${python_artifact_digest#sha256:}" ]]; then
+	printf 'release verifier install gate: downloaded pipelock-verify@%s wheel digest is sha256:%s, expected %s\n' \
+		"$python_version" "$calculated_python_digest" "$python_artifact_digest" >&2
+	exit 2
+fi
 if ! "$CI_RETRY" git clone --quiet --filter=blob:none --no-checkout \
 	"https://github.com/$python_repository.git" "$scratch_dir/python-source"; then
 	printf 'release verifier install gate: could not fetch Python verifier source from %s\n' "$python_repository" >&2
@@ -531,8 +560,12 @@ if [[ "$(git -C "$scratch_dir/python-source" rev-parse HEAD)" != "$python_source
 	exit 2
 fi
 mkdir -p "$scratch_dir/python-rebuilt"
-PIP_DISABLE_PIP_VERSION_CHECK=1 "$scratch_dir/python/bin/python" -m pip wheel --isolated --no-deps \
-	--wheel-dir "$scratch_dir/python-rebuilt" "$scratch_dir/python-source"
+if ! "$CI_RETRY" env PIP_DISABLE_PIP_VERSION_CHECK=1 \
+	"$scratch_dir/python/bin/python" -m pip wheel --isolated --no-deps \
+	--wheel-dir "$scratch_dir/python-rebuilt" "$scratch_dir/python-source"; then
+	printf 'release verifier install gate: could not rebuild the Python verifier after retries\n' >&2
+	exit 2
+fi
 mapfile -t rebuilt_python_wheels < <(find "$scratch_dir/python-rebuilt" -maxdepth 1 -type f -name '*.whl')
 if ((${#rebuilt_python_wheels[@]} != 1)); then
 	printf 'release verifier install gate: expected one rebuilt Python wheel, found %d\n' "${#rebuilt_python_wheels[@]}" >&2
@@ -553,7 +586,11 @@ def content(path):
 if content(sys.argv[1]) != content(sys.argv[2]):
     raise SystemExit("published Python wheel contents differ from the pinned source commit")
 PY
-PIP_DISABLE_PIP_VERSION_CHECK=1 "$scratch_dir/python/bin/python" -m pip install --isolated "${python_wheels[0]}"
+if ! "$CI_RETRY" env PIP_DISABLE_PIP_VERSION_CHECK=1 \
+	"$scratch_dir/python/bin/python" -m pip install --isolated "${python_wheels[0]}"; then
+	printf 'release verifier install gate: could not install the Python verifier after retries\n' >&2
+	exit 2
+fi
 
 go_reported_version="$("$go_bin_dir/pipelock-verifier" --version)"
 if [[ "$go_reported_version" != "pipelock-verifier ${tag#v} "* ]]; then

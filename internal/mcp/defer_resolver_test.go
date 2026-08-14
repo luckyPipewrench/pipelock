@@ -431,7 +431,7 @@ func TestForwardScanned_ToolInventoryResolvesHeldActions(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			baseline := tools.NewToolBaseline()
-			baseline.SetKnownTools([]string{"read_file"})
+			requireKnownTools(t, baseline, []string{"read_file"})
 			toolCfg := &tools.ToolScanConfig{Action: config.ActionBlock, DetectDrift: true, Baseline: baseline}
 			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
 			resolved := make(chan deferred.Resolution, 1)

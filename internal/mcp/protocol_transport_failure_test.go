@@ -664,7 +664,7 @@ func TestForwardScannedProvenanceFailuresStopAtClientBoundary(t *testing.T) {
 
 func TestHTTPInputSessionBindingRejectsMissingToolIdentity(t *testing.T) {
 	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, baseline, []string{"read_file"})
 	toolCfg := &tools.ToolScanConfig{
 		Baseline:                baseline,
 		Action:                  config.ActionWarn,

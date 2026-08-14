@@ -330,7 +330,7 @@ func TestForwardScanned_ToolsListWriteFailureDoesNotSeedFreshBaseline(t *testing
 func TestForwardScanned_ToolsListWarnWriteFailureDoesNotAlterExistingBaseline(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
 	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{"existing"})
+	requireKnownTools(t, baseline, []string{"existing"})
 	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
 	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	line := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"new-tool","description":"safe documentation"}],"note":"server credential: ` + accessKey + `"}}` + "\n"

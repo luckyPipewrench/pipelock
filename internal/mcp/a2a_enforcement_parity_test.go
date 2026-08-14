@@ -189,7 +189,7 @@ func TestRunHTTPListenerProxy_A2ASessionBindingBlocksNoBaseline(t *testing.T) {
 func TestScanHTTPInput_A2ASessionBindingDoesNotUseSameNamedTool(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{a2aBaselineIdentity(testA2AMethod)})
+	requireKnownTools(t, baseline, []string{a2aBaselineIdentity(testA2AMethod)})
 	toolCfg := &tools.ToolScanConfig{
 		Baseline:                baseline,
 		Action:                  config.ActionBlock,
@@ -421,7 +421,7 @@ func TestForwardScannedInput_A2ADoWAllowDoesNotFalseBlock(t *testing.T) {
 func TestForwardScannedInput_A2ASessionBindingBlocksUnknownMethod(t *testing.T) {
 	sc := testInputScanner(t)
 	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, baseline, []string{"read_file"})
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          baseline,
 		UnknownToolAction: config.ActionBlock,
@@ -463,7 +463,7 @@ func TestForwardScannedInput_A2ASessionBindingBlocksUnknownMethod(t *testing.T) 
 func TestForwardScannedInput_A2ASessionBindingDoesNotUseSameNamedTool(t *testing.T) {
 	sc := testInputScanner(t)
 	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{a2aBaselineIdentity(testA2AMethod)})
+	requireKnownTools(t, baseline, []string{a2aBaselineIdentity(testA2AMethod)})
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          baseline,
 		UnknownToolAction: config.ActionBlock,

@@ -47,7 +47,7 @@ func TestExtractHeaderBindings_CurrentSpecConstraints(t *testing.T) {
 func TestToolBaseline_HeaderBindingsReplaceAndClear(t *testing.T) {
 	baseline := NewToolBaseline()
 	defs := []ToolDef{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`)}}
-	baseline.SetToolHeaderBindings(defs)
+	requireHeaderBindings(t, baseline, defs)
 	if bindings, ok := baseline.HeaderBindings("echo"); !ok || bindings["region"].Type != "string" {
 		t.Fatalf("stored bindings = %#v ok=%v", bindings, ok)
 	}
@@ -65,7 +65,7 @@ func TestToolBaseline_HeaderBindingsErrorAndCopyBoundaries(t *testing.T) {
 
 	baseline := &ToolBaseline{}
 	valid := ToolDef{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`)}
-	baseline.SetToolHeaderBindings([]ToolDef{valid})
+	requireHeaderBindings(t, baseline, []ToolDef{valid})
 	bindings, ok := baseline.HeaderBindings("echo")
 	if !ok {
 		t.Fatal("valid definition did not initialize the header contract map")
@@ -77,7 +77,7 @@ func TestToolBaseline_HeaderBindingsErrorAndCopyBoundaries(t *testing.T) {
 	}
 
 	invalid := ToolDef{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"number","x-mcp-header":"Region"}}}`)}
-	baseline.SetToolHeaderBindings([]ToolDef{invalid})
+	requireHeaderBindings(t, baseline, []ToolDef{invalid})
 	if _, ok := baseline.HeaderBindings("echo"); ok {
 		t.Fatal("invalid replacement retained the previous header contract")
 	}

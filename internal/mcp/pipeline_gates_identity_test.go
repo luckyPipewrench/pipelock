@@ -145,7 +145,7 @@ func TestEvaluateMCPInputGates_HTTPBindingReservedPrefixIdentity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			baseline := tools.NewToolBaseline()
-			baseline.SetKnownTools(tt.baselineTools)
+			requireKnownTools(t, baseline, tt.baselineTools)
 			eval := EvaluateMCPInputGates(
 				t.Context(),
 				tt.frame,
@@ -187,7 +187,7 @@ func TestEvaluateMCPInputGates_A2ABindingAllowsPinnedMethodOnly(t *testing.T) {
 	unknownMsg := testA2ARequest(2, testA2ASecondMethod)
 
 	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, baseline, []string{"read_file"})
 	baseline.SetKnownA2AMethods([]string{testA2AMethod})
 
 	tests := []struct {
@@ -249,7 +249,7 @@ func TestEvaluateMCPInputGates_A2ABindingAllowsPinnedMethodOnly(t *testing.T) {
 func TestEvaluateSessionBinding_NoBaselineFailClosed(t *testing.T) {
 	empty := tools.NewToolBaseline()
 	mcpOnly := tools.NewToolBaseline()
-	mcpOnly.SetKnownTools([]string{"search"})
+	requireKnownTools(t, mcpOnly, []string{"search"})
 	cases := []struct {
 		name       string
 		check      sessionBindingCheck
@@ -321,7 +321,7 @@ func TestEvaluateSessionBinding_A2AUnknownMethodWithBaseline(t *testing.T) {
 
 func TestEvaluateSessionBinding_NilBaselineAndNonCallable(t *testing.T) {
 	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{"search"})
+	requireKnownTools(t, baseline, []string{"search"})
 
 	cases := []struct {
 		name       string

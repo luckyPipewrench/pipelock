@@ -3093,7 +3093,7 @@ func TestForwardScannedInput_SessionBinding_BlockUnknown(t *testing.T) {
 	sc := testInputScanner(t)
 
 	tb := tools.NewToolBaseline()
-	tb.SetKnownTools([]string{"read_file", "write_file"})
+	requireKnownTools(t, tb, []string{"read_file", "write_file"})
 
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          tb,
@@ -3137,7 +3137,7 @@ func TestForwardScannedInput_SessionBinding_WarnUnknown(t *testing.T) {
 	sc := testInputScanner(t)
 
 	tb := tools.NewToolBaseline()
-	tb.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, tb, []string{"read_file"})
 
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          tb,
@@ -3218,7 +3218,7 @@ func TestForwardScannedInput_SessionBinding_KnownToolAllowed(t *testing.T) {
 	sc := testInputScanner(t)
 
 	tb := tools.NewToolBaseline()
-	tb.SetKnownTools([]string{"read_file", "write_file"})
+	requireKnownTools(t, tb, []string{"read_file", "write_file"})
 
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          tb,
@@ -3255,7 +3255,7 @@ func TestForwardScannedInput_SessionBinding_NonToolCallIgnored(t *testing.T) {
 	sc := testInputScanner(t)
 
 	tb := tools.NewToolBaseline()
-	tb.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, tb, []string{"read_file"})
 
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          tb,
@@ -3290,7 +3290,7 @@ func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
 	sc := testInputScanner(t)
 
 	tb := tools.NewToolBaseline()
-	tb.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, tb, []string{"read_file"})
 
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          tb,
@@ -3811,7 +3811,7 @@ func TestForwardScannedInput_BindingMissingToolName(t *testing.T) {
 	sc := testInputScanner(t)
 
 	tb := tools.NewToolBaseline()
-	tb.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, tb, []string{"read_file"})
 
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          tb,

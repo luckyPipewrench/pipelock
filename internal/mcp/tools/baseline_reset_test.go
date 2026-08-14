@@ -17,8 +17,8 @@ func TestToolBaseline_ResetDriftState_ClearsHashes(t *testing.T) {
 	tb := NewToolBaseline()
 	tb.CheckAndUpdate("tool-a", "hash-a")
 	tb.CheckAndUpdate("tool-b", "hash-b")
-	tb.StoreDesc("tool-a", "describe-a")
-	tb.StoreParams("tool-a", []string{"param1"})
+	requireStoredDescription(t, tb, "tool-a", "describe-a")
+	requireStoredParams(t, tb, "tool-a", []string{"param1"})
 
 	tb.ResetDriftState()
 
@@ -43,7 +43,7 @@ func TestToolBaseline_ResetDriftState_ClearsHashes(t *testing.T) {
 // inventory across a detect_drift toggle.
 func TestToolBaseline_ResetDriftState_PreservesKnownTools(t *testing.T) {
 	tb := NewToolBaseline()
-	tb.SetKnownTools([]string{"tool-a", "tool-b"})
+	requireKnownTools(t, tb, []string{"tool-a", "tool-b"})
 	if !tb.HasBaseline() {
 		t.Fatal("HasBaseline returned false after SetKnownTools")
 	}

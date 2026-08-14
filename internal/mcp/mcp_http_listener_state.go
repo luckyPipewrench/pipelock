@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -80,6 +81,7 @@ type mcpListenerClientStates struct {
 	upstreamToolBaseline    *tools.ToolBaseline
 	resetAuthority          *ResetAuthority
 	resetAuthorityConfig    string
+	resetAuthorityToolCfgFn func() *tools.ToolScanConfig
 	degradationReporter     mcpListenerDegradationReporter
 	principalSecret         [32]byte
 	principalSecretErr      error
@@ -557,7 +559,9 @@ func (s *mcpListenerClientStates) upstreamDriftEpoch() uint64 {
 }
 
 type listenerDriftResetEpoch struct {
-	states *mcpListenerClientStates
+	states    *mcpListenerClientStates
+	authority *ResetAuthority
+	resetFile string
 }
 
 func (e listenerDriftResetEpoch) CurrentEpoch() uint64 {
@@ -565,7 +569,55 @@ func (e listenerDriftResetEpoch) CurrentEpoch() uint64 {
 }
 
 func (e listenerDriftResetEpoch) AdvanceEpoch(expected uint64) bool {
-	return e.states.upstreamToolBaseline.ResetDriftStateAtEpoch(expected)
+	if cfgFn := e.states.resetAuthorityToolCfgFn; cfgFn != nil && !resetAuthorityMatchesToolConfig(e.authority, e.resetFile, cfgFn()) {
+		return false
+	}
+	return e.states.advanceUpstreamDriftResetEpoch(e.authority, expected)
+}
+
+func (e listenerDriftResetEpoch) CurrentBinding() (target, instanceID string, epoch uint64) {
+	if cfgFn := e.states.resetAuthorityToolCfgFn; cfgFn != nil {
+		cfg := cfgFn()
+		if !resetAuthorityConfigEnabled(cfg) {
+			return "", "", e.states.upstreamDriftEpoch()
+		}
+		authority, err := e.states.authorityForToolDriftReset(cfg)
+		if err != nil {
+			return "", "", e.states.upstreamDriftEpoch()
+		}
+		return authority.Target(), authority.InstanceID(), e.states.upstreamDriftEpoch()
+	}
+	return e.states.currentUpstreamDriftResetBinding()
+}
+
+func resetAuthorityConfigEnabled(cfg *tools.ToolScanConfig) bool {
+	return cfg != nil && cfg.DetectDrift && cfg.ListenerDriftResetFile != "" &&
+		len(cfg.ListenerDriftResetAuthorityPublicKey) != 0 && cfg.ListenerDriftResetTarget != ""
+}
+
+func resetAuthorityMatchesToolConfig(authority *ResetAuthority, resetFile string, cfg *tools.ToolScanConfig) bool {
+	return resetAuthorityConfigEnabled(cfg) && cfg.ListenerDriftResetFile == resetFile &&
+		authority != nil && authority.target == cfg.ListenerDriftResetTarget &&
+		bytes.Equal(authority.publicKey, cfg.ListenerDriftResetAuthorityPublicKey)
+}
+
+func (s *mcpListenerClientStates) advanceUpstreamDriftResetEpoch(authority *ResetAuthority, expected uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resetAuthority != authority {
+		return false
+	}
+	return s.upstreamToolBaseline.ResetDriftStateAtEpoch(expected)
+}
+
+func (s *mcpListenerClientStates) currentUpstreamDriftResetBinding() (target, instanceID string, epoch uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resetAuthority != nil {
+		target = s.resetAuthority.Target()
+		instanceID = s.resetAuthority.InstanceID()
+	}
+	return target, instanceID, s.upstreamToolBaseline.DriftEpoch()
 }
 
 // resetUpstreamToolDriftStateIfRequested consumes a signed operator delegation
@@ -580,7 +632,9 @@ func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *to
 		_, _ = fmt.Fprintf(logW, "pipelock: tool drift reset authority unavailable: %v\n", err)
 		return ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
 	}
-	return consumeToolDriftResetFile(cfg.ListenerDriftResetFile, authority, listenerDriftResetEpoch{states: s}, logW)
+	return consumeToolDriftResetFile(cfg.ListenerDriftResetFile, authority, listenerDriftResetEpoch{
+		states: s, authority: authority, resetFile: cfg.ListenerDriftResetFile,
+	}, logW)
 }
 
 func (s *mcpListenerClientStates) authorityForToolDriftReset(cfg *tools.ToolScanConfig) (*ResetAuthority, error) {

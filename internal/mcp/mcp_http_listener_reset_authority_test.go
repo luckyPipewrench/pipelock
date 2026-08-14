@@ -217,3 +217,126 @@ func TestMCPListenerRotatedResetAuthorityReportsCurrentMintBinding(t *testing.T)
 		})
 	}
 }
+
+func TestMCPListenerRotationRejectsInFlightOldAuthorityDelegation(t *testing.T) {
+	oldPublicKey, oldPrivateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := newMCPListenerClientStates(nil)
+	path := filepath.Join(t.TempDir(), "reset")
+	oldCfg := &tools.ToolScanConfig{
+		DetectDrift:                          true,
+		ListenerDriftResetFile:               path,
+		ListenerDriftResetAuthorityPublicKey: oldPublicKey,
+		ListenerDriftResetTarget:             "mcp://listener-rotation-race",
+	}
+	oldAuthority, err := states.authorityForToolDriftReset(oldCfg)
+	if err != nil {
+		t.Fatalf("create old reset authority: %v", err)
+	}
+	oldAuthority.now = func() time.Time { return resetAuthorityTestNow }
+
+	stale, err := MintResetDelegation(
+		oldPrivateKey, "listener-operator", ResetKindDrift, oldAuthority.Target(), oldAuthority.InstanceID(), 0,
+		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("a", 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, resetDelegationBytes(t, stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	newPublicKey, newPrivateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedCfgValue := *oldCfg
+	rotatedCfgValue.ListenerDriftResetAuthorityPublicKey = newPublicKey
+	rotatedCfg := &rotatedCfgValue
+	states.resetAuthorityToolCfgFn = func() *tools.ToolScanConfig { return rotatedCfg }
+
+	var log bytes.Buffer
+	decision := consumeToolDriftResetFile(path, oldAuthority, listenerDriftResetEpoch{
+		states: states, authority: oldAuthority, resetFile: path,
+	}, &log)
+	if decision.Result != ResetAuthorityWrongEpoch {
+		t.Fatalf("old-authority delegation result = %q, want wrong_epoch", decision.Result)
+	}
+	if got := states.upstreamDriftEpoch(); got != 0 {
+		t.Fatalf("old-authority delegation advanced epoch after rotation to %d, want 0", got)
+	}
+	currentAuthority, err := states.authorityForToolDriftReset(rotatedCfg)
+	if err != nil {
+		t.Fatalf("read rotated reset authority: %v", err)
+	}
+	currentAuthority.now = func() time.Time { return resetAuthorityTestNow }
+	for _, want := range []string{
+		`expected_target="` + currentAuthority.Target() + `"`,
+		`expected_instance="` + currentAuthority.InstanceID() + `"`,
+		"expected_epoch=0",
+	} {
+		if !strings.Contains(log.String(), want) {
+			t.Fatalf("rotation-race rejection = %q, missing %q", log.String(), want)
+		}
+	}
+
+	fresh, err := MintResetDelegation(
+		newPrivateKey, "listener-operator", ResetKindDrift, currentAuthority.Target(), currentAuthority.InstanceID(), 0,
+		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("b", 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, resetDelegationBytes(t, fresh), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if decision := states.resetUpstreamToolDriftStateIfRequested(rotatedCfg, io.Discard); decision.Result != ResetAuthorityAccepted {
+		t.Fatalf("delegation minted from current rotation binding = %+v", decision)
+	}
+	if got := states.upstreamDriftEpoch(); got != 1 {
+		t.Fatalf("fresh rotated-authority delegation advanced epoch to %d, want 1", got)
+	}
+}
+
+func TestMCPListenerReloadDisablingResetAuthorityRejectsInFlightDelegation(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := newMCPListenerClientStates(nil)
+	path := filepath.Join(t.TempDir(), "reset")
+	cfg := &tools.ToolScanConfig{
+		DetectDrift:                          true,
+		ListenerDriftResetFile:               path,
+		ListenerDriftResetAuthorityPublicKey: publicKey,
+		ListenerDriftResetTarget:             "mcp://listener-disable-race",
+	}
+	authority, err := states.authorityForToolDriftReset(cfg)
+	if err != nil {
+		t.Fatalf("create reset authority: %v", err)
+	}
+	authority.now = func() time.Time { return resetAuthorityTestNow }
+	delegation, err := MintResetDelegation(
+		privateKey, "listener-operator", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
+		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("c", 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, resetDelegationBytes(t, delegation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	states.resetAuthorityToolCfgFn = func() *tools.ToolScanConfig { return nil }
+	decision := consumeToolDriftResetFile(path, authority, listenerDriftResetEpoch{
+		states: states, authority: authority, resetFile: path,
+	}, io.Discard)
+	if decision.Result != ResetAuthorityWrongEpoch {
+		t.Fatalf("delegation after reset authority disable = %q, want wrong_epoch", decision.Result)
+	}
+	if got := states.upstreamDriftEpoch(); got != 0 {
+		t.Fatalf("disabled authority delegation advanced epoch to %d, want 0", got)
+	}
+}

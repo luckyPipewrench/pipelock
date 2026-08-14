@@ -197,6 +197,7 @@ func RunHTTPListenerProxy(
 	}
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
+	listenerClients.resetAuthorityToolCfgFn = opts.toolCfg
 	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.ListenerDriftResetFile != "" {
 		if authority, authorityErr := listenerClients.authorityForToolDriftReset(toolCfg); authorityErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: tool drift reset authority unavailable: %v\n", authorityErr)

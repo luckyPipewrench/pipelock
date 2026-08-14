@@ -1114,6 +1114,12 @@ the drift epoch, so a `tools/list` response that was already in flight under
 the old epoch is rejected. The audit line records the issuer, target, epoch,
 expiry, nonce, and result; the next delegation uses that epoch plus one.
 
+The listener retains at most 1024 unexpired consumed nonces. If the ledger is
+full, it rejects the delegation with `result=capacity_exceeded` and keeps the
+drift block in place. This does not require a restart: once an earlier
+delegation expires, the next attempt removes only expired entries before it
+checks capacity. Delegations last at most 15 minutes.
+
 The control-file owner and mode are not authority. A wrapped same-UID agent can
 write a file, but it cannot mint a delegation signed by the operator key. Keep
 the private key outside the proxy and wrapped child. A missing, expired,
@@ -1131,8 +1137,11 @@ must generate an `mcp-reset-authority` key, export its public half, add
 Delegations from before a proxy restart cannot be reused because the random
 instance ID changes. To rotate or revoke an issuer, generate and export a new
 key, update the public-key path, and reload or restart the listener; old-key
-delegations then fail closed. Keep an offline backup of the private key for
-recovery. Inspect or cancel a pending delegation with:
+delegations then fail closed. A hot reload gives the current binding in the
+rejected reset audit line as `expected_target`, `expected_instance`, and
+`expected_epoch`. Mint the next delegation with those values. Keep an offline
+backup of the private key for recovery. Inspect or cancel a pending delegation
+with:
 
 ```bash
 pipelock signing reset inspect \

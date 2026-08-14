@@ -292,6 +292,46 @@ func TestResetAuthorityConsumesEpochExactlyOnceUnderConcurrentDelegations(t *tes
 	}
 }
 
+func TestResetAuthorityRejectsDelegationAfterEpochAdvances(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(publicKey, "mcp://advanced-epoch", strings.Repeat("a", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var epoch atomic.Uint64
+	path := filepath.Join(t.TempDir(), "reset")
+	writeDelegation := func(nonce string) {
+		t.Helper()
+		delegation, err := MintResetDelegation(
+			privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
+			resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), nonce,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, resetDelegationBytes(t, delegation), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeDelegation(strings.Repeat("b", 32))
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch)); decision.Result != ResetAuthorityAccepted {
+		t.Fatalf("first delegation result = %+v", decision)
+	}
+	writeDelegation(strings.Repeat("c", 32))
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch)); decision.Result != ResetAuthorityWrongEpoch || decision.ExpectedEpoch != 1 {
+		t.Fatalf("delegation for spent epoch result = %+v, want wrong_epoch at 1", decision)
+	}
+	if got := epoch.Load(); got != 1 {
+		t.Fatalf("stale delegation advanced epoch to %d, want 1", got)
+	}
+}
+
 func TestResetAuthorityEvictsExpiredNonceWithoutPermittingExpiredReplay(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -396,6 +436,109 @@ func TestResetAuthorityDeniesLiveNonceLedgerCapacity(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("capacity-denied delegation remained at control path: %v", err)
+	}
+}
+
+func TestResetAuthorityNonceLedgerCapacityPurgesOnlyExpiredEntries(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := resetAuthorityTestNow
+	authority, err := newResetAuthority(publicKey, "mcp://nonce-capacity-boundary", strings.Repeat("a", 32), func() time.Time {
+		return now
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const expiredEntries = 2
+	authority.mu.Lock()
+	for i := 0; i < expiredEntries; i++ {
+		authority.consumed[fmt.Sprintf("expired-%030x", i)] = now.Add(-time.Second)
+	}
+	for i := 0; i < maxResetConsumedNonces-expiredEntries; i++ {
+		authority.consumed[fmt.Sprintf("live-%033x", i)] = now.Add(time.Minute)
+	}
+	authority.mu.Unlock()
+
+	var epoch atomic.Uint64
+	path := filepath.Join(t.TempDir(), "reset")
+	consume := func(nonce string) ResetAuthorityDecision {
+		t.Helper()
+		delegation, err := MintResetDelegation(
+			privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), epoch.Load(),
+			now, now.Add(time.Minute), nonce,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, resetDelegationBytes(t, delegation), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch))
+	}
+
+	if decision := consume(strings.Repeat("b", 32)); decision.Result != ResetAuthorityAccepted {
+		t.Fatalf("consume below capacity after expiry purge = %+v", decision)
+	}
+	authority.mu.Lock()
+	count := len(authority.consumed)
+	_, expiredRetained := authority.consumed[fmt.Sprintf("expired-%030x", 0)]
+	_, liveRetained := authority.consumed[fmt.Sprintf("live-%033x", 0)]
+	authority.mu.Unlock()
+	if count != maxResetConsumedNonces-1 || expiredRetained || !liveRetained {
+		t.Fatalf("post-purge ledger count=%d expired_retained=%v live_retained=%v, want %d/false/true", count, expiredRetained, liveRetained, maxResetConsumedNonces-1)
+	}
+
+	if decision := consume(strings.Repeat("c", 32)); decision.Result != ResetAuthorityAccepted {
+		t.Fatalf("consume at capacity boundary = %+v", decision)
+	}
+	if decision := consume(strings.Repeat("d", 32)); decision.Result != ResetAuthorityCapacity {
+		t.Fatalf("consume over capacity = %+v, want capacity_exceeded", decision)
+	}
+	if got := epoch.Load(); got != 2 {
+		t.Fatalf("capacity denial advanced epoch to %d, want 2", got)
+	}
+	authority.mu.Lock()
+	count = len(authority.consumed)
+	_, liveRetained = authority.consumed[fmt.Sprintf("live-%033x", 0)]
+	authority.mu.Unlock()
+	if count != maxResetConsumedNonces || !liveRetained {
+		t.Fatalf("capacity denial ledger count=%d live_retained=%v, want %d/true", count, liveRetained, maxResetConsumedNonces)
+	}
+
+	overfull, err := newResetAuthority(publicKey, "mcp://nonce-capacity-overfull", strings.Repeat("b", 32), func() time.Time {
+		return now
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overfull.mu.Lock()
+	for i := 0; i < maxResetConsumedNonces+1; i++ {
+		overfull.consumed[fmt.Sprintf("live-%033x", i)] = now.Add(time.Minute)
+	}
+	overfull.mu.Unlock()
+	overfullPath := filepath.Join(t.TempDir(), "overfull-reset")
+	overfullDelegation, err := MintResetDelegation(
+		privateKey, "operator-primary", ResetKindDrift, overfull.Target(), overfull.InstanceID(), 0,
+		now, now.Add(time.Minute), strings.Repeat("e", 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overfullPath, resetDelegationBytes(t, overfullDelegation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var overfullEpoch atomic.Uint64
+	if decision := overfull.ConsumeFile(overfullPath, ResetKindDrift, newResetAtomicEpoch(&overfullEpoch)); decision.Result != ResetAuthorityCapacity {
+		t.Fatalf("overfull ledger decision = %+v, want capacity_exceeded", decision)
+	}
+	overfull.mu.Lock()
+	count = len(overfull.consumed)
+	overfull.mu.Unlock()
+	if count != maxResetConsumedNonces+1 || overfullEpoch.Load() != 0 {
+		t.Fatalf("overfull ledger count=%d epoch=%d, want %d/0", count, overfullEpoch.Load(), maxResetConsumedNonces+1)
 	}
 }
 

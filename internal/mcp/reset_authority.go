@@ -131,6 +131,14 @@ type ResetEpoch interface {
 	AdvanceEpoch(expected uint64) bool
 }
 
+// resetEpochBinding is implemented by reset epochs that can expose the live
+// minting binding after their authority changes. It is intentionally internal:
+// callers need it only to make a rejected, in-flight delegation recoverable.
+type resetEpochBinding interface {
+	ResetEpoch
+	CurrentBinding() (target, instanceID string, epoch uint64)
+}
+
 type resetAtomicEpoch struct {
 	epoch *atomic.Uint64
 }
@@ -328,6 +336,9 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch ResetEpo
 	if !epoch.AdvanceEpoch(expectedEpoch) {
 		decision.Result = ResetAuthorityWrongEpoch
 		decision.ExpectedEpoch = epoch.CurrentEpoch()
+		if binding, ok := epoch.(resetEpochBinding); ok {
+			decision.ExpectedTarget, decision.ExpectedInstanceID, decision.ExpectedEpoch = binding.CurrentBinding()
+		}
 		return decision
 	}
 	a.consumed[d.Nonce] = time.Unix(d.ExpiresUnix, 0).UTC()

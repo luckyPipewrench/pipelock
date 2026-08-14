@@ -241,6 +241,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if r, ok := rec.(adaptiveResetter); ok {
 				decision := consumeAdaptiveResetFile(resetFile, opts.AdaptiveResetAuthority, opts.AdaptiveResetEpoch, logW)
 				auditResetAuthorityDecision(opts.AuditLogger, opts.AdaptiveResetAuthority.Target(), decision)
+				recordResetAuthorityCapacity(m, decision)
 				if decision.Result == ResetAuthorityAccepted {
 					prevScore, prevLevel := r.Reset()
 					blockAll = false

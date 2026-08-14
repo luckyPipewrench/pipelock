@@ -6,7 +6,10 @@ package mcp
 import (
 	"bytes"
 	"crypto/ed25519"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 const adaptiveResetTestTarget = "mcp://adaptive-test"
@@ -181,4 +185,42 @@ func TestForwardScanned_AdaptiveResetAuthorityFailuresKeepAirlock(t *testing.T) 
 			t.Fatalf("absent authority removed operator control file: %v", err)
 		}
 	})
+}
+
+func TestForwardScanned_AdaptiveResetNonceCapacityFailsClosedAndCounts(t *testing.T) {
+	sc := newAdaptiveTestScanner()
+	defer sc.Close()
+	authority, privateKey := newAdaptiveResetAuthority(t)
+	authority.mu.Lock()
+	for i := 0; i < maxResetConsumedNonces; i++ {
+		authority.consumed[fmt.Sprintf("%032x", i)] = resetAuthorityTestNow.Add(time.Minute)
+	}
+	authority.mu.Unlock()
+	resetPath := filepath.Join(t.TempDir(), "reset")
+	writeAdaptiveResetDelegation(t, resetPath, privateKey, authority, ResetKindAdaptive, 0, strings.Repeat("f", 32))
+
+	rec := &resettableRecorder{mockRecorder: mockRecorder{level: 3}}
+	var epoch atomic.Uint64
+	resetMetrics := metrics.New()
+	opts := buildTestOpts(sc, withRec(rec), withAdaptive(blockAllCriticalCfg()), withResetFile(resetPath))
+	opts.AdaptiveResetAuthority = authority
+	opts.AdaptiveResetEpoch = &epoch
+	opts.Metrics = resetMetrics
+	cleanResp := makeResponse(1, "clean safe content") + "\n"
+	var outBuf, logBuf bytes.Buffer
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(cleanResp)), transport.NewStdioWriter(&outBuf), &logBuf, nil, opts); err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if rec.resetCalls != 0 || epoch.Load() != 0 || !strings.Contains(outBuf.String(), "-32001") {
+		t.Fatalf("capacity denial cleared airlock: calls=%d epoch=%d response=%s", rec.resetCalls, epoch.Load(), outBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "result=capacity_exceeded") {
+		t.Fatalf("capacity denial log = %q", logBuf.String())
+	}
+
+	metricOut := httptest.NewRecorder()
+	resetMetrics.PrometheusHandler().ServeHTTP(metricOut, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(metricOut.Body.String(), `pipelock_scanner_hits_total{agent="",scanner="mcp_reset_authority_nonce_capacity"} 1`) {
+		t.Fatalf("reset authority capacity metric missing:\n%s", metricOut.Body.String())
+	}
 }

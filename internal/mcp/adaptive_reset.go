@@ -6,7 +6,11 @@ package mcp
 import (
 	"io"
 	"sync/atomic"
+
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
+
+const resetAuthorityCapacityMetric = "mcp_reset_authority_nonce_capacity"
 
 // adaptiveResetter clears one adaptive-enforcement session without importing
 // the proxy package into MCP.
@@ -31,4 +35,10 @@ func consumeMCPResetDelegation(path string, authority *ResetAuthority, kind Rese
 	decision := authority.ConsumeFile(path, kind, epoch)
 	logResetAuthorityDecision(logW, decision)
 	return decision
+}
+
+func recordResetAuthorityCapacity(metrics *metrics.Metrics, decision ResetAuthorityDecision) {
+	if metrics != nil && decision.Result == ResetAuthorityCapacity {
+		metrics.RecordBlocked("mcp", resetAuthorityCapacityMetric, 0, "")
+	}
 }

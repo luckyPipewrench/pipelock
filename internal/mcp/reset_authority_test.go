@@ -292,6 +292,113 @@ func TestResetAuthorityConsumesEpochExactlyOnceUnderConcurrentDelegations(t *tes
 	}
 }
 
+func TestResetAuthorityEvictsExpiredNonceWithoutPermittingExpiredReplay(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := resetAuthorityTestNow
+	authority, err := newResetAuthority(publicKey, "mcp://expired-nonce", strings.Repeat("a", 32), func() time.Time {
+		return now
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expiredNonce := strings.Repeat("b", 32)
+	expired, err := MintResetDelegation(
+		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
+		now, now.Add(time.Second), expiredNonce,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredRaw := resetDelegationBytes(t, expired)
+	path := filepath.Join(t.TempDir(), "reset")
+	if err := os.WriteFile(path, expiredRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var epoch atomic.Uint64
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch)); decision.Result != ResetAuthorityAccepted {
+		t.Fatalf("consume expiring delegation = %+v", decision)
+	}
+
+	now = now.Add(2 * time.Second)
+	fresh, err := MintResetDelegation(
+		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), epoch.Load(),
+		now, now.Add(time.Minute), strings.Repeat("c", 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, resetDelegationBytes(t, fresh), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch)); decision.Result != ResetAuthorityAccepted {
+		t.Fatalf("consume after expiry eviction = %+v", decision)
+	}
+	authority.mu.Lock()
+	_, retained := authority.consumed[expiredNonce]
+	authority.mu.Unlock()
+	if retained {
+		t.Fatal("expired nonce remained in the consumed ledger")
+	}
+
+	if err := os.WriteFile(path, expiredRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(0))); decision.Result != ResetAuthorityExpired {
+		t.Fatalf("expired delegation after eviction = %+v, want expired", decision)
+	}
+}
+
+func TestResetAuthorityDeniesLiveNonceLedgerCapacity(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(publicKey, "mcp://nonce-capacity", strings.Repeat("a", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.mu.Lock()
+	for i := 0; i < maxResetConsumedNonces; i++ {
+		authority.consumed[fmt.Sprintf("%032x", i)] = resetAuthorityTestNow.Add(time.Minute)
+	}
+	authority.mu.Unlock()
+
+	delegation, err := MintResetDelegation(
+		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
+		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("f", 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "reset")
+	if err := os.WriteFile(path, resetDelegationBytes(t, delegation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var epoch atomic.Uint64
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch)); decision.Result != ResetAuthorityCapacity {
+		t.Fatalf("capacity decision = %+v, want %q", decision, ResetAuthorityCapacity)
+	}
+	if epoch.Load() != 0 {
+		t.Fatalf("capacity denial advanced epoch to %d", epoch.Load())
+	}
+	authority.mu.Lock()
+	count := len(authority.consumed)
+	_, retained := authority.consumed[fmt.Sprintf("%032x", 0)]
+	authority.mu.Unlock()
+	if count != maxResetConsumedNonces || !retained {
+		t.Fatalf("capacity denial retained %d live nonces and first=%v, want %d/true", count, retained, maxResetConsumedNonces)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("capacity-denied delegation remained at control path: %v", err)
+	}
+}
+
 func TestResetDelegationRejectsMalformedArtifactsAndMissingRemovalPath(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {

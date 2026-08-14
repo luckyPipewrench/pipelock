@@ -29,6 +29,10 @@ const (
 	resetDelegationMaxBytes      = 16 * 1024
 	resetDelegationMaxTTL        = 15 * time.Minute
 	resetDelegationClockSkew     = time.Minute
+	// maxResetConsumedNonces bounds one authority's replay ledger. When every
+	// entry is live, accepting another protection-lowering reset would require
+	// forgetting replay state, so the authority denies the reset instead.
+	maxResetConsumedNonces = 1024
 	// resetHexBytes is the byte length of BOTH the nonce and the instance ID.
 	// One constant, deliberately: they are generated and validated by the same
 	// helper, and two equal constants with nothing holding them equal would let
@@ -94,6 +98,7 @@ const (
 	ResetAuthorityWrongInstance ResetAuthorityResult = "wrong_instance"
 	ResetAuthorityWrongEpoch    ResetAuthorityResult = "wrong_epoch"
 	ResetAuthorityReplayed      ResetAuthorityResult = "replayed"
+	ResetAuthorityCapacity      ResetAuthorityResult = "capacity_exceeded"
 	ResetAuthorityRemoveFailed  ResetAuthorityResult = "remove_failed"
 	ResetAuthorityPathChanged   ResetAuthorityResult = "path_changed"
 )
@@ -152,7 +157,7 @@ type ResetAuthority struct {
 	instanceID string
 	now        func() time.Time
 	mu         sync.Mutex
-	consumed   map[string]struct{}
+	consumed   map[string]time.Time
 }
 
 // NewResetAuthority makes a verifier for one proxy process.
@@ -182,7 +187,7 @@ func newResetAuthority(publicKey ed25519.PublicKey, target, instanceID string, n
 		target:     target,
 		instanceID: instanceID,
 		now:        now,
-		consumed:   make(map[string]struct{}),
+		consumed:   make(map[string]time.Time),
 	}, nil
 }
 
@@ -292,13 +297,20 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch ResetEpo
 	defer a.mu.Unlock()
 	expectedEpoch := epoch.CurrentEpoch()
 	decision := ResetAuthorityDecision{Delegation: d, ExpectedEpoch: expectedEpoch}
-	if result := a.verify(d, kind, expectedEpoch); result != ResetAuthorityAccepted {
+	now := a.now().UTC().Truncate(time.Second)
+	a.purgeExpiredConsumedLocked(now)
+	if result := a.verifyAt(d, kind, expectedEpoch, now); result != ResetAuthorityAccepted {
 		decision.Result = result
 		_ = removeResetDelegationFile(path, opened)
 		return decision
 	}
 	if _, used := a.consumed[d.Nonce]; used {
 		decision.Result = ResetAuthorityReplayed
+		_ = removeResetDelegationFile(path, opened)
+		return decision
+	}
+	if len(a.consumed) >= maxResetConsumedNonces {
+		decision.Result = ResetAuthorityCapacity
 		_ = removeResetDelegationFile(path, opened)
 		return decision
 	}
@@ -311,12 +323,16 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch ResetEpo
 		decision.ExpectedEpoch = epoch.CurrentEpoch()
 		return decision
 	}
-	a.consumed[d.Nonce] = struct{}{}
+	a.consumed[d.Nonce] = time.Unix(d.ExpiresUnix, 0).UTC()
 	decision.Result = ResetAuthorityAccepted
 	return decision
 }
 
 func (a *ResetAuthority) verify(d ResetDelegation, kind ResetKind, epoch uint64) ResetAuthorityResult {
+	return a.verifyAt(d, kind, epoch, a.now().UTC().Truncate(time.Second))
+}
+
+func (a *ResetAuthority) verifyAt(d ResetDelegation, kind ResetKind, epoch uint64, now time.Time) ResetAuthorityResult {
 	if _, err := d.signingInput(); err != nil {
 		if d.Purpose != signing.PurposeMCPResetAuthority.String() {
 			return ResetAuthorityWrongPurpose
@@ -329,7 +345,6 @@ func (a *ResetAuthority) verify(d ResetDelegation, kind ResetKind, epoch uint64)
 	if err := VerifyResetDelegationSignature(a.publicKey, d); err != nil {
 		return ResetAuthorityWrongKey
 	}
-	now := a.now().UTC().Truncate(time.Second)
 	issued, expires := time.Unix(d.IssuedUnix, 0).UTC(), time.Unix(d.ExpiresUnix, 0).UTC()
 	if issued.After(now.Add(resetDelegationClockSkew)) {
 		return ResetAuthorityNotYetValid
@@ -353,6 +368,17 @@ func (a *ResetAuthority) verify(d ResetDelegation, kind ResetKind, epoch uint64)
 		return ResetAuthorityWrongEpoch
 	}
 	return ResetAuthorityAccepted
+}
+
+// purgeExpiredConsumedLocked removes only nonces whose delegations have
+// already expired. A replay carrying one of those nonces still fails the
+// delegation expiry check before it can change reset state.
+func (a *ResetAuthority) purgeExpiredConsumedLocked(now time.Time) {
+	for nonce, expires := range a.consumed {
+		if !expires.After(now) {
+			delete(a.consumed, nonce)
+		}
+	}
 }
 
 // ParseResetDelegation strictly decodes one control-file envelope and validates

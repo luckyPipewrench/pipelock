@@ -10,11 +10,9 @@ so third parties can install a Pipelock receipt verifier with one command:
 | Python     | PyPI      | `pipelock-verify`        | `pip install pipelock-verify` (separate repo) |
 | Go         | —         | `cmd/pipelock-verifier`  | built from this repo / release binaries |
 
-**Target: publish automatically when a release is tagged.** The goal is that
-cutting a Pipelock release also ships the verifiers, with no passwords stored in
-the repository (GitHub OIDC "trusted publishing" to both registries). Until that
-is wired, and to claim each package name the first time, use the one-time manual
-steps below.
+The TypeScript and Rust packages publish from their own `verifier-v*` tag. A
+Pipelock product tag does not publish them. GitHub OIDC trusted publishing sends
+both packages to their registries without stored npm or crates.io tokens.
 
 > Why automate: the Python verifier (`pipelock-verify`) was published once by
 > hand and then fell behind the receipt format because nobody re-ran the manual
@@ -97,6 +95,32 @@ Verify: the crate appears at <https://crates.io/crates/pipelock-verifier-rs>, an
 The README install lines (`npm install -g …` / `cargo install …`) only become
 true once the publish succeeds. Publish first, then merge / release the docs that
 point at the published packages, so the public docs are never ahead of reality.
+
+## Product release gate
+
+Do not publish a new verifier version while product or live-proof changes may
+still alter verifier source. After the candidate survives those checks:
+
+A verifier version bump intentionally blocks product releases until its tag is
+published and the registry digests are pinned in the installer inventory.
+
+1. Create the approved annotated `verifier-vX.Y.Z` tag and let
+   `publish-verifiers.yaml` publish both packages.
+2. Wait until npm and crates.io expose the new version. Record the peeled source
+   commit, npm `dist.integrity`, and crates.io checksum in
+   `release/verifier-installers.json`.
+3. Merge that metadata-only update and use the resulting product commit as the
+   new candidate. Runtime proof that does not consume this CI-only change stays
+   valid.
+4. Run `scripts/release-verifier-install-gate.sh --tag vX.Y.Z`. The gate builds
+   the Go verifier from the candidate, installs the exact public TypeScript,
+   Rust, and Python packages in empty directories, and requires every verifier
+   to accept a candidate receipt and reject its changed copy.
+
+The product release workflow repeats this gate before it builds or uploads
+release artifacts. A missing verifier tag, stale package, mismatched source
+commit, changed registry digest, install failure, valid-receipt rejection, or
+tampered-receipt acceptance stops the release.
 
 ## Auto-publish on release tag
 

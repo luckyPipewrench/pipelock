@@ -128,8 +128,44 @@ jobs:
           packages="$(python3 scripts/ci_test_packages.py "${package_args[@]}")"
           go test "${tag_args[@]}" -race -count=1 -timeout 30m $packages
 
-  release:
+  # Source-tree conformance proves the implementations agree. This gate proves
+  # the packages customers can install accept a receipt from this candidate
+  # and reject a changed copy.
+  release-verifier-install:
     needs: [release-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25.12'
+          check-latest: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Install and verify customer receipt verifiers
+        run: scripts/release-verifier-install-gate.sh --tag "$GITHUB_REF_NAME"
+
+  release:
+    needs: [release-tests, release-verifier-install]
     runs-on: ubuntu-latest
     permissions:
       contents: write

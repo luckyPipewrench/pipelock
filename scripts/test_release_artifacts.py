@@ -89,6 +89,19 @@ class TestReleaseArtifacts(unittest.TestCase):
             self.assertNotIn(f'name_template: "{repository}:{{{{ .Version }}}}"', self.goreleaser)
             self.assertNotIn(f'name_template: "{repository}:latest"', self.goreleaser)
 
+    def test_release_waits_for_customer_verifier_install_gate(self) -> None:
+        gate = self.workflow.index("  release-verifier-install:")
+        release = self.workflow.index("\n  release:\n", gate)
+        gate_block = self.workflow[gate:release]
+
+        self.assertIn("needs: [release-tests]", gate_block)
+        self.assertIn("fetch-depth: 0", gate_block)
+        self.assertIn(
+            'scripts/release-verifier-install-gate.sh --tag "$GITHUB_REF_NAME"',
+            gate_block,
+        )
+        self.assertIn("needs: [release-tests, release-verifier-install]", self.workflow[release:])
+
     def test_other_release_tools_are_exactly_pinned_and_verified(self) -> None:
         expected_tools = (
             (

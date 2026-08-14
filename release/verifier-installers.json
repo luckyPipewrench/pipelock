@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "verifiers": [
+    {
+      "language": "Go",
+      "package": "pipelock-verifier",
+      "version": "candidate tag",
+      "install_source": "candidate source build",
+      "artifact_digest": "computed at run time",
+      "publisher": {
+        "repository": "luckyPipewrench/pipelock",
+        "workflow": ".github/workflows/release.yaml",
+        "environment": "tagged product release",
+        "source_ref": "candidate tag",
+        "source_commit": "candidate commit"
+      }
+    },
+    {
+      "language": "TypeScript",
+      "package": "@pipelock/verifier-ts",
+      "version": "0.3.0",
+      "install_source": "npm",
+      "artifact_digest": "REPLACE_WITH_NPM_DIST_INTEGRITY",
+      "publisher": {
+        "repository": "luckyPipewrench/pipelock",
+        "workflow": ".github/workflows/publish-verifiers.yaml",
+        "environment": "verifier-release",
+        "source_ref": "verifier-v0.3.0",
+        "source_commit": "REPLACE_WITH_VERIFIER_V0_3_0_TAG_COMMIT"
+      }
+    },
+    {
+      "language": "Rust",
+      "package": "pipelock-verifier-rs",
+      "version": "0.3.0",
+      "install_source": "crates.io",
+      "artifact_digest": "REPLACE_WITH_CRATES_IO_SHA256",
+      "publisher": {
+        "repository": "luckyPipewrench/pipelock",
+        "workflow": ".github/workflows/publish-verifiers.yaml",
+        "environment": "verifier-release",
+        "source_ref": "verifier-v0.3.0",
+        "source_commit": "REPLACE_WITH_VERIFIER_V0_3_0_TAG_COMMIT"
+      }
+    },
+    {
+      "language": "Python",
+      "package": "pipelock-verify",
+      "version": "0.4.0",
+      "install_source": "PyPI",
+      "artifact_digest": "sha256:b380cb3f51fadbbb34ddd264b588893c9ac1c676058225915a2679d0e34a47c6",
+      "publisher": {
+        "repository": "luckyPipewrench/pipelock-verify-python",
+        "workflow": ".github/workflows/release.yml",
+        "environment": "pypi",
+        "source_ref": "v0.4.0",
+        "source_commit": "f70bca2222466f1d8ce66a3c4a764ef43e57a5f0"
+      }
+    }
+  ]
+}

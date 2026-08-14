@@ -201,7 +201,7 @@ func TestVerifier_VerifyRequestRejectsTamperReplayExpiredAndUnknownSigner(t *tes
 	})
 }
 
-func TestReplayCacheConcurrentAndEviction(t *testing.T) {
+func TestReplayCacheConcurrentAndCapacity(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -226,15 +226,15 @@ func TestReplayCacheConcurrentAndEviction(t *testing.T) {
 		t.Fatal("duplicate nonce should be rejected")
 	}
 
-	evict := newReplayCache(time.Minute, 1, func() time.Time { return now })
-	if err := evict.CheckAndStore("old", now.Add(time.Minute)); err != nil {
+	capacity := newReplayCache(time.Minute, 1, func() time.Time { return now })
+	if err := capacity.CheckAndStore("old", now.Add(time.Minute)); err != nil {
 		t.Fatalf("store old: %v", err)
 	}
-	if err := evict.CheckAndStore("new", now.Add(time.Minute)); err != nil {
-		t.Fatalf("store new: %v", err)
+	if err := capacity.CheckAndStore("new", now.Add(time.Minute)); !errors.Is(err, ErrReplayCacheCapacity) {
+		t.Fatalf("store new error = %v, want replay cache capacity", err)
 	}
-	if err := evict.CheckAndStore("old", now.Add(time.Minute)); err != nil {
-		t.Fatalf("old nonce should have been cap-evicted: %v", err)
+	if err := capacity.CheckAndStore("old", now.Add(time.Minute)); err == nil {
+		t.Fatal("old nonce should remain replay-protected at capacity")
 	}
 
 	expired := newReplayCache(time.Minute, 2, func() time.Time { return now })
@@ -244,6 +244,34 @@ func TestReplayCacheConcurrentAndEviction(t *testing.T) {
 	now = now.Add(2 * time.Second)
 	if err := expired.CheckAndStore("gone", now.Add(time.Minute)); err != nil {
 		t.Fatalf("expired nonce should have been window-evicted: %v", err)
+	}
+}
+
+func TestVerifier_ReportsReplayCacheCapacity(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	cache := newReplayCache(time.Minute, 1, func() time.Time { return now })
+	if err := cache.CheckAndStore("already-stored", now.Add(time.Minute)); err != nil {
+		t.Fatalf("seed replay cache: %v", err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		TrustedKeys: []TrustedKey{{KeyID: testKeyIDTrusted, PublicKey: pub}},
+		ReplayCache: cache,
+		Skew:        time.Minute,
+		NowFn:       func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	_, err = verifier.VerifyRequest(signedVerifierRequest(t, priv, now, ""), nil)
+	if !errors.Is(err, ErrReplayCacheCapacity) {
+		t.Fatalf("VerifyRequest error = %v, want replay cache capacity", err)
+	}
+	if got, ok := VerificationFailureCodeOf(err); !ok || got != VerificationFailureReplayCapacity {
+		t.Fatalf("failure code = %q, %v; want %q", got, ok, VerificationFailureReplayCapacity)
 	}
 }
 

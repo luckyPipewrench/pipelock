@@ -66,14 +66,15 @@ type trustedKey struct {
 type VerificationFailureCode string
 
 const (
-	VerificationFailureReplay     VerificationFailureCode = "replay"
-	VerificationFailureExpired    VerificationFailureCode = "expired"
-	VerificationFailureNotTrusted VerificationFailureCode = "not_trusted"
-	VerificationFailureMissing    VerificationFailureCode = "missing"
-	VerificationFailureDigest     VerificationFailureCode = "digest"
-	VerificationFailureSignature  VerificationFailureCode = "signature"
-	VerificationFailureParse      VerificationFailureCode = "parse"
-	VerificationFailureFailed     VerificationFailureCode = "failed"
+	VerificationFailureReplay         VerificationFailureCode = "replay"
+	VerificationFailureReplayCapacity VerificationFailureCode = "replay_capacity"
+	VerificationFailureExpired        VerificationFailureCode = "expired"
+	VerificationFailureNotTrusted     VerificationFailureCode = "not_trusted"
+	VerificationFailureMissing        VerificationFailureCode = "missing"
+	VerificationFailureDigest         VerificationFailureCode = "digest"
+	VerificationFailureSignature      VerificationFailureCode = "signature"
+	VerificationFailureParse          VerificationFailureCode = "parse"
+	VerificationFailureFailed         VerificationFailureCode = "failed"
 )
 
 type VerificationError struct {
@@ -277,7 +278,9 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, erro
 	}
 	if err := v.replayCache.CheckAndStoreWithSkew(nonce, time.Unix(expires, 0).UTC(), v.skew); err != nil {
 		code := VerificationFailureReplay
-		if strings.Contains(strings.ToLower(err.Error()), "expired") {
+		if errors.Is(err, ErrReplayCacheCapacity) {
+			code = VerificationFailureReplayCapacity
+		} else if strings.Contains(strings.ToLower(err.Error()), "expired") {
 			code = VerificationFailureExpired
 		}
 		return Envelope{}, wrapVerificationError(code, err)

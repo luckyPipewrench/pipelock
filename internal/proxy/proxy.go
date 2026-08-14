@@ -2478,6 +2478,8 @@ func inboundEnvelopeFailurePattern(err error) string {
 		switch code {
 		case envelope.VerificationFailureReplay:
 			return "inbound_verify_replay"
+		case envelope.VerificationFailureReplayCapacity:
+			return "inbound_verify_replay_capacity"
 		case envelope.VerificationFailureExpired:
 			return "inbound_verify_expired"
 		case envelope.VerificationFailureNotTrusted:

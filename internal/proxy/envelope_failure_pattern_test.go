@@ -37,6 +37,7 @@ func TestInboundEnvelopeFailurePatternUsesVerifierCodes(t *testing.T) {
 		want string
 	}{
 		{name: "replay", code: envelope.VerificationFailureReplay, want: "inbound_verify_replay"},
+		{name: "replay capacity", code: envelope.VerificationFailureReplayCapacity, want: "inbound_verify_replay_capacity"},
 		{name: "expired", code: envelope.VerificationFailureExpired, want: "inbound_verify_expired"},
 		{name: "not trusted", code: envelope.VerificationFailureNotTrusted, want: "inbound_verify_not_trusted"},
 		{name: "missing", code: envelope.VerificationFailureMissing, want: testInboundVerifyMissingPattern},

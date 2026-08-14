@@ -276,6 +276,11 @@ func TestAF328_SignedResetDelegationRebaselinesListenerInventory(t *testing.T) {
 	if !strings.Contains(audited, "operator re-baselined") {
 		t.Errorf("signed delegation must produce a re-baseline audit record: %s", audited)
 	}
+	for _, want := range []string{"mcp_reset_authority", "af328-operator", target, "epoch=0", "expiry=", strings.Repeat("4", 32), "result=accepted"} {
+		if !strings.Contains(audited, want) {
+			t.Errorf("reset audit record missing %q: %s", want, audited)
+		}
+	}
 }
 
 func listenerResetInstance(t *testing.T, log string) string {

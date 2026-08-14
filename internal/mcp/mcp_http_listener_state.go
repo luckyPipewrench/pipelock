@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -601,8 +602,24 @@ func logResetAuthorityDecision(logW io.Writer, decision ResetAuthorityDecision) 
 	if logW == nil || decision.Result == ResetAuthorityAbsent {
 		return
 	}
+	_, _ = fmt.Fprintf(logW, "pipelock: %s\n", resetAuthorityDecisionSummary(decision))
+}
+
+func auditResetAuthorityDecision(logger *audit.Logger, resource string, decision ResetAuthorityDecision) {
+	if logger == nil || decision.Result == ResetAuthorityAbsent {
+		return
+	}
+	logger.LogAnomaly(
+		mustMCPAuditContext(logger, mcpWarnMethod, resource),
+		"mcp_reset_authority",
+		resetAuthorityDecisionSummary(decision),
+		0,
+	)
+}
+
+func resetAuthorityDecisionSummary(decision ResetAuthorityDecision) string {
 	d := decision.Delegation
-	_, _ = fmt.Fprintf(logW, "pipelock: MCP reset authority issuer=%q target=%q epoch=%d expiry=%d nonce=%q result=%s\n",
+	return fmt.Sprintf("MCP reset authority issuer=%q target=%q epoch=%d expiry=%d nonce=%q result=%s",
 		d.Issuer, d.Target, d.Epoch, d.ExpiresUnix, d.Nonce, decision.Result)
 }
 

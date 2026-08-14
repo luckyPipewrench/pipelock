@@ -444,7 +444,9 @@ func RunHTTPListenerProxy(
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
 		fullRequestBaseOpts := requestBaseOpts
-		if reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW); reset.Result == ResetAuthorityAccepted {
+		reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW)
+		auditResetAuthorityDecision(requestBaseOpts.AuditLogger, "http-listener", reset)
+		if reset.Result == ResetAuthorityAccepted {
 			resetReason := "operator re-baselined the HTTP listener tool inventory with a signed mcp-reset-authority delegation"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", resetReason)
 			if requestBaseOpts.AuditLogger != nil {

@@ -883,11 +883,12 @@ func TestHTTPListener_AuditSessionKeySanitizedForAdaptiveSignals(t *testing.T) {
 			store := &mockStore{rec: rec}
 			auditLogger, auditPath := newStreamableAuditLogger(t)
 			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-				Scanner:     testScannerForHTTP(t),
-				InputCfg:    newHTTPInputCfg(config.ActionBlock),
-				Store:       store,
-				AdaptiveCfg: adaptiveCfgEnabled(),
-				AuditLogger: auditLogger,
+				Scanner:                    testScannerForHTTP(t),
+				InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+				Store:                      store,
+				AdaptiveCfg:                adaptiveCfgEnabled(),
+				AuditLogger:                auditLogger,
+				listenerStateTokenRequired: boolPtr(true),
 			})
 
 			token := listenerSetupToken(t, baseURL)

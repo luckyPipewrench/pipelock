@@ -89,11 +89,41 @@ func TestMCPListenerTokenHelpers_EdgeCases(t *testing.T) {
 	}
 
 	disabled := false
+	enabled := true
+	if listenerRequiresStateToken(MCPProxyOpts{
+		ToolCfg: &tools.ToolScanConfig{Action: "block"},
+	}) {
+		t.Fatal("omitted requirement defaulted on")
+	}
 	if listenerRequiresStateToken(MCPProxyOpts{
 		ToolCfg:                    &tools.ToolScanConfig{Action: "block"},
 		listenerStateTokenRequired: &disabled,
 	}) {
 		t.Fatal("explicit compatibility mode required a listener token")
+	}
+	if !listenerRequiresStateToken(MCPProxyOpts{
+		ToolCfg:                    &tools.ToolScanConfig{Action: "block"},
+		listenerStateTokenRequired: &enabled,
+	}) {
+		t.Fatal("explicit requirement was ignored")
+	}
+	if listenerRequiresStateToken(MCPProxyOpts{
+		listenerStateTokenRequired:   &enabled,
+		ListenerStateTokenRequiredFn: func() *bool { return &disabled },
+	}) {
+		t.Fatal("live-reload function did not override the static requirement")
+	}
+	if !listenerRequiresStateToken(MCPProxyOpts{
+		listenerStateTokenRequired:   &disabled,
+		ListenerStateTokenRequiredFn: func() *bool { return &enabled },
+	}) {
+		t.Fatal("live-reload function did not enable the requirement")
+	}
+	if listenerRequiresStateToken(MCPProxyOpts{
+		listenerStateTokenRequired:   &enabled,
+		ListenerStateTokenRequiredFn: func() *bool { return nil },
+	}) {
+		t.Fatal("nil live-reload value did not override the static requirement")
 	}
 
 	state := newMCPListenerClientState("token", "key")

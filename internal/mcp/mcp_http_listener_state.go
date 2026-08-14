@@ -308,9 +308,9 @@ func (s *mcpListenerClientStates) stateForPrincipal(principal mcpListenerPrincip
 	return state, true
 }
 
-// stateForLegacySession preserves the pre-token listener behavior for narrow
-// transport compatibility tests. Production listeners keep
-// listenerStateTokenRequired unset and therefore never call this path.
+// stateForLegacySession partitions unauthenticated clients by the legacy
+// session header. That is the production default: requiring a Pipelock
+// token is an opt-in (mcp_session_binding.listener_require_state_token).
 func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpListenerClientState {
 	if sessionID == "" {
 		return newMCPListenerTransientState()

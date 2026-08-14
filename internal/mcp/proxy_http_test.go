@@ -2590,10 +2590,10 @@ func TestRunHTTPListenerProxy_MetadataDialBlockSurfacesReason(t *testing.T) {
 	}
 }
 
-// startListenerProxy starts a production-default RunHTTPListenerProxy on a
+// startListenerProxy starts the production-default RunHTTPListenerProxy on a
 // free port and returns the base URL (e.g. "http://127.0.0.1:<port>") and a
-// cancel function. Tests that need compatibility behavior must opt in through
-// startLegacyListenerProxy instead.
+// cancel function. Tests that need a Pipelock-issued state token opt in through
+// startListenerProxyRequiringToken.
 func startListenerProxy(
 	t *testing.T,
 	upstreamURL string,
@@ -2608,6 +2608,23 @@ func startListenerProxy(
 		inputCfg:    inputCfg,
 		toolCfg:     toolCfg,
 		policyCfg:   policyCfg,
+	})
+}
+
+func startListenerProxyRequiringToken(
+	t *testing.T,
+	upstreamURL string,
+	sc *scanner.Scanner,
+	inputCfg *InputScanConfig,
+	toolCfg *tools.ToolScanConfig,
+) (string, context.CancelFunc, *bytes.Buffer) {
+	required := true
+	return startListenerProxyWithStateMode(t, listenerProxyTestOpts{
+		upstreamURL:        upstreamURL,
+		sc:                 sc,
+		inputCfg:           inputCfg,
+		toolCfg:            toolCfg,
+		stateTokenRequired: &required,
 	})
 }
 
@@ -2993,7 +3010,7 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksNoBaseline(t *testing.T) {
 		BindingUnknownAction:    config.ActionBlock,
 		BindingNoBaselineAction: config.ActionBlock,
 	}
-	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
+	baseURL, _, logBuf := startListenerProxyRequiringToken(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg)
 
 	token := listenerSetupToken(t, baseURL)
 	// The setup handshake is itself forwarded, so the invariant is that the
@@ -3122,7 +3139,7 @@ func TestRunHTTPListenerProxy_SessionBindingBlocksUnknownToolAfterToolsList(t *t
 		BindingUnknownAction:    config.ActionBlock,
 		BindingNoBaselineAction: config.ActionBlock,
 	}
-	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
+	baseURL, _, logBuf := startListenerProxyRequiringToken(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg)
 	token := listenerSetupToken(t, baseURL)
 
 	listPayload := listenerPost(t, baseURL, token, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
@@ -5055,7 +5072,7 @@ func TestHTTPListener_ToolPoisoningBlock(t *testing.T) {
 		DetectDrift: true,
 	}
 
-	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, toolCfg, nil)
+	baseURL, _, _ := startListenerProxyRequiringToken(t, upstream.URL, sc, nil, toolCfg)
 	token := listenerSetupToken(t, baseURL)
 
 	body := jsonToolsList
@@ -5156,8 +5173,9 @@ func startListenerProxyFull(
 
 	done := make(chan error, 1)
 	go func() {
+		required := true
 		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, MCPProxyOpts{
-			Scanner: sc, InputCfg: inputCfg, KillSwitch: ks, ChainMatcher: cm,
+			Scanner: sc, InputCfg: inputCfg, KillSwitch: ks, ChainMatcher: cm, listenerStateTokenRequired: &required,
 		})
 	}()
 

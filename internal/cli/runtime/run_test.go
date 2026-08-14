@@ -1235,7 +1235,9 @@ func postRunMCPListenerToolCall(t *testing.T, baseURL, sessionID, token, wantBod
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", sessionID)
-	req.Header.Set("Pipelock-Session-Token", token)
+	if token != "" {
+		req.Header.Set("Pipelock-Session-Token", token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("tools/call POST: %v", err)

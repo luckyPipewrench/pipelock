@@ -2133,10 +2133,14 @@ func listenerHasSessionScopedControls(opts MCPProxyOpts) bool {
 }
 
 func listenerRequiresStateToken(opts MCPProxyOpts) bool {
-	if opts.listenerStateTokenRequired != nil && !*opts.listenerStateTokenRequired {
+	required := opts.listenerStateTokenRequired
+	if opts.ListenerStateTokenRequiredFn != nil {
+		required = opts.ListenerStateTokenRequiredFn()
+	}
+	if required == nil {
 		return false
 	}
-	return listenerHasStatefulControls(opts)
+	return *required
 }
 
 // listenerStatelessRequestOpts strips every control whose decision depends on

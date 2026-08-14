@@ -110,11 +110,14 @@ type MCPProxyOpts struct {
 	// without ListenerBearerToken. This is intended only for deployments whose
 	// network policy is the authentication boundary.
 	ListenerAllowUnauthenticated bool
-	// listenerStateTokenRequired controls the Pipelock-issued token required
-	// before stateful listener requests. Nil uses the secure production default
-	// of true. It exists for narrowly-scoped transport compatibility tests; no
-	// operator-facing configuration disables the requirement.
+	// listenerStateTokenRequired, when set, is the static token requirement
+	// used by tests. Nil means omitted. Production listeners should prefer
+	// ListenerStateTokenRequiredFn so a reload can change the value.
 	listenerStateTokenRequired *bool
+	// ListenerStateTokenRequiredFn is the live-reload source for the HTTP
+	// reverse-listener token requirement. A nil return is omitted (default
+	// off). When set, it wins over listenerStateTokenRequired.
+	ListenerStateTokenRequiredFn func() *bool
 	// UpstreamHeaders are operator-configured headers applied by the HTTP
 	// reverse listener. They take precedence over client-supplied headers, so a
 	// browser can use Authorization for listener authentication while Pipelock

@@ -455,9 +455,10 @@ func TestRunHTTPListenerProxy_AirlockHardContainsOnlyBoundClient(t *testing.T) {
 		&airlockTestRecorder{tier: config.AirlockTierNone},
 	}}
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:     testScannerForHTTP(t),
-		Store:       store,
-		AdaptiveCfg: adaptiveCfgEnabled(),
+		Scanner:                    testScannerForHTTP(t),
+		Store:                      store,
+		AdaptiveCfg:                adaptiveCfgEnabled(),
+		listenerStateTokenRequired: boolPtr(true),
 	})
 	containedToken := listenerSetupToken(t, baseURL)
 	innocentToken := listenerSetupToken(t, baseURL)
@@ -502,10 +503,11 @@ func TestRunHTTPListenerProxy_AdaptiveCriticalEntersHardAirlock(t *testing.T) {
 	rec := &airlockTestRecorder{tier: config.AirlockTierNone, level: 2, escalate: true}
 	var cfgReads atomic.Int32
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:     testScannerForHTTP(t),
-		InputCfg:    newHTTPInputCfg(config.ActionBlock),
-		Store:       &airlockRecorderStore{rec: rec},
-		AdaptiveCfg: adaptiveCfgEnabled(),
+		Scanner:                    testScannerForHTTP(t),
+		InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+		Store:                      &airlockRecorderStore{rec: rec},
+		AdaptiveCfg:                adaptiveCfgEnabled(),
+		listenerStateTokenRequired: boolPtr(true),
 		AirlockCfgFn: func() *config.Airlock {
 			cfgReads.Add(1)
 			return liveCfg.Load()
@@ -672,9 +674,10 @@ func TestRunHTTPListenerProxy_HeaderlessToolCallCannotEscapeHardClient(t *testin
 		&airlockTestRecorder{tier: config.AirlockTierNone},
 	}}
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:    testScannerForHTTP(t),
-		Store:      store,
-		AirlockCfg: &cfg.Airlock,
+		Scanner:                    testScannerForHTTP(t),
+		Store:                      store,
+		AirlockCfg:                 &cfg.Airlock,
+		listenerStateTokenRequired: boolPtr(true),
 	})
 	token := listenerSetupToken(t, baseURL)
 	if token == "" {
@@ -717,10 +720,11 @@ func TestRunHTTPListenerProxy_AirlockAuditUsesRequestClientIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:     testScannerForHTTP(t),
-		Store:       &airlockRecorderStore{rec: &airlockTestRecorder{tier: config.AirlockTierHard}},
-		AirlockCfg:  &airlockCfg,
-		AuditLogger: auditLogger,
+		Scanner:                    testScannerForHTTP(t),
+		Store:                      &airlockRecorderStore{rec: &airlockTestRecorder{tier: config.AirlockTierHard}},
+		AirlockCfg:                 &airlockCfg,
+		AuditLogger:                auditLogger,
+		listenerStateTokenRequired: boolPtr(true),
 	})
 	token := listenerSetupToken(t, baseURL)
 	_ = listenerPost(t, baseURL, token, jsonToolsCallEcho)

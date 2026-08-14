@@ -716,6 +716,7 @@ func TestMCPListenerPrincipalState_RetriesSecretInitialization(t *testing.T) {
 func TestHTTPListener_PrincipalState_UnidentifiedStatefulCurrentSpecFailsClosed(t *testing.T) {
 	upstream, calls := principalStateUpstream(t)
 	opts := principalStateOpts(t, "")
+	opts.listenerStateTokenRequired = boolPtr(true)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 
 	status, body := principalStateToolCall(t, baseURL, "", 1, "read_file", nil)
@@ -736,6 +737,7 @@ func TestHTTPListener_PrincipalState_UnidentifiedDenialDoesNotSpendDoWBudget(t *
 		return true, "", "", ""
 	}
 	opts.DoWEnabledFn = func() bool { return true }
+	opts.listenerStateTokenRequired = boolPtr(true)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 
 	status, body := principalStateToolCall(t, baseURL, "", 1, "read_file", nil)

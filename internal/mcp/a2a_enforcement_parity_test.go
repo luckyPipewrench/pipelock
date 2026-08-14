@@ -164,10 +164,9 @@ func TestRunHTTPListenerProxy_A2ASessionBindingBlocksNoBaseline(t *testing.T) {
 		BindingUnknownAction:    config.ActionBlock,
 		BindingNoBaselineAction: config.ActionBlock,
 	}
-	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc,
+	baseURL, _, logBuf := startListenerProxyRequiringToken(t, upstream.URL, sc,
 		&InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
 		toolCfg,
-		nil,
 	)
 
 	token := listenerSetupToken(t, baseURL)

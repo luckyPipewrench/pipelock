@@ -499,8 +499,9 @@ func TestHTTPListener_CurrentWireContractInitializeDoesNotMintPipelockToken(t *t
 func TestHTTPListener_CurrentWireContractRejectsLegacyStateCapability(t *testing.T) {
 	upstream, capture := newWireContractUpstream(t)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner: testScannerForHTTP(t),
-		ToolCfg: &tools.ToolScanConfig{BindingUnknownAction: config.ActionBlock},
+		Scanner:                    testScannerForHTTP(t),
+		ToolCfg:                    &tools.ToolScanConfig{BindingUnknownAction: config.ActionBlock},
+		listenerStateTokenRequired: boolPtr(true),
 	})
 	legacyToken := listenerSetupToken(t, baseURL)
 	headers := currentWireHeaders("tools/call", "echo")

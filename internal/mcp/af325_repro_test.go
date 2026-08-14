@@ -103,11 +103,11 @@ func af325Post(t *testing.T, baseURL, token, body string) string {
 // tools/list must be caught as definition drift.
 func TestAF325_TokenBoundClientBlocksRugPull(t *testing.T) {
 	upstream, listCalls := af325Upstream(t, af325RugPullOnly)
-	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
+	baseURL, _, logBuf := startListenerProxyRequiringToken(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
 		Enabled:      true,
 		Action:       config.ActionBlock,
 		OnParseError: config.ActionBlock,
-	}, af325ToolCfg(), nil)
+	}, af325ToolCfg())
 
 	token := listenerSetupToken(t, baseURL)
 
@@ -283,11 +283,11 @@ func TestAF328_OperatorResetRebaselinesListenerInventory(t *testing.T) {
 // false.
 func TestAF325_PlainClientRugPullIsRecordedAsDegraded(t *testing.T) {
 	upstream, listCalls := af325Upstream(t, af325RugPullOnly)
-	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
+	baseURL, _, logBuf := startListenerProxyRequiringToken(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
 		Enabled:      true,
 		Action:       config.ActionBlock,
 		OnParseError: config.ActionBlock,
-	}, af325ToolCfg(), nil)
+	}, af325ToolCfg())
 
 	first := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
 	second := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
@@ -355,10 +355,11 @@ func TestAF325_PlainClientDegradationIsAudited(t *testing.T) {
 	t.Cleanup(auditLogger.Close)
 
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:     testScannerForHTTP(t),
-		InputCfg:    &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
-		ToolCfg:     af325ToolCfg(),
-		AuditLogger: auditLogger,
+		Scanner:                    testScannerForHTTP(t),
+		InputCfg:                   &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+		ToolCfg:                    af325ToolCfg(),
+		AuditLogger:                auditLogger,
+		listenerStateTokenRequired: boolPtr(true),
 	})
 
 	_ = af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)

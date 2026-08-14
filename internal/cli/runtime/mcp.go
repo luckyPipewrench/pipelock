@@ -1327,8 +1327,11 @@ Key-free evidence capture:
 						ListenerBearerToken:          listenerAuthToken,
 						ListenerAllowedOrigins:       listenerAllowedOrigins,
 						ListenerAllowUnauthenticated: listenerAllowUnauthenticated,
-						UpstreamHeaders:              extraHeaders,
-						Scanner:                      sc, Approver: approver,
+						ListenerStateTokenRequiredFn: func() *bool {
+							return cfg.MCPSessionBinding.ListenerRequireStateToken
+						},
+						UpstreamHeaders: extraHeaders,
+						Scanner:         sc, Approver: approver,
 						AuditLogger: auditLogger,
 						InputCfg:    inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
 						ToolCfg: toolCfg, PolicyCfg: policyCfg,

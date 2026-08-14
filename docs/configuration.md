@@ -1199,6 +1199,7 @@ mcp_session_binding:
   enabled: true
   unknown_tool_action: warn
   no_baseline_action: warn
+  listener_require_state_token: false
 ```
 
 | Field | Default | Description |
@@ -1206,16 +1207,17 @@ mcp_session_binding:
 | `enabled` | `false` | Enable session binding |
 | `unknown_tool_action` | `"warn"` | Action on tools not in baseline |
 | `no_baseline_action` | `"warn"` | Action if no baseline exists |
+| `listener_require_state_token` | `false` | When `true`, the HTTP reverse listener refuses stateful requests that present neither an authenticated principal nor a Pipelock-issued session token. Omitted, YAML null, and `false` keep the v3.3 compatibility path. |
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
 
-On the HTTP reverse listener, persistent security state belongs to an authenticated principal. The configured listener bearer is one shared credential principal: every holder intentionally shares its session-binding baseline, adaptive state, taint risk, chain history, cross-request exfiltration state, and quota. It proves membership in that trust domain, not an individual human identity. Deployments that need separate users or agents can supply a verifier-backed principal resolver; OAuth and mTLS integrations use the same state boundary without changing the MCP wire protocol.
+On the HTTP reverse listener, authenticated requests use persistent state owned by an authenticated principal. The configured listener bearer is one shared credential principal: every holder intentionally shares its session-binding baseline, adaptive state, taint risk, chain history, cross-request exfiltration state, and quota. It proves membership in that trust domain, not an individual human identity. Deployments that need separate users or agents can supply a verifier-backed principal resolver; OAuth and mTLS integrations use the same state boundary without changing the MCP wire protocol. By default, unauthenticated legacy requests use the `Mcp-Session-Id` compatibility partition instead; it is not an identity proof.
 
-Protocol revision `2026-07-28` does not use `initialize` or protocol sessions. Each request authenticates with either the configured listener bearer or credentials resolved by the verifier, and persistent protection begins on the first authenticated request. No Pipelock-specific response header is required. `Mcp-Session-Id`, `_meta.clientInfo`, forwarded client-IP headers, routing names, and other client-declared values never select or rekey security state.
+Protocol revision `2026-07-28` does not use `initialize` or protocol sessions. Each authenticated request uses the configured listener bearer or credentials resolved by the verifier, and principal-owned protection begins on the first authenticated request. No Pipelock-specific response header is required. `Mcp-Session-Id`, `_meta.clientInfo`, forwarded client-IP headers, routing names, and other client-declared values never select or rekey authenticated principal state; `Mcp-Session-Id` remains the isolated legacy compatibility partition when `listener_require_state_token` is omitted or false.
 
 Current HTTP requests carry `Mcp-Method` and, where applicable, `Mcp-Name` plus schema-selected `Mcp-Param-*` mirrors. Pipelock checks the standard routing headers against the body before forwarding. When tool scanning accepts a `tools/list` response for an authenticated principal, Pipelock records valid `x-mcp-header` contracts and checks each recognized parameter mirror against the exact body argument path. Missing, duplicate, malformed, or mismatched recognized mirrors fail locally. A contract from a warned or invalid definition is not trusted. Its parameter headers remain transparent intermediary data for protocol compatibility, but their raw and decoded values are always scanned. Base64 is transport encoding, not secrecy; do not mark credentials or personal data with `x-mcp-header`.
 
-When a principal-scoped control is configured and a request has no authenticated principal, Pipelock performs its request-local scan and then refuses the request before it reaches the upstream. It does not silently remove the configured control. Pure request scanning, tool-poison scanning, upstream-scoped tool drift, and network-grade denial-of-wallet remain usable without a principal.
+When `listener_require_state_token` is `true` and a request has neither an authenticated principal nor a Pipelock-issued session token, Pipelock performs its request-local scan and then refuses the request before it reaches the upstream. It does not silently remove the configured control. The omitted default is `false`, so existing MCP HTTP clients that do not perform the Pipelock handshake keep working; set the field to `true` to require a principal or token. Pure request scanning, tool-poison scanning, upstream-scoped tool drift, and network-grade denial-of-wallet remain usable without a principal.
 
 Replacing a file-backed listener bearer starts a new credential epoch on the next request. Pipelock revokes and cancels the previous epoch, deletes its recorder, and does not carry learned security state into the new credential. The listener trust domain keeps its denial-of-wallet spend across rotation, so credential hygiene cannot become a quota reset. A current-protocol DELETE terminates upstream transport resources but does not erase the authenticated principal's firewall history.
 

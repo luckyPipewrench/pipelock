@@ -380,7 +380,7 @@ func TestHTTPListener_PrincipalControls_UnidentifiedStatefulControlsFailClosed(t
 			}))
 			t.Cleanup(upstream.Close)
 
-			opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), InputCfg: newHTTPInputCfg(config.ActionBlock), Store: &listenerDiagnosisStore{}}
+			opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), InputCfg: newHTTPInputCfg(config.ActionBlock), Store: &listenerDiagnosisStore{}, listenerStateTokenRequired: boolPtr(true)}
 			tc.configure(t, &opts)
 			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 			status, body := mustPrincipalControlRPC(t, baseURL, "", principalControlToolCall(1, "read_file", `{"path":"/tmp/no-principal"}`))

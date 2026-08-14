@@ -1147,6 +1147,20 @@ type MCPSessionBinding struct {
 	Enabled           bool   `yaml:"enabled"`
 	UnknownToolAction string `yaml:"unknown_tool_action"` // warn, block
 	NoBaselineAction  string `yaml:"no_baseline_action"`  // warn, block
+	// ListenerRequireStateToken, when true, refuses HTTP reverse-listener
+	// requests that have neither an authenticated principal nor a
+	// Pipelock-issued session token. Omitted, YAML null, and explicit false
+	// keep the v3.3 compatibility path: unauthenticated clients are
+	// partitioned by the legacy session header. The omitted default is false
+	// because requiring a token is a breaking change for existing MCP HTTP
+	// deployments whose clients do not perform the Pipelock handshake.
+	ListenerRequireStateToken *bool `yaml:"listener_require_state_token" json:"listener_require_state_token,omitempty"`
+}
+
+// RequiresListenerStateToken reports the effective HTTP-listener token
+// requirement. Omitted and YAML-null values are false.
+func (s MCPSessionBinding) RequiresListenerStateToken() bool {
+	return s.ListenerRequireStateToken != nil && *s.ListenerRequireStateToken
 }
 
 // A2AScanning configures scanning of Google A2A (Agent-to-Agent) protocol

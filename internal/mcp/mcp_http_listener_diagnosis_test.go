@@ -128,11 +128,11 @@ func TestHTTPListenerDiagnosis_ClientBaselineDoesNotCrossSessions(t *testing.T) 
 		BindingUnknownAction:    config.ActionBlock,
 		BindingNoBaselineAction: config.ActionBlock,
 	}
-	baseURL, _, _ := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
+	baseURL, _, _ := startListenerProxyRequiringToken(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
 		Enabled:      true,
 		Action:       config.ActionBlock,
 		OnParseError: config.ActionBlock,
-	}, toolCfg, nil)
+	}, toolCfg)
 
 	newClient := func() *http.Client {
 		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
@@ -249,11 +249,12 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 			},
 		}
 		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-			Scanner:        newAdaptiveTestScanner(),
-			InputCfg:       newHTTPInputCfg(config.ActionBlock),
-			Store:          store,
-			AdaptiveCfg:    adaptiveCfg,
-			RequestBodyCfg: &config.RequestBodyScanning{Enabled: true, ScanHeaders: true},
+			Scanner:                    newAdaptiveTestScanner(),
+			InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+			Store:                      store,
+			AdaptiveCfg:                adaptiveCfg,
+			RequestBodyCfg:             &config.RequestBodyScanning{Enabled: true, ScanHeaders: true},
+			listenerStateTokenRequired: boolPtr(true),
 		})
 		tokenA := listenerSetupToken(t, baseURL)
 		tokenB := listenerSetupToken(t, baseURL)
@@ -314,10 +315,11 @@ func TestHTTPListenerDiagnosis_ClientStateDoesNotCrossSessions(t *testing.T) {
 		defer upstream.Close()
 
 		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-			Scanner:  testScannerForHTTP(t),
-			InputCfg: newHTTPInputCfg(config.ActionBlock),
-			Store:    &listenerDiagnosisStore{},
-			TaintCfg: &config.TaintConfig{Enabled: true, Policy: config.ModeStrict},
+			Scanner:                    testScannerForHTTP(t),
+			InputCfg:                   newHTTPInputCfg(config.ActionBlock),
+			Store:                      &listenerDiagnosisStore{},
+			TaintCfg:                   &config.TaintConfig{Enabled: true, Policy: config.ModeStrict},
+			listenerStateTokenRequired: boolPtr(true),
 		})
 		tokenA := listenerSetupToken(t, baseURL)
 		tokenB := listenerSetupToken(t, baseURL)
@@ -861,8 +863,9 @@ func TestHTTPListenerDiagnosis_BaselineSurvivesReloadAndTokenSetup(t *testing.T)
 	var activeToolCfg atomic.Pointer[tools.ToolScanConfig]
 	activeToolCfg.Store(newToolCfg())
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner:   testScannerForHTTP(t),
-		ToolCfgFn: activeToolCfg.Load,
+		Scanner:                    testScannerForHTTP(t),
+		ToolCfgFn:                  activeToolCfg.Load,
+		listenerStateTokenRequired: boolPtr(true),
 	})
 	// A hot-reload snapshot may arrive before any client establishes a
 	// baseline. The first tools/list must still initialize normally.

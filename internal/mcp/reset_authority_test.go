@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -291,4 +292,239 @@ func resignResetDelegation(t *testing.T, privateKey ed25519.PrivateKey, d ResetD
 	}
 	d.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, input))
 	return d
+}
+
+func TestNewResetAuthorityValidatesLiveBindings(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name       string
+		publicKey  ed25519.PublicKey
+		target     string
+		instanceID string
+		now        func() time.Time
+	}{
+		{name: "short public key", publicKey: pub[:ed25519.PublicKeySize-1], target: "mcp://fixture", instanceID: strings.Repeat("a", 32), now: time.Now},
+		{name: "blank target", publicKey: pub, target: " ", instanceID: strings.Repeat("a", 32), now: time.Now},
+		{name: "invalid instance", publicKey: pub, target: "mcp://fixture", instanceID: "not-hex", now: time.Now},
+		{name: "nil clock", publicKey: pub, target: "mcp://fixture", instanceID: strings.Repeat("a", 32), now: nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if authority, err := newResetAuthority(test.publicKey, test.target, test.instanceID, test.now); err == nil || authority != nil {
+				t.Fatalf("newResetAuthority() = %v, %v; want validation failure", authority, err)
+			}
+		})
+	}
+
+	authority, err := newResetAuthority(pub, "mcp://fixture", strings.Repeat("b", 32), func() time.Time { return resetAuthorityTestNow })
+	if err != nil {
+		t.Fatalf("newResetAuthority: %v", err)
+	}
+	if authority.Target() != "mcp://fixture" || authority.InstanceID() != strings.Repeat("b", 32) {
+		t.Fatalf("live bindings = target=%q instance=%q", authority.Target(), authority.InstanceID())
+	}
+	if (*ResetAuthority)(nil).Target() != "" || (*ResetAuthority)(nil).InstanceID() != "" {
+		t.Fatal("nil reset authority exposed live bindings")
+	}
+
+	generated, err := NewResetAuthority(pub, "mcp://generated")
+	if err != nil {
+		t.Fatalf("NewResetAuthority: %v", err)
+	}
+	if err := validateResetHex("instance_id", generated.InstanceID()); err != nil {
+		t.Fatalf("generated instance ID = %q: %v", generated.InstanceID(), err)
+	}
+	if nonce, err := NewResetNonce(); err != nil || validateResetHex("nonce", nonce) != nil {
+		t.Fatalf("NewResetNonce() = %q, %v", nonce, err)
+	}
+}
+
+func TestMintResetDelegationRejectsInvalidAuthorityInputs(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := resetAuthorityTestNow
+	validInstance := strings.Repeat("a", 32)
+	validNonce := strings.Repeat("b", 32)
+
+	tests := []struct {
+		name       string
+		privateKey ed25519.PrivateKey
+		kind       ResetKind
+		target     string
+		instanceID string
+		nonce      string
+		issuer     string
+		expires    time.Time
+	}{
+		{name: "short private key", privateKey: privateKey[:ed25519.PrivateKeySize-1], kind: ResetKindDrift, target: "mcp://fixture", instanceID: validInstance, nonce: validNonce, issuer: "operator", expires: issued.Add(time.Minute)},
+		{name: "inconsistent private key", privateKey: ed25519.PrivateKey(bytes.Repeat([]byte{1}, ed25519.PrivateKeySize)), kind: ResetKindDrift, target: "mcp://fixture", instanceID: validInstance, nonce: validNonce, issuer: "operator", expires: issued.Add(time.Minute)},
+		{name: "invalid kind", privateKey: privateKey, kind: ResetKind("other"), target: "mcp://fixture", instanceID: validInstance, nonce: validNonce, issuer: "operator", expires: issued.Add(time.Minute)},
+		{name: "invalid target", privateKey: privateKey, kind: ResetKindDrift, target: "bad\nvalue", instanceID: validInstance, nonce: validNonce, issuer: "operator", expires: issued.Add(time.Minute)},
+		{name: "invalid instance", privateKey: privateKey, kind: ResetKindDrift, target: "mcp://fixture", instanceID: "bad", nonce: validNonce, issuer: "operator", expires: issued.Add(time.Minute)},
+		{name: "invalid nonce", privateKey: privateKey, kind: ResetKindDrift, target: "mcp://fixture", instanceID: validInstance, nonce: "bad", issuer: "operator", expires: issued.Add(time.Minute)},
+		{name: "invalid issuer", privateKey: privateKey, kind: ResetKindDrift, target: "mcp://fixture", instanceID: validInstance, nonce: validNonce, issuer: "", expires: issued.Add(time.Minute)},
+		{name: "expired at issue", privateKey: privateKey, kind: ResetKindDrift, target: "mcp://fixture", instanceID: validInstance, nonce: validNonce, issuer: "operator", expires: issued},
+		{name: "ttl too long", privateKey: privateKey, kind: ResetKindDrift, target: "mcp://fixture", instanceID: validInstance, nonce: validNonce, issuer: "operator", expires: issued.Add(resetDelegationMaxTTL + time.Second)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if delegation, err := MintResetDelegation(test.privateKey, test.issuer, test.kind, test.target, test.instanceID, 0, issued, test.expires, test.nonce); err == nil || delegation != (ResetDelegation{}) {
+				t.Fatalf("MintResetDelegation() = %+v, %v; want validation failure", delegation, err)
+			}
+		})
+	}
+}
+
+func TestResetDelegationFileOperationsAreBoundedAndPathSafe(t *testing.T) {
+	pub, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(pub, "mcp://fixture", strings.Repeat("c", 32), func() time.Time { return resetAuthorityTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegation, err := MintResetDelegation(privateKey, "operator", ResetKindDrift, authority.Target(), authority.InstanceID(), 0, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("d", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "delegation")
+	raw := resetDelegationBytes(t, delegation)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, opened, err := readResetDelegationFile(path); err != nil || !bytes.Equal(got, raw) || opened == nil {
+		t.Fatalf("read reset file = %q, %v, %v", got, opened, err)
+	}
+
+	unreadable := filepath.Join(dir, "unreadable")
+	if err := os.WriteFile(unreadable, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readResetDelegationFile(unreadable); err == nil {
+		t.Fatal("unreadable reset delegation was accepted")
+	}
+	if err := os.Chmod(unreadable, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oversized := filepath.Join(dir, "oversized")
+	if err := os.WriteFile(oversized, bytes.Repeat([]byte{'x'}, resetDelegationMaxBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readResetDelegationFile(oversized); err == nil {
+		t.Fatal("oversized reset delegation was accepted")
+	}
+	if _, _, err := readResetDelegationFile(dir); err == nil {
+		t.Fatal("directory reset delegation was accepted")
+	}
+
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readResetDelegationFile(link); err == nil {
+		t.Fatal("symlink reset delegation was accepted")
+	}
+
+	opened, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, path+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeResetDelegationFile(path, opened); err == nil {
+		t.Fatal("replacement at reset path was removed")
+	}
+
+	if decision := authority.ConsumeFile("", ResetKindDrift, 0); decision.Result != ResetAuthorityAbsent {
+		t.Fatalf("empty reset path decision = %+v", decision)
+	}
+	if decision := (*ResetAuthority)(nil).ConsumeFile(path, ResetKindDrift, 0); decision.Result != ResetAuthorityAbsent {
+		t.Fatalf("nil reset authority decision = %+v", decision)
+	}
+}
+
+func TestResetDelegationParsingAndVerificationRejectsMalformedArtifacts(t *testing.T) {
+	pub, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegation, err := MintResetDelegation(privateKey, "operator", ResetKindAdaptive, "mcp://fixture", strings.Repeat("e", 32), 3, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("f", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := resetDelegationBytes(t, delegation)
+	if parsed, err := ParseResetDelegation(raw); err != nil || parsed.Nonce != delegation.Nonce {
+		t.Fatalf("ParseResetDelegation() = %+v, %v", parsed, err)
+	}
+	if err := VerifyResetDelegationSignature(pub, delegation); err != nil {
+		t.Fatalf("VerifyResetDelegationSignature(valid) = %v", err)
+	}
+
+	withoutSignature := delegation
+	withoutSignature.Signature = ""
+	if _, err := MarshalResetDelegation(withoutSignature); err == nil {
+		t.Fatal("MarshalResetDelegation accepted unsigned delegation")
+	}
+	if err := VerifyResetDelegationSignature(pub[:ed25519.PublicKeySize-1], delegation); err == nil {
+		t.Fatal("VerifyResetDelegationSignature accepted short public key")
+	}
+	otherPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyResetDelegationSignature(otherPub, delegation); err == nil {
+		t.Fatal("VerifyResetDelegationSignature accepted another authority key")
+	}
+	if _, err := ParseResetDelegation(append(bytes.TrimSpace(raw), []byte(" trailing")...)); err == nil {
+		t.Fatal("ParseResetDelegation accepted trailing data")
+	}
+	if _, err := ParseResetDelegation([]byte(`{"schema_version":1,"purpose":"mcp-reset-authority","extra":true}`)); err == nil {
+		t.Fatal("ParseResetDelegation accepted unknown fields")
+	}
+
+	tests := []struct {
+		name string
+		mut  func(*ResetDelegation)
+	}{
+		{name: "schema version", mut: func(d *ResetDelegation) { d.SchemaVersion++ }},
+		{name: "purpose", mut: func(d *ResetDelegation) { d.Purpose = "other" }},
+		{name: "kind", mut: func(d *ResetDelegation) { d.Kind = "other" }},
+		{name: "target", mut: func(d *ResetDelegation) { d.Target = "\x00" }},
+		{name: "instance", mut: func(d *ResetDelegation) { d.InstanceID = "bad" }},
+		{name: "nonce", mut: func(d *ResetDelegation) { d.Nonce = "bad" }},
+		{name: "issuer", mut: func(d *ResetDelegation) { d.Issuer = "\n" }},
+		{name: "fingerprint", mut: func(d *ResetDelegation) { d.IssuerFingerprint = "not-a-fingerprint" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := delegation
+			test.mut(&invalid)
+			if _, err := invalid.signingInput(); err == nil {
+				t.Fatalf("signingInput accepted invalid %s", test.name)
+			}
+		})
+	}
+
+	for _, encoded := range []string{"", "not-base64", base64.StdEncoding.EncodeToString([]byte("short"))} {
+		if _, err := decodeResetSignature(encoded); err == nil {
+			t.Fatalf("decodeResetSignature(%q) succeeded", encoded)
+		}
+	}
 }

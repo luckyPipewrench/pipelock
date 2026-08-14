@@ -140,13 +140,11 @@ func runMCPEnvironProofHelper(t *testing.T, mode string) {
 	}
 
 	if mode == "best-effort-fallback" {
-		if err := SetNoNewPrivs(); err != nil {
-			t.Fatalf("set no_new_privs for fallback proof: %v", err)
-		}
-		status, err := ApplySeccomp()
-		if err != nil || !status.Active {
-			t.Fatalf("apply seccomp for fallback proof: status=%+v err=%v", status, err)
-		}
+		// Deny only namespace creation, not the whole production filter. See
+		// applyUserNSDenyFilter for why: seccomp is inherited across fork and
+		// exec, so ApplySeccomp here put the proxy and the CPython target under
+		// a filter meant for a confined child and made this proof intermittent.
+		applyUserNSDenyFilter(t)
 	}
 
 	args := []string{"mcp", "proxy", "--config", config, "--workspace", workspace}

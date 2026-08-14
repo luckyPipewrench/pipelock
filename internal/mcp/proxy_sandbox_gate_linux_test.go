@@ -48,7 +48,7 @@ func TestRunProxyWithSandbox_RefusesMappedCommand(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cmd := exec.Command("/bin/true")
+			cmd := exec.CommandContext(t.Context(), "/bin/true")
 			cmd.SysProcAttr = tc.attr
 
 			// The refusal must happen before any launch, so it returns
@@ -89,7 +89,7 @@ func TestRunProxyWithSandbox_RefusesMappedCommand(t *testing.T) {
 func TestRunProxyWithSandbox_AllowsUnmappedCommand(t *testing.T) {
 	t.Parallel()
 
-	cmd := exec.Command("/bin/true")
+	cmd := exec.CommandContext(t.Context(), "/bin/true")
 	err := RunProxyWithSandbox(context.Background(), cmd, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})
 	if err != nil && strings.Contains(err.Error(), "RunProxyWithSandboxLaunch") {
 		t.Fatalf("unmapped command must not hit the mapped-launch refusal: %v", err)

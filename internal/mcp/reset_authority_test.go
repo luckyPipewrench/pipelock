@@ -399,6 +399,27 @@ func TestResetAuthorityDeniesLiveNonceLedgerCapacity(t *testing.T) {
 	}
 }
 
+func TestResetAuthorityMalformedRejectionReportsCurrentBinding(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(publicKey, "mcp://diagnostic-binding", strings.Repeat("a", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "reset")
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if decision := authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(resetAuthorityEpoch(9))); decision.Result != ResetAuthorityMalformed ||
+		decision.ExpectedTarget != authority.Target() || decision.ExpectedInstanceID != authority.InstanceID() || decision.ExpectedEpoch != 9 {
+		t.Fatalf("malformed rejection diagnostics = %+v", decision)
+	}
+}
+
 func TestResetDelegationRejectsMalformedArtifactsAndMissingRemovalPath(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {

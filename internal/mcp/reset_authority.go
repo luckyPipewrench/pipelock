@@ -288,12 +288,12 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch ResetEpo
 	}
 	raw, opened, err := readResetDelegationFile(path)
 	if err != nil {
-		return ResetAuthorityDecision{Result: resetReadResult(err)}
+		return a.rejectionDecision(resetReadResult(err), epoch)
 	}
 	var d ResetDelegation
 	if err := contract.DecodeStrictJSON(raw, &d); err != nil {
 		_ = removeResetDelegationFile(path, opened)
-		return ResetAuthorityDecision{Result: ResetAuthorityMalformed}
+		return a.rejectionDecision(ResetAuthorityMalformed, epoch)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -333,6 +333,17 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch ResetEpo
 	a.consumed[d.Nonce] = time.Unix(d.ExpiresUnix, 0).UTC()
 	decision.Result = ResetAuthorityAccepted
 	return decision
+}
+
+func (a *ResetAuthority) rejectionDecision(result ResetAuthorityResult, epoch ResetEpoch) ResetAuthorityDecision {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return ResetAuthorityDecision{
+		Result:             result,
+		ExpectedTarget:     a.target,
+		ExpectedInstanceID: a.instanceID,
+		ExpectedEpoch:      epoch.CurrentEpoch(),
+	}
 }
 
 func (a *ResetAuthority) verify(d ResetDelegation, kind ResetKind, epoch uint64) ResetAuthorityResult {

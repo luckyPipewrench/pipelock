@@ -58,13 +58,13 @@ func applyUserNSDenyFilter(t *testing.T) {
 	}
 
 	prog := unix.SockFprog{
-		Len:    uint16(len(filter)), //nolint:gosec // fixed small filter
+		Len:    uint16(len(filter)), // #nosec G115 -- fixed small filter, length is a compile-time constant
 		Filter: &filter[0],
 	}
 	if _, _, errno := unix.Syscall(unix.SYS_SECCOMP,
 		uintptr(unix.SECCOMP_SET_MODE_FILTER),
 		uintptr(unix.SECCOMP_FILTER_FLAG_TSYNC),
-		uintptr(unsafe.Pointer(&prog)), //nolint:gosec // required by the seccomp syscall ABI
+		uintptr(unsafe.Pointer(&prog)), // #nosec G103 -- required by the seccomp syscall ABI
 	); errno != 0 {
 		t.Fatalf("install user-namespace deny filter: %v", errno)
 	}

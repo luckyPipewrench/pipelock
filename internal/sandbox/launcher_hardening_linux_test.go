@@ -19,7 +19,7 @@ func TestPreparedSandboxCmd_HardeningFailureReapsChild(t *testing.T) {
 		t.Fatalf("create readiness pipe: %v", err)
 	}
 	launch := &PreparedSandboxCmd{
-		Cmd:                       exec.CommandContext(t.Context(), "sh", "-c", "sleep 30"), //nolint:gosec // fixed test command
+		Cmd:                       exec.CommandContext(t.Context(), "sh", "-c", "sleep 30"), // #nosec G204 G702 -- fixed literal test command
 		ParentHardeningAfterStart: true,
 		readinessReader:           reader,
 		readinessWriter:           writer,
@@ -43,7 +43,7 @@ func TestPreparedSandboxCmd_ReadinessWriteFailureReapsChild(t *testing.T) {
 		t.Fatalf("close readiness writer: %v", err)
 	}
 	launch := &PreparedSandboxCmd{
-		Cmd:                       exec.CommandContext(t.Context(), "sh", "-c", "sleep 30"), //nolint:gosec // fixed test command
+		Cmd:                       exec.CommandContext(t.Context(), "sh", "-c", "sleep 30"), // #nosec G204 G702 -- fixed literal test command
 		ParentHardeningAfterStart: true,
 		readinessReader:           reader,
 		readinessWriter:           writer,

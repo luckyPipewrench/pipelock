@@ -84,7 +84,7 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestIntegration_McpSandboxProxyEnvironDenied$") //nolint:gosec // fixed test binary helper executes Pipelock
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestIntegration_McpSandboxProxyEnvironDenied$") // #nosec G204 G702 -- test re-execs its own binary with a fixed run filter
 	cmd.Env = append(os.Environ(),
 		mcpEnvironProofHelperEnv+"="+mode,
 		mcpEnvironProofBinaryEnv+"="+binary,
@@ -114,7 +114,7 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 func buildMCPEnvironProofBinary(t *testing.T) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "pipelock-mcp-environ-proof")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-tags=mcp_hardening_test", "-o", binary, "./cmd/pipelock/") //nolint:gosec // fixed repository build for integration proof
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-tags=mcp_hardening_test", "-o", binary, "./cmd/pipelock/") // #nosec G204 G702 -- fixed repository build for the integration proof
 	cmd.Dir = filepath.Join("..", "..")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build MCP environ proof binary: %v\n%s", err, out)
@@ -162,7 +162,7 @@ func runMCPEnvironProofHelper(t *testing.T, mode string) {
 		"--env", mcpEnvironProofMarkerEnv+"="+marker,
 		"--", "python3", server,
 	)
-	if err := syscall.Exec(binary, append([]string{binary}, args...), os.Environ()); err != nil { //nolint:gosec // controlled test helper re-execs its fixture binary
+	if err := syscall.Exec(binary, append([]string{binary}, args...), os.Environ()); err != nil { // #nosec G204 G702 -- controlled test helper re-execs its fixture binary
 		t.Fatalf("exec MCP environ proof: %v", err)
 	}
 }

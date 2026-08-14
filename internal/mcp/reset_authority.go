@@ -395,7 +395,7 @@ func readResetDelegationFile(path string) ([]byte, os.FileInfo, error) {
 	if listed.Mode()&os.ModeSymlink != 0 || !listed.Mode().IsRegular() {
 		return nil, nil, errors.New("reset delegation is not a regular file")
 	}
-	f, err := os.Open(clean) //nolint:gosec // configured operator control path, fd checked and bounded below
+	f, err := os.Open(clean) // #nosec G304 -- configured operator control path, fd checked and bounded below
 	if err != nil {
 		return nil, nil, err
 	}

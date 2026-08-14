@@ -38,7 +38,7 @@ func TestMCPProxyCmdMakesProxyProcessNonDumpable(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMCPProxyCmdMakesProxyProcessNonDumpable$") //nolint:gosec // test runs this package's own binary with fixed arguments
+	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMCPProxyCmdMakesProxyProcessNonDumpable$") // #nosec G204 G702 -- test re-execs its own binary with fixed arguments
 	child.Env = append(os.Environ(), "PIPELOCK_MCP_HARDEN_HELPER=1")
 	out, err := child.CombinedOutput()
 	if err != nil {

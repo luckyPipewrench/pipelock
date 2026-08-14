@@ -4125,3 +4125,55 @@ func TestLogToolFindings_ResourceLimitAndDriftDetail(t *testing.T) {
 		}
 	}
 }
+
+func TestToolBaseline_ReservationNilAndZeroValueLifecycle(t *testing.T) {
+	var nilBaseline *ToolBaseline
+	if reservation, err := nilBaseline.ReserveToolInventory([]string{"tool"}, []ToolDef{{Name: "tool"}}); err != nil || reservation != nil {
+		t.Fatalf("nil baseline reservation = %#v, %v", reservation, err)
+	}
+	var nilReservation *ToolInventoryReservation
+	nilReservation.Release()
+	if added, err := nilReservation.Commit(true); err != nil || added != nil {
+		t.Fatalf("nil reservation commit = %v, %v", added, err)
+	}
+
+	baseline := &ToolBaseline{
+		hashes:     make(map[string]string),
+		descs:      make(map[string]string),
+		params:     make(map[string][]string),
+		structural: make(map[string]string),
+		knownTools: make(map[string]bool),
+	}
+	reservation, err := baseline.ReserveToolInventory([]string{"zero"}, []ToolDef{{Name: "zero"}})
+	if err != nil {
+		t.Fatalf("zero-value reservation: %v", err)
+	}
+	if _, err := reservation.Commit(true); err != nil {
+		t.Fatalf("zero-value reservation commit: %v", err)
+	}
+	if !baseline.IsKnownTool("zero") || baseline.headerBindings == nil || baseline.pendingTools == nil {
+		t.Fatalf("zero-value commit left incomplete state: %+v", baseline)
+	}
+}
+
+func TestToolBaseline_NilEpochAndDirectStaleDefinitionScan(t *testing.T) {
+	var nilBaseline *ToolBaseline
+	if nilBaseline.DriftEpoch() != 0 || !nilBaseline.matchesDriftEpoch(99) {
+		t.Fatal("nil baseline epoch helpers did not remain neutral")
+	}
+	if got := toolScanCapacityLimit(nil, nil, nil); got != "" {
+		t.Fatalf("nil tool scan config capacity limit = %q", got)
+	}
+
+	baseline := NewToolBaseline()
+	epoch := baseline.DriftEpoch()
+	baseline.ResetDriftState()
+	matches, observations, capacityExceeded, epochChanged := scanToolDefs(
+		[]ToolDef{{Name: "stale", Description: "safe"}},
+		testScanner(t),
+		&ToolScanConfig{Action: "warn", Baseline: baseline, DetectDrift: true, ExpectedDriftEpoch: &epoch},
+	)
+	if len(matches) != 0 || len(observations) != 0 || capacityExceeded || !epochChanged {
+		t.Fatalf("direct stale scan = matches=%v observations=%v capacity=%v epoch=%v", matches, observations, capacityExceeded, epochChanged)
+	}
+}

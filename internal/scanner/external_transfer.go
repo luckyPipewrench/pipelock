@@ -22,6 +22,33 @@ var externalTransferUploadArgRE = regexp.MustCompile(`(?i)(?:^|\s)(?:(-F|-T)([^\
 
 var externalTransferSensitiveFilenameRE = regexp.MustCompile(`(?i)^(?:(?:session[_.-]?(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?|id)|diagnostic[_.-]?data|credentials?|secrets?|tokens?|cookies?|passwords?|passwd|api[_.-]?keys?|(?:private|ssh)[_.-]?keys?)(?:\.[a-z0-9_-]{1,16})?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.(?:pem|key|der|ppk))?|\.env(?:\.[a-z0-9_-]{1,16})*)$`)
 
+// externalTransferFileDirectiveRE matches a natural-language instruction to send
+// the contents of a named file to an external URL.
+//
+// The command form of this was already covered: `curl --upload-file .env
+// https://...` matches through externalTransferHasSensitiveUploadSource, because
+// .env is on the sensitive-filename list. The prose form naming the same file was
+// not, so one phrasing of one exfiltration was caught and the other was invisible.
+// This closes that inconsistency rather than widening what counts as sensitive.
+//
+// Deliberately narrow. All four must be present: a transfer verb from the
+// vocabulary the surrounding pattern already uses, an explicit whole-content
+// phrase, a filename the sensitive list already recognises, and an external
+// destination. Dropping any one of them starts matching ordinary developer prose
+// that discusses a file and links to documentation, which is the failure mode that
+// gets a detector switched off.
+var externalTransferFileDirectiveRE = regexp.MustCompile(
+	`(?im)(?:^|[.!?:]\s+)\s*(?:[-*]\s+)?` +
+		`(?:(?:please|must|required\s+to|need\s+to|you\s+(?:must|should|need\s+to))\s+)?` +
+		`(?:send|upload|post|transmit|forward|email|exfiltrat\w*)\b` +
+		`(?:[^.\n!?;|&]|\.[^\s]){0,60}?` +
+		`\bcontents?\s+of\b` +
+		`(?P<span>(?:[^.\n!?;|&]|\.[^\s]){0,120}?)` +
+		`\b(?:to|via|using|through|at)\s+(?:(?:the|this|an?)\s+)?` +
+		`(?:(?:external|remote|upload|collection)\s+)?(?:url|endpoint|server|address)?\s*(?:at|:)?\s*` +
+		`https?://`,
+)
+
 func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
 	locs := p.re.FindAllStringIndex(content, -1)
 	if p.name != externalDataTransferDirectivePatternName || p.re.String() != config.ExternalDataTransferDirectiveRegex {
@@ -35,7 +62,43 @@ func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
 		}
 		locs = append(locs, loc)
 	}
+	for _, loc := range externalTransferFileDirectiveRE.FindAllStringSubmatchIndex(content, -1) {
+		if !externalTransferNamesSensitiveFile(content, loc) || overlapsResponseMatch(locs, loc[0:2]) {
+			continue
+		}
+		locs = append(locs, loc[0:2])
+	}
 	return locs
+}
+
+// externalTransferNamesSensitiveFile reports whether any token between the
+// whole-content phrase and the destination is a filename the sensitive list
+// already recognises.
+//
+// It tests every token rather than capturing one, because the filename is not at
+// a fixed position: "the contents of the .env file to <url>" puts an article and
+// a trailing noun around it. Positional capture picked up "the" and silently
+// missed the case this arm exists for. Deciding against the one shared vocabulary
+// also keeps a second copy of the filename list from drifting inside a pattern.
+func externalTransferNamesSensitiveFile(content string, loc []int) bool {
+	idx := externalTransferFileDirectiveRE.SubexpIndex("span")
+	if idx < 0 || len(loc) <= 2*idx+1 || loc[2*idx] < 0 {
+		return false
+	}
+	for _, token := range strings.Fields(content[loc[2*idx]:loc[2*idx+1]]) {
+		token = strings.Trim(token, "'\"`,;:()[]{}")
+		token = strings.TrimSuffix(token, ".")
+		if slash := strings.LastIndexAny(token, "/\\"); slash >= 0 {
+			token = token[slash+1:]
+		}
+		if token == "" || len(token) > 160 {
+			continue
+		}
+		if externalTransferSensitiveFilenameRE.MatchString(token) {
+			return true
+		}
+	}
+	return false
 }
 
 func externalTransferHasSensitiveUploadSource(candidate string) bool {

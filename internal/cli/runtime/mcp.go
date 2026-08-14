@@ -532,6 +532,15 @@ var ErrMCPResponseSecurityFinding = errors.New("MCP response security finding de
 // ErrMCPResponseSecurityFinding.
 var ErrInjectionDetected = ErrMCPResponseSecurityFinding
 
+// ErrMCPScanMalformedInput is returned when pipelock mcp scan could not decode a
+// line. It carries the exit code this binary reserves for bad input rather than
+// the security-finding code, because "this could not be scanned" and "this was
+// scanned and something was found" are different answers for a caller.
+var ErrMCPScanMalformedInput = cliutil.ExitCodeError(
+	cliutil.ExitConfig,
+	errors.New("malformed MCP input: one or more lines could not be decoded and were not scanned"),
+)
+
 // safeWriter wraps an io.Writer with a mutex for concurrent use.
 // Used to synchronize file sentry goroutines and RunProxy stderr output.
 type safeWriter struct {
@@ -614,8 +623,12 @@ For bidirectional MCP protection, use pipelock mcp proxy: responses are scanned
 before forwarding, and requests are scanned for DLP leaks and injection in tool
 arguments.
 
-Exit code 0 if all responses are clean, 1 if any response security finding
-(prompt injection or generic inbound credential) is detected.
+Exit code 0 only if every response was scanned and all were clean, 1 if any
+response security finding (prompt injection or generic inbound credential) is
+detected, and 2 if any line could not be decoded and was therefore never
+scanned. A finding outranks a decode failure. Scanning covers response
+injection and inbound DLP; it does not include tool scanning or tool policy,
+which are proxy features.
 In text mode, only findings are printed. In JSON mode, every line produces a verdict.
 
 Examples:
@@ -654,12 +667,21 @@ Examples:
 			}
 			defer sc.Close()
 
-			found, err := mcp.ScanStream(cmd.InOrStdin(), cmd.OutOrStdout(), sc, jsonOutput)
+			found, malformed, err := mcp.ScanStreamResult(cmd.InOrStdin(), cmd.OutOrStdout(), sc, jsonOutput)
 			if err != nil {
 				return err
 			}
 			if found {
 				return ErrMCPResponseSecurityFinding
+			}
+			// A line that could not be decoded was never scanned, so it must not
+			// share an exit code with verified-clean input. A caller gating CI on
+			// process status would otherwise read undecodable input as safe.
+			// Exit 2 is the code this binary already reserves for bad input, and
+			// `pipelock explain mcp-response` already returns it for the same
+			// input, so this makes the two agree rather than inventing a scheme.
+			if malformed {
+				return ErrMCPScanMalformedInput
 			}
 
 			return nil

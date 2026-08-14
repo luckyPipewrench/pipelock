@@ -424,10 +424,24 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, inclu
 // security finding was detected. Parse errors are reported but do not count as a
 // finding.
 func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (bool, error) {
+	found, _, err := ScanStreamResult(r, w, sc, jsonOutput)
+	return found, err
+}
+
+// ScanStreamResult scans a stream and reports security findings and malformed
+// input separately.
+//
+// The two are different answers and must not share one. A line this command
+// could not decode was never scanned, so reporting it alongside verified-clean
+// input tells a caller the opposite of the truth. Callers that gate on process
+// status need to distinguish "nothing was found" from "something could not be
+// looked at".
+func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (found, malformed bool, err error) {
 	lineScanner := bufio.NewScanner(r)
 	lineScanner.Buffer(make([]byte, 0, 64*1024), transport.MaxLineSize)
 
 	foundFinding := false
+	sawMalformed := false
 	lineNum := 0
 
 	for lineScanner.Scan() {
@@ -441,6 +455,9 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 		verdict.Line = lineNum
 		verdict.Scanned = scanVerdictScopes()
 
+		if verdict.Error != "" {
+			sawMalformed = true
+		}
 		if !verdict.Clean && verdict.Error == "" {
 			foundFinding = true
 		}
@@ -448,24 +465,24 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 		if jsonOutput {
 			data, err := json.Marshal(verdict)
 			if err != nil {
-				return foundFinding, fmt.Errorf("marshaling verdict: %w", err)
+				return foundFinding, sawMalformed, fmt.Errorf("marshaling verdict: %w", err)
 			}
 			data = append(data, '\n')
 			if _, err := w.Write(data); err != nil {
-				return foundFinding, fmt.Errorf("writing verdict: %w", err)
+				return foundFinding, sawMalformed, fmt.Errorf("writing verdict: %w", err)
 			}
 		} else {
 			if err := writeTextVerdict(w, verdict); err != nil {
-				return foundFinding, err
+				return foundFinding, sawMalformed, err
 			}
 		}
 	}
 
 	if err := lineScanner.Err(); err != nil {
-		return foundFinding, fmt.Errorf("reading input: %w", err)
+		return foundFinding, sawMalformed, fmt.Errorf("reading input: %w", err)
 	}
 
-	return foundFinding, nil
+	return foundFinding, sawMalformed, nil
 }
 
 func scanVerdictScopes() []string {

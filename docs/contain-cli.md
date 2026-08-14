@@ -123,10 +123,11 @@ Upgrade performs a containment-aware binary update in one fail-closed command. I
 
 The sequence is:
 
-1. Download and verify the candidate release by invoking the **deployed** binary's `pipelock update --yes` (Ed25519 manifest + checksums + optional cosign), which replaces the binary only after those checks pass.
-2. Re-pin the SHA-256 integrity hash against the newly deployed binary at `/etc/pipelock/integrity/binary-pin.sha256`.
-3. Restart the `pipelock.service` systemd unit and wait for readiness.
-4. Run `contain verify` and require exit 0, which means every probe passed.
+1. Validate the managed config with the integrity-pinned deployed binary and require containment-safe metrics before any binary or service change.
+2. Download and verify the candidate release by invoking the **deployed** binary's `pipelock update --yes` (Ed25519 manifest + checksums + optional cosign), which replaces the binary only after those checks pass.
+3. Re-pin the SHA-256 integrity hash against the newly deployed binary at `/etc/pipelock/integrity/binary-pin.sha256`.
+4. Restart the `pipelock.service` systemd unit and wait for readiness.
+5. Run `contain verify` and repeat the managed-config check. Exit 0 means every probe passed.
    A failing probe exits 1 and a skipped or inconclusive probe exits 2, so
    both roll the upgrade back.
 
@@ -155,7 +156,7 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify is read-only. It walks 12 probes in order and prints pass / fail / skip /
+Verify is read-only. It walks 13 probes in order and prints pass / fail / skip /
 unknown per probe. It does not require root.
 
 ```bash
@@ -176,6 +177,19 @@ pipelock contain verify
 | 10 | `binary_integrity_pin` | The installed pipelock binary hash matches `/etc/pipelock/integrity/binary-pin.sha256`. |
 | 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
+| 13 | `managed_config_metrics` | The managed config keeps `metrics_listen` on a dedicated numeric loopback port. It skips when the config cannot be read and reports unknown for other read failures. |
+
+### Managed metrics invariant
+
+Containment requires `metrics_listen` to remain a numeric loopback address on a port other than the agent-accessible proxy port. Keep the key present. Removing it registers `/metrics` and `/stats` on the proxy listener, where the contained agent can reach them.
+
+Repair the managed config with a dedicated loopback listener such as:
+
+```yaml
+metrics_listen: 127.0.0.1:9091
+```
+
+Choose another unused non-proxy port if `9091` is unavailable. Do not delete `metrics_listen` to disable metrics.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking

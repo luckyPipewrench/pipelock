@@ -143,6 +143,7 @@ type probeEnv struct {
 	pinPath            string
 	wrapperInvPath     string
 	toolsListPath      string
+	configPath         string
 	workspacePaths     []string
 	pipelockTarget     string
 	verifyRunningImage bool
@@ -190,6 +191,7 @@ func defaultProbeEnv() *probeEnv {
 		pinPath:            defaultIntegrityPin,
 		wrapperInvPath:     defaultWrapperInvPath,
 		toolsListPath:      defaultToolsListPath,
+		configPath:         filepath.Join(defaultConfigDir, "pipelock.yaml"),
 		pipelockTarget:     defaultPipelockTarget,
 		verifyRunningImage: true,
 		runCmd:             realRunCommand,
@@ -334,6 +336,7 @@ func allProbes() []probe {
 		{10, "binary_integrity_pin", "deployed and running pipelock binary match TOFU pin", probeBinaryIntegrity},
 		{11, "cc_launch_allow_list_enforced", "plk-launch rejects tools missing from the allow-list", probeCCLaunchAllowList},
 		{12, "listed_tool_targets_resolvable", "tools.list entries resolve for pipelock-agent", probeListedToolTargets},
+		{13, "managed_config_metrics", "managed config keeps metrics on a dedicated loopback port", probeManagedConfigMetrics},
 	}
 }
 
@@ -348,7 +351,7 @@ func probesForEnv(env *probeEnv) []probe {
 		}
 	}
 	if len(env.workspacePaths) > 0 {
-		probes = append(probes, probe{13, "workspace_access", "pipelock-agent can read configured workspace paths", probeWorkspaceAccess})
+		probes = append(probes, probe{14, "workspace_access", "pipelock-agent can read configured workspace paths", probeWorkspaceAccess})
 	}
 	return probes
 }
@@ -753,7 +756,7 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Run read-only probes against the containment model",
-		Long: `Run twelve read-only probes to verify the workstation containment model
+		Long: `Run thirteen read-only probes to verify the workstation containment model
 is installed correctly and the boundary is intact.
 
 Probes inspect system users, the pipelock systemd unit, nftables rules,
@@ -761,8 +764,9 @@ wrapper scripts, the CA bundle, the pipelock loopback bind, the NO_PROXY
 policy, run two egress canaries (pipelock-agent must NOT reach the internet
 directly; the operator user must still reach the internet), verify the
 deployed and running service binaries match the TOFU integrity pin written at
-install time, and exercise plk-launch end-to-end with a sentinel tool to confirm
-the allow-list enforcement path actually fires. Pass --workspace to also
+install time, exercise plk-launch end-to-end with a sentinel tool to confirm
+the allow-list enforcement path actually fires, and check that the managed
+config keeps metrics on a dedicated loopback port. Pass --workspace to also
 verify that pipelock-agent can read/traverse real project directories.
 Pass --enforcement-only when another process owns the proxy lifecycle;
 that mode verifies the kernel/user/wrapper controls and the pinned file at the
@@ -1029,6 +1033,34 @@ func parseSystemdShow(out string) map[string]string {
 		fields[k] = v
 	}
 	return fields
+}
+
+// ---------------------------------------------------------------------------
+// Probe 13: managed_config_metrics
+// ---------------------------------------------------------------------------
+
+// probeManagedConfigMetrics verifies the containment-specific metrics surface
+// from the managed config without starting or reloading Pipelock. An operator
+// may run verify without root, while the managed config is readable only by
+// root and pipelock-proxy, so an unreadable or absent file is incomplete
+// evidence and must not become a pass.
+func probeManagedConfigMetrics(_ context.Context, env *probeEnv) (string, string) {
+	configPath := filepath.Clean(env.configPath)
+	data, err := env.readFile(configPath)
+	if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return statusSkip, fmt.Sprintf("managed config %s is missing", configPath)
+		case errors.Is(err, os.ErrPermission):
+			return statusSkip, fmt.Sprintf("managed config %s is not readable; rerun as root", configPath)
+		default:
+			return statusUnknown, fmt.Sprintf("read managed config %s: %v", configPath, err)
+		}
+	}
+	if _, err := containServiceReadOnlyPaths(data, env.port); err != nil {
+		return statusFail, fmt.Sprintf("managed config %s violates containment metrics policy: %v", configPath, err)
+	}
+	return statusPass, fmt.Sprintf("managed config %s keeps metrics off the agent-accessible proxy port", configPath)
 }
 
 // ---------------------------------------------------------------------------

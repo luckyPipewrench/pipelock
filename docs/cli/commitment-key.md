@@ -16,9 +16,16 @@ logging:
   file: /var/log/pipelock/audit.jsonl
 ```
 
+New keyrings use `pipelock-commitment-keyring/v2`. Each file carries a required
+`content_check` in the form `sha256:<hex>`. Pipelock computes it over the
+domain-separated canonical keyring content, excluding `content_check` itself.
+It detects accidental corruption and transport damage. It cannot establish
+authenticity: a party that can rewrite the backup can recompute this check.
+
 The configured file is loaded at startup. A missing keyring, a symlink, a
-non-regular file, malformed content, the wrong key purpose, or permissions
-other than `0600` aborts startup. The path is restart-only.
+non-regular file, malformed content, a v1 or check-less format, a failed
+corruption check, the wrong key purpose, or permissions other than `0600`
+aborts startup. The path is restart-only.
 
 Initialize and inspect the keyring:
 
@@ -27,8 +34,11 @@ pipelock commitment-key initialize --config /etc/pipelock/pipelock.yaml
 pipelock commitment-key inspect --config /etc/pipelock/pipelock.yaml
 ```
 
-Initialization creates 32 random bytes, an opaque key ID, and epoch 1. Inspect
-prints metadata only; it never prints key material.
+Initialization creates 32 random bytes, an opaque random key ID, and epoch 1.
+Inspect prints metadata only; it never prints key material. Its `validation`
+object reports `structural: "valid"` and `corruption: "valid"` after those
+checks pass. It always reports `authenticity: "not_established"`: no evidence
+producer retains a commitment outside this backup's write domain yet.
 
 Rotate without breaking historical opening:
 
@@ -64,6 +74,23 @@ pipelock commitment-key restore \
   --config /etc/pipelock/pipelock.yaml \
   --from /secure-backup/commitment-keyring.json
 ```
+
+The default restore rejects v1 and check-less backups. Use the one legacy
+recovery escape hatch only when the operator accepts that the legacy source's
+corruption status cannot be checked:
+
+```bash
+pipelock commitment-key restore \
+  --config /etc/pipelock/pipelock.yaml \
+  --from /secure-backup/legacy-commitment-keyring.json \
+  --allow-unverified-legacy-recovery
+```
+
+This command requires the same file-backed lifecycle audit sink as every
+mutation. It records `operator_unverified_legacy_recovery` in the durable
+intent and outcome records, writes a v2 content check for later corruption
+checks, and reports `corruption: "unverified_legacy_recovery"`. The new check
+does not establish whether the legacy backup was already corrupted.
 
 `pipelock commitment-key test` recomputes the PR 3 `CommitView` contract for a
 named key ID and epoch. The private transformed view is read from stdin by

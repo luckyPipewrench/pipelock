@@ -51,6 +51,8 @@ func TestCommandLifecycleAndAudit(t *testing.T) {
 	}
 	if got := decodeMetadata(t, stdout); got.ActiveID != first.ActiveID || got.Epoch != 1 {
 		t.Fatalf("inspect metadata = %+v, want active %q epoch 1", got, first.ActiveID)
+	} else if got.Validation.Structural != "valid" || got.Validation.Corruption != "valid" || got.Validation.Authenticity != "not_established" {
+		t.Fatalf("inspect validation = %+v, want structural and corruption validity without authenticity", got.Validation)
 	}
 	assertAudit(t, stderr, "inspect", "succeeded")
 	assertNoKeyMaterial(t, stdout, stderr)
@@ -329,6 +331,52 @@ func TestLifecycleDurableAuditCoversMutationsAndDenial(t *testing.T) {
 		assertDurableMutationAuditPair(t, auditPath, operation, outcome)
 	}
 	assertNoKeyMaterial(t, string(mustReadFile(t, auditPath)))
+}
+
+func TestRestoreUnverifiedLegacyRecoveryIsAudited(t *testing.T) {
+	dir := t.TempDir()
+	keyringPath := filepath.Join(dir, "keyring.json")
+	backupPath := filepath.Join(dir, "legacy-backup.json")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := writeLifecycleAuditConfig(t, dir, keyringPath, auditPath, "file", "")
+	if _, _, err := execute(t, "initialize", "--config", configPath); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, _, err := execute(t, "backup", "--config", configPath, "--out", backupPath); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	makeBackupLegacyAndCheckless(t, backupPath)
+	if err := os.Remove(keyringPath); err != nil {
+		t.Fatalf("remove live keyring: %v", err)
+	}
+
+	if _, stderr, err := execute(t, "restore", "--config", configPath, "--from", backupPath); !errors.Is(err, domkey.ErrInvalidKeyring) {
+		t.Fatalf("default restore error = %v, want ErrInvalidKeyring", err)
+	} else {
+		assertDurableAudit(t, auditPath, "restore", "denied")
+		assertAuditReason(t, stderr, "invalid_keyring")
+	}
+
+	stdout, stderr, err := execute(t, "restore", "--config", configPath, "--from", backupPath, "--allow-unverified-legacy-recovery")
+	if err != nil {
+		t.Fatalf("unverified legacy recovery: %v", err)
+	}
+	metadata := decodeMetadata(t, stdout)
+	if got := metadata.Validation; got.Structural != "valid" || got.Corruption != "unverified_legacy_recovery" || got.Authenticity != "not_established" {
+		t.Fatalf("legacy recovery metadata validation = %+v", got)
+	}
+	assertAudit(t, stderr, "restore", "succeeded")
+	assertAuditAuthorization(t, stderr, "operator_unverified_legacy_recovery")
+	assertDurableAuditAuthorization(t, auditPath, "restore", "operator_unverified_legacy_recovery")
+	assertDurableMutationAuditPair(t, auditPath, "restore", "succeeded")
+
+	stdout, _, err = execute(t, "inspect", "--config", configPath)
+	if err != nil {
+		t.Fatalf("inspect recovered keyring: %v", err)
+	}
+	if got := decodeMetadata(t, stdout).Validation.Corruption; got != "unverified_legacy_recovery" {
+		t.Fatalf("inspect legacy recovery corruption status = %q, want unverified_legacy_recovery", got)
+	}
 }
 
 func TestLifecycleAuditFileMatchesStderrRecord(t *testing.T) {
@@ -1211,6 +1259,24 @@ func lifecycleAuditConfig(keyringPath, auditPath, output, includeBlocked string)
 	return body + "evidence_provenance:\n  commitment_keyring_path: " + keyringPath + "\n"
 }
 
+func makeBackupLegacyAndCheckless(t *testing.T, path string) {
+	t.Helper()
+	data := mustReadFile(t, path)
+	var backup map[string]any
+	if err := json.Unmarshal(data, &backup); err != nil {
+		t.Fatalf("decode backup: %v", err)
+	}
+	backup["format"] = domkey.FormatV1
+	delete(backup, "content_check")
+	legacy, err := json.MarshalIndent(backup, "", "  ")
+	if err != nil {
+		t.Fatalf("encode legacy backup: %v", err)
+	}
+	if err := os.WriteFile(path, append(legacy, '\n'), 0o600); err != nil {
+		t.Fatalf("write legacy backup: %v", err)
+	}
+}
+
 func assertDurableAudit(t *testing.T, path, operation, outcome string) {
 	t.Helper()
 	for _, line := range strings.Split(strings.TrimSpace(string(mustReadFile(t, path))), "\n") {
@@ -1223,6 +1289,41 @@ func assertDurableAudit(t *testing.T, path, operation, outcome string) {
 		}
 	}
 	t.Fatalf("durable audit %s/%s not found in %s", operation, outcome, path)
+}
+
+// assertDurableAuditAuthorization requires the authorization on BOTH the intent
+// and the outcome record.
+//
+// Accepting either one is not enough. The intent record is written before the
+// operation runs, so a version that recorded the exceptional authorization on
+// the way in and dropped it from the successful outcome would still satisfy a
+// match-any check, and the durable record of WHAT WAS ACTUALLY ALLOWED is the
+// outcome. That is the record an operator reads after an incident.
+func assertDurableAuditAuthorization(t *testing.T, path, operation, authorization string) {
+	t.Helper()
+	seen := make(map[string]bool, 2)
+	for _, line := range strings.Split(strings.TrimSpace(string(mustReadFile(t, path))), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event["event"] != "commitment_key_lifecycle" || event["operation"] != operation {
+			continue
+		}
+		if event["authorization"] != authorization {
+			continue
+		}
+		if phase, ok := event["phase"].(string); ok {
+			seen[phase] = true
+		}
+	}
+	for _, phase := range []string{"intent", "outcome"} {
+		if !seen[phase] {
+			t.Fatalf("durable audit %s %s record does not carry authorization %q in %s; "+
+				"the exceptional authorization has to survive onto the record of what was allowed",
+				operation, phase, authorization, path)
+		}
+	}
 }
 
 func assertDurableMutationAuditPair(t *testing.T, path, operation, outcome string) {

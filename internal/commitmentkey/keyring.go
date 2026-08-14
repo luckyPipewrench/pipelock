@@ -8,6 +8,7 @@ package commitmentkey
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,9 +21,12 @@ import (
 
 const (
 	FormatV1 = "pipelock-commitment-keyring/v1"
+	FormatV2 = "pipelock-commitment-keyring/v2"
 	Purpose  = "evidence-commitment"
 	keyBytes = 32
 	maxBytes = 1 << 20
+
+	contentCheckDomain = "pipelock/commitment-keyring/content-check/v2\x00"
 )
 
 var (
@@ -51,19 +55,30 @@ type Entry struct {
 }
 
 type Keyring struct {
-	Format   string  `json:"format"`
-	Purpose  string  `json:"purpose"`
-	ActiveID string  `json:"active_key_id"`
-	Epoch    uint64  `json:"epoch"`
-	Keys     []Entry `json:"keys"`
+	Format                   string  `json:"format"`
+	Purpose                  string  `json:"purpose"`
+	ActiveID                 string  `json:"active_key_id"`
+	Epoch                    uint64  `json:"epoch"`
+	Keys                     []Entry `json:"keys"`
+	ContentCheck             string  `json:"content_check"`
+	LegacyRecoveryUnverified bool    `json:"legacy_recovery_unverified,omitempty"`
 }
 
 type Metadata struct {
-	Format   string          `json:"format"`
-	Purpose  string          `json:"purpose"`
-	ActiveID string          `json:"active_key_id"`
-	Epoch    uint64          `json:"epoch"`
-	Keys     []EntryMetadata `json:"keys"`
+	Format     string             `json:"format"`
+	Purpose    string             `json:"purpose"`
+	ActiveID   string             `json:"active_key_id"`
+	Epoch      uint64             `json:"epoch"`
+	Keys       []EntryMetadata    `json:"keys"`
+	Validation ValidationMetadata `json:"validation"`
+}
+
+// ValidationMetadata distinguishes the checks this command can make from
+// authenticity, which requires evidence retained outside the keyring backup.
+type ValidationMetadata struct {
+	Structural   string `json:"structural"`
+	Corruption   string `json:"corruption"`
+	Authenticity string `json:"authenticity"`
 }
 
 type EntryMetadata struct {
@@ -88,7 +103,7 @@ func Initialize(path string, now time.Time) (*Keyring, error) {
 	if err != nil {
 		return nil, err
 	}
-	keyring := &Keyring{Format: FormatV1, Purpose: Purpose, ActiveID: entry.KeyID, Epoch: 1, Keys: []Entry{entry}}
+	keyring := &Keyring{Format: FormatV2, Purpose: Purpose, ActiveID: entry.KeyID, Epoch: 1, Keys: []Entry{entry}}
 	data, err := marshal(keyring)
 	if err != nil {
 		return nil, err
@@ -107,24 +122,35 @@ func Load(path string) (*Keyring, error) {
 	if err != nil {
 		return nil, err
 	}
-	var keyring Keyring
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&keyring); err != nil {
-		return nil, fmt.Errorf("%w: decode: %w", ErrInvalidKeyring, err)
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%w: trailing JSON", ErrInvalidKeyring)
+	keyring, err := decode(raw)
+	if err != nil {
+		return nil, err
 	}
 	if err := keyring.Validate(); err != nil {
 		return nil, err
 	}
-	return &keyring, nil
+	return keyring, nil
 }
 
 func (k *Keyring) Validate() error {
-	if k.Format != FormatV1 {
+	if err := k.validateStructure(false); err != nil {
+		return err
+	}
+	if k.ContentCheck == "" {
+		return fmt.Errorf("%w: missing required content check", ErrInvalidKeyring)
+	}
+	expected, err := k.expectedContentCheck()
+	if err != nil {
+		return err
+	}
+	if k.ContentCheck != expected {
+		return fmt.Errorf("%w: content check does not match keyring content", ErrInvalidKeyring)
+	}
+	return nil
+}
+
+func (k *Keyring) validateStructure(allowLegacy bool) error {
+	if k.Format != FormatV2 && (!allowLegacy || k.Format != FormatV1) {
 		return fmt.Errorf("%w: format %q", ErrInvalidKeyring, k.Format)
 	}
 	if k.Purpose != Purpose {
@@ -289,9 +315,6 @@ func (k *Keyring) retire(path, keyID string, epoch uint64, acceptLoss bool) erro
 // saveLocked persists a validated lifecycle mutation. Callers must hold the
 // cross-process lifecycle lock for path.
 func (k *Keyring) saveLocked(path string) error {
-	if err := k.Validate(); err != nil {
-		return err
-	}
 	data, err := marshal(k)
 	if err != nil {
 		return err
@@ -303,7 +326,22 @@ func (k *Keyring) saveLocked(path string) error {
 }
 
 func (k *Keyring) Metadata() Metadata {
-	metadata := Metadata{Format: k.Format, Purpose: k.Purpose, ActiveID: k.ActiveID, Epoch: k.Epoch, Keys: make([]EntryMetadata, 0, len(k.Keys))}
+	corruption := "valid"
+	if k.LegacyRecoveryUnverified {
+		corruption = "unverified_legacy_recovery"
+	}
+	metadata := Metadata{
+		Format:   k.Format,
+		Purpose:  k.Purpose,
+		ActiveID: k.ActiveID,
+		Epoch:    k.Epoch,
+		Keys:     make([]EntryMetadata, 0, len(k.Keys)),
+		Validation: ValidationMetadata{
+			Structural:   "valid",
+			Corruption:   corruption,
+			Authenticity: "not_established",
+		},
+	}
 	for _, entry := range k.Keys {
 		metadata.Keys = append(metadata.Keys, EntryMetadata{KeyID: entry.KeyID, Epoch: entry.Epoch, State: entry.State, CreatedAt: entry.CreatedAt, RetiredAt: entry.RetiredAt})
 	}
@@ -317,6 +355,28 @@ func Backup(source, destination string) (*Keyring, error) {
 
 func Restore(source, destination string) (*Keyring, error) {
 	return copyValidated(source, destination, "load commitment keyring backup", "restore commitment keyring")
+}
+
+// RestoreLegacyUnverified recovers a v1 or check-less backup only when an
+// operator explicitly invokes the legacy recovery command. The result retains
+// that unverified status because a new check cannot establish whether the
+// legacy source was corrupted before recovery.
+func RestoreLegacyUnverified(source, destination string) (*Keyring, error) {
+	keyring, err := loadLegacyUnverified(source)
+	if err != nil {
+		return nil, fmt.Errorf("load unverified legacy commitment keyring backup: %w", err)
+	}
+	if err := ensureParent(destination); err != nil {
+		return nil, err
+	}
+	data, err := marshal(keyring)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeSecureNew(destination, data); err != nil {
+		return nil, fmt.Errorf("restore unverified legacy commitment keyring: %w", err)
+	}
+	return keyring, nil
 }
 
 func copyValidated(source, destination, loadContext, writeContext string) (*Keyring, error) {
@@ -337,6 +397,29 @@ func copyValidated(source, destination, loadContext, writeContext string) (*Keyr
 	return keyring, nil
 }
 
+func loadLegacyUnverified(path string) (*Keyring, error) {
+	raw, err := readSecure(path)
+	if err != nil {
+		return nil, err
+	}
+	keyring, err := decode(raw)
+	if err != nil {
+		return nil, err
+	}
+	if keyring.ContentCheck != "" {
+		if err := keyring.Validate(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: legacy recovery only accepts a v1 or check-less keyring", ErrInvalidKeyring)
+	}
+	if err := keyring.validateStructure(true); err != nil {
+		return nil, err
+	}
+	keyring.Format = FormatV2
+	keyring.LegacyRecoveryUnverified = true
+	return keyring, nil
+}
+
 func newEntry(epoch uint64, now time.Time) (Entry, error) {
 	material := make([]byte, keyBytes)
 	if _, err := io.ReadFull(rand.Reader, material); err != nil {
@@ -350,9 +433,61 @@ func newEntry(epoch uint64, now time.Time) (Entry, error) {
 }
 
 func marshal(keyring *Keyring) ([]byte, error) {
+	if err := keyring.validateStructure(false); err != nil {
+		return nil, err
+	}
+	contentCheck, err := keyring.expectedContentCheck()
+	if err != nil {
+		return nil, err
+	}
+	keyring.ContentCheck = contentCheck
+	if err := keyring.Validate(); err != nil {
+		return nil, err
+	}
 	data, err := json.MarshalIndent(keyring, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal commitment keyring: %w", err)
 	}
 	return append(data, '\n'), nil
+}
+
+type canonicalKeyringContent struct {
+	Format                   string  `json:"format"`
+	Purpose                  string  `json:"purpose"`
+	ActiveID                 string  `json:"active_key_id"`
+	Epoch                    uint64  `json:"epoch"`
+	Keys                     []Entry `json:"keys"`
+	LegacyRecoveryUnverified bool    `json:"legacy_recovery_unverified,omitempty"`
+}
+
+func (k *Keyring) expectedContentCheck() (string, error) {
+	keys := append([]Entry(nil), k.Keys...)
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Epoch < keys[j].Epoch })
+	content, err := json.Marshal(canonicalKeyringContent{
+		Format:                   k.Format,
+		Purpose:                  k.Purpose,
+		ActiveID:                 k.ActiveID,
+		Epoch:                    k.Epoch,
+		Keys:                     keys,
+		LegacyRecoveryUnverified: k.LegacyRecoveryUnverified,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal canonical commitment keyring content: %w", err)
+	}
+	sum := sha256.Sum256(append([]byte(contentCheckDomain), content...))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func decode(raw []byte) (*Keyring, error) {
+	var keyring Keyring
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&keyring); err != nil {
+		return nil, fmt.Errorf("%w: decode: %w", ErrInvalidKeyring, err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: trailing JSON", ErrInvalidKeyring)
+	}
+	return &keyring, nil
 }

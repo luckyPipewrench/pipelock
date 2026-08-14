@@ -257,33 +257,43 @@ func backupCmd() *cobra.Command {
 func restoreCmd() *cobra.Command {
 	var flags pathFlags
 	var from string
+	var allowUnverifiedLegacyRecovery bool
 	cmd := &cobra.Command{
 		Use:   "restore",
-		Short: "Restore a validated backup into an absent keyring path",
+		Short: "Restore a corruption-checked backup into an absent keyring path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			emitCapabilityNotice(cmd)
+			authorization := ""
+			if allowUnverifiedLegacyRecovery {
+				authorization = "operator_unverified_legacy_recovery"
+			}
 			if err := flags.prepareLifecycleAudit(cmd, true, from); err != nil {
 				err = fmt.Errorf("restore: file-backed lifecycle audit sink: %w", err)
-				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err, Authorization: authorization})
 			}
 			defer closeLifecycleAudit(cmd)
 			if err := requireFlags(cmd, "from"); err != nil {
-				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err, Authorization: authorization})
 			}
 			path, err := flags.resolve()
 			if err != nil {
-				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err, Authorization: authorization})
 			}
-			if err := beginMutationAudit(cmd, "restore", "", 0, ""); err != nil {
+			if err := beginMutationAudit(cmd, "restore", "", 0, authorization); err != nil {
 				err = fmt.Errorf("restore: durable lifecycle audit intent: %w", err)
-				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err, Authorization: authorization})
 			}
-			keyring, err := domkey.Restore(filepath.Clean(from), path)
+			var keyring *domkey.Keyring
+			if allowUnverifiedLegacyRecovery {
+				keyring, err = domkey.RestoreLegacyUnverified(filepath.Clean(from), path)
+			} else {
+				keyring, err = domkey.Restore(filepath.Clean(from), path)
+			}
 			if err != nil {
-				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err})
+				return finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "denied", Err: err, Authorization: authorization})
 			}
-			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "succeeded", KeyID: keyring.ActiveID, Epoch: keyring.Epoch}); err != nil {
+			if err := finishLifecycleAudit(cmd, lifecycleAuditOptions{Operation: "restore", Outcome: "succeeded", KeyID: keyring.ActiveID, Epoch: keyring.Epoch, Authorization: authorization}); err != nil {
 				return err
 			}
 			return writeJSON(cmd, keyring.Metadata())
@@ -291,6 +301,7 @@ func restoreCmd() *cobra.Command {
 	}
 	flags.bind(cmd)
 	cmd.Flags().StringVar(&from, "from", "", "backup file path")
+	cmd.Flags().BoolVar(&allowUnverifiedLegacyRecovery, "allow-unverified-legacy-recovery", false, "recover a v1 or check-less backup as unverified and record that exceptional recovery")
 	return cmd
 }
 

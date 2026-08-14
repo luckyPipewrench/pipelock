@@ -114,7 +114,9 @@ type ResetAuthorityDecision struct {
 	// with. The epoch advances on every accepted reset, so an operator who
 	// mints a second delegation from a stale number otherwise has no way to
 	// learn the current one short of restarting the proxy.
-	ExpectedEpoch uint64
+	ExpectedTarget     string
+	ExpectedInstanceID string
+	ExpectedEpoch      uint64
 }
 
 // ResetEpoch is the live reset generation that a delegation consumes. The
@@ -296,7 +298,12 @@ func (a *ResetAuthority) ConsumeFile(path string, kind ResetKind, epoch ResetEpo
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	expectedEpoch := epoch.CurrentEpoch()
-	decision := ResetAuthorityDecision{Delegation: d, ExpectedEpoch: expectedEpoch}
+	decision := ResetAuthorityDecision{
+		Delegation:         d,
+		ExpectedTarget:     a.target,
+		ExpectedInstanceID: a.instanceID,
+		ExpectedEpoch:      expectedEpoch,
+	}
 	now := a.now().UTC().Truncate(time.Second)
 	a.purgeExpiredConsumedLocked(now)
 	if result := a.verifyAt(d, kind, expectedEpoch, now); result != ResetAuthorityAccepted {

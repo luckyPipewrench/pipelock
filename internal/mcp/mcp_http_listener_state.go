@@ -625,8 +625,9 @@ func resetAuthorityDecisionSummary(decision ResetAuthorityDecision) string {
 	d := decision.Delegation
 	summary := fmt.Sprintf("MCP reset authority issuer=%q target=%q epoch=%d expiry=%d nonce=%q result=%s",
 		d.Issuer, d.Target, d.Epoch, d.ExpiresUnix, d.Nonce, decision.Result)
-	if decision.Result == ResetAuthorityWrongEpoch {
-		summary += fmt.Sprintf(" expected_epoch=%d", decision.ExpectedEpoch)
+	if decision.Result != ResetAuthorityAccepted {
+		summary += fmt.Sprintf(" expected_target=%q expected_instance=%q expected_epoch=%d",
+			decision.ExpectedTarget, decision.ExpectedInstanceID, decision.ExpectedEpoch)
 	}
 	return summary
 }

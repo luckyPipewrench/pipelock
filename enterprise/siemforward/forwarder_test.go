@@ -882,8 +882,13 @@ func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) 
 	var accepted atomic.Int32
 	var acceptedMu sync.Mutex
 	acceptedSequences := make(map[int]struct{})
+	if err := f.Emit(t.Context(), testEvent(0)); err != nil {
+		t.Fatalf("seed Emit: %v", err)
+	}
+	accepted.Add(1)
+	acceptedSequences[0] = struct{}{}
 	var producers sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := 1; i <= 100; i++ {
 		producers.Add(1)
 		go func(sequence int) {
 			defer producers.Done()

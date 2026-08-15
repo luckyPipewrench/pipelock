@@ -61,36 +61,6 @@ def top_level_permissions(text: str) -> dict[str, str]:
     return permissions
 
 
-def setting_keys(text: str) -> set[str]:
-    """Every mapping key that is actually in effect in a workflow document.
-
-    Comment lines are dropped so prose naming a key cannot satisfy or defeat an
-    assertion, and only the key is returned, so however a value is quoted makes
-    no difference. Deliberately dependency-free: the CI job that runs these
-    tests installs no Python packages, and an import failure there would take
-    down the whole discovery run rather than one assertion.
-    """
-    keys: set[str] = set()
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line.startswith("- "):
-            line = line[2:].strip()
-        key, separator, value = line.partition(":")
-        if not (separator and key and " " not in key):
-            continue
-        keys.add(key.strip().strip("'\""))
-        # A flow mapping puts real settings on the same line, so "with:
-        # {cache: pip}" would otherwise report only "with" and let a
-        # setup-breaking key back in green. Reported reproduction.
-        value = value.strip()
-        if value.startswith("{") and value.endswith("}"):
-            for entry in value[1:-1].split(","):
-                inner, inner_separator, _ = entry.partition(":")
-                if inner_separator and inner.strip():
-                    keys.add(inner.strip().strip("'\""))
-    return keys
-
-
 def unit(identifier: int, path: str, category: str, *, additions: int = 1, tokens: int = 2) -> object:
     return pr_review.DiffUnit(
         identifier=identifier,
@@ -178,17 +148,16 @@ class WorkflowPackagingTest(unittest.TestCase):
         self.assertIn("openai-api-key", action)
         self.assertIn("PR_REVIEW_MODEL_FAST", action)
         self.assertIn("PR_REVIEW_MODEL_DEEP", action)
-        # Either cache key breaks setup for this action, which stops every
-        # review before it starts: a dependency path built from the action path
-        # carries a dot segment that setup rejects, and enabling the cache
-        # without one makes setup search the workspace for a requirements file
-        # and fail when it finds none.
-        #
-        # This matches the KEY rather than a key and value. Earlier revisions
-        # matched "cache: pip", which any of pip, 'pip' or "pip" would have
-        # slipped past, and matched raw text, which the comment above tripped
-        # over by naming the key it forbids. A key match has neither problem.
-        self.assertEqual(setting_keys(action) & {"cache", "cache-dependency-path"}, set())
+        # There is deliberately no assertion here about pip caching. Four
+        # attempts to express one in this file were each bypassed a different
+        # way, by a comment naming the key, by a quoted value, by a flow
+        # mapping, and by whitespace before the colon, because each was a
+        # hand-rolled reader standing in for a YAML parser. A guard that keeps
+        # being wrong is worse than none: it reports safety it does not have.
+        # Reintroducing either cache key fails setup on the next review and is
+        # therefore loud and immediate, which is the detection that matters
+        # here. The reason it must not come back is recorded where the setting
+        # would live, in action.yml.
 
 
 class StateMachineTest(unittest.TestCase):

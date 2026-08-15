@@ -1633,6 +1633,37 @@ class RepeatReviewTest(unittest.TestCase):
         verified, _judged, _excluded, _undecided = self._judge(payload, candidates)
         self.assertEqual(verified, [], "the first decision for an index wins")
 
+    def test_an_unhashable_verdict_does_not_crash_the_run(self) -> None:
+        # A set-membership test on model output raises TypeError for any JSON
+        # array or object. TypeError is not ModelOutputError, so it escaped the
+        # handler written for bad model output entirely, and the publish-on-exit
+        # path then reported a verdict derived from state that never recorded
+        # the failure.
+        for verdict in (["keep"], {"v": "keep"}, 7, None):
+            with self.subTest(verdict=verdict):
+                payload = {"findings": [{"index": 0, "verdict": verdict, "reason": "r"}]}
+                with self.assertRaises(pr_review.ModelOutputError):
+                    self._judge(payload, self._cands(1))
+
+    def test_an_unhashable_severity_or_path_is_a_model_output_error(self) -> None:
+        # The sibling of the same class in the chunk-finding parser. Found by
+        # grepping every set-membership test against a model-supplied value
+        # rather than fixing only the reported instance.
+        for bad in ({"severity": ["high"]}, {"path": {"p": "f.go"}}):
+            with self.subTest(bad=bad):
+                item = {
+                    "severity": "high", "path": "f.go", "line": 1, "title": "T",
+                    "why": "w", "fix": "f", "needs_verification": False,
+                }
+                item.update(bad)
+                # No "changes" key: require_changes is None here, so the
+                # payload schema expects findings alone. Passing changes made
+                # the payload fail the outer check and never reach the
+                # membership test this covers.
+                with self.assertRaises(pr_review.ModelOutputError) as caught:
+                    pr_review.parse_findings({"findings": [item]}, {"f.go"})
+                self.assertIn("invalid severity or path", str(caught.exception))
+
     def test_candidates_discarded_unjudged_are_counted(self) -> None:
         # Observed live: a deep review read 7 of 7 units, omitted nothing, and
         # published "No verified material findings were published" because the

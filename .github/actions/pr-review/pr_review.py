@@ -754,6 +754,12 @@ def parse_findings(payload: object, allowed_paths: set[str], *, require_changes:
         severity = item["severity"]
         path = item["path"]
         line = item["line"]
+        # isinstance first: a JSON array or object is unhashable, and testing
+        # set membership on it raises TypeError, which is not ModelOutputError
+        # and so escapes the handler written for exactly this kind of bad
+        # model output.
+        if not isinstance(severity, str) or not isinstance(path, str):
+            raise ModelOutputError("finding has an invalid severity or path")
         if severity not in {"high", "medium", "low"} or path not in allowed_paths:
             raise ModelOutputError("finding has an invalid severity or path")
         if line is not None and (type(line) is not int or line < 1):
@@ -1274,7 +1280,9 @@ def judge_findings(
         verdict = item["verdict"]
         if type(index) is not int or index < 0 or index >= len(candidates) or index in decisions:
             continue
-        if verdict not in {"keep", "drop", "needs_verification"}:
+        # Same reason as the severity check above: an unhashable verdict would
+        # raise TypeError out of this function rather than dropping one row.
+        if not isinstance(verdict, str) or verdict not in {"keep", "drop", "needs_verification"}:
             continue
         try:
             _required_string(item["reason"], "judge reason", limit=300)
@@ -1821,6 +1829,10 @@ def run_review(
                 )
                 if not judged:
                     progress.incomplete_reasons.append("actual-code judge context was unavailable")
+                    # This path returns before any decision, so every candidate
+                    # is lost here as well.
+                    if reason := discarded_candidates_reason(candidates):
+                        progress.incomplete_reasons.append(reason)
                 if unjudged:
                     progress.incomplete_reasons.append(
                         f"{len(unjudged)} candidate finding(s) exceeded the judge payload budget and were not published"

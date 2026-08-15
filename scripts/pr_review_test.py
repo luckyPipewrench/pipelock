@@ -6,6 +6,7 @@
 
 import importlib.util
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -113,10 +114,10 @@ class WorkflowPackagingTest(unittest.TestCase):
 
         review = workflow["jobs"]["review"]
         self.assertEqual(review["needs"], "admit")
-        # One provider remains. A second was carried for a gateway no
-        # repository ever configured, so its branch never ran.
-        self.assertIn("HAS_OPENAI", review["env"])
-        self.assertNotIn("HAS_LITELLM", review["env"])
+        # Exactly the provider-presence flags, stated positively. Asserting
+        # that one removed flag is absent would only catch that one spelling
+        # and would say nothing about a third provider added later.
+        self.assertEqual(set(review["env"]), {"HAS_OPENAI"})
         checkout = review["steps"][0]
         self.assertEqual(checkout["with"]["repository"], "luckyPipewrench/pipelock")
         self.assertEqual(checkout["with"]["ref"], "${{ inputs.reviewer_sha }}")
@@ -1130,15 +1131,19 @@ class SingleProviderTest(unittest.TestCase):
         self.assertEqual(endpoint, "https://api.openai.com/v1/chat/completions")
         self.assertEqual(key, "key")
 
-    def test_a_stale_gateway_variable_cannot_redirect_the_provider_call(self) -> None:
-        # The removed branch chose its endpoint from an environment variable.
-        # A leftover value in a repository or runner must not be able to send
-        # the review, its diff and its credential somewhere else.
-        environment = {
-            "OPENAI_API_KEY": "key",
-            "LITELLM_BASE_URL": "https://attacker.vendor.example/v1",
-            "LITELLM_API_KEY": "other",
-        }
+    def test_no_environment_value_can_redirect_the_provider_call(self) -> None:
+        # The endpoint is a constant, not something the environment supplies.
+        # This is the property worth holding: a review carries the repository's
+        # diff and a credential, so anything able to name the destination could
+        # send both somewhere else. Stated generally rather than against one
+        # variable, since the risk is any endpoint-shaped value on the runner,
+        # not the particular one a removed provider branch happened to read.
+        environment = {"OPENAI_API_KEY": "key"}
+        for name in (
+            "API_BASE", "API_BASE_URL", "BASE_URL", "OPENAI_API_BASE",
+            "OPENAI_BASE_URL", "PROVIDER_BASE_URL", "PR_REVIEW_API_BASE",
+        ):
+            environment[name] = "https://attacker.vendor.example/v1"
         with mock.patch.dict(pr_review.os.environ, environment, clear=True):
             endpoint, key = pr_review.provider_configuration()
         self.assertEqual(endpoint, "https://api.openai.com/v1/chat/completions")
@@ -1149,19 +1154,35 @@ class SingleProviderTest(unittest.TestCase):
             with self.assertRaises(pr_review.ProviderConfigurationError):
                 pr_review.provider_configuration()
 
-    def test_guide_does_not_advertise_removed_gateway_credentials(self) -> None:
-        # The provider branch, composite inputs, and reusable-workflow secrets
-        # are gone together. Leaving a gateway variable in the guide tells an
-        # adopter to configure a value the action no longer consumes.
-        #
-        # Matched case-insensitively against the whole name, not against a
-        # backtick-quoted variable. Prose reintroducing the gateway ("point
-        # LiteLLM at any upstream") tells an adopter the same wrong thing as a
-        # table row, and four earlier guards in this suite were each bypassed
-        # by matching a narrower spelling than the thing they guarded.
+    def test_every_secret_the_guide_requires_is_one_the_workflow_accepts(self) -> None:
+        # Setup instructions are the first thing an adopter follows, and a
+        # secret named there that the workflow never declares is a step that
+        # silently accomplishes nothing. Checked against the declared secrets
+        # rather than against any particular name, so it holds for a provider
+        # added or removed later and not only for one already gone.
         guide = (ROOT / "docs" / "guides" / "pr-review.md").read_text(encoding="utf-8")
-        self.assertIn("`OPENAI_API_KEY`", guide)
-        self.assertNotIn("litellm", guide.lower())
+        marker = "### Required GitHub Secret"
+        self.assertIn(marker, guide, "the guide must tell an adopter which secrets to set")
+        # Stop at the next heading of any level. Running to the next top-level
+        # heading swept in the optional-variables section, and a repository
+        # variable is not a secret: reporting one as an undeclared secret is a
+        # false alarm on correct documentation, which is how a check like this
+        # gets deleted rather than fixed.
+        section = re.split(r"\n#{2,}\s", guide.split(marker, 1)[1], maxsplit=1)[0]
+        advertised = {
+            name.strip("`")
+            for name in re.findall(r"`[A-Z][A-Z0-9_]{3,}`", section)
+        }
+        self.assertTrue(advertised, "the secrets section must name at least one secret")
+
+        declared = {name.upper() for name in load_yaml(REUSABLE_WORKFLOW)["on"]["workflow_call"]["secrets"]}
+        # GITHUB_TOKEN is supplied by Actions itself and mapped by the caller
+        # as review_token, so it is legitimately named without being declared.
+        self.assertEqual(
+            advertised - declared - {"GITHUB_TOKEN"},
+            set(),
+            "the guide names a secret the reusable workflow does not accept",
+        )
 
 
 class AdoptionStubTest(unittest.TestCase):

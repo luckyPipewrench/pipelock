@@ -1370,6 +1370,9 @@ def run_review(
 
 
 PUBLISHED_REVIEW_STATES = frozenset({"already-running", "clean", "failed", "findings", "partial", "superseded"})
+# A review that reached a verdict over the whole diff. Everything else left
+# something unreviewed, however cleanly it reported that.
+COMPLETE_REVIEW_STATES = frozenset({"clean", "findings"})
 
 
 def exit_code_for_state(state: str) -> int:
@@ -1426,6 +1429,13 @@ def main() -> None:
         print("pr-review phase=terminal attempt=1 status=failed correlation=pending", file=sys.stderr)
         raise SystemExit(1) from None
     print(f"pr-review phase=terminal attempt=1 status={state} correlation=published")
+    # Published separately from the exit code because these answer different
+    # questions. The exit code says whether the runner worked; this says
+    # whether the review actually covered the diff. Collapsing them is what
+    # made a nine-finding review look like a crashed job, and inverting the
+    # collapse would instead let an incomplete review show an all-green pull
+    # request, which reads as reviewed when it was not.
+    write_action_outputs(state=state, complete="true" if state in COMPLETE_REVIEW_STATES else "false")
     if exit_code_for_state(state):
         raise SystemExit(1)
 

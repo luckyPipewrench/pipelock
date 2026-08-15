@@ -16,6 +16,12 @@ outputs:
   correlation:
     description: Review identity written into the status comment marker.
     value: ${{ steps.run.outputs.correlation }}
+  state:
+    description: Published verdict for this review.
+    value: ${{ steps.run.outputs.state }}
+  complete:
+    description: Whether the review reached a verdict over the whole diff.
+    value: ${{ steps.run.outputs.complete }}
 inputs:
   github-token:
     description: Token permitted to read pull requests and update their status

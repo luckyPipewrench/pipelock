@@ -96,7 +96,23 @@ class WorkflowPackagingTest(unittest.TestCase):
         checkout = review["steps"][0]
         self.assertEqual(checkout["with"]["repository"], "luckyPipewrench/pipelock")
         self.assertEqual(checkout["with"]["ref"], "${{ inputs.reviewer_sha }}")
-        self.assertTrue(any(step.get("name") == "Finalize an abandoned review" and step.get("if") == "always()" for step in review["steps"]))
+        # Finalization is its own job, not a step inside review. As a step it
+        # was skipped in the case it most needs to cover: admission claims the
+        # status comment and the review job never starts, leaving the comment
+        # reading running until its stale timeout blocks later reviews.
+        finalize = workflow["jobs"]["finalize"]
+        self.assertEqual(finalize["needs"], ["admit", "review"])
+        self.assertIn("always()", finalize["if"])
+        self.assertNotIn("Finalize an abandoned review", [step.get("name") for step in review["steps"]])
+
+        # Coverage is a separate check from whether the runner published. One
+        # signal cannot carry both: collapsing them either makes a working
+        # review look crashed, or lets an incomplete review show an all-green
+        # pull request, which reads as reviewed when it was not.
+        completeness = workflow["jobs"]["completeness"]
+        self.assertEqual(completeness["needs"], ["admit", "review"])
+        self.assertIn("always()", completeness["if"])
+        self.assertEqual(review["outputs"]["complete"].count("outputs.complete"), 3)
         for step in review["steps"]:
             self.assertNotIn("secrets.", step.get("if", ""))
 
@@ -212,6 +228,20 @@ class ExitSemanticsTest(unittest.TestCase):
         for state in expected:
             self.assertEqual(pr_review.exit_code_for_state(state), 0, state)
         self.assertEqual(pr_review.exit_code_for_state("unexpected"), 1)
+
+    def test_only_a_whole_diff_review_counts_as_complete(self) -> None:
+        # The green exit says the runner published. This says the review
+        # covered the diff. Every state that left something unreviewed must
+        # report incomplete, however cleanly it reported that, or a partial
+        # review shows an all-green pull request and reads as reviewed.
+        self.assertEqual(pr_review.COMPLETE_REVIEW_STATES, {"clean", "findings"})
+        for state in pr_review.PUBLISHED_REVIEW_STATES - pr_review.COMPLETE_REVIEW_STATES:
+            self.assertNotIn(state, pr_review.COMPLETE_REVIEW_STATES, state)
+        # partial and superseded both publish a verdict and both left work
+        # undone, so they are green to run and not complete.
+        for state in ("partial", "superseded", "failed", "already-running"):
+            self.assertEqual(pr_review.exit_code_for_state(state), 0, state)
+            self.assertNotIn(state, pr_review.COMPLETE_REVIEW_STATES, state)
 
     def test_main_accepts_each_published_review_outcome(self) -> None:
         environment = {

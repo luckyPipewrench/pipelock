@@ -95,6 +95,9 @@ jobs:
     if: needs.admit.outputs.claimed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      state: ${{ steps.litellm.outputs.state || steps.openai.outputs.state || steps.nocreds.outputs.state }}
+      complete: ${{ steps.litellm.outputs.complete || steps.openai.outputs.complete || steps.nocreds.outputs.complete }}
     env:
       HAS_LITELLM: >-
         ${{ secrets.litellm_base_url != '' && secrets.litellm_api_key != '' && 'true' || 'false' }}
@@ -112,6 +115,7 @@ jobs:
       # mappings are required because personal-account repositories cannot use
       # secrets: inherit with a reusable workflow.
       - name: Run review through LiteLLM
+        id: litellm
         if: env.HAS_LITELLM == 'true'
         uses: ./trusted-pr-review/.github/actions/pr-review
         with:
@@ -130,6 +134,7 @@ jobs:
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
 
       - name: Run review through OpenAI
+        id: openai
         if: env.HAS_LITELLM != 'true' && env.HAS_OPENAI == 'true'
         uses: ./trusted-pr-review/.github/actions/pr-review
         with:
@@ -147,6 +152,7 @@ jobs:
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
 
       - name: Report missing provider credential
+        id: nocreds
         if: env.HAS_LITELLM != 'true' && env.HAS_OPENAI != 'true'
         uses: ./trusted-pr-review/.github/actions/pr-review
         with:
@@ -162,6 +168,17 @@ jobs:
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
 
+
+  # Separate from the review job on purpose. Inside it, this was skipped in the
+  # one case it most needs to cover: admission claims the status comment and the
+  # review job never starts, leaving the comment reading running until its stale
+  # timeout blocks later reviews.
+  finalize:
+    needs: [admit, review]
+    if: always() && needs.admit.outputs.claimed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
       # The job timeout, a cancellation, or a failed checkout all end this job
       # before any step above finalizes the status comment. Left running, the
       # admission check treats it as an active review and refuses later reviews
@@ -171,7 +188,6 @@ jobs:
       # the comment this run claimed, and only while that comment still reads
       # running, so a completed review is never overwritten.
       - name: Finalize an abandoned review
-        if: always()
         env:
           GH_TOKEN: ${{ secrets.review_token }}
           REPO: ${{ github.repository }}
@@ -197,3 +213,24 @@ jobs:
             "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" > /tmp/pr-review-finalize.md
           gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null
           echo "pr-review phase=finalize status=closed"
+
+  completeness:
+    needs: [admit, review]
+    if: always() && needs.admit.outputs.claimed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require a review that covered the whole diff
+        env:
+          STATE: ${{ needs.review.outputs.state }}
+          COMPLETE: ${{ needs.review.outputs.complete }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: |
+          set -euo pipefail
+          if [ "${COMPLETE}" = "true" ]; then
+            echo "pr-review coverage: complete (${STATE})"
+            exit 0
+          fi
+          echo "pr-review coverage: NOT complete (state=${STATE:-none}, review job ${REVIEW_RESULT})" >&2
+          echo "The review comment carries the verdict and the reasons it is incomplete." >&2
+          exit 1

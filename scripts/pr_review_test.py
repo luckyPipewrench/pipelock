@@ -1639,11 +1639,23 @@ class RepeatReviewTest(unittest.TestCase):
         # handler written for bad model output entirely, and the publish-on-exit
         # path then reported a verdict derived from state that never recorded
         # the failure.
+        #
+        # A second, valid decision keeps the "judge decided no candidate" guard
+        # from firing, so this asserts the bad row was SKIPPED rather than that
+        # some guard somewhere raised. With one candidate the pass raised, and
+        # the test then proved a different guard than the one it names.
         for verdict in (["keep"], {"v": "keep"}, 7, None):
             with self.subTest(verdict=verdict):
-                payload = {"findings": [{"index": 0, "verdict": verdict, "reason": "r"}]}
-                with self.assertRaises(pr_review.ModelOutputError):
-                    self._judge(payload, self._cands(1))
+                payload = {
+                    "findings": [
+                        {"index": 0, "verdict": verdict, "reason": "r"},
+                        {"index": 1, "verdict": "keep", "reason": "r"},
+                    ]
+                }
+                verified, judged, _excluded, undecided = self._judge(payload, self._cands(2))
+                self.assertTrue(judged)
+                self.assertEqual([f.title for f in verified], ["T1"])
+                self.assertEqual([f.title for f in undecided], ["T0"])
 
     def test_an_unhashable_severity_or_path_is_a_model_output_error(self) -> None:
         # The sibling of the same class in the chunk-finding parser. Found by
@@ -1701,7 +1713,7 @@ class RepeatReviewTest(unittest.TestCase):
         }
         published: dict[str, str] = {}
 
-        def capture(_repo, comment_id, _token, body, _corr):
+        def capture(_repo, comment_id, _token, body, _corr) -> dict[str, int]:
             published["body"] = body
             return {"id": comment_id}
 

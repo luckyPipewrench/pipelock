@@ -754,13 +754,18 @@ def parse_findings(payload: object, allowed_paths: set[str], *, require_changes:
         severity = item["severity"]
         path = item["path"]
         line = item["line"]
-        # isinstance first: a JSON array or object is unhashable, and testing
-        # set membership on it raises TypeError, which is not ModelOutputError
-        # and so escapes the handler written for exactly this kind of bad
-        # model output.
-        if not isinstance(severity, str) or not isinstance(path, str):
-            raise ModelOutputError("finding has an invalid severity or path")
-        if severity not in {"high", "medium", "low"} or path not in allowed_paths:
+        # The isinstance tests come first and `or` short-circuits, so a JSON
+        # array or object never reaches the set membership below. Membership on
+        # an unhashable value raises TypeError, which is not ModelOutputError
+        # and so escapes the handler written for exactly this kind of bad model
+        # output. One branch, because both halves mean the same thing to a
+        # caller and a second identical message says nothing extra.
+        if (
+            not isinstance(severity, str)
+            or not isinstance(path, str)
+            or severity not in {"high", "medium", "low"}
+            or path not in allowed_paths
+        ):
             raise ModelOutputError("finding has an invalid severity or path")
         if line is not None and (type(line) is not int or line < 1):
             raise ModelOutputError("finding has an invalid line")

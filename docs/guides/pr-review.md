@@ -22,17 +22,24 @@ The reviewer is tuned for Pipelock's security model. It flags:
 - Logging or audit gaps
 - Prompt injection escape vectors
 
-It ignores style nits and generic suggestions. `/review deep` separately checks
-production states, failure direction, blast radius, approach, sibling patterns,
-test vacuity, predecessor fixes, self-produced artifacts, availability, and
-honest convergence. A fixed scope banner says that no tests or repository-wide
-search ran; the review does not replace CodeQL or CI.
-The ten questions are an internal checklist; the posted comment is a concise,
-findings-first report rather than ten narrated sections. It uses `Findings` and
-`Audit coverage` headings and targets fewer than 1,200 words without dropping
-independently material findings. The workflow validates that shape before
-posting, retries one malformed response for correction, and fails closed if the
-replacement still violates the contract.
+It ignores style nits and generic suggestions. `/review deep` adds the
+adversarial rubric for state transitions, failure direction, blast radius, test
+vacuity, self-produced artifacts, and availability. The core security and
+correctness rubric always runs, including for test-heavy or documentation-heavy
+diffs.
+
+The runner binds the review to the PR's captured base and head SHAs, reviewer
+source SHA, and rubric version. It fetches the comparison by those exact commits
+and marks the result `superseded` if the head changes before finalization. It
+uses deterministic token budgeting instead of character slicing: Go source and
+additions rank above tests, configuration, and documentation. The final comment
+contains an omission manifest and never reports `clean` when a unit was omitted,
+collapsed, unparseable, or left without a valid structured result.
+
+Each run creates one bot-owned status comment and edits it in place. The runner
+uses strict JSON output, a cross-file synthesis pass, and a second actual-code
+judge pass before publishing findings. It strips mentions and command-shaped
+text from model-supplied fields.
 
 ## Setup
 
@@ -55,11 +62,12 @@ when intentionally overriding the reviewed defaults:
 
 | Variable | Default | Used By |
 |----------|---------|---------|
-| `PR_REVIEW_MODEL_FAST` | `gpt-5.6-luna` | `/review`, `/review tests`, `/review docs` |
+| `PR_REVIEW_MODEL_FAST` | `gpt-5.6-luna` | `/review` |
 | `PR_REVIEW_MODEL_DEEP` | `gpt-5.6-terra` | `/review deep` |
 
-The defaults live in `scripts/pr-review.py`; the workflow passes optional
-repository variables through without maintaining another copy.
+The defaults live in `.github/actions/pr-review/pr_review.py`; the composite
+action passes optional repository variables through without maintaining another
+copy.
 
 ### LiteLLM vs Direct OpenAI
 
@@ -88,13 +96,54 @@ PR_REVIEW_MODEL_FAST=groq/llama-3.3-70b-versatile
 ## Cost Control
 
 - Only runs when manually triggered (no auto-review on push)
-- Standard reviews truncate diffs at 100k characters; deep reviews allow 200k
+- Never retries an ambiguous provider timeout, which could double-spend
+- Splits by complete hunks and explicit token budgets, never a character slice
 - `/review` uses the efficient model by default
 - `/review deep` is opt-in for the xhigh adversarial pass
+
+## Reusing the reviewer in another repository
+
+Copy this workflow stub and replace both occurrences of
+`PINNED_PIPELOCK_REVIEW_COMMIT_SHA` with the same full, immutable Pipelock
+commit SHA. Do not use a branch or tag. Personal-account repositories must map
+each named secret explicitly; `secrets: inherit` is not available here.
+
+```yaml
+name: AI PR Review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    if: >-
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.author_association == 'OWNER' &&
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '/review' ||
+       github.event.comment.body == '/review deep')
+    uses: luckyPipewrench/pipelock/.github/workflows/pr-review-reusable.yaml@PINNED_PIPELOCK_REVIEW_COMMIT_SHA
+    with:
+      pr_number: ${{ github.event.issue.number }}
+      review_mode: ${{ github.event.comment.body == '/review deep' && 'deep' || 'default' }}
+      reviewer_sha: PINNED_PIPELOCK_REVIEW_COMMIT_SHA
+    secrets:
+      review_token: ${{ secrets.GITHUB_TOKEN }}
+      litellm_base_url: ${{ secrets.LITELLM_BASE_URL }}
+      litellm_api_key: ${{ secrets.LITELLM_API_KEY }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+```
 
 ## Files
 
 | File | What |
 |------|------|
-| `.github/workflows/pr-review.yaml` | GitHub Actions workflow |
-| `scripts/pr-review.py` | Review script (fetches diff, calls LLM, posts comment) |
+| `.github/workflows/pr-review.yaml` | Thin Pipelock caller for the reusable workflow |
+| `.github/workflows/pr-review-reusable.yaml` | Shared job control plane, permissions, and concurrency |
+| `.github/actions/pr-review/` | Composite action, runner, and pinned Python requirements |

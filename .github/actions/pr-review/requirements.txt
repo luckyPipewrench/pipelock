@@ -1,4 +1,4 @@
-# Pinned dependencies for pr-review.yaml workflow.
+# Pinned dependencies for the pr-review composite action.
 # All hashes from PyPI; includes py3-none-any and cp312 manylinux_x86_64
 # variants so the install works on GitHub Ubuntu runners.
 # Regenerate: pip download <pkg> --no-deps, then pip hash <file>.

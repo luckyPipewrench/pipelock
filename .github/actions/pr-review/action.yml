@@ -1,0 +1,94 @@
+name: Pipelock PR review
+description: Run the immutable, structured Pipelock pull-request reviewer.
+outputs:
+  claimed:
+    description: Whether the admission step created the review status comment.
+    value: ${{ steps.run.outputs.claimed }}
+  base_sha:
+    description: Captured immutable base commit.
+    value: ${{ steps.run.outputs.base_sha }}
+  head_sha:
+    description: Captured immutable head commit.
+    value: ${{ steps.run.outputs.head_sha }}
+  status_comment_id:
+    description: Bot-owned status comment to edit during review.
+    value: ${{ steps.run.outputs.status_comment_id }}
+inputs:
+  github-token:
+    description: Token permitted to read pull requests and update their status
+      comment.
+    required: true
+  repo:
+    description: Repository in owner/name form.
+    required: true
+  pr-number:
+    description: Pull request number.
+    required: true
+  review-mode:
+    description: default or deep.
+    required: true
+  reviewer-sha:
+    description: Immutable Pipelock source commit containing this action.
+    required: true
+  litellm-base-url:
+    description: Optional LiteLLM-compatible base URL.
+    required: false
+  litellm-api-key:
+    description: Optional LiteLLM credential.
+    required: false
+  openai-api-key:
+    description: Optional direct OpenAI credential.
+    required: false
+  model-fast:
+    description: Optional model override for /review.
+    required: false
+  model-deep:
+    description: Optional model override for /review deep.
+    required: false
+  operation:
+    description: claim creates the status marker; review performs the provider calls.
+    required: false
+    default: review
+  base-sha:
+    description: Captured base commit from the admission step.
+    required: false
+  head-sha:
+    description: Captured head commit from the admission step.
+    required: false
+  status-comment-id:
+    description: Comment identifier from the admission step.
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      # actions/setup-python v7.0.0
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+
+    - name: Install reviewer dependencies
+      shell: bash
+      run: >-
+        pip install --require-hashes
+        -r "$GITHUB_ACTION_PATH/requirements.txt"
+
+    - name: Run immutable PR review
+      id: run
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        REVIEW_MODE: ${{ inputs.review-mode }}
+        REVIEWER_SHA: ${{ inputs.reviewer-sha }}
+        LITELLM_BASE_URL: ${{ inputs.litellm-base-url }}
+        LITELLM_API_KEY: ${{ inputs.litellm-api-key }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        PR_REVIEW_MODEL_FAST: ${{ inputs.model-fast }}
+        PR_REVIEW_MODEL_DEEP: ${{ inputs.model-deep }}
+        REVIEW_OPERATION: ${{ inputs.operation }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        STATUS_COMMENT_ID: ${{ inputs.status-comment-id }}
+      run: python "$GITHUB_ACTION_PATH/pr_review.py"

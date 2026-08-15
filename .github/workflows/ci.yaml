@@ -102,7 +102,7 @@ jobs:
             --exclude test/secureiqlab/ \ \
             --exclude README.md \ \
             --exclude assets/demo.cast \ \
-            --exclude scripts/pr-review.py \ \
+            --exclude .github/actions/pr-review/pr_review.py \ \
             --exclude docs/attacks-blocked.md \ \
             --exclude docs/bypass-resistance.md \ \
             --exclude docs/configuration.md \ \

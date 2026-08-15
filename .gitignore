@@ -65,3 +65,4 @@ deploy/wasm-verify/out/*.wasm
 deploy/wasm-verify/out/wasm_exec.js
 deploy/wasm-verify/*.tar.gz
 scripts/__pycache__/
+__pycache__/

@@ -1,0 +1,143 @@
+name: Reusable AI PR Review
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number to review.
+        required: true
+        type: string
+      review_mode:
+        description: default or deep.
+        required: true
+        type: string
+      reviewer_sha:
+        description: Full immutable Pipelock commit containing the review
+          action.
+        required: true
+        type: string
+    secrets:
+      review_token:
+        required: true
+      litellm_base_url:
+        required: false
+      litellm_api_key:
+        required: false
+      openai_api_key:
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  admit:
+    # Serialize only the fast admission step. It persists a running status
+    # comment before provider work begins, so a later command can reply with
+    # that comment's link rather than start another review.
+    concurrency:
+      group: pr-review-${{ github.repository }}-${{ inputs.pr_number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      claimed: ${{ steps.claim.outputs.claimed }}
+      base_sha: ${{ steps.claim.outputs.base_sha }}
+      head_sha: ${{ steps.claim.outputs.head_sha }}
+      status_comment_id: ${{ steps.claim.outputs.status_comment_id }}
+    steps:
+      # A called workflow's normal checkout is the caller repository. Fetch
+      # Pipelock by the caller-provided full SHA so the composite action and
+      # runner cannot silently come from a caller's stale local copy.
+      - name: Check out immutable Pipelock review source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: luckyPipewrench/pipelock
+          ref: ${{ inputs.reviewer_sha }}
+          path: trusted-pr-review
+          persist-credentials: false
+
+      - name: Claim review status
+        id: claim
+        uses: ./trusted-pr-review/.github/actions/pr-review
+        with:
+          github-token: ${{ secrets.review_token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          review-mode: ${{ inputs.review_mode }}
+          reviewer-sha: ${{ inputs.reviewer_sha }}
+          operation: claim
+
+
+  review:
+    needs: admit
+    if: needs.admit.outputs.claimed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HAS_LITELLM: >-
+        ${{ secrets.litellm_base_url != '' && secrets.litellm_api_key != '' && 'true' || 'false' }}
+      HAS_OPENAI: ${{ secrets.openai_api_key != '' && 'true' || 'false' }}
+    steps:
+      - name: Check out immutable Pipelock review source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: luckyPipewrench/pipelock
+          ref: ${{ inputs.reviewer_sha }}
+          path: trusted-pr-review
+          persist-credentials: false
+
+      # The runner receives one provider credential, never both. Named secret
+      # mappings are required because personal-account repositories cannot use
+      # secrets: inherit with a reusable workflow.
+      - name: Run review through LiteLLM
+        if: env.HAS_LITELLM == 'true'
+        uses: ./trusted-pr-review/.github/actions/pr-review
+        with:
+          github-token: ${{ secrets.review_token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          review-mode: ${{ inputs.review_mode }}
+          reviewer-sha: ${{ inputs.reviewer_sha }}
+          operation: review
+          base-sha: ${{ needs.admit.outputs.base_sha }}
+          head-sha: ${{ needs.admit.outputs.head_sha }}
+          status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
+          litellm-base-url: ${{ secrets.litellm_base_url }}
+          litellm-api-key: ${{ secrets.litellm_api_key }}
+          model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
+          model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
+
+      - name: Run review through OpenAI
+        if: env.HAS_LITELLM != 'true' && env.HAS_OPENAI == 'true'
+        uses: ./trusted-pr-review/.github/actions/pr-review
+        with:
+          github-token: ${{ secrets.review_token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          review-mode: ${{ inputs.review_mode }}
+          reviewer-sha: ${{ inputs.reviewer_sha }}
+          operation: review
+          base-sha: ${{ needs.admit.outputs.base_sha }}
+          head-sha: ${{ needs.admit.outputs.head_sha }}
+          status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
+          openai-api-key: ${{ secrets.openai_api_key }}
+          model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
+          model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
+
+      - name: Report missing provider credential
+        if: env.HAS_LITELLM != 'true' && env.HAS_OPENAI != 'true'
+        uses: ./trusted-pr-review/.github/actions/pr-review
+        with:
+          github-token: ${{ secrets.review_token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          review-mode: ${{ inputs.review_mode }}
+          reviewer-sha: ${{ inputs.reviewer_sha }}
+          operation: review
+          base-sha: ${{ needs.admit.outputs.base_sha }}
+          head-sha: ${{ needs.admit.outputs.head_sha }}
+          status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
+          model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
+          model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}

@@ -120,13 +120,13 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 
 func buildMCPEnvironProofBinary(t *testing.T) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "pipelock-mcp-environ-proof")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-tags=mcp_hardening_test", "-o", binary, "./cmd/pipelock/") // #nosec G204 G702 -- fixed repository build for the integration proof
-	cmd.Dir = filepath.Join("..", "..")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build MCP environ proof binary: %v\n%s", err, out)
+	if errMCPEnvironProofBuild != nil {
+		t.Fatalf("build MCP environ proof binary: %v\n%s", errMCPEnvironProofBuild, mcpEnvironProofBuildOutput)
 	}
-	return binary
+	if mcpEnvironProofBinaryPath == "" {
+		t.Fatal("MCP environ proof binary was not prepared")
+	}
+	return mcpEnvironProofBinaryPath
 }
 
 func runMCPEnvironProofHelper(t *testing.T, mode string) {

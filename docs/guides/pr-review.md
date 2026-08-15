@@ -91,6 +91,32 @@ Values must name models available through the direct OpenAI API.
   contiguous review units rather than summarizing or dropping its deletion lines
 - `/review` uses the efficient model by default
 - `/review deep` is opt-in for the xhigh adversarial pass
+- Re-running a command against an unchanged head does not review again; it
+  links the review that already covered it
+
+## Repeat reviews
+
+Reviewing the same pull request twice is normal, and the two cases behave
+differently.
+
+**Nothing changed since the last review.** The command links the existing review
+and stops. A finished review of the same base, head, reviewer commit, rubric,
+and selected model cannot reach a different answer, so running it again would
+spend a full review,
+twenty minutes on a large diff, to reproduce what is already posted. Depth is
+part of that comparison, so `/review deep` still runs after `/review`. Only a
+review that covered the whole diff counts; a `partial` or `failed` one is worth
+retrying because it may have been short for a transient reason. To review an
+unchanged head anyway, run the workflow manually from Actions.
+
+**You pushed a fix and want another look.** The head changed, so this is a
+different review and it reads the whole diff again. That is deliberate rather
+than a cost oversight: reviewing only the newest commits assumes findings
+compose, and they do not. A commit that is fine alone can break code reviewed
+earlier, and a fix for a finding can itself be wrong. What the review does
+instead is mark any finding it has already reported on this pull request with
+`(reported before)`, so the new work is visible without re-triaging the list.
+Every finding is still published; the label never hides one.
 
 ## Changing the reviewer
 

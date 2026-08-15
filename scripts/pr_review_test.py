@@ -1546,6 +1546,28 @@ class RepeatReviewTest(unittest.TestCase):
         self.assertEqual(state, "failed")
         self.assertIn("no usable provider credential was configured", progress.incomplete_reasons)
 
+    def test_candidates_discarded_unjudged_are_counted(self) -> None:
+        # Observed live: a deep review read 7 of 7 units, omitted nothing, and
+        # published "No verified material findings were published" because the
+        # judge pass returned an invalid result. Every candidate was dropped
+        # and nothing said so, which reads identically to a reviewer that found
+        # nothing. Those call for opposite responses from the reader.
+        candidates = [
+            pr_review.Finding("high", "a.go", 1, "One", "w", "f"),
+            pr_review.Finding("low", "b.go", 2, "Two", "w", "f"),
+        ]
+        reason = pr_review.discarded_candidates_reason(candidates)
+        self.assertIsNotNone(reason)
+        self.assertIn("2 candidate", reason)
+
+    def test_a_judge_that_rejected_everything_is_not_reported_as_a_gap(self) -> None:
+        # The other direction, and the reason this is not a blanket check after
+        # the fact. A judge that ran and rejected every candidate is a real
+        # clean review. Reporting that as discarded work would make a correct
+        # result look broken, which is the failure mode that teaches an
+        # operator to ignore the incompleteness section.
+        self.assertIsNone(pr_review.discarded_candidates_reason([]))
+
     def test_an_incomplete_scan_still_labels_what_it_did_read(self) -> None:
         # Records a deliberate asymmetry, so a later reader does not "fix" it
         # into consistency. Admission and this path share one scan and use it

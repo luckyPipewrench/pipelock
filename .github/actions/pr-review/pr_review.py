@@ -1313,6 +1313,23 @@ def coverage_gaps(_units: list[DiffUnit], omitted: list[DiffUnit], parse_errors:
     return gaps
 
 
+def discarded_candidates_reason(candidates: list[Finding]) -> str | None:
+    """Say how many findings were dropped without ever being judged.
+
+    An operator cannot act on "no verified material findings were published"
+    when it means both "the reviewer found nothing" and "the reviewer found
+    things and could not verify them". Those call for opposite responses: ship
+    it, or run the review again. The count is publishable because it reveals no
+    unverified claim about the code, only that verification did not happen.
+
+    Never used for a judge pass that completed and rejected everything. That is
+    a real clean result.
+    """
+    if not candidates:
+        return None
+    return f"{len(candidates)} candidate finding(s) were discarded unjudged, so this review reports no findings it could verify"
+
+
 def derive_state(progress: ReviewProgress) -> str:
     """Own status transitions in code; model prose never decides completeness."""
     if progress.head_changed:
@@ -1759,9 +1776,13 @@ def run_review(
             except ModelConnectionError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("cross-file synthesis could not connect after one retry")
+                if reason := discarded_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
             except ModelOutputError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("cross-file synthesis was incomplete or invalid")
+                if reason := discarded_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
         # Deliberately not gated on timed_out. A timeout used to end the chunk
         # loop, so there were no later candidates to judge; chunks now continue
         # past one, and gating here would discard findings that later chunks
@@ -1771,6 +1792,8 @@ def run_review(
         judge_ready = bool(candidates) and not progress.aggregation_failed
         if judge_ready and not budget_allows(deadline, mode):
             progress.incomplete_reasons.append("wall-clock budget exhausted before the judge pass")
+            if reason := discarded_candidates_reason(candidates):
+                progress.incomplete_reasons.append(reason)
             judge_ready = False
         if judge_ready:
             try:
@@ -1784,12 +1807,18 @@ def run_review(
             except ModelTimeout:
                 progress.timed_out = True
                 progress.incomplete_reasons.append("judge pass timed out")
+                if reason := discarded_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
             except ModelConnectionError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("judge pass could not connect after one retry")
+                if reason := discarded_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
             except ModelOutputError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("judge pass was incomplete or invalid")
+                if reason := discarded_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
         try:
             latest = get_pull_binding(repo, pr_number, token, reviewer_sha)
             progress.head_changed = latest.head_sha != binding.head_sha

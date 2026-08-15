@@ -29,9 +29,13 @@ on:
 permissions:
   contents: read
   issues: write
-  # Results post through the issue-comments API, which issues: write covers.
-  # No pull-request write operation is performed, so this stays read.
-  pull-requests: read
+  # Both are required. Posting a comment on a PULL REQUEST needs
+  # pull-requests: write even though the call goes to the issue-comments
+  # endpoint; issues: write alone covers issues only, and the comment-create
+  # call returns 403. Verified live: this was reduced to read and every
+  # /review in the repository failed until it was restored. Do not narrow it
+  # again without running a real /review against a pull request.
+  pull-requests: write
 
 jobs:
   admit:

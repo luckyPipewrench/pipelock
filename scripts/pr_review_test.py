@@ -60,6 +60,16 @@ class WorkflowPackagingTest(unittest.TestCase):
         # The explicit mapping must not accidentally turn into a secret inherit.
         self.assertNotRegex(workflow, r"(?m)^\s*secrets:\s*inherit\s*$")
 
+    def test_both_workflows_keep_pull_request_write_for_comment_creation(self) -> None:
+        # Posting a comment on a pull request needs pull-requests: write even
+        # though the call targets the issue-comments endpoint. Reducing this to
+        # read reads like least privilege and returned 403 on comment-create,
+        # which broke /review across the whole repository until it was restored.
+        for path in (CALLER_WORKFLOW, REUSABLE_WORKFLOW):
+            workflow = path.read_text(encoding="utf-8")
+            self.assertIn("pull-requests: write", workflow, f"{path.name} must keep pull-requests: write")
+            self.assertNotIn("pull-requests: read", workflow, f"{path.name} cannot post comments with read")
+
     def test_composite_action_owns_runner_requirements_and_single_provider_inputs(self) -> None:
         action = ACTION_YAML.read_text(encoding="utf-8")
         self.assertTrue((ACTION_DIR / "requirements.txt").is_file())

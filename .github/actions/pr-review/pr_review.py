@@ -81,6 +81,7 @@ REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 RUBRIC_VERSION = "2026-08-14.1"
 STATUS_MARKER = "pr-review-status:v1"
+NOTICE_MARKER = "pr-review-notice:v1"
 STATUS_MARKER_REQUIRED_FIELDS = frozenset({"state", "identity", "mode", "findings"})
 STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"model"}
 FINDING_FINGERPRINTS_RE = re.compile(r"(?:[0-9a-f]{12}(?:,[0-9a-f]{12})*)?")
@@ -947,6 +948,42 @@ def finding_fingerprint(finding: Finding) -> str:
     return hashlib.sha256(f"{finding.path}\x00{finding.severity}\x00{title}".encode()).hexdigest()[:12]
 
 
+def notice_marker(kind: str, correlation: str, mode: str) -> str:
+    """Identify a notice so the same one is never posted twice.
+
+    Deliberately a different marker from the terminal status marker, so a
+    notice can never be mistaken for a review result.
+    """
+    return f"<!-- {NOTICE_MARKER} kind={kind} identity={correlation} mode={mode} -->"
+
+
+def create_notice_once(
+    repo: str,
+    pr_number: str,
+    token: str,
+    kind: str,
+    binding: PullBinding,
+    mode: str,
+    message: str,
+    existing: set[str],
+) -> None:
+    """Post an explanatory notice at most once per pull request, mode and reason.
+
+    Every command that declines to review answers the operator, and without
+    this each repeated command left another comment. The admission scan reads a
+    bounded number of comment pages and fails closed when it cannot finish, so
+    an accumulating pile of notices eventually pushes real status comments past
+    that bound and every later review refuses to start. That makes repeatedly
+    typing a command a way to disable reviewing, which is a worse outcome than
+    the silence of not repeating an answer the pull request already carries.
+    """
+    marker = notice_marker(kind, binding.correlation, mode)
+    if marker in existing:
+        log_phase("notice-suppressed", status=kind, correlation=binding.correlation)
+        return
+    create_comment(repo, pr_number, token, f"{message}\n\n{marker}", binding.correlation)
+
+
 def model_binding(mode: str) -> str:
     """Bind a completed marker to the effective reviewer model.
 
@@ -981,7 +1018,7 @@ def parse_status_marker(body: str) -> dict[str, str] | None:
     return fields
 
 
-def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str) -> tuple[list[dict[str, str]], bool]:
+def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str) -> tuple[list[dict[str, str]], set[str], bool]:
     """Collect this bot's status markers, and report whether the scan finished.
 
     Shares the paging bound and the fail-closed contract of the admission
@@ -989,6 +1026,7 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
     incomplete scan as no evidence at all rather than as an absence.
     """
     markers: list[dict[str, str]] = []
+    notices: set[str] = set()
     for page in range(1, ADMISSION_COMMENT_PAGES + 1):
         try:
             response = requests.get(
@@ -999,18 +1037,18 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
             )
         except requests.RequestException:
             log_phase("status-scan", attempt=page, status="request-error", correlation=correlation)
-            return markers, False
+            return markers, notices, False
         log_phase("status-scan", attempt=page, status=response.status_code, correlation=correlation)
         if response.status_code != 200:
-            return markers, False
+            return markers, notices, False
         try:
             comments = response.json()
         except ValueError:
-            return markers, False
+            return markers, notices, False
         if not isinstance(comments, list):
-            return markers, False
+            return markers, notices, False
         if not comments:
-            return markers, True
+            return markers, notices, True
         for comment in comments:
             if not isinstance(comment, dict):
                 continue
@@ -1020,11 +1058,13 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
             body = comment.get("body")
             if not isinstance(body, str):
                 continue
+            for notice in re.findall(rf"<!-- {re.escape(NOTICE_MARKER)}[^>\r\n]*?-->", body):
+                notices.add(notice)
             fields = parse_status_marker(body)
             if fields:
                 fields["html_url"] = comment.get("html_url") if isinstance(comment.get("html_url"), str) else ""
                 markers.append(fields)
-    return markers, False
+    return markers, notices, False
 
 
 def previously_reported(markers: list[dict[str, str]]) -> set[str]:
@@ -1497,22 +1537,28 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
     # Skipped only for the comment path. A manual dispatch always reviews,
     # which is the escape hatch when someone wants a fresh pass anyway, and it
     # needs no new command to remember. GITHUB_EVENT_NAME is set by the runner.
+    #
+    # The scan runs either way, because the notices it collects are what stops
+    # a declined command from leaving another comment every time it is typed.
+    markers, notices, complete = scan_status_comments(repo, pr_number, token, binding.correlation)
     if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
-        markers, complete = scan_status_comments(repo, pr_number, token, binding.correlation)
         # An incomplete scan is not evidence, and here the cheap outcome is the
         # one that skips. Uncertainty therefore reviews rather than skips.
         if complete:
             done = completed_identical_review(markers, binding.correlation, mode)
             if done:
                 link = done.get("html_url") or "the existing review"
-                create_comment(
+                create_notice_once(
                     repo,
                     pr_number,
                     token,
+                    "already-reviewed",
+                    binding,
+                    mode,
                     f"This exact head was already reviewed in `{mode}` mode: {link}\n\n"
                     "Nothing has changed since, so a new review would reach the same result. "
                     "Push a change, or run the workflow manually to review it again anyway.",
-                    binding.correlation,
+                    notices,
                 )
                 write_action_outputs(claimed="false")
                 return
@@ -1525,10 +1571,29 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
         # against the same head.
         if active:
             link = active.get("html_url") if isinstance(active.get("html_url"), str) else "the existing review status"
-            message = f"A review is already running: {link}"
+            create_notice_once(
+                repo,
+                pr_number,
+                token,
+                "already-running",
+                binding,
+                mode,
+                f"A review is already running: {link}",
+                notices,
+            )
         else:
-            message = "Could not confirm whether a review is already running, so this command did not start one. Try again."
-        create_comment(repo, pr_number, token, message, binding.correlation)
+            # Deliberately NOT suppressed on repeat. This one tells the operator
+            # to try again, and answering the first attempt then silently
+            # ignoring the retry it asked for is worse than an extra comment.
+            # It also only occurs when the API failed, so it cannot accumulate
+            # the way a stable answer to a repeated command does.
+            create_comment(
+                repo,
+                pr_number,
+                token,
+                "Could not confirm whether a review is already running, so this command did not start one. Try again.",
+                binding.correlation,
+            )
         write_action_outputs(claimed="false")
         return
     comment = create_comment(repo, pr_number, token, _initial_status(binding, mode), binding.correlation)
@@ -1574,7 +1639,7 @@ def run_review(
     # as new, which is the previous behavior.
     seen_before: set[str] = set()
     try:
-        prior, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
+        prior, _, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
         seen_before = previously_reported(prior)
     except requests.RequestException:
         log_phase("prior-findings", status="request-error", correlation=binding.correlation)

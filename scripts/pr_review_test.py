@@ -1358,20 +1358,87 @@ class RepeatReviewTest(unittest.TestCase):
         self.assertIsNone(pr_review.completed_identical_review([legacy], self.IDENTITY, "default"))
 
     def test_workflow_dispatch_runs_even_when_a_matching_review_exists(self) -> None:
+        # Asserts the invariant rather than the implementation. An earlier
+        # version asserted the comment scan was never reached on a dispatch,
+        # which stopped being true once the scan also collects the notices that
+        # keep a declined command from commenting every time. The property that
+        # matters is that a matching completed review cannot stop a dispatch.
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        self.assertIsNotNone(
+            pr_review.completed_identical_review([matching], binding.correlation, "default"),
+            "the marker must be one that WOULD skip a comment-triggered run",
+        )
         with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
             pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False
         ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
-            pr_review, "scan_status_comments"
-        ) as scan, mock.patch.object(pr_review, "find_running_comment", return_value=(None, True)), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], set(), True)
+        ), mock.patch.object(pr_review, "find_running_comment", return_value=(None, True)), mock.patch.object(
             pr_review, "create_comment", return_value={"id": 17}
         ) as create:
             pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
             output.seek(0)
             values = output.read().decode("utf-8")
-        scan.assert_not_called()
         self.assertIn("claimed=true", values)
         self.assertIn("state=running", create.call_args.args[3])
+
+    def test_a_comment_triggered_run_does_skip_that_same_review(self) -> None:
+        # The paired negative. Without it the dispatch test above could pass
+        # because nothing skips at all, which is the failure mode of a guard
+        # that only ever proves the permissive direction.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "issue_comment"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], set(), True)
+        ), mock.patch.object(pr_review, "create_comment", return_value={"id": 17}) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        self.assertIn("claimed=false", values)
+        self.assertIn("already reviewed", create.call_args.args[3])
+
+    def test_a_declined_command_does_not_comment_again(self) -> None:
+        # Every declined command used to leave another comment. The admission
+        # scan reads a bounded number of pages and fails closed when it cannot
+        # finish, so an accumulating pile of notices eventually pushes the real
+        # status comments past that bound and stops reviewing altogether. That
+        # made repeatedly typing a command a way to disable the reviewer.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        already = {pr_review.notice_marker("already-reviewed", binding.correlation, "default")}
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "issue_comment"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], already, True)
+        ), mock.patch.object(pr_review, "create_comment", return_value={"id": 17}) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        create.assert_not_called()
+        self.assertIn("claimed=false", values)
 
     def test_a_fingerprint_survives_a_line_number_moving(self) -> None:
         # Anything inserted above a finding shifts its line. Including the line

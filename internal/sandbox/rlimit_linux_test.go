@@ -92,6 +92,11 @@ func TestProcessTaskCount(t *testing.T) {
 	if _, _, err := processTaskCount([]byte("Name:\ttest\n"), 1000); err == nil {
 		t.Fatal("missing UID and thread fields accepted")
 	}
+	t.Run("missing threads", func(t *testing.T) {
+		if _, _, err := processTaskCount([]byte("Uid:\t1000\n"), 1000); err == nil {
+			t.Fatal("missing thread field accepted for target UID")
+		}
+	})
 	t.Run("malformed UID", func(t *testing.T) {
 		if _, _, err := processTaskCount([]byte("Uid:\tinvalid\nThreads:\t7\n"), 1000); err == nil {
 			t.Fatal("malformed UID accepted")

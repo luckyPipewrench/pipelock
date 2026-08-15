@@ -1050,6 +1050,38 @@ class DeletionFidelityTest(unittest.TestCase):
         for index in range(count):
             self.assertIn(f"-old line {index}", units[0].body)
 
+    def test_deep_mode_splits_an_oversized_deletion_hunk_without_omission(self) -> None:
+        # The prior version collapsed this hunk before it reached the deep
+        # planner. Leaving it whole made it exceed that planner's per-chunk
+        # input budget and therefore omitted the entire deletion. Split it
+        # into bounded contiguous units instead: no deleted line is hidden or
+        # dropped, but each provider call remains within its budget.
+        count = 16_000
+        units, errors = pr_review.parse_diff(self.diff_with_deletions(count), "deep")
+        chunks, omitted = pr_review.plan_chunks(units, "deep")
+        deleted_lines = [
+            line
+            for unit in units
+            for line in unit.body.splitlines()
+            if line.startswith("-old line ")
+        ]
+        self.assertEqual(errors, [])
+        self.assertGreater(len(units), 1)
+        self.assertTrue(all(unit.estimated_tokens <= pr_review.DEEP_INPUT_TOKEN_BUDGET for unit in units))
+        self.assertEqual(sum(len(chunk) for chunk in chunks), len(units))
+        self.assertEqual(omitted, [])
+        self.assertEqual(deleted_lines, [f"-old line {index}" for index in range(count)])
+        # Every piece must still be a readable diff. Emitting a continuation
+        # without the hunk header hands the model file headers and a bare run
+        # of changed lines, which is not a diff and carries no line context.
+        for unit in units:
+            body = unit.body.splitlines()
+            self.assertIn(unit.hunk_header, body)
+            self.assertTrue(
+                body.index(unit.hunk_header) < len(body) - 1,
+                "a unit must carry changed lines after its hunk header",
+            )
+
     def test_default_mode_still_collapses_and_discloses(self) -> None:
         count = pr_review.MAX_DELETION_LINES_PER_HUNK * 3
         units, _ = pr_review.parse_diff(self.diff_with_deletions(count), "default")
@@ -1116,6 +1148,20 @@ class SingleProviderTest(unittest.TestCase):
         with mock.patch.dict(pr_review.os.environ, {}, clear=True):
             with self.assertRaises(pr_review.ProviderConfigurationError):
                 pr_review.provider_configuration()
+
+    def test_guide_does_not_advertise_removed_gateway_credentials(self) -> None:
+        # The provider branch, composite inputs, and reusable-workflow secrets
+        # are gone together. Leaving a gateway variable in the guide tells an
+        # adopter to configure a value the action no longer consumes.
+        #
+        # Matched case-insensitively against the whole name, not against a
+        # backtick-quoted variable. Prose reintroducing the gateway ("point
+        # LiteLLM at any upstream") tells an adopter the same wrong thing as a
+        # table row, and four earlier guards in this suite were each bypassed
+        # by matching a narrower spelling than the thing they guarded.
+        guide = (ROOT / "docs" / "guides" / "pr-review.md").read_text(encoding="utf-8")
+        self.assertIn("`OPENAI_API_KEY`", guide)
+        self.assertNotIn("litellm", guide.lower())
 
 
 class AdoptionStubTest(unittest.TestCase):

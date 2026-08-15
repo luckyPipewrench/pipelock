@@ -298,6 +298,36 @@ def _collapse_deletions(lines: list[str], mode: str) -> tuple[list[str], int]:
     return result, collapsed
 
 
+def _split_oversized_deep_hunk(header: list[str], hunk: list[str]) -> list[list[str]]:
+    """Bound a deep-review hunk without dropping or summarizing its lines.
+
+    A deep review keeps deletion hunks intact. A sufficiently large deletion
+    hunk can therefore exceed the per-call input budget, which made the chunk
+    planner omit the entire hunk. Repeat the file and hunk headers around
+    bounded contiguous pieces so every changed line remains available to the
+    reviewer. A single oversized line is deliberately left whole: splitting a
+    source line would alter the diff's meaning, so the normal omission path can
+    report that it could not be reviewed.
+    """
+    prefix = header + hunk[:1]
+    content = hunk[1:]
+    if estimate_tokens("\n".join(prefix + content)) <= DEEP_INPUT_TOKEN_BUDGET:
+        return [hunk]
+
+    parts: list[list[str]] = []
+    current: list[str] = []
+    for line in content:
+        candidate = prefix + current + [line]
+        if current and estimate_tokens("\n".join(candidate)) > DEEP_INPUT_TOKEN_BUDGET:
+            parts.append(hunk[:1] + current)
+            current = [line]
+            continue
+        current.append(line)
+    if current:
+        parts.append(hunk[:1] + current)
+    return parts or [hunk]
+
+
 def parse_diff(diff: str, mode: str = "default") -> tuple[list[DiffUnit], list[str]]:
     """Split an exact-commit unified diff into hunk-addressable review units."""
     lines = diff.splitlines()
@@ -343,21 +373,23 @@ def parse_diff(diff: str, mode: str = "default") -> tuple[list[DiffUnit], list[s
         for hunk_number, hunk_start in enumerate(hunk_starts):
             hunk_end = hunk_starts[hunk_number + 1] if hunk_number + 1 < len(hunk_starts) else len(block)
             hunk = block[hunk_start:hunk_end]
-            collapsed_hunk, collapsed = _collapse_deletions(hunk, mode)
-            body = "\n".join(header + collapsed_hunk)
-            additions = sum(1 for line in hunk if line.startswith("+") and not line.startswith("+++"))
-            units.append(
-                DiffUnit(
-                    identifier=len(units) + 1,
-                    path=path,
-                    hunk_header=hunk[0],
-                    body=body,
-                    category=category,
-                    additions=additions,
-                    estimated_tokens=estimate_tokens(body),
-                    collapsed_deletions=collapsed,
+            review_hunks = _split_oversized_deep_hunk(header, hunk) if mode == "deep" else [hunk]
+            for review_hunk in review_hunks:
+                collapsed_hunk, collapsed = _collapse_deletions(review_hunk, mode)
+                body = "\n".join(header + collapsed_hunk)
+                additions = sum(1 for line in review_hunk if line.startswith("+") and not line.startswith("+++"))
+                units.append(
+                    DiffUnit(
+                        identifier=len(units) + 1,
+                        path=path,
+                        hunk_header=hunk[0],
+                        body=body,
+                        category=category,
+                        additions=additions,
+                        estimated_tokens=estimate_tokens(body),
+                        collapsed_deletions=collapsed,
+                    )
                 )
-            )
     return units, errors
 
 
@@ -564,10 +596,10 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
     api_url, api_key = provider_configuration()
     model = model_for_mode(mode)
     timeout = llm_timeout_for(mode)
-    # This is a correlation key, not an idempotency promise: the direct and
-    # LiteLLM-compatible endpoints do not share a documented deduplication
-    # contract. It stays stable across the one permitted retry so a provider
-    # can trace both attempts if a connection fault needs investigation.
+    # This is a correlation key, not an idempotency promise: the direct OpenAI
+    # endpoint has no documented deduplication contract. It stays stable across
+    # the one permitted retry so the provider can trace both attempts if a
+    # connection fault needs investigation.
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

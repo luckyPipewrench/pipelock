@@ -34,7 +34,8 @@ and marks the result `superseded` if the head changes before finalization. It
 uses deterministic token budgeting instead of character slicing: Go source and
 additions rank above tests, configuration, and documentation. The final comment
 contains an omission manifest and never reports `clean` when a unit was omitted,
-collapsed, unparseable, or left without a valid structured result.
+unparseable, or left without a valid structured result. Default-mode deletion
+compression is disclosed separately; deep mode reads deletions in full.
 
 Each run creates one bot-owned status comment and edits it in place. The runner
 uses strict JSON output, a cross-file synthesis pass, and a second actual-code
@@ -43,15 +44,13 @@ text from model-supplied fields.
 
 ## Setup
 
-### Required GitHub Secrets
+### Required GitHub Secret
 
 Set these in **Settings > Secrets and variables > Actions**:
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `LITELLM_BASE_URL` | If using LiteLLM | Your LiteLLM proxy URL (e.g., `https://litellm.example.com/v1`) |
-| `LITELLM_API_KEY` | If using LiteLLM | API key for LiteLLM proxy |
-| `OPENAI_API_KEY` | If not using LiteLLM | Direct OpenAI API key (fallback) |
+| `OPENAI_API_KEY` | Yes | Direct OpenAI API key for the reviewer |
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions.
 
@@ -69,13 +68,9 @@ The defaults live in `.github/actions/pr-review/pr_review.py`; the composite
 action passes optional repository variables through without maintaining another
 copy.
 
-### LiteLLM vs Direct OpenAI
+### Provider
 
-**LiteLLM (preferred):** Set `LITELLM_BASE_URL` and `LITELLM_API_KEY`. Point at whatever upstream model you want (OpenAI, Anthropic, local). The script sends OpenAI-compatible requests to your LiteLLM proxy.
-
-**Direct OpenAI (fallback):** Set only `OPENAI_API_KEY`. The script calls `api.openai.com` directly.
-
-If both are set, LiteLLM takes priority.
+Set `OPENAI_API_KEY`. The reviewer calls `api.openai.com` directly.
 
 ### Switching Models
 
@@ -86,18 +81,14 @@ PR_REVIEW_MODEL_FAST=gpt-5.6-luna
 PR_REVIEW_MODEL_DEEP=gpt-5.6-terra
 ```
 
-With LiteLLM, use any model your proxy supports:
-
-```
-PR_REVIEW_MODEL_DEEP=anthropic/claude-sonnet-4-20250514
-PR_REVIEW_MODEL_FAST=groq/llama-3.3-70b-versatile
-```
+Values must name models available through the direct OpenAI API.
 
 ## Cost Control
 
 - Only runs when manually triggered (no auto-review on push)
 - Never retries an ambiguous provider timeout, which could double-spend
-- Splits by complete hunks and explicit token budgets, never a character slice
+- Uses explicit token budgets; deep mode splits an oversized hunk into complete
+  contiguous review units rather than summarizing or dropping its deletion lines
 - `/review` uses the efficient model by default
 - `/review deep` is opt-in for the xhigh adversarial pass
 

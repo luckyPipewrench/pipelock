@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 import math
 import os
@@ -38,12 +39,21 @@ DEEP_LLM_TIMEOUT_SECONDS = 720
 # timeout so the run can refuse a call it cannot finish and report partial.
 REVIEW_WALL_CLOCK_SECONDS = 2_100
 DIFF_FETCH_ATTEMPTS = 2
+# Bounds the admission scan on a pull request with a very long comment history.
+ADMISSION_COMMENT_PAGES = 10
+# A running marker older than any possible job (10-minute admit plus 45-minute
+# review) belongs to a run that died without finalizing. The always() finalizer
+# covers a timeout or a cancellation, but it cannot run when the checkout it
+# needs is the thing that failed, so treating an ancient marker as stale is what
+# stops a dead run from wedging every later review on the same head.
+STALE_RUNNING_MINUTES = 90
 FAST_INPUT_TOKEN_BUDGET = 10_000
 DEEP_INPUT_TOKEN_BUDGET = 16_000
 FAST_MAX_CHUNKS = 3
 DEEP_MAX_CHUNKS = 8
 MAX_UNITS_PER_CHUNK = 20
 MAX_DELETION_LINES_PER_HUNK = 24
+REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 RUBRIC_VERSION = "2026-08-14.1"
 STATUS_MARKER = "pr-review-status:v1"
 
@@ -62,6 +72,15 @@ class ModelTimeout(ReviewError):
 
 class ModelOutputError(ReviewError):
     """A provider response was not a complete, valid structured result."""
+
+
+class ProviderConfigurationError(ReviewError):
+    """No usable provider credential was supplied to the action.
+
+    Kept distinct from ModelOutputError so a missing secret ends the run as a
+    configuration failure rather than being absorbed by the per-chunk handler,
+    which would publish partial with a reason naming the wrong cause.
+    """
 
 
 @dataclass(frozen=True)
@@ -457,7 +476,7 @@ def provider_configuration() -> tuple[str, str]:
         return litellm_url.rstrip("/") + "/chat/completions", litellm_key
     if openai_key:
         return "https://api.openai.com/v1/chat/completions", openai_key
-    raise ModelOutputError("no LLM credential was supplied")
+    raise ProviderConfigurationError("no LLM credential was supplied")
 
 
 def _content_from_response(data: object) -> str:
@@ -674,36 +693,63 @@ def update_comment(repo: str, comment_id: int, token: str, body: str, correlatio
     response.raise_for_status()
 
 
-def find_running_comment(repo: str, pr_number: str, token: str, correlation: str) -> dict[str, Any] | None:
+def _running_marker_is_stale(comment: dict[str, Any]) -> bool:
+    """Whether a running marker is too old to belong to a live review job."""
+    created = comment.get("created_at")
+    if not isinstance(created, str):
+        return False
     try:
-        response = requests.get(
-            f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
-            headers=github_headers(token),
-            params={"per_page": 100},
-            timeout=30,
-        )
-    except requests.RequestException:
-        log_phase("admission-check", status="request-error", correlation=correlation)
-        return None
-    log_phase("admission-check", status=response.status_code, correlation=correlation)
-    if response.status_code != 200:
-        return None
-    try:
-        comments = response.json()
+        stamped = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
     except ValueError:
-        return None
-    if not isinstance(comments, list):
-        return None
+        return False
+    age = datetime.datetime.now(datetime.timezone.utc) - stamped
+    return age > datetime.timedelta(minutes=STALE_RUNNING_MINUTES)
+
+
+def find_running_comment(repo: str, pr_number: str, token: str, correlation: str) -> dict[str, Any] | None:
+    """Find a running status comment, reading every page of issue comments.
+
+    This endpoint returns comments oldest first, so a single unpaginated request
+    holds the 100 OLDEST comments.  On a busy pull request the running marker is
+    on a later page, the admission check would miss it, and a second review
+    would start concurrently against the same head.
+    """
     marker = f"<!-- {STATUS_MARKER} state=running"
-    for comment in reversed(comments):
-        if not isinstance(comment, dict):
-            continue
-        author = comment.get("user")
-        if not isinstance(author, dict) or author.get("login") != "github-actions[bot]":
-            continue
-        if isinstance(comment.get("body"), str) and marker in comment["body"]:
-            return comment
-    return None
+    found: dict[str, Any] | None = None
+    for page in range(1, ADMISSION_COMMENT_PAGES + 1):
+        try:
+            response = requests.get(
+                f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                headers=github_headers(token),
+                params={"per_page": 100, "page": page},
+                timeout=30,
+            )
+        except requests.RequestException:
+            log_phase("admission-check", attempt=page, status="request-error", correlation=correlation)
+            return found
+        log_phase("admission-check", attempt=page, status=response.status_code, correlation=correlation)
+        if response.status_code != 200:
+            return found
+        try:
+            comments = response.json()
+        except ValueError:
+            return found
+        if not isinstance(comments, list) or not comments:
+            return found
+        for comment in reversed(comments):
+            if not isinstance(comment, dict):
+                continue
+            author = comment.get("user")
+            if not isinstance(author, dict) or author.get("login") != "github-actions[bot]":
+                continue
+            if isinstance(comment.get("body"), str) and marker in comment["body"]:
+                if _running_marker_is_stale(comment):
+                    continue
+                found = comment
+                break
+        if len(comments) < 100:
+            return found
+    return found
 
 
 def fetch_file_context(repo: str, path: str, head_sha: str, token: str, correlation: str) -> str | None:
@@ -739,17 +785,40 @@ def _line_context(content: str, line: int | None) -> str:
     return "\n".join(f"{number + 1}: {value}" for number, value in enumerate(lines[start:end], start=start))
 
 
-def judge_findings(repo: str, token: str, binding: PullBinding, mode: str, candidates: list[Finding]) -> tuple[list[Finding], bool]:
+def judge_findings(
+    repo: str, token: str, binding: PullBinding, mode: str, candidates: list[Finding]
+) -> tuple[list[Finding], bool, list[Finding]]:
+    """Judge candidate findings against the real file, within a bounded payload.
+
+    Each distinct path contributes up to 120 lines of context and the candidate
+    count comes from model output, so an unbounded payload can exceed the
+    provider input limit.  That failure discards every candidate, so instead the
+    payload is filled in order and the overflow is returned for the caller to
+    record as incomplete coverage.
+    """
     if not candidates:
-        return [], True
+        return [], True, []
+    budget, _ = input_limits(mode)
     contexts: dict[str, str] = {}
+    retained: list[Finding] = []
+    excluded: list[Finding] = []
+    used = 0
     for finding in candidates:
-        if finding.path in contexts:
+        addition = estimate_tokens(finding.title + finding.why + finding.fix + finding.path)
+        context = contexts.get(finding.path)
+        if context is None:
+            content = fetch_file_context(repo, finding.path, binding.head_sha, token, binding.correlation)
+            if content is None:
+                return [], False, []
+            context = _line_context(content, finding.line)
+            addition += estimate_tokens(context)
+        if retained and used + addition > budget:
+            excluded.append(finding)
             continue
-        content = fetch_file_context(repo, finding.path, binding.head_sha, token, binding.correlation)
-        if content is None:
-            return [], False
-        contexts[finding.path] = _line_context(content, finding.line)
+        contexts[finding.path] = context
+        retained.append(finding)
+        used += addition
+    candidates = retained
     system, user = build_judge_prompt(candidates, contexts)
     payload = call_model(system, user, mode, "judge", binding.correlation)
     if not isinstance(payload, dict) or set(payload) != {"findings"} or not isinstance(payload["findings"], list):
@@ -782,7 +851,7 @@ def judge_findings(repo: str, token: str, binding: PullBinding, mode: str, candi
                     needs_verification=True,
                 )
             )
-    return verified, True
+    return verified, True, excluded
 
 
 def derive_state(progress: ReviewProgress) -> str:
@@ -812,8 +881,18 @@ def sanitize_public_text(value: str, *, limit: int) -> str:
 
 
 def display_path(path: str) -> str:
-    """Render a diff-originated path without allowing comment formatting."""
-    return sanitize_public_text(path, limit=512).replace("/", "/")
+    """Render a diff-originated path without allowing comment formatting.
+
+    Paths reach here only from parse_diff, which already rejects control
+    characters and anything over 512 characters, and parse_findings restricts
+    findings to those paths.  Stripping markdown characters the way model prose
+    is stripped would rewrite real paths (pr_review.py became prreview.py), so
+    only the backtick that could close the surrounding code span is removed.
+    """
+    text = unicodedata.normalize("NFKC", path)
+    text = re.sub(r"[\s\x00-\x1f\x7f]", "", text)
+    text = text.replace("`", "")
+    return text[:512] or "unspecified"
 
 
 def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]]) -> str:
@@ -901,6 +980,25 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
     )
 
 
+def finalize_abandoned_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha: str) -> None:
+    """Mark a still-running status comment failed after the job died mid-review.
+
+    run_review finalizes its own comment for in-process failures, but a failed
+    checkout, a job timeout, and a cancellation all kill the process first. The
+    comment would stay running forever, and because the admission check treats a
+    running marker as an active review, every later /review on that head would
+    be refused. This runs from an always() step to close that hole.
+    """
+    binding = get_pull_binding(repo, pr_number, token, reviewer_sha)
+    active = find_running_comment(repo, pr_number, token, binding.correlation)
+    if not active:
+        return
+    progress = ReviewProgress()
+    progress.incomplete_reasons.append("the review job ended before the review completed")
+    body = render_status(binding, mode, [], progress, "failed", [])
+    update_comment(repo, int(active["id"]), token, body, binding.correlation)
+
+
 def run_review(
     repo: str,
     pr_number: str,
@@ -925,6 +1023,10 @@ def run_review(
     progress = ReviewProgress()
     classification: list[str] = []
     manifest: list[dict[str, Any]] = []
+    units: list[DiffUnit] = []
+    # Fail on a missing credential before any provider work, so the run ends as
+    # a configuration failure instead of a partial review.
+    provider_configuration()
     try:
         try:
             diff = fetch_bound_diff(repo, binding, token)
@@ -990,9 +1092,13 @@ def run_review(
             judge_ready = False
         if judge_ready:
             try:
-                progress.findings, judged = judge_findings(repo, token, binding, mode, candidates)
+                progress.findings, judged, unjudged = judge_findings(repo, token, binding, mode, candidates)
                 if not judged:
                     progress.incomplete_reasons.append("actual-code judge context was unavailable")
+                if unjudged:
+                    progress.incomplete_reasons.append(
+                        f"{len(unjudged)} candidate finding(s) exceeded the judge payload budget and were not published"
+                    )
             except ModelTimeout:
                 progress.timed_out = True
                 progress.incomplete_reasons.append("judge pass timed out")
@@ -1006,7 +1112,7 @@ def run_review(
             progress.incomplete_reasons.append("final head binding could not be re-read")
         return derive_state(progress), progress
     finally:
-        manifest = [unit.manifest() for unit in locals().get("units", [])]
+        manifest = [unit.manifest() for unit in units]
         state = derive_state(progress)
         try:
             update_comment(repo, comment["id"], token, render_status(binding, mode, classification, progress, state, manifest), binding.correlation)
@@ -1022,12 +1128,24 @@ def main() -> None:
     mode = os.environ.get("REVIEW_MODE", "default")
     reviewer_sha = os.environ.get("REVIEWER_SHA", "")
     operation = os.environ.get("REVIEW_OPERATION", "review")
-    if not all((github_token, repo, pr_number, reviewer_sha)) or mode not in {"default", "deep"} or operation not in {"claim", "review"}:
+    # repo and pr_number reach path position in every GitHub API URL below, each
+    # request carrying the workflow token, so they get the same strict format
+    # check already applied to the sha and comment-id inputs.
+    if (
+        not all((github_token, repo, pr_number, reviewer_sha))
+        or not REPO_PATTERN.fullmatch(repo)
+        or not pr_number.isdigit()
+        or mode not in {"default", "deep"}
+        or operation not in {"claim", "review", "finalize"}
+    ):
         print("pr-review phase=configuration attempt=1 status=invalid correlation=pending", file=sys.stderr)
         raise SystemExit(2)
     try:
         if operation == "claim":
             claim_review(repo, pr_number, github_token, mode, reviewer_sha)
+            return
+        if operation == "finalize":
+            finalize_abandoned_review(repo, pr_number, github_token, mode, reviewer_sha)
             return
         base_sha = os.environ.get("BASE_SHA", "")
         head_sha = os.environ.get("HEAD_SHA", "")

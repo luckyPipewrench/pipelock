@@ -194,7 +194,9 @@ class ImmutableBindingTest(unittest.TestCase):
             pr_review, "fetch_bound_diff", return_value=diff
         ), mock.patch.object(
             pr_review, "call_model", side_effect=[review_payload, {"findings": []}]
-        ), mock.patch.object(pr_review, "update_comment"):
+        ), mock.patch.object(pr_review, "update_comment"), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("https://provider.example/v1/chat/completions", "key")
+        ):
             state, progress = pr_review.run_review("owner/repo", "42", "token", "default", "c" * 40)
         self.assertEqual(state, "superseded")
         self.assertTrue(progress.head_changed)
@@ -214,6 +216,57 @@ class ImmutableBindingTest(unittest.TestCase):
         self.assertIn("head_sha=" + "b" * 40, values)
         self.assertIn("status_comment_id=17", values)
         self.assertEqual(create.call_count, 1)
+
+
+class AdmissionMarkerTest(unittest.TestCase):
+    def _page(self, body: str, created: str) -> list[dict[str, object]]:
+        return [{"user": {"login": "github-actions[bot]"}, "body": body, "created_at": created, "id": 5}]
+
+    def test_running_marker_is_found_on_a_later_page(self) -> None:
+        # Issue comments come back oldest first, so an unpaginated read holds the
+        # OLDEST hundred and would miss an active review on a busy pull request.
+        marker = f"<!-- {pr_review.STATUS_MARKER} state=running -->"
+        fresh = pr_review.datetime.datetime.now(pr_review.datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        page1 = [{"user": {"login": "someone"}, "body": "chatter", "created_at": fresh, "id": 1}] * 100
+        page2 = self._page(marker, fresh)
+
+        class Response:
+            status_code = 200
+
+            def __init__(self, payload: object) -> None:
+                self._payload = payload
+
+            def json(self) -> object:
+                return self._payload
+
+        with mock.patch.object(pr_review.requests, "get", side_effect=[Response(page1), Response(page2)]) as get:
+            found = pr_review.find_running_comment("owner/repo", "42", "token", "corr")
+        self.assertIsNotNone(found)
+        self.assertEqual(get.call_count, 2)
+
+    def test_an_ancient_running_marker_does_not_wedge_later_reviews(self) -> None:
+        # A job killed before finalization leaves the marker behind. Without an
+        # age bound it would refuse every later review on the same head forever.
+        marker = f"<!-- {pr_review.STATUS_MARKER} state=running -->"
+        stale = pr_review.datetime.datetime.now(pr_review.datetime.timezone.utc) - pr_review.datetime.timedelta(
+            minutes=pr_review.STALE_RUNNING_MINUTES + 5
+        )
+
+        class Response:
+            status_code = 200
+
+            def json(self) -> object:
+                return [
+                    {
+                        "user": {"login": "github-actions[bot]"},
+                        "body": marker,
+                        "created_at": stale.isoformat().replace("+00:00", "Z"),
+                        "id": 5,
+                    }
+                ]
+
+        with mock.patch.object(pr_review.requests, "get", return_value=Response()):
+            self.assertIsNone(pr_review.find_running_comment("owner/repo", "42", "token", "corr"))
 
 
 class WallClockBudgetTest(unittest.TestCase):
@@ -246,7 +299,9 @@ class WallClockBudgetTest(unittest.TestCase):
             pr_review, "create_comment", return_value={"id": 7}
         ), mock.patch.object(pr_review, "fetch_bound_diff", return_value=diff), mock.patch.object(
             pr_review, "call_model"
-        ) as call_model, mock.patch.object(pr_review, "update_comment"):
+        ) as call_model, mock.patch.object(pr_review, "update_comment"), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("https://provider.example/v1/chat/completions", "key")
+        ):
             state, progress = pr_review.run_review("owner/repo", "42", "token", "deep", "c" * 40)
         self.assertEqual(state, "partial")
         self.assertEqual(call_model.call_count, 0)
@@ -266,7 +321,11 @@ class FailureDirectionTest(unittest.TestCase):
         ):
             with self.assertRaises(pr_review.FetchError):
                 pr_review.fetch_bound_diff("owner/repo", binding, "token")
-        self.assertEqual(get.call_count, pr_review.DIFF_FETCH_ATTEMPTS)
+        # Assert the literal, not the constant. Comparing the call count to the
+        # constant holds for any value of it, so the bound could be raised
+        # without the test noticing.
+        self.assertEqual(pr_review.DIFF_FETCH_ATTEMPTS, 2)
+        self.assertEqual(get.call_count, 2)
 
     def test_provider_timeout_is_distinguished_from_schema_failure(self) -> None:
         with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
@@ -300,6 +359,26 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(pr_review.ModelOutputError, "schema"):
             pr_review.parse_findings(payload, {"internal/a.go"})
+
+    def test_schema_rejects_a_finding_outside_the_reviewed_diff(self) -> None:
+        # The extra-field case above trips the key-set check before the path is
+        # ever examined, so the rejection that keeps a finding inside the
+        # reviewed diff needs a payload whose keys are exactly right.
+        outside = {
+            "findings": [
+                {
+                    "severity": "high",
+                    "path": "wrong.go",
+                    "line": 1,
+                    "title": "x",
+                    "why": "y",
+                    "fix": "z",
+                    "needs_verification": False,
+                }
+            ]
+        }
+        with self.assertRaisesRegex(pr_review.ModelOutputError, "invalid severity or path"):
+            pr_review.parse_findings(outside, {"internal/a.go"})
 
     def test_publication_sanitizer_removes_mentions_commands_and_markup(self) -> None:
         rendered = pr_review.sanitize_public_text(

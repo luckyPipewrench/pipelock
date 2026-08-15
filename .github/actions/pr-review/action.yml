@@ -46,7 +46,9 @@ inputs:
     description: Optional model override for /review deep.
     required: false
   operation:
-    description: claim creates the status marker; review performs the provider calls.
+    description: claim creates the status marker; review performs the provider
+      calls; finalize marks a still-running status comment failed after the job
+      died without finishing.
     required: false
     default: review
   base-sha:

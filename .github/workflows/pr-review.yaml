@@ -7,7 +7,9 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: write
+  # Results post through the issue-comments API, which issues: write covers.
+  # No pull-request write operation is performed, so this stays read.
+  pull-requests: read
 
 jobs:
   review:

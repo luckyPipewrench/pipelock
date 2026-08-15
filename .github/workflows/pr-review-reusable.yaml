@@ -29,7 +29,9 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: write
+  # Results post through the issue-comments API, which issues: write covers.
+  # No pull-request write operation is performed, so this stays read.
+  pull-requests: read
 
 jobs:
   admit:
@@ -47,6 +49,19 @@ jobs:
       head_sha: ${{ steps.claim.outputs.head_sha }}
       status_comment_id: ${{ steps.claim.outputs.status_comment_id }}
     steps:
+      # reviewer_sha is a free-form workflow input used directly as a checkout
+      # ref. A branch or tag name would execute action code from a mutable ref,
+      # so reject anything that is not a full commit SHA before any fetch.
+      - name: Require an immutable reviewer commit
+        env:
+          REVIEWER_SHA: ${{ inputs.reviewer_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${REVIEWER_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "reviewer_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+
       # A called workflow's normal checkout is the caller repository. Fetch
       # Pipelock by the caller-provided full SHA so the composite action and
       # runner cannot silently come from a caller's stale local copy.
@@ -141,3 +156,18 @@ jobs:
           status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
+
+      # A failed checkout, the job timeout, or a cancellation kills this job
+      # before any step above finalizes the status comment. Left running, the
+      # admission check treats it as an active review and refuses every later
+      # /review on the same head, so this always-run step closes it out.
+      - name: Finalize an abandoned review
+        if: always()
+        uses: ./trusted-pr-review/.github/actions/pr-review
+        with:
+          github-token: ${{ secrets.review_token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          review-mode: ${{ inputs.review_mode }}
+          reviewer-sha: ${{ inputs.reviewer_sha }}
+          operation: finalize

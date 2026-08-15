@@ -103,9 +103,11 @@ PR_REVIEW_MODEL_FAST=groq/llama-3.3-70b-versatile
 
 ## Reusing the reviewer in another repository
 
-Copy this workflow stub and replace both occurrences of
+Copy this workflow stub and make two replacements. Replace both occurrences of
 `PINNED_PIPELOCK_REVIEW_COMMIT_SHA` with the same full, immutable Pipelock
-commit SHA. Do not use a branch or tag. Personal-account repositories must map
+commit SHA; do not use a branch or tag. Replace `YOUR_GITHUB_LOGIN` with the
+login allowed to trigger a review, or drop that clause and rely on
+`author_association == 'OWNER'` alone. Personal-account repositories must map
 each named secret explicitly; `secrets: inherit` is not available here.
 
 ```yaml
@@ -118,12 +120,12 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: write
+  pull-requests: read
 
 jobs:
   review:
     if: >-
-      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
       github.event.comment.author_association == 'OWNER' &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||

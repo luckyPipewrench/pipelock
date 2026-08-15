@@ -121,21 +121,19 @@ Every finding is still published; the label never hides one.
 ## Changing the reviewer
 
 Read this before editing anything under `.github/actions/pr-review/` or either
-review workflow. Most of what has broken this reviewer in production came from
-not knowing one of the following, and each was rediscovered the expensive way.
+review workflow.
 
 **A change here cannot be tested by the pull request that makes it.** A workflow
 triggered by `issue_comment` only ever executes the copy already on the default
 branch. Comment `/review` on your own pull request and you exercise the old
-reviewer, not your change, and it will report success while proving nothing.
-This is not a quirk to work around; it is how the trigger works, and it is why
-every earlier regression here shipped green.
+reviewer, not your change, and it reports success while proving nothing about
+what you wrote. That is how the trigger works, not a quirk to route around.
 
 **So test with the manual dispatch, which exists for exactly this.** From
 Actions, select **AI PR Review**, run the workflow from your branch, and give it
 a real pull request number and a mode. That runs your branch's caller against a
 real pull request. It is the only way to exercise a change before it merges, and
-it still requires the same account that the comment path requires.
+it requires the same account the comment path requires.
 
 **Run the tests locally first; they are fast and they gate the pull request.**
 
@@ -145,36 +143,35 @@ pip install --require-hashes -r .github/requirements-pr-review-test.txt
 python -m unittest scripts.pr_review_test
 ```
 
-The `pr-review-tests` job in `ci.yaml` runs the same command. Before that job
-existed, this suite ran only inside a review, which is comment-triggered and so
-could never gate the change that broke it.
+The `pr-review-tests` job in `ci.yaml` runs the same command. A suite that runs
+only inside a review cannot gate a change to the reviewer, because a review runs
+the default-branch copy.
 
 **Two signals, and they mean different things.** The `review` job reports
-whether the runner published a verdict; a published `partial` is a successful
-run. The `completeness` job reports whether the review actually covered the pull
-request, and fails when it did not. Do not "fix" a red `completeness` by making
-it green. Read the review comment: it names what was not covered. Collapsing
-these two into one signal has failed in both directions here, first making a
-working review look crashed, then showing a green check on a review that had
-covered only part of the diff.
+whether the runner published a verdict, so a published `partial` is a successful
+run. The `completeness` job reports whether the review covered the whole pull
+request, and fails when it did not. Do not make a red `completeness` green; read
+the review comment, which names what was not covered. One signal cannot carry
+both without either making a working review look crashed or showing a green
+check on a review that read part of the diff.
 
 **Deletions are a security change.** Removing a guard reads as a deletion hunk.
 Deep mode reads deletion hunks in full and splits an oversized one into bounded
 pieces rather than summarizing or dropping it. Default mode compresses large
 deletion runs and discloses that it did. Do not make deep mode compress them.
 
-**Compression is not a coverage gap.** `coverage_gaps()` names only what the
-review should have read and did not: omitted units, parse errors, a truncated
-compare, a timeout, a moved head, a failed fetch. A disclosed compression does
-not belong in that list. It was there once, and the completeness check then
-failed on a review that read 321 of 321 units and omitted nothing, which trains
-an operator to ignore the check.
+**A disclosed compression is not a coverage gap.** `coverage_gaps()` names only
+what the review should have read and did not: omitted units, parse errors, a
+truncated compare, a timeout, a moved head, a failed fetch. Counting a
+compression there makes the completeness check fail on reviews that covered
+everything, and a check that is red on complete work is one an operator learns
+to ignore.
 
-**Structural assertions parse; they do not match text.** Four guards here were
-each bypassed a different way while appearing to pass: by the comment that named
-the thing, by a quoted value, by a flow mapping, and by whitespace before a
-colon. Assert against parsed YAML. When you add a guard, break the thing it
-guards and watch that test fail before you trust it.
+**Structural assertions parse; they do not match text.** A guard that greps a
+workflow can be satisfied by a comment naming the thing it guards, by a quoted
+value, by a flow mapping, or by whitespace before a colon. Assert against parsed
+YAML. When you add a guard, break the thing it guards and watch that test fail
+before you trust it.
 
 ## Propagating a change to the other repositories
 

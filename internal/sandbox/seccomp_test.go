@@ -529,6 +529,11 @@ func TestApplyRlimits_ChildVerifiesAll(t *testing.T) {
 
 func init() {
 	if os.Getenv("__SANDBOX_RLIMIT_TEST") == "1" {
+		var inheritedNProc syscall.Rlimit
+		if err := syscall.Getrlimit(unix.RLIMIT_NPROC, &inheritedNProc); err != nil {
+			_, _ = os.Stderr.WriteString("get inherited RLIMIT_NPROC: " + err.Error() + "\n")
+			os.Exit(1)
+		}
 		if err := ApplyRlimits(); err != nil {
 			_, _ = os.Stderr.WriteString("rlimits: " + err.Error() + "\n")
 			os.Exit(1)
@@ -538,13 +543,9 @@ func init() {
 			_, _ = os.Stderr.WriteString("getrlimit RLIMIT_NPROC: " + err.Error() + "\n")
 			os.Exit(1)
 		}
-		tasks, err := currentUIDTaskCount()
-		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "count shared UID tasks: %v\n", err)
-			os.Exit(1)
-		}
-		if nproc.Cur <= tasks || nproc.Cur != nproc.Max {
-			_, _ = fmt.Fprintf(os.Stderr, "RLIMIT_NPROC cur=%d max=%d, want equal values above %d shared-UID tasks\n", nproc.Cur, nproc.Max, tasks)
+		wantNProc := boundedNProcLimit(unix.Rlimit{Cur: inheritedNProc.Cur, Max: inheritedNProc.Max})
+		if nproc.Cur != wantNProc || nproc.Max != wantNProc {
+			_, _ = fmt.Fprintf(os.Stderr, "RLIMIT_NPROC cur=%d max=%d, want absolute shared-UID ceiling %d\n", nproc.Cur, nproc.Max, wantNProc)
 			os.Exit(1)
 		}
 		// Verify the three per-process limits keep their fixed values.

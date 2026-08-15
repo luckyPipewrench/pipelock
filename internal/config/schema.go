@@ -5,6 +5,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -640,6 +641,9 @@ type MCPToolScanning struct {
 	// ListenerDriftResetAuthorityPublicKeyFile is the public half of an
 	// mcp-reset-authority key. Its private half never enters the proxy.
 	ListenerDriftResetAuthorityPublicKeyFile string `yaml:"listener_drift_reset_authority_public_key_file" json:"-"`
+	// ListenerDriftResetAuthorityPublicKey is the immutable parsed key pinned
+	// during validation. Runtime builders must not reopen the path above.
+	ListenerDriftResetAuthorityPublicKey ed25519.PublicKey `yaml:"-" json:"-"`
 	// ListenerDriftResetTarget is the stable listener identity a delegation
 	// must bind before it may re-baseline this upstream inventory.
 	ListenerDriftResetTarget string `yaml:"listener_drift_reset_target" json:"-"`

@@ -20,6 +20,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // standaloneProxyConnectionConfig controls how one accepted bridge connection
@@ -46,7 +48,7 @@ type standaloneProxyConnectionConfig struct {
 // but is not kernel-enforced (cooperative, not mandatory).
 //
 // Returns when the agent command exits.
-func LaunchStandalone(cfg StandaloneLaunchConfig) error {
+func LaunchStandalone(cfg StandaloneLaunchConfig) (returnErr error) {
 	if runtime.GOOS != osLinux {
 		return fmt.Errorf("%w: sandbox requires Linux", ErrUnavailable)
 	}
@@ -198,6 +200,17 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 			_ = guardStatusWriter.Close()
 		}()
 	}
+	var readinessReader, readinessWriter *os.File
+	if hasNamespaces {
+		readinessReader, readinessWriter, err = os.Pipe()
+		if err != nil {
+			return fmt.Errorf("creating standalone parent-hardening pipe: %w", err)
+		}
+		defer func() {
+			_ = readinessReader.Close()
+			_ = readinessWriter.Close()
+		}()
+	}
 
 	var developerPipe *developerEnvironmentPipe
 	if cfg.UseDeveloperEnvironment {
@@ -215,7 +228,12 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if guardStatusWriter != nil {
 		guardStatusFD = 2 + len(cmd.ExtraFiles)
 	}
-	cmd.Env = standaloneInitControlEnv(cfg, socketPath, coverageEnv, policyJSON, hasNamespaces, guardDeclarationJSON, guardStatusFD)
+	readinessFD := 0
+	if readinessReader != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, readinessReader)
+		readinessFD = 2 + len(cmd.ExtraFiles)
+	}
+	cmd.Env = standaloneInitControlEnv(cfg, socketPath, coverageEnv, policyJSON, hasNamespaces, guardDeclarationJSON, guardStatusFD, readinessFD)
 
 	if hasNamespaces {
 		cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
@@ -252,10 +270,55 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		}
 	}
 
+	var restoreParent func() error
+	if !hasNamespaces {
+		restoreParent, err = hardenStandaloneParent()
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if restoreErr := restoreParent(); returnErr == nil && restoreErr != nil {
+				returnErr = restoreErr
+			}
+		}()
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting sandbox child: %w", err)
 	}
 	cleanupChildState := standaloneChildCleanup(cmd.Process.Pid, cfg.Strict, proxyServer.stop, ReapOrphans)
+	if readinessReader != nil {
+		if err := readinessReader.Close(); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("closing standalone readiness reader: %w", err)
+		}
+		restoreParent, err = hardenStandaloneParent()
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return err
+		}
+		defer func() {
+			if restoreErr := restoreParent(); returnErr == nil && restoreErr != nil {
+				returnErr = restoreErr
+			}
+		}()
+		if n, writeErr := readinessWriter.Write([]byte{1}); writeErr != nil || n != 1 {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			if writeErr == nil {
+				writeErr = io.ErrShortWrite
+			}
+			return fmt.Errorf("releasing standalone target after parent hardening: %w", writeErr)
+		}
+		if err := readinessWriter.Close(); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("closing standalone readiness writer: %w", err)
+		}
+	}
+	// Register cleanup after the dumpability restore so LIFO execution kills
+	// the sandbox process group before the parent becomes inspectable again.
 	defer cleanupChildState()
 	if guardStatusWriter != nil {
 		if err := guardStatusWriter.Close(); err != nil {
@@ -355,7 +418,7 @@ func readGuardExecutionProof(r io.Reader) ([]byte, error) {
 // standaloneInitControlEnv is the complete re-exec environment. In
 // developer-environment mode it carries only a fixed descriptor number, never
 // a developer-supplied value.
-func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, coverageEnv []string, policyJSON string, hasNamespaces bool, guardDeclarationJSON []byte, guardStatusFD int) []string {
+func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, coverageEnv []string, policyJSON string, hasNamespaces bool, guardDeclarationJSON []byte, guardStatusFD, readinessFD int) []string {
 	commandJSON, _ := json.Marshal(cfg.Command)
 	env := []string{
 		standaloneInitEnv + "=1",
@@ -377,6 +440,9 @@ func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, cov
 	if !hasNamespaces {
 		env = append(env, noNetNSEnvKey+"=1")
 	}
+	if readinessFD > 0 {
+		env = append(env, sandboxReadinessFDEnv+"="+strconv.Itoa(readinessFD))
+	}
 	if cfg.GuardDeclaration != nil {
 		env = append(env,
 			standaloneGuardDeclarationEnv+"="+string(guardDeclarationJSON),
@@ -386,6 +452,26 @@ func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, cov
 		)
 	}
 	return env
+}
+
+func hardenStandaloneParent() (func() error, error) {
+	previous, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("reading standalone parent dumpability: %w", err)
+	}
+	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+		return nil, fmt.Errorf("hardening standalone parent: %w", err)
+	}
+	if err := recordParentHardeningForTest(); err != nil {
+		_ = unix.Prctl(unix.PR_SET_DUMPABLE, uintptr(previous), 0, 0, 0)
+		return nil, fmt.Errorf("recording standalone parent hardening: %w", err)
+	}
+	return func() error {
+		if err := unix.Prctl(unix.PR_SET_DUMPABLE, uintptr(previous), 0, 0, 0); err != nil {
+			return fmt.Errorf("restoring standalone parent dumpability: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 // newStandaloneControlDir creates the per-invocation control directory that

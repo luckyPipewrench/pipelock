@@ -50,7 +50,7 @@ func ApplySeccomp(strict ...bool) (LayerStatus, error) {
 	// Install the BPF filter. Requires no_new_privs already set.
 	// TSYNC synchronizes the filter across all threads in the thread group.
 	// Without this, Go's runtime threads could remain unfiltered.
-	_, _, errno := unix.RawSyscall(
+	failedThread, _, errno := unix.RawSyscall(
 		unix.SYS_SECCOMP,
 		unix.SECCOMP_SET_MODE_FILTER,
 		unix.SECCOMP_FILTER_FLAG_TSYNC,
@@ -59,6 +59,10 @@ func ApplySeccomp(strict ...bool) (LayerStatus, error) {
 	if errno != 0 {
 		status.Reason = fmt.Sprintf("seccomp install failed: %v", errno)
 		return status, fmt.Errorf("installing seccomp filter: %w", errno)
+	}
+	if failedThread != 0 {
+		status.Reason = fmt.Sprintf("seccomp thread synchronization failed at thread %d", failedThread)
+		return status, fmt.Errorf("installing seccomp filter: thread synchronization failed at thread %d", failedThread)
 	}
 
 	status.Active = true

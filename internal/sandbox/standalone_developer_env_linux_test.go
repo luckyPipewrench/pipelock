@@ -32,7 +32,7 @@ func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T
 	controlEnv := standaloneInitControlEnv(cfg, "/tmp/pipelock-sandbox-test/proxy.sock", []string{
 		"GOCOVERDIR=/tmp/pipelock-covdata-" + token,
 		"PIPELOCK_SUBPROCESS_COVERAGE=1",
-	}, `{"workspace":"/workspace"}`, true, nil, 0)
+	}, `{"workspace":"/workspace"}`, true, nil, 0, 0)
 
 	for _, entry := range controlEnv {
 		if strings.Contains(entry, token) || strings.Contains(entry, "LD_PRELOAD") || strings.Contains(entry, "NODE_OPTIONS") {
@@ -52,7 +52,7 @@ func TestStandaloneCommandJSONPreservesLegacyDelimiterInArgument(t *testing.T) {
 	want := []string{"tool", "left\x1fright", "line one\nline two"}
 	controlEnv := standaloneInitControlEnv(StandaloneLaunchConfig{
 		Command: want, Workspace: "/workspace",
-	}, "/tmp/pipelock-sandbox-test/proxy.sock", nil, `{"workspace":"/workspace"}`, true, nil, 0)
+	}, "/tmp/pipelock-sandbox-test/proxy.sock", nil, `{"workspace":"/workspace"}`, true, nil, 0, 0)
 	got, err := decodeStandaloneCommand(envValue(controlEnv, standaloneCommandJSONEnv), "")
 	if err != nil {
 		t.Fatalf("decodeStandaloneCommand: %v", err)
@@ -70,6 +70,15 @@ func TestStandaloneCommandJSONPreservesLegacyDelimiterInArgument(t *testing.T) {
 	}
 	if _, err := decodeStandaloneCommand("", "\x1farg"); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("legacy empty command error = %v", err)
+	}
+}
+
+func TestStandaloneControlEnvCarriesParentHardeningGate(t *testing.T) {
+	controlEnv := standaloneInitControlEnv(StandaloneLaunchConfig{
+		Command: []string{"true"}, Workspace: "/workspace",
+	}, "/tmp/pipelock-sandbox-test/proxy.sock", nil, `{"workspace":"/workspace"}`, true, nil, 0, 7)
+	if got := envValue(controlEnv, sandboxReadinessFDEnv); got != "7" {
+		t.Fatalf("parent-hardening readiness descriptor = %q, want 7", got)
 	}
 }
 

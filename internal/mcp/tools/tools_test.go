@@ -2603,6 +2603,9 @@ func TestToolBaseline_StoreDesc_CapacityLimit(t *testing.T) {
 	if err := tb.StoreDesc("overflow_tool", "should not be stored"); !errors.Is(err, ErrBaselineCapacity) {
 		t.Fatalf("overflow description error = %v, want ErrBaselineCapacity", err)
 	}
+	if got := tb.DiffSummary("overflow_tool", "changed", nil); got != "" {
+		t.Fatalf("rejected description left partial baseline state: %q", got)
+	}
 }
 
 func TestScanTools_DriftDetail(t *testing.T) {
@@ -2695,6 +2698,14 @@ func TestToolBaseline_KnownToolsCap(t *testing.T) {
 
 	if err := tb.SetKnownTools([]string{"overflow_tool"}); !errors.Is(err, ErrBaselineCapacity) {
 		t.Fatalf("SetKnownTools overflow error = %v, want ErrBaselineCapacity", err)
+	}
+	if tb.IsKnownTool("overflow_tool") {
+		t.Fatal("capacity-rejected tool was partially added to the known inventory")
+	}
+	for _, name := range names {
+		if !tb.IsKnownTool(name) {
+			t.Fatalf("capacity rejection removed existing known tool %q", name)
+		}
 	}
 }
 
@@ -3280,6 +3291,9 @@ func TestToolBaseline_StoreParams_Cap(t *testing.T) {
 	}
 	if err := tb.StoreParams("overflow", []string{"x"}); !errors.Is(err, ErrBaselineCapacity) {
 		t.Fatalf("overflow params error = %v, want ErrBaselineCapacity", err)
+	}
+	if got := tb.DiffSummary("overflow", "", []string{"y"}); got != "" {
+		t.Fatalf("rejected parameters left partial baseline state: %q", got)
 	}
 }
 

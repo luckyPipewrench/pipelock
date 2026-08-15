@@ -196,7 +196,12 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 }
 
 func TestPrepareSandboxCmdRejectsGateWithoutOrderingWrapper(t *testing.T) {
-	if cmd, err := PrepareSandboxCmd(LaunchConfig{GateTargetStart: true}); err == nil || cmd != nil {
+	cmd, err := PrepareSandboxCmd(LaunchConfig{
+		Command:         []string{"true"},
+		Workspace:       t.TempDir(),
+		GateTargetStart: true,
+	})
+	if err == nil || cmd != nil || !strings.Contains(err.Error(), "target-start gate requires PrepareSandboxLaunch") {
 		t.Fatalf("PrepareSandboxCmd gate result = %v, %v; want explicit wrapper error", cmd, err)
 	}
 }

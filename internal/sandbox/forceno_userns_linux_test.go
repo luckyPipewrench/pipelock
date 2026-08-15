@@ -61,11 +61,13 @@ func applyUserNSDenyFilter(t *testing.T) {
 		Len:    uint16(len(filter)), // #nosec G115 -- fixed small filter, length is a compile-time constant
 		Filter: &filter[0],
 	}
-	if _, _, errno := unix.Syscall(unix.SYS_SECCOMP,
+	if failedThread, _, errno := unix.Syscall(unix.SYS_SECCOMP,
 		uintptr(unix.SECCOMP_SET_MODE_FILTER),
 		uintptr(unix.SECCOMP_FILTER_FLAG_TSYNC),
 		uintptr(unsafe.Pointer(&prog)), // #nosec G103 -- required by the seccomp syscall ABI
 	); errno != 0 {
 		t.Fatalf("install user-namespace deny filter: %v", errno)
+	} else if failedThread != 0 {
+		t.Fatalf("install user-namespace deny filter: thread synchronization failed at thread %d", failedThread)
 	}
 }

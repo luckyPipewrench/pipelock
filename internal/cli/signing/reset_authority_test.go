@@ -64,6 +64,24 @@ func TestResetAuthorityCommandsMintInspectAndCancel(t *testing.T) {
 		t.Fatalf("mint output = %q", minted.String())
 	}
 
+	wrongKeyDir := t.TempDir()
+	wrongPrivatePath := newResetAuthorityKey(t, wrongKeyDir)
+	wrongPublicPath := filepath.Join(wrongKeyDir, "authority.pub")
+	wrongExport := keyExportPublicCmd()
+	wrongExport.SetOut(&bytes.Buffer{})
+	wrongExport.SetErr(&bytes.Buffer{})
+	wrongExport.SetArgs([]string{"--key", wrongPrivatePath, "--out", wrongPublicPath})
+	if err := wrongExport.Execute(); err != nil {
+		t.Fatalf("export wrong reset authority public key: %v", err)
+	}
+	wrongInspect := resetInspectCmd()
+	wrongInspect.SetOut(&bytes.Buffer{})
+	wrongInspect.SetErr(&bytes.Buffer{})
+	wrongInspect.SetArgs([]string{"--file", delegationPath, "--public-key-file", wrongPublicPath})
+	if err := wrongInspect.Execute(); err == nil {
+		t.Fatal("inspect accepted a delegation signed by another authority")
+	}
+
 	var inspected bytes.Buffer
 	inspect := resetInspectCmd()
 	inspect.SetOut(&inspected)
@@ -322,6 +340,10 @@ func TestResetInspectAndRevokeRejectUntrustedFilesystemState(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := newResetAuthorityKey(t, dir)
 	publicPath := filepath.Join(dir, "authority.pub")
+	malformedPublicPath := filepath.Join(dir, "malformed-authority.pub")
+	if err := os.WriteFile(malformedPublicPath, []byte("not-a-public-key\n"), resetAuthorityPublicKeyMode); err != nil {
+		t.Fatal(err)
+	}
 	export := keyExportPublicCmd()
 	export.SetOut(&bytes.Buffer{})
 	export.SetErr(&bytes.Buffer{})
@@ -336,7 +358,8 @@ func TestResetInspectAndRevokeRejectUntrustedFilesystemState(t *testing.T) {
 		key  string
 	}{
 		{name: "missing delegation", file: filepath.Join(dir, "missing"), key: publicPath},
-		{name: "malformed public key", file: filepath.Join(dir, "missing"), key: filepath.Join(dir, "missing-key")},
+		{name: "missing public key", file: filepath.Join(dir, "missing"), key: filepath.Join(dir, "missing-key")},
+		{name: "malformed public key", file: filepath.Join(dir, "missing"), key: malformedPublicPath},
 		{name: "malformed delegation", file: filepath.Join(dir, "malformed"), key: publicPath},
 	} {
 		t.Run(test.name, func(t *testing.T) {

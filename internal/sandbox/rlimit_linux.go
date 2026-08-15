@@ -6,14 +6,7 @@
 package sandbox
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
-	"io"
-	"math"
-	"os"
-	"path/filepath"
-	"strconv"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,161 +14,38 @@ import (
 // Resource limit defaults for sandboxed child processes.
 // These prevent fork bombs, disk fill, FD exhaustion, and core dumps.
 const (
-	rlimitNProc  uint64 = 1024    // max child processes (prevents fork bomb)
+	rlimitNProc  uint64 = 4096    // absolute shared-UID task ceiling
 	rlimitNoFile uint64 = 4096    // max open file descriptors
 	rlimitFSize  uint64 = 1 << 30 // 1 GB max file size (prevents disk fill)
 	rlimitCore   uint64 = 0       // disable core dumps (prevents memory leak to disk)
 )
 
-// sharedUIDNProcLimit returns a limit that leaves the sandbox process room for
-// rlimitNProc additional tasks without setting a limit below tasks that already
-// exist for a shared host UID. inheritedMax is the caller's existing hard cap.
-func sharedUIDNProcLimit(tasks, inheritedMax uint64) (uint64, error) {
-	if tasks > math.MaxUint64-rlimitNProc {
-		return 0, errors.New("shared UID task count overflows RLIMIT_NPROC headroom")
+// boundedNProcLimit keeps either inherited cap when it is already stricter;
+// otherwise it applies one absolute ceiling to every process sharing this UID.
+// RLIMIT_NPROC is UID-wide on Linux, so adding current usage to a per-launch
+// allowance lets concurrent sandboxes ratchet the total without bound.
+func boundedNProcLimit(inherited unix.Rlimit) uint64 {
+	limit := rlimitNProc
+	if inherited.Cur != unix.RLIM_INFINITY && inherited.Cur < limit {
+		limit = inherited.Cur
 	}
-	limit := tasks + rlimitNProc
-	if inheritedMax == unix.RLIM_INFINITY || limit <= inheritedMax {
-		return limit, nil
+	if inherited.Max != unix.RLIM_INFINITY && inherited.Max < limit {
+		limit = inherited.Max
 	}
-	if inheritedMax <= tasks {
-		return 0, fmt.Errorf("shared UID already has %d tasks at inherited RLIMIT_NPROC hard cap %d", tasks, inheritedMax)
-	}
-	return inheritedMax, nil
-}
-
-// currentUIDTaskCount counts Linux tasks for the caller's real UID. It runs
-// before Landlock, because fallback mode otherwise may not be allowed to read
-// the host /proc entries needed to avoid a retroactively exhausted NPROC cap.
-func currentUIDTaskCount() (uint64, error) {
-	procFD, err := unix.Open("/proc", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return 0, fmt.Errorf("opening /proc: %w", err)
-	}
-	proc := os.NewFile(uintptr(procFD), "/proc")
-	if proc == nil {
-		_ = unix.Close(procFD)
-		return 0, errors.New("opening /proc directory file")
-	}
-	defer func() { _ = proc.Close() }()
-
-	entries, err := proc.ReadDir(-1)
-	if err != nil {
-		return 0, fmt.Errorf("reading /proc: %w", err)
-	}
-
-	uid := os.Getuid()
-	var tasks uint64
-	for _, entry := range entries {
-		pid := entry.Name()
-		if _, err := strconv.ParseUint(pid, 10, 64); err != nil {
-			continue
-		}
-
-		statusFile, err := openProcFile(procFD, filepath.Join(pid, "status"))
-		if err != nil {
-			if procEntryUnavailable(err) {
-				continue
-			}
-			return 0, fmt.Errorf("reading /proc/%s/status: %w", pid, err)
-		}
-		status, readErr := io.ReadAll(statusFile)
-		_ = statusFile.Close()
-		if readErr != nil {
-			if procEntryUnavailable(readErr) {
-				continue
-			}
-			return 0, fmt.Errorf("reading /proc/%s/status: %w", pid, readErr)
-		}
-		realUID, err := processRealUID(status)
-		if err != nil {
-			return 0, fmt.Errorf("parsing /proc/%s/status: %w", pid, err)
-		}
-		if realUID != uid {
-			continue
-		}
-
-		threads, err := processThreadCount(status)
-		if err != nil {
-			return 0, fmt.Errorf("parsing /proc/%s/status: %w", pid, err)
-		}
-		if threads > math.MaxUint64-tasks {
-			return 0, errors.New("shared UID task count overflows")
-		}
-		tasks += threads
-	}
-	if tasks == 0 {
-		return 0, errors.New("shared UID has no visible tasks")
-	}
-	return tasks, nil
-}
-
-func openProcFile(procFD int, name string) (*os.File, error) {
-	fd, err := unix.Openat(procFD, name, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	return os.NewFile(uintptr(fd), name), nil
-}
-
-func procEntryUnavailable(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) ||
-		errors.Is(err, unix.ESRCH) || errors.Is(err, unix.EACCES)
-}
-
-func processRealUID(status []byte) (int, error) {
-	value, err := processStatusField(status, []byte("Uid:"))
-	if err != nil {
-		return 0, errors.New("uid field is missing")
-	}
-	uid, err := strconv.Atoi(string(value))
-	if err != nil {
-		return 0, fmt.Errorf("real UID %q: %w", value, err)
-	}
-	return uid, nil
-}
-
-func processThreadCount(status []byte) (uint64, error) {
-	value, err := processStatusField(status, []byte("Threads:"))
-	if err != nil {
-		return 0, errors.New("threads field is missing")
-	}
-	threads, err := strconv.ParseUint(string(value), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("thread count %q: %w", value, err)
-	}
-	return threads, nil
-}
-
-func processStatusField(status, label []byte) ([]byte, error) {
-	for len(status) > 0 {
-		line, rest, _ := bytes.Cut(status, []byte{'\n'})
-		status = rest
-		fields := bytes.Fields(line)
-		if len(fields) >= 2 && bytes.Equal(fields[0], label) {
-			return fields[1], nil
-		}
-	}
-	return nil, errors.New("status field is missing")
+	return limit
 }
 
 // ApplyRlimits sets resource limits on the calling process. Linux accounts
-// RLIMIT_NPROC against the real UID shared with the host even for the mapped
-// sandbox launches exercised here, so every mode receives current shared-UID
-// usage plus 1024 tasks of headroom.
+// RLIMIT_NPROC against the real UID shared with the host even for mapped
+// sandbox launches, so every mode receives the same absolute shared-UID
+// ceiling. If the UID is already at that ceiling, later process creation is
+// denied; failing closed avoids expanding every same-UID sandbox's allowance.
 func ApplyRlimits() error {
-	tasks, err := currentUIDTaskCount()
-	if err != nil {
-		return err
-	}
 	var inherited unix.Rlimit
 	if err := unix.Getrlimit(unix.RLIMIT_NPROC, &inherited); err != nil {
 		return fmt.Errorf("getting inherited RLIMIT_NPROC: %w", err)
 	}
-	nprocLimit, err := sharedUIDNProcLimit(tasks, inherited.Max)
-	if err != nil {
-		return err
-	}
+	nprocLimit := boundedNProcLimit(inherited)
 
 	limits := []struct {
 		resource int
@@ -188,10 +58,10 @@ func ApplyRlimits() error {
 		{unix.RLIMIT_CORE, rlimitCore, "RLIMIT_CORE"},
 	}
 
-	for _, l := range limits {
-		rlim := unix.Rlimit{Cur: l.value, Max: l.value}
-		if err := unix.Setrlimit(l.resource, &rlim); err != nil {
-			return fmt.Errorf("setting %s: %w", l.name, err)
+	for _, limit := range limits {
+		rlim := unix.Rlimit{Cur: limit.value, Max: limit.value}
+		if err := unix.Setrlimit(limit.resource, &rlim); err != nil {
+			return fmt.Errorf("setting %s: %w", limit.name, err)
 		}
 	}
 	return nil

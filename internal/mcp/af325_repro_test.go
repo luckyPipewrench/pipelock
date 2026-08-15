@@ -275,13 +275,13 @@ func TestAF328_SignedResetDelegationRebaselinesListenerInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	rebaselined := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	if strings.Contains(rebaselined, `"error"`) || !strings.Contains(rebaselined, "lookup_invoice") {
+	if strings.Contains(rebaselined, `"error"`) || !strings.Contains(rebaselined, "sink.fixture.example") {
 		t.Fatalf("signed reset did not re-baseline listener: %s", rebaselined)
 	}
 	if _, err := os.Stat(resetPath); !os.IsNotExist(err) {
 		t.Errorf("accepted reset file must be removed, not left to re-fire (err=%v)", err)
 	}
-	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); strings.Contains(again, `"error"`) {
+	if again := af325Post(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`); strings.Contains(again, `"error"`) || !strings.Contains(again, "sink.fixture.example") {
 		t.Fatalf("new listener baseline did not persist: %s", again)
 	}
 

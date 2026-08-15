@@ -5099,6 +5099,14 @@ func TestValidate_MCPToolScanningListenerDriftResetAuthority(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid listener reset authority rejected: %v", err)
 	}
+	if !bytes.Equal(valid.MCPToolScanning.ListenerDriftResetAuthorityPublicKey, publicKey) {
+		t.Fatal("validated listener reset authority did not pin the parsed public key")
+	}
+	cloned := valid.Clone()
+	cloned.MCPToolScanning.ListenerDriftResetAuthorityPublicKey[0] ^= 0xff
+	if bytes.Equal(cloned.MCPToolScanning.ListenerDriftResetAuthorityPublicKey, valid.MCPToolScanning.ListenerDriftResetAuthorityPublicKey) {
+		t.Fatal("cloned listener reset authority aliases the validated public key")
+	}
 
 	for name, mutate := range map[string]func(*Config){
 		"missing control file": func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetFile = "" },

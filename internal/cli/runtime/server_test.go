@@ -1644,8 +1644,19 @@ func TestBuildMCPToolCfgWiresListenerResetAuthority(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = config.ActionBlock
+	cfg.MCPToolScanning.ListenerDriftResetFile = filepath.Join(t.TempDir(), "drift-reset")
 	cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = keyPath
 	cfg.MCPToolScanning.ListenerDriftResetTarget = "mcp://listener-reset-test"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate listener reset authority: %v", err)
+	}
+	replacementKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate replacement reset authority key: %v", err)
+	}
+	if err := signing.SavePublicKey(replacementKey, keyPath); err != nil {
+		t.Fatalf("replace reset authority key after validation: %v", err)
+	}
 	baseline := mcptools.NewToolBaseline()
 	toolCfg := buildMCPToolCfg(cfg, nil, baseline)
 	if toolCfg == nil || toolCfg.Baseline != baseline || !bytes.Equal(toolCfg.ListenerDriftResetAuthorityPublicKey, publicKey) || toolCfg.ListenerDriftResetTarget != cfg.MCPToolScanning.ListenerDriftResetTarget {

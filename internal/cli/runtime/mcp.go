@@ -981,17 +981,9 @@ Key-free evidence capture:
 					ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 					ExtraPoison:            extraPoison,
 				}
-				resetKeyPath := cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile
 				resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
-				if resetKeyPath != "" || resetTarget != "" {
-					if resetKeyPath == "" || resetTarget == "" {
-						return errors.New("mcp_tool_scanning listener drift reset requires both listener_drift_reset_authority_public_key_file and listener_drift_reset_target")
-					}
-					publicKey, err := signing.LoadPublicKey(resetKeyPath)
-					if err != nil {
-						return fmt.Errorf("load listener drift reset authority public key: %w", err)
-					}
-					toolCfg.ListenerDriftResetAuthorityPublicKey = publicKey
+				if len(cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey) != 0 && resetTarget != "" {
+					toolCfg.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
 					toolCfg.ListenerDriftResetTarget = resetTarget
 				}
 				// Wire session binding into tool scanning when enabled.

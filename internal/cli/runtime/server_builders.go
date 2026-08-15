@@ -15,7 +15,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
-	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func buildToolPolicyCfg(cfg *config.Config) *policy.Config {
@@ -55,14 +54,10 @@ func buildMCPToolCfg(
 		ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 		ExtraPoison:            extraPoison,
 	}
-	resetKeyPath := cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile
 	resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
-	if resetKeyPath != "" && resetTarget != "" {
-		publicKey, err := signing.LoadPublicKey(resetKeyPath)
-		if err == nil {
-			toolCfg.ListenerDriftResetAuthorityPublicKey = publicKey
-			toolCfg.ListenerDriftResetTarget = resetTarget
-		}
+	if len(cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey) != 0 && resetTarget != "" {
+		toolCfg.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
+		toolCfg.ListenerDriftResetTarget = resetTarget
 	}
 	if cfg.MCPSessionBinding.Enabled {
 		toolCfg.BindingUnknownAction = cfg.MCPSessionBinding.UnknownToolAction

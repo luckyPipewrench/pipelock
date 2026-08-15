@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +61,48 @@ func TestIntegration_McpSandboxBestEffortFallbackEnvironDenied(t *testing.T) {
 	requireAmbientProcEnvironReadable(t)
 	binary := buildMCPEnvironProofBinary(t)
 	runMCPEnvironProof(t, binary, "best-effort-fallback")
+}
+
+func TestIntegration_StandaloneTargetCannotReadParentEnviron(t *testing.T) {
+	requireSandboxPrimitives(t)
+	requireAmbientProcEnvironReadable(t)
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required for the standalone environ proof fixture")
+	}
+	workspace := t.TempDir()
+	resultPath := filepath.Join(workspace, "parent-environ-result")
+	scriptPath := filepath.Join(workspace, "parent-environ-proof.py")
+	script := "import errno, os, sys\n" +
+		"try:\n" +
+		"    fd = os.open(f'/proc/{sys.argv[1]}/environ', os.O_RDONLY)\n" +
+		"    os.close(fd)\n" +
+		"    result = 'readable'\n" +
+		"except OSError as err:\n" +
+		"    result = 'permission-denied' if err.errno in (errno.EACCES, errno.EPERM) else f'error-{err.errno}'\n" +
+		"open(sys.argv[2], 'w', encoding='utf-8').write(result)\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatalf("write standalone environ proof: %v", err)
+	}
+	err = LaunchStandalone(StandaloneLaunchConfig{
+		Ctx:       t.Context(),
+		Command:   []string{python, scriptPath, strconv.Itoa(os.Getpid()), resultPath},
+		Workspace: workspace,
+		ProxyHandler: func(conn net.Conn) {
+			_ = conn.Close()
+		},
+		RequireProxyHandler: true,
+	})
+	if err != nil {
+		t.Fatalf("standalone environ proof launch: %v", err)
+	}
+	result, err := os.ReadFile(filepath.Clean(resultPath))
+	if err != nil {
+		t.Fatalf("read standalone environ proof: %v", err)
+	}
+	if got := string(result); got != "permission-denied" {
+		t.Fatalf("standalone target read parent environ: got %q, want permission-denied", got)
+	}
 }
 
 func runMCPEnvironProof(t *testing.T, binary, mode string) {

@@ -327,8 +327,9 @@ const (
 	// and hard-separator action anchoring that excludes ordinary run guidance.
 	// Re-bumped so authority-qualified directives remain detectable across
 	// period, comma, em-dash, and newline separators.
-	// Re-bumped so hard-separated directives do not depend on a verb allowlist.
-	goldenHashDefaults = "6ac8320f787fec77d0fcfeaf2a3b5765287051cf15897b934bdcde76cb1b97f7"
+	// Re-bumped for action-anchored connective forms such as "rules say to"
+	// and "instructions are to" without broadening ordinary task prose.
+	goldenHashDefaults = "92b218b5df48b838e164a6f9f5b26e7a1e4ece2cfbb1c34eb0c369ae15a20492"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -491,7 +492,7 @@ const (
 	// Re-bumped for the singular and hard-separator refinement above.
 	// Re-bumped for the authority-label separator expansion above.
 	// Re-bumped for the hard-separated directive expansion above.
-	goldenHashRichConfig = "3e97049650210e6f104a25396a8311af5a6d25794a27563751bf452861e7e582"
+	goldenHashRichConfig = "b60a9dbc7da5ffe924408ac0b8a6f40a304c46ed1faac2c5ec0a1aab29cae370"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

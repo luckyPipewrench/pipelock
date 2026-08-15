@@ -35,7 +35,7 @@ func TestPrepareSubprocessCoverageEnabled(t *testing.T) {
 	}
 	controlEnv := standaloneInitControlEnv(StandaloneLaunchConfig{
 		Command: []string{"true"}, Workspace: "/workspace", UseDeveloperEnvironment: true,
-	}, "/tmp/pipelock-sandbox-test/proxy.sock", env, `{"workspace":"/workspace"}`, true, nil, 0)
+	}, "/tmp/pipelock-sandbox-test/proxy.sock", env, `{"workspace":"/workspace"}`, true, nil, 0, 0)
 	if !slices.Contains(controlEnv, "GOCOVERDIR="+cleanDir) || !slices.Contains(controlEnv, subprocessCoverageMarker+"=1") {
 		t.Fatalf("developer-mode control environment omitted validated coverage state: %v", controlEnv)
 	}

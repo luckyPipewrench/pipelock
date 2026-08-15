@@ -1235,6 +1235,7 @@ func (c *Config) validateMCPInputScanning() error {
 }
 
 func (c *Config) validateMCPToolScanning() error {
+	c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = nil
 	// Validate MCP tool scanning config
 	if c.MCPToolScanning.Enabled {
 		switch c.MCPToolScanning.Action {
@@ -1254,12 +1255,14 @@ func (c *Config) validateMCPToolScanning() error {
 		if resetKey == "" || resetTarget == "" {
 			return errors.New("mcp_tool_scanning listener drift reset requires listener_drift_reset_authority_public_key_file and listener_drift_reset_target")
 		}
-		if _, err := signing.LoadPublicKey(resetKey); err != nil {
+		publicKey, err := signing.LoadPublicKey(resetKey)
+		if err != nil {
 			return fmt.Errorf("load mcp_tool_scanning listener drift reset authority public key: %w", err)
 		}
 		if strings.TrimSpace(resetTarget) == "" || len(resetTarget) > 512 || strings.ContainsAny(resetTarget, "\r\n\x00") {
 			return errors.New("invalid mcp_tool_scanning listener_drift_reset_target")
 		}
+		c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), publicKey...)
 	}
 	return nil
 }

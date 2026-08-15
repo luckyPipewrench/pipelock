@@ -122,6 +122,33 @@ func TestForwardScanned_ToolInventoryCapacityAlwaysBlocks(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_ConcurrentToolInventoryReservationFailsClosed(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	baseline := tools.NewToolBaseline()
+	held, err := baseline.ReserveToolInventory([]string{"contended"}, nil)
+	if err != nil {
+		t.Fatalf("reserve competing inventory: %v", err)
+	}
+	t.Cleanup(held.Release)
+
+	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
+	line := string(makeToolsResponse(`[{"name":"contended","description":"safe"}]`)) + "\n"
+	var out, log strings.Builder
+	found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found || strings.Contains(out.String(), `"contended"`) {
+		t.Fatalf("contended inventory forwarded: found=%v output=%q", found, out.String())
+	}
+	if !strings.Contains(out.String(), "tool_inventory_capacity") || !strings.Contains(log.String(), "tool_inventory_capacity") {
+		t.Fatalf("reservation conflict was not operator-visible: output=%q log=%q", out.String(), log.String())
+	}
+	if baseline.IsKnownTool("contended") {
+		t.Fatal("capacity-blocked inventory became trusted")
+	}
+}
+
 func TestForwardScanned_ToolScanDrift(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	baseline := tools.NewToolBaseline()

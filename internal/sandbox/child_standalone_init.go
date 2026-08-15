@@ -141,8 +141,9 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
-	// Apply resource limits before Landlock. RLIMIT_NPROC uses shared real-UID
-	// accounting, so count host tasks through /proc before setting its bound.
+	// Apply resource limits before Landlock. RLIMIT_NPROC uses one absolute
+	// ceiling for the shared real UID; it does not enumerate host processes or
+	// grow the allowance independently for each sandbox launch.
 	noNetNS := IsNoNetNS()
 	if err := ApplyRlimits(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resource limits: %v\n", err)
@@ -207,6 +208,10 @@ func RunStandaloneInit() {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] loopback: %v\n", err)
 			exitSandboxProcess(1)
 		}
+	}
+	if err := waitForParentHardening(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: parent hardening gate: %v\n", err)
+		exitSandboxProcess(1)
 	}
 
 	// Start bridge proxy. In best-effort mode without netns, the bridge

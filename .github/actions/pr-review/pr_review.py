@@ -327,20 +327,44 @@ def _split_oversized_deep_hunk(header: list[str], hunk: list[str]) -> list[list[
     parts: list[list[str]] = []
     current: list[str] = []
     current_length = 0
-    for line in content:
-        candidate_length = prefix_length + current_length + len(line) + 1
+    for record in _atomic_records(content):
+        record_length = _joined_length(record) + 1
+        candidate_length = prefix_length + current_length + record_length
         if current and math.ceil(candidate_length / 4) > DEEP_INPUT_TOKEN_BUDGET:
             piece, old_cursor, new_cursor = _emit_piece(hunk[0], old_cursor, new_cursor, current)
             parts.append(piece)
-            current = [line]
-            current_length = len(line) + 1
+            current = list(record)
+            current_length = record_length
             continue
-        current.append(line)
-        current_length += len(line) + 1
+        current.extend(record)
+        current_length += record_length
     if current:
         piece, old_cursor, new_cursor = _emit_piece(hunk[0], old_cursor, new_cursor, current)
         parts.append(piece)
     return parts or [hunk]
+
+
+NO_NEWLINE_MARKER = r"\ No newline at end of file"
+
+
+def _atomic_records(content: list[str]) -> list[list[str]]:
+    """Group diff lines that cannot be separated without changing meaning.
+
+    A "\\ No newline at end of file" marker describes the line immediately
+    before it. Packing them independently lets a boundary fall between the two,
+    which states the opposite of the truth twice over: the piece that keeps the
+    line now claims the file ended with a newline, and the next piece opens with
+    a marker describing a line the reviewer cannot see. Deep mode exists to
+    report findings against exact lines, so a silently altered line is the one
+    corruption it must not introduce.
+    """
+    records: list[list[str]] = []
+    for line in content:
+        if line == NO_NEWLINE_MARKER and records:
+            records[-1].append(line)
+            continue
+        records.append([line])
+    return records
 
 
 def _joined_length(lines: list[str]) -> int:

@@ -1083,6 +1083,45 @@ class DeletionFidelityTest(unittest.TestCase):
                 "a unit must carry changed lines after its hunk header",
             )
 
+    def test_no_newline_marker_never_separates_from_its_line(self) -> None:
+        # The marker describes the line immediately before it. A boundary
+        # falling between the two states the opposite of the truth twice: the
+        # first piece then claims the file ended with a newline, and the next
+        # opens with a marker for a line the reviewer cannot see. Deep mode
+        # exists to address exact lines, so this is the one corruption the
+        # split must not introduce.
+        marker = pr_review.NO_NEWLINE_MARKER
+        header = ["--- a/f.go", "+++ b/f.go"]
+
+        # Sweep line counts so a boundary lands on the marker for at least one
+        # of them rather than depending on one hand-computed offset.
+        for count in range(6, 40):
+            content = []
+            for index in range(count):
+                content.append(f"-old line {index}")
+                content.append(marker)
+            hunk = [f"@@ -1,{count} +1,1 @@", *content]
+
+            with mock.patch.object(pr_review, "DEEP_INPUT_TOKEN_BUDGET", 24):
+                pieces = pr_review._split_oversized_deep_hunk(header, hunk)
+
+            self.assertGreater(len(pieces), 1, f"count={count} did not split")
+            for piece in pieces:
+                body = piece[1:]
+                self.assertNotEqual(
+                    body[0], marker, f"count={count}: a piece opens with an orphan marker"
+                )
+                for position, line in enumerate(body):
+                    if line == marker:
+                        self.assertNotEqual(
+                            body[position - 1],
+                            marker,
+                            f"count={count}: marker lost the line it annotates",
+                        )
+            # No line may be dropped by the grouping.
+            emitted = [line for piece in pieces for line in piece[1:]]
+            self.assertEqual(emitted, content, f"count={count}: split altered the hunk")
+
     def test_split_pieces_carry_their_own_accurate_hunk_header(self) -> None:
         # Every piece used to repeat the original @@ header, so a continuation
         # starting thousands of lines in still announced the hunk's first line.

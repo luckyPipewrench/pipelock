@@ -560,22 +560,26 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
     for attempt in range(1, MODEL_CONNECTION_ATTEMPTS + 1):
         try:
             response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
-        except requests.Timeout as exc:
-            # A timeout is ambiguous: the provider may complete and bill it
-            # after this runner stops waiting, so it is deliberately never
-            # retried.
-            log_phase(phase, attempt=attempt, status="timeout", correlation=correlation)
-            raise ModelTimeout("provider timed out") from exc
-        except requests.ConnectionError as exc:
-            log_phase(phase, attempt=attempt, status="connection-error", correlation=correlation)
+        except requests.ConnectTimeout as exc:
+            # The only failure that proves the request was never delivered: the
+            # connection itself was never established, so the provider cannot
+            # have seen or billed it. This clause must stay ABOVE Timeout,
+            # which ConnectTimeout also subclasses, or it never runs.
+            log_phase(phase, attempt=attempt, status="connect-timeout", correlation=correlation)
             if attempt == MODEL_CONNECTION_ATTEMPTS:
                 raise ModelConnectionError("provider connection failed after one retry") from exc
             continue
+        except requests.Timeout as exc:
+            # Ambiguous: the provider may complete and bill this after the
+            # runner stops waiting, so it is deliberately never retried.
+            log_phase(phase, attempt=attempt, status="timeout", correlation=correlation)
+            raise ModelTimeout("provider timed out") from exc
         except requests.RequestException as exc:
-            # A response-path failure, protocol error, or any other request
-            # error may have reached the provider. Retrying it could bill the
-            # same review twice, so only a connection error gets the bounded
-            # retry above.
+            # Everything else, including a connection reset or a protocol
+            # error, can occur after the request reached the provider. None of
+            # them prove non-delivery, and X-Client-Request-Id above is a
+            # correlation key rather than a deduplication contract, so retrying
+            # any of them risks paying for the same review twice.
             log_phase(phase, attempt=attempt, status="request-error", correlation=correlation)
             raise ModelOutputError("provider request failed") from exc
         log_phase(phase, attempt=attempt, status=response.status_code, correlation=correlation)

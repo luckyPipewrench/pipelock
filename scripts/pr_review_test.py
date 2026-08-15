@@ -13,8 +13,13 @@ from unittest import mock
 
 try:
     import yaml
-except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("PyYAML is required to verify PR-review workflow structure") from exc
+except ImportError:  # pragma: no cover
+    # Absent PyYAML fails the tests that need it and nothing else. Raising here
+    # would abort collection for this whole module, taking down every unrelated
+    # assertion in it, and a skip would quietly drop the coverage instead. The
+    # job that runs these tests installs no packages, so whether PyYAML is
+    # present on the runner is an open question that CI answers directly.
+    yaml = None
 
 
 ROOT = pathlib.Path(__file__).parents[1]
@@ -33,6 +38,15 @@ SPEC.loader.exec_module(pr_review)
 
 def parse_yaml(text: str) -> dict[str, object]:
     """Parse workflow YAML without YAML 1.1 coercing GitHub's `on` key."""
+    if yaml is None:  # pragma: no cover
+        # A failure, never a skip. A skipped structural check reports the same
+        # green as a passing one, which is the exact class of defect these
+        # tests exist to catch.
+        raise AssertionError("PyYAML is required to verify workflow structure and is not installed here")
+    # BaseLoader constructs nothing but strings, lists and dicts, so it cannot
+    # instantiate arbitrary Python the way the default loader can. It is also
+    # the only loader that leaves GitHub's `on:` key alone, which YAML 1.1
+    # otherwise reads as the boolean true.
     document = yaml.load(text, Loader=yaml.BaseLoader)
     if not isinstance(document, dict):
         raise RuntimeError("expected a YAML mapping")
@@ -70,16 +84,23 @@ class WorkflowPackagingTest(unittest.TestCase):
 
         review = caller["jobs"]["review"]
         self.assertEqual(review["uses"], "./.github/workflows/pr-review-reusable.yaml")
-        gate = review["if"]
-        for requirement in (
-            "github.actor == 'luckyPipewrench'",
-            "github.triggering_actor == 'luckyPipewrench'",
-            "github.event.comment.user.login == 'luckyPipewrench'",
-            "github.event.comment.author_association == 'OWNER'",
-            "github.event.issue.pull_request",
-            "github.event_name == 'workflow_dispatch'",
-        ):
-            self.assertIn(requirement, gate)
+        # The WHOLE expression, not its parts. Requiring only substrings would
+        # accept a gate rewritten as "dispatch || (everything else)", which
+        # still contains every required string while letting an unauthorized
+        # manual dispatch through. Authorization is a property of the
+        # expression's structure, so the assertion has to be the expression.
+        expected = (
+            "github.actor == 'luckyPipewrench' && "
+            "github.triggering_actor == 'luckyPipewrench' && "
+            "((github.event_name == 'issue_comment' && "
+            "github.event.comment.user.login == 'luckyPipewrench' && "
+            "github.event.comment.author_association == 'OWNER' && "
+            "github.event.issue.pull_request && "
+            "(github.event.comment.body == '/review' || "
+            "github.event.comment.body == '/review deep')) || "
+            "github.event_name == 'workflow_dispatch')"
+        )
+        self.assertEqual(" ".join(review["if"].split()), expected)
         self.assertIn("inputs.pr_number", review["with"]["pr_number"])
         self.assertIn("inputs.review_mode", review["with"]["review_mode"])
 
@@ -737,7 +758,9 @@ class FailureDirectionTest(unittest.TestCase):
                 pr_review.call_model("system", "user", "deep", "review-chunk-1", "correlation")
         self.assertEqual(post.call_count, 1, "an ambiguous timeout must not be retried")
 
-    def test_connection_error_retries_once_with_one_provider_correlation_id(self) -> None:
+    def test_connect_timeout_retries_once_with_one_provider_correlation_id(self) -> None:
+        # A connect timeout is the only failure proving the request was
+        # never delivered, so it is the only one safe to repeat.
         class Response:
             status_code = 200
 
@@ -746,7 +769,7 @@ class FailureDirectionTest(unittest.TestCase):
                 return {"choices": [{"message": {"content": '{"findings":[]}'}}]}
 
         with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
-            pr_review.requests, "post", side_effect=[pr_review.requests.ConnectionError("offline"), Response()]
+            pr_review.requests, "post", side_effect=[pr_review.requests.ConnectTimeout("no route"), Response()]
         ) as post:
             self.assertEqual(pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation"), {"findings": []})
         self.assertEqual(pr_review.MODEL_CONNECTION_ATTEMPTS, 2)
@@ -756,13 +779,24 @@ class FailureDirectionTest(unittest.TestCase):
             post.call_args_list[1].kwargs["headers"]["X-Client-Request-Id"],
         )
 
-    def test_connection_error_after_retry_is_distinct_from_other_provider_failures(self) -> None:
+    def test_connect_timeout_after_retry_is_distinct_from_other_provider_failures(self) -> None:
         with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
-            pr_review.requests, "post", side_effect=pr_review.requests.ConnectionError("offline")
+            pr_review.requests, "post", side_effect=pr_review.requests.ConnectTimeout("no route")
         ) as post:
             with self.assertRaises(pr_review.ModelConnectionError):
                 pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation")
         self.assertEqual(post.call_count, 2)
+
+    def test_a_dropped_connection_is_not_retried(self) -> None:
+        # ConnectionError covers resets that can occur after the provider has
+        # the request. Only a connect timeout proves non-delivery, so anything
+        # broader would risk paying for the same review twice.
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", side_effect=pr_review.requests.ConnectionError("reset by peer")
+        ) as post:
+            with self.assertRaises(pr_review.ModelOutputError):
+                pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation")
+        self.assertEqual(post.call_count, 1)
 
     def test_non_connection_request_error_is_not_retried(self) -> None:
         # A response-path failure can happen after the provider receives the

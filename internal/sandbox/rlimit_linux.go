@@ -22,7 +22,7 @@ import (
 // These prevent fork bombs, disk fill, FD exhaustion, and core dumps.
 const (
 	rlimitNProc           uint64 = 4096    // absolute shared-UID task ceiling
-	rlimitNProcHeadroom   uint64 = 1024    // tasks reserved for each admitted sandbox launch
+	rlimitNProcHeadroom   uint64 = 1024    // maximum additional task capacity per launch
 	rlimitNoFile          uint64 = 4096    // max open file descriptors
 	rlimitFSize           uint64 = 1 << 30 // 1 GB max file size (prevents disk fill)
 	rlimitCore            uint64 = 0       // disable core dumps (prevents memory leak to disk)
@@ -45,14 +45,13 @@ func boundedNProcLimit(inherited unix.Rlimit) uint64 {
 }
 
 func requestedNProcLimit(tasks, ceiling uint64) (uint64, error) {
-	if tasks > math.MaxUint64-rlimitNProcHeadroom {
-		return 0, errors.New("shared UID task headroom overflows")
+	if tasks >= ceiling {
+		return 0, fmt.Errorf("shared UID has %d tasks at or above sandbox RLIMIT_NPROC ceiling %d", tasks, ceiling)
 	}
-	requested := tasks + rlimitNProcHeadroom
-	if requested > ceiling {
-		return 0, fmt.Errorf("shared UID has %d tasks; reserving %d tasks exceeds sandbox RLIMIT_NPROC ceiling %d", tasks, rlimitNProcHeadroom, ceiling)
+	if ceiling-tasks < rlimitNProcHeadroom {
+		return ceiling, nil
 	}
-	return requested, nil
+	return tasks + rlimitNProcHeadroom, nil
 }
 
 // currentUIDTaskCount counts tasks for this real UID without retaining the
@@ -98,11 +97,11 @@ func currentUIDTaskCount(stopAt uint64) (uint64, error) {
 				}
 				return 0, fmt.Errorf("reading /proc/%s/status: %w", pid, statusErr)
 			}
-			realUID, threads, err := processUIDAndThreads(status)
+			threads, belongsToUID, err := processTaskCount(status, uid)
 			if err != nil {
 				return 0, fmt.Errorf("parsing /proc/%s/status: %w", pid, err)
 			}
-			if realUID != uid {
+			if !belongsToUID {
 				continue
 			}
 			if threads > math.MaxUint64-tasks {
@@ -139,10 +138,17 @@ func procEntryUnavailable(err error) bool {
 		errors.Is(err, unix.ESRCH) || errors.Is(err, unix.EACCES)
 }
 
-func processUIDAndThreads(status []byte) (int, uint64, error) {
-	var uid int
-	var threads uint64
-	foundUID, foundThreads := false, false
+// processTaskCount returns the thread count only for the requested real UID.
+// An empty status is the observable /proc exit race after a successful open;
+// the process no longer contributes stable tasks and is skipped. Foreign
+// processes are identified and skipped before their Threads field is parsed,
+// so their unrelated status shape cannot deny this UID's sandbox launch.
+func processTaskCount(status []byte, targetUID int) (uint64, bool, error) {
+	if len(bytes.TrimSpace(status)) == 0 {
+		return 0, false, nil
+	}
+
+	foundUID := false
 	for len(status) > 0 {
 		line, rest, _ := bytes.Cut(status, []byte{'\n'})
 		status = rest
@@ -154,29 +160,35 @@ func processUIDAndThreads(status []byte) (int, uint64, error) {
 		case "Uid:":
 			parsed, err := strconv.Atoi(string(fields[1]))
 			if err != nil {
-				return 0, 0, fmt.Errorf("real UID %q: %w", fields[1], err)
+				return 0, false, fmt.Errorf("real UID %q: %w", fields[1], err)
 			}
-			uid, foundUID = parsed, true
+			foundUID = true
+			if parsed != targetUID {
+				return 0, false, nil
+			}
 		case "Threads:":
+			if !foundUID {
+				continue
+			}
 			parsed, err := strconv.ParseUint(string(fields[1]), 10, 64)
 			if err != nil {
-				return 0, 0, fmt.Errorf("thread count %q: %w", fields[1], err)
+				return 0, false, fmt.Errorf("thread count %q: %w", fields[1], err)
 			}
-			threads, foundThreads = parsed, true
-		}
-		if foundUID && foundThreads {
-			return uid, threads, nil
+			return parsed, true, nil
 		}
 	}
-	return 0, 0, errors.New("uid or threads field is missing")
+	if !foundUID {
+		return 0, false, errors.New("uid field is missing")
+	}
+	return 0, false, errors.New("threads field is missing")
 }
 
 // ApplyRlimits sets resource limits on the calling process. Linux accounts
 // RLIMIT_NPROC against the real UID shared with the host even for mapped
 // sandbox launches, so every mode receives the same absolute shared-UID
-// ceiling. Each admitted launch receives 1,024 tasks above current shared-UID
-// usage without ever raising that absolute ceiling. A launch that cannot
-// receive the full headroom fails before the target executes.
+// ceiling. Each admitted launch receives up to 1,024 tasks above current
+// shared-UID usage without ever raising that absolute ceiling. A launch fails
+// before the target executes only when the UID is already at the ceiling.
 func ApplyRlimits() error {
 	var inherited unix.Rlimit
 	if err := unix.Getrlimit(unix.RLIMIT_NPROC, &inherited); err != nil {

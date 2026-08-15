@@ -61,6 +61,4 @@ jobs:
       reviewer_sha: ${{ github.sha }}
     secrets:
       review_token: ${{ secrets.GITHUB_TOKEN }}
-      litellm_base_url: ${{ secrets.LITELLM_BASE_URL }}
-      litellm_api_key: ${{ secrets.LITELLM_API_KEY }}
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}

@@ -19,10 +19,6 @@ on:
     secrets:
       review_token:
         required: true
-      litellm_base_url:
-        required: false
-      litellm_api_key:
-        required: false
       openai_api_key:
         required: false
 
@@ -96,11 +92,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
-      state: ${{ steps.litellm.outputs.state || steps.openai.outputs.state || steps.nocreds.outputs.state }}
-      complete: ${{ steps.litellm.outputs.complete || steps.openai.outputs.complete || steps.nocreds.outputs.complete }}
+      state: ${{ steps.openai.outputs.state || steps.nocreds.outputs.state }}
+      complete: ${{ steps.openai.outputs.complete || steps.nocreds.outputs.complete }}
     env:
-      HAS_LITELLM: >-
-        ${{ secrets.litellm_base_url != '' && secrets.litellm_api_key != '' && 'true' || 'false' }}
       HAS_OPENAI: ${{ secrets.openai_api_key != '' && 'true' || 'false' }}
     steps:
       - name: Check out immutable Pipelock review source
@@ -114,28 +108,9 @@ jobs:
       # The runner receives one provider credential, never both. Named secret
       # mappings are required because personal-account repositories cannot use
       # secrets: inherit with a reusable workflow.
-      - name: Run review through LiteLLM
-        id: litellm
-        if: env.HAS_LITELLM == 'true'
-        uses: ./trusted-pr-review/.github/actions/pr-review
-        with:
-          github-token: ${{ secrets.review_token }}
-          repo: ${{ github.repository }}
-          pr-number: ${{ inputs.pr_number }}
-          review-mode: ${{ inputs.review_mode }}
-          reviewer-sha: ${{ inputs.reviewer_sha }}
-          operation: review
-          base-sha: ${{ needs.admit.outputs.base_sha }}
-          head-sha: ${{ needs.admit.outputs.head_sha }}
-          status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
-          litellm-base-url: ${{ secrets.litellm_base_url }}
-          litellm-api-key: ${{ secrets.litellm_api_key }}
-          model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
-          model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
-
       - name: Run review through OpenAI
         id: openai
-        if: env.HAS_LITELLM != 'true' && env.HAS_OPENAI == 'true'
+        if: env.HAS_OPENAI == 'true'
         uses: ./trusted-pr-review/.github/actions/pr-review
         with:
           github-token: ${{ secrets.review_token }}
@@ -153,7 +128,7 @@ jobs:
 
       - name: Report missing provider credential
         id: nocreds
-        if: env.HAS_LITELLM != 'true' && env.HAS_OPENAI != 'true'
+        if: env.HAS_OPENAI != 'true'
         uses: ./trusted-pr-review/.github/actions/pr-review
         with:
           github-token: ${{ secrets.review_token }}

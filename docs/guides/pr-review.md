@@ -117,9 +117,7 @@ from the reviewer rather than failing at load, and the review then ends on a
 permission error when it tries to post.
 
 Personal-account repositories must map each named secret explicitly, because
-`secrets: inherit` is not available to them. Map the LiteLLM secrets even where
-they do not exist; an absent secret resolves to an empty string and the reviewer
-falls back to the direct OpenAI path.
+`secrets: inherit` is not available to them.
 
 Keep the manual dispatch. A comment-triggered workflow only ever executes the
 copy on the default branch, so a change to this file cannot run on the pull
@@ -175,8 +173,6 @@ jobs:
       reviewer_sha: PINNED_PIPELOCK_REVIEW_COMMIT_SHA
     secrets:
       review_token: ${{ secrets.GITHUB_TOKEN }}
-      litellm_base_url: ${{ secrets.LITELLM_BASE_URL }}
-      litellm_api_key: ${{ secrets.LITELLM_API_KEY }}
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 

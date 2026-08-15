@@ -113,7 +113,10 @@ class WorkflowPackagingTest(unittest.TestCase):
 
         review = workflow["jobs"]["review"]
         self.assertEqual(review["needs"], "admit")
-        self.assertIn("HAS_LITELLM", review["env"])
+        # One provider remains. A second was carried for a gateway no
+        # repository ever configured, so its branch never ran.
+        self.assertIn("HAS_OPENAI", review["env"])
+        self.assertNotIn("HAS_LITELLM", review["env"])
         checkout = review["steps"][0]
         self.assertEqual(checkout["with"]["repository"], "luckyPipewrench/pipelock")
         self.assertEqual(checkout["with"]["ref"], "${{ inputs.reviewer_sha }}")
@@ -133,7 +136,28 @@ class WorkflowPackagingTest(unittest.TestCase):
         completeness = workflow["jobs"]["completeness"]
         self.assertEqual(completeness["needs"], ["admit", "review"])
         self.assertIn("always()", completeness["if"])
-        self.assertEqual(review["outputs"]["complete"].count("outputs.complete"), 3)
+        # Every step that can run a review must feed both outputs. A hard-coded
+        # count went stale the moment a provider was removed, and a count is the
+        # wrong assertion anyway: it cannot tell which step was dropped. Derive
+        # the expected identifiers from the steps themselves, so adding or
+        # removing a provider without wiring its outputs fails here.
+        provider_ids = {
+            step["id"]
+            for step in review["steps"]
+            if step.get("id") and str(step.get("uses", "")).endswith("/actions/pr-review")
+        }
+        self.assertTrue(provider_ids, "the review job must run the review action")
+        for output in ("state", "complete"):
+            referenced = {
+                identifier
+                for identifier in provider_ids
+                if f"steps.{identifier}.outputs.{output}" in review["outputs"][output]
+            }
+            self.assertEqual(
+                referenced,
+                provider_ids,
+                f"every provider step must contribute to the {output} output",
+            )
         for step in review["steps"]:
             self.assertNotIn("secrets.", step.get("if", ""))
 
@@ -183,7 +207,7 @@ class WorkflowPackagingTest(unittest.TestCase):
         action = load_yaml(ACTION_YAML)
         self.assertTrue((ACTION_DIR / "requirements.txt").is_file())
         self.assertEqual(action["inputs"]["operation"]["default"], "review")
-        for name in ("status-comment-id", "operation", "litellm-api-key", "openai-api-key", "model-fast", "model-deep"):
+        for name in ("status-comment-id", "operation", "openai-api-key", "model-fast", "model-deep"):
             self.assertIn(name, action["inputs"])
         # Either cache key breaks setup for this action and stops every review
         # before it starts, so this asserts against the parsed document rather
@@ -998,6 +1022,100 @@ class StatusPresentationTest(unittest.TestCase):
         self.assertNotIn("**Binding:**", lead)
         self.assertNotIn("**Review identity:**", lead)
         self.assertIn("<summary>Review details: binding and planned review</summary>", status)
+
+
+class DeletionFidelityTest(unittest.TestCase):
+    """Deleting code is a change, and deep mode is the pass that must see it."""
+
+    @staticmethod
+    def diff_with_deletions(count: int) -> str:
+        removed = "\n".join(f"-old line {index}" for index in range(count))
+        return (
+            "diff --git a/internal/guard.go b/internal/guard.go\n"
+            "--- a/internal/guard.go\n"
+            "+++ b/internal/guard.go\n"
+            f"@@ -1,{count} +1,1 @@\n"
+            f"{removed}\n"
+            "+replacement\n"
+        )
+
+    def test_deep_mode_reads_every_deleted_line(self) -> None:
+        # Removing a guard reads as a deletion hunk, so summarizing deletions
+        # in the mode asked for full fidelity can hide the change that matters
+        # most on a security product.
+        count = pr_review.MAX_DELETION_LINES_PER_HUNK * 3
+        units, errors = pr_review.parse_diff(self.diff_with_deletions(count), "deep")
+        self.assertEqual(errors, [])
+        self.assertEqual(sum(item.collapsed_deletions for item in units), 0)
+        for index in range(count):
+            self.assertIn(f"-old line {index}", units[0].body)
+
+    def test_default_mode_still_collapses_and_discloses(self) -> None:
+        count = pr_review.MAX_DELETION_LINES_PER_HUNK * 3
+        units, _ = pr_review.parse_diff(self.diff_with_deletions(count), "default")
+        collapsed = sum(item.collapsed_deletions for item in units)
+        self.assertGreater(collapsed, 0)
+        self.assertIn("deletion lines collapsed", units[0].body)
+        self.assertEqual(units[0].manifest()["collapsed_deletions"], collapsed)
+
+    def test_a_collapsed_hunk_is_not_a_coverage_gap(self) -> None:
+        # An observed review read 321 of 321 units, omitted nothing, and still
+        # reported partial behind a failing check because six hunks were
+        # collapsed. A check that fails on complete reviews gets ignored, and
+        # then it protects nothing when a review really is short.
+        #
+        # This asserts the decision, not its consequence. Asserting that
+        # derive_state returns clean for a hand-built progress cannot catch
+        # this: the defect was in what the caller recorded, so a version that
+        # recorded the collapse again still passed that assertion.
+        units, _ = pr_review.parse_diff(
+            self.diff_with_deletions(pr_review.MAX_DELETION_LINES_PER_HUNK * 3), "default"
+        )
+        self.assertGreater(sum(item.collapsed_deletions for item in units), 0)
+        self.assertEqual(pr_review.coverage_gaps(units, [], []), [])
+
+    def test_a_genuinely_omitted_unit_is_a_coverage_gap(self) -> None:
+        units, _ = pr_review.parse_diff(self.diff_with_deletions(2), "deep")
+        gaps = pr_review.coverage_gaps(units, [units[0]], [])
+        self.assertEqual(gaps, ["one or more units were omitted or unrepresentable"])
+
+    def test_a_parse_error_is_carried_through_as_a_gap(self) -> None:
+        units, _ = pr_review.parse_diff(self.diff_with_deletions(2), "deep")
+        self.assertEqual(pr_review.coverage_gaps(units, [], ["diff has no file headers"]),
+                         ["diff has no file headers"])
+
+    def test_an_omitted_unit_still_reports_partial(self) -> None:
+        progress = pr_review.ReviewProgress()
+        progress.expected_units = 4
+        progress.reviewed_units = 3
+        self.assertEqual(pr_review.derive_state(progress), "partial")
+
+
+class SingleProviderTest(unittest.TestCase):
+    def test_openai_credential_selects_the_only_provider(self) -> None:
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True):
+            endpoint, key = pr_review.provider_configuration()
+        self.assertEqual(endpoint, "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(key, "key")
+
+    def test_a_stale_gateway_variable_cannot_redirect_the_provider_call(self) -> None:
+        # The removed branch chose its endpoint from an environment variable.
+        # A leftover value in a repository or runner must not be able to send
+        # the review, its diff and its credential somewhere else.
+        environment = {
+            "OPENAI_API_KEY": "key",
+            "LITELLM_BASE_URL": "https://attacker.vendor.example/v1",
+            "LITELLM_API_KEY": "other",
+        }
+        with mock.patch.dict(pr_review.os.environ, environment, clear=True):
+            endpoint, key = pr_review.provider_configuration()
+        self.assertEqual(endpoint, "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(key, "key")
+
+    def test_no_credential_is_a_configuration_failure(self) -> None:
+        with mock.patch.dict(pr_review.os.environ, {}, clear=True):
+            with self.assertRaises(pr_review.ProviderConfigurationError):
+                pr_review.provider_configuration()
 
 
 class AdoptionStubTest(unittest.TestCase):

@@ -39,12 +39,6 @@ inputs:
   reviewer-sha:
     description: Immutable Pipelock source commit containing this action.
     required: true
-  litellm-base-url:
-    description: Optional LiteLLM-compatible base URL.
-    required: false
-  litellm-api-key:
-    description: Optional LiteLLM credential.
-    required: false
   openai-api-key:
     description: Optional direct OpenAI credential.
     required: false
@@ -97,8 +91,6 @@ runs:
         PR_NUMBER: ${{ inputs.pr-number }}
         REVIEW_MODE: ${{ inputs.review-mode }}
         REVIEWER_SHA: ${{ inputs.reviewer-sha }}
-        LITELLM_BASE_URL: ${{ inputs.litellm-base-url }}
-        LITELLM_API_KEY: ${{ inputs.litellm-api-key }}
         OPENAI_API_KEY: ${{ inputs.openai-api-key }}
         PR_REVIEW_MODEL_FAST: ${{ inputs.model-fast }}
         PR_REVIEW_MODEL_DEEP: ${{ inputs.model-deep }}

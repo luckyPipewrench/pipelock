@@ -148,6 +148,8 @@ class WorkflowPackagingTest(unittest.TestCase):
         self.assertIn("openai-api-key", action)
         self.assertIn("PR_REVIEW_MODEL_FAST", action)
         self.assertIn("PR_REVIEW_MODEL_DEEP", action)
+        self.assertIn("cache: pip", action)
+        self.assertIn("cache-dependency-path: ${{ github.action_path }}/requirements.txt", action)
 
 
 class StateMachineTest(unittest.TestCase):
@@ -191,6 +193,22 @@ class StateMachineTest(unittest.TestCase):
 
 
 class CompressionAndClassificationTest(unittest.TestCase):
+    def test_deep_plan_covers_321_small_units_in_six_chunks(self) -> None:
+        # The old global cap (20 units x 8 chunks) made a 321-unit review
+        # partial even when every hunk fit the token budget. Deep mode now
+        # admits 60 units per chunk, so the observed PR shape fits in six
+        # provider calls and still leaves two chunk slots for larger diffs.
+        # 800 tokens per unit is exactly the old 20-unit, 16k-token ceiling;
+        # this proves the new count and token limits work together rather than
+        # only exercising an unrealistically tiny hunk.
+        units = [unit(index, f"internal/item_{index}.go", "source:go", tokens=800) for index in range(1, 322)]
+        chunks, omitted = pr_review.plan_chunks(units, "deep")
+        self.assertEqual([len(chunk) for chunk in chunks], [60, 60, 60, 60, 60, 21])
+        self.assertEqual(omitted, [])
+        self.assertEqual(pr_review.DEEP_INPUT_TOKEN_BUDGET, 48_000)
+        self.assertEqual(pr_review.DEEP_MAX_UNITS_PER_CHUNK, 60)
+        self.assertEqual(pr_review.DEEP_MAX_CHUNKS, 8)
+
     def test_primary_language_and_additions_outrank_test_config_and_docs(self) -> None:
         ranked = pr_review.rank_units(
             [
@@ -405,6 +423,8 @@ class FinalizerIndependenceTest(unittest.TestCase):
         finalize = workflow.split("Finalize an abandoned review", 1)[1]
         self.assertIn(f"<!-- {pr_review.STATUS_MARKER} state=running", finalize)
         self.assertIn(f"<!-- {pr_review.STATUS_MARKER} state=failed", finalize)
+        self.assertIn("**Verdict:** `failed`", finalize)
+        self.assertIn("<summary>Review details: binding and identity</summary>", finalize)
 
 
 class AdmissionMarkerTest(unittest.TestCase):
@@ -520,7 +540,7 @@ class JudgeFetchCapTest(unittest.TestCase):
         # going. Measured at 60 requests against a limit of 20.
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         candidates = [pr_review.Finding("low", f"p{index}/a.go", 1, "t", "w", "f") for index in range(60)]
-        with mock.patch.object(pr_review, "fetch_file_context", return_value="x" * 80_000) as fetch, mock.patch.object(
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="x" * 200_000) as fetch, mock.patch.object(
             pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
         ):
             _, judged, excluded = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
@@ -595,6 +615,58 @@ class FailureDirectionTest(unittest.TestCase):
                 pr_review.call_model("system", "user", "deep", "review-chunk-1", "correlation")
 
 
+class ChunkResilienceTest(unittest.TestCase):
+    def _run_with_chunk_outcomes(self, outcomes: list[object]) -> tuple[str, object, object]:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        units = [unit(index, f"internal/item_{index}.go", "source:go") for index in range(1, 4)]
+
+        def payload_for(path: str) -> dict[str, object]:
+            return {"findings": [], "changes": [{"path": path, "summary": "changed"}]}
+
+        resolved = [payload_for(unit.path) if outcome == "ok" else outcome for unit, outcome in zip(units, outcomes, strict=True)]
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("https://provider.example/v1/chat/completions", "key")), mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value="ignored"
+        ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None), mock.patch.object(
+            pr_review, "parse_diff", return_value=(units, [])
+        ), mock.patch.object(pr_review, "plan_chunks", return_value=([[units[0]], [units[1]], [units[2]]], [])), mock.patch.object(
+            pr_review, "head_has_moved", return_value=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "budget_allows", return_value=True
+        ), mock.patch.object(
+            pr_review, "call_model", side_effect=resolved
+        ) as call_model, mock.patch.object(pr_review, "update_comment"):
+            state, progress = pr_review.run_review(
+                "owner/repo", "42", "token", "deep", "c" * 40, binding=binding, status_comment_id=7
+            )
+        return state, progress, call_model
+
+    def test_invalid_chunk_response_does_not_stop_later_chunks(self) -> None:
+        # A provider 500 used to break here, throwing away every later chunk.
+        # The failed chunk remains missing, so the terminal state must be
+        # partial even though the other two chunks were successfully reviewed.
+        state, progress, call_model = self._run_with_chunk_outcomes(
+            ["ok", pr_review.ModelOutputError("HTTP 500"), "ok"]
+        )
+        self.assertEqual(state, "partial")
+        self.assertEqual(progress.reviewed_units, 2)
+        self.assertFalse(progress.aggregation_failed)
+        self.assertEqual(call_model.call_count, 3)
+        self.assertTrue(any("chunk 2" in reason for reason in progress.incomplete_reasons))
+
+    def test_timeout_is_not_retried_but_later_chunks_continue(self) -> None:
+        # A retry would be ambiguous because the timed-out provider request can
+        # still complete and be billed. Continuing with a distinct later chunk
+        # preserves useful coverage without a duplicate request for chunk one.
+        state, progress, call_model = self._run_with_chunk_outcomes(
+            [pr_review.ModelTimeout("timeout"), "ok", "ok"]
+        )
+        self.assertEqual(state, "partial")
+        self.assertTrue(progress.timed_out)
+        self.assertEqual(progress.reviewed_units, 2)
+        self.assertEqual(call_model.call_count, 3)
+        self.assertTrue(any("not retried" in reason for reason in progress.incomplete_reasons))
+
+
 class StructuredOutputSafetyTest(unittest.TestCase):
     def test_model_clean_sentence_cannot_set_clean_state(self) -> None:
         with self.assertRaises(pr_review.ModelOutputError):
@@ -665,7 +737,63 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         self.assertLess(status.index("#### 1. high"), status.index("#### 2. low"))
         self.assertNotIn("/approve", status)
         self.assertNotIn("@bad", status)
-        self.assertIn("Status:** `findings`", status)
+        self.assertIn("Verdict:** `findings`", status)
+
+
+class StatusPresentationTest(unittest.TestCase):
+    def _binding(self) -> object:
+        return pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+
+    def test_partial_status_leads_with_verdict_and_caps_the_manifest(self) -> None:
+        # A no-findings partial once published one line for every omitted hunk
+        # before the reader saw the useful conclusion. Keep the count intact,
+        # show only a bounded sample, and make partial impossible to mistake
+        # for a clean result.
+        manifest = [
+            {
+                "path": f"internal/omitted_{index}.go",
+                "hunk": "@@ -1 +1 @@",
+                "status": "priority-token-budget",
+                "collapsed_deletions": 0,
+            }
+            for index in range(171)
+        ]
+        progress = pr_review.ReviewProgress(
+            expected_units=321,
+            reviewed_units=90,
+            incomplete_reasons=["one or more units were omitted or unrepresentable"],
+        )
+        status = pr_review.render_status(self._binding(), "deep", ["source:go"], progress, "partial", manifest)
+        first_details = status.index("<details>")
+        lead = status[:first_details]
+        self.assertIn("Verdict:** `partial`", lead)
+        self.assertIn("must not be treated as a clean review", lead)
+        self.assertIn("### Findings", lead)
+        self.assertNotIn("**Binding:**", lead)
+        self.assertNotIn("**Completeness:**", lead)
+        self.assertIn("<summary>Review details: binding and coverage</summary>", status)
+        self.assertIn("<summary>Why this review is incomplete</summary>", status)
+        self.assertIn("<summary>Omission manifest (8 of 171 shown)</summary>", status)
+        self.assertEqual(status.count("priority-token-budget"), pr_review.MAX_RENDERED_MANIFEST_ENTRIES)
+        self.assertIn("- and 163 more", status)
+        self.assertLess(len(status.encode("utf-8")), 2_500)
+
+    def test_no_findings_status_is_compact_but_keeps_details_available(self) -> None:
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1)
+        status = pr_review.render_status(self._binding(), "default", ["source:go"], progress, "clean", [])
+        self.assertIn("Verdict:** `clean`", status)
+        self.assertIn("Findings:** high 0, medium 0, low 0.", status)
+        self.assertIn("No verified material findings were published.", status)
+        self.assertIn("<summary>Review details: binding and coverage</summary>", status)
+        self.assertLess(len(status.encode("utf-8")), 2_000)
+
+    def test_running_status_keeps_binding_out_of_the_open_body(self) -> None:
+        status = pr_review._initial_status(self._binding(), "deep")
+        lead = status[:status.index("<details>")]
+        self.assertIn("Status:** `running`", lead)
+        self.assertNotIn("**Binding:**", lead)
+        self.assertNotIn("**Review identity:**", lead)
+        self.assertIn("<summary>Review details: binding and planned review</summary>", status)
 
 
 if __name__ == "__main__":

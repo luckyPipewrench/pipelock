@@ -193,7 +193,7 @@ jobs:
             *"<!-- pr-review-status:v1 state=running identity=${IDENTITY} -->"*) ;;
             *) echo "pr-review phase=finalize status=not-ours-or-already-final"; exit 0 ;;
           esac
-          printf '## AI PR Review\n\n**Status:** `failed`\n\n**Binding:** base `%s` head `%s`\n\nThe review job ended before the review completed.\n\n<!-- pr-review-status:v1 state=failed identity=%s -->\n' \
-            "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" > /tmp/pr-review-finalize.md
+          printf '## AI PR Review\n\n**Verdict:** `failed`\n**Findings:** unavailable because the review job ended before model review completed.\n\n<details>\n<summary>Review details: binding and identity</summary>\n\n**Binding:** base `%s` head `%s`\n**Review identity:** `%s`\n\n</details>\n\n<!-- pr-review-status:v1 state=failed identity=%s -->\n' \
+            "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" > /tmp/pr-review-finalize.md
           gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null
           echo "pr-review phase=finalize status=closed"

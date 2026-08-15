@@ -52,15 +52,21 @@ STALE_RUNNING_MINUTES = 90
 # truncates, and the diff media type gives no indication that it did.
 COMPARE_FILE_LIMIT = 300
 COMPARE_COMMIT_LIMIT = 250
-FAST_INPUT_TOKEN_BUDGET = 10_000
-DEEP_INPUT_TOKEN_BUDGET = 16_000
+FAST_INPUT_TOKEN_BUDGET = 12_000
+DEEP_INPUT_TOKEN_BUDGET = 48_000
 FAST_MAX_CHUNKS = 3
 DEEP_MAX_CHUNKS = 8
-MAX_UNITS_PER_CHUNK = 20
+# Keep a default review small enough for a low-reasoning model to hold the
+# relationships in one call. Deep mode can take a materially larger slice: the
+# observed 321-unit PR then needs six chunks instead of being capped at 160
+# units before the token budget is even considered.
+FAST_MAX_UNITS_PER_CHUNK = 30
+DEEP_MAX_UNITS_PER_CHUNK = 60
 # Each judge context fetch allows 30 seconds, so an unbounded candidate set
 # could spend longer on requests than the whole job is permitted to run.
 MAX_JUDGE_CONTEXT_FETCHES = 20
 MAX_DELETION_LINES_PER_HUNK = 24
+MAX_RENDERED_MANIFEST_ENTRIES = 8
 REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 RUBRIC_VERSION = "2026-08-14.1"
 STATUS_MARKER = "pr-review-status:v1"
@@ -172,6 +178,11 @@ def input_limits(mode: str) -> tuple[int, int]:
     if mode == "deep":
         return DEEP_INPUT_TOKEN_BUDGET, DEEP_MAX_CHUNKS
     return FAST_INPUT_TOKEN_BUDGET, FAST_MAX_CHUNKS
+
+
+def units_per_chunk(mode: str) -> int:
+    """Bound independent review topics as well as prompt tokens."""
+    return DEEP_MAX_UNITS_PER_CHUNK if mode == "deep" else FAST_MAX_UNITS_PER_CHUNK
 
 
 def estimate_tokens(text: str) -> int:
@@ -347,7 +358,7 @@ def plan_chunks(units: list[DiffUnit], mode: str) -> tuple[list[list[DiffUnit]],
             continue
         placed = False
         for index, used in enumerate(chunk_tokens):
-            if len(chunks[index]) < MAX_UNITS_PER_CHUNK and used + unit.estimated_tokens <= token_budget:
+            if len(chunks[index]) < units_per_chunk(mode) and used + unit.estimated_tokens <= token_budget:
                 chunks[index].append(unit)
                 chunk_tokens[index] += unit.estimated_tokens
                 placed = True
@@ -986,31 +997,18 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
     counts = {severity: sum(finding.severity == severity for finding in findings) for severity in ("high", "medium", "low")}
     omitted = [entry for entry in manifest if entry["status"] != "reviewed"]
     collapsed = [entry for entry in manifest if entry["collapsed_deletions"]]
-    lines = [
-        "## AI PR Review",
-        "",
-        f"**Status:** `{state}`",
-        f"**Command:** `{'/review deep' if mode == 'deep' else '/review'}`",
-        f"**Model:** `{model}` (`{reasoning_for_mode(mode)}` reasoning)",
-        f"**Binding:** base `{binding.base_sha}` head `{binding.head_sha}`",
-        f"**Review identity:** `{binding.correlation}`",
-        f"**Classification:** {', '.join(classification) if classification else 'empty diff'}",
-        f"**Completeness:** {progress.reviewed_units}/{progress.expected_units} representable units reviewed; {len(omitted)} omitted or unrepresentable; {len(collapsed)} deletion-collapsed.",
-        f"**Severity counts:** high {counts['high']}, medium {counts['medium']}, low {counts['low']}",
-    ]
-    if progress.incomplete_reasons:
-        lines.extend(["", "**Incomplete because:** " + "; ".join(sorted(set(progress.incomplete_reasons))) + "."])
-    if state == "superseded":
-        lines.extend(["", "This review is historical only because the PR head changed before completion."])
-    if omitted:
-        lines.extend(["", "### Omission manifest"])
-        for entry in omitted:
-            lines.append(f"- `{display_path(str(entry['path']))}` ({sanitize_public_text(str(entry['hunk']), limit=160)}): {sanitize_public_text(str(entry['status']), limit=120)}")
-    if collapsed:
-        lines.extend(["", "### Collapsed deletion hunks"])
-        for entry in collapsed:
-            lines.append(f"- `{display_path(str(entry['path']))}` ({sanitize_public_text(str(entry['hunk']), limit=160)}): {entry['collapsed_deletions']} deletion lines collapsed")
-    lines.extend(["", "### Findings"])
+    lines = ["## AI PR Review", "", f"**Verdict:** `{state}`"]
+    if state == "partial":
+        lines.append("**This is incomplete and must not be treated as a clean review.**")
+    elif state == "superseded":
+        lines.append("**This is historical only because the pull request head changed before completion.**")
+    lines.extend(
+        [
+            f"**Findings:** high {counts['high']}, medium {counts['medium']}, low {counts['low']}.",
+            "",
+            "### Findings",
+        ]
+    )
     if not findings:
         lines.append("No verified material findings were published.")
     else:
@@ -1025,6 +1023,64 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
                     f"**Fix:** {sanitize_public_text(finding.fix, limit=600)}",
                 ]
             )
+    lines.extend(
+        [
+            "",
+            "<details>",
+            "<summary>Review details: binding and coverage</summary>",
+            "",
+            f"**Command:** `{'/review deep' if mode == 'deep' else '/review'}`",
+            f"**Model:** `{model}` (`{reasoning_for_mode(mode)}` reasoning)",
+            f"**Binding:** base `{binding.base_sha}` head `{binding.head_sha}`",
+            f"**Review identity:** `{binding.correlation}`",
+            f"**Classification:** {', '.join(classification) if classification else 'empty diff'}",
+            f"**Completeness:** {progress.reviewed_units}/{progress.expected_units} representable units reviewed; {len(omitted)} omitted or unrepresentable; {len(collapsed)} deletion-collapsed.",
+            "",
+            "</details>",
+        ]
+    )
+    if progress.incomplete_reasons:
+        lines.extend(
+            [
+                "",
+                "<details>",
+                "<summary>Why this review is incomplete</summary>",
+                "",
+                "; ".join(sorted(set(progress.incomplete_reasons))) + ".",
+                "",
+                "</details>",
+            ]
+        )
+    if omitted:
+        shown = omitted[:MAX_RENDERED_MANIFEST_ENTRIES]
+        lines.extend(
+            [
+                "",
+                "<details>",
+                f"<summary>Omission manifest ({len(shown)} of {len(omitted)} shown)</summary>",
+                "",
+            ]
+        )
+        for entry in shown:
+            lines.append(f"- `{display_path(str(entry['path']))}` ({sanitize_public_text(str(entry['hunk']), limit=96)}): {sanitize_public_text(str(entry['status']), limit=72)}")
+        if remaining := len(omitted) - len(shown):
+            lines.append(f"- and {remaining} more")
+        lines.extend(["", "</details>"])
+    if collapsed:
+        shown = collapsed[:MAX_RENDERED_MANIFEST_ENTRIES]
+        lines.extend(
+            [
+                "",
+                "<details>",
+                f"<summary>Collapsed deletion hunks ({len(shown)} of {len(collapsed)} shown)</summary>",
+                "",
+            ]
+        )
+        for entry in shown:
+            lines.append(f"- `{display_path(str(entry['path']))}` ({sanitize_public_text(str(entry['hunk']), limit=96)}): {entry['collapsed_deletions']} deletion lines collapsed")
+        if remaining := len(collapsed) - len(shown):
+            lines.append(f"- and {remaining} more")
+        lines.extend(["", "</details>"])
     lines.extend(["", f"<!-- {STATUS_MARKER} state={state} identity={binding.correlation} -->"])
     return "\n".join(lines)
 
@@ -1053,11 +1109,6 @@ def _initial_status(binding: PullBinding, mode: str) -> str:
         "## AI PR Review",
         "",
         "**Status:** `running`",
-        f"**Command:** `{'/review deep' if deep else '/review'}`",
-        f"**Model:** `{model_for_mode(mode)}` (`{reasoning_for_mode(mode)}` reasoning)",
-        f"**Binding:** base `{binding.base_sha}` head `{binding.head_sha}`",
-        f"**Review identity:** `{binding.correlation}`",
-        "**Classification:** pending immutable diff fetch",
     ]
     if run_url:
         lines.append(f"**Progress:** [live run log]({run_url})")
@@ -1067,6 +1118,17 @@ def _initial_status(binding: PullBinding, mode: str) -> str:
             "A deep review reasons over the diff in bounded chunks and commonly takes several minutes."
             if deep
             else "This comment is replaced with the result when the review finishes.",
+            "",
+            "<details>",
+            "<summary>Review details: binding and planned review</summary>",
+            "",
+            f"**Command:** `{'/review deep' if deep else '/review'}`",
+            f"**Model:** `{model_for_mode(mode)}` (`{reasoning_for_mode(mode)}` reasoning)",
+            f"**Binding:** base `{binding.base_sha}` head `{binding.head_sha}`",
+            f"**Review identity:** `{binding.correlation}`",
+            "**Classification:** pending immutable diff fetch",
+            "",
+            "</details>",
             "",
             f"<!-- {STATUS_MARKER} state=running identity={binding.correlation} -->",
         ]
@@ -1180,12 +1242,24 @@ def run_review(
                 findings, changes = parse_findings(payload, {unit.path for unit in chunk}, require_changes={unit.path for unit in chunk})
             except ModelTimeout:
                 progress.timed_out = True
-                progress.incomplete_reasons.append("provider timed out; no retry attempted to avoid a duplicate charge")
-                break
+                # Do not retry an ambiguous timeout: the provider may finish
+                # and bill the original request after this client stops
+                # waiting. Continue with later, distinct chunks so one timeout
+                # does not erase their coverage; timed_out keeps the result
+                # partial even if every other chunk succeeds.
+                progress.incomplete_reasons.append(
+                    f"review chunk {chunk_index} timed out and was not retried to avoid a duplicate charge"
+                )
+                continue
             except ModelOutputError:
-                progress.aggregation_failed = True
-                progress.incomplete_reasons.append("a chunk response was truncated or violated the structured schema")
-                break
+                # A provider 500 or malformed response is localized to this
+                # chunk. Later chunks remain independently reviewable; the
+                # missing unit and this reason make derive_state report partial
+                # rather than allowing their success to read as clean.
+                progress.incomplete_reasons.append(
+                    f"review chunk {chunk_index} returned an incomplete or invalid structured response"
+                )
+                continue
             progress.reviewed_units += len(chunk)
             candidates.extend(findings)
             reviewed_changes.extend(changes)

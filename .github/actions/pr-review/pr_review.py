@@ -15,6 +15,7 @@ import re
 import sys
 import time
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,6 +48,10 @@ ADMISSION_COMMENT_PAGES = 10
 # needs is the thing that failed, so treating an ancient marker as stale is what
 # stops a dead run from wedging every later review on the same head.
 STALE_RUNNING_MINUTES = 90
+# The compare endpoint returns at most this many files and commits before it
+# truncates, and the diff media type gives no indication that it did.
+COMPARE_FILE_LIMIT = 300
+COMPARE_COMMIT_LIMIT = 250
 FAST_INPUT_TOKEN_BUDGET = 10_000
 DEEP_INPUT_TOKEN_BUDGET = 16_000
 FAST_MAX_CHUNKS = 3
@@ -664,6 +669,42 @@ def fetch_bound_diff(repo: str, binding: PullBinding, token: str) -> str:
     raise FetchError(f"immutable diff fetch failed with status {last_status}")
 
 
+def compare_incompleteness(repo: str, binding: PullBinding, token: str) -> str | None:
+    """Return why the compare response may be incomplete, or None if it is whole.
+
+    The compare endpoint caps its file list and commit list, and the diff media
+    type carries no marker saying it was cut.  Reviewing a truncated subset and
+    reporting clean would hide exactly the changes an attacker would want buried
+    in a large pull request, so an unverifiable comparison fails closed.
+    """
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{repo}/compare/{binding.base_sha}...{binding.head_sha}",
+            headers=github_headers(token),
+            params={"per_page": 1},
+            timeout=30,
+        )
+    except requests.RequestException:
+        log_phase("compare-metadata", status="request-error", correlation=binding.correlation)
+        return "comparison completeness could not be confirmed"
+    log_phase("compare-metadata", status=response.status_code, correlation=binding.correlation)
+    if response.status_code != 200:
+        return "comparison completeness could not be confirmed"
+    try:
+        data = response.json()
+    except ValueError:
+        return "comparison metadata was not readable"
+    if not isinstance(data, dict):
+        return "comparison metadata was not readable"
+    total_files = data.get("files")
+    if isinstance(total_files, list) and len(total_files) >= COMPARE_FILE_LIMIT:
+        return f"the comparison reached the {COMPARE_FILE_LIMIT}-file API limit, so the diff may be truncated"
+    total_commits = data.get("total_commits")
+    if isinstance(total_commits, int) and total_commits > COMPARE_COMMIT_LIMIT:
+        return f"the comparison spans {total_commits} commits, beyond the {COMPARE_COMMIT_LIMIT} the API returns whole"
+    return None
+
+
 def create_comment(repo: str, pr_number: str, token: str, body: str, correlation: str) -> dict[str, Any]:
     response = requests.post(
         f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
@@ -753,9 +794,15 @@ def find_running_comment(repo: str, pr_number: str, token: str, correlation: str
 
 
 def fetch_file_context(repo: str, path: str, head_sha: str, token: str, correlation: str) -> str | None:
+    # parse_diff rejects control characters but allows characters that are
+    # significant in a URL, so an unencoded path containing ? or # would address
+    # a different file and the judge would verify a finding against the wrong
+    # source. The returned path is checked against the request for the same
+    # reason.
+    encoded = urllib.parse.quote(path, safe="/")
     try:
         response = requests.get(
-            f"https://api.github.com/repos/{repo}/contents/{path}",
+            f"https://api.github.com/repos/{repo}/contents/{encoded}",
             headers=github_headers(token),
             params={"ref": head_sha},
             timeout=30,
@@ -769,6 +816,9 @@ def fetch_file_context(repo: str, path: str, head_sha: str, token: str, correlat
     try:
         data = response.json()
         if not isinstance(data, dict) or data.get("encoding") != "base64" or not isinstance(data.get("content"), str):
+            return None
+        if data.get("path") != path:
+            log_phase("judge-context", status="path-mismatch", correlation=correlation)
             return None
         return base64.b64decode(data["content"], validate=False).decode("utf-8", errors="replace")
     except (ValueError, TypeError):
@@ -980,25 +1030,6 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
     )
 
 
-def finalize_abandoned_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha: str) -> None:
-    """Mark a still-running status comment failed after the job died mid-review.
-
-    run_review finalizes its own comment for in-process failures, but a failed
-    checkout, a job timeout, and a cancellation all kill the process first. The
-    comment would stay running forever, and because the admission check treats a
-    running marker as an active review, every later /review on that head would
-    be refused. This runs from an always() step to close that hole.
-    """
-    binding = get_pull_binding(repo, pr_number, token, reviewer_sha)
-    active = find_running_comment(repo, pr_number, token, binding.correlation)
-    if not active:
-        return
-    progress = ReviewProgress()
-    progress.incomplete_reasons.append("the review job ended before the review completed")
-    body = render_status(binding, mode, [], progress, "failed", [])
-    update_comment(repo, int(active["id"]), token, body, binding.correlation)
-
-
 def run_review(
     repo: str,
     pr_number: str,
@@ -1034,6 +1065,9 @@ def run_review(
             progress.fetch_failed = True
             progress.incomplete_reasons.append("immutable diff fetch failed after retry")
             return "failed", progress
+        truncation = compare_incompleteness(repo, binding, token)
+        if truncation:
+            progress.incomplete_reasons.append(truncation)
         units, parse_errors = parse_diff(diff)
         classification = classify_units(units)
         progress.expected_units = sum(1 for unit in units if unit.representable)
@@ -1136,16 +1170,13 @@ def main() -> None:
         or not REPO_PATTERN.fullmatch(repo)
         or not pr_number.isdigit()
         or mode not in {"default", "deep"}
-        or operation not in {"claim", "review", "finalize"}
+        or operation not in {"claim", "review"}
     ):
         print("pr-review phase=configuration attempt=1 status=invalid correlation=pending", file=sys.stderr)
         raise SystemExit(2)
     try:
         if operation == "claim":
             claim_review(repo, pr_number, github_token, mode, reviewer_sha)
-            return
-        if operation == "finalize":
-            finalize_abandoned_review(repo, pr_number, github_token, mode, reviewer_sha)
             return
         base_sha = os.environ.get("BASE_SHA", "")
         head_sha = os.environ.get("HEAD_SHA", "")

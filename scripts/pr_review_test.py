@@ -196,7 +196,7 @@ class ImmutableBindingTest(unittest.TestCase):
             pr_review, "call_model", side_effect=[review_payload, {"findings": []}]
         ), mock.patch.object(pr_review, "update_comment"), mock.patch.object(
             pr_review, "provider_configuration", return_value=("https://provider.example/v1/chat/completions", "key")
-        ):
+        ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None):
             state, progress = pr_review.run_review("owner/repo", "42", "token", "default", "c" * 40)
         self.assertEqual(state, "superseded")
         self.assertTrue(progress.head_changed)
@@ -216,6 +216,88 @@ class ImmutableBindingTest(unittest.TestCase):
         self.assertIn("head_sha=" + "b" * 40, values)
         self.assertIn("status_comment_id=17", values)
         self.assertEqual(create.call_count, 1)
+
+
+class CompareCompletenessTest(unittest.TestCase):
+    def _response(self, payload: object, status: int = 200) -> object:
+        class Response:
+            status_code = status
+
+            def json(self) -> object:
+                return payload
+
+        return Response()
+
+    def test_a_capped_file_list_is_reported_as_possibly_truncated(self) -> None:
+        # The compare endpoint silently truncates, and the diff media type gives
+        # no sign of it. Reviewing the surviving subset and calling it clean is
+        # the failure this guards.
+        payload = {"files": [{"filename": f"f{i}.go"} for i in range(pr_review.COMPARE_FILE_LIMIT)]}
+        with mock.patch.object(pr_review.requests, "get", return_value=self._response(payload)):
+            reason = pr_review.compare_incompleteness("owner/repo", self._binding(), "token")
+        self.assertIsNotNone(reason)
+        self.assertIn("truncated", reason)
+
+    def test_an_unreachable_comparison_fails_closed(self) -> None:
+        with mock.patch.object(pr_review.requests, "get", side_effect=pr_review.requests.RequestException()):
+            self.assertIsNotNone(pr_review.compare_incompleteness("owner/repo", self._binding(), "token"))
+
+    def test_a_whole_comparison_reports_no_reason(self) -> None:
+        payload = {"files": [{"filename": "a.go"}], "total_commits": 3}
+        with mock.patch.object(pr_review.requests, "get", return_value=self._response(payload)):
+            self.assertIsNone(pr_review.compare_incompleteness("owner/repo", self._binding(), "token"))
+
+    def _binding(self) -> object:
+        return pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+
+
+class JudgeContextAddressingTest(unittest.TestCase):
+    def test_url_significant_characters_in_a_path_are_encoded(self) -> None:
+        captured: dict[str, str] = {}
+
+        class Response:
+            status_code = 200
+
+            def json(self) -> object:
+                return {"encoding": "base64", "content": "", "path": "weird?name#1.go"}
+
+        def fake_get(url: str, **kwargs: object) -> object:
+            captured["url"] = url
+            return Response()
+
+        with mock.patch.object(pr_review.requests, "get", side_effect=fake_get):
+            pr_review.fetch_file_context("owner/repo", "weird?name#1.go", "b" * 40, "token", "corr")
+        self.assertIn("weird%3Fname%231.go", captured["url"])
+
+    def test_a_mismatched_returned_path_yields_no_context(self) -> None:
+        class Response:
+            status_code = 200
+
+            def json(self) -> object:
+                return {"encoding": "base64", "content": "", "path": "some/other.go"}
+
+        with mock.patch.object(pr_review.requests, "get", return_value=Response()):
+            self.assertIsNone(pr_review.fetch_file_context("owner/repo", "internal/a.go", "b" * 40, "token", "corr"))
+
+
+class FinalizerIndependenceTest(unittest.TestCase):
+    def test_finalizer_does_not_depend_on_the_review_checkout(self) -> None:
+        # A failed checkout is one of the cases the finalizer exists to survive,
+        # so it must not resolve the locally checked-out action.
+        workflow = REUSABLE_WORKFLOW.read_text(encoding="utf-8")
+        finalize = workflow.split("Finalize an abandoned review", 1)[1]
+        self.assertIn("if: always()", finalize)
+        self.assertNotIn("trusted-pr-review", finalize)
+        self.assertIn("needs.admit.outputs.status_comment_id", finalize)
+
+    def test_finalizer_marker_matches_the_runner_status_marker(self) -> None:
+        # The finalizer writes the marker in shell while the admission check
+        # reads it in Python. If these drift, a finalized comment still reads as
+        # running and wedges later reviews.
+        workflow = REUSABLE_WORKFLOW.read_text(encoding="utf-8")
+        finalize = workflow.split("Finalize an abandoned review", 1)[1]
+        self.assertIn(f"<!-- {pr_review.STATUS_MARKER} state=running", finalize)
+        self.assertIn(f"<!-- {pr_review.STATUS_MARKER} state=failed", finalize)
 
 
 class AdmissionMarkerTest(unittest.TestCase):
@@ -301,7 +383,7 @@ class WallClockBudgetTest(unittest.TestCase):
             pr_review, "call_model"
         ) as call_model, mock.patch.object(pr_review, "update_comment"), mock.patch.object(
             pr_review, "provider_configuration", return_value=("https://provider.example/v1/chat/completions", "key")
-        ):
+        ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None):
             state, progress = pr_review.run_review("owner/repo", "42", "token", "deep", "c" * 40)
         self.assertEqual(state, "partial")
         self.assertEqual(call_model.call_count, 0)

@@ -157,17 +157,36 @@ jobs:
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
 
-      # A failed checkout, the job timeout, or a cancellation kills this job
+      # The job timeout, a cancellation, or a failed checkout all end this job
       # before any step above finalizes the status comment. Left running, the
-      # admission check treats it as an active review and refuses every later
-      # /review on the same head, so this always-run step closes it out.
+      # admission check treats it as an active review and refuses later reviews
+      # on the same head. This deliberately uses the preinstalled CLI instead of
+      # the checked-out action: a failed checkout is one of the cases it has to
+      # survive, so it cannot depend on that checkout existing. It edits only
+      # the comment this run claimed, and only while that comment still reads
+      # running, so a completed review is never overwritten.
       - name: Finalize an abandoned review
         if: always()
-        uses: ./trusted-pr-review/.github/actions/pr-review
-        with:
-          github-token: ${{ secrets.review_token }}
-          repo: ${{ github.repository }}
-          pr-number: ${{ inputs.pr_number }}
-          review-mode: ${{ inputs.review_mode }}
-          reviewer-sha: ${{ inputs.reviewer_sha }}
-          operation: finalize
+        env:
+          GH_TOKEN: ${{ secrets.review_token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ needs.admit.outputs.status_comment_id }}
+          BASE_SHA: ${{ needs.admit.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
+          REVIEWER_SHA: ${{ inputs.reviewer_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COMMENT_ID}" ]; then
+            echo "pr-review phase=finalize status=no-claim"
+            exit 0
+          fi
+          body="$(gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" --jq '.body')"
+          case "${body}" in
+            *"<!-- pr-review-status:v1 state=running"*) ;;
+            *) echo "pr-review phase=finalize status=already-final"; exit 0 ;;
+          esac
+          identity="${BASE_SHA:0:12}:${HEAD_SHA:0:12}:${REVIEWER_SHA:0:12}"
+          printf '## AI PR Review\n\n**Status:** `failed`\n\n**Binding:** base `%s` head `%s`\n\nThe review job ended before the review completed.\n\n<!-- pr-review-status:v1 state=failed identity=%s -->\n' \
+            "${BASE_SHA}" "${HEAD_SHA}" "${identity}" > /tmp/pr-review-finalize.md
+          gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null
+          echo "pr-review phase=finalize status=closed"

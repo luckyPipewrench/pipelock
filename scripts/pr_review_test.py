@@ -153,8 +153,12 @@ class WorkflowPackagingTest(unittest.TestCase):
         # stopped every review. This checks the settings actually in effect,
         # ignoring comments, because the comment explaining the removal names
         # the very key it must not find.
-        effective = [line for line in action.splitlines() if not line.strip().startswith("#")]
-        self.assertNotIn("cache-dependency-path", "\n".join(effective))
+        effective = "\n".join(line for line in action.splitlines() if not line.strip().startswith("#"))
+        # Both keys, not just the one that failed. Enabling the cache without a
+        # dependency path makes setup search the workspace for a requirements
+        # file and fail when it finds none, which breaks setup the same way.
+        self.assertNotIn("cache: pip", effective)
+        self.assertNotIn("cache-dependency-path", effective)
 
 
 class StateMachineTest(unittest.TestCase):

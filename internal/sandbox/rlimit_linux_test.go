@@ -106,41 +106,6 @@ func TestProcessRealUID(t *testing.T) {
 	}
 }
 
-func TestUIDMapHasIsolatedAccounting(t *testing.T) {
-	tests := []struct {
-		name    string
-		mapping string
-		want    bool
-		wantErr string
-	}{
-		{name: "initial namespace", mapping: "0 0 4294967295\n"},
-		{name: "single mapped UID", mapping: "0 1000 1\n", want: true},
-		{name: "multiple mappings", mapping: "0 1000 1\n1 2000 1\n", want: true},
-		{name: "empty", mapping: "", wantErr: "empty"},
-		{name: "missing fields", mapping: "0 0\n", wantErr: "three fields"},
-		{name: "invalid size", mapping: "0 0 nope\n", wantErr: "field 3"},
-		{name: "malformed second mapping", mapping: "0 1000 1\nbad\n", wantErr: "three fields"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := uidMapHasIsolatedAccounting([]byte(tt.mapping))
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("uidMapHasIsolatedAccounting() error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("uidMapHasIsolatedAccounting(): %v", err)
-			}
-			if got != tt.want {
-				t.Fatalf("uidMapHasIsolatedAccounting() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCurrentUIDTaskCount(t *testing.T) {
 	tasks, err := currentUIDTaskCount()
 	if err != nil {
@@ -151,7 +116,7 @@ func TestCurrentUIDTaskCount(t *testing.T) {
 	}
 }
 
-func TestApplyRlimits_BestEffortAvoidsSubCurrentNProcAbort(t *testing.T) {
+func TestApplyRlimits_AvoidsSubCurrentNProcAbort(t *testing.T) {
 	if mode := os.Getenv(rlimitNProcRegressionEnv); mode != "" {
 		runNProcRegressionChild(mode)
 	}
@@ -162,12 +127,12 @@ func TestApplyRlimits_BestEffortAvoidsSubCurrentNProcAbort(t *testing.T) {
 		want string
 	}{
 		{name: "fixed sub-current cap blocks child", mode: "fixed", want: "fixed cap child: resource temporarily unavailable"},
-		{name: "best effort dynamically leaves child headroom", mode: "best-effort", want: "best-effort child succeeded"},
+		{name: "dynamic limit leaves child headroom", mode: "dynamic", want: "dynamic child succeeded"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^TestApplyRlimits_BestEffortAvoidsSubCurrentNProcAbort$")
+			cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^TestApplyRlimits_AvoidsSubCurrentNProcAbort$")
 			cmd.Env = append(os.Environ(), rlimitNProcRegressionEnv+"="+tt.mode)
 			out, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {
@@ -195,16 +160,16 @@ func runNProcRegressionChild(mode string) {
 			os.Exit(1)
 		}
 		_, _ = fmt.Fprintln(os.Stdout, "fixed cap child: resource temporarily unavailable")
-	case "best-effort":
-		if err := applyRlimits(false); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "apply best-effort rlimits: %v\n", err)
+	case "dynamic":
+		if err := ApplyRlimits(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "apply dynamic rlimits: %v\n", err)
 			os.Exit(1)
 		}
 		if err := exec.CommandContext(context.Background(), "/bin/true").Run(); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "best-effort child: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "dynamic child: %v\n", err)
 			os.Exit(1)
 		}
-		_, _ = fmt.Fprintln(os.Stdout, "best-effort child succeeded")
+		_, _ = fmt.Fprintln(os.Stdout, "dynamic child succeeded")
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "unknown regression mode %q\n", mode)
 		os.Exit(1)

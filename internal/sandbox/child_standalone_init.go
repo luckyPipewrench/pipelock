@@ -141,15 +141,12 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
-	// Apply resource limits before Landlock. Best-effort fallback needs to count
-	// same-UID host tasks through /proc so RLIMIT_NPROC leaves usable headroom.
+	// Apply resource limits before Landlock. RLIMIT_NPROC uses shared real-UID
+	// accounting, so count host tasks through /proc before setting its bound.
 	noNetNS := IsNoNetNS()
 	if err := ApplyRlimits(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: %v\n", err)
-		if noNetNS {
-			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: best-effort mode requires a usable shared-UID RLIMIT_NPROC bound\n")
-			exitSandboxProcess(1)
-		}
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resource limits: %v\n", err)
+		exitSandboxProcess(1)
 	} else {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
 	}

@@ -8,6 +8,6 @@ package sandbox
 import "fmt"
 
 // ApplyRlimits is a no-op on non-Linux platforms.
-func ApplyRlimits() error {
+func ApplyRlimits(_ bool) error {
 	return fmt.Errorf("%w: not linux", ErrUnavailable)
 }

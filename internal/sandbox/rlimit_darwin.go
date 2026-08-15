@@ -8,6 +8,6 @@ package sandbox
 import "fmt"
 
 // ApplyRlimits is not used on macOS - seatbelt handles resource containment.
-func ApplyRlimits() error {
+func ApplyRlimits(_ bool) error {
 	return fmt.Errorf("%w: rlimits not applied on macOS", ErrUnavailable)
 }

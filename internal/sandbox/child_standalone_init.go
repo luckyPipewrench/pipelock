@@ -141,6 +141,19 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
+	// Apply resource limits before Landlock. Best-effort fallback needs to count
+	// same-UID host tasks through /proc so RLIMIT_NPROC leaves usable headroom.
+	noNetNS := IsNoNetNS()
+	if err := ApplyRlimits(!noNetNS); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: %v\n", err)
+		if noNetNS {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: best-effort mode requires a usable shared-UID RLIMIT_NPROC bound\n")
+			exitSandboxProcess(1)
+		}
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
+	}
+
 	// Apply Landlock.
 	// Add per-sandbox temp dir and the parent's socket dir to the policy.
 	// Host /tmp is NOT in the default policy to prevent cross-sandbox leakage.
@@ -169,13 +182,6 @@ func RunStandaloneInit() {
 	llStatus, llErr := ApplyLandlock(policy)
 	reportLayer(os.Stderr, llStatus, llErr)
 
-	// Apply resource limits.
-	if err := ApplyRlimits(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
-	}
-
 	// Set no_new_privs + seccomp (strict blocks clone3).
 	if err := SetNoNewPrivs(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] no_new_privs: %v\n", err)
@@ -184,7 +190,6 @@ func RunStandaloneInit() {
 	reportLayer(os.Stderr, scStatus, scErr)
 
 	// Network namespace status depends on whether parent created one.
-	noNetNS := IsNoNetNS()
 	if noNetNS {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: DEGRADED (no namespace, proxy-based routing only)\n")
 		// Degraded mode enforces proxy routing via HTTP(S)_PROXY env only.

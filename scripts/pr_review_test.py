@@ -1000,5 +1000,126 @@ class StatusPresentationTest(unittest.TestCase):
         self.assertIn("<summary>Review details: binding and planned review</summary>", status)
 
 
+class AdoptionStubTest(unittest.TestCase):
+    """The stub in the guide is what other repositories copy, so it is code.
+
+    Six repositories each grew their own copy of this reviewer and drifted
+    apart, which is what made the command work in one repository and not the
+    next. Replacing the copies with a shared caller only holds if the
+    instructions for writing that caller cannot fall behind the caller this
+    repository actually runs. Prose cannot be relied on for that, so the
+    published stub is compared against the real caller here.
+    """
+
+    # A caller outside this repository must name the reviewer by immutable
+    # commit, where a same-repository call resolves it implicitly. Those two
+    # keys are expected to differ; nothing else is.
+    EXPECTED_DIFFERENCES = frozenset({"uses", "reviewer_sha"})
+    PLACEHOLDER_LOGIN = "YOUR_GITHUB_LOGIN"
+    REAL_LOGIN = "luckyPipewrench"
+
+    def documented_stub(self) -> dict[str, object]:
+        guide = (ROOT / "docs" / "guides" / "pr-review.md").read_text(encoding="utf-8")
+        marker = "## Reusing the reviewer in another repository"
+        self.assertIn(marker, guide, "the adoption section is what other repositories copy")
+        section = guide.split(marker, 1)[1]
+        blocks = section.split("```yaml")
+        self.assertGreater(len(blocks), 1, "the adoption section must publish a YAML stub")
+        body = blocks[1].split("```", 1)[0]
+        # The stub is written for another repository, so it carries a
+        # placeholder where this repository carries its own login.
+        self.assertIn(self.PLACEHOLDER_LOGIN, body, "the stub must not hard-code one account")
+        return parse_yaml(body.replace(self.PLACEHOLDER_LOGIN, self.REAL_LOGIN))
+
+    @staticmethod
+    def collapse(value: object) -> object:
+        """Compare meaning, not line breaks, since YAML folding is free."""
+        if isinstance(value, str):
+            return " ".join(value.split())
+        if isinstance(value, list):
+            return [AdoptionStubTest.collapse(item) for item in value]
+        if isinstance(value, dict):
+            return {key: AdoptionStubTest.collapse(item) for key, item in value.items()}
+        return value
+
+    @staticmethod
+    def triggers(document: dict[str, object]) -> object:
+        """Compare what a trigger accepts, not how it describes itself.
+
+        An input's description is text shown to whoever runs the dispatch. It
+        carries no behavior, and requiring two copies of it to match word for
+        word would fail on an improved wording. A guard that fails on
+        harmless edits gets removed, so this compares the contract instead:
+        which inputs exist, whether each is required, its type, its default
+        and its permitted values.
+        """
+        events = AdoptionStubTest.collapse(document.get("on"))
+        dispatch = events.get("workflow_dispatch") if isinstance(events, dict) else None
+        if isinstance(dispatch, dict) and isinstance(dispatch.get("inputs"), dict):
+            dispatch["inputs"] = {
+                name: {key: value for key, value in spec.items() if key != "description"}
+                for name, spec in dispatch["inputs"].items()
+            }
+        return events
+
+    def test_documented_stub_matches_the_caller_this_repository_runs(self) -> None:
+        stub = self.documented_stub()
+        real = load_yaml(CALLER_WORKFLOW)
+
+        self.assertEqual(
+            self.triggers(stub),
+            self.triggers(real),
+            "the stub must offer the same triggers, including the manual dispatch that "
+            "makes a change to a caller testable before it merges",
+        )
+        self.assertEqual(
+            stub.get("permissions"),
+            real.get("permissions"),
+            "a called workflow cannot hold a permission its caller withheld, so a stub "
+            "granting less silently strips it from the reviewer",
+        )
+
+        stub_job = stub["jobs"]["review"]
+        real_job = real["jobs"]["review"]
+        self.assertEqual(
+            self.collapse(stub_job.get("if")),
+            self.collapse(real_job.get("if")),
+            "the stub must authorize exactly who the real caller authorizes",
+        )
+        self.assertEqual(
+            stub_job.get("secrets"),
+            real_job.get("secrets"),
+            "every secret is mapped by name because personal accounts cannot inherit them",
+        )
+
+        stub_with = self.collapse(stub_job.get("with"))
+        real_with = self.collapse(real_job.get("with"))
+        self.assertEqual(
+            set(stub_with), set(real_with), "the stub must pass the same inputs"
+        )
+        differing = {key for key in stub_with if stub_with[key] != real_with[key]}
+        self.assertEqual(
+            differing,
+            self.EXPECTED_DIFFERENCES & set(stub_with),
+            "only the reviewer pin may differ between an external stub and this caller",
+        )
+
+    def test_stub_pins_the_reviewer_by_commit_in_both_positions(self) -> None:
+        stub = self.documented_stub()
+        job = stub["jobs"]["review"]
+        placeholder = "PINNED_PIPELOCK_REVIEW_COMMIT_SHA"
+        uses = job["uses"]
+        self.assertTrue(
+            uses.endswith("@" + placeholder),
+            "the stub must be pinned by commit; a branch or tag can move the reviewer "
+            "code under the pin",
+        )
+        self.assertEqual(
+            job["with"]["reviewer_sha"],
+            placeholder,
+            "the workflow and the reviewer it checks out must be pinned to one commit",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

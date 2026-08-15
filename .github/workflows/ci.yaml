@@ -431,6 +431,41 @@ jobs:
           GOOS=aix GOARCH=ppc64 go test -c -o /tmp/recorder-aix.test ./internal/recorder
           GOOS=aix GOARCH=ppc64 go test -c -o /tmp/license-aix.test ./internal/license
 
+  # The reviewer's own tests, which no pull request has ever run.
+  #
+  # The repositories that kept their own copy of the reviewer ran these as a
+  # step inside the review itself. That never gated anything: a review is
+  # triggered by a comment, so it only ever executes the copy already on the
+  # default branch, and by then the change is merged. Consolidating onto one
+  # shared workflow then dropped even that step. So the suite has been proving
+  # nothing in either arrangement, while every guard in it reported green.
+  #
+  # This job is what makes them load-bearing, because it runs on the pull
+  # request that changes them. It covers the reviewer, the review workflow's
+  # permissions and authorization gate, and the adoption stub that other
+  # repositories copy.
+  pr-review-tests:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned dependencies
+        run: |
+          pip install --require-hashes -r .github/actions/pr-review/requirements.txt
+          pip install --require-hashes -r .github/requirements-pr-review-test.txt
+
+      - name: Run reviewer tests
+        run: python -m unittest scripts.pr_review_test
+
   lint:
     needs: [security-scan]
     runs-on: ubuntu-latest

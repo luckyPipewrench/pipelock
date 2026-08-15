@@ -103,12 +103,28 @@ PR_REVIEW_MODEL_FAST=groq/llama-3.3-70b-versatile
 
 ## Reusing the reviewer in another repository
 
-Copy this workflow stub and make two replacements. Replace both occurrences of
-`PINNED_PIPELOCK_REVIEW_COMMIT_SHA` with the same full, immutable Pipelock
-commit SHA; do not use a branch or tag. Replace `YOUR_GITHUB_LOGIN` with the
-login allowed to trigger a review, or drop that clause and rely on
-`author_association == 'OWNER'` alone. Personal-account repositories must map
-each named secret explicitly; `secrets: inherit` is not available here.
+The stub below carries nothing specific to any one repository, so every adopting
+repository holds the same file. Make two replacements. Replace both occurrences
+of `PINNED_PIPELOCK_REVIEW_COMMIT_SHA` with the same full, immutable Pipelock
+commit SHA; do not use a branch or tag, because either can move the reviewer
+code under the pin. Replace `YOUR_GITHUB_LOGIN` with the login allowed to
+trigger a review, or drop those clauses and rely on `author_association ==
+'OWNER'` alone.
+
+Grant both `issues: write` and `pull-requests: write`. A called workflow cannot
+hold a permission its caller withheld, so dropping either one silently strips it
+from the reviewer rather than failing at load, and the review then ends on a
+permission error when it tries to post.
+
+Personal-account repositories must map each named secret explicitly, because
+`secrets: inherit` is not available to them. Map the LiteLLM secrets even where
+they do not exist; an absent secret resolves to an empty string and the reviewer
+falls back to the direct OpenAI path.
+
+Keep the manual dispatch. A comment-triggered workflow only ever executes the
+copy on the default branch, so a change to this file cannot run on the pull
+request that introduces it, and the dispatch is the only way to exercise a
+change here before it lands.
 
 ```yaml
 name: AI PR Review
@@ -116,6 +132,18 @@ name: AI PR Review
 on:
   issue_comment:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request to review with the workflow on this branch.
+        required: true
+        type: string
+      review_mode:
+        description: default or deep.
+        required: true
+        default: default
+        type: choice
+        options: [default, deep]
 
 permissions:
   contents: read
@@ -125,15 +153,25 @@ permissions:
 jobs:
   review:
     if: >-
-      github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
-      github.event.comment.author_association == 'OWNER' &&
-      github.event.issue.pull_request &&
-      (github.event.comment.body == '/review' ||
-       github.event.comment.body == '/review deep')
+      github.actor == 'YOUR_GITHUB_LOGIN' &&
+      github.triggering_actor == 'YOUR_GITHUB_LOGIN' &&
+      ((github.event_name == 'issue_comment' &&
+        github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
+        github.event.comment.author_association == 'OWNER' &&
+        github.event.issue.pull_request &&
+        (github.event.comment.body == '/review' ||
+         github.event.comment.body == '/review deep')) ||
+       github.event_name == 'workflow_dispatch')
     uses: luckyPipewrench/pipelock/.github/workflows/pr-review-reusable.yaml@PINNED_PIPELOCK_REVIEW_COMMIT_SHA
     with:
-      pr_number: ${{ github.event.issue.number }}
-      review_mode: ${{ github.event.comment.body == '/review deep' && 'deep' || 'default' }}
+      pr_number: >-
+        ${{ github.event_name == 'issue_comment' &&
+        github.event.issue.number || inputs.pr_number }}
+      review_mode: >-
+        ${{ github.event_name == 'issue_comment' &&
+        (github.event.comment.body == '/review deep' && 'deep' ||
+         'default') ||
+        inputs.review_mode }}
       reviewer_sha: PINNED_PIPELOCK_REVIEW_COMMIT_SHA
     secrets:
       review_token: ${{ secrets.GITHUB_TOKEN }}
@@ -141,6 +179,10 @@ jobs:
       litellm_api_key: ${{ secrets.LITELLM_API_KEY }}
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
+
+`github.triggering_actor` names the account that started the current attempt,
+which differs from `github.actor` when someone re-runs an existing workflow.
+Requiring both means a re-run cannot widen who is able to start a review.
 
 ## Files
 

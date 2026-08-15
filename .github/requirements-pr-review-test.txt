@@ -1,0 +1,18 @@
+# Test-only dependency for the pr-review structural checks.
+#
+# The reviewer itself does not parse YAML; its tests do, to verify the review
+# workflow's triggers, permissions and authorization gate by structure rather
+# than by matching text. Text matching is how four earlier guards in this suite
+# were each satisfied without checking anything.
+#
+# Kept separate from .github/actions/pr-review/requirements.txt so the action
+# that runs a review installs nothing it does not need.
+#
+# Hashes from the PyPI release for 6.0.3, the newest stable release. Both the
+# cp312 and cp313 wheels are listed so the install survives a runner Python
+# upgrade, plus the sdist for any interpreter without a matching wheel.
+# Regenerate: pip download PyYAML --no-deps, then pip hash <file>.
+PyYAML==6.0.3 \
+    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc \
+    --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
+    --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f

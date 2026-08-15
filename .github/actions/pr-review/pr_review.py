@@ -1643,6 +1643,14 @@ def run_review(
     # Presentation only, so it must never be able to cost a review. Any failure
     # reading prior markers leaves the set empty and every finding simply reads
     # as new, which is the previous behavior.
+    #
+    # The scan's completeness is deliberately ignored HERE, unlike at
+    # admission. Those two use the same scan to do opposite things. Admission
+    # DECIDES to withhold a review, so a partial view must not authorize it. A
+    # label only ADDS information, and a marker parsed from a page that was
+    # read successfully is genuine whether or not a later page failed. So an
+    # incomplete scan yields fewer labels, never a wrong one, and requiring
+    # completeness here would discard correct labels to no benefit.
     seen_before: set[str] = set()
     try:
         prior, _, _ = scan_status_comments(repo, pr_number, token, binding.correlation)

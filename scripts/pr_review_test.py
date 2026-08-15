@@ -1546,6 +1546,23 @@ class RepeatReviewTest(unittest.TestCase):
         self.assertEqual(state, "failed")
         self.assertIn("no usable provider credential was configured", progress.incomplete_reasons)
 
+    def test_an_incomplete_scan_still_labels_what_it_did_read(self) -> None:
+        # Records a deliberate asymmetry, so a later reader does not "fix" it
+        # into consistency. Admission and this path share one scan and use it
+        # for opposite purposes. Admission DECIDES to withhold a review, so a
+        # partial view must never authorize that. A label only ADDS
+        # information, and a marker parsed from a page that was read is genuine
+        # regardless of whether a later page failed. Requiring completeness
+        # here would drop correct labels and prevent no wrong one.
+        real = {
+            "state": "findings",
+            "identity": self.IDENTITY,
+            "mode": "deep",
+            "findings": "abcabcabcabc",
+            "html_url": "u",
+        }
+        self.assertEqual(pr_review.previously_reported([real]), {"abcabcabcabc"})
+
     def test_a_fingerprint_survives_a_line_number_moving(self) -> None:
         # Anything inserted above a finding shifts its line. Including the line
         # would make every finding look new after any push, which is the noise

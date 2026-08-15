@@ -642,7 +642,7 @@ class JudgeContextBoundTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 10) as fetch, mock.patch.object(
             pr_review, "build_judge_prompt", side_effect=record
         ), mock.patch.object(pr_review, "call_model", side_effect=decide):
-            _, judged, excluded = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, excluded, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
         self.assertTrue(judged)
         self.assertLessEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
         self.assertTrue(excluded)
@@ -658,7 +658,7 @@ class JudgeFetchCapTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="x" * 200_000) as fetch, mock.patch.object(
             pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
         ):
-            _, judged, excluded = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, excluded, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
         self.assertTrue(judged)
         self.assertEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
         self.assertEqual(len(excluded), len(candidates) - 1)
@@ -1545,6 +1545,93 @@ class RepeatReviewTest(unittest.TestCase):
         # It reached a published verdict instead of propagating the exception.
         self.assertEqual(state, "failed")
         self.assertIn("no usable provider credential was configured", progress.incomplete_reasons)
+
+    def _judge(self, payload: dict, candidates: list) -> tuple:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 40), mock.patch.object(
+            pr_review, "call_model", return_value=payload
+        ):
+            return pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+
+    @staticmethod
+    def _cands(n: int) -> list:
+        return [pr_review.Finding("high", f"f{i}.go", i + 1, f"T{i}", "w", "f") for i in range(n)]
+
+    def test_an_extra_key_does_not_discard_the_review(self) -> None:
+        # Observed live twice on one pull request: a deep review read every unit
+        # and published nothing. The schema gate required an EXACT key set, so a
+        # model adding one field threw the whole paid review away. An extra key
+        # is ordinary model output, not hostile, and nothing reads it.
+        candidates = self._cands(2)
+        payload = {
+            "findings": [
+                {"index": 0, "verdict": "keep", "reason": "real", "confidence": 0.9},
+                {"index": 1, "verdict": "drop", "reason": "not real"},
+            ],
+            "summary": "an extra top-level key",
+        }
+        verified, judged, excluded, undecided = self._judge(payload, candidates)
+        self.assertTrue(judged)
+        self.assertEqual([f.title for f in verified], ["T0"])
+        self.assertEqual(undecided, [])
+        self.assertEqual(excluded, [])
+
+    def test_one_unusable_decision_does_not_take_the_others_down(self) -> None:
+        # The blast radius is the defect, not the strictness. An unjudged
+        # candidate must still fail closed and go unpublished; what it must not
+        # do is discard the candidates the judge DID decide.
+        candidates = self._cands(3)
+        payload = {
+            "findings": [
+                {"index": 0, "verdict": "keep", "reason": "real"},
+                {"index": 1, "verdict": "banana", "reason": "invalid verdict"},
+                {"index": 2, "verdict": "keep", "reason": "also real"},
+            ]
+        }
+        verified, judged, _excluded, undecided = self._judge(payload, candidates)
+        self.assertTrue(judged)
+        self.assertEqual(sorted(f.title for f in verified), ["T0", "T2"])
+        self.assertEqual([f.title for f in undecided], ["T1"])
+
+    def test_a_partial_answer_publishes_what_was_decided(self) -> None:
+        # Deciding 2 of 3 used to discard all three.
+        candidates = self._cands(3)
+        payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}, {"index": 1, "verdict": "drop", "reason": "r"}]}
+        verified, judged, _excluded, undecided = self._judge(payload, candidates)
+        self.assertTrue(judged)
+        self.assertEqual([f.title for f in verified], ["T0"])
+        self.assertEqual([f.title for f in undecided], ["T2"])
+
+    def test_an_unjudged_candidate_is_never_published(self) -> None:
+        # The security invariant this change must not weaken.
+        candidates = self._cands(2)
+        payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
+        verified, _judged, _excluded, undecided = self._judge(payload, candidates)
+        self.assertNotIn("T1", [f.title for f in verified])
+        self.assertEqual([f.title for f in undecided], ["T1"])
+
+    def test_a_judge_that_decides_nothing_still_fails(self) -> None:
+        # A response with no usable decision at all is a failed judge pass, not
+        # a clean review, and must keep raising so the verdict goes partial.
+        with self.assertRaises(pr_review.ModelOutputError):
+            self._judge({"findings": [{"nope": 1}]}, self._cands(2))
+
+    def test_a_structurally_unusable_payload_still_fails(self) -> None:
+        # Asserts WHICH guard fires, not merely that something raised. Both
+        # payloads are also caught downstream by the no-decision guard, so a
+        # test that only checked for an exception passed even with the
+        # structural check removed and proved nothing about it.
+        for payload in ({"findings": "not a list"}, {"other": []}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(pr_review.ModelOutputError) as caught:
+                    self._judge(payload, self._cands(1))
+                self.assertIn("violated its schema", str(caught.exception))
+
+    def test_a_duplicate_index_cannot_overwrite_a_decision(self) -> None:
+        candidates = self._cands(1)
+        payload = {"findings": [{"index": 0, "verdict": "drop", "reason": "r"}, {"index": 0, "verdict": "keep", "reason": "r"}]}
+        verified, _judged, _excluded, _undecided = self._judge(payload, candidates)
+        self.assertEqual(verified, [], "the first decision for an index wins")
 
     def test_candidates_discarded_unjudged_are_counted(self) -> None:
         # Observed live: a deep review read 7 of 7 units, omitted nothing, and

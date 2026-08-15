@@ -1211,7 +1211,7 @@ def _line_context(content: str, line: int | None) -> str:
 
 def judge_findings(
     repo: str, token: str, binding: PullBinding, mode: str, candidates: list[Finding]
-) -> tuple[list[Finding], bool, list[Finding]]:
+) -> tuple[list[Finding], bool, list[Finding], list[Finding]]:
     """Judge candidate findings against the real file, within a bounded payload.
 
     Each distinct path contributes up to 120 lines of context and the candidate
@@ -1221,7 +1221,7 @@ def judge_findings(
     record as incomplete coverage.
     """
     if not candidates:
-        return [], True, []
+        return [], True, [], []
     budget, _ = input_limits(mode)
     # Fetched contexts are cached and counted separately from the ones that end
     # up in the payload. Counting only payload entries bounded nothing: a path
@@ -1242,7 +1242,7 @@ def judge_findings(
                 continue
             content = fetch_file_context(repo, finding.path, binding.head_sha, token, binding.correlation)
             if content is None:
-                return [], False, []
+                return [], False, [], []
             context = _line_context(content, finding.line)
             fetched[finding.path] = context
         if finding.path not in contexts:
@@ -1256,25 +1256,44 @@ def judge_findings(
     candidates = retained
     system, user = build_judge_prompt(candidates, contexts)
     payload = call_model(system, user, mode, "judge", binding.correlation)
-    if not isinstance(payload, dict) or set(payload) != {"findings"} or not isinstance(payload["findings"], list):
+    # Structural failure only. The payload must be a usable shape; anything
+    # finer is handled per decision below, because one unusable row is not a
+    # reason to discard a whole review.
+    if not isinstance(payload, dict) or not isinstance(payload.get("findings"), list):
         raise ModelOutputError("judge response violated its schema")
     decisions: dict[int, str] = {}
     for item in payload["findings"]:
-        if not isinstance(item, dict) or set(item) != {"index", "verdict", "reason"}:
-            raise ModelOutputError("judge decision violated its schema")
+        # A decision is read by REQUIRED key rather than exact key set. Exact
+        # equality rejected any answer carrying an extra field, and a model
+        # adding one is ordinary, not hostile: the extra key is ignored and
+        # every value actually used is still validated below. The strict
+        # version discarded entire paid reviews over a field nobody read.
+        if not isinstance(item, dict) or not {"index", "verdict", "reason"} <= set(item):
+            continue
         index = item["index"]
         verdict = item["verdict"]
-        if type(index) is not int or index < 0 or index >= len(candidates) or index in decisions or verdict not in {"keep", "drop", "needs_verification"}:
-            raise ModelOutputError("judge decision was invalid")
-        _required_string(item["reason"], "judge reason", limit=300)
+        if type(index) is not int or index < 0 or index >= len(candidates) or index in decisions:
+            continue
+        if verdict not in {"keep", "drop", "needs_verification"}:
+            continue
+        try:
+            _required_string(item["reason"], "judge reason", limit=300)
+        except ModelOutputError:
+            continue
         decisions[index] = verdict
-    if set(decisions) != set(range(len(candidates))):
-        raise ModelOutputError("judge did not decide every candidate")
+    # A candidate with no usable decision is NOT published. The judge is what
+    # separates a real finding from a plausible one, so an unjudged candidate
+    # fails closed exactly as before. What changed is the blast radius: it used
+    # to take every other candidate down with it.
+    undecided = [candidates[i] for i in range(len(candidates)) if i not in decisions]
+    if not decisions:
+        raise ModelOutputError("judge decided no candidate")
     verified: list[Finding] = []
     for index, finding in enumerate(candidates):
-        if decisions[index] == "keep":
+        verdict = decisions.get(index)
+        if verdict == "keep":
             verified.append(finding)
-        elif decisions[index] == "needs_verification":
+        elif verdict == "needs_verification":
             verified.append(
                 Finding(
                     severity=finding.severity,
@@ -1286,7 +1305,7 @@ def judge_findings(
                     needs_verification=True,
                 )
             )
-    return verified, True, excluded
+    return verified, True, excluded, undecided
 
 
 def coverage_gaps(_units: list[DiffUnit], omitted: list[DiffUnit], parse_errors: list[str]) -> list[str]:
@@ -1797,12 +1816,21 @@ def run_review(
             judge_ready = False
         if judge_ready:
             try:
-                progress.findings, judged, unjudged = judge_findings(repo, token, binding, mode, candidates)
+                progress.findings, judged, unjudged, undecided = judge_findings(
+                    repo, token, binding, mode, candidates
+                )
                 if not judged:
                     progress.incomplete_reasons.append("actual-code judge context was unavailable")
                 if unjudged:
                     progress.incomplete_reasons.append(
                         f"{len(unjudged)} candidate finding(s) exceeded the judge payload budget and were not published"
+                    )
+                if undecided:
+                    # Distinct from the budget case above. The review was not
+                    # too large; the judge returned no usable decision for these,
+                    # so they fail closed unpublished and are counted.
+                    progress.incomplete_reasons.append(
+                        f"{len(undecided)} candidate finding(s) received no usable judge decision and were not published"
                     )
             except ModelTimeout:
                 progress.timed_out = True

@@ -45,6 +45,7 @@ trusting them in production.
 
 Subcommand groups:
   key         Generate deployment-level signing keys
+  reset       Mint and inspect MCP reset delegations
   receipt-rotation
               Prepare old-key-endorsed receipt signing-key rotations
   roster      Build, show, and verify key rosters

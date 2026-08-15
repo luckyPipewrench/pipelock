@@ -574,6 +574,12 @@ func (ct *ContextTracker) TrackAndScan(ctx context.Context, contextID, taskID st
 
 	ct.mu.Lock()
 	canonicalID := ct.resolveContextLocked(contextID, taskID)
+	if taskID != "" {
+		if _, known := ct.taskMap[taskID]; !known && len(ct.taskMap) >= ct.maxContextsLocked() {
+			ct.mu.Unlock()
+			return true, "a2a: task alias capacity exceeded"
+		}
+	}
 	sess := ct.getOrCreateLocked(canonicalID)
 
 	// Track task → context mapping.
@@ -651,10 +657,7 @@ func (ct *ContextTracker) getOrCreateLocked(id string) *contextSession {
 	}
 
 	// Evict if at capacity.
-	maxCtx := ct.cfg.MaxContexts
-	if maxCtx <= 0 {
-		maxCtx = 1000
-	}
+	maxCtx := ct.maxContextsLocked()
 	for len(ct.contexts) >= maxCtx && len(ct.order) > 0 {
 		oldest := ct.order[0]
 		ct.order = ct.order[1:]
@@ -675,6 +678,13 @@ func (ct *ContextTracker) getOrCreateLocked(id string) *contextSession {
 	ct.order = append(ct.order, id)
 
 	return sess
+}
+
+func (ct *ContextTracker) maxContextsLocked() int {
+	if ct.cfg.MaxContexts > 0 {
+		return ct.cfg.MaxContexts
+	}
+	return 1000
 }
 
 // dropContextTasksLocked removes task aliases that cannot resolve after their

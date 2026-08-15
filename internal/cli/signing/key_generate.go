@@ -86,7 +86,8 @@ func keyGenerateGroupCmd() *cobra.Command {
 		Short: "Generate deployment-level signing keys",
 		Long: `Generate deployment-level Ed25519 keys with explicit purpose
 binding. Subcommands:
-  generate    Generate one keypair bound to a recognised wire purpose`,
+  generate      Generate one keypair bound to a recognised wire purpose
+  export-public Export the public half of a generated key`,
 	}
 	cmd.AddCommand(keyGenerateCmd(), keyExportPublicCmd())
 	return cmd

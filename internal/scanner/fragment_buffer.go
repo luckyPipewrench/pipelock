@@ -26,7 +26,6 @@ type fragment struct {
 type sessionBuffer struct {
 	fragments  []fragment
 	totalBytes int
-	lastAccess time.Time // for LRU eviction across sessions
 }
 
 // FragmentAppendResult describes whether a fragment became representable in the
@@ -89,7 +88,6 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) FragmentAppe
 	copy(copied, payload)
 
 	now := time.Now()
-	sb.lastAccess = now
 	sb.fragments = append(sb.fragments, fragment{
 		data: copied,
 		at:   now,

@@ -8,8 +8,10 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -143,7 +145,9 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(t.Context(), "sh", "-c", "read -r -n 1 <&3") // #nosec G204 G702 -- fixed literal test command
+	progress := filepath.Join(t.TempDir(), "child-progress")
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", `dd bs=1 count=1 <&3 >/dev/null 2>&1; : > "$PROGRESS"`) // #nosec G204 G702 -- fixed literal test command
+	cmd.Env = append(os.Environ(), "PROGRESS="+progress)
 	cmd.ExtraFiles = []*os.File{reader}
 	launch := &PreparedSandboxCmd{
 		Cmd:                       cmd,
@@ -153,6 +157,9 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 	}
 	hardened := false
 	if err := launch.StartWithParentHardening(func() error {
+		if _, err := os.Stat(progress); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("child progressed before hardening release: %w", err)
+		}
 		hardened = true
 		return nil
 	}); err != nil {
@@ -163,6 +170,9 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 	}
 	if err := launch.Cmd.Wait(); err != nil {
 		t.Fatalf("wait gated child: %v", err)
+	}
+	if _, err := os.Stat(progress); err != nil {
+		t.Fatalf("child did not progress after release: %v", err)
 	}
 	if err := launch.releaseTargetStart(); err == nil {
 		t.Fatal("released launch allowed a second target-start signal")

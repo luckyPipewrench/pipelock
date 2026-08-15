@@ -4001,6 +4001,24 @@ func TestToolBaseline_ReserveToolInventoryRejectsCompetingAndOverCapacityState(t
 	}
 }
 
+func TestToolBaseline_ReserveToolInventoryDeduplicatesOneResponse(t *testing.T) {
+	baseline := NewToolBaseline()
+	reservation, err := baseline.ReserveToolInventory(
+		[]string{"x", "x"},
+		[]ToolDef{{Name: "x"}, {Name: "x"}},
+	)
+	if err != nil {
+		t.Fatalf("reserve duplicate tool names: %v", err)
+	}
+	reservation.Release()
+
+	next, err := baseline.ReserveToolInventory([]string{"x"}, []ToolDef{{Name: "x"}})
+	if err != nil {
+		t.Fatalf("reserve tool after duplicate release: %v", err)
+	}
+	next.Release()
+}
+
 func TestToolBaseline_CapacityPreflightHandlesDuplicatesAndNil(t *testing.T) {
 	var nilBaseline *ToolBaseline
 	if !nilBaseline.CanTrackDefinitions([]string{"one"}) || !nilBaseline.CanAdmitKnownTools([]string{"one"}) {

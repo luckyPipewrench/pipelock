@@ -40,6 +40,8 @@ const (
 	resetHexBytes = 16
 )
 
+var errResetPathChanged = errors.New("reset delegation path changed before removal")
+
 // ResetKind scopes a delegation to one de-escalation.
 type ResetKind string
 
@@ -218,31 +220,43 @@ func (a *ResetAuthority) InstanceID() string {
 // NewResetNonce creates the random one-shot nonce carried in a delegation.
 func NewResetNonce() (string, error) { return randomResetHex(resetHexBytes) }
 
+// ResetDelegationRequest contains the claims signed into a reset delegation.
+type ResetDelegationRequest struct {
+	Issuer     string
+	Kind       ResetKind
+	Target     string
+	InstanceID string
+	Epoch      uint64
+	IssuedAt   time.Time
+	ExpiresAt  time.Time
+	Nonce      string
+}
+
 // MintResetDelegation signs a short-lived canonical delegation. The caller
 // retains the private key, which never enters the MCP proxy.
-func MintResetDelegation(privateKey ed25519.PrivateKey, issuer string, kind ResetKind, target, instanceID string, epoch uint64, issuedAt, expiresAt time.Time, nonce string) (ResetDelegation, error) {
+func MintResetDelegation(privateKey ed25519.PrivateKey, req ResetDelegationRequest) (ResetDelegation, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return ResetDelegation{}, fmt.Errorf("reset authority private key length %d, want %d", len(privateKey), ed25519.PrivateKeySize)
 	}
 	if err := signing.ValidatePrivateKeyConsistency(privateKey); err != nil {
 		return ResetDelegation{}, fmt.Errorf("validate reset authority private key: %w", err)
 	}
-	if !kind.valid() {
-		return ResetDelegation{}, fmt.Errorf("invalid reset delegation kind %q", kind)
+	if !req.Kind.valid() {
+		return ResetDelegation{}, fmt.Errorf("invalid reset delegation kind %q", req.Kind)
 	}
-	if err := validateResetTarget(target); err != nil {
+	if err := validateResetTarget(req.Target); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("instance_id", instanceID); err != nil {
+	if err := validateResetHex("instance_id", req.InstanceID); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetHex("nonce", nonce); err != nil {
+	if err := validateResetHex("nonce", req.Nonce); err != nil {
 		return ResetDelegation{}, err
 	}
-	if err := validateResetIssuer(issuer); err != nil {
+	if err := validateResetIssuer(req.Issuer); err != nil {
 		return ResetDelegation{}, err
 	}
-	issuedAt, expiresAt = issuedAt.UTC().Truncate(time.Second), expiresAt.UTC().Truncate(time.Second)
+	issuedAt, expiresAt := req.IssuedAt.UTC().Truncate(time.Second), req.ExpiresAt.UTC().Truncate(time.Second)
 	if !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > resetDelegationMaxTTL {
 		return ResetDelegation{}, fmt.Errorf("reset delegation expiry must be after issue time and no more than %s later", resetDelegationMaxTTL)
 	}
@@ -256,9 +270,9 @@ func MintResetDelegation(privateKey ed25519.PrivateKey, issuer string, kind Rese
 	}
 	d := ResetDelegation{
 		SchemaVersion: resetDelegationSchemaVersion, Purpose: signing.PurposeMCPResetAuthority.String(),
-		Kind: kind, Target: target, InstanceID: instanceID, Epoch: epoch,
-		IssuedUnix: issuedAt.Unix(), ExpiresUnix: expiresAt.Unix(), Nonce: nonce,
-		Issuer: issuer, IssuerFingerprint: fingerprint,
+		Kind: req.Kind, Target: req.Target, InstanceID: req.InstanceID, Epoch: req.Epoch,
+		IssuedUnix: issuedAt.Unix(), ExpiresUnix: expiresAt.Unix(), Nonce: req.Nonce,
+		Issuer: req.Issuer, IssuerFingerprint: fingerprint,
 	}
 	input, err := d.signingInput()
 	if err != nil {
@@ -521,7 +535,7 @@ func removeResetDelegationFile(path string, opened os.FileInfo) error {
 		return err
 	}
 	if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
-		return errors.New("reset delegation path changed before removal")
+		return errResetPathChanged
 	}
 	return os.Remove(filepath.Clean(path))
 }
@@ -534,7 +548,7 @@ func resetReadResult(err error) ResetAuthorityResult {
 }
 
 func removeResetResult(err error) ResetAuthorityResult {
-	if strings.Contains(err.Error(), "path changed") {
+	if errors.Is(err, errResetPathChanged) {
 		return ResetAuthorityPathChanged
 	}
 	return ResetAuthorityRemoveFailed
@@ -565,15 +579,9 @@ func validateResetIssuer(issuer string) error {
 	return nil
 }
 
-// validateResetHex checks one lowercase hex field against the exact byte length
-// its generator produced.
-//
-// The length is a parameter rather than a single shared constant because the
-// instance ID and the nonce are generated from separate constants. Validating
-// both against one of them happens to work only while the two are equal, and
-// the failure if they ever diverge is silent and total: the proxy generates an
-// instance ID it then refuses as malformed, every reset fails, and the error
-// names a field the operator never typed.
+// validateResetHex checks one lowercase hex field against resetHexBytes. Both
+// the instance ID and nonce use that shared generation and validation length.
+// label identifies the refused field in the returned error.
 func validateResetHex(label, value string) error {
 	decoded, err := hex.DecodeString(value)
 	if err != nil || len(decoded) != resetHexBytes || strings.ToLower(value) != value {

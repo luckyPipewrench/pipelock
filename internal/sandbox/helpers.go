@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // initEnvKey is the environment variable that signals the process is in
@@ -65,12 +67,25 @@ func waitForParentHardening() error {
 		return fmt.Errorf("opening readiness descriptor %d", fd)
 	}
 	defer func() { _ = ready.Close() }()
-
 	var token [1]byte
-	if _, err := io.ReadFull(ready, token[:]); err != nil {
+	readResult := make(chan error, 1)
+	go func() {
+		_, readErr := io.ReadFull(ready, token[:])
+		readResult <- readErr
+	}()
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-readResult:
+		if err == nil {
+			return nil
+		}
 		return fmt.Errorf("waiting for parent hardening: %w", err)
+	case <-timer.C:
+		_ = ready.Close()
+		<-readResult
+		return errors.New("waiting for parent hardening: timed out")
 	}
-	return nil
 }
 
 // reportLayer prints a sandbox layer status line to stderr.

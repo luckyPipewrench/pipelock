@@ -772,14 +772,22 @@ func (tb *ToolBaseline) ReserveToolInventory(names []string, defs []ToolDef) (*T
 	}
 
 	reserved := make([]string, 0, len(names))
+	claimed := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		if _, known := tb.knownTools[name]; known {
 			continue
 		}
+		if _, repeat := claimed[name]; repeat {
+			continue
+		}
 		if _, duplicate := tb.pendingTools[name]; duplicate {
+			for _, held := range reserved {
+				delete(tb.pendingTools, held)
+			}
 			return nil, ErrBaselineCapacity
 		}
 		tb.pendingTools[name] = struct{}{}
+		claimed[name] = struct{}{}
 		reserved = append(reserved, name)
 	}
 	return &ToolInventoryReservation{baseline: tb, names: names, defs: defs, bindings: bindings, reserved: reserved}, nil

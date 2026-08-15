@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,9 @@ func TestConsumeToolDriftResetFileRejectsWrongKindAndUnreadablePath(t *testing.T
 	})
 
 	t.Run("symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation requires privileges on Windows")
+		}
 		dir := t.TempDir()
 		target := filepath.Join(dir, "delegation")
 		writeAdaptiveResetDelegation(t, target, privateKey, authority, ResetKindDrift, 0, strings.Repeat("3", 32))

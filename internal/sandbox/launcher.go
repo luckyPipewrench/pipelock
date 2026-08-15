@@ -171,11 +171,11 @@ func (p *PreparedSandboxCmd) releaseTargetStart() error {
 }
 
 func (p *PreparedSandboxCmd) abortStartedChild() {
-	p.Close()
 	if p.Cmd.Process != nil {
 		_ = p.Cmd.Process.Kill()
 		_ = p.Cmd.Wait()
 	}
+	p.Close()
 	CleanupSandboxCmd(p.Cmd)
 }
 

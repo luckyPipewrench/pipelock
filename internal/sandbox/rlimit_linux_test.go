@@ -111,14 +111,19 @@ func TestCurrentUIDTaskCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("currentUIDTaskCount: %v", err)
 	}
-	if tasks == 0 {
-		t.Fatal("currentUIDTaskCount = 0, want current test-process task")
+	selfTasks, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		t.Fatalf("read /proc/self/task: %v", err)
+	}
+	if tasks < uint64(len(selfTasks)) {
+		t.Fatalf("currentUIDTaskCount = %d, want at least %d current-process tasks", tasks, len(selfTasks))
 	}
 }
 
 func TestApplyRlimits_AvoidsSubCurrentNProcAbort(t *testing.T) {
 	if mode := os.Getenv(rlimitNProcRegressionEnv); mode != "" {
 		runNProcRegressionChild(mode)
+		return
 	}
 
 	for _, tt := range []struct {
@@ -151,7 +156,12 @@ func TestApplyRlimits_AvoidsSubCurrentNProcAbort(t *testing.T) {
 func runNProcRegressionChild(mode string) {
 	switch mode {
 	case "fixed":
-		if err := unix.Setrlimit(unix.RLIMIT_NPROC, &unix.Rlimit{}); err != nil {
+		tasks, err := currentUIDTaskCount()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "count shared UID tasks: %v\n", err)
+			os.Exit(1)
+		}
+		if err := unix.Setrlimit(unix.RLIMIT_NPROC, &unix.Rlimit{Cur: tasks, Max: tasks}); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "set fixed RLIMIT_NPROC: %v\n", err)
 			os.Exit(1)
 		}

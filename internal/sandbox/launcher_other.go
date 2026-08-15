@@ -34,7 +34,9 @@ type LaunchConfig struct {
 // PreparedSandboxCmd exists for cross-platform callers. Unsupported platforms
 // never produce one because PrepareSandboxLaunch returns ErrUnavailable.
 type PreparedSandboxCmd struct {
-	Cmd                       *exec.Cmd
+	Cmd *exec.Cmd
+	// ParentHardeningAfterStart is ignored outside Linux; hardening always
+	// happens before Cmd.Start on these platforms.
 	ParentHardeningAfterStart bool
 }
 

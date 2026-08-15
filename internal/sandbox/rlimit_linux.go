@@ -6,6 +6,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -74,7 +74,7 @@ func currentUIDTaskCount() (uint64, error) {
 
 		statusFile, err := openProcFile(procFD, filepath.Join(pid, "status"))
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if procEntryUnavailable(err) {
 				continue
 			}
 			return 0, fmt.Errorf("reading /proc/%s/status: %w", pid, err)
@@ -82,6 +82,9 @@ func currentUIDTaskCount() (uint64, error) {
 		status, readErr := io.ReadAll(statusFile)
 		_ = statusFile.Close()
 		if readErr != nil {
+			if procEntryUnavailable(readErr) {
+				continue
+			}
 			return 0, fmt.Errorf("reading /proc/%s/status: %w", pid, readErr)
 		}
 		realUID, err := processRealUID(status)
@@ -92,22 +95,14 @@ func currentUIDTaskCount() (uint64, error) {
 			continue
 		}
 
-		taskDir, err := openProcFile(procFD, filepath.Join(pid, "task"))
+		threads, err := processThreadCount(status)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return 0, fmt.Errorf("reading /proc/%s/task: %w", pid, err)
+			return 0, fmt.Errorf("parsing /proc/%s/status: %w", pid, err)
 		}
-		threadEntries, readErr := taskDir.ReadDir(-1)
-		_ = taskDir.Close()
-		if readErr != nil {
-			return 0, fmt.Errorf("reading /proc/%s/task: %w", pid, readErr)
-		}
-		if uint64(len(threadEntries)) > math.MaxUint64-tasks {
+		if threads > math.MaxUint64-tasks {
 			return 0, errors.New("shared UID task count overflows")
 		}
-		tasks += uint64(len(threadEntries))
+		tasks += threads
 	}
 	if tasks == 0 {
 		return 0, errors.New("shared UID has no visible tasks")
@@ -123,19 +118,45 @@ func openProcFile(procFD int, name string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
+func procEntryUnavailable(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, unix.ESRCH) || errors.Is(err, unix.EACCES)
+}
+
 func processRealUID(status []byte) (int, error) {
-	for _, line := range strings.Split(string(status), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "Uid:" {
-			continue
-		}
-		uid, err := strconv.Atoi(fields[1])
-		if err != nil {
-			return 0, fmt.Errorf("real UID %q: %w", fields[1], err)
-		}
-		return uid, nil
+	value, err := processStatusField(status, []byte("Uid:"))
+	if err != nil {
+		return 0, errors.New("uid field is missing")
 	}
-	return 0, errors.New("uid field is missing")
+	uid, err := strconv.Atoi(string(value))
+	if err != nil {
+		return 0, fmt.Errorf("real UID %q: %w", value, err)
+	}
+	return uid, nil
+}
+
+func processThreadCount(status []byte) (uint64, error) {
+	value, err := processStatusField(status, []byte("Threads:"))
+	if err != nil {
+		return 0, errors.New("threads field is missing")
+	}
+	threads, err := strconv.ParseUint(string(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("thread count %q: %w", value, err)
+	}
+	return threads, nil
+}
+
+func processStatusField(status, label []byte) ([]byte, error) {
+	for len(status) > 0 {
+		line, rest, _ := bytes.Cut(status, []byte{'\n'})
+		status = rest
+		fields := bytes.Fields(line)
+		if len(fields) >= 2 && bytes.Equal(fields[0], label) {
+			return fields[1], nil
+		}
+	}
+	return nil, errors.New("status field is missing")
 }
 
 // ApplyRlimits sets resource limits on the calling process. Linux accounts

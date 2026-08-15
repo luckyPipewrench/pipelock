@@ -5087,6 +5087,10 @@ func TestValidate_MCPToolScanningListenerDriftResetAuthority(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(publicKey)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	malformedKeyPath := filepath.Join(t.TempDir(), "malformed-reset-authority.pub")
+	if err := os.WriteFile(malformedKeyPath, []byte("not-hex"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	valid := Defaults()
 	valid.MCPToolScanning.ListenerDriftResetFile = "/run/pipelock/drift.reset"
@@ -5101,8 +5105,11 @@ func TestValidate_MCPToolScanningListenerDriftResetAuthority(t *testing.T) {
 		"missing public key":   func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = "" },
 		"missing target":       func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetTarget = "" },
 		"blank target":         func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetTarget = "   " },
-		"invalid public key": func(cfg *Config) {
+		"missing public key file": func(cfg *Config) {
 			cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = "/missing/reset-authority.pub"
+		},
+		"malformed public key": func(cfg *Config) {
+			cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = malformedKeyPath
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

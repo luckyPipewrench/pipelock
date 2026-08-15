@@ -795,6 +795,14 @@ func TestReadModel_ReceiptDetail(t *testing.T) {
 		}
 	})
 
+	t.Run("not_found_in_truncated_view", func(t *testing.T) {
+		limited := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 1})
+		_, found, err := limited.ReceiptDetail(testSessionID, "missing-action-id")
+		if found || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+			t.Fatalf("ReceiptDetail truncated result = found %v, err %v", found, err)
+		}
+	})
+
 	t.Run("independent_chains_with_same_seq_select_by_action_id", func(t *testing.T) {
 		collisionDir := t.TempDir()
 		first := signDashboardReceipt(t, priv, 0, receipt.GenesisHash, time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC))

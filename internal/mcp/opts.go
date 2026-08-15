@@ -310,10 +310,12 @@ type MCPProxyOpts struct {
 	// reset. It is honored only through AdaptiveResetAuthority.
 	AdaptiveResetFile string
 	// AdaptiveResetAuthority verifies signed adaptive reset delegations. The
-	// proxy holds only the operator's public key.
+	// proxy holds only the operator's public key. Nil disables adaptive reset,
+	// including when AdaptiveResetFile is configured.
 	AdaptiveResetAuthority *ResetAuthority
 	// AdaptiveResetEpoch is incremented after every accepted reset, preventing
-	// a valid delegation from being reused within this proxy process.
+	// a valid delegation from being reused within this proxy process. Nil
+	// disables adaptive reset and preserves the airlock.
 	AdaptiveResetEpoch *atomic.Uint64
 
 	// Transport identifies the MCP transport for capture records.

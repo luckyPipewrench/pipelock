@@ -538,8 +538,13 @@ func init() {
 			_, _ = os.Stderr.WriteString("getrlimit RLIMIT_NPROC: " + err.Error() + "\n")
 			os.Exit(1)
 		}
-		if nproc.Cur < rlimitNProc || nproc.Cur != nproc.Max {
-			_, _ = fmt.Fprintf(os.Stderr, "RLIMIT_NPROC cur=%d max=%d, want equal values of at least %d\n", nproc.Cur, nproc.Max, rlimitNProc)
+		tasks, err := currentUIDTaskCount()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "count shared UID tasks: %v\n", err)
+			os.Exit(1)
+		}
+		if nproc.Cur <= tasks || nproc.Cur != nproc.Max {
+			_, _ = fmt.Fprintf(os.Stderr, "RLIMIT_NPROC cur=%d max=%d, want equal values above %d shared-UID tasks\n", nproc.Cur, nproc.Max, tasks)
 			os.Exit(1)
 		}
 		// Verify the three per-process limits keep their fixed values.

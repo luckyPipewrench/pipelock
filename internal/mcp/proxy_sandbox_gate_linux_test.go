@@ -92,13 +92,25 @@ func TestRunProxyWithSandbox_AllowsUnmappedCommand(t *testing.T) {
 	t.Parallel()
 
 	cmd := exec.CommandContext(t.Context(), "/bin/true")
-	err := RunProxyWithSandbox(context.Background(), cmd, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})
+	}()
+	var err error
+	select {
+	case err = <-errCh:
+	case <-ctx.Done():
+		t.Fatal("unmapped command did not complete; proxy flow blocked")
+	}
 	if err != nil && strings.Contains(err.Error(), "RunProxyWithSandboxLaunch") {
 		t.Fatalf("unmapped command must not hit the mapped-launch refusal: %v", err)
 	}
 }
 
 func TestRunProxyWithSandboxLaunchRejectsNilAndFailedMappedLaunch(t *testing.T) {
+	t.Parallel()
 	if err := RunProxyWithSandboxLaunch(context.Background(), nil, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{}); err == nil || !strings.Contains(err.Error(), "sandbox launch is nil") {
 		t.Fatalf("nil prepared launch error = %v", err)
 	}

@@ -258,7 +258,7 @@ func (m *ReadModel) Agent(id string, filter FilterSpec) (evidenceview.AgentGroup
 // ReceiptDetail loads one receipt by session ID and globally unique action ID,
 // returning a DecisionExplanation. The CALLER redacts per RBAC.
 func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.DecisionExplanation, bool, error) {
-	receipts, _, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, sessionID, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
+	receipts, truncated, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, sessionID, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}
@@ -266,6 +266,9 @@ func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.Deci
 		if r.ActionRecord.ActionID == actionID {
 			return evidenceview.ExplainReceipt(r), true, nil
 		}
+	}
+	if truncated {
+		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("%w: receipt %s was not found in the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
 	}
 	return evidenceview.DecisionExplanation{}, false, nil
 }

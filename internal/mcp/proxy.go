@@ -445,6 +445,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			added, err := toolInventoryReservation.Commit(toolResult.Clean)
 			if err != nil {
+				toolInventoryReservation.Release()
 				return err
 			}
 			decision := ""
@@ -652,16 +653,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if err := reserveToolInventory(); err != nil {
 				resolveToolInventory(config.ActionBlock)
 				foundInjection = true
-				blockReason := "tools/list cannot be safely inspected: tool_inventory_capacity"
-				_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, blockReason)
-				if m != nil {
-					m.RecordBlocked("mcp", "tool_inventory_capacity", 0, "")
+				if writeErr := blockToolInventoryCapacity(writer, logW, opts, lineNum, toolResult.RPCID, emitTrackedOutcome); writeErr != nil {
+					return foundInjection, writeErr
 				}
-				resp := blockResponseReason(toolResult.RPCID, blockReason)
-				if writeErr := writer.WriteMessage(resp); writeErr != nil {
-					return foundInjection, fmt.Errorf("writing inventory-capacity block: %w", writeErr)
-				}
-				emitTrackedOutcome("error", "tool_inventory_capacity", resp)
 				continue
 			}
 			if err := writer.WriteMessage(line); err != nil {
@@ -868,16 +862,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
 			if err := reserveToolInventory(); err != nil {
 				resolveToolInventory(config.ActionBlock)
-				blockReason := "tools/list cannot be safely inspected: tool_inventory_capacity"
-				_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, blockReason)
-				if m != nil {
-					m.RecordBlocked("mcp", "tool_inventory_capacity", 0, "")
+				if writeErr := blockToolInventoryCapacity(writer, logW, opts, lineNum, toolResult.RPCID, emitTrackedOutcome); writeErr != nil {
+					return foundInjection, writeErr
 				}
-				resp := blockResponseReason(toolResult.RPCID, blockReason)
-				if writeErr := writer.WriteMessage(resp); writeErr != nil {
-					return foundInjection, fmt.Errorf("writing inventory-capacity block: %w", writeErr)
-				}
-				emitTrackedOutcome("error", "tool_inventory_capacity", resp)
 				continue
 			}
 		}
@@ -958,19 +945,20 @@ func emitMCPToolScanReceipt(
 	pattern := "tool_poisoning"
 	if result.ResourceLimit != "" {
 		pattern = result.ResourceLimit
-	}
-	for _, match := range result.Matches {
-		if len(match.ToolPoison) > 0 {
-			pattern = match.ToolPoison[0]
-			break
-		}
-		if match.DriftDetected {
-			pattern = "tool_definition_drift"
-			break
-		}
-		if len(match.Injection) > 0 {
-			pattern = match.Injection[0].PatternName
-			break
+	} else {
+		for _, match := range result.Matches {
+			if len(match.ToolPoison) > 0 {
+				pattern = match.ToolPoison[0]
+				break
+			}
+			if match.DriftDetected {
+				pattern = "tool_definition_drift"
+				break
+			}
+			if len(match.Injection) > 0 {
+				pattern = match.Injection[0].PatternName
+				break
+			}
 		}
 	}
 	_, err := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
@@ -1129,6 +1117,35 @@ func blockResponseReason(id json.RawMessage, reason string) []byte {
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct
 	return data
+}
+
+func blockToolInventoryCapacity(
+	writer transport.MessageWriter,
+	logW io.Writer,
+	opts MCPProxyOpts,
+	lineNum int,
+	rpcID json.RawMessage,
+	emitTrackedOutcome func(string, string, []byte),
+) error {
+	const reason = "tool_inventory_capacity"
+	blockReason := "tools/list cannot be safely inspected: " + reason
+	_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, blockReason)
+	if opts.AuditLogger != nil {
+		opts.AuditLogger.LogBlocked(
+			mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"),
+			"tool_scanning",
+			blockReason,
+		)
+	}
+	if opts.Metrics != nil {
+		opts.Metrics.RecordBlocked("mcp", reason, 0, "")
+	}
+	resp := blockResponseReason(rpcID, blockReason)
+	if err := writer.WriteMessage(resp); err != nil {
+		return fmt.Errorf("writing inventory-capacity block: %w", err)
+	}
+	emitTrackedOutcome("error", reason, resp)
+	return nil
 }
 
 // blockMediaPolicyResponse generates a JSON-RPC 2.0 error for media policy

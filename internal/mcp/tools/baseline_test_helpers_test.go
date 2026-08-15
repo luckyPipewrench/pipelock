@@ -1,5 +1,5 @@
-// Copyright 2026 Pipelock contributors
-// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
 
 package tools
 

@@ -279,7 +279,11 @@ func TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed(t *t
 		oldResult <- result{status: resp.StatusCode, body: string(payload), err: readErr}
 	}()
 
-	<-oldReachedConfig
+	select {
+	case <-oldReachedConfig:
+	case <-time.After(30 * time.Second):
+		t.Fatal("old bearer request never reached AdaptiveCfgFn")
+	}
 	active.Store(newBearer)
 	holdOld.Store(false)
 	if status, body := principalStateToolCall(t, baseURL, newBearer, 2, "read_file", nil); status != http.StatusOK || strings.Contains(body, "chain pattern") {
@@ -370,7 +374,11 @@ func TestHTTPListener_PrincipalState_RotatedBearerCapacityDeniesReadAndDelete(t 
 				oldResult <- result{status: resp.StatusCode, body: string(body), err: readErr}
 			}()
 
-			<-oldReachedConfig
+			select {
+			case <-oldReachedConfig:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s request never reached AdaptiveCfgFn", method)
+			}
 			active.Store(newBearer)
 			holdOld.Store(false)
 			if status, body := principalStateToolCall(t, baseURL, newBearer, 2, "read_file", nil); status != http.StatusOK || strings.Contains(body, "chain pattern") {

@@ -789,8 +789,18 @@ func (s *Server) Start(ctx context.Context) error {
 		mcpToolBaseline := tools.NewToolBaseline()
 		mcpScannerFn := func() *scanner.Scanner { return s.proxy.ScannerPtr().Load() }
 		mcpInputCfgFn := func() *mcp.InputScanConfig { return buildMCPInputCfg(s.proxy.CurrentConfig()) }
+		var mcpToolCfgMu sync.Mutex
+		var cachedMCPToolSource *config.Config
+		var cachedMCPToolCfg *tools.ToolScanConfig
 		mcpToolCfgFn := func() *tools.ToolScanConfig {
-			return buildMCPToolCfg(s.proxy.CurrentConfig(), s.currentMCPToolExtraPoison(), mcpToolBaseline)
+			current := s.proxy.CurrentConfig()
+			mcpToolCfgMu.Lock()
+			defer mcpToolCfgMu.Unlock()
+			if current != cachedMCPToolSource {
+				cachedMCPToolCfg = buildMCPToolCfg(current, s.currentMCPToolExtraPoison(), mcpToolBaseline)
+				cachedMCPToolSource = current
+			}
+			return cachedMCPToolCfg
 		}
 		mcpRedirectRTFn := func() *mcp.RedirectRuntime {
 			c := s.proxy.CurrentConfig()

@@ -57,13 +57,11 @@ func buildMCPToolCfg(
 	}
 	resetKeyPath := cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile
 	resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
-	if resetKeyPath != "" || resetTarget != "" {
-		if resetKeyPath != "" && resetTarget != "" {
-			publicKey, err := signing.LoadPublicKey(resetKeyPath)
-			if err == nil {
-				toolCfg.ListenerDriftResetAuthorityPublicKey = publicKey
-				toolCfg.ListenerDriftResetTarget = resetTarget
-			}
+	if resetKeyPath != "" && resetTarget != "" {
+		publicKey, err := signing.LoadPublicKey(resetKeyPath)
+		if err == nil {
+			toolCfg.ListenerDriftResetAuthorityPublicKey = publicKey
+			toolCfg.ListenerDriftResetTarget = resetTarget
 		}
 	}
 	if cfg.MCPSessionBinding.Enabled {

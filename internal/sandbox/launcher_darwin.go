@@ -59,6 +59,7 @@ func (p *PreparedSandboxCmd) StartWithParentHardening(harden func() error) error
 		return fmt.Errorf("hardening parent before sandbox start: %w", err)
 	}
 	if err := p.Cmd.Start(); err != nil {
+		CleanupSandboxCmd(p.Cmd)
 		return fmt.Errorf("starting sandbox child: %w", err)
 	}
 	return nil

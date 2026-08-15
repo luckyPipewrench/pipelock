@@ -20,6 +20,9 @@ import (
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+// The exported half contains no secret material and is world-readable so a
+// proxy running under a different UID can load it. This is a deliberate
+// exception to the repository's 0o600 default for generated files.
 const resetAuthorityPublicKeyMode os.FileMode = 0o644
 
 func resetAuthorityCmd() *cobra.Command {
@@ -112,7 +115,7 @@ func resetMintCmd() *cobra.Command {
 				return fmt.Errorf("generate reset delegation nonce: %w", err)
 			}
 			now := time.Now().UTC()
-			d, err := mcp.MintResetDelegation(privateKey, key.KeyID, mcp.ResetKind(kind), target, instanceID, epoch, now, now.Add(ttl), nonce)
+			d, err := mcp.MintResetDelegation(privateKey, mcp.ResetDelegationRequest{Issuer: key.KeyID, Kind: mcp.ResetKind(kind), Target: target, InstanceID: instanceID, Epoch: epoch, IssuedAt: now, ExpiresAt: now.Add(ttl), Nonce: nonce})
 			if err != nil {
 				return err
 			}

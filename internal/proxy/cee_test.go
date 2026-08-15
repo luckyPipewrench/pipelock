@@ -516,6 +516,13 @@ func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 	if !result.Blocked || !strings.Contains(result.Reason, "session capacity exhausted") {
 		t.Fatalf("capacity result = %+v, want visible fail-closed capacity denial", result)
 	}
+	established := ceeAdmit(context.Background(),
+		"trusted-session", []byte("second fragment"), nil, "http://example.com", testCEEAgent,
+		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
+	)
+	if established.Blocked {
+		t.Fatalf("established session = %+v, want admission at capacity", established)
+	}
 	assertMetricsContain(t, m, "pipelock_cross_request_fragment_session_capacity_exceeded_total 1")
 }
 

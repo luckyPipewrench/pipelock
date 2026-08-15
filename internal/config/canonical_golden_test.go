@@ -321,7 +321,7 @@ const (
 	// above required a literal ":" or "-" between the phrase and its context,
 	// so a period, newline, comma, or em-dash evaded it. Proximity keeps the
 	// context requirement without depending on one punctuation mark.
-	goldenHashDefaults = "4025c2d6fd31333bf1054aa0a6aa4a6457cf02afecba047cb69b9a7c54fe8078"
+	goldenHashDefaults = "5bceed7c37e0b6e5cd60855c226a4cc1a8c93009169f66caa478b5ffdb60d737"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -480,7 +480,7 @@ const (
 	// goldenHashDefaults note. Both invariance tests compare against this
 	// constant and produced this same hash, so ops-field and allowlist-order
 	// invariance are intact and only the shared baseline moved.
-	goldenHashRichConfig = "a4b307de43a2dd5ff2314d02a245b8b63c0fe61d450661eb86de195593268b24"
+	goldenHashRichConfig = "cb25a92a77fc259e436ae5c5eb8a451b3204795560f47ed4483d46e36591a60d"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

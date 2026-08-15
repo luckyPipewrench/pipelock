@@ -446,6 +446,8 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				continue
 			}
 			fragmentKey := mcpCEEFragmentSessionKey(opts.sessionKey, path)
+			// Capacity exhaustion always blocks, regardless of the configured
+			// cross-request action, because the request is no longer inspectable.
 			if appendResult := buffer.Append(fragmentKey, payload); appendResult.CapacityExceeded {
 				if m != nil {
 					m.RecordCrossRequestFragmentCapacityExceeded()

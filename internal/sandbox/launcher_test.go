@@ -42,6 +42,12 @@ var sandboxLaunchSmoke struct {
 	stderr string
 }
 
+var strictSandboxLaunchSmoke struct {
+	once   sync.Once
+	err    error
+	stderr string
+}
+
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -74,7 +80,7 @@ func requireSandboxPrimitives(t *testing.T) {
 			caps.LandlockABI, caps.UserNamespaces)
 	}
 	sandboxLaunchSmoke.once.Do(func() {
-		sandboxLaunchSmoke.stderr, sandboxLaunchSmoke.err = probeSandboxLaunch(t.TempDir())
+		sandboxLaunchSmoke.stderr, sandboxLaunchSmoke.err = probeSandboxLaunch(t.TempDir(), false)
 	})
 	if sandboxLaunchSmoke.err != nil {
 		t.Skipf("sandbox launch unavailable in this runner: %v; stderr: %s",
@@ -82,7 +88,19 @@ func requireSandboxPrimitives(t *testing.T) {
 	}
 }
 
-func probeSandboxLaunch(workspace string) (string, error) {
+func requireStrictSandboxPrimitives(t *testing.T) {
+	t.Helper()
+	requireSandboxPrimitives(t)
+	strictSandboxLaunchSmoke.once.Do(func() {
+		strictSandboxLaunchSmoke.stderr, strictSandboxLaunchSmoke.err = probeSandboxLaunch(t.TempDir(), true)
+	})
+	if strictSandboxLaunchSmoke.err != nil {
+		t.Skipf("strict sandbox launch unavailable in this runner: %v; stderr: %s",
+			strictSandboxLaunchSmoke.err, strictSandboxLaunchSmoke.stderr)
+	}
+}
+
+func probeSandboxLaunch(workspace string, strict bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxSmokeTimeout)
 	defer cancel()
 
@@ -94,6 +112,7 @@ func probeSandboxLaunch(workspace string) (string, error) {
 			Command:   []string{"true"},
 			Workspace: workspace,
 			Stderr:    stderr,
+			Strict:    strict,
 		})
 		if err != nil {
 			done <- err

@@ -46,18 +46,25 @@ func TestIntegration_McpSandboxProxyEnvironDenied(t *testing.T) {
 		"best-effort-with-namespaces",
 	} {
 		t.Run(mode, func(t *testing.T) {
+			if mode == "strict" {
+				requireStrictSandboxPrimitives(t)
+			}
 			runMCPEnvironProof(t, binary, mode)
 		})
 	}
 }
 
 func TestIntegration_McpSandboxBestEffortFallbackEnvironDenied(t *testing.T) {
+	requireSandboxPrimitives(t)
 	binary := buildMCPEnvironProofBinary(t)
 	runMCPEnvironProof(t, binary, "best-effort-fallback")
 }
 
 func runMCPEnvironProof(t *testing.T, binary, mode string) {
 	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required for the MCP environ proof fixture")
+	}
 	workspace := t.TempDir()
 	marker := filepath.Join(workspace, "parent-hardened")
 	server := filepath.Join(workspace, "mcp-environ-server.py")

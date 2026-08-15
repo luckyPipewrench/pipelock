@@ -68,16 +68,7 @@ func TestMCPListenerSignedDriftResetCachesAuthorityAndAdvancesEpoch(t *testing.T
 		t.Fatal("listener reset authority accepted malformed public key")
 	}
 	delegation, err := MintResetDelegation(
-		privateKey,
-		"listener-operator",
-		ResetKindDrift,
-		authority.Target(),
-		authority.InstanceID(),
-		states.upstreamDriftEpoch(),
-		resetAuthorityTestNow,
-		resetAuthorityTestNow.Add(time.Minute),
-		strings.Repeat("c", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "listener-operator", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: states.upstreamDriftEpoch(), IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("c", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,9 +167,7 @@ func TestMCPListenerRotatedResetAuthorityReportsCurrentMintBinding(t *testing.T)
 			currentAuthority.now = func() time.Time { return resetAuthorityTestNow }
 
 			stale, err := MintResetDelegation(
-				oldPrivateKey, "listener-operator", ResetKindDrift, oldAuthority.Target(), oldAuthority.InstanceID(), 0,
-				resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("a", 32),
-			)
+				oldPrivateKey, ResetDelegationRequest{Issuer: "listener-operator", Kind: ResetKindDrift, Target: oldAuthority.Target(), InstanceID: oldAuthority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("a", 32)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -200,9 +189,7 @@ func TestMCPListenerRotatedResetAuthorityReportsCurrentMintBinding(t *testing.T)
 			}
 
 			fresh, err := MintResetDelegation(
-				currentPrivateKey, "listener-operator", ResetKindDrift, currentAuthority.Target(), currentAuthority.InstanceID(), states.upstreamDriftEpoch(),
-				resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("b", 32),
-			)
+				currentPrivateKey, ResetDelegationRequest{Issuer: "listener-operator", Kind: ResetKindDrift, Target: currentAuthority.Target(), InstanceID: currentAuthority.InstanceID(), Epoch: states.upstreamDriftEpoch(), IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("b", 32)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -239,9 +226,7 @@ func TestMCPListenerRotationRejectsInFlightOldAuthorityDelegation(t *testing.T) 
 	oldAuthority.now = func() time.Time { return resetAuthorityTestNow }
 
 	stale, err := MintResetDelegation(
-		oldPrivateKey, "listener-operator", ResetKindDrift, oldAuthority.Target(), oldAuthority.InstanceID(), 0,
-		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("a", 32),
-	)
+		oldPrivateKey, ResetDelegationRequest{Issuer: "listener-operator", Kind: ResetKindDrift, Target: oldAuthority.Target(), InstanceID: oldAuthority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("a", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +269,7 @@ func TestMCPListenerRotationRejectsInFlightOldAuthorityDelegation(t *testing.T) 
 	}
 
 	fresh, err := MintResetDelegation(
-		newPrivateKey, "listener-operator", ResetKindDrift, currentAuthority.Target(), currentAuthority.InstanceID(), 0,
-		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("b", 32),
-	)
+		newPrivateKey, ResetDelegationRequest{Issuer: "listener-operator", Kind: ResetKindDrift, Target: currentAuthority.Target(), InstanceID: currentAuthority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("b", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,6 +281,37 @@ func TestMCPListenerRotationRejectsInFlightOldAuthorityDelegation(t *testing.T) 
 	}
 	if got := states.upstreamDriftEpoch(); got != 1 {
 		t.Fatalf("fresh rotated-authority delegation advanced epoch to %d, want 1", got)
+	}
+}
+
+func TestMCPListenerUnrelatedReloadPreservesResetAuthorityBinding(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := newMCPListenerClientStates(nil)
+	cfg := &tools.ToolScanConfig{
+		DetectDrift:                          true,
+		ListenerDriftResetFile:               filepath.Join(t.TempDir(), "reset"),
+		ListenerDriftResetAuthorityPublicKey: publicKey,
+		ListenerDriftResetTarget:             "mcp://listener-unrelated-reload",
+	}
+	authority, err := states.authorityForToolDriftReset(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := *cfg
+	reloaded.Action = config.ActionBlock
+	reloaded.ExtraPoison = []*tools.ExtraPoisonPattern{{Name: "unrelated"}}
+	after, err := states.authorityForToolDriftReset(&reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != authority || after.InstanceID() != authority.InstanceID() {
+		t.Fatal("unrelated reload rotated the reset authority")
+	}
+	if got := states.upstreamDriftEpoch(); got != 0 {
+		t.Fatalf("unrelated reload changed epoch to %d", got)
 	}
 }
 
@@ -320,9 +334,7 @@ func TestMCPListenerReloadDisablingResetAuthorityRejectsInFlightDelegation(t *te
 	}
 	authority.now = func() time.Time { return resetAuthorityTestNow }
 	delegation, err := MintResetDelegation(
-		privateKey, "listener-operator", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
-		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("c", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "listener-operator", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("c", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,17 +417,9 @@ func TestListenerDriftResetEpochChecksLiveConfigWhileAdvancing(t *testing.T) {
 
 	var liveCfg atomic.Pointer[tools.ToolScanConfig]
 	liveCfg.Store(oldCfg)
+	var cfgCalls atomic.Int64
 	states.resetAuthorityToolCfgFn = func() *tools.ToolScanConfig {
-		// If the config is sampled before taking the listener-state lock, this
-		// captures the old config then publishes the rotation before AdvanceEpoch
-		// can commit. The old ordering accepts the stale authority. The fixed
-		// ordering holds the lock, observes the rotation, and denies it.
-		if states.mu.TryLock() {
-			cfg := liveCfg.Load()
-			states.mu.Unlock()
-			liveCfg.Store(rotatedCfg)
-			return cfg
-		}
+		cfgCalls.Add(1)
 		liveCfg.Store(rotatedCfg)
 		return liveCfg.Load()
 	}
@@ -426,6 +430,13 @@ func TestListenerDriftResetEpochChecksLiveConfigWhileAdvancing(t *testing.T) {
 	}
 	if got := states.upstreamDriftEpoch(); got != 0 {
 		t.Fatalf("listener epoch after reload race = %d, want 0", got)
+	}
+	if cfgCalls.Load() == 0 {
+		t.Fatal("AdvanceEpoch did not consult the live tool configuration")
+	}
+	target, _, _ := epoch.CurrentBinding()
+	if target != rotatedCfg.ListenerDriftResetTarget {
+		t.Fatalf("rejected binding target = %q, want rotated target %q", target, rotatedCfg.ListenerDriftResetTarget)
 	}
 }
 

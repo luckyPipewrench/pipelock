@@ -30,15 +30,17 @@ func consumeToolDriftResetFile(path string, authority *ResetAuthority, epoch Res
 
 func consumeMCPResetDelegation(path string, authority *ResetAuthority, kind ResetKind, epoch ResetEpoch, logW io.Writer) ResetAuthorityDecision {
 	if authority == nil {
-		return ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
+		decision := ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
+		logResetAuthorityDecision(logW, decision)
+		return decision
 	}
 	decision := authority.ConsumeFile(path, kind, epoch)
 	logResetAuthorityDecision(logW, decision)
 	return decision
 }
 
-func recordResetAuthorityCapacity(metrics *metrics.Metrics, decision ResetAuthorityDecision) {
-	if metrics != nil && decision.Result == ResetAuthorityCapacity {
-		metrics.RecordBlocked("mcp", resetAuthorityCapacityMetric, 0, "")
+func recordResetAuthorityCapacity(m *metrics.Metrics, decision ResetAuthorityDecision) {
+	if m != nil && decision.Result == ResetAuthorityCapacity {
+		m.RecordBlocked("mcp", resetAuthorityCapacityMetric, 0, "")
 	}
 }

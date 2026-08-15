@@ -1232,8 +1232,12 @@ func TestContextTracker_EvictionBoundsAuxiliaryState(t *testing.T) {
 	for i := range 50 {
 		contextID := fmt.Sprintf("context-%d", i)
 		taskID := fmt.Sprintf("task-%d", i)
-		if smuggling, reason := ct.TrackAndScan(context.Background(), contextID, taskID, []string{"benign"}, sc); smuggling {
+		smuggling, reason := ct.TrackAndScan(context.Background(), contextID, taskID, []string{"benign"}, sc)
+		if i < cfg.MaxContexts && smuggling {
 			t.Fatalf("context %d unexpectedly flagged smuggling: %s", i, reason)
+		}
+		if i >= cfg.MaxContexts && (!smuggling || !strings.Contains(reason, "task alias capacity")) {
+			t.Fatalf("context %d capacity result = %t, %q", i, smuggling, reason)
 		}
 	}
 
@@ -1253,6 +1257,55 @@ func TestContextTracker_EvictionBoundsAuxiliaryState(t *testing.T) {
 	}
 	if got := len(ct.evictedOrder); got > cfg.MaxContexts {
 		t.Fatalf("evicted LRU entries = %d, want <= %d", got, cfg.MaxContexts)
+	}
+}
+
+func TestContextTracker_BoundsAliasesForResidentContext(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.MaxContexts = 3
+	ct := NewContextTracker(cfg)
+	sc := testA2AScanner(t)
+	for i := range 20 {
+		smuggling, reason := ct.TrackAndScan(context.Background(), "resident", fmt.Sprintf("task-%d", i), []string{"benign"}, sc)
+		if i < cfg.MaxContexts && smuggling {
+			t.Fatalf("alias %d unexpectedly refused: %s", i, reason)
+		}
+		if i >= cfg.MaxContexts && (!smuggling || !strings.Contains(reason, "task alias capacity")) {
+			t.Fatalf("alias %d capacity result = %t, %q", i, smuggling, reason)
+		}
+	}
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	if len(ct.taskMap) != cfg.MaxContexts {
+		t.Fatalf("task aliases = %d, want %d", len(ct.taskMap), cfg.MaxContexts)
+	}
+}
+
+func TestContextTracker_EvictionHelpersBoundAllIndexes(t *testing.T) {
+	ct := NewContextTracker(&config.A2AScanning{})
+	ct.taskMap["drop-a"] = "evicted"
+	ct.taskMap["drop-b"] = "evicted"
+	ct.taskMap["keep"] = "resident"
+	ct.dropContextTasksLocked("evicted")
+	if len(ct.taskMap) != 1 || ct.taskMap["keep"] != "resident" {
+		t.Fatalf("task aliases after eviction = %#v, want only resident alias", ct.taskMap)
+	}
+
+	ct.markEvictedLocked("first", 1)
+	ct.markEvictedLocked("first", 1)
+	ct.markEvictedLocked("second", 1)
+	if len(ct.evicted) != 1 {
+		t.Fatalf("evicted index size = %d, want 1", len(ct.evicted))
+	}
+	if _, ok := ct.evicted["second"]; !ok {
+		t.Fatalf("evicted index = %#v, want second", ct.evicted)
+	}
+	if got := ct.maxContextsLocked(); got != 1000 {
+		t.Fatalf("default max contexts = %d, want 1000", got)
+	}
+	ct.cfg.MaxContexts = 7
+	if got := ct.maxContextsLocked(); got != 7 {
+		t.Fatalf("configured max contexts = %d, want 7", got)
 	}
 }
 

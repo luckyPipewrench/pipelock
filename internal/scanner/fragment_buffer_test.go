@@ -41,7 +41,6 @@ func TestFragmentBuffer_OpportunisticCleanup(t *testing.T) {
 	fb.sessions["expired"] = &sessionBuffer{
 		fragments:  []fragment{{data: []byte("old"), at: expiredAt}},
 		totalBytes: 3,
-		lastAccess: expiredAt,
 	}
 	fb.lastCleanup = time.Now().Add(-2 * time.Second)
 
@@ -177,22 +176,36 @@ func TestFragmentBuffer_MaxSessionsCapacityDeniesNewSession(t *testing.T) {
 
 	fb.mu.Lock()
 	sessionCount := len(fb.sessions)
-	_, hasA := fb.sessions[testSessionA]
-	_, hasB := fb.sessions[testSessionB]
+	sessionA, hasA := fb.sessions[testSessionA]
+	sessionB, hasB := fb.sessions[testSessionB]
+	sessionC, hasC := fb.sessions[testSessionC]
 	_, hasD := fb.sessions[testSessionD]
+	bytesA, bytesB, bytesC := 0, 0, 0
+	if hasA {
+		bytesA = sessionA.totalBytes
+	}
+	if hasB {
+		bytesB = sessionB.totalBytes
+	}
+	if hasC {
+		bytesC = sessionC.totalBytes
+	}
 	fb.mu.Unlock()
 
-	if sessionCount > 3 {
-		t.Errorf("expected at most 3 sessions, got %d", sessionCount)
+	if sessionCount != 3 {
+		t.Errorf("expected exactly 3 sessions, got %d", sessionCount)
 	}
 	if !hasA {
-		t.Error("session A should survive (recently used)")
+		t.Error("session A must remain after a new-session capacity refusal")
 	}
 	if !hasB {
 		t.Error("session B must remain after a new-session capacity refusal")
 	}
 	if hasD {
 		t.Error("session D must not be created after capacity refusal")
+	}
+	if bytesA != len("data-a")+len("more-a") || bytesB != len("data-b") || bytesC != len("data-c") {
+		t.Fatalf("preserved session bytes = A:%d B:%d C:%d", bytesA, bytesB, bytesC)
 	}
 }
 

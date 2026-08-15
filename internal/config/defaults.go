@@ -22,7 +22,7 @@ const ExternalDataTransferDirectiveRegex = `(?im)(?:^|[.!?:]\s+)\s*(?:[-*]\s+)?(
 
 // NewInstructionsRegex requires either an explicit authority tag or an action
 // directive. Bare mentions of updated documentation are ordinary prose.
-const NewInstructionsRegex = `(?i)(\b(system|developer|administrator|admin)\s*(message|prompt|instruction|directive)?[\s\W]{0,4}(new|updated|revised)\s+(instructions|directives|rules|prompt)\b|\b(new|updated|revised)\s+(instructions|directives|rules|prompt)\b[\s\W]{0,4}(you\s+)?(must|should|will|need\s+to|are\s+to|obey|execute|override|replace|supersede|ignore|disregard|forget|abandon)\b)`
+const NewInstructionsRegex = `(?i)(\b(system|developer|administrator|admin)\s*(message|prompt|instruction|directive)?[\s\W]+(?:\w+[\s\W]+){0,4}(new|updated|revised)\s+(instructions|directives|rules|prompt)\b|\b(new|updated|revised)\s+(instructions|directives|rules|prompt)\b[\s\W]+(?:\w+[\s\W]+){0,4}(you\s+)?(must|should|will|need\s+to|are\s+to|obey|execute|run|override|replace|supersede|ignore|disregard|forget|abandon)\b)`
 
 // CredentialSolicitationRegex is the canonical direction-anchored response
 // pattern for requests that try to make the agent hand credentials back to the

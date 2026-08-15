@@ -202,7 +202,8 @@ func RunHTTPListenerProxy(
 		if authority, authorityErr := listenerClients.authorityForToolDriftReset(toolCfg); authorityErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: tool drift reset authority unavailable: %v\n", authorityErr)
 		} else {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reset authority target=%q instance=%q epoch=0\n", authority.Target(), authority.InstanceID())
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reset authority target=%q instance=%q epoch=%d\n",
+				authority.Target(), authority.InstanceID(), listenerClients.upstreamDriftEpoch())
 		}
 	}
 
@@ -445,8 +446,27 @@ func RunHTTPListenerProxy(
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
 		fullRequestBaseOpts := requestBaseOpts
-		reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW)
-		auditResetAuthorityDecision(requestBaseOpts.AuditLogger, "http-listener", reset)
+		reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), io.Discard)
+		reportReset := reset.Result == ResetAuthorityAccepted
+		resetCount := uint64(1)
+		if reset.Result != ResetAuthorityAbsent && !reportReset {
+			resetCount, reportReset = listenerClients.resetDecisionReporter.observe()
+		}
+		if reportReset {
+			detail := resetAuthorityDecisionSummary(reset)
+			if resetCount > 1 {
+				detail = fmt.Sprintf("%s (decisions_since_last_report=%d)", detail, resetCount)
+			}
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", detail)
+			if requestBaseOpts.AuditLogger != nil {
+				requestBaseOpts.AuditLogger.LogAnomaly(
+					mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
+					"mcp_reset_authority",
+					detail,
+					0,
+				)
+			}
+		}
 		recordResetAuthorityCapacity(opts.Metrics, reset)
 		if reset.Result == ResetAuthorityAccepted {
 			resetReason := "operator re-baselined the HTTP listener tool inventory with a signed mcp-reset-authority delegation"
@@ -479,10 +499,8 @@ func RunHTTPListenerProxy(
 			requestBaseOpts.ToolCfg = listenerToolCfgFn()
 			requestBaseOpts.ToolCfgFn = listenerToolCfgFn
 		}
-		setClientState(clientState)
-		// toolConfig can consume a detect-drift rising edge and reset the shared
-		// baseline. Capture only after that configuration transition, but still
-		// before this request reaches the upstream.
+		// Bind this request to the shared drift baseline after any pending signed
+		// reset above and before the request reaches the upstream.
 		upstreamDriftEpoch = listenerClients.upstreamDriftEpoch()
 		setClientState(clientState)
 		if statefulControls && listenerPrincipal.key != "" {
@@ -501,7 +519,7 @@ func RunHTTPListenerProxy(
 			setClientState(listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")))
 			stateBound = true
 		}
-		if requireStateToken && !stateBound && listenerSessionToken != "" {
+		if requireStateToken && !stateBound && listenerPrincipal.key == "" && listenerSessionToken != "" {
 			if state, ok := listenerClients.stateForToken(listenerSessionToken); ok {
 				setClientState(state)
 				stateBound = true

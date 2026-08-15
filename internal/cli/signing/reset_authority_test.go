@@ -36,8 +36,12 @@ func TestResetAuthorityCommandsMintInspectAndCancel(t *testing.T) {
 	if !strings.Contains(exported.String(), "fingerprint:") {
 		t.Fatalf("export output missing fingerprint: %q", exported.String())
 	}
-	if info, err := os.Stat(publicPath); err != nil || info.Mode().Perm() != resetAuthorityPublicKeyMode {
-		t.Fatalf("public key mode = %v, err=%v, want %o", info.Mode(), err, resetAuthorityPublicKeyMode)
+	info, err := os.Stat(publicPath)
+	if err != nil {
+		t.Fatalf("stat exported public key: %v", err)
+	}
+	if info.Mode().Perm() != resetAuthorityPublicKeyMode {
+		t.Fatalf("public key mode = %v, want %o", info.Mode().Perm(), resetAuthorityPublicKeyMode)
 	}
 
 	var minted bytes.Buffer

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,9 +43,7 @@ func TestResetAuthorityRejectsInvalidDelegations(t *testing.T) {
 	mint := func(t *testing.T, private ed25519.PrivateKey, kind ResetKind, delegationTarget, delegationInstance string, epoch uint64, issued, expires time.Time, nonce int) ResetDelegation {
 		t.Helper()
 		d, err := MintResetDelegation(
-			private, "operator-primary", kind, delegationTarget, delegationInstance, epoch,
-			issued, expires, fmt.Sprintf("%032x", nonce),
-		)
+			private, ResetDelegationRequest{Issuer: "operator-primary", Kind: kind, Target: delegationTarget, InstanceID: delegationInstance, Epoch: epoch, IssuedAt: issued, ExpiresAt: expires, Nonce: fmt.Sprintf("%032x", nonce)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -200,9 +199,7 @@ func TestResetAuthorityConsumesNonceOnceAndRejectsAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, err := MintResetDelegation(
-		privateKey, "operator-primary", ResetKindDrift, target, instanceID, 7,
-		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("d", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: target, InstanceID: instanceID, Epoch: 7, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("d", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,9 +246,7 @@ func TestResetAuthorityConsumesEpochExactlyOnceUnderConcurrentDelegations(t *tes
 	for i := range paths {
 		paths[i] = filepath.Join(t.TempDir(), fmt.Sprintf("reset-%d", i))
 		delegation, err := MintResetDelegation(
-			privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
-			resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), fmt.Sprintf("%032x", i+1),
-		)
+			privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: fmt.Sprintf("%032x", i+1)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -308,9 +303,7 @@ func TestResetAuthorityRejectsDelegationAfterEpochAdvances(t *testing.T) {
 	writeDelegation := func(nonce string) {
 		t.Helper()
 		delegation, err := MintResetDelegation(
-			privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
-			resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), nonce,
-		)
+			privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: nonce})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -329,6 +322,52 @@ func TestResetAuthorityRejectsDelegationAfterEpochAdvances(t *testing.T) {
 	}
 	if got := epoch.Load(); got != 1 {
 		t.Fatalf("stale delegation advanced epoch to %d, want 1", got)
+	}
+}
+
+func TestResetAuthorityConsumesSamePathExactlyOnceConcurrently(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := newResetAuthority(publicKey, "mcp://same-path-reset", strings.Repeat("a", 32), func() time.Time {
+		return resetAuthorityTestNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegation, err := MintResetDelegation(
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("b", 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "reset")
+	if err := os.WriteFile(path, resetDelegationBytes(t, delegation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var epoch atomic.Uint64
+	start := make(chan struct{})
+	results := make(chan ResetAuthorityResult, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- authority.ConsumeFile(path, ResetKindDrift, newResetAtomicEpoch(&epoch)).Result
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	accepted := 0
+	for result := range results {
+		if result == ResetAuthorityAccepted {
+			accepted++
+		}
+	}
+	if accepted != 1 || epoch.Load() != 1 {
+		t.Fatalf("same-path concurrent accepted=%d epoch=%d, want 1/1", accepted, epoch.Load())
 	}
 }
 
@@ -366,9 +405,7 @@ func TestResetAuthorityEvictsExpiredNonceWithoutPermittingExpiredReplay(t *testi
 
 	expiredNonce := strings.Repeat("b", 32)
 	expired, err := MintResetDelegation(
-		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
-		now, now.Add(time.Second), expiredNonce,
-	)
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: now, ExpiresAt: now.Add(time.Second), Nonce: expiredNonce})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,9 +421,7 @@ func TestResetAuthorityEvictsExpiredNonceWithoutPermittingExpiredReplay(t *testi
 
 	now = now.Add(2 * time.Second)
 	fresh, err := MintResetDelegation(
-		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), epoch.Load(),
-		now, now.Add(time.Minute), strings.Repeat("c", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: epoch.Load(), IssuedAt: now, ExpiresAt: now.Add(time.Minute), Nonce: strings.Repeat("c", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,9 +464,7 @@ func TestResetAuthorityDeniesLiveNonceLedgerCapacity(t *testing.T) {
 	authority.mu.Unlock()
 
 	delegation, err := MintResetDelegation(
-		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
-		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("f", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("f", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,9 +519,7 @@ func TestResetAuthorityNonceLedgerCapacityPurgesOnlyExpiredEntries(t *testing.T)
 	consume := func(nonce string) ResetAuthorityDecision {
 		t.Helper()
 		delegation, err := MintResetDelegation(
-			privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), epoch.Load(),
-			now, now.Add(time.Minute), nonce,
-		)
+			privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: epoch.Load(), IssuedAt: now, ExpiresAt: now.Add(time.Minute), Nonce: nonce})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -540,9 +571,7 @@ func TestResetAuthorityNonceLedgerCapacityPurgesOnlyExpiredEntries(t *testing.T)
 	overfull.mu.Unlock()
 	overfullPath := filepath.Join(t.TempDir(), "overfull-reset")
 	overfullDelegation, err := MintResetDelegation(
-		privateKey, "operator-primary", ResetKindDrift, overfull.Target(), overfull.InstanceID(), 0,
-		now, now.Add(time.Minute), strings.Repeat("e", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: overfull.Target(), InstanceID: overfull.InstanceID(), Epoch: 0, IssuedAt: now, ExpiresAt: now.Add(time.Minute), Nonce: strings.Repeat("e", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,9 +623,7 @@ func TestResetDelegationRejectsMalformedArtifactsAndMissingRemovalPath(t *testin
 		t.Fatal(err)
 	}
 	delegation, err := MintResetDelegation(
-		privateKey, "operator-primary", ResetKindDrift, authority.Target(), authority.InstanceID(), 0,
-		resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("f", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("f", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,10 +665,7 @@ func TestResetDelegationCanonicalInputIsStable(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, err := MintResetDelegation(
-		privateKey, "operator-primary", ResetKindAdaptive, "mcp://stdio/code-assistant",
-		"ffffffffffffffffffffffffffffffff", 0, resetAuthorityTestNow,
-		resetAuthorityTestNow.Add(time.Minute), strings.Repeat("1", 32),
-	)
+		privateKey, ResetDelegationRequest{Issuer: "operator-primary", Kind: ResetKindAdaptive, Target: "mcp://stdio/code-assistant", InstanceID: "ffffffffffffffffffffffffffffffff", Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("1", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +806,7 @@ func TestMintResetDelegationRejectsInvalidAuthorityInputs(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if delegation, err := MintResetDelegation(test.privateKey, test.issuer, test.kind, test.target, test.instanceID, 0, issued, test.expires, test.nonce); err == nil || delegation != (ResetDelegation{}) {
+			if delegation, err := MintResetDelegation(test.privateKey, ResetDelegationRequest{Issuer: test.issuer, Kind: test.kind, Target: test.target, InstanceID: test.instanceID, Epoch: 0, IssuedAt: issued, ExpiresAt: test.expires, Nonce: test.nonce}); err == nil || delegation != (ResetDelegation{}) {
 				t.Fatalf("MintResetDelegation() = %+v, %v; want validation failure", delegation, err)
 			}
 		})
@@ -790,6 +814,9 @@ func TestMintResetDelegationRejectsInvalidAuthorityInputs(t *testing.T) {
 }
 
 func TestResetDelegationFileOperationsAreBoundedAndPathSafe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission and symlink semantics")
+	}
 	pub, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -798,7 +825,7 @@ func TestResetDelegationFileOperationsAreBoundedAndPathSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delegation, err := MintResetDelegation(privateKey, "operator", ResetKindDrift, authority.Target(), authority.InstanceID(), 0, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("d", 32))
+	delegation, err := MintResetDelegation(privateKey, ResetDelegationRequest{Issuer: "operator", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("d", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,7 +900,7 @@ func TestResetDelegationParsingAndVerificationRejectsMalformedArtifacts(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	delegation, err := MintResetDelegation(privateKey, "operator", ResetKindAdaptive, "mcp://fixture", strings.Repeat("e", 32), 3, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("f", 32))
+	delegation, err := MintResetDelegation(privateKey, ResetDelegationRequest{Issuer: "operator", Kind: ResetKindAdaptive, Target: "mcp://fixture", InstanceID: strings.Repeat("e", 32), Epoch: 3, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("f", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -938,6 +965,9 @@ func TestResetDelegationParsingAndVerificationRejectsMalformedArtifacts(t *testi
 }
 
 func TestResetAuthorityRejectsSignedOverlongDelegationAndPreservesRemovalFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX non-removable directory semantics")
+	}
 	pub, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -946,7 +976,7 @@ func TestResetAuthorityRejectsSignedOverlongDelegationAndPreservesRemovalFailure
 	if err != nil {
 		t.Fatal(err)
 	}
-	delegation, err := MintResetDelegation(privateKey, "operator", ResetKindDrift, authority.Target(), authority.InstanceID(), 0, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), strings.Repeat("b", 32))
+	delegation, err := MintResetDelegation(privateKey, ResetDelegationRequest{Issuer: "operator", Kind: ResetKindDrift, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: 0, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("b", 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -993,7 +1023,7 @@ func TestResetAuthorityRejectsSignedOverlongDelegationAndPreservesRemovalFailure
 	if got := resetReadResult(errors.New("read denied")); got != ResetAuthorityUnreadable {
 		t.Fatalf("read failure result = %q", got)
 	}
-	if got := removeResetResult(errors.New("reset delegation path changed before removal")); got != ResetAuthorityPathChanged {
+	if got := removeResetResult(fmt.Errorf("wrapped path race: %w", errResetPathChanged)); got != ResetAuthorityPathChanged {
 		t.Fatalf("path-changed remove result = %q", got)
 	}
 	if got := removeResetResult(errors.New("remove denied")); got != ResetAuthorityRemoveFailed {

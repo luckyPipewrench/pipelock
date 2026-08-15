@@ -41,7 +41,7 @@ func newAdaptiveResetAuthority(t *testing.T) (*ResetAuthority, ed25519.PrivateKe
 
 func writeAdaptiveResetDelegation(t *testing.T, path string, privateKey ed25519.PrivateKey, authority *ResetAuthority, kind ResetKind, epoch uint64, nonce string) {
 	t.Helper()
-	d, err := MintResetDelegation(privateKey, "adaptive-operator", kind, authority.Target(), authority.InstanceID(), epoch, resetAuthorityTestNow, resetAuthorityTestNow.Add(time.Minute), nonce)
+	d, err := MintResetDelegation(privateKey, ResetDelegationRequest{Issuer: "adaptive-operator", Kind: kind, Target: authority.Target(), InstanceID: authority.InstanceID(), Epoch: epoch, IssuedAt: resetAuthorityTestNow, ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: nonce})
 	if err != nil {
 		t.Fatal(err)
 	}

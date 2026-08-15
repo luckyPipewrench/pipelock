@@ -1265,6 +1265,50 @@ class SingleProviderTest(unittest.TestCase):
         )
 
 
+class GuideAccuracyTest(unittest.TestCase):
+    """The guide is where a session goes to find this system; keep it true.
+
+    A file table that names a moved or deleted path sends the next session
+    hunting, which is the cost this documentation exists to remove. Paths are
+    cheap to verify, so they are verified rather than trusted.
+    """
+
+    GUIDE = ROOT / "docs" / "guides" / "pr-review.md"
+
+    def test_every_path_in_the_file_table_exists(self) -> None:
+        guide = self.GUIDE.read_text(encoding="utf-8")
+        marker = "## Files"
+        self.assertIn(marker, guide)
+        section = guide.split(marker, 1)[1].split("\n## ", 1)[0]
+        paths = [
+            cell.strip("` ")
+            for row in section.splitlines()
+            if row.startswith("| `")
+            for cell in [row.split("|")[1]]
+        ]
+        self.assertGreaterEqual(len(paths), 5, "the file table must describe the whole system")
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue((ROOT / path).exists(), f"the guide names {path}, which does not exist")
+
+    def test_the_guide_explains_how_to_test_a_change_to_this_workflow(self) -> None:
+        # The single most expensive thing to not know here: a comment-triggered
+        # workflow runs only the default-branch copy, so a change cannot be
+        # tested by the pull request that makes it. Every regression in this
+        # system shipped green because of it. If that explanation is ever
+        # dropped, the guide stops preventing the failure it was written for.
+        guide = self.GUIDE.read_text(encoding="utf-8")
+        self.assertIn("## Changing the reviewer", guide)
+        self.assertIn("## Propagating a change to the other repositories", guide)
+        self.assertIn("workflow_dispatch", guide)
+        caller = load_yaml(CALLER_WORKFLOW)
+        self.assertIn(
+            "workflow_dispatch",
+            caller["on"],
+            "the guide documents a dispatch the caller must actually offer",
+        )
+
+
 class AdoptionStubTest(unittest.TestCase):
     """The stub in the guide is what other repositories copy, so it is code.
 

@@ -208,6 +208,14 @@ func TestKeyExportPublicRejectsUnsafePathsAndWriteFailures(t *testing.T) {
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "stat output file") {
 		t.Fatalf("export-public file-as-parent error = %v", err)
 	}
+
+	cmd = keyExportPublicCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--key", keyPath, "--out", filepath.Join(parent, "public"), "--force"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "write public key") {
+		t.Fatalf("forced export-public write error = %v", err)
+	}
 }
 
 func TestResetMintRejectsOperatorInputAndWriteFailures(t *testing.T) {
@@ -293,6 +301,16 @@ func TestResetMintRejectsOperatorInputAndWriteFailures(t *testing.T) {
 	})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "stat output file") {
 		t.Fatalf("mint file-as-parent error = %v", err)
+	}
+
+	cmd = resetMintCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--key", keyPath, "--kind", "drift", "--target", "mcp://fixture", "--instance", strings.Repeat("a", 32), "--out", filepath.Join(parent, "delegation"), "--force",
+	})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "write reset delegation") {
+		t.Fatalf("forced mint write error = %v", err)
 	}
 }
 

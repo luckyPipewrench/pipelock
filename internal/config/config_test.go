@@ -5100,6 +5100,7 @@ func TestValidate_MCPToolScanningListenerDriftResetAuthority(t *testing.T) {
 		"missing control file": func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetFile = "" },
 		"missing public key":   func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = "" },
 		"missing target":       func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetTarget = "" },
+		"blank target":         func(cfg *Config) { cfg.MCPToolScanning.ListenerDriftResetTarget = "   " },
 		"invalid public key": func(cfg *Config) {
 			cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = "/missing/reset-authority.pub"
 		},

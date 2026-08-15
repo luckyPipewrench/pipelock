@@ -64,7 +64,7 @@ func TestIntegration_McpSandboxBestEffortFallbackEnvironDenied(t *testing.T) {
 }
 
 func TestIntegration_StandaloneTargetCannotReadParentEnviron(t *testing.T) {
-	requireSandboxPrimitives(t)
+	skipIfStandaloneUnavailable(t)
 	requireAmbientProcEnvironReadable(t)
 	python, err := exec.LookPath("python3")
 	if err != nil {

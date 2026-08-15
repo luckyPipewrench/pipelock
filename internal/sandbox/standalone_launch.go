@@ -233,7 +233,12 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) (returnErr error) {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, readinessReader)
 		readinessFD = 2 + len(cmd.ExtraFiles)
 	}
-	cmd.Env = standaloneInitControlEnv(cfg, socketPath, coverageEnv, policyJSON, hasNamespaces, guardDeclarationJSON, guardStatusFD, readinessFD)
+	cmd.Env = standaloneInitControlEnv(standaloneInitControlOptions{
+		Config: cfg, SocketPath: socketPath, CoverageEnv: coverageEnv,
+		PolicyJSON: policyJSON, HasNamespaces: hasNamespaces,
+		GuardDeclarationJSON: guardDeclarationJSON, GuardStatusFD: guardStatusFD,
+		ReadinessFD: readinessFD,
+	})
 
 	if hasNamespaces {
 		cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
@@ -286,17 +291,19 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) (returnErr error) {
 		return fmt.Errorf("starting sandbox child: %w", err)
 	}
 	cleanupChildState := standaloneChildCleanup(cmd.Process.Pid, cfg.Strict, proxyServer.stop, ReapOrphans)
+	failStartedChild := func(err error) error {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		cleanupChildState()
+		return err
+	}
 	if readinessReader != nil {
 		if err := readinessReader.Close(); err != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return fmt.Errorf("closing standalone readiness reader: %w", err)
+			return failStartedChild(fmt.Errorf("closing standalone readiness reader: %w", err))
 		}
 		restoreParent, err = hardenStandaloneParent()
 		if err != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return err
+			return failStartedChild(err)
 		}
 		defer func() {
 			if restoreErr := restoreParent(); returnErr == nil && restoreErr != nil {
@@ -304,17 +311,13 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) (returnErr error) {
 			}
 		}()
 		if n, writeErr := readinessWriter.Write([]byte{1}); writeErr != nil || n != 1 {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
 			if writeErr == nil {
 				writeErr = io.ErrShortWrite
 			}
-			return fmt.Errorf("releasing standalone target after parent hardening: %w", writeErr)
+			return failStartedChild(fmt.Errorf("releasing standalone target after parent hardening: %w", writeErr))
 		}
 		if err := readinessWriter.Close(); err != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return fmt.Errorf("closing standalone readiness writer: %w", err)
+			return failStartedChild(fmt.Errorf("closing standalone readiness writer: %w", err))
 		}
 	}
 	// Register cleanup after the dumpability restore so LIFO execution kills
@@ -418,15 +421,27 @@ func readGuardExecutionProof(r io.Reader) ([]byte, error) {
 // standaloneInitControlEnv is the complete re-exec environment. In
 // developer-environment mode it carries only a fixed descriptor number, never
 // a developer-supplied value.
-func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, coverageEnv []string, policyJSON string, hasNamespaces bool, guardDeclarationJSON []byte, guardStatusFD, readinessFD int) []string {
+type standaloneInitControlOptions struct {
+	Config               StandaloneLaunchConfig
+	SocketPath           string
+	CoverageEnv          []string
+	PolicyJSON           string
+	HasNamespaces        bool
+	GuardDeclarationJSON []byte
+	GuardStatusFD        int
+	ReadinessFD          int
+}
+
+func standaloneInitControlEnv(opts standaloneInitControlOptions) []string {
+	cfg := opts.Config
 	commandJSON, _ := json.Marshal(cfg.Command)
 	env := []string{
 		standaloneInitEnv + "=1",
 		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
 		standaloneCommandJSONEnv + "=" + string(commandJSON),
-		sandboxSocketEnv + "=" + socketPath,
+		sandboxSocketEnv + "=" + opts.SocketPath,
 	}
-	env = append(env, subprocessCoverageControlEnv(coverageEnv)...)
+	env = append(env, subprocessCoverageControlEnv(opts.CoverageEnv)...)
 	if cfg.Strict {
 		env = append(env, strictEnvKey+"=1")
 	}
@@ -436,19 +451,19 @@ func standaloneInitControlEnv(cfg StandaloneLaunchConfig, socketPath string, cov
 	if cfg.UseDeveloperEnvironment {
 		env = append(env, developerEnvironmentControlEnv+"="+strconv.Itoa(developerEnvironmentFD))
 	}
-	env = append(env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
-	if !hasNamespaces {
+	env = append(env, "__PIPELOCK_SANDBOX_POLICY="+opts.PolicyJSON)
+	if !opts.HasNamespaces {
 		env = append(env, noNetNSEnvKey+"=1")
 	}
-	if readinessFD > 0 {
-		env = append(env, sandboxReadinessFDEnv+"="+strconv.Itoa(readinessFD))
+	if opts.ReadinessFD > 0 {
+		env = append(env, sandboxReadinessFDEnv+"="+strconv.Itoa(opts.ReadinessFD))
 	}
 	if cfg.GuardDeclaration != nil {
 		env = append(env,
-			standaloneGuardDeclarationEnv+"="+string(guardDeclarationJSON),
+			standaloneGuardDeclarationEnv+"="+string(opts.GuardDeclarationJSON),
 			standaloneGuardProfileEnv+"="+cfg.GuardProfile,
 			standaloneGuardPolicyHashEnv+"="+cfg.GuardPolicyHash,
-			guardStatusControlEnv+"="+strconv.Itoa(guardStatusFD),
+			guardStatusControlEnv+"="+strconv.Itoa(opts.GuardStatusFD),
 		)
 	}
 	return env

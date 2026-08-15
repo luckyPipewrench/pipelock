@@ -5091,6 +5091,10 @@ func TestValidate_MCPToolScanningListenerDriftResetAuthority(t *testing.T) {
 	if err := os.WriteFile(malformedKeyPath, []byte("not-hex"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	shortKeyPath := filepath.Join(t.TempDir(), "short-reset-authority.pub")
+	if err := os.WriteFile(shortKeyPath, []byte(hex.EncodeToString(publicKey[:16])), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	valid := Defaults()
 	valid.MCPToolScanning.ListenerDriftResetFile = "/run/pipelock/drift.reset"
@@ -5118,6 +5122,9 @@ func TestValidate_MCPToolScanningListenerDriftResetAuthority(t *testing.T) {
 		},
 		"malformed public key": func(cfg *Config) {
 			cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = malformedKeyPath
+		},
+		"short public key": func(cfg *Config) {
+			cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = shortKeyPath
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

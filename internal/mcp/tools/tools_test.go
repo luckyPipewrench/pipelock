@@ -4032,6 +4032,53 @@ func TestToolBaseline_ReserveToolInventoryDeduplicatesOneResponse(t *testing.T) 
 	next.Release()
 }
 
+func TestToolBaseline_ReserveToolInventorySerializesCompetingResponses(t *testing.T) {
+	t.Parallel()
+	type result struct {
+		reservation *ToolInventoryReservation
+		err         error
+	}
+	baseline := NewToolBaseline()
+	start := make(chan struct{})
+	releaseWinner := make(chan struct{})
+	results := make(chan result, 2)
+	done := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			<-start
+			reservation, err := baseline.ReserveToolInventory([]string{"shared"}, []ToolDef{{Name: "shared"}})
+			results <- result{reservation: reservation, err: err}
+			if reservation != nil {
+				<-releaseWinner
+				reservation.Commit(true)
+			}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	close(releaseWinner)
+	<-done
+	<-done
+
+	successes, capacityErrors := 0, 0
+	for _, got := range []result{first, second} {
+		if got.err == nil && got.reservation != nil {
+			successes++
+		} else if errors.Is(got.err, ErrBaselineCapacity) {
+			capacityErrors++
+		} else {
+			t.Fatalf("competing reservation = (%v, %v), want success or ErrBaselineCapacity", got.reservation, got.err)
+		}
+	}
+	if successes != 1 || capacityErrors != 1 {
+		t.Fatalf("competing reservations: successes=%d capacity errors=%d, want 1 each", successes, capacityErrors)
+	}
+	if !baseline.IsKnownTool("shared") {
+		t.Fatal("winning reservation did not commit")
+	}
+}
+
 func TestToolBaseline_CapacityPreflightHandlesDuplicatesAndNil(t *testing.T) {
 	var nilBaseline *ToolBaseline
 	if !nilBaseline.CanTrackDefinitions([]string{"one"}) || !nilBaseline.CanAdmitKnownTools([]string{"one"}) {

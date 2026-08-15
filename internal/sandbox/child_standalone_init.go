@@ -141,16 +141,8 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
-	// Apply resource limits before Landlock. RLIMIT_NPROC uses one absolute
-	// ceiling for the shared real UID; it does not enumerate host processes or
-	// grow the allowance independently for each sandbox launch.
 	noNetNS := IsNoNetNS()
-	if err := ApplyRlimits(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resource limits: %v\n", err)
-		exitSandboxProcess(1)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
-	}
+	applyRlimitsOrExit()
 
 	// Apply Landlock.
 	// Add per-sandbox temp dir and the parent's socket dir to the policy.

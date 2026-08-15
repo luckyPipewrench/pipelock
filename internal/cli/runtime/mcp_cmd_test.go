@@ -9,7 +9,9 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -318,6 +320,64 @@ func TestMCPProxyCmdAdaptiveResetAuthorityValidation(t *testing.T) {
 				t.Fatalf("mcp proxy err = %v, want containing %q\noutput:\n%s", err, tt.wantErr, out.String())
 			}
 		})
+	}
+}
+
+func TestMCPProxyCmdBuildsPinnedListenerResetAuthority(t *testing.T) {
+	dir := t.TempDir()
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "authority.pub")
+	if err := signing.SavePublicKey(publicKey, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	configData := fmt.Sprintf("mcp_tool_scanning:\n  enabled: true\n  action: block\n  listener_drift_reset_file: %q\n  listener_drift_reset_authority_public_key_file: %q\n  listener_drift_reset_target: mcp://runtime-listener-test\n",
+		filepath.Join(dir, "reset"), keyPath)
+	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := mcpProxyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--config", configPath, "--", "true"})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("MCP proxy with pinned listener reset authority: %v\n%s", err, output.String())
+	}
+}
+
+func TestMCPProxyCmdBuildsAdaptiveResetAuthority(t *testing.T) {
+	dir := t.TempDir()
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "authority.pub")
+	if err := signing.SavePublicKey(publicKey, keyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := mcpProxyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{
+		"--adaptive-reset-file", filepath.Join(dir, "reset"),
+		"--adaptive-reset-authority-public-key-file", keyPath,
+		"--adaptive-reset-target", "mcp://adaptive-runtime-test",
+		"--", "true",
+	})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("MCP proxy with adaptive reset authority: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "MCP reset authority target=") {
+		t.Fatalf("adaptive reset binding was not reported:\n%s", output.String())
 	}
 }
 

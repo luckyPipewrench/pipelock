@@ -76,16 +76,8 @@ func RunInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
-	// Apply resource limits before Landlock. RLIMIT_NPROC uses one absolute
-	// ceiling for the shared real UID; it does not enumerate host processes or
-	// grow the allowance independently for each sandbox launch.
 	noNetNS := IsNoNetNS()
-	if err := ApplyRlimits(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resource limits: %v\n", err)
-		exitSandboxProcess(1)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
-	}
+	applyRlimitsOrExit()
 
 	// Apply Landlock (filesystem restriction).
 	// Add the per-sandbox temp dir to the policy so the child has a
@@ -203,6 +195,16 @@ func RunInit() {
 	err = processexec.Replace(binary, command, env)
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] exec failed: %v\n", err)
 	exitSandboxProcess(1)
+}
+
+// applyRlimitsOrExit enforces the shared-UID resource ceiling before Landlock.
+// Both child entry points fail closed when the ceiling cannot be applied.
+func applyRlimitsOrExit() {
+	if err := ApplyRlimits(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resource limits: %v\n", err)
+		exitSandboxProcess(1)
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
 }
 
 func runInitWithBridge(command, env []string, workspace, socketPath string, sigCh <-chan os.Signal) {

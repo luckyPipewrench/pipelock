@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +161,8 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 	hardened := false
 	if err := launch.StartWithParentHardening(func() error {
 		deadline := time.Now().Add(5 * time.Second)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			if _, err := os.Stat(waiting); err == nil {
 				break
@@ -171,10 +172,12 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 			if time.Now().After(deadline) {
 				return errors.New("child did not reach the hardening gate")
 			}
-			runtime.Gosched()
+			<-ticker.C
 		}
-		if _, err := os.Stat(progress); !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("child progressed before hardening release: %w", err)
+		if _, err := os.Stat(progress); err == nil {
+			return errors.New("child progressed before hardening release")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("checking child progress marker: %w", err)
 		}
 		hardened = true
 		return nil

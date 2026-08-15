@@ -354,24 +354,25 @@ func TestResetInspectAndRevokeRejectUntrustedFilesystemState(t *testing.T) {
 
 	for _, test := range []struct {
 		name string
-		file string
+		file func(t *testing.T) string
 		key  string
 	}{
-		{name: "missing delegation", file: filepath.Join(dir, "missing"), key: publicPath},
-		{name: "missing public key", file: filepath.Join(dir, "missing"), key: filepath.Join(dir, "missing-key")},
-		{name: "malformed public key", file: filepath.Join(dir, "missing"), key: malformedPublicPath},
-		{name: "malformed delegation", file: filepath.Join(dir, "malformed"), key: publicPath},
+		{name: "missing delegation", file: func(*testing.T) string { return filepath.Join(dir, "missing") }, key: publicPath},
+		{name: "missing public key", file: func(*testing.T) string { return filepath.Join(dir, "missing") }, key: filepath.Join(dir, "missing-key")},
+		{name: "malformed public key", file: func(*testing.T) string { return filepath.Join(dir, "missing") }, key: malformedPublicPath},
+		{name: "malformed delegation", file: func(t *testing.T) string {
+			path := filepath.Join(dir, "malformed")
+			if err := os.WriteFile(path, []byte("{bad"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}, key: publicPath},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if test.name == "malformed delegation" {
-				if err := os.WriteFile(test.file, []byte("{bad"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
 			cmd := resetInspectCmd()
 			cmd.SetOut(&bytes.Buffer{})
 			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs([]string{"--file", test.file, "--public-key-file", test.key})
+			cmd.SetArgs([]string{"--file", test.file(t), "--public-key-file", test.key})
 			if err := cmd.Execute(); err == nil {
 				t.Fatalf("inspect accepted %s", test.name)
 			}

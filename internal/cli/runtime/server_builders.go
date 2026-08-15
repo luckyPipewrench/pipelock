@@ -55,7 +55,8 @@ func buildMCPToolCfg(
 		ExtraPoison:            extraPoison,
 	}
 	resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
-	if len(cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey) != 0 && resetTarget != "" {
+	if cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile != "" &&
+		len(cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey) != 0 && resetTarget != "" {
 		toolCfg.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
 		toolCfg.ListenerDriftResetTarget = resetTarget
 	}

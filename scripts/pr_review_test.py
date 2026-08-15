@@ -1265,6 +1265,114 @@ class SingleProviderTest(unittest.TestCase):
         )
 
 
+class RepeatReviewTest(unittest.TestCase):
+    """Re-running a review must be cheap when it cannot say anything new."""
+
+    IDENTITY = "aaaaaaaaaaaa:bbbbbbbbbbbb:cccccccccccc:2026-08-14.1"
+
+    @staticmethod
+    def marker(state: str, identity: str, mode: str, findings: str = "") -> dict[str, str]:
+        return {"state": state, "identity": identity, "mode": mode, "findings": findings, "html_url": "u"}
+
+    def test_an_identical_completed_review_is_recognized(self) -> None:
+        markers = [self.marker("findings", self.IDENTITY, "deep", "aaa,bbb")]
+        self.assertIsNotNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_a_deep_pass_is_not_skipped_because_a_default_pass_ran(self) -> None:
+        # The identity covers base, head, reviewer and rubric, but NOT depth. A
+        # deep review of the same commits is a different review and asks a
+        # different model a harder question, so skipping it would silently
+        # downgrade what the operator asked for.
+        markers = [self.marker("findings", self.IDENTITY, "default", "aaa")]
+        self.assertIsNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_a_partial_review_is_not_treated_as_done(self) -> None:
+        # A partial run may have been short for a transient reason, so a rerun
+        # can genuinely do better and is worth the spend.
+        for state in ("partial", "failed", "superseded", "already-running"):
+            with self.subTest(state=state):
+                markers = [self.marker(state, self.IDENTITY, "deep")]
+                self.assertIsNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_a_different_head_is_not_skipped(self) -> None:
+        markers = [self.marker("clean", "zzzzzzzzzzzz:bbbbbbbbbbbb:cccccccccccc:2026-08-14.1", "deep")]
+        self.assertIsNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_marker_round_trips_through_its_own_parser(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        progress = pr_review.ReviewProgress()
+        progress.expected_units = 1
+        progress.reviewed_units = 1
+        progress.findings = [
+            pr_review.Finding("high", "internal/a.go", 4, "Guard removed", "why", "fix"),
+        ]
+        body = pr_review.render_status(binding, "deep", ["source:go"], progress, "findings", [])
+        fields = pr_review.parse_status_marker(body)
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields["state"], "findings")
+        self.assertEqual(fields["identity"], binding.correlation)
+        self.assertEqual(fields["mode"], "deep")
+        self.assertEqual(
+            fields["findings"],
+            pr_review.finding_fingerprint(progress.findings[0]),
+        )
+        # The round trip is what makes the skip safe: a marker this action
+        # writes must be readable by the next run, or an identical review is
+        # never recognized and the saving silently never happens.
+        self.assertIsNotNone(
+            pr_review.completed_identical_review([fields], binding.correlation, "deep")
+        )
+
+    def test_a_fingerprint_survives_a_line_number_moving(self) -> None:
+        # Anything inserted above a finding shifts its line. Including the line
+        # would make every finding look new after any push, which is the noise
+        # this is meant to remove.
+        first = pr_review.Finding("high", "a.go", 10, "Guard  removed", "w", "f")
+        moved = pr_review.Finding("high", "a.go", 480, "guard removed", "w2", "f2")
+        self.assertEqual(pr_review.finding_fingerprint(first), pr_review.finding_fingerprint(moved))
+
+    def test_a_different_finding_gets_a_different_fingerprint(self) -> None:
+        base = pr_review.Finding("high", "a.go", 10, "Guard removed", "w", "f")
+        for other in (
+            pr_review.Finding("medium", "a.go", 10, "Guard removed", "w", "f"),
+            pr_review.Finding("high", "b.go", 10, "Guard removed", "w", "f"),
+            pr_review.Finding("high", "a.go", 10, "Different problem", "w", "f"),
+        ):
+            with self.subTest(other=other.title):
+                self.assertNotEqual(pr_review.finding_fingerprint(base), pr_review.finding_fingerprint(other))
+
+    def test_repeats_are_labelled_and_never_dropped(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        old = pr_review.Finding("high", "a.go", 10, "Old problem", "w", "f")
+        new = pr_review.Finding("high", "b.go", 20, "New problem", "w", "f")
+        progress = pr_review.ReviewProgress()
+        progress.expected_units = 2
+        progress.reviewed_units = 2
+        progress.findings = [old, new]
+        body = pr_review.render_status(
+            binding, "deep", ["source:go"], progress, "findings", [],
+            {pr_review.finding_fingerprint(old)},
+        )
+        # Both are still published. Labelling is presentation; suppression from
+        # evidence this action wrote would let anything able to edit a comment
+        # erase a finding.
+        self.assertIn("Old problem", body)
+        self.assertIn("New problem", body)
+        self.assertEqual(body.count("(reported before)"), 1)
+        old_line = next(line for line in body.splitlines() if "`a.go:10`" in line)
+        new_line = next(line for line in body.splitlines() if "`b.go:20`" in line)
+        self.assertIn("(reported before)", old_line)
+        self.assertNotIn("(reported before)", new_line)
+
+    def test_prior_fingerprints_come_only_from_completed_reviews(self) -> None:
+        markers = [
+            self.marker("findings", self.IDENTITY, "deep", "keepme"),
+            self.marker("partial", self.IDENTITY, "deep", "dropme"),
+            self.marker("failed", self.IDENTITY, "deep", "dropme2"),
+        ]
+        self.assertEqual(pr_review.previously_reported(markers), {"keepme"})
+
+
 class AdoptionStubTest(unittest.TestCase):
     """The stub in the guide is what other repositories copy, so it is code.
 

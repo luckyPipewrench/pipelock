@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -80,6 +81,11 @@ REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 RUBRIC_VERSION = "2026-08-14.1"
 STATUS_MARKER = "pr-review-status:v1"
+
+PUBLISHED_REVIEW_STATES = frozenset({"already-running", "clean", "failed", "findings", "partial", "superseded"})
+# A review that reached a verdict over the whole diff. Everything else left
+# something unreviewed, however cleanly it reported that.
+COMPLETE_REVIEW_STATES = frozenset({"clean", "findings"})
 
 
 class ReviewError(RuntimeError):
@@ -927,6 +933,115 @@ def _running_marker_is_stale(comment: dict[str, Any]) -> bool:
     return age > datetime.timedelta(minutes=STALE_RUNNING_MINUTES)
 
 
+def finding_fingerprint(finding: Finding) -> str:
+    """Identify a finding across runs without depending on its line number.
+
+    A line number moves whenever anything above it changes, so including it
+    would make every finding look new after any push. Path, severity and the
+    normalized title are what a reader recognizes as the same finding.
+    """
+    title = " ".join(finding.title.lower().split())
+    return hashlib.sha256(f"{finding.path}\x00{finding.severity}\x00{title}".encode()).hexdigest()[:12]
+
+
+def parse_status_marker(body: str) -> dict[str, str] | None:
+    """Read one status marker's fields, or None when the body carries none."""
+    match = re.search(rf"<!-- {re.escape(STATUS_MARKER)} ([^>]*?)-->", body)
+    if not match:
+        return None
+    fields: dict[str, str] = {}
+    for token in match.group(1).split():
+        key, separator, value = token.partition("=")
+        if separator:
+            fields[key] = value
+    return fields
+
+
+def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str) -> tuple[list[dict[str, str]], bool]:
+    """Collect this bot's status markers, and report whether the scan finished.
+
+    Shares the paging bound and the fail-closed contract of the admission
+    check: an unreadable page yields complete=False, and a caller must treat an
+    incomplete scan as no evidence at all rather than as an absence.
+    """
+    markers: list[dict[str, str]] = []
+    for page in range(1, ADMISSION_COMMENT_PAGES + 1):
+        try:
+            response = requests.get(
+                f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                headers=github_headers(token),
+                params={"per_page": 100, "page": page},
+                timeout=30,
+            )
+        except requests.RequestException:
+            log_phase("status-scan", attempt=page, status="request-error", correlation=correlation)
+            return markers, False
+        log_phase("status-scan", attempt=page, status=response.status_code, correlation=correlation)
+        if response.status_code != 200:
+            return markers, False
+        try:
+            comments = response.json()
+        except ValueError:
+            return markers, False
+        if not isinstance(comments, list):
+            return markers, False
+        if not comments:
+            return markers, True
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            author = comment.get("user")
+            if not isinstance(author, dict) or author.get("login") != "github-actions[bot]":
+                continue
+            body = comment.get("body")
+            if not isinstance(body, str):
+                continue
+            fields = parse_status_marker(body)
+            if fields:
+                fields["html_url"] = comment.get("html_url") if isinstance(comment.get("html_url"), str) else ""
+                markers.append(fields)
+    return markers, False
+
+
+def previously_reported(markers: list[dict[str, str]]) -> set[str]:
+    """Fingerprints any earlier completed review on this pull request published.
+
+    Read from markers this action wrote, so it is used only to ANNOTATE a
+    finding as seen before. It never suppresses one. A guard that decided what
+    to hide from evidence we produced ourselves would let anything able to edit
+    a comment erase a finding; labelling cannot.
+    """
+    seen: set[str] = set()
+    for marker in markers:
+        if marker.get("state") not in COMPLETE_REVIEW_STATES:
+            continue
+        for fingerprint in marker.get("findings", "").split(","):
+            if fingerprint:
+                seen.add(fingerprint)
+    return seen
+
+
+def completed_identical_review(markers: list[dict[str, str]], correlation: str, mode: str) -> dict[str, str] | None:
+    """Find a finished review of this exact input, which cannot differ from one run now.
+
+    The identity covers base, head, reviewer commit and rubric; mode is compared
+    alongside it because a deep pass over the same commits is a different review
+    and must never be skipped because a default pass already ran.
+
+    Only a state that means the review covered the whole diff qualifies. A
+    partial or failed run may have been short for a transient reason, so
+    re-running it can do better and is worth the spend.
+    """
+    for marker in markers:
+        if (
+            marker.get("identity") == correlation
+            and marker.get("mode") == mode
+            and marker.get("state") in COMPLETE_REVIEW_STATES
+        ):
+            return marker
+    return None
+
+
 def find_running_comment(repo: str, pr_number: str, token: str, correlation: str) -> tuple[dict[str, Any] | None, bool]:
     """Find a running status comment, and report whether the scan was complete.
 
@@ -1180,7 +1295,8 @@ def head_has_moved(repo: str, pr_number: str, token: str, binding: PullBinding, 
         return False
 
 
-def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]]) -> str:
+def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None) -> str:
+    seen_before = seen_before or set()
     model = model_for_mode(mode)
     severity_order = {"high": 0, "medium": 1, "low": 2}
     findings = sorted(progress.findings, key=lambda finding: (severity_order[finding.severity], finding.path, finding.line or 0, finding.title))
@@ -1205,6 +1321,12 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         for index, finding in enumerate(findings, 1):
             location = display_path(finding.path) + (f":{finding.line}" if finding.line else "")
             marker = " (needs verification)" if finding.needs_verification else ""
+            # Says which findings a reader has already seen on this pull
+            # request, so a re-review after a push reads as a short list of new
+            # work rather than a wall to re-triage. Every finding is still
+            # printed; this only labels.
+            if finding_fingerprint(finding) in seen_before:
+                marker += " (reported before)"
             lines.extend(
                 [
                     f"#### {index}. {finding.severity} - `{location}`{marker}",
@@ -1271,7 +1393,18 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         if remaining := len(collapsed) - len(shown):
             lines.append(f"- and {remaining} more")
         lines.extend(["", "</details>"])
-    lines.extend(["", f"<!-- {STATUS_MARKER} state={state} identity={binding.correlation} -->"])
+    # mode distinguishes a deep pass from a default pass over the same commits,
+    # so a later deep review is never mistaken for one already done. The
+    # fingerprints let a later review say which of its findings a reader has
+    # already seen, which is presentation only and never suppression.
+    fingerprints = ",".join(sorted({finding_fingerprint(finding) for finding in findings}))
+    lines.extend(
+        [
+            "",
+            f"<!-- {STATUS_MARKER} state={state} identity={binding.correlation} "
+            f"mode={mode} findings={fingerprints} -->",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -1329,6 +1462,35 @@ def _initial_status(binding: PullBinding, mode: str) -> str:
 def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha: str) -> None:
     """Atomically enough for one operator: persist a running marker before review work."""
     binding = get_pull_binding(repo, pr_number, token, reviewer_sha)
+
+    # A finished review of this exact base, head, reviewer and rubric cannot
+    # differ from one run now, so running it again spends a full review to
+    # reproduce an answer already on the pull request. On a large diff that is
+    # twenty minutes and a deep-model bill for no new information.
+    #
+    # Skipped only for the comment path. A manual dispatch always reviews,
+    # which is the escape hatch when someone wants a fresh pass anyway, and it
+    # needs no new command to remember. GITHUB_EVENT_NAME is set by the runner.
+    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+        markers, complete = scan_status_comments(repo, pr_number, token, binding.correlation)
+        # An incomplete scan is not evidence, and here the cheap outcome is the
+        # one that skips. Uncertainty therefore reviews rather than skips.
+        if complete:
+            done = completed_identical_review(markers, binding.correlation, mode)
+            if done:
+                link = done.get("html_url") or "the existing review"
+                create_comment(
+                    repo,
+                    pr_number,
+                    token,
+                    f"This exact head was already reviewed in `{mode}` mode: {link}\n\n"
+                    "Nothing has changed since, so a new review would reach the same result. "
+                    "Push a change, or run the workflow manually to review it again anyway.",
+                    binding.correlation,
+                )
+                write_action_outputs(claimed="false")
+                return
+
     active, scanned = find_running_comment(repo, pr_number, token, binding.correlation)
     if active or not scanned:
         # Fail closed on an incomplete scan. Not finding a marker is only
@@ -1381,6 +1543,15 @@ def run_review(
     classification: list[str] = []
     manifest: list[dict[str, Any]] = []
     units: list[DiffUnit] = []
+    # Presentation only, so it must never be able to cost a review. Any failure
+    # reading prior markers leaves the set empty and every finding simply reads
+    # as new, which is the previous behavior.
+    seen_before: set[str] = set()
+    try:
+        prior, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
+        seen_before = previously_reported(prior)
+    except requests.RequestException:
+        log_phase("prior-findings", status="request-error", correlation=binding.correlation)
     try:
         # Checked before any provider work so a missing credential ends the run
         # as a configuration failure rather than a partial review, and checked
@@ -1518,16 +1689,10 @@ def run_review(
         manifest = [unit.manifest() for unit in units]
         state = derive_state(progress)
         try:
-            update_comment(repo, comment["id"], token, render_status(binding, mode, classification, progress, state, manifest), binding.correlation)
+            update_comment(repo, comment["id"], token, render_status(binding, mode, classification, progress, state, manifest, seen_before), binding.correlation)
         except (requests.RequestException, ReviewError):
             log_phase("comment-update", status="failed", correlation=binding.correlation)
             raise ReviewError("final status comment update failed") from None
-
-
-PUBLISHED_REVIEW_STATES = frozenset({"already-running", "clean", "failed", "findings", "partial", "superseded"})
-# A review that reached a verdict over the whole diff. Everything else left
-# something unreviewed, however cleanly it reported that.
-COMPLETE_REVIEW_STATES = frozenset({"clean", "findings"})
 
 
 def exit_code_for_state(state: str) -> int:

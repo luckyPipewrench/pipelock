@@ -1686,6 +1686,83 @@ class RepeatReviewTest(unittest.TestCase):
         # operator to ignore the incompleteness section.
         self.assertIsNone(pr_review.discarded_candidates_reason([]))
 
+    def test_an_incomplete_scan_still_labels_through_run_review(self) -> None:
+        # The integration half of the asymmetry. Asserting previously_reported
+        # alone could not catch a change that drops the label in run_review, so
+        # this drives the real path with a scan that reports complete=False.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        seen = pr_review.Finding("high", "f.go", 1, "Old problem", "w", "f")
+        marker = {
+            "state": "findings",
+            "identity": "old:old:old:x",
+            "mode": "deep",
+            "findings": pr_review.finding_fingerprint(seen),
+            "html_url": "u",
+        }
+        published: dict[str, str] = {}
+
+        def capture(_repo, comment_id, _token, body, _corr):
+            published["body"] = body
+            return {"id": comment_id}
+
+        diff = "diff --git a/f.go b/f.go\n--- a/f.go\n+++ b/f.go\n@@ -1,1 +1,1 @@\n+x\n"
+        finding_payload = {
+            "findings": [{"severity": "high", "path": "f.go", "line": 1, "title": "Old problem",
+                          "why": "w", "fix": "f", "needs_verification": False}],
+            "changes": [{"path": "f.go", "summary": "s"}],
+        }
+        # Deep mode calls the model three times: the chunk, then a cross-file
+        # synthesis pass, then the judge. Supplying two payloads handed the
+        # judge's answer to synthesis, which is worth knowing and is exactly
+        # what a unit test on the helper could never have surfaced.
+        synthesis_payload: dict[str, list] = {"findings": []}
+        judge_payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
+        with mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("u", "k")
+        ), mock.patch.object(pr_review, "fetch_bound_diff", return_value=diff), mock.patch.object(
+            pr_review, "compare_incompleteness", return_value=None
+        ), mock.patch.object(
+            # complete=False: the scan did not finish, and the label must still apply.
+            pr_review, "scan_status_comments", return_value=([marker], set(), False)
+        ), mock.patch.object(
+            pr_review, "fetch_file_context", return_value="x\n" * 40
+        ), mock.patch.object(pr_review, "update_comment", side_effect=capture), mock.patch.object(
+            pr_review, "call_model", side_effect=[finding_payload, synthesis_payload, judge_payload]
+        ):
+            pr_review.run_review("o/r", "42", "t", "deep", "c" * 40, binding=binding, status_comment_id=1)
+        self.assertIn("Old problem", published["body"])
+        self.assertIn("(reported before)", published["body"])
+
+    def test_an_incomplete_scan_does_not_let_admission_skip(self) -> None:
+        # The other half. Admission decides to withhold a review, so a partial
+        # view of the pull request must never authorize that, even when a
+        # matching completed marker is among the ones it did read.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        self.assertIsNotNone(
+            pr_review.completed_identical_review([matching], binding.correlation, "default"),
+            "the marker must be one that WOULD skip if the scan had completed",
+        )
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "issue_comment"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], set(), False)
+        ), mock.patch.object(pr_review, "find_running_comment", return_value=(None, True)), mock.patch.object(
+            pr_review, "create_comment", return_value={"id": 17}
+        ) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        self.assertIn("claimed=true", values)
+        self.assertIn("state=running", create.call_args.args[3])
+
     def test_an_incomplete_scan_still_labels_what_it_did_read(self) -> None:
         # Records a deliberate asymmetry, so a later reader does not "fix" it
         # into consistency. Admission and this path share one scan and use it

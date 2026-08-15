@@ -26,6 +26,30 @@ sys.modules[SPEC.name] = pr_review
 SPEC.loader.exec_module(pr_review)
 
 
+def top_level_permissions(text: str) -> dict[str, str]:
+    """Read a workflow's top-level permissions mapping, ignoring comments.
+
+    Deliberately dependency-free: the CI job that runs these tests installs no
+    Python packages, and an import failure there would take down the whole test
+    discovery run rather than just this assertion.
+    """
+    permissions: dict[str, str] = {}
+    inside = False
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        if line == "permissions:":
+            inside = True
+            continue
+        if inside:
+            if not line.startswith("  "):
+                break
+            key, _, value = line.strip().partition(":")
+            permissions[key.strip()] = value.strip()
+    return permissions
+
+
 def unit(identifier: int, path: str, category: str, *, additions: int = 1, tokens: int = 2) -> object:
     return pr_review.DiffUnit(
         identifier=identifier,
@@ -65,10 +89,21 @@ class WorkflowPackagingTest(unittest.TestCase):
         # though the call targets the issue-comments endpoint. Reducing this to
         # read reads like least privilege and returned 403 on comment-create,
         # which broke /review across the whole repository until it was restored.
+        # This reads the parsed mapping rather than searching the file, because
+        # the comment above the key contains the same words and a substring
+        # search passed with the real key deleted.
         for path in (CALLER_WORKFLOW, REUSABLE_WORKFLOW):
-            workflow = path.read_text(encoding="utf-8")
-            self.assertIn("pull-requests: write", workflow, f"{path.name} must keep pull-requests: write")
-            self.assertNotIn("pull-requests: read", workflow, f"{path.name} cannot post comments with read")
+            permissions = top_level_permissions(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                permissions.get("pull-requests"),
+                "write",
+                f"{path.name} must set permissions.pull-requests to write",
+            )
+            self.assertEqual(
+                permissions.get("issues"),
+                "write",
+                f"{path.name} must set permissions.issues to write",
+            )
 
     def test_composite_action_owns_runner_requirements_and_single_provider_inputs(self) -> None:
         action = ACTION_YAML.read_text(encoding="utf-8")

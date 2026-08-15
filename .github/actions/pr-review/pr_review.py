@@ -1284,7 +1284,13 @@ def run_review(
             except ModelOutputError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("cross-file synthesis was incomplete or invalid")
-        judge_ready = bool(candidates) and not progress.aggregation_failed and not progress.timed_out
+        # Deliberately not gated on timed_out. A timeout used to end the chunk
+        # loop, so there were no later candidates to judge; chunks now continue
+        # past one, and gating here would discard findings that later chunks
+        # actually produced while completeness still counted their units as
+        # reviewed. timed_out keeps the verdict partial through derive_state,
+        # which is where incompleteness belongs.
+        judge_ready = bool(candidates) and not progress.aggregation_failed
         if judge_ready and not budget_allows(deadline, mode):
             progress.incomplete_reasons.append("wall-clock budget exhausted before the judge pass")
             judge_ready = False

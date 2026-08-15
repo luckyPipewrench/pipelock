@@ -549,6 +549,61 @@ class JudgeFetchCapTest(unittest.TestCase):
         self.assertEqual(len(excluded), len(candidates) - 1)
 
 
+class TimeoutStillPublishesLaterFindingsTest(unittest.TestCase):
+    def test_a_finding_from_a_chunk_after_a_timeout_is_published(self) -> None:
+        # Chunks continue past a timeout, so gating the judge on timed_out
+        # discarded findings that later chunks really produced while
+        # completeness still counted their units as reviewed. The verdict stays
+        # partial; the finding must not vanish.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        diff = "\n".join(
+            [
+                "diff --git a/internal/a.go b/internal/a.go",
+                "--- a/internal/a.go",
+                "+++ b/internal/a.go",
+                "@@ -1 +1 @@",
+                "-old",
+                "+new",
+                "diff --git a/internal/b.go b/internal/b.go",
+                "--- a/internal/b.go",
+                "+++ b/internal/b.go",
+                "@@ -1 +1 @@",
+                "-old",
+                "+new",
+            ]
+        )
+        found = {
+            "findings": [
+                {
+                    "severity": "high",
+                    "path": "internal/b.go",
+                    "line": 1,
+                    "title": "unsafe",
+                    "why": "why",
+                    "fix": "fix",
+                    "needs_verification": False,
+                }
+            ],
+            "changes": [{"path": "internal/b.go", "summary": "changes enforcement"}],
+        }
+        judged = {"findings": [{"index": 0, "verdict": "keep", "reason": "confirmed"}]}
+        with mock.patch.object(pr_review, "plan_chunks", side_effect=lambda units, mode: ([[units[0]], [units[1]]], [])), mock.patch.object(
+            pr_review, "get_pull_binding", return_value=binding
+        ), mock.patch.object(pr_review, "find_running_comment", return_value=(None, True)), mock.patch.object(
+            pr_review, "create_comment", return_value={"id": 7}
+        ), mock.patch.object(pr_review, "fetch_bound_diff", return_value=diff), mock.patch.object(
+            pr_review, "compare_incompleteness", return_value=None
+        ), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("https://provider.example/v1/chat/completions", "key")
+        ), mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 5), mock.patch.object(
+            pr_review, "call_model", side_effect=[pr_review.ModelTimeout("slow"), found, judged]
+        ), mock.patch.object(pr_review, "update_comment"):
+            state, progress = pr_review.run_review("owner/repo", "42", "token", "deep", "c" * 40)
+        self.assertEqual(state, "partial")
+        self.assertTrue(progress.timed_out)
+        self.assertEqual([finding.path for finding in progress.findings], ["internal/b.go"])
+
+
 class WallClockBudgetTest(unittest.TestCase):
     def test_budget_refuses_a_call_that_cannot_finish_before_the_job_timeout(self) -> None:
         now = 1_000.0

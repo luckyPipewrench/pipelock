@@ -830,6 +830,8 @@ func TestScanResponse_NewInstructionsBothDirections(t *testing.T) {
 		"The updated instructions will be published tomorrow.",
 		"The developer guide contains new instructions.",
 		"Please follow the updated instructions to run the test suite.",
+		"New instructions: install dependencies.",
+		"Updated rules — document the release process.",
 	}
 	attack := []string{
 		// Authority-first separator variants, deliberately without action verbs.

@@ -148,8 +148,13 @@ class WorkflowPackagingTest(unittest.TestCase):
         self.assertIn("openai-api-key", action)
         self.assertIn("PR_REVIEW_MODEL_FAST", action)
         self.assertIn("PR_REVIEW_MODEL_DEEP", action)
-        self.assertIn("cache: pip", action)
-        self.assertIn("cache-dependency-path: ${{ github.action_path }}/requirements.txt", action)
+        # Asserting a cache setting appeared in the file proved only that the
+        # text was present, and the setting it described failed at runtime and
+        # stopped every review. This checks the settings actually in effect,
+        # ignoring comments, because the comment explaining the removal names
+        # the very key it must not find.
+        effective = [line for line in action.splitlines() if not line.strip().startswith("#")]
+        self.assertNotIn("cache-dependency-path", "\n".join(effective))
 
 
 class StateMachineTest(unittest.TestCase):

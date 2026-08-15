@@ -69,8 +69,12 @@ runs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
       with:
         python-version: '3.12'
-        cache: pip
-        cache-dependency-path: ${{ github.action_path }}/requirements.txt
+        # No pip cache here. github.action_path resolves with a "." segment
+        # when this action is used from a checked-out path, and
+        # cache-dependency-path rejects relative components, which failed setup
+        # and stopped every review before it began. The install is two seconds
+        # against a review measured in minutes, so the cache is not worth
+        # another way to break the run.
 
     - name: Install reviewer dependencies
       shell: bash

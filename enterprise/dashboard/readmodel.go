@@ -255,17 +255,20 @@ func (m *ReadModel) Agent(id string, filter FilterSpec) (evidenceview.AgentGroup
 	return evidenceview.AgentGroup{}, false, nil
 }
 
-// ReceiptDetail loads one receipt by session ID and chain sequence number,
+// ReceiptDetail loads one receipt by session ID and globally unique action ID,
 // returning a DecisionExplanation. The CALLER redacts per RBAC.
-func (m *ReadModel) ReceiptDetail(sessionID string, seq uint64) (evidenceview.DecisionExplanation, bool, error) {
-	receipts, _, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, sessionID, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
+func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.DecisionExplanation, bool, error) {
+	receipts, truncated, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, sessionID, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}
 	for _, r := range receipts {
-		if r.ActionRecord.ChainSeq == seq {
+		if r.ActionRecord.ActionID == actionID {
 			return evidenceview.ExplainReceipt(r), true, nil
 		}
+	}
+	if truncated {
+		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("%w: receipt %s was not found in the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
 	}
 	return evidenceview.DecisionExplanation{}, false, nil
 }

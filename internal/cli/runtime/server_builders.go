@@ -54,6 +54,12 @@ func buildMCPToolCfg(
 		ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 		ExtraPoison:            extraPoison,
 	}
+	resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
+	if cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile != "" &&
+		len(cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey) != 0 && resetTarget != "" {
+		toolCfg.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
+		toolCfg.ListenerDriftResetTarget = resetTarget
+	}
 	if cfg.MCPSessionBinding.Enabled {
 		toolCfg.BindingUnknownAction = cfg.MCPSessionBinding.UnknownToolAction
 		toolCfg.BindingNoBaselineAction = cfg.MCPSessionBinding.NoBaselineAction

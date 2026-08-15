@@ -486,6 +486,46 @@ func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 	}
 }
 
+func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	fb := scanner.NewFragmentBuffer(65536, 1, 300)
+	t.Cleanup(fb.Close)
+	if result := fb.Append("trusted-session", []byte("first fragment")); result.CapacityExceeded {
+		t.Fatal("trusted session did not fit")
+	}
+	m := metrics.New()
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	ceeCfg := config.CrossRequestDetection{
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 65536,
+			WindowMinutes:  5,
+		},
+		Action: config.ActionWarn,
+	}
+
+	result := ceeAdmit(context.Background(),
+		"new-session", []byte("new fragment"), nil, "http://example.com", testCEEAgent,
+		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
+	)
+	if !result.Blocked || !strings.Contains(result.Reason, "session capacity exhausted") {
+		t.Fatalf("capacity result = %+v, want visible fail-closed capacity denial", result)
+	}
+	established := ceeAdmit(context.Background(),
+		"trusted-session", []byte("second fragment"), nil, "http://example.com", testCEEAgent,
+		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
+	)
+	if established.Blocked {
+		t.Fatalf("established session = %+v, want admission at capacity", established)
+	}
+	assertMetricsContain(t, m, "pipelock_cross_request_fragment_session_capacity_exceeded_total 1")
+}
+
 func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

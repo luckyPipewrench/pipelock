@@ -30,6 +30,7 @@ func TestKeyPurpose_String(t *testing.T) {
 		{"enrollment-token-signing", PurposeEnrollmentTokenSigning, "enrollment-token-signing"},
 		{"fleet-report-signing", PurposeFleetReportSigning, "fleet-report-signing"},
 		{"coverage-cert-signing", PurposeCoverageCertSigning, "coverage-cert-signing"},
+		{"mcp-reset-authority", PurposeMCPResetAuthority, "mcp-reset-authority"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,8 +169,8 @@ func TestKnownPurposes(t *testing.T) {
 	purposes := KnownPurposes()
 
 	t.Run("length", func(t *testing.T) {
-		if len(purposes) != 14 {
-			t.Fatalf("KnownPurposes() returned %d elements, want 14", len(purposes))
+		if len(purposes) != 15 {
+			t.Fatalf("KnownPurposes() returned %d elements, want 15", len(purposes))
 		}
 	})
 
@@ -189,6 +190,7 @@ func TestKnownPurposes(t *testing.T) {
 			PurposeEnrollmentTokenSigning,
 			PurposeFleetReportSigning,
 			PurposeCoverageCertSigning,
+			PurposeMCPResetAuthority,
 		}
 		for i, p := range purposes {
 			if p != expected[i] {
@@ -227,6 +229,7 @@ func TestKeyPurpose_IsConductorPurpose(t *testing.T) {
 		{PurposeEnrollmentTokenSigning, true},
 		{PurposeFleetReportSigning, true},
 		{PurposeCoverageCertSigning, false},
+		{PurposeMCPResetAuthority, false},
 		{KeyPurpose("unknown"), false},
 	}
 	for _, tt := range tests {
@@ -252,6 +255,7 @@ func TestKeyPurpose_RequiresConductorThreshold(t *testing.T) {
 		{PurposeFleetReportSigning, false},
 		{PurposeCoverageCertSigning, false},
 		{PurposeReceiptSigning, false},
+		{PurposeMCPResetAuthority, false},
 		{KeyPurpose("unknown"), false},
 	}
 	for _, tt := range tests {

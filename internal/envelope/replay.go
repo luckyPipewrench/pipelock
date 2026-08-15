@@ -4,10 +4,15 @@
 package envelope
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
+
+// ErrReplayCacheCapacity reports that accepting a new nonce would evict
+// still-valid replay state and make a prior request replayable.
+var ErrReplayCacheCapacity = errors.New("signature replay cache capacity exhausted; cannot safely verify nonce")
 
 // ReplayCache is a bounded, nonce-keyed in-process cache for inbound envelope
 // verification. It is safe for concurrent use.
@@ -80,16 +85,8 @@ func (c *ReplayCache) CheckAndStoreWithSkew(nonce string, expires time.Time, ske
 	if _, ok := c.entries[nonce]; ok {
 		return fmt.Errorf("signature replay detected")
 	}
-	for len(c.entries) >= c.max {
-		var oldestNonce string
-		var oldestExpiry time.Time
-		for n, exp := range c.entries {
-			if oldestNonce == "" || exp.Before(oldestExpiry) {
-				oldestNonce = n
-				oldestExpiry = exp
-			}
-		}
-		delete(c.entries, oldestNonce)
+	if len(c.entries) >= c.max {
+		return ErrReplayCacheCapacity
 	}
 
 	c.entries[nonce] = storedUntil

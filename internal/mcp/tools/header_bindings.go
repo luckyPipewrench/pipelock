@@ -22,23 +22,14 @@ type HeaderBinding struct {
 	Type       string
 }
 
-// SetToolHeaderBindings replaces the header-binding schema for definitions in
-// an accepted tools/list response. Invalid definitions and definitions beyond
-// the baseline capacity keep no contract, so unknown headers remain transparent.
-// Pipelock must never enforce a partially parsed or ambiguous schema.
-func (tb *ToolBaseline) SetToolHeaderBindings(defs []ToolDef) {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-	if tb.headerBindings == nil {
-		tb.headerBindings = make(map[string]map[string]HeaderBinding)
-	}
+// headerBindingsForDefs validates bindings before the baseline lock is held.
+// Invalid definitions deliberately have no returned entry so a later commit
+// clears their stale contract rather than enforcing an ambiguous schema.
+func headerBindingsForDefs(defs []ToolDef) map[string]map[string]HeaderBinding {
+	prepared := make(map[string]map[string]HeaderBinding, len(defs))
 	for _, def := range defs {
 		bindings, err := ExtractHeaderBindings(def.InputSchema)
 		if err != nil {
-			delete(tb.headerBindings, def.Name)
-			continue
-		}
-		if _, exists := tb.headerBindings[def.Name]; !exists && len(tb.headerBindings) >= maxBaselineTools {
 			continue
 		}
 		byName := make(map[string]HeaderBinding, len(bindings))
@@ -46,8 +37,54 @@ func (tb *ToolBaseline) SetToolHeaderBindings(defs []ToolDef) {
 			binding.Path = append([]string(nil), binding.Path...)
 			byName[strings.ToLower(binding.HeaderName)] = binding
 		}
-		tb.headerBindings[def.Name] = byName
+		prepared[def.Name] = byName
 	}
+	return prepared
+}
+
+// CanAdmitHeaderBindings reports whether every valid header-binding contract
+// can be recorded. A partial set of contracts is an ambiguous security state.
+func (tb *ToolBaseline) CanAdmitHeaderBindings(defs []ToolDef) bool {
+	if tb == nil {
+		return true
+	}
+	prepared := headerBindingsForDefs(defs)
+	names := make([]string, 0, len(prepared))
+	for name := range prepared {
+		names = append(names, name)
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return namesFitCapacity(tb.headerBindings, names)
+}
+
+// SetToolHeaderBindings replaces the header-binding schema for definitions in
+// an accepted tools/list response. Invalid definitions clear their contract.
+// Capacity returns an explicit error before changing any contract; forwarding
+// a response with only some contracts would make header enforcement random.
+func (tb *ToolBaseline) SetToolHeaderBindings(defs []ToolDef) error {
+	prepared := headerBindingsForDefs(defs)
+	names := make([]string, 0, len(prepared))
+	for name := range prepared {
+		names = append(names, name)
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if tb.headerBindings == nil {
+		tb.headerBindings = make(map[string]map[string]HeaderBinding)
+	}
+	if !namesFitCapacity(tb.headerBindings, names) {
+		return ErrBaselineCapacity
+	}
+	for _, def := range defs {
+		bindings, valid := prepared[def.Name]
+		if !valid {
+			delete(tb.headerBindings, def.Name)
+			continue
+		}
+		tb.headerBindings[def.Name] = bindings
+	}
+	return nil
 }
 
 // ClearToolHeaderBindings removes contracts carried by a response that was

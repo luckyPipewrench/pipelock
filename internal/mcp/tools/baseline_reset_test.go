@@ -17,8 +17,8 @@ func TestToolBaseline_ResetDriftState_ClearsHashes(t *testing.T) {
 	tb := NewToolBaseline()
 	tb.CheckAndUpdate("tool-a", "hash-a")
 	tb.CheckAndUpdate("tool-b", "hash-b")
-	tb.StoreDesc("tool-a", "describe-a")
-	tb.StoreParams("tool-a", []string{"param1"})
+	requireStoredDescription(t, tb, "tool-a", "describe-a")
+	requireStoredParams(t, tb, "tool-a", []string{"param1"})
 
 	tb.ResetDriftState()
 
@@ -43,7 +43,7 @@ func TestToolBaseline_ResetDriftState_ClearsHashes(t *testing.T) {
 // inventory across a detect_drift toggle.
 func TestToolBaseline_ResetDriftState_PreservesKnownTools(t *testing.T) {
 	tb := NewToolBaseline()
-	tb.SetKnownTools([]string{"tool-a", "tool-b"})
+	requireKnownTools(t, tb, []string{"tool-a", "tool-b"})
 	if !tb.HasBaseline() {
 		t.Fatal("HasBaseline returned false after SetKnownTools")
 	}
@@ -78,15 +78,14 @@ func TestToolBaseline_ResetDriftState_Idempotent(t *testing.T) {
 }
 
 // TestDetectDriftRisingEdge_StateMatrix walks every transition pair and
-// asserts the prescribed behavior. This is the helper that proxy_http.go
-// and server.go invoke via Observe; the four-cell transition matrix
-// lives here.
+// asserts the generic helper behavior. MCP deliberately does not use an edge
+// alone to reset a baseline; that action requires signed operator authority.
 //
 // The first Observe call NEVER reports a rising edge regardless of value:
 // it records the initial state without claiming a transition, so an
 // initial config load with detect_drift=true cannot clobber a pre-seeded
-// baseline. Only subsequent calls observing an actual false→true flip
-// fire Reset.
+// baseline. Only subsequent calls observing an actual false→true flip report
+// a transition to the caller.
 func TestDetectDriftRisingEdge_StateMatrix(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -167,11 +166,9 @@ func TestDetectDriftRisingEdge_InitialTrueDoesNotReset(t *testing.T) {
 	}
 }
 
-// TestDetectDriftRisingEdge_ResetEffect proves the closure-equivalent
-// composition: the helper drives ResetDriftState exactly when expected
-// across realistic toggle sequences. Confirms NEW poisoned tools added
-// during the disabled window produce first-insertion semantics on the
-// re-seeded baseline (the attacker reload-cycle bypass this fix closes).
+// TestDetectDriftRisingEdge_ResetEffect proves the behavior available to a
+// caller that explicitly chooses to reset on an observed edge. MCP is not that
+// caller: it preserves its baseline across reload and requires a signed reset.
 func TestDetectDriftRisingEdge_ResetEffect(t *testing.T) {
 	tb := NewToolBaseline()
 	var edge DetectDriftRisingEdge

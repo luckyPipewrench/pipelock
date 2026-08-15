@@ -226,6 +226,14 @@ func TestIntegration_SandboxCLI_ConfigWorkspace(t *testing.T) {
 func TestIntegration_McpProxy_Sandbox(t *testing.T) {
 	binary := buildTestBinary(t)
 	workspace := t.TempDir()
+	server := filepath.Join(workspace, "mcp-server.sh")
+	const response = `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"sandbox-test","version":"1.0.0"}}}` + "\n"
+	serverScript := "#!/bin/sh\n" +
+		"IFS= read -r _ || exit 1\n" +
+		"printf '%s' '" + response[:len(response)-1] + "'\n"
+	if err := os.WriteFile(server, []byte(serverScript), 0o600); err != nil {
+		t.Fatalf("write MCP server fixture: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -234,11 +242,16 @@ func TestIntegration_McpProxy_Sandbox(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, binary, //nolint:gosec // G204: test binary
-		"mcp", "proxy", "--sandbox", "--workspace", workspace, "--", "cat")
+		"mcp", "proxy", "--sandbox", "--workspace", workspace, "--", "/bin/sh", server)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("sandboxed MCP proxy failed: %v\nstderr: %s\nstdout: %s", err, stderr.String(), stdout.String())
+	}
+	if got := stdout.String(); got != response {
+		t.Fatalf("sandboxed MCP mediation response = %q, want %q", got, response)
+	}
 
 	stderrStr := stderr.String()
 	if !strings.Contains(stderrStr, "SANDBOXED") {

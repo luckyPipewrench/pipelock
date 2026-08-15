@@ -254,6 +254,9 @@ func (c *Config) Clone() *Config {
 	if c.LicenseIntermediateCert != nil {
 		clone.LicenseIntermediateCert = append([]byte(nil), c.LicenseIntermediateCert...)
 	}
+	if c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey != nil {
+		clone.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
+	}
 
 	clone.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
 	clone.ResponseScanning.Patterns = cloneResponseScanPatterns(c.ResponseScanning.Patterns)

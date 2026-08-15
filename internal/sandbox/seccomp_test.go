@@ -8,6 +8,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -528,18 +529,32 @@ func TestApplyRlimits_ChildVerifiesAll(t *testing.T) {
 
 func init() {
 	if os.Getenv("__SANDBOX_RLIMIT_TEST") == "1" {
+		var inheritedNProc syscall.Rlimit
+		if err := syscall.Getrlimit(unix.RLIMIT_NPROC, &inheritedNProc); err != nil {
+			_, _ = os.Stderr.WriteString("get inherited RLIMIT_NPROC: " + err.Error() + "\n")
+			os.Exit(1)
+		}
 		if err := ApplyRlimits(); err != nil {
 			_, _ = os.Stderr.WriteString("rlimits: " + err.Error() + "\n")
 			os.Exit(1)
 		}
-		// Verify all four limits are applied.
+		var nproc syscall.Rlimit
+		if err := syscall.Getrlimit(unix.RLIMIT_NPROC, &nproc); err != nil {
+			_, _ = os.Stderr.WriteString("getrlimit RLIMIT_NPROC: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		nprocCeiling := boundedNProcLimit(unix.Rlimit{Cur: inheritedNProc.Cur, Max: inheritedNProc.Max})
+		if nproc.Cur > nprocCeiling || nproc.Cur != nproc.Max {
+			_, _ = fmt.Fprintf(os.Stderr, "RLIMIT_NPROC cur=%d max=%d, want equal values no greater than shared-UID ceiling %d\n", nproc.Cur, nproc.Max, nprocCeiling)
+			os.Exit(1)
+		}
+		// Verify the three per-process limits keep their fixed values.
 		checks := []struct {
 			resource int
 			name     string
 			want     uint64
 		}{
 			{syscall.RLIMIT_CORE, "RLIMIT_CORE", 0},
-			{unix.RLIMIT_NPROC, "RLIMIT_NPROC", 1024},
 			{syscall.RLIMIT_NOFILE, "RLIMIT_NOFILE", 4096},
 			{unix.RLIMIT_FSIZE, "RLIMIT_FSIZE", 1 << 30},
 		}

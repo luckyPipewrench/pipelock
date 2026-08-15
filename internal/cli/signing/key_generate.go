@@ -86,9 +86,10 @@ func keyGenerateGroupCmd() *cobra.Command {
 		Short: "Generate deployment-level signing keys",
 		Long: `Generate deployment-level Ed25519 keys with explicit purpose
 binding. Subcommands:
-  generate    Generate one keypair bound to a recognised wire purpose`,
+  generate      Generate one keypair bound to a recognised wire purpose
+  export-public Export the public half of a generated key`,
 	}
-	cmd.AddCommand(keyGenerateCmd())
+	cmd.AddCommand(keyGenerateCmd(), keyExportPublicCmd())
 	return cmd
 }
 
@@ -120,6 +121,7 @@ The --purpose flag binds the key to one of the recognised wire purposes:
   enrollment-token-signing       reserved Conductor enrollment-token signing
   fleet-report-signing           Fleet Receipt Report signing (verify is free; mint is Enterprise)
   coverage-cert-signing          Coverage Certificate signing (verify is free; mint is Enterprise)
+  mcp-reset-authority            short-lived MCP reset delegation signing
 
 Conductor rollback, remote-kill, and trust-root-rotation keys are threshold
 keys: generate independent keys for separate approvers and configure the

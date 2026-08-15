@@ -45,6 +45,7 @@ trusting them in production.
 
 Subcommand groups:
   key         Generate deployment-level signing keys
+  reset       Mint and inspect MCP reset delegations
   receipt-rotation
               Prepare old-key-endorsed receipt signing-key rotations
   roster      Build, show, and verify key rosters
@@ -72,7 +73,7 @@ Subcommand groups:
 	}
 	transition.AddCommand(transitionVerifyCmd())
 
-	cmd.AddCommand(keyGenerateGroupCmd(), pubkeyCmd(), receiptRotationGroupCmd(), roster, recovery, transition)
+	cmd.AddCommand(keyGenerateGroupCmd(), resetAuthorityCmd(), pubkeyCmd(), receiptRotationGroupCmd(), roster, recovery, transition)
 	return cmd
 }
 

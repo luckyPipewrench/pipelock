@@ -316,7 +316,20 @@ const (
 	// Re-bumped for airlock.triggers.anomaly_window_minutes default 0:
 	// the reserved window is now rejected when nonzero, so the default
 	// cannot stay at the previous inert 5.
-	goldenHashDefaults = "b30392fd23d378ddb33ba25884b54ad0c419cf91c3d6f5b33e8c51b8570a2990"
+	// Re-bumped for New Instructions authority/action context narrowing.
+	// Re-bumped again for the New Instructions proximity form: the narrowing
+	// above required a literal ":" or "-" between the phrase and its context,
+	// so a period, newline, comma, or em-dash evaded it. Proximity keeps the
+	// context requirement without depending on one punctuation mark.
+	// Re-bumped to require an authority label or concrete override action;
+	// ordinary publication and developer-guide prose must remain clean.
+	// Re-bumped for singular directive nouns, authority-after-phrase forms,
+	// and hard-separator action anchoring that excludes ordinary run guidance.
+	// Re-bumped so authority-qualified directives remain detectable across
+	// period, comma, em-dash, and newline separators.
+	// Re-bumped for action-anchored connective forms such as "rules say to"
+	// and "instructions are to" without broadening ordinary task prose.
+	goldenHashDefaults = "92b218b5df48b838e164a6f9f5b26e7a1e4ece2cfbb1c34eb0c369ae15a20492"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -470,7 +483,16 @@ const (
 	// Re-bumped for cookie query keys plus curl/wget upload-form coverage.
 	// Re-bumped for URL-first curl and wget upload-command coverage.
 	// Re-bumped for natural-language password and private-key transfers.
-	goldenHashRichConfig = "3b8492e676ab7527987ad8fccf4be9375015b785108c8852893fccc2f7fa5ddc"
+	// Re-bumped for New Instructions authority/action context narrowing.
+	// Re-bumped again for the New Instructions proximity form; see the
+	// goldenHashDefaults note. Both invariance tests compare against this
+	// constant and produced this same hash, so ops-field and allowlist-order
+	// invariance are intact and only the shared baseline moved.
+	// Re-bumped for the authority-label/action narrowing above.
+	// Re-bumped for the singular and hard-separator refinement above.
+	// Re-bumped for the authority-label separator expansion above.
+	// Re-bumped for the hard-separated directive expansion above.
+	goldenHashRichConfig = "b60a9dbc7da5ffe924408ac0b8a6f40a304c46ed1faac2c5ec0a1aab29cae370"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -133,6 +133,7 @@ fragment_expected_error() {
     case "$1" in
         mcp-session-binding) echo "mcp_session_binding.enabled requires mcp_tool_scanning.enabled" ;;
         adaptive-enforcement) echo "adaptive_enforcement.enabled requires session_profiling.enabled" ;;
+        mcp-drift-reset-authority) echo "listener drift reset authority public key" ;;
         license-path-precedence) echo "unmarshal errors" ;;
         license-complete-reference | license-container-layout | license-activation) echo "license" ;;
         trusted-rule-key) echo "public_key must be exactly 64 hex chars" ;;

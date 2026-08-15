@@ -27,6 +27,11 @@ func (m *Metrics) registerCrossRequestMetrics(reg *prometheus.Registry) {
 		Name:      "cross_request_dlp_match_total",
 		Help:      "Fragment reassembly DLP match events.",
 	})
+	m.CrossRequestFragmentCapacityExceeded = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "cross_request_fragment_session_capacity_exceeded_total",
+		Help:      "Fragment reassembly requests denied because the session ledger is full.",
+	})
 	m.CrossRequestFragmentBytes = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "pipelock",
 		Name:      "cross_request_fragment_buffer_bytes",
@@ -34,7 +39,7 @@ func (m *Metrics) registerCrossRequestMetrics(reg *prometheus.Registry) {
 	})
 
 	reg.MustRegister(
-		m.CrossRequestEntropyExceeded, m.CrossRequestDLPMatch, m.CrossRequestFragmentBytes,
+		m.CrossRequestEntropyExceeded, m.CrossRequestDLPMatch, m.CrossRequestFragmentCapacityExceeded, m.CrossRequestFragmentBytes,
 	)
 }
 
@@ -49,6 +54,14 @@ func (m *Metrics) RecordCrossRequestEntropyExceeded() {
 func (m *Metrics) RecordCrossRequestDLPMatch() {
 	if m != nil {
 		m.CrossRequestDLPMatch.Inc()
+	}
+}
+
+// RecordCrossRequestFragmentCapacityExceeded increments the fragment-session
+// capacity-denial counter.
+func (m *Metrics) RecordCrossRequestFragmentCapacityExceeded() {
+	if m != nil {
+		m.CrossRequestFragmentCapacityExceeded.Inc()
 	}
 }
 

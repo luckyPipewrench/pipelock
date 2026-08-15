@@ -34,6 +34,7 @@ const (
 	producerDropChannelFull       = "producer_channel_full"
 	producerDropEnqueueError      = "enqueue_error"
 	producerDropInvalidCheckpoint = "invalid_checkpoint"
+	producerDropNamespaceCapacity = "namespace_capacity"
 	producerDropPayloadTooLarge   = "payload_too_large"
 	producerDropQueueFull         = "queue_full"
 	producerDropSequenceGap       = "producer_sequence_gap"
@@ -188,7 +189,7 @@ func (p *Producer) run() {
 	for entry := range p.entries {
 		key := recorderNamespaceKey(entry)
 		if !admitRecorderNamespace(knownNamespaces, key) {
-			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
+			p.drop(producerDropNamespaceCapacity, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
 		if blocked[key] {

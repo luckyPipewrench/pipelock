@@ -1602,6 +1602,22 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	if toolCfg.BindingUnknownAction != config.ActionBlock || toolCfg.BindingNoBaselineAction != config.ActionWarn {
 		t.Fatalf("tool binding actions = %q/%q, want block/warn", toolCfg.BindingUnknownAction, toolCfg.BindingNoBaselineAction)
 	}
+	// server_lifecycle calls this builder again after reload. A detect_drift
+	// false->true change must retain prior hashes until a signed reset is
+	// consumed, rather than silently accepting a new baseline.
+	if drifted, _ := baseline.CheckAndUpdate("approved", "hash-before-disable"); drifted {
+		t.Fatal("initial tool baseline unexpectedly drifted")
+	}
+	cfg.MCPToolScanning.DetectDrift = false
+	_ = buildMCPToolCfg(cfg, extra, baseline)
+	cfg.MCPToolScanning.DetectDrift = true
+	_ = buildMCPToolCfg(cfg, extra, baseline)
+	if got := baseline.DriftEpoch(); got != 0 {
+		t.Fatalf("server reload reset tool baseline epoch to %d without authority", got)
+	}
+	if drifted, previous, _ := baseline.CheckAndUpdatePromote("approved", "hash-after-reload", false, false); !drifted || previous != "hash-before-disable" {
+		t.Fatalf("server reload discarded trusted baseline: drifted=%v previous=%q", drifted, previous)
+	}
 	if chain := buildMCPChainMatcher(cfg, metrics.New()); chain == nil {
 		t.Fatal("expected chain matcher when tool chain detection is enabled")
 	}
@@ -1612,6 +1628,39 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	tracker, buffer := cee.Components()
 	if tracker == nil || buffer == nil {
 		t.Fatalf("CEE deps = %+v, want tracker and buffer", cee)
+	}
+}
+
+func TestBuildMCPToolCfgWiresListenerResetAuthority(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate reset authority key: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "reset-authority.pub")
+	if err := signing.SavePublicKey(publicKey, keyPath); err != nil {
+		t.Fatalf("write reset authority key: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = config.ActionBlock
+	cfg.MCPToolScanning.ListenerDriftResetFile = filepath.Join(t.TempDir(), "drift-reset")
+	cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile = keyPath
+	cfg.MCPToolScanning.ListenerDriftResetTarget = "mcp://listener-reset-test"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate listener reset authority: %v", err)
+	}
+	replacementKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate replacement reset authority key: %v", err)
+	}
+	if err := signing.SavePublicKey(replacementKey, keyPath); err != nil {
+		t.Fatalf("replace reset authority key after validation: %v", err)
+	}
+	baseline := mcptools.NewToolBaseline()
+	toolCfg := buildMCPToolCfg(cfg, nil, baseline)
+	if toolCfg == nil || toolCfg.Baseline != baseline || !bytes.Equal(toolCfg.ListenerDriftResetAuthorityPublicKey, publicKey) || toolCfg.ListenerDriftResetTarget != cfg.MCPToolScanning.ListenerDriftResetTarget {
+		t.Fatalf("listener reset authority tool config = %+v", toolCfg)
 	}
 }
 

@@ -37,7 +37,7 @@ func TestEvaluateMCPInputGatesStdio_BatchBindingPreCheck(t *testing.T) {
 
 	sc := testInputScanner(t)
 	tb := tools.NewToolBaseline()
-	tb.SetKnownTools([]string{"read_file"})
+	requireKnownTools(t, tb, []string{"read_file"})
 
 	bindingCfg := &SessionBindingConfig{
 		Baseline:          tb,

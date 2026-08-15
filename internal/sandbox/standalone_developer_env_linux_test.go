@@ -29,10 +29,11 @@ func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T
 			"NODE_OPTIONS=--require=/developer/hook.js",
 		},
 	}
-	controlEnv := standaloneInitControlEnv(cfg, "/tmp/pipelock-sandbox-test/proxy.sock", []string{
-		"GOCOVERDIR=/tmp/pipelock-covdata-" + token,
-		"PIPELOCK_SUBPROCESS_COVERAGE=1",
-	}, `{"workspace":"/workspace"}`, true, nil, 0)
+	controlEnv := standaloneInitControlEnv(standaloneInitControlOptions{
+		Config: cfg, SocketPath: "/tmp/pipelock-sandbox-test/proxy.sock",
+		CoverageEnv: []string{"GOCOVERDIR=/tmp/pipelock-covdata-" + token, "PIPELOCK_SUBPROCESS_COVERAGE=1"},
+		PolicyJSON:  `{"workspace":"/workspace"}`, HasNamespaces: true,
+	})
 
 	for _, entry := range controlEnv {
 		if strings.Contains(entry, token) || strings.Contains(entry, "LD_PRELOAD") || strings.Contains(entry, "NODE_OPTIONS") {
@@ -50,9 +51,10 @@ func TestStandaloneInitControlEnvDoesNotContainDeveloperEnvironment(t *testing.T
 
 func TestStandaloneCommandJSONPreservesLegacyDelimiterInArgument(t *testing.T) {
 	want := []string{"tool", "left\x1fright", "line one\nline two"}
-	controlEnv := standaloneInitControlEnv(StandaloneLaunchConfig{
-		Command: want, Workspace: "/workspace",
-	}, "/tmp/pipelock-sandbox-test/proxy.sock", nil, `{"workspace":"/workspace"}`, true, nil, 0)
+	controlEnv := standaloneInitControlEnv(standaloneInitControlOptions{
+		Config:     StandaloneLaunchConfig{Command: want, Workspace: "/workspace"},
+		SocketPath: "/tmp/pipelock-sandbox-test/proxy.sock", PolicyJSON: `{"workspace":"/workspace"}`, HasNamespaces: true,
+	})
 	got, err := decodeStandaloneCommand(envValue(controlEnv, standaloneCommandJSONEnv), "")
 	if err != nil {
 		t.Fatalf("decodeStandaloneCommand: %v", err)
@@ -70,6 +72,25 @@ func TestStandaloneCommandJSONPreservesLegacyDelimiterInArgument(t *testing.T) {
 	}
 	if _, err := decodeStandaloneCommand("", "\x1farg"); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("legacy empty command error = %v", err)
+	}
+}
+
+func TestStandaloneControlEnvCarriesParentHardeningGate(t *testing.T) {
+	controlEnv := standaloneInitControlEnv(standaloneInitControlOptions{
+		Config:     StandaloneLaunchConfig{Command: []string{"true"}, Workspace: "/workspace"},
+		SocketPath: "/tmp/pipelock-sandbox-test/proxy.sock", PolicyJSON: `{"workspace":"/workspace"}`,
+		HasNamespaces: true, ReadinessFD: 7,
+	})
+	if got := envValue(controlEnv, sandboxReadinessFDEnv); got != "7" {
+		t.Fatalf("parent-hardening readiness descriptor = %q, want 7", got)
+	}
+	ungated := standaloneInitControlEnv(standaloneInitControlOptions{
+		Config:     StandaloneLaunchConfig{Command: []string{"true"}, Workspace: "/workspace"},
+		SocketPath: "/tmp/pipelock-sandbox-test/proxy.sock", PolicyJSON: `{"workspace":"/workspace"}`,
+		HasNamespaces: true,
+	})
+	if got := envValue(ungated, sandboxReadinessFDEnv); got != "" {
+		t.Fatalf("readiness descriptor present without a gate: %q", got)
 	}
 }
 

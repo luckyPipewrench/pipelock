@@ -11,16 +11,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 const principalStateTestBearer = "shared-listener-credential"
@@ -204,13 +202,14 @@ func TestHTTPListener_PrincipalState_BearerRotationStartsNewEpoch(t *testing.T) 
 	}
 }
 
-// TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionState
+// TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed
 // holds a request after bearer authentication, rotates the bearer on another
 // request, then resumes the original request in explicit compatibility mode.
 // The original principal is still authenticated, but its retired epoch cannot
 // be admitted. A client-supplied Mcp-Session-Id must not select the preexisting
-// legacy chain state; the request proceeds with stateless controls instead.
-func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionState(t *testing.T) {
+// legacy chain state. Required stateful controls deny the request rather than
+// forwarding it with the controls stripped.
+func TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed(t *testing.T) {
 	const (
 		oldBearer     = "legacy-fallback-rotation-old"
 		newBearer     = "legacy-fallback-rotation-new"
@@ -225,13 +224,6 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 	var oldConfigOnce sync.Once
 
 	upstream, calls := principalStateUpstream(t)
-	auditPath := filepath.Join(t.TempDir(), "listener-audit.jsonl")
-	auditLogger, err := audit.New("json", "file", auditPath, false, true)
-	if err != nil {
-		t.Fatalf("new audit logger: %v", err)
-	}
-	defer auditLogger.Close()
-
 	chainMatcher := buildBlockChainMatcher()
 	legacyStateKey := mcpListenerStateKey(legacySession)
 	if verdict := chainMatcher.Record(legacyStateKey, "read_file"); verdict.Matched {
@@ -254,7 +246,6 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 		return adaptiveCfg
 	}
 	opts.Store = &listenerDiagnosisStore{}
-	opts.AuditLogger = auditLogger
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 
 	holdOld.Store(true)
@@ -288,7 +279,11 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 		oldResult <- result{status: resp.StatusCode, body: string(payload), err: readErr}
 	}()
 
-	<-oldReachedConfig
+	select {
+	case <-oldReachedConfig:
+	case <-time.After(30 * time.Second):
+		t.Fatal("old bearer request never reached AdaptiveCfgFn")
+	}
 	active.Store(newBearer)
 	holdOld.Store(false)
 	if status, body := principalStateToolCall(t, baseURL, newBearer, 2, "read_file", nil); status != http.StatusOK || strings.Contains(body, "chain pattern") {
@@ -300,31 +295,114 @@ func TestHTTPListener_PrincipalState_RotatedBearerDoesNotSelectLegacySessionStat
 	if got.err != nil {
 		t.Fatal(got.err)
 	}
-	if got.status != http.StatusOK || strings.Contains(got.body, "chain pattern") {
-		t.Fatalf("retired-but-authenticated request = status %d body %s, want stateless forward", got.status, got.body)
+	if got.status != http.StatusServiceUnavailable || !strings.Contains(got.body, "state capacity exhausted") {
+		t.Fatalf("retired-but-authenticated request = status %d body %s, want explicit state-capacity block", got.status, got.body)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("upstream calls = %d, want 2; the retired request must not select the legacy chain partition", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1; state-capacity block must not forward", calls.Load())
 	}
+}
 
-	auditLogger.Close()
-	auditData, err := os.ReadFile(filepath.Clean(auditPath))
-	if err != nil {
-		t.Fatalf("read audit log: %v", err)
-	}
-	if !strings.Contains(string(auditData), `"session":"`+legacySession+`"`) {
-		t.Fatalf("unbound request audit key did not retain its compatibility session header: %s", auditData)
-	}
+func TestHTTPListener_PrincipalState_RotatedBearerCapacityDeniesReadAndDelete(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			const (
+				oldBearer     = "principal-capacity-old"
+				newBearer     = "principal-capacity-new"
+				legacySession = "principal-capacity-legacy-session"
+			)
 
-	// Positive control. Every security assertion above is a negative one: the
-	// retired request was not blocked. That proves the retired principal avoided
-	// the legacy partition only if the matcher would have fired had it entered
-	// that partition. Complete the chain on the legacy key directly and require
-	// a match, so a matcher that silently stops recognising this pattern fails
-	// here instead of leaving the test green while proving nothing. Run it after
-	// the HTTP assertions so it cannot alter the state the listener observed.
-	if verdict := chainMatcher.Record(legacyStateKey, "bash_exec"); !verdict.Matched {
-		t.Fatalf("chain matcher did not match the completing step on the legacy partition, so the negative assertions above prove nothing: %+v", verdict)
+			var active atomic.Value
+			active.Store(oldBearer)
+			var holdOld atomic.Bool
+			oldReachedConfig := make(chan struct{})
+			releaseOld := make(chan struct{})
+			defer func() {
+				select {
+				case <-releaseOld:
+				default:
+					close(releaseOld)
+				}
+			}()
+			var oldConfigOnce sync.Once
+
+			upstream, calls := principalStateUpstream(t)
+			compatibilityMode := false
+			adaptiveCfg := adaptiveCfgEnabled()
+			adaptiveCfg.EscalationThreshold = 1
+			listenerMetrics := metrics.New()
+			opts := principalStateOpts(t, "")
+			opts.ListenerBearerTokenFn = func() (string, error) { return active.Load().(string), nil }
+			opts.listenerStateTokenRequired = &compatibilityMode
+			opts.InputCfg = newHTTPInputCfg(config.ActionWarn)
+			opts.AdaptiveCfgFn = func() *config.AdaptiveEnforcement {
+				if holdOld.Load() {
+					oldConfigOnce.Do(func() { close(oldReachedConfig) })
+					<-releaseOld
+				}
+				return adaptiveCfg
+			}
+			opts.Store = &listenerDiagnosisStore{}
+			opts.Metrics = listenerMetrics
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+
+			holdOld.Store(true)
+			type result struct {
+				status int
+				body   string
+				err    error
+			}
+			oldResult := make(chan result, 1)
+			go func() {
+				req, err := http.NewRequestWithContext(context.Background(), method, baseURL+"/", nil)
+				if err != nil {
+					oldResult <- result{err: fmt.Errorf("new old-bearer %s request: %w", method, err)}
+					return
+				}
+				if method == http.MethodGet {
+					req.Header.Set("Accept", "text/event-stream")
+				}
+				req.Header.Set("Mcp-Session-Id", legacySession)
+				req.Header.Set("Proxy-Authorization", "Bearer "+oldBearer)
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					oldResult <- result{err: fmt.Errorf("old-bearer %s request: %w", method, err)}
+					return
+				}
+				defer func() { _ = resp.Body.Close() }()
+				body, readErr := io.ReadAll(resp.Body)
+				oldResult <- result{status: resp.StatusCode, body: string(body), err: readErr}
+			}()
+
+			select {
+			case <-oldReachedConfig:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s request never reached AdaptiveCfgFn", method)
+			}
+			active.Store(newBearer)
+			holdOld.Store(false)
+			if status, body := principalStateToolCall(t, baseURL, newBearer, 2, "read_file", nil); status != http.StatusOK || strings.Contains(body, "chain pattern") {
+				t.Fatalf("rotating bearer request = status %d body %s, want new state admission", status, body)
+			}
+			close(releaseOld)
+
+			got := <-oldResult
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.status != http.StatusServiceUnavailable || !strings.Contains(got.body, "state capacity exhausted") {
+				t.Fatalf("retired %s request = status %d body %s, want explicit state-capacity block", method, got.status, got.body)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("upstream calls = %d, want 1; capacity block must not forward", calls.Load())
+			}
+
+			rec := httptest.NewRecorder()
+			listenerMetrics.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+			if !strings.Contains(rec.Body.String(), `pipelock_scanner_hits_total{agent="",scanner="listener_principal_state_capacity"} 1`) {
+				t.Fatalf("capacity metric missing from listener output:\n%s", rec.Body.String())
+			}
+		})
 	}
 }
 

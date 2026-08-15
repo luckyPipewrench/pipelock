@@ -306,14 +306,17 @@ type MCPProxyOpts struct {
 	// for hot-reload-aware proxy surfaces. Nil falls back to ResponseActionOverride.
 	ResponseActionOverrideFn func() string
 
-	// AdaptiveResetFile, when set, is a local operator control file: when it
-	// appears (regular file, mode 0600, owned by the proxy user) the stdio
-	// proxy clears this session's adaptive-enforcement escalation on the next
-	// message and removes the file. It lets an airlocked invocation session
-	// recover without a restart (invocation sessions are otherwise
-	// un-resettable). Empty disables the reset path. Set from
-	// `pipelock mcp proxy --adaptive-reset-file`.
+	// AdaptiveResetFile is the signed local control-file path for an adaptive
+	// reset. It is honored only through AdaptiveResetAuthority.
 	AdaptiveResetFile string
+	// AdaptiveResetAuthority verifies signed adaptive reset delegations. The
+	// proxy holds only the operator's public key. Nil disables adaptive reset,
+	// including when AdaptiveResetFile is configured.
+	AdaptiveResetAuthority *ResetAuthority
+	// AdaptiveResetEpoch is incremented after every accepted reset, preventing
+	// a valid delegation from being reused within this proxy process. Nil
+	// disables adaptive reset and preserves the airlock.
+	AdaptiveResetEpoch *atomic.Uint64
 
 	// Transport identifies the MCP transport for capture records.
 	// Set by each proxy surface, for example "mcp_stdio", "mcp_http_upstream",

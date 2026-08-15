@@ -20,16 +20,35 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-// RunProxyWithSandbox is like RunProxy but uses a pre-built (unstarted)
-// sandbox exec.Cmd from sandbox.PrepareSandboxCmd(). Sets up stdio pipes
-// for MCP scanning, then starts the sandboxed child.
-//
-// This function requires Linux kernel primitives (user namespaces) and is
-// integration-tested via subprocess tests. It cannot be unit-tested without
-// a real sandbox environment.
 // RunProxyWithSandbox runs an MCP proxy with a sandboxed child process.
+// It retains the legacy plain-command entry point for tests and callers that
+// do not have a UID/GID map phase. Mapped sandbox launches must use
+// RunProxyWithSandboxLaunch so target start is gated on parent hardening.
 // The optional strict parameter enables subreaper for orphan cleanup.
 func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
+	// Refuse a mapped command here rather than starting it ungated. This entry
+	// point calls Start directly, so a mapped launch would get neither the map
+	// ordering nor the parent hardening, and would get them missing silently.
+	// A gate with an unguarded door beside it is not a gate.
+	if sandbox.CmdNeedsHardeningGate(sandboxCmd) {
+		return fmt.Errorf("mapped sandbox command must start through RunProxyWithSandboxLaunch so target start is gated on parent hardening")
+	}
+	return runProxyWithSandbox(ctx, sandboxCmd, sandboxCmd.Start, clientIn, clientOut, logW, opts, strict...)
+}
+
+// RunProxyWithSandboxLaunch runs a prepared sandbox launch with the explicit
+// parent-hardening ordering selected by sandbox.PrepareSandboxLaunch.
+func RunProxyWithSandboxLaunch(ctx context.Context, launch *sandbox.PreparedSandboxCmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
+	if launch == nil || launch.Cmd == nil {
+		return fmt.Errorf("sandbox launch is nil")
+	}
+	defer launch.Close()
+	return runProxyWithSandbox(ctx, launch.Cmd, func() error {
+		return launch.StartWithParentHardening(HardenProxyProcess)
+	}, clientIn, clientOut, logW, opts, strict...)
+}
+
+func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func() error, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
 	if opts.Transport == "" {
 		opts.Transport = "mcp_stdio"
 	}
@@ -61,7 +80,7 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	}
 	sandboxCmd.Stderr = safeLogW
 
-	if err := sandboxCmd.Start(); err != nil {
+	if err := start(); err != nil {
 		return fmt.Errorf("starting sandboxed MCP server %q: %w", sandboxCmd.Path, err)
 	}
 

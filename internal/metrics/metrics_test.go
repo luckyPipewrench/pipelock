@@ -1534,6 +1534,22 @@ func TestRecordCrossRequestDLPMatch_NilReceiver(t *testing.T) {
 	m.RecordCrossRequestDLPMatch()
 }
 
+func TestRecordCrossRequestFragmentCapacityExceeded(t *testing.T) {
+	m := New()
+	m.RecordCrossRequestFragmentCapacityExceeded()
+	m.RecordCrossRequestFragmentCapacityExceeded()
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "pipelock_cross_request_fragment_session_capacity_exceeded_total 2") {
+		t.Fatalf("expected fragment capacity count 2:\n%s", rec.Body.String())
+	}
+
+	var nilMetrics *Metrics
+	nilMetrics.RecordCrossRequestFragmentCapacityExceeded()
+}
+
 func TestSetCrossRequestFragmentBytes(t *testing.T) {
 	m := New()
 	m.SetCrossRequestFragmentBytes(42.0)

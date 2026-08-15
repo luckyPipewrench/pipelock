@@ -76,6 +76,9 @@ func RunInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
+	noNetNS := IsNoNetNS()
+	applyRlimitsOrExit()
+
 	// Apply Landlock (filesystem restriction).
 	// Add the per-sandbox temp dir to the policy so the child has a
 	// scoped /tmp equivalent. Host /tmp is NOT in the default policy -
@@ -104,13 +107,6 @@ func RunInit() {
 	llStatus, llErr := ApplyLandlock(policy)
 	reportLayer(os.Stderr, llStatus, llErr)
 
-	// Apply resource limits.
-	if err := ApplyRlimits(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
-	}
-
 	// Set no_new_privs (MUST come before seccomp).
 	if err := SetNoNewPrivs(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] no_new_privs: %v\n", err)
@@ -122,7 +118,6 @@ func RunInit() {
 	reportLayer(os.Stderr, scStatus, scErr)
 
 	// Report network namespace status (set at fork time by parent).
-	noNetNS := IsNoNetNS()
 	if noNetNS {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: DEGRADED (no namespace, best-effort mode)\n")
 		// Containers without user namespaces (CAP_SYS_ADMIN / CLONE_NEWUSER
@@ -162,6 +157,14 @@ func RunInit() {
 		exitSandboxProcess(1)
 	}
 
+	// Mapped launches remain here until the parent has made itself
+	// non-dumpable. This gate covers both the direct exec below and bridge-mode
+	// target start, rather than relying on the scheduler after cmd.Start.
+	if err := waitForParentHardening(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: parent hardening gate: %v\n", err)
+		exitSandboxProcess(1)
+	}
+
 	if socketPath != "" {
 		runInitWithBridge(command, env, workspace, socketPath, bridgeSignals)
 		return
@@ -192,6 +195,16 @@ func RunInit() {
 	err = processexec.Replace(binary, command, env)
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] exec failed: %v\n", err)
 	exitSandboxProcess(1)
+}
+
+// applyRlimitsOrExit enforces the shared-UID resource ceiling before Landlock.
+// Both child entry points fail closed when the ceiling cannot be applied.
+func applyRlimitsOrExit() {
+	if err := ApplyRlimits(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resource limits: %v\n", err)
+		exitSandboxProcess(1)
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
 }
 
 func runInitWithBridge(command, env []string, workspace, socketPath string, sigCh <-chan os.Signal) {

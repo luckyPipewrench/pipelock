@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -25,7 +27,7 @@ const (
 	listenerPrincipalIdleTTL          = 24 * time.Hour
 	listenerLegacyIdleTTL             = 24 * time.Hour
 	listenerDegradationReportInterval = time.Minute
-	listenerToolDriftRemediation      = "have an authorized operator create the owner-only control file configured by mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
+	listenerToolDriftRemediation      = "have an authorized operator place a signed reset delegation at mcp_tool_scanning.listener_drift_reset_file, then request tools/list to re-baseline this listener"
 )
 
 const listenerSessionTokenHeader = "Pipelock-Session-Token"
@@ -77,8 +79,11 @@ type mcpListenerClientStates struct {
 	clock                   uint64
 	store                   session.Store
 	upstreamToolBaseline    *tools.ToolBaseline
-	driftEdge               tools.DetectDriftRisingEdge
+	resetAuthority          *ResetAuthority
+	resetAuthorityConfig    string
+	resetAuthorityToolCfgFn func() *tools.ToolScanConfig
 	degradationReporter     mcpListenerDegradationReporter
+	resetDecisionReporter   mcpListenerDegradationReporter
 	principalSecret         [32]byte
 	principalSecretErr      error
 	activeBearer            [32]byte
@@ -136,11 +141,12 @@ func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
 
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	states := &mcpListenerClientStates{
-		clients:              make(map[string]*mcpListenerClientState),
-		store:                store,
-		upstreamToolBaseline: tools.NewToolBaseline(),
-		degradationReporter:  newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
-		now:                  time.Now,
+		clients:               make(map[string]*mcpListenerClientState),
+		store:                 store,
+		upstreamToolBaseline:  tools.NewToolBaseline(),
+		degradationReporter:   newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
+		resetDecisionReporter: newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
+		now:                   time.Now,
 	}
 	_, states.principalSecretErr = rand.Read(states.principalSecret[:])
 	return states
@@ -524,9 +530,6 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 		(cfg.Action == "" && cfg.BindingUnknownAction == "" && cfg.BindingNoBaselineAction == "" && !cfg.DetectDrift) {
 		return nil
 	}
-	if s.driftEdge.Observe(cfg.DetectDrift) {
-		s.resetDriftState()
-	}
 	return &tools.ToolScanConfig{
 		Baseline:                state.baseline,
 		DriftBaseline:           s.upstreamToolBaseline,
@@ -540,19 +543,156 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 	}
 }
 
-func (s *mcpListenerClientStates) resetDriftState() {
-	s.upstreamToolBaseline.ResetDriftState()
+// toolConfigAtDriftEpoch binds this request's tools/list response to the
+// shared listener drift baseline as it existed before upstream work began.
+func (s *mcpListenerClientStates) toolConfigAtDriftEpoch(state *mcpListenerClientState, cfg *tools.ToolScanConfig, epoch uint64) *tools.ToolScanConfig {
+	toolCfg := s.toolConfig(state, cfg)
+	if toolCfg != nil && toolCfg.DetectDrift {
+		toolCfg.ExpectedDriftEpoch = &epoch
+	}
+	return toolCfg
 }
 
-// resetUpstreamToolDriftStateIfRequested consumes the operator-controlled,
-// one-shot reset file before a request reaches the upstream. It resets only
-// definition hashes; per-token known-tool binding state remains intact.
-func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *tools.ToolScanConfig, logW io.Writer) bool {
-	if cfg == nil || !cfg.DetectDrift || cfg.ListenerDriftResetFile == "" || !consumeToolDriftResetFile(cfg.ListenerDriftResetFile, logW) {
+func (s *mcpListenerClientStates) upstreamDriftEpoch() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.upstreamToolBaseline.DriftEpoch()
+}
+
+type listenerDriftResetEpoch struct {
+	states    *mcpListenerClientStates
+	authority *ResetAuthority
+	resetFile string
+}
+
+func (e listenerDriftResetEpoch) CurrentEpoch() uint64 {
+	return e.states.upstreamDriftEpoch()
+}
+
+func (e listenerDriftResetEpoch) AdvanceEpoch(expected uint64) bool {
+	return e.states.advanceUpstreamDriftResetEpoch(e.authority, e.resetFile, e.states.resetAuthorityToolCfgFn, expected)
+}
+
+func (e listenerDriftResetEpoch) CurrentBinding() (target, instanceID string, epoch uint64) {
+	if cfgFn := e.states.resetAuthorityToolCfgFn; cfgFn != nil {
+		cfg := cfgFn()
+		e.states.mu.Lock()
+		defer e.states.mu.Unlock()
+		if !resetAuthorityConfigEnabled(cfg) {
+			return "", "", e.states.upstreamToolBaseline.DriftEpoch()
+		}
+		authority, err := e.states.authorityForToolDriftResetLocked(cfg)
+		if err != nil {
+			return "", "", e.states.upstreamToolBaseline.DriftEpoch()
+		}
+		return authority.Target(), authority.InstanceID(), e.states.upstreamToolBaseline.DriftEpoch()
+	}
+	return e.states.currentUpstreamDriftResetBinding()
+}
+
+func resetAuthorityConfigEnabled(cfg *tools.ToolScanConfig) bool {
+	return cfg != nil && cfg.DetectDrift && cfg.ListenerDriftResetFile != "" &&
+		len(cfg.ListenerDriftResetAuthorityPublicKey) != 0 && cfg.ListenerDriftResetTarget != ""
+}
+
+func resetAuthorityMatchesToolConfig(authority *ResetAuthority, resetFile string, cfg *tools.ToolScanConfig) bool {
+	return resetAuthorityConfigEnabled(cfg) && cfg.ListenerDriftResetFile == resetFile &&
+		authority != nil && authority.target == cfg.ListenerDriftResetTarget &&
+		bytes.Equal(authority.publicKey, cfg.ListenerDriftResetAuthorityPublicKey)
+}
+
+func (s *mcpListenerClientStates) advanceUpstreamDriftResetEpoch(authority *ResetAuthority, resetFile string, cfgFn func() *tools.ToolScanConfig, expected uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cfgFn != nil && !resetAuthorityMatchesToolConfig(authority, resetFile, cfgFn()) {
 		return false
 	}
-	s.resetDriftState()
-	return true
+	if s.resetAuthority != authority {
+		return false
+	}
+	return s.upstreamToolBaseline.ResetDriftStateAtEpoch(expected)
+}
+
+func (s *mcpListenerClientStates) currentUpstreamDriftResetBinding() (target, instanceID string, epoch uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resetAuthority != nil {
+		target = s.resetAuthority.Target()
+		instanceID = s.resetAuthority.InstanceID()
+	}
+	return target, instanceID, s.upstreamToolBaseline.DriftEpoch()
+}
+
+// resetUpstreamToolDriftStateIfRequested consumes a signed operator delegation
+// before a request reaches the upstream. It resets only definition hashes;
+// per-token known-tool binding state remains intact.
+func (s *mcpListenerClientStates) resetUpstreamToolDriftStateIfRequested(cfg *tools.ToolScanConfig, logW io.Writer) ResetAuthorityDecision {
+	if cfg == nil || !cfg.DetectDrift || cfg.ListenerDriftResetFile == "" {
+		return ResetAuthorityDecision{Result: ResetAuthorityAbsent}
+	}
+	authority, err := s.authorityForToolDriftReset(cfg)
+	if err != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: tool drift reset authority unavailable: %v\n", err)
+		return ResetAuthorityDecision{Result: ResetAuthorityUnreadable}
+	}
+	return consumeToolDriftResetFile(cfg.ListenerDriftResetFile, authority, listenerDriftResetEpoch{
+		states: s, authority: authority, resetFile: cfg.ListenerDriftResetFile,
+	}, logW)
+}
+
+func (s *mcpListenerClientStates) authorityForToolDriftReset(cfg *tools.ToolScanConfig) (*ResetAuthority, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.authorityForToolDriftResetLocked(cfg)
+}
+
+// authorityForToolDriftResetLocked requires s.mu.
+func (s *mcpListenerClientStates) authorityForToolDriftResetLocked(cfg *tools.ToolScanConfig) (*ResetAuthority, error) {
+	if len(cfg.ListenerDriftResetAuthorityPublicKey) == 0 || cfg.ListenerDriftResetTarget == "" {
+		return nil, fmt.Errorf("configure listener_drift_reset_authority_public_key_file and listener_drift_reset_target")
+	}
+	configKey := fmt.Sprintf("%x:%s", cfg.ListenerDriftResetAuthorityPublicKey, cfg.ListenerDriftResetTarget)
+	if s.resetAuthority != nil && s.resetAuthorityConfig == configKey {
+		return s.resetAuthority, nil
+	}
+	authority, err := NewResetAuthority(cfg.ListenerDriftResetAuthorityPublicKey, cfg.ListenerDriftResetTarget)
+	if err != nil {
+		return nil, err
+	}
+	s.resetAuthority = authority
+	s.resetAuthorityConfig = configKey
+	return authority, nil
+}
+
+func logResetAuthorityDecision(logW io.Writer, decision ResetAuthorityDecision) {
+	if logW == nil || decision.Result == ResetAuthorityAbsent {
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: %s\n", resetAuthorityDecisionSummary(decision))
+}
+
+func auditResetAuthorityDecision(logger *audit.Logger, resource string, decision ResetAuthorityDecision) {
+	if logger == nil || decision.Result == ResetAuthorityAbsent {
+		return
+	}
+	logger.LogAnomaly(
+		mustMCPAuditContext(logger, mcpWarnMethod, resource),
+		"mcp_reset_authority",
+		resetAuthorityDecisionSummary(decision),
+		0,
+	)
+}
+
+func resetAuthorityDecisionSummary(decision ResetAuthorityDecision) string {
+	d := decision.Delegation
+	summary := fmt.Sprintf("MCP reset authority issuer=%q target=%q epoch=%d expiry=%d nonce=%q result=%s",
+		d.Issuer, d.Target, d.Epoch, d.ExpiresUnix, d.Nonce, decision.Result)
+	if decision.Result != ResetAuthorityAccepted {
+		summary += fmt.Sprintf(" expected_target=%q expected_instance=%q expected_epoch=%d",
+			decision.ExpectedTarget, decision.ExpectedInstanceID, decision.ExpectedEpoch)
+	}
+	return summary
 }
 
 func (s *mcpListenerClientStates) touchLocked(state *mcpListenerClientState) {

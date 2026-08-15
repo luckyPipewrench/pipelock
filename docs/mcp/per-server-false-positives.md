@@ -222,40 +222,71 @@ can be set above zero to drop one level after that many consecutive clean
 requests; any adaptive signal resets that streak, so mixed clean/blocked traffic
 does not advance recovery.
 
-Launch the proxy with the reset-file path:
+Create an `mcp-reset-authority` key outside the proxy and wrapped server, then
+export only its public half into the proxy deployment:
+
+```bash
+pipelock signing key generate --purpose mcp-reset-authority \
+  --out /etc/pipelock/operator/code-assistant-reset.json
+pipelock signing key export-public \
+  --key /etc/pipelock/operator/code-assistant-reset.json \
+  --out /etc/pipelock/code-assistant-reset.pub
+```
+
+Launch the proxy with the reset-file path, public key, and a stable reset
+target:
 
 ```bash
 pipelock mcp proxy --config pipelock.yaml \
   --server-name code-assistant \
   --adaptive-reset-file /run/pipelock/code-assistant-reset \
+  --adaptive-reset-authority-public-key-file /etc/pipelock/code-assistant-reset.pub \
+  --adaptive-reset-target mcp://code-assistant/adaptive \
   -- code-assistant mcp-server
 ```
 
-When the file at that path appears, the proxy clears the session's
-adaptive-enforcement escalation on the next message and removes the file
-(one-shot). To recover a wedged session, the operator creates it:
+At startup the proxy writes its reset target, random instance ID, and epoch
+`0` to stderr. When a valid signed delegation appears at that path, the proxy
+clears the session's adaptive-enforcement escalation on the next message and
+removes the file (one-shot). To recover a wedged session, mint a delegation
+using the current status values:
 
 ```bash
-install -m 0600 /dev/null /run/pipelock/code-assistant-reset   # owner-only, owned by you
+pipelock signing reset mint \
+  --key /etc/pipelock/operator/code-assistant-reset.json \
+  --kind adaptive \
+  --target mcp://code-assistant/adaptive \
+  --instance 0123456789abcdef0123456789abcdef \
+  --epoch 0 \
+  --ttl 5m \
+  --out /run/pipelock/code-assistant-reset
 ```
 
-The proxy honors the file only when it is a regular file, mode `0600`
-(owner-only - no group or other permission bits), and owned by the proxy's own
-user. An over-permissive, wrong-owner, or symlinked file is **ignored and
-removed** with a warning, fail-safe.
+The control-file owner and mode are not authority. The wrapped agent may share
+the proxy UID and write a file, but it cannot mint a short-lived delegation
+signed by the operator key. The proxy and wrapped child receive only the public
+key. The audit output records the issuer, target, epoch, expiry, nonce, and
+result. An accepted reset increments the epoch, so a repeated or pre-restart
+delegation is refused.
 
-> **Place the reset file where the wrapped agent cannot write it.** The reset is
-> a privilege de-escalation (it clears an airlock), so a contained agent that
-> could create its own reset file would self-clear its own escalation and defeat
-> it. The owner/mode checks block a different-uid contained agent from planting a
-> file the proxy honors; in a same-user (bare) deployment the agent shares the
-> proxy's uid, so the directory must not be agent-writable.
+> **Authority failures fail closed.** An absent configuration, unsigned file,
+> expired delegation, wrong key, target, instance, epoch, kind, or replay leaves
+> the airlock in place. Rejected regular delegation files are removed to prevent
+> repeated attempts; absent authority configuration leaves the file untouched.
 >
-> **Windows.** File mode bits there are not security-meaningful (they do not
-> reflect the NTFS ACL), so the proxy cannot verify the reset file's owner. Since
-> the reset authorizes a de-escalation, this control fails closed on Windows:
-> `--adaptive-reset-file` is rejected at startup. Restart the proxy to clear an
-> adaptive escalation on Windows.
+> **Windows.** Reset authority is cryptographic rather than filesystem-based, so
+> the same signed delegation flow works without trusting mode bits or file owner.
+
+### Upgrade note: adaptive reset files now need signed authority
+
+Existing `--adaptive-reset-file` users must also set
+`--adaptive-reset-authority-public-key-file` and `--adaptive-reset-target`, then
+mint a new delegation for each reset. A reset file by itself no longer proves
+operator authority. Generate a replacement key to rotate or revoke an issuer,
+update the public-key flag, and restart the proxy. Keep an offline backup of
+the private key for recovery. Use `pipelock signing reset inspect` before use
+and `pipelock signing reset revoke --file /run/pipelock/code-assistant-reset`
+to cancel a pending delegation at that path.
 
 ## Tier
 

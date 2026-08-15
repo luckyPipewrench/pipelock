@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -51,10 +52,131 @@ type LaunchConfig struct {
 	// to this parent Unix socket path.
 	BridgeSocketPath string
 
+	// GateTargetStart blocks sandbox-init before it starts or execs Command
+	// when this launch uses UID/GID mappings. The parent must start the
+	// returned PreparedSandboxCmd through StartWithParentHardening so the
+	// target cannot run until the parent hardens itself after mapping setup.
+	// Launches without mappings deliberately do not get this gate: they retain
+	// eager, pre-spawn parent hardening.
+	GateTargetStart bool
+
 	// Stdin, Stdout, Stderr are connected to the child process.
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+}
+
+// PreparedSandboxCmd is a sandbox command together with its explicit launch
+// ordering contract. ParentHardeningAfterStart is true only when Go must write
+// UID/GID mappings before the parent becomes non-dumpable.
+//
+// Call StartWithParentHardening instead of Cmd.Start. It owns both safe
+// orderings: eager hardening for no-map launches and gated post-map hardening
+// for launches that use UID/GID mappings.
+type PreparedSandboxCmd struct {
+	Cmd                       *exec.Cmd
+	ParentHardeningAfterStart bool
+
+	readinessReader *os.File
+	readinessWriter *os.File
+}
+
+// Close releases unstarted readiness-pipe descriptors. It is safe to call
+// after StartWithParentHardening; successful launches close both ends there.
+func (p *PreparedSandboxCmd) Close() {
+	if p == nil {
+		return
+	}
+	if p.readinessReader != nil {
+		_ = p.readinessReader.Close()
+		p.readinessReader = nil
+	}
+	if p.readinessWriter != nil {
+		_ = p.readinessWriter.Close()
+		p.readinessWriter = nil
+	}
+}
+
+// StartWithParentHardening starts the sandbox child in the ordering selected
+// by PrepareSandboxLaunch. Full namespace launches keep the parent dumpable
+// until Go has written UID/GID mappings, then harden and release sandbox-init.
+// All other launches harden before the first child starts.
+//
+// Any post-start failure closes the readiness pipe, kills the child, waits for
+// it, and removes the child sandbox directory. No blocked child is left behind.
+func (p *PreparedSandboxCmd) StartWithParentHardening(harden func() error) error {
+	if p == nil || p.Cmd == nil {
+		return fmt.Errorf("sandbox launch is nil")
+	}
+	if harden == nil {
+		return fmt.Errorf("sandbox parent hardening callback is nil")
+	}
+
+	if !p.ParentHardeningAfterStart {
+		if err := harden(); err != nil {
+			return fmt.Errorf("hardening parent before sandbox start: %w", err)
+		}
+		if err := recordParentHardeningForTest(); err != nil {
+			return fmt.Errorf("recording parent hardening: %w", err)
+		}
+		if err := p.Cmd.Start(); err != nil {
+			p.Close()
+			return fmt.Errorf("starting sandbox child: %w", err)
+		}
+		p.closeReadinessReader()
+		return nil
+	}
+
+	if err := p.Cmd.Start(); err != nil {
+		p.Close()
+		return fmt.Errorf("starting mapped sandbox child: %w", err)
+	}
+	p.closeReadinessReader()
+
+	if err := harden(); err != nil {
+		p.abortStartedChild()
+		return fmt.Errorf("hardening parent after sandbox mapping: %w", err)
+	}
+	if err := recordParentHardeningForTest(); err != nil {
+		p.abortStartedChild()
+		return fmt.Errorf("recording parent hardening: %w", err)
+	}
+	if err := p.releaseTargetStart(); err != nil {
+		p.abortStartedChild()
+		return fmt.Errorf("releasing sandbox target after parent hardening: %w", err)
+	}
+	return nil
+}
+
+func (p *PreparedSandboxCmd) closeReadinessReader() {
+	if p.readinessReader != nil {
+		_ = p.readinessReader.Close()
+		p.readinessReader = nil
+	}
+}
+
+func (p *PreparedSandboxCmd) releaseTargetStart() error {
+	if p.readinessWriter == nil {
+		return fmt.Errorf("sandbox readiness writer is unavailable")
+	}
+	n, err := p.readinessWriter.Write([]byte{1})
+	if err == nil && n != 1 {
+		err = io.ErrShortWrite
+	}
+	if closeErr := p.readinessWriter.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	p.readinessWriter = nil
+	return err
+}
+
+func (p *PreparedSandboxCmd) abortStartedChild() {
+	if p.Cmd.Process != nil {
+		_ = p.Cmd.Process.Kill()
+		_ = p.Cmd.Wait()
+	}
+	p.Close()
+	CleanupSandboxCmd(p.Cmd)
 }
 
 // PrepareSandboxCmd builds an exec.Cmd configured to re-exec pipelock in
@@ -68,6 +190,20 @@ type LaunchConfig struct {
 //
 // For simple cases, use LaunchSandboxed which calls Start automatically.
 func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
+	if cfg.GateTargetStart {
+		return nil, fmt.Errorf("sandbox target-start gate requires PrepareSandboxLaunch")
+	}
+	launch, err := PrepareSandboxLaunch(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return launch.Cmd, nil
+}
+
+// PrepareSandboxLaunch builds a sandbox command and records which parent
+// hardening ordering applies. A readiness pipe is installed only when both the
+// caller requested it and this launch uses user-namespace UID/GID mappings.
+func PrepareSandboxLaunch(cfg LaunchConfig) (*PreparedSandboxCmd, error) {
 	if runtime.GOOS != osLinux {
 		return nil, fmt.Errorf("%w: sandbox requires Linux", ErrUnavailable)
 	}
@@ -143,7 +279,8 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	}
 	cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
 
-	if hasNamespaces {
+	usesUserNamespaceMappings := hasNamespaces
+	if usesUserNamespaceMappings {
 		// Full isolation: user + network namespace.
 		// Strict mode adds CLONE_NEWNS (mount namespace) for private /dev/shm.
 		cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
@@ -172,7 +309,23 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 		}
 	}
 
-	return cmd, nil
+	launch := &PreparedSandboxCmd{
+		Cmd:                       cmd,
+		ParentHardeningAfterStart: cfg.GateTargetStart && usesUserNamespaceMappings,
+	}
+	if launch.ParentHardeningAfterStart {
+		reader, writer, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			return nil, fmt.Errorf("creating sandbox readiness pipe: %w", pipeErr)
+		}
+		launch.readinessReader = reader
+		launch.readinessWriter = writer
+		cmd.ExtraFiles = append(cmd.ExtraFiles, reader)
+		fd := 3 + len(cmd.ExtraFiles) - 1
+		cmd.Env = append(cmd.Env, sandboxReadinessFDEnv+"="+strconv.Itoa(fd))
+	}
+
+	return launch, nil
 }
 
 // LaunchSandboxed is a convenience wrapper that prepares and starts a

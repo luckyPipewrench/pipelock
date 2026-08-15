@@ -183,6 +183,18 @@ func writeReceiptsToDir(t *testing.T, dir string, receipts []receipt.Receipt) {
 	_ = rec.Close()
 }
 
+func receiptDetailPath(t *testing.T, dir string) string {
+	t.Helper()
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, testSessionID)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	if len(receipts) == 0 {
+		t.Fatal("receipt detail path requires at least one receipt")
+	}
+	return "/session/" + testSessionID + "/receipt/" + receipts[0].ActionRecord.ActionID
+}
+
 func newTestRecorder(t *testing.T, dir string, priv ed25519.PrivateKey) *recorder.Recorder {
 	t.Helper()
 	rec, err := recorder.New(recorder.Config{

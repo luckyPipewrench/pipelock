@@ -658,6 +658,7 @@ func TestHandler_SharedNavReachabilityFromRenderedViews(t *testing.T) {
 	t.Parallel()
 
 	dir, trusted := writeTrustedHandlerSession(t)
+	investigatorPath := receiptDetailPath(t, dir)
 	handler := New(Options{
 		TrustedOuterAuth:    true,
 		ReceiptDir:          dir,
@@ -672,7 +673,7 @@ func TestHandler_SharedNavReachabilityFromRenderedViews(t *testing.T) {
 		{path: "/", activeKey: "overview"},
 		{path: "/evidence", activeKey: "evidence"},
 		{path: "/session/" + testSessionID, activeKey: "evidence"},
-		{path: "/session/" + testSessionID + "/receipt/0", activeKey: "evidence"},
+		{path: investigatorPath, activeKey: "evidence"},
 		{path: "/exemptions", activeKey: "exemptions"},
 		{path: "/agents", activeKey: "agents"},
 		{path: "/agent/" + testActor, activeKey: "agents"},
@@ -700,6 +701,7 @@ func TestHandler_SharedHeaderCSSSingleSourcedAcrossRenderedViews(t *testing.T) {
 	t.Parallel()
 
 	dir, trusted := writeTrustedHandlerSession(t)
+	investigatorPath := receiptDetailPath(t, dir)
 	handler := New(Options{
 		TrustedOuterAuth:    true,
 		ReceiptDir:          dir,
@@ -714,7 +716,7 @@ func TestHandler_SharedHeaderCSSSingleSourcedAcrossRenderedViews(t *testing.T) {
 		"/",
 		"/evidence",
 		"/session/" + testSessionID,
-		"/session/" + testSessionID + "/receipt/0",
+		investigatorPath,
 		"/exemptions",
 		"/agents",
 		"/agent/" + testActor,

@@ -1011,7 +1011,9 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
-| `listener_drift_reset_file` | `""` | Owner-only one-shot reset file for the HTTP reverse listener's upstream drift baseline |
+| `listener_drift_reset_file` | `""` | One-shot signed reset-delegation control-file path for the HTTP reverse listener's upstream drift baseline |
+| `listener_drift_reset_authority_public_key_file` | `""` | Exported `mcp-reset-authority` public key used to verify listener reset delegations |
+| `listener_drift_reset_target` | `""` | Stable listener identity that a reset delegation must name |
 
 When `detect_drift` is enabled, Pipelock hashes the canonical full tool object
 from `tools/list`, excluding only Pipelock's own provenance attestation in
@@ -1065,35 +1067,89 @@ drift baseline per client, which would restore the fresh-session rug-pull
 bypass.
 
 With `action: block`, a confirmed upstream update that Pipelock blocked needs
-an operator re-baseline. Configure an owner-only one-shot control file on the
-listener:
+an operator re-baseline. Configure a signed one-shot control-file path, the
+operator public key, and a stable listener identity:
 
-```yaml
+```yaml pipelock-fragment
+# pipelock-fragment-id: mcp-drift-reset-authority
 mcp_tool_scanning:
   enabled: true
   action: block
   detect_drift: true
   listener_drift_reset_file: /run/pipelock/mcp-tool-drift.reset
+  listener_drift_reset_authority_public_key_file: /etc/pipelock/reset-authority.pub
+  listener_drift_reset_target: mcp://billing-listener
 ```
 
-After confirming the update, the proxy owner creates the file with mode 0600:
+Create the key outside the proxy and wrapped MCP server, then export only its
+public half into the listener deployment:
 
 ```bash
-install -m 0600 /dev/null /run/pipelock/mcp-tool-drift.reset
+pipelock signing key generate --purpose mcp-reset-authority \
+  --out /etc/pipelock/operator/reset-authority.json
+pipelock signing key export-public \
+  --key /etc/pipelock/operator/reset-authority.json \
+  --out /etc/pipelock/reset-authority.pub
 ```
 
-The next listener request consumes the file, resets only that listener's
-upstream definition hashes, and requires a clean `tools/list` to establish the
-replacement inventory. It does not disable drift detection or change any
-token-bound session-binding baseline. The file must be a regular owner-only
-file owned by the proxy user; unsafe files are ignored and removed. Place it
-in a directory the MCP client cannot write. In a same-user deployment, the
-client shares the proxy uid, so owner checks alone cannot distinguish an
-operator file from a client-created one.
+At listener startup, Pipelock logs the target, a random instance ID, and epoch
+`0`. After confirming the update, mint a short-lived delegation bound to that
+exact status and write it at the configured control-file path:
 
-On Windows, Pipelock cannot verify the file owner from filesystem mode bits and
-will not honor this reset path. Restart the listener after confirming the
-upstream update to establish a new drift baseline.
+```bash
+pipelock signing reset mint \
+  --key /etc/pipelock/operator/reset-authority.json \
+  --kind drift \
+  --target mcp://billing-listener \
+  --instance 0123456789abcdef0123456789abcdef \
+  --epoch 0 \
+  --ttl 5m \
+  --out /run/pipelock/mcp-tool-drift.reset
+```
+
+The next listener request consumes a valid delegation, resets only that
+listener's upstream definition hashes, and requires a clean `tools/list` to
+establish the replacement inventory. It does not disable drift detection or
+change any token-bound session-binding baseline. An accepted reset increments
+the drift epoch, so a `tools/list` response that was already in flight under
+the old epoch is rejected. The audit line records the issuer, target, epoch,
+expiry, nonce, and result; the next delegation uses that epoch plus one.
+
+The listener retains at most 1024 unexpired consumed nonces. If the ledger is
+full, it rejects the delegation with `result=capacity_exceeded` and keeps the
+drift block in place. This does not require a restart: once an earlier
+delegation expires, the next attempt removes only expired entries before it
+checks capacity. Delegations last at most 15 minutes.
+
+The control-file owner and mode are not authority. A wrapped same-UID agent can
+write a file, but it cannot mint a delegation signed by the operator key. Keep
+the private key outside the proxy and wrapped child. A missing, expired,
+wrong-target, wrong-epoch, replayed, unsigned, or wrong-key delegation leaves
+the drift block in place. Rejected regular delegation files are removed so they
+cannot be retried forever; an absent authority configuration leaves the file
+untouched and also leaves the block in place.
+
+### Upgrade note: signed listener reset authority
+
+`listener_drift_reset_file` is no longer proof of authority. Existing users
+must generate an `mcp-reset-authority` key, export its public half, add
+`listener_drift_reset_authority_public_key_file` and
+`listener_drift_reset_target`, then mint a fresh delegation for every reset.
+Delegations from before a proxy restart cannot be reused because the random
+instance ID changes. To rotate or revoke an issuer, generate and export a new
+key, update the public-key path, and reload or restart the listener; old-key
+delegations then fail closed. A hot reload gives the current binding in the
+rejected reset audit line as `expected_target`, `expected_instance`, and
+`expected_epoch`. Mint the next delegation with those values. Keep an offline
+backup of the private key for recovery. Inspect or cancel a pending delegation
+with:
+
+```bash
+pipelock signing reset inspect \
+  --file /run/pipelock/mcp-tool-drift.reset \
+  --public-key-file /etc/pipelock/reset-authority.pub
+pipelock signing reset revoke --file /run/pipelock/mcp-tool-drift.reset
+```
 
 ## MCP Tool Policy
 

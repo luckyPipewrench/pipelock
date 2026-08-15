@@ -18,7 +18,6 @@ import (
 	"html/template"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -515,7 +514,7 @@ func sessionFromRequest(r *http.Request) string {
 		return "-"
 	}
 	// Trim to the session ID for the audit field. The investigator path is
-	// /session/<id>/receipt/<seq>, so cut at the first "/" to log <id>
+	// /session/<id>/receipt/<action-id>, so cut at the first "/" to log <id>
 	// rather than the full sub-path.
 	rest := strings.TrimPrefix(r.URL.Path, "/session/")
 	if i := strings.IndexByte(rest, '/'); i >= 0 {
@@ -912,7 +911,7 @@ type agentsPageData struct {
 type investigatorPageData struct {
 	Nav         NavContext
 	SessionID   string
-	Seq         uint64
+	Seq         string
 	Explanation evidenceview.DecisionExplanation
 	RawAllowed  bool
 }
@@ -1187,7 +1186,7 @@ func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	// Handle /session/<id>/receipt/<seq> — the investigator route.
+	// Handle /session/<id>/receipt/<action-id> — the investigator route.
 	if strings.Contains(rest, "/") {
 		d.handleSessionReceipt(w, r, rest)
 		return
@@ -1202,7 +1201,7 @@ func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request)
 }
 
 func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.Request, rest string) {
-	// Expected: <sessionID>/receipt/<seq>
+	// Expected: <sessionID>/receipt/<action-id>
 	parts := strings.SplitN(rest, "/", 3)
 	if len(parts) != 3 || parts[1] != "receipt" || parts[0] == "" || parts[2] == "" {
 		http.NotFound(w, r)
@@ -1214,12 +1213,8 @@ func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
-	seq, err := strconv.ParseUint(parts[2], 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	explanation, found, err := d.model.ReceiptDetail(sessionID, seq)
+	actionID := parts[2]
+	explanation, found, err := d.model.ReceiptDetail(sessionID, actionID)
 	if err != nil {
 		http.Error(w, "could not read receipt detail", http.StatusInternalServerError)
 		return
@@ -1235,7 +1230,7 @@ func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.R
 	data := investigatorPageData{
 		Nav:         navFromContext(r),
 		SessionID:   sessionID,
-		Seq:         seq,
+		Seq:         explanation.ChainSeq.Detail,
 		Explanation: explanation,
 		RawAllowed:  raw,
 	}

@@ -917,6 +917,65 @@ func TestCeeRecordMCP_FragmentDLPBlock(t *testing.T) {
 	}
 }
 
+func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
+	fb := scanner.NewFragmentBuffer(65536, 1, testMCPWindowSecs)
+	t.Cleanup(fb.Close)
+	if result := fb.Append("trusted-session", []byte("first fragment")); result.CapacityExceeded {
+		t.Fatal("trusted session did not fit")
+	}
+
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	m := metrics.New()
+	cee := &CEEDeps{
+		Buffer:  fb,
+		Metrics: m,
+		Config: &config.CrossRequestDetection{
+			FragmentReassembly: config.CrossRequestFragments{
+				Enabled:        true,
+				MaxBufferBytes: 65536,
+				WindowMinutes:  testMCPWindowSecs / 60,
+			},
+			Action: config.ActionWarn,
+		},
+	}
+
+	var logBuf bytes.Buffer
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("create audit logger: %v", err)
+	}
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: []byte("new fragment"), fragmentPayloads: map[string][]byte{"": []byte("new fragment")}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	})
+	if !strings.Contains(reason, "fragment session capacity exhausted") {
+		t.Fatalf("capacity reason = %q, want visible fail-closed denial", reason)
+	}
+	logger.Close()
+	auditRaw, err := os.ReadFile(auditPath) // #nosec G304 -- auditPath is inside t.TempDir.
+	if err != nil {
+		t.Fatalf("read capacity audit: %v", err)
+	}
+	if !bytes.Contains(auditRaw, []byte("cross_request_fragment_capacity")) {
+		t.Fatalf("capacity audit = %s, want blocking event", auditRaw)
+	}
+
+	var count float64
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() == "pipelock_cross_request_fragment_session_capacity_exceeded_total" && len(family.Metric) == 1 {
+			count = family.Metric[0].GetCounter().GetValue()
+		}
+	}
+	if count != 1 {
+		t.Fatalf("fragment-session capacity metric = %v, want 1", count)
+	}
+}
+
 func TestCeeRecordMCP_FragmentDLPWarn(t *testing.T) {
 	fb := scanner.NewFragmentBuffer(65536, 1000, testMCPWindowSecs)
 	defer fb.Close()

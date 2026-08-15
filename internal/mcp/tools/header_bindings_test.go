@@ -5,6 +5,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -46,7 +47,7 @@ func TestExtractHeaderBindings_CurrentSpecConstraints(t *testing.T) {
 func TestToolBaseline_HeaderBindingsReplaceAndClear(t *testing.T) {
 	baseline := NewToolBaseline()
 	defs := []ToolDef{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`)}}
-	baseline.SetToolHeaderBindings(defs)
+	requireHeaderBindings(t, baseline, defs)
 	if bindings, ok := baseline.HeaderBindings("echo"); !ok || bindings["region"].Type != "string" {
 		t.Fatalf("stored bindings = %#v ok=%v", bindings, ok)
 	}
@@ -61,10 +62,13 @@ func TestToolBaseline_HeaderBindingsErrorAndCopyBoundaries(t *testing.T) {
 	if bindings, ok := nilBaseline.HeaderBindings("echo"); ok || bindings != nil {
 		t.Fatalf("nil baseline returned bindings = %#v ok=%v", bindings, ok)
 	}
+	if !nilBaseline.CanAdmitHeaderBindings([]ToolDef{{Name: "echo"}}) {
+		t.Fatal("nil baseline rejected a header-binding contract")
+	}
 
 	baseline := &ToolBaseline{}
 	valid := ToolDef{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`)}
-	baseline.SetToolHeaderBindings([]ToolDef{valid})
+	requireHeaderBindings(t, baseline, []ToolDef{valid})
 	bindings, ok := baseline.HeaderBindings("echo")
 	if !ok {
 		t.Fatal("valid definition did not initialize the header contract map")
@@ -76,7 +80,7 @@ func TestToolBaseline_HeaderBindingsErrorAndCopyBoundaries(t *testing.T) {
 	}
 
 	invalid := ToolDef{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"number","x-mcp-header":"Region"}}}`)}
-	baseline.SetToolHeaderBindings([]ToolDef{invalid})
+	requireHeaderBindings(t, baseline, []ToolDef{invalid})
 	if _, ok := baseline.HeaderBindings("echo"); ok {
 		t.Fatal("invalid replacement retained the previous header contract")
 	}
@@ -118,12 +122,11 @@ func TestToolBaseline_HeaderBindingsRespectCaps(t *testing.T) {
 	for i := range defs {
 		defs[i] = ToolDef{Name: fmt.Sprintf("tool-%d", i), InputSchema: schema}
 	}
-	baseline.SetToolHeaderBindings(defs)
-	if got := len(baseline.headerBindings); got != maxBaselineTools {
-		t.Fatalf("header contract tools = %d, want cap %d", got, maxBaselineTools)
+	if err := baseline.SetToolHeaderBindings(defs); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("header binding overflow error = %v, want ErrBaselineCapacity", err)
 	}
-	if _, ok := baseline.HeaderBindings(fmt.Sprintf("tool-%d", maxBaselineTools)); ok {
-		t.Fatal("tool beyond baseline cap received a header contract")
+	if got := len(baseline.headerBindings); got != 0 {
+		t.Fatalf("partial header contracts committed: %d", got)
 	}
 
 	properties := make([]string, maxToolHeaderBindings+1)

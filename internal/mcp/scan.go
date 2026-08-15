@@ -756,6 +756,11 @@ func agentCardToVerdict(rpcID json.RawMessage, result AgentCardScanResult, cfg *
 	}
 
 	var matches []scanner.ResponseMatch
+	if result.BaselineCapacityExceeded {
+		matches = append(matches, scanner.ResponseMatch{
+			PatternName: "a2a_card_baseline_capacity",
+		})
+	}
 	if result.DriftDetected {
 		matches = append(matches, scanner.ResponseMatch{
 			PatternName: "a2a_card_drift",

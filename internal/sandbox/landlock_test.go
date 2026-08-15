@@ -33,6 +33,12 @@ const landlockTestEnv = "__SANDBOX_LANDLOCK_TEST"
 // consuming the whole package timeout.
 const landlockChildTimeout = 60 * time.Second
 
+var (
+	mcpEnvironProofBinaryPath  string
+	mcpEnvironProofBuildOutput []byte
+	errMCPEnvironProofBuild    error
+)
+
 func TestMain(m *testing.M) {
 	if guardruntime.IsExecMode() {
 		guardruntime.RunExec()
@@ -55,7 +61,27 @@ func TestMain(m *testing.M) {
 		runLandlockTestChild(op)
 		return
 	}
-	os.Exit(m.Run())
+
+	var proofBuildDir string
+	if runtime.GOARCH == "amd64" && os.Getenv("PIPELOCK_MCP_ENVIRON_PROOF_HELPER") == "" {
+		proofBuildDir, errMCPEnvironProofBuild = os.MkdirTemp("", "pipelock-mcp-environ-proof-")
+		if errMCPEnvironProofBuild == nil {
+			errMCPEnvironProofBuild = os.Chmod(proofBuildDir, 0o750) // #nosec G302 -- directory mode follows repository policy
+		}
+		if errMCPEnvironProofBuild == nil {
+			mcpEnvironProofBinaryPath = filepath.Join(proofBuildDir, "pipelock-mcp-environ-proof")
+			buildCtx, cancelBuild := context.WithTimeout(context.Background(), 2*time.Minute)
+			cmd := exec.CommandContext(buildCtx, "go", "build", "-tags=mcp_hardening_test", "-o", mcpEnvironProofBinaryPath, "./cmd/pipelock/") // #nosec G204 G702 -- fixed repository build for the integration proof
+			cmd.Dir = filepath.Join("..", "..")
+			mcpEnvironProofBuildOutput, errMCPEnvironProofBuild = cmd.CombinedOutput()
+			cancelBuild()
+		}
+	}
+	code := m.Run()
+	if proofBuildDir != "" {
+		_ = os.RemoveAll(proofBuildDir)
+	}
+	os.Exit(code)
 }
 
 // runLandlockTestChild is executed in the sandboxed child process.

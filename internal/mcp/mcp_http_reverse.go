@@ -197,6 +197,15 @@ func RunHTTPListenerProxy(
 	}
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
+	listenerClients.resetAuthorityToolCfgFn = opts.toolCfg
+	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.ListenerDriftResetFile != "" {
+		if authority, authorityErr := listenerClients.authorityForToolDriftReset(toolCfg); authorityErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: tool drift reset authority unavailable: %v\n", authorityErr)
+		} else {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reset authority target=%q instance=%q epoch=%d\n",
+				authority.Target(), authority.InstanceID(), listenerClients.upstreamDriftEpoch())
+		}
+	}
 
 	// Base opts shared across requests. Per-request fields (Rec) are
 	// overridden on a copy inside each request handler. The static
@@ -437,8 +446,30 @@ func RunHTTPListenerProxy(
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
 		fullRequestBaseOpts := requestBaseOpts
-		if listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), safeLogW) {
-			resetReason := "operator re-baselined the HTTP listener tool inventory using mcp_tool_scanning.listener_drift_reset_file"
+		reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), io.Discard)
+		reportReset := reset.Result == ResetAuthorityAccepted
+		resetCount := uint64(1)
+		if reset.Result != ResetAuthorityAbsent && !reportReset {
+			resetCount, reportReset = listenerClients.resetDecisionReporter.observe()
+		}
+		if reportReset {
+			detail := resetAuthorityDecisionSummary(reset)
+			if resetCount > 1 {
+				detail = fmt.Sprintf("%s (decisions_since_last_report=%d)", detail, resetCount)
+			}
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", detail)
+			if requestBaseOpts.AuditLogger != nil {
+				requestBaseOpts.AuditLogger.LogAnomaly(
+					mustMCPAuditContext(requestBaseOpts.AuditLogger, "MCP", "http-listener"),
+					"mcp_reset_authority",
+					detail,
+					0,
+				)
+			}
+		}
+		recordResetAuthorityCapacity(opts.Metrics, reset)
+		if reset.Result == ResetAuthorityAccepted {
+			resetReason := "operator re-baselined the HTTP listener tool inventory with a signed mcp-reset-authority delegation"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", resetReason)
 			if requestBaseOpts.AuditLogger != nil {
 				requestBaseOpts.AuditLogger.LogAnomaly(
@@ -449,6 +480,7 @@ func RunHTTPListenerProxy(
 				)
 			}
 		}
+		var upstreamDriftEpoch uint64
 		statefulControls := listenerHasStatefulControls(opts)
 		principalControls := listenerHasPrincipalScopedControls(opts)
 		requireStateToken := listenerRequiresStateToken(opts)
@@ -462,11 +494,14 @@ func RunHTTPListenerProxy(
 			clientState = state
 			clientStateKey = state.key
 			listenerToolCfgFn := func() *tools.ToolScanConfig {
-				return listenerClients.toolConfig(clientState, opts.toolCfg())
+				return listenerClients.toolConfigAtDriftEpoch(clientState, opts.toolCfg(), upstreamDriftEpoch)
 			}
 			requestBaseOpts.ToolCfg = listenerToolCfgFn()
 			requestBaseOpts.ToolCfgFn = listenerToolCfgFn
 		}
+		// Bind this request to the shared drift baseline after any pending signed
+		// reset above and before the request reaches the upstream.
+		upstreamDriftEpoch = listenerClients.upstreamDriftEpoch()
 		setClientState(clientState)
 		if statefulControls && listenerPrincipal.key != "" {
 			if state, ok := listenerClients.stateForPrincipal(listenerPrincipal); ok {
@@ -484,7 +519,7 @@ func RunHTTPListenerProxy(
 			setClientState(listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")))
 			stateBound = true
 		}
-		if requireStateToken && !stateBound && listenerSessionToken != "" {
+		if requireStateToken && !stateBound && listenerPrincipal.key == "" && listenerSessionToken != "" {
 			if state, ok := listenerClients.stateForToken(listenerSessionToken); ok {
 				setClientState(state)
 				stateBound = true
@@ -493,15 +528,16 @@ func RunHTTPListenerProxy(
 		if !stateBound && (requireStateToken || listenerPrincipal.key != "") {
 			// An unbound client receives stateless content and tool-poison scanning,
 			// plus its resulting evidence. It never enters a state partition
-			// selected by client-controlled routing data. An authenticated
-			// principal reaches here when the registry could not admit its state,
-			// which degrades that request to stateless rather than denying it; a
-			// saturated registry must not become an outage for every principal.
+			// selected by client-controlled routing data. A verified principal that
+			// cannot obtain a required state partition is rejected below instead of
+			// forwarding without its baseline, chain matcher, taint, CEE, and tool
+			// freezer controls.
 			clientState = listenerClients.newUnboundState()
 			clientStateKey = clientState.key
 			defer listenerClients.discardUnboundState(clientState)
 			requestBaseOpts = listenerStatelessRequestOpts(requestBaseOpts)
 		}
+		principalStateAdmissionDenied := statefulControls && listenerPrincipal.key != "" && !stateBound
 		listenerStateAuditKey := func() string {
 			if requireStateToken || principalBound {
 				return listenerAuditSessionKey("", clientStateKey)
@@ -563,6 +599,25 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("stateful MCP listener request requires an authenticated principal or a legacy Pipelock session token")))
+		}
+		rejectPrincipalStateCapacity := func(id json.RawMessage) {
+			const pattern = "listener_principal_state_capacity"
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: verified principal state admission denied at listener capacity\n")
+			if opts.Metrics != nil {
+				opts.Metrics.RecordBlocked("mcp", pattern, 0, "")
+			}
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason:          blockreason.SessionBinding,
+				headerSeverity:  blockreason.SeverityCritical,
+				retry:           blockreason.RetryTransient,
+				layer:           "mcp_listener_session",
+				pattern:         pattern,
+				target:          "mcp:listener-principal-state",
+				receiptSeverity: config.SeverityHigh,
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("verified principal state capacity exhausted; retry after an existing principal state expires")))
 		}
 		rejectLegacyTokenForCurrentProtocol := func(id json.RawMessage) {
 			emitListenerBlockDecision(mcpListenerBlockDecision{
@@ -810,6 +865,10 @@ func RunHTTPListenerProxy(
 			if blockedByA2AHeaders() {
 				return
 			}
+			if principalStateAdmissionDenied {
+				rejectPrincipalStateCapacity(nil)
+				return
+			}
 			if principalControls && !stateBound && listenerPrincipal.key == "" {
 				rejectMissingListenerState(nil)
 				return
@@ -948,6 +1007,10 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if blockedByA2AHeaders() {
+				return
+			}
+			if principalStateAdmissionDenied {
+				rejectPrincipalStateCapacity(nil)
 				return
 			}
 			if principalControls && !stateBound && listenerPrincipal.key == "" {
@@ -1167,6 +1230,10 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(invalidReq)
 				return
 			}
+		}
+		if principalStateAdmissionDenied {
+			rejectPrincipalStateCapacity(frame.ID)
+			return
 		}
 		if requireStateToken && !principalBound {
 			startSetup := func() bool {
@@ -2157,6 +2224,7 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 		// tokenless request could mutate or reuse.
 		opts.ToolCfg = &tools.ToolScanConfig{
 			DriftBaseline:           toolCfg.DriftBaseline,
+			ExpectedDriftEpoch:      toolCfg.ExpectedDriftEpoch,
 			DriftRemediation:        toolCfg.DriftRemediation,
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,

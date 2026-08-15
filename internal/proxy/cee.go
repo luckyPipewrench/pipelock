@@ -434,7 +434,17 @@ func ceeFragmentScan(
 	if len(data) == 0 {
 		return nil
 	}
-	fb.Append(bufferKey, data)
+	if appendResult := fb.Append(bufferKey, data); appendResult.CapacityExceeded {
+		m.RecordCrossRequestFragmentCapacityExceeded()
+		detail := "fragment reassembly session capacity exhausted; request cannot be safely inspected"
+		actx := newHTTPAuditContext(logger, "CEE", targetURL, clientIP, requestID, agent)
+		logger.LogBlocked(actx, "cross_request_fragment_capacity", detail)
+		return &ceeResult{
+			Blocked:     true,
+			FragmentHit: true,
+			Reason:      detail,
+		}
+	}
 	matches := fb.ScanForSecrets(ctx, bufferKey, sc)
 	if len(matches) == 0 {
 		return nil

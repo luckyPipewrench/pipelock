@@ -12,118 +12,55 @@ import (
 	"testing"
 )
 
-// The tool-drift reset file re-baselines the listener's shared upstream tool
-// inventory, so it is a security-relevant operator action and carries the same
-// owner-only, one-shot contract as the adaptive reset. These pin that contract
-// on the drift path specifically: a file the wrapped agent could plant must
-// never clear the baseline that agent's own upstream is being measured against.
-func TestConsumeToolDriftResetFile_HonorsOwnerOnlyFileOnce(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "drift-reset")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var logW bytes.Buffer
+func TestConsumeToolDriftResetFileAcceptsSignedDelegationOnce(t *testing.T) {
+	authority, privateKey := newAdaptiveResetAuthority(t)
+	path := filepath.Join(t.TempDir(), "drift-reset")
+	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindDrift, 7, strings.Repeat("1", 32))
 
-	if !consumeToolDriftResetFile(path, &logW) {
-		t.Fatalf("owner-only drift reset was not honored, log=%q", logW.String())
+	var logW bytes.Buffer
+	if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(7)), &logW).Result; got != ResetAuthorityAccepted {
+		t.Fatalf("consume result = %q, want accepted; log=%q", got, logW.String())
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("drift reset file must be removed after honoring (err=%v)", err)
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("accepted drift delegation remained: %v", err)
 	}
-	if consumeToolDriftResetFile(path, &logW) {
-		t.Fatal("drift reset must be one-shot")
+	if !strings.Contains(logW.String(), "result=accepted") || !strings.Contains(logW.String(), "epoch=7") {
+		t.Fatalf("accepted drift reset was not audited: %q", logW.String())
+	}
+
+	writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindDrift, 7, strings.Repeat("1", 32))
+	if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(7)), &logW).Result; got != ResetAuthorityReplayed {
+		t.Fatalf("replay result = %q, want replayed", got)
 	}
 }
 
-func TestConsumeToolDriftResetFile_RejectsPlantedFiles(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("mode bits and symlink semantics are not the access control on Windows")
-	}
+func TestConsumeToolDriftResetFileRejectsWrongKindAndUnreadablePath(t *testing.T) {
+	authority, privateKey := newAdaptiveResetAuthority(t)
+
+	t.Run("wrong kind", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "drift-reset")
+		writeAdaptiveResetDelegation(t, path, privateKey, authority, ResetKindAdaptive, 0, strings.Repeat("2", 32))
+		if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(0)), nil).Result; got != ResetAuthorityWrongKind {
+			t.Fatalf("wrong kind result = %q, want wrong_kind", got)
+		}
+	})
 
 	t.Run("symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation requires privileges on Windows")
+		}
 		dir := t.TempDir()
-		target := filepath.Join(dir, "real")
-		if err := os.WriteFile(target, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		link := filepath.Join(dir, "drift-reset")
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
-		var logW bytes.Buffer
-
-		if consumeToolDriftResetFile(link, &logW) {
-			t.Fatal("a symlinked drift reset file must not re-baseline the listener")
-		}
-		if !strings.Contains(logW.String(), "tool drift") || !strings.Contains(logW.String(), "symlink") {
-			t.Errorf("rejection must say what was refused and why; log=%q", logW.String())
-		}
-		// Removed, so a planted path is not re-checked and re-warned forever.
-		if _, err := os.Lstat(link); !os.IsNotExist(err) {
-			t.Errorf("rejected symlink was not cleaned up (err=%v)", err)
-		}
-	})
-
-	t.Run("group or world accessible", func(t *testing.T) {
-		for _, mode := range []os.FileMode{0o660, 0o666, 0o604, 0o640} {
-			t.Run(mode.String(), func(t *testing.T) {
-				dir := t.TempDir()
-				path := filepath.Join(dir, "drift-reset")
-				if err := os.WriteFile(path, nil, mode); err != nil {
-					t.Fatal(err)
-				}
-				// WriteFile honors umask, which can quietly turn this into an
-				// owner-only file and make the whole case vacuous. Force it.
-				if err := os.Chmod(path, mode); err != nil {
-					t.Fatal(err)
-				}
-				var logW bytes.Buffer
-
-				if consumeToolDriftResetFile(path, &logW) {
-					t.Fatalf("mode %o must not re-baseline the listener (agent-writable bypass)", mode)
-				}
-				if !strings.Contains(logW.String(), "unsafe mode") {
-					t.Errorf("rejection must name the mode problem; log=%q", logW.String())
-				}
-				if _, err := os.Stat(path); !os.IsNotExist(err) {
-					t.Error("an unsafe reset file must be removed, not left to persist")
-				}
-			})
-		}
-	})
-
-	t.Run("not a regular file", func(t *testing.T) {
-		dir := t.TempDir()
+		target := filepath.Join(dir, "delegation")
+		writeAdaptiveResetDelegation(t, target, privateKey, authority, ResetKindDrift, 0, strings.Repeat("3", 32))
 		path := filepath.Join(dir, "drift-reset")
-		if err := os.Mkdir(path, 0o700); err != nil {
+		if err := os.Symlink(target, path); err != nil {
 			t.Fatal(err)
 		}
-		var logW bytes.Buffer
-
-		if consumeToolDriftResetFile(path, &logW) {
-			t.Fatal("a directory must not be honored as a drift reset file")
+		if got := consumeToolDriftResetFile(path, authority, newResetAtomicEpoch(resetAuthorityEpoch(0)), nil).Result; got != ResetAuthorityUnreadable {
+			t.Fatalf("symlink result = %q, want unreadable", got)
 		}
-		if !strings.Contains(logW.String(), "not a regular file") {
-			t.Errorf("rejection must name the file-type problem; log=%q", logW.String())
-		}
-		// A directory is never removed, or a mistyped config path could delete
-		// a tree on every request.
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("a directory must be left in place, got err=%v", err)
-		}
-	})
-
-	t.Run("empty and missing are silent no-ops", func(t *testing.T) {
-		var logW bytes.Buffer
-		if consumeToolDriftResetFile("", &logW) {
-			t.Error("empty path must be a no-op")
-		}
-		if consumeToolDriftResetFile(filepath.Join(t.TempDir(), "absent"), &logW) {
-			t.Error("missing file must be a no-op")
-		}
-		if logW.String() != "" {
-			t.Errorf("an absent reset file must not warn; log=%q", logW.String())
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("unreadable path must stay in place: %v", err)
 		}
 	})
 }

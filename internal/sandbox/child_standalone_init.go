@@ -141,6 +141,9 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
+	noNetNS := IsNoNetNS()
+	applyRlimitsOrExit()
+
 	// Apply Landlock.
 	// Add per-sandbox temp dir and the parent's socket dir to the policy.
 	// Host /tmp is NOT in the default policy to prevent cross-sandbox leakage.
@@ -169,13 +172,6 @@ func RunStandaloneInit() {
 	llStatus, llErr := ApplyLandlock(policy)
 	reportLayer(os.Stderr, llStatus, llErr)
 
-	// Apply resource limits.
-	if err := ApplyRlimits(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
-	}
-
 	// Set no_new_privs + seccomp (strict blocks clone3).
 	if err := SetNoNewPrivs(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] no_new_privs: %v\n", err)
@@ -184,7 +180,6 @@ func RunStandaloneInit() {
 	reportLayer(os.Stderr, scStatus, scErr)
 
 	// Network namespace status depends on whether parent created one.
-	noNetNS := IsNoNetNS()
 	if noNetNS {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: DEGRADED (no namespace, proxy-based routing only)\n")
 		// Degraded mode enforces proxy routing via HTTP(S)_PROXY env only.
@@ -205,6 +200,10 @@ func RunStandaloneInit() {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] loopback: %v\n", err)
 			exitSandboxProcess(1)
 		}
+	}
+	if err := waitForParentHardening(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: parent hardening gate: %v\n", err)
+		exitSandboxProcess(1)
 	}
 
 	// Start bridge proxy. In best-effort mode without netns, the bridge

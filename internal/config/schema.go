@@ -5,6 +5,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -634,8 +635,18 @@ type MCPToolScanning struct {
 	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
 	// json:"-" because this is an operator control-file location, not
 	// request-time policy: it changes how an authorized operator re-baselines
-	// state, not what Pipelock decides for a scanned request.
+	// state, not what Pipelock decides for a scanned request. The file carries
+	// a signed delegation; its owner and mode do not confer authority.
 	ListenerDriftResetFile string `yaml:"listener_drift_reset_file" json:"-"`
+	// ListenerDriftResetAuthorityPublicKeyFile is the public half of an
+	// mcp-reset-authority key. Its private half never enters the proxy.
+	ListenerDriftResetAuthorityPublicKeyFile string `yaml:"listener_drift_reset_authority_public_key_file" json:"-"`
+	// ListenerDriftResetAuthorityPublicKey is the immutable parsed key pinned
+	// during validation. Runtime builders must not reopen the path above.
+	ListenerDriftResetAuthorityPublicKey ed25519.PublicKey `yaml:"-" json:"-"`
+	// ListenerDriftResetTarget is the stable listener identity a delegation
+	// must bind before it may re-baseline this upstream inventory.
+	ListenerDriftResetTarget string `yaml:"listener_drift_reset_target" json:"-"`
 }
 
 // MCPDataClassLabels reserves the config surface for DLP-derived MCP receipt

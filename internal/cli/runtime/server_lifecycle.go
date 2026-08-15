@@ -787,21 +787,20 @@ func (s *Server) Start(ctx context.Context) error {
 		// when the operator did not configure them; the effective cfg
 		// already reflects those defaults.
 		mcpToolBaseline := tools.NewToolBaseline()
-		// mcpDriftEdge detects detect_drift false→true transitions for
-		// the server-level tool baseline shared across stdio / WS / forward
-		// MCP sessions. On false→true reload, ResetDriftState clears stale
-		// drift hashes so a subsequent session does not evaluate post-flip
-		// tools/list against pre-disable ground truth. See proxy_http.go
-		// for the equivalent detector on the per-listener baseline.
-		var mcpDriftEdge tools.DetectDriftRisingEdge
 		mcpScannerFn := func() *scanner.Scanner { return s.proxy.ScannerPtr().Load() }
 		mcpInputCfgFn := func() *mcp.InputScanConfig { return buildMCPInputCfg(s.proxy.CurrentConfig()) }
+		var mcpToolCfgMu sync.Mutex
+		var cachedMCPToolSource *config.Config
+		var cachedMCPToolCfg *tools.ToolScanConfig
 		mcpToolCfgFn := func() *tools.ToolScanConfig {
-			cfg := buildMCPToolCfg(s.proxy.CurrentConfig(), s.currentMCPToolExtraPoison(), mcpToolBaseline)
-			if cfg != nil && mcpDriftEdge.Observe(cfg.DetectDrift) {
-				mcpToolBaseline.ResetDriftState()
+			current := s.proxy.CurrentConfig()
+			mcpToolCfgMu.Lock()
+			defer mcpToolCfgMu.Unlock()
+			if current != cachedMCPToolSource {
+				cachedMCPToolCfg = buildMCPToolCfg(current, s.currentMCPToolExtraPoison(), mcpToolBaseline)
+				cachedMCPToolSource = current
 			}
-			return cfg
+			return cachedMCPToolCfg
 		}
 		mcpRedirectRTFn := func() *mcp.RedirectRuntime {
 			c := s.proxy.CurrentConfig()

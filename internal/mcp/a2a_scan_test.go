@@ -575,12 +575,15 @@ func TestScanA2AHeaders_Disabled(t *testing.T) {
 func TestCardBaseline_FirstSeen(t *testing.T) {
 	cb := NewCardBaseline(10)
 	key := cardCacheKey{cardURL: "https://agent.example/.well-known/agent-card.json"}
-	drift, firstSeen := cb.Check(key, "hash1", []string{"skill1"})
+	drift, firstSeen, capacityExceeded := cb.Check(key, "hash1", []string{"skill1"})
 	if drift {
 		t.Error("expected no drift on first seen")
 	}
 	if !firstSeen {
 		t.Error("expected firstSeen=true")
+	}
+	if capacityExceeded {
+		t.Error("first baseline entry must fit")
 	}
 }
 
@@ -588,12 +591,15 @@ func TestCardBaseline_NoDriftSameHash(t *testing.T) {
 	cb := NewCardBaseline(10)
 	key := cardCacheKey{cardURL: "https://agent.example/.well-known/agent-card.json"}
 	cb.Check(key, "hash1", []string{"skill1"})
-	drift, firstSeen := cb.Check(key, "hash1", []string{"skill1"})
+	drift, firstSeen, capacityExceeded := cb.Check(key, "hash1", []string{"skill1"})
 	if drift {
 		t.Error("expected no drift for same hash")
 	}
 	if firstSeen {
 		t.Error("expected firstSeen=false on second check")
+	}
+	if capacityExceeded {
+		t.Error("known baseline entry must remain inspectable")
 	}
 }
 
@@ -601,9 +607,12 @@ func TestCardBaseline_DriftDetected(t *testing.T) {
 	cb := NewCardBaseline(10)
 	key := cardCacheKey{cardURL: "https://agent.example/.well-known/agent-card.json"}
 	cb.Check(key, "hash1", []string{"skill1"})
-	drift, _ := cb.Check(key, "hash2", []string{"skill1_changed"})
+	drift, _, capacityExceeded := cb.Check(key, "hash2", []string{"skill1_changed"})
 	if !drift {
 		t.Error("expected drift when hash changes")
+	}
+	if capacityExceeded {
+		t.Error("known baseline entry must remain inspectable")
 	}
 }
 
@@ -614,25 +623,58 @@ func TestCardBaseline_PerAuthVariant(t *testing.T) {
 	cb.Check(key1, "hash1", nil)
 	cb.Check(key2, "hash2", nil)
 	// Each auth variant has its own baseline - no cross-drift.
-	drift1, _ := cb.Check(key1, "hash1", nil)
-	drift2, _ := cb.Check(key2, "hash2", nil)
+	drift1, _, capacity1 := cb.Check(key1, "hash1", nil)
+	drift2, _, capacity2 := cb.Check(key2, "hash2", nil)
 	if drift1 || drift2 {
 		t.Error("expected no drift — different auth variants are independent")
 	}
+	if capacity1 || capacity2 {
+		t.Error("known auth variants must remain inspectable")
+	}
 }
 
-func TestCardBaseline_LRUEviction(t *testing.T) {
+func TestCardBaseline_CapacityDeniesNewCardAndPreservesTrustedBaseline(t *testing.T) {
 	cb := NewCardBaseline(2)
 	key1 := cardCacheKey{cardURL: "https://a.example/"}
 	key2 := cardCacheKey{cardURL: "https://b.example/"}
 	key3 := cardCacheKey{cardURL: "https://c.example/"}
 	cb.Check(key1, "h1", nil)
 	cb.Check(key2, "h2", nil)
-	cb.Check(key3, "h3", nil) // evicts key1
-	// key1 re-entry should be first-seen (lost history).
-	_, firstSeen := cb.Check(key1, "h1_new", nil)
-	if !firstSeen {
-		t.Error("expected first-seen after eviction")
+	drift, firstSeen, capacityExceeded := cb.Check(key3, "h3", nil)
+	if drift || firstSeen || !capacityExceeded {
+		t.Fatalf("new card at capacity = drift=%v firstSeen=%v capacityExceeded=%v, want false false true", drift, firstSeen, capacityExceeded)
+	}
+	if drift, _, capacityExceeded = cb.Check(key1, "h1_changed", nil); !drift || capacityExceeded {
+		t.Fatalf("trusted baseline after capacity refusal = drift=%v capacityExceeded=%v, want true false", drift, capacityExceeded)
+	}
+	if err := cb.ResetBaseline(key3, "h3", nil); !errors.Is(err, ErrCardBaselineCapacity) {
+		t.Fatalf("ResetBaseline capacity error = %v, want ErrCardBaselineCapacity", err)
+	}
+}
+
+func TestScanAgentCard_BaselineCapacityFailsClosedWithVisibleReason(t *testing.T) {
+	baseline := NewCardBaseline(1)
+	first := CardCacheKeyFromRequest("https://first.example/card", "")
+	if _, _, capacityExceeded := baseline.Check(first, "trusted", nil); capacityExceeded {
+		t.Fatal("seed card did not fit")
+	}
+	cfg := enabledA2ACfg()
+	cfg.DetectCardDrift = true
+	second := CardCacheKeyFromRequest("https://second.example/card", "")
+	body, err := json.Marshal(A2AAgentCard{Name: "Second", Description: "safe"})
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	result := ScanAgentCard(context.Background(), body, testA2AScanner(t), baseline, second, cfg)
+	if result.Clean || !result.BaselineCapacityExceeded || result.Action != config.ActionBlock {
+		t.Fatalf("capacity result = %+v, want blocked baseline-capacity outcome", result)
+	}
+	if !strings.Contains(result.Reason, "baseline capacity exhausted") {
+		t.Fatalf("capacity reason = %q, want operator-visible capacity detail", result.Reason)
+	}
+	verdict := agentCardToVerdict(json.RawMessage(`1`), result, cfg)
+	if verdict.Clean || verdict.Action != config.ActionBlock || len(verdict.Matches) != 1 || verdict.Matches[0].PatternName != "a2a_card_baseline_capacity" {
+		t.Fatalf("capacity verdict = %+v, want block with visible capacity match", verdict)
 	}
 }
 
@@ -1158,7 +1200,7 @@ func TestContextTracker_AnonymousContext(t *testing.T) {
 	ct.mu.Unlock()
 }
 
-func TestContextTracker_EvictionAndReentry(t *testing.T) {
+func TestContextTracker_CapacityPreservesExistingState(t *testing.T) {
 	cfg := enabledA2ACfg()
 	cfg.MaxContexts = 2
 	ct := NewContextTracker(cfg)
@@ -1166,19 +1208,81 @@ func TestContextTracker_EvictionAndReentry(t *testing.T) {
 
 	ct.TrackAndScan(context.Background(), "ctx-1", "", []string{"hello"}, sc)
 	ct.TrackAndScan(context.Background(), "ctx-2", "", []string{"world"}, sc)
-	ct.TrackAndScan(context.Background(), "ctx-3", "", []string{"new"}, sc) // evicts ctx-1
-
-	// ctx-1 re-enters - should be tainted.
-	ct.TrackAndScan(context.Background(), "ctx-1", "", []string{"back"}, sc)
+	if blocked, reason := ct.TrackAndScan(context.Background(), "ctx-3", "", []string{"new"}, sc); !blocked || !strings.Contains(reason, "context capacity") {
+		t.Fatalf("new context at capacity = %t, %q, want fail-closed refusal", blocked, reason)
+	}
+	if blocked, reason := ct.TrackAndScan(context.Background(), "ctx-1", "", []string{"back"}, sc); blocked {
+		t.Fatalf("existing context after capacity refusal = %t, %q", blocked, reason)
+	}
 	ct.mu.Lock()
 	sess := ct.contexts["ctx-1"]
 	if sess == nil {
-		t.Fatal("expected ctx-1 to exist")
+		t.Fatal("capacity refusal discarded ctx-1")
 	}
-	if !sess.tainted {
-		t.Error("expected ctx-1 to be tainted after eviction and re-entry")
+	if _, exists := ct.contexts["ctx-3"]; exists {
+		t.Fatal("refused context entered the tracker")
 	}
 	ct.mu.Unlock()
+}
+
+func TestContextTracker_CapacityBoundsState(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.MaxContexts = 3
+	ct := NewContextTracker(cfg)
+	sc := testA2AScanner(t)
+
+	for i := range 50 {
+		contextID := fmt.Sprintf("context-%d", i)
+		taskID := fmt.Sprintf("task-%d", i)
+		smuggling, reason := ct.TrackAndScan(context.Background(), contextID, taskID, []string{"benign"}, sc)
+		if i < cfg.MaxContexts && smuggling {
+			t.Fatalf("context %d unexpectedly flagged smuggling: %s", i, reason)
+		}
+		if i >= cfg.MaxContexts && (!smuggling || !strings.Contains(reason, "task alias capacity")) {
+			t.Fatalf("context %d capacity result = %t, %q", i, smuggling, reason)
+		}
+	}
+
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	if got := len(ct.contexts); got > cfg.MaxContexts {
+		t.Fatalf("contexts = %d, want <= %d", got, cfg.MaxContexts)
+	}
+	if got := len(ct.taskMap); got > cfg.MaxContexts {
+		t.Fatalf("task aliases = %d, want <= %d", got, cfg.MaxContexts)
+	}
+}
+
+func TestContextTracker_BoundsAliasesForResidentContext(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.MaxContexts = 3
+	ct := NewContextTracker(cfg)
+	sc := testA2AScanner(t)
+	for i := range 20 {
+		smuggling, reason := ct.TrackAndScan(context.Background(), "resident", fmt.Sprintf("task-%d", i), []string{"benign"}, sc)
+		if i < cfg.MaxContexts && smuggling {
+			t.Fatalf("alias %d unexpectedly refused: %s", i, reason)
+		}
+		if i >= cfg.MaxContexts && (!smuggling || !strings.Contains(reason, "task alias capacity")) {
+			t.Fatalf("alias %d capacity result = %t, %q", i, smuggling, reason)
+		}
+	}
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	if len(ct.taskMap) != cfg.MaxContexts {
+		t.Fatalf("task aliases = %d, want %d", len(ct.taskMap), cfg.MaxContexts)
+	}
+}
+
+func TestContextTracker_DefaultAndConfiguredCapacity(t *testing.T) {
+	ct := NewContextTracker(&config.A2AScanning{})
+	if got := ct.maxContextsLocked(); got != 1000 {
+		t.Fatalf("default max contexts = %d, want 1000", got)
+	}
+	ct.cfg.MaxContexts = 7
+	if got := ct.maxContextsLocked(); got != 7 {
+		t.Fatalf("configured max contexts = %d, want 7", got)
+	}
 }
 
 func TestContextTracker_SmugglingDetected(t *testing.T) {

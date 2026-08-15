@@ -982,6 +982,35 @@ func TestCore_ResponsePatterns_MarkdownLinkCredentialFollowExfiltrationRegexPari
 	}
 }
 
+func TestResponsePatterns_NewInstructionsRegexParity(t *testing.T) {
+	t.Parallel()
+
+	const patternName = "New Instructions"
+	surfaces := map[string]string{
+		"default config":     responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, patternName),
+		"balanced yaml":      yamlResponsePatternRegex(t, "../../configs/balanced.yaml", patternName),
+		"strict yaml":        yamlResponsePatternRegex(t, "../../configs/strict.yaml", patternName),
+		"audit yaml":         yamlResponsePatternRegex(t, "../../configs/audit.yaml", patternName),
+		"claude-code yaml":   yamlResponsePatternRegex(t, "../../configs/claude-code.yaml", patternName),
+		"cursor yaml":        yamlResponsePatternRegex(t, "../../configs/cursor.yaml", patternName),
+		"generic-agent yaml": yamlResponsePatternRegex(t, "../../configs/generic-agent.yaml", patternName),
+		"hostile-model yaml": yamlResponsePatternRegex(t, "../../configs/hostile-model.yaml", patternName),
+		// The quickstart is a shipped executable claim and was NOT covered here,
+		// so it silently kept the original bare-prose pattern through a narrowing
+		// that touched every other surface. A new user's first contact with the
+		// product would have been the exact false positive this pattern was
+		// changed to remove.
+		"quickstart example": yamlResponsePatternRegex(t, "../../examples/quickstart/pipelock.yaml", patternName),
+	}
+	for surface, got := range surfaces {
+		t.Run(surface, func(t *testing.T) {
+			if got != config.NewInstructionsRegex {
+				t.Errorf("regex drifted from config.NewInstructionsRegex")
+			}
+		})
+	}
+}
+
 func TestCore_ResponsePatterns_MarkdownLinkCredentialExfiltrationRegexParity(t *testing.T) {
 	t.Parallel()
 

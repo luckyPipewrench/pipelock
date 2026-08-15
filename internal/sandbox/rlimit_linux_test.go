@@ -34,14 +34,28 @@ func TestBoundedNProcLimit(t *testing.T) {
 }
 
 func TestRequestedNProcLimit(t *testing.T) {
-	if got, err := requestedNProcLimit(100, 2048); err != nil || got != 1124 {
-		t.Fatalf("requestedNProcLimit(100, 2048) = (%d, %v), want (1124, nil)", got, err)
+	tests := []struct {
+		name    string
+		tasks   uint64
+		ceiling uint64
+		want    uint64
+		wantErr bool
+	}{
+		{name: "reserves headroom", tasks: 100, ceiling: 2048, want: 1124},
+		{name: "rejects insufficient headroom", tasks: 1025, ceiling: 2048, wantErr: true},
+		{name: "rejects overflow", tasks: ^uint64(0), ceiling: ^uint64(0), wantErr: true},
 	}
-	if _, err := requestedNProcLimit(1025, 2048); err == nil {
-		t.Fatal("launch without full process headroom was accepted")
-	}
-	if _, err := requestedNProcLimit(^uint64(0), ^uint64(0)); err == nil {
-		t.Fatal("overflowing process headroom was accepted")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := requestedNProcLimit(tt.tasks, tt.ceiling)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("requestedNProcLimit(%d, %d) error = %v, wantErr %t", tt.tasks, tt.ceiling, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("requestedNProcLimit(%d, %d) = %d, want %d", tt.tasks, tt.ceiling, got, tt.want)
+			}
+		})
 	}
 }
 

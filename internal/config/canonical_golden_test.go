@@ -321,7 +321,14 @@ const (
 	// above required a literal ":" or "-" between the phrase and its context,
 	// so a period, newline, comma, or em-dash evaded it. Proximity keeps the
 	// context requirement without depending on one punctuation mark.
-	goldenHashDefaults = "5bceed7c37e0b6e5cd60855c226a4cc1a8c93009169f66caa478b5ffdb60d737"
+	// Re-bumped to require an authority label or concrete override action;
+	// ordinary publication and developer-guide prose must remain clean.
+	// Re-bumped for singular directive nouns, authority-after-phrase forms,
+	// and hard-separator action anchoring that excludes ordinary run guidance.
+	// Re-bumped so authority-qualified directives remain detectable across
+	// period, comma, em-dash, and newline separators.
+	// Re-bumped so hard-separated directives do not depend on a verb allowlist.
+	goldenHashDefaults = "63642a81e38fd76d1c024d46965768c68d73ce85a94062da98f6b780ba341ffa"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -480,7 +487,11 @@ const (
 	// goldenHashDefaults note. Both invariance tests compare against this
 	// constant and produced this same hash, so ops-field and allowlist-order
 	// invariance are intact and only the shared baseline moved.
-	goldenHashRichConfig = "cb25a92a77fc259e436ae5c5eb8a451b3204795560f47ed4483d46e36591a60d"
+	// Re-bumped for the authority-label/action narrowing above.
+	// Re-bumped for the singular and hard-separator refinement above.
+	// Re-bumped for the authority-label separator expansion above.
+	// Re-bumped for the hard-separated directive expansion above.
+	goldenHashRichConfig = "313a7a99bb13252fc3190454095ae1014193ec4407326fc1e34731f2771ab9d1"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

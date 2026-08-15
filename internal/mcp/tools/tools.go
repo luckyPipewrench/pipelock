@@ -755,6 +755,9 @@ func (tb *ToolBaseline) ReserveToolInventory(names []string, defs []ToolDef) (*T
 	if tb == nil {
 		return nil, nil
 	}
+	if len(defs) > maxBaselineTools {
+		return nil, ErrBaselineCapacity
+	}
 	bindings := headerBindingsForDefs(defs)
 	bindingNames := make([]string, 0, len(bindings))
 	for name := range bindings {
@@ -807,10 +810,10 @@ func (r *ToolInventoryReservation) Release() {
 }
 
 // Commit makes a reserved tools/list response trusted after it has forwarded.
-// It never rechecks capacity: Reserve held every slot this response needs.
-func (r *ToolInventoryReservation) Commit(clean bool) ([]string, error) {
+// It is infallible: Reserve already held every slot this response needs.
+func (r *ToolInventoryReservation) Commit(clean bool) []string {
 	if r == nil || r.baseline == nil {
-		return nil, nil
+		return nil
 	}
 	tb := r.baseline
 	tb.mu.Lock()
@@ -847,7 +850,7 @@ func (r *ToolInventoryReservation) Commit(clean bool) ([]string, error) {
 		}
 		tb.headerBindings[def.Name] = bindings
 	}
-	return added, nil
+	return added
 }
 
 func a2aMethodIdentity(method string) string {

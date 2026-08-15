@@ -29,7 +29,7 @@ const (
 	mcpEnvironProofMarkerPathEnv = "PIPELOCK_MCP_ENVIRON_PROOF_MARKER_PATH"
 )
 
-const mcpEnvironProofDenied = `{"jsonrpc":"2.0","id":1,"result":{"proxy_environ":"denied","parent_hardening":"released"}}` + "\n"
+const mcpEnvironProofDenied = `{"jsonrpc":"2.0","id":1,"result":{"proxy_environ":"permission-denied","parent_hardening":"released"}}` + "\n"
 
 func TestIntegration_McpSandboxProxyEnvironDenied(t *testing.T) {
 	if mode := os.Getenv(mcpEnvironProofHelperEnv); mode != "" {
@@ -38,6 +38,7 @@ func TestIntegration_McpSandboxProxyEnvironDenied(t *testing.T) {
 	}
 
 	requireSandboxPrimitives(t)
+	requireAmbientProcEnvironReadable(t)
 	binary := buildMCPEnvironProofBinary(t)
 	for _, mode := range []string{
 		"default",
@@ -56,6 +57,7 @@ func TestIntegration_McpSandboxProxyEnvironDenied(t *testing.T) {
 
 func TestIntegration_McpSandboxBestEffortFallbackEnvironDenied(t *testing.T) {
 	requireSandboxPrimitives(t)
+	requireAmbientProcEnvironReadable(t)
 	binary := buildMCPEnvironProofBinary(t)
 	runMCPEnvironProof(t, binary, "best-effort-fallback")
 }
@@ -68,7 +70,8 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 	workspace := t.TempDir()
 	marker := filepath.Join(workspace, "parent-hardened")
 	server := filepath.Join(workspace, "mcp-environ-server.py")
-	serverScript := "import os\n" +
+	serverScript := "import errno\n" +
+		"import os\n" +
 		"import sys\n" +
 		"proxy_pid = os.getppid()\n" +
 		"marker = os.environ[\"" + mcpEnvironProofMarkerEnv + "\"]\n" +
@@ -78,7 +81,7 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 		"    result = 'readable'\n" +
 		"except OSError as err:\n" +
 		"    print(f'[mcp-environ-proof] errno={err.errno} uid={os.getuid()} ppid={os.getppid()} proxy={proxy_pid}', file=sys.stderr)\n" +
-		"    result = 'denied'\n" +
+		"    result = 'permission-denied' if err.errno in (errno.EACCES, errno.EPERM) else f'error-{err.errno}'\n" +
 		"parent_hardening = 'released' if os.path.exists(marker) else 'missing'\n" +
 		"if not sys.stdin.readline():\n" +
 		"    raise SystemExit(1)\n" +
@@ -115,6 +118,37 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 	}
 	if mode == "best-effort-fallback" && !strings.Contains(stderr.String(), "network: DEGRADED") {
 		t.Fatalf("best-effort fallback did not take degraded namespace path:\n%s", stderr.String())
+	}
+}
+
+func requireAmbientProcEnvironReadable(t *testing.T) {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required for the MCP environ proof fixture")
+	}
+	probe := "import os, sys\n" +
+		"try:\n" +
+		"    fd = os.open(f'/proc/{sys.argv[1]}/environ', os.O_RDONLY)\n" +
+		"    os.close(fd)\n" +
+		"    print('readable')\n" +
+		"except PermissionError:\n" +
+		"    print('permission-denied')\n" +
+		"except OSError as err:\n" +
+		"    print(f'error-{err.errno}')\n"
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, python, "-c", probe, strconv.Itoa(os.Getpid())).CombinedOutput() // #nosec G204 G702 -- fixed interpreter path and script; PID is decimal test state
+	if err != nil {
+		t.Fatalf("run non-sandbox ProcFS control: %v\n%s", err, out)
+	}
+	switch got := strings.TrimSpace(string(out)); got {
+	case "readable":
+		return
+	case "permission-denied":
+		t.Skip("host ProcFS policy blocks the non-sandbox control")
+	default:
+		t.Fatalf("non-sandbox ProcFS control = %q, want readable", got)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -54,6 +55,9 @@ type mcpSandboxBridge struct{}
 // hardening proof build. sandbox-init then direct-execs the fixture, making
 // the target a direct child of the real Pipelock proxy for the proc check.
 func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
+	if os.Getenv("PIPELOCK_SANDBOX_HARDENING_PROOF_MARKER") == "" {
+		return nil, errors.New("mcp hardening proof build refuses non-test sandbox use")
+	}
 	if opts.LaunchConfig == nil {
 		return nil, errors.New("MCP sandbox hardening proof missing launch config")
 	}

@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPreparedSandboxCmd_HardeningFailureReapsChild(t *testing.T) {
@@ -145,9 +147,11 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	progress := filepath.Join(t.TempDir(), "child-progress")
-	cmd := exec.CommandContext(t.Context(), "sh", "-c", `dd bs=1 count=1 <&3 >/dev/null 2>&1; : > "$PROGRESS"`) // #nosec G204 G702 -- fixed literal test command
-	cmd.Env = append(os.Environ(), "PROGRESS="+progress)
+	testDir := t.TempDir()
+	waiting := filepath.Join(testDir, "child-waiting")
+	progress := filepath.Join(testDir, "child-progress")
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", `: > "$WAITING"; dd bs=1 count=1 <&3 >/dev/null 2>&1; : > "$PROGRESS"`) // #nosec G204 G702 -- fixed literal test command
+	cmd.Env = append(os.Environ(), "WAITING="+waiting, "PROGRESS="+progress)
 	cmd.ExtraFiles = []*os.File{reader}
 	launch := &PreparedSandboxCmd{
 		Cmd:                       cmd,
@@ -157,6 +161,18 @@ func TestPreparedSandboxCmd_GatedSuccessReleasesOnlyAfterHardening(t *testing.T)
 	}
 	hardened := false
 	if err := launch.StartWithParentHardening(func() error {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(waiting); err == nil {
+				break
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("checking child wait marker: %w", err)
+			}
+			if time.Now().After(deadline) {
+				return errors.New("child did not reach the hardening gate")
+			}
+			runtime.Gosched()
+		}
 		if _, err := os.Stat(progress); !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("child progressed before hardening release: %w", err)
 		}

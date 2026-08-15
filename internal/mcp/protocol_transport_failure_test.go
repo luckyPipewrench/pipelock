@@ -448,10 +448,11 @@ func TestA2AStateTransitionsPreserveReviewedBoundaries(t *testing.T) {
 
 		ct.mu.Lock()
 		for i := 0; i <= 1000; i++ {
-			ct.getOrCreateLocked("context-" + time.Unix(int64(i), 0).Format(time.RFC3339))
+			_, _ = ct.getOrCreateLocked("context-" + time.Unix(int64(i), 0).Format(time.RFC3339))
 		}
 		ct.mu.Unlock()
 
+		ct = NewContextTracker(cfg)
 		cfg.MaxContextMessages = 2
 		hit, reason := ct.TrackAndScan(context.Background(), "tainted", "", []string{
 			"discarded",

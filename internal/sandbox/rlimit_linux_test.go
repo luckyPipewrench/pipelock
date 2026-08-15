@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -135,6 +136,15 @@ func TestApplyRlimits_AvoidsSubCurrentNProcAbort(t *testing.T) {
 		{name: "dynamic limit leaves child headroom", mode: "dynamic", want: "dynamic child succeeded"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.mode == "fixed" {
+				exempt, err := nprocLimitExempt()
+				if err != nil {
+					t.Fatalf("detect RLIMIT_NPROC exemption: %v", err)
+				}
+				if exempt {
+					t.Skip("RLIMIT_NPROC is not enforced for this privileged process")
+				}
+			}
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^TestApplyRlimits_AvoidsSubCurrentNProcAbort$")
@@ -153,6 +163,29 @@ func TestApplyRlimits_AvoidsSubCurrentNProcAbort(t *testing.T) {
 	}
 }
 
+func nprocLimitExempt() (bool, error) {
+	if os.Getuid() == 0 {
+		return true, nil
+	}
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false, fmt.Errorf("read process status: %w", err)
+	}
+	for line := range strings.SplitSeq(string(status), "\n") {
+		value, ok := strings.CutPrefix(line, "CapEff:")
+		if !ok {
+			continue
+		}
+		caps, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+		if err != nil {
+			return false, fmt.Errorf("parse effective capabilities: %w", err)
+		}
+		exemptCaps := uint64(1<<unix.CAP_SYS_ADMIN | 1<<unix.CAP_SYS_RESOURCE)
+		return caps&exemptCaps != 0, nil
+	}
+	return false, errors.New("process status is missing CapEff")
+}
+
 func runNProcRegressionChild(mode string) {
 	switch mode {
 	case "fixed":
@@ -161,7 +194,14 @@ func runNProcRegressionChild(mode string) {
 			_, _ = fmt.Fprintf(os.Stderr, "count shared UID tasks: %v\n", err)
 			os.Exit(1)
 		}
-		if err := unix.Setrlimit(unix.RLIMIT_NPROC, &unix.Rlimit{Cur: tasks, Max: tasks}); err != nil {
+		// Keep the cap visibly below the sampled usage. An exact cap is racy:
+		// unrelated same-UID tasks can exit between the count and fork, briefly
+		// leaving room for the child and making this regression test flaky.
+		limit := tasks / 2
+		if limit == 0 {
+			limit = 1
+		}
+		if err := unix.Setrlimit(unix.RLIMIT_NPROC, &unix.Rlimit{Cur: limit, Max: limit}); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "set fixed RLIMIT_NPROC: %v\n", err)
 			os.Exit(1)
 		}

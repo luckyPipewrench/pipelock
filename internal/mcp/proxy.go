@@ -439,15 +439,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			toolInventoryReservation, err = toolCfg.Baseline.ReserveToolInventory(toolResult.ToolNames, toolResult.ToolDefs)
 			return err
 		}
-		commitToolInventory := func() error {
+		commitToolInventory := func() {
 			if toolInventoryReservation == nil {
-				return nil
+				return
 			}
-			added, err := toolInventoryReservation.Commit(toolResult.Clean)
-			if err != nil {
-				toolInventoryReservation.Release()
-				return err
-			}
+			added := toolInventoryReservation.Commit(toolResult.Clean)
 			decision := ""
 			for _, name := range added {
 				_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
@@ -460,7 +456,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if !toolInventoryResolved {
 				resolveToolInventory(decision)
 			}
-			return nil
 		}
 		releaseToolInventory := func() {
 			if toolInventoryReservation != nil {
@@ -662,9 +657,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				releaseToolInventory()
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
-			if err := commitToolInventory(); err != nil {
-				return foundInjection, fmt.Errorf("committing tool inventory after forward: %w", err)
-			}
+			commitToolInventory()
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
 			observeMCPResponseTaint(taintOpts, toolPoisonDetected)
 			continue
@@ -873,9 +866,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
 		}
 		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
-			if err := commitToolInventory(); err != nil {
-				return foundInjection, fmt.Errorf("committing tool inventory after forward: %w", err)
-			}
+			commitToolInventory()
 		}
 		emitTrackedOutcome(mcpResponseStatus(outbound), "mcp_response_scan", outbound)
 

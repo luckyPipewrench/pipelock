@@ -3928,10 +3928,7 @@ func TestToolBaseline_ReserveToolInventoryCommitsOnlyForwardedState(t *testing.T
 	if err != nil {
 		t.Fatalf("reserve after release: %v", err)
 	}
-	added, err := reservation.Commit(true)
-	if err != nil {
-		t.Fatalf("commit first response: %v", err)
-	}
+	added := reservation.Commit(true)
 	if len(added) != 0 {
 		t.Fatalf("first baseline added = %v, want none", added)
 	}
@@ -3949,10 +3946,7 @@ func TestToolBaseline_ReserveToolInventoryCommitsOnlyForwardedState(t *testing.T
 	if err != nil {
 		t.Fatalf("reserve updated response: %v", err)
 	}
-	added, err = reservation.Commit(false)
-	if err != nil {
-		t.Fatalf("commit warned response: %v", err)
-	}
+	added = reservation.Commit(false)
 	if !slices.Equal(added, []string{"write"}) {
 		t.Fatalf("updated baseline added = %v, want [write]", added)
 	}
@@ -3998,6 +3992,11 @@ func TestToolBaseline_ReserveToolInventoryRejectsCompetingAndOverCapacityState(t
 	}
 	if headerBaseline.IsKnownTool(overflowDef.Name) {
 		t.Fatal("rejected header-binding overflow changed trusted inventory")
+	}
+
+	tooManyDefs := make([]ToolDef, maxBaselineTools+1)
+	if _, err := NewToolBaseline().ReserveToolInventory(nil, tooManyDefs); !errors.Is(err, ErrBaselineCapacity) {
+		t.Fatalf("oversized definition preflight error = %v, want ErrBaselineCapacity", err)
 	}
 }
 
@@ -4151,8 +4150,8 @@ func TestToolBaseline_ReservationNilAndZeroValueLifecycle(t *testing.T) {
 	}
 	var nilReservation *ToolInventoryReservation
 	nilReservation.Release()
-	if added, err := nilReservation.Commit(true); err != nil || added != nil {
-		t.Fatalf("nil reservation commit = %v, %v", added, err)
+	if added := nilReservation.Commit(true); added != nil {
+		t.Fatalf("nil reservation commit = %v", added)
 	}
 
 	baseline := &ToolBaseline{
@@ -4166,9 +4165,7 @@ func TestToolBaseline_ReservationNilAndZeroValueLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zero-value reservation: %v", err)
 	}
-	if _, err := reservation.Commit(true); err != nil {
-		t.Fatalf("zero-value reservation commit: %v", err)
-	}
+	reservation.Commit(true)
 	if !baseline.IsKnownTool("zero") || baseline.headerBindings == nil || baseline.pendingTools == nil {
 		t.Fatalf("zero-value commit left incomplete state: %+v", baseline)
 	}

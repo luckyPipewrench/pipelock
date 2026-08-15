@@ -1070,7 +1070,8 @@ With `action: block`, a confirmed upstream update that Pipelock blocked needs
 an operator re-baseline. Configure a signed one-shot control-file path, the
 operator public key, and a stable listener identity:
 
-```yaml
+```yaml pipelock-fragment
+# pipelock-fragment-id: mcp-drift-reset-authority
 mcp_tool_scanning:
   enabled: true
   action: block

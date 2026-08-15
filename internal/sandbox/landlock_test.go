@@ -66,6 +66,9 @@ func TestMain(m *testing.M) {
 	if runtime.GOARCH == "amd64" && os.Getenv("PIPELOCK_MCP_ENVIRON_PROOF_HELPER") == "" {
 		proofBuildDir, errMCPEnvironProofBuild = os.MkdirTemp("", "pipelock-mcp-environ-proof-")
 		if errMCPEnvironProofBuild == nil {
+			errMCPEnvironProofBuild = os.Chmod(proofBuildDir, 0o750) // #nosec G302 -- directory mode follows repository policy
+		}
+		if errMCPEnvironProofBuild == nil {
 			mcpEnvironProofBinaryPath = filepath.Join(proofBuildDir, "pipelock-mcp-environ-proof")
 			buildCtx, cancelBuild := context.WithTimeout(context.Background(), 2*time.Minute)
 			cmd := exec.CommandContext(buildCtx, "go", "build", "-tags=mcp_hardening_test", "-o", mcpEnvironProofBinaryPath, "./cmd/pipelock/") // #nosec G204 G702 -- fixed repository build for the integration proof

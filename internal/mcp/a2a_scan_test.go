@@ -1200,7 +1200,7 @@ func TestContextTracker_AnonymousContext(t *testing.T) {
 	ct.mu.Unlock()
 }
 
-func TestContextTracker_EvictionAndReentry(t *testing.T) {
+func TestContextTracker_CapacityPreservesExistingState(t *testing.T) {
 	cfg := enabledA2ACfg()
 	cfg.MaxContexts = 2
 	ct := NewContextTracker(cfg)
@@ -1208,22 +1208,24 @@ func TestContextTracker_EvictionAndReentry(t *testing.T) {
 
 	ct.TrackAndScan(context.Background(), "ctx-1", "", []string{"hello"}, sc)
 	ct.TrackAndScan(context.Background(), "ctx-2", "", []string{"world"}, sc)
-	ct.TrackAndScan(context.Background(), "ctx-3", "", []string{"new"}, sc) // evicts ctx-1
-
-	// ctx-1 re-enters - should be tainted.
-	ct.TrackAndScan(context.Background(), "ctx-1", "", []string{"back"}, sc)
+	if blocked, reason := ct.TrackAndScan(context.Background(), "ctx-3", "", []string{"new"}, sc); !blocked || !strings.Contains(reason, "context capacity") {
+		t.Fatalf("new context at capacity = %t, %q, want fail-closed refusal", blocked, reason)
+	}
+	if blocked, reason := ct.TrackAndScan(context.Background(), "ctx-1", "", []string{"back"}, sc); blocked {
+		t.Fatalf("existing context after capacity refusal = %t, %q", blocked, reason)
+	}
 	ct.mu.Lock()
 	sess := ct.contexts["ctx-1"]
 	if sess == nil {
-		t.Fatal("expected ctx-1 to exist")
+		t.Fatal("capacity refusal discarded ctx-1")
 	}
-	if !sess.tainted {
-		t.Error("expected ctx-1 to be tainted after eviction and re-entry")
+	if _, exists := ct.contexts["ctx-3"]; exists {
+		t.Fatal("refused context entered the tracker")
 	}
 	ct.mu.Unlock()
 }
 
-func TestContextTracker_EvictionBoundsAuxiliaryState(t *testing.T) {
+func TestContextTracker_CapacityBoundsState(t *testing.T) {
 	cfg := enabledA2ACfg()
 	cfg.MaxContexts = 3
 	ct := NewContextTracker(cfg)
@@ -1246,17 +1248,8 @@ func TestContextTracker_EvictionBoundsAuxiliaryState(t *testing.T) {
 	if got := len(ct.contexts); got > cfg.MaxContexts {
 		t.Fatalf("contexts = %d, want <= %d", got, cfg.MaxContexts)
 	}
-	if got := len(ct.order); got > cfg.MaxContexts {
-		t.Fatalf("context LRU entries = %d, want <= %d", got, cfg.MaxContexts)
-	}
 	if got := len(ct.taskMap); got > cfg.MaxContexts {
-		t.Fatalf("task aliases = %d, want <= %d after context eviction", got, cfg.MaxContexts)
-	}
-	if got := len(ct.evicted); got > cfg.MaxContexts {
-		t.Fatalf("evicted markers = %d, want <= %d", got, cfg.MaxContexts)
-	}
-	if got := len(ct.evictedOrder); got > cfg.MaxContexts {
-		t.Fatalf("evicted LRU entries = %d, want <= %d", got, cfg.MaxContexts)
+		t.Fatalf("task aliases = %d, want <= %d", got, cfg.MaxContexts)
 	}
 }
 
@@ -1281,25 +1274,8 @@ func TestContextTracker_BoundsAliasesForResidentContext(t *testing.T) {
 	}
 }
 
-func TestContextTracker_EvictionHelpersBoundAllIndexes(t *testing.T) {
+func TestContextTracker_DefaultAndConfiguredCapacity(t *testing.T) {
 	ct := NewContextTracker(&config.A2AScanning{})
-	ct.taskMap["drop-a"] = "evicted"
-	ct.taskMap["drop-b"] = "evicted"
-	ct.taskMap["keep"] = "resident"
-	ct.dropContextTasksLocked("evicted")
-	if len(ct.taskMap) != 1 || ct.taskMap["keep"] != "resident" {
-		t.Fatalf("task aliases after eviction = %#v, want only resident alias", ct.taskMap)
-	}
-
-	ct.markEvictedLocked("first", 1)
-	ct.markEvictedLocked("first", 1)
-	ct.markEvictedLocked("second", 1)
-	if len(ct.evicted) != 1 {
-		t.Fatalf("evicted index size = %d, want 1", len(ct.evicted))
-	}
-	if _, ok := ct.evicted["second"]; !ok {
-		t.Fatalf("evicted index = %#v, want second", ct.evicted)
-	}
 	if got := ct.maxContextsLocked(); got != 1000 {
 		t.Fatalf("default max contexts = %d, want 1000", got)
 	}

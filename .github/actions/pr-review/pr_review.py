@@ -75,6 +75,9 @@ MAX_JUDGE_CONTEXT_FETCHES = 20
 MAX_DELETION_LINES_PER_HUNK = 24
 MAX_RENDERED_MANIFEST_ENTRIES = 8
 REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
+# @@ -old_start,old_count +new_start,new_count @@ optional section heading.
+# Counts are optional in unified diff when they are 1.
+HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 RUBRIC_VERSION = "2026-08-14.1"
 STATUS_MARKER = "pr-review-status:v1"
 
@@ -314,18 +317,70 @@ def _split_oversized_deep_hunk(header: list[str], hunk: list[str]) -> list[list[
     if estimate_tokens("\n".join(prefix + content)) <= DEEP_INPUT_TOKEN_BUDGET:
         return [hunk]
 
+    # Track the joined length instead of rebuilding the candidate string each
+    # time. estimate_tokens is ceil(len / 4), so the length is enough and the
+    # loop stays linear. Re-joining made it quadratic in characters, which on a
+    # 16,000-line deletion is around a billion characters copied per piece.
+    prefix_length = _joined_length(prefix)
+    old_cursor, new_cursor = _hunk_start_offsets(hunk[0])
+
     parts: list[list[str]] = []
     current: list[str] = []
+    current_length = 0
     for line in content:
-        candidate = prefix + current + [line]
-        if current and estimate_tokens("\n".join(candidate)) > DEEP_INPUT_TOKEN_BUDGET:
-            parts.append(hunk[:1] + current)
+        candidate_length = prefix_length + current_length + len(line) + 1
+        if current and math.ceil(candidate_length / 4) > DEEP_INPUT_TOKEN_BUDGET:
+            piece, old_cursor, new_cursor = _emit_piece(hunk[0], old_cursor, new_cursor, current)
+            parts.append(piece)
             current = [line]
+            current_length = len(line) + 1
             continue
         current.append(line)
+        current_length += len(line) + 1
     if current:
-        parts.append(hunk[:1] + current)
+        piece, old_cursor, new_cursor = _emit_piece(hunk[0], old_cursor, new_cursor, current)
+        parts.append(piece)
     return parts or [hunk]
+
+
+def _joined_length(lines: list[str]) -> int:
+    """Length of "\\n".join(lines), computed without building the string."""
+    if not lines:
+        return 0
+    return sum(len(line) for line in lines) + len(lines) - 1
+
+
+def _hunk_start_offsets(hunk_header: str) -> tuple[int, int]:
+    """Old-side and new-side starting line numbers from an @@ header."""
+    match = HUNK_HEADER_RE.match(hunk_header)
+    if not match:
+        return 1, 1
+    return int(match.group(1)), int(match.group(3))
+
+
+def _side_line_counts(lines: list[str]) -> tuple[int, int]:
+    """How many lines a piece occupies on the old side and the new side."""
+    old = sum(1 for line in lines if not line or line.startswith(("-", " ")))
+    new = sum(1 for line in lines if not line or line.startswith(("+", " ")))
+    return old, new
+
+
+def _emit_piece(
+    original_header: str, old_start: int, new_start: int, lines: list[str]
+) -> tuple[list[str], int, int]:
+    """Give a piece its own accurate @@ header and advance the cursors.
+
+    Every piece previously repeated the original hunk header, so a continuation
+    starting thousands of lines into a file still announced the whole hunk's
+    starting line. The reviewer anchors findings to that header, so deep mode
+    reported real findings against the wrong lines: the split was added to
+    preserve line-addressed output and was silently corrupting it.
+    """
+    old_count, new_count = _side_line_counts(lines)
+    match = HUNK_HEADER_RE.match(original_header)
+    suffix = match.group(5) if match else ""
+    piece_header = f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}"
+    return [piece_header] + lines, old_start + old_count, new_start + new_count
 
 
 def parse_diff(diff: str, mode: str = "default") -> tuple[list[DiffUnit], list[str]]:
@@ -382,7 +437,11 @@ def parse_diff(diff: str, mode: str = "default") -> tuple[list[DiffUnit], list[s
                     DiffUnit(
                         identifier=len(units) + 1,
                         path=path,
-                        hunk_header=hunk[0],
+                        # The piece's own header, not the original hunk's. A
+                        # split piece carries different line numbers, and this
+                        # value is what the manifest and the review prompt use
+                        # to locate a finding.
+                        hunk_header=review_hunk[0],
                         body=body,
                         category=category,
                         additions=additions,
@@ -1019,7 +1078,7 @@ def judge_findings(
     return verified, True, excluded
 
 
-def coverage_gaps(units: list[DiffUnit], omitted: list[DiffUnit], parse_errors: list[str]) -> list[str]:
+def coverage_gaps(_units: list[DiffUnit], omitted: list[DiffUnit], parse_errors: list[str]) -> list[str]:
     """Name only the things the review should have read and did not.
 
     Separated from the caller so the policy can be tested directly. It was

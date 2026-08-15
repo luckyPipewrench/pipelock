@@ -1083,6 +1083,47 @@ class DeletionFidelityTest(unittest.TestCase):
                 "a unit must carry changed lines after its hunk header",
             )
 
+    def test_split_pieces_carry_their_own_accurate_hunk_header(self) -> None:
+        # Every piece used to repeat the original @@ header, so a continuation
+        # starting thousands of lines in still announced the hunk's first line.
+        # The reviewer anchors findings to that header, so deep mode reported
+        # real findings against the wrong lines: the split exists to preserve
+        # line-addressed output and was quietly corrupting it.
+        count = 16_000
+        units, errors = pr_review.parse_diff(self.diff_with_deletions(count), "deep")
+        self.assertEqual(errors, [])
+        self.assertGreater(len(units), 1)
+
+        headers = [unit.hunk_header for unit in units]
+        self.assertEqual(len(headers), len(set(headers)), "pieces repeated one header")
+
+        old_cursor = 1
+        new_cursor = 1
+        for unit in units:
+            match = pr_review.HUNK_HEADER_RE.match(unit.hunk_header)
+            self.assertIsNotNone(match, f"unparseable piece header {unit.hunk_header!r}")
+            old_start, old_count = int(match.group(1)), int(match.group(2))
+            new_start, new_count = int(match.group(3)), int(match.group(4))
+
+            # A piece must start where the previous one ended on both sides.
+            self.assertEqual(old_start, old_cursor, f"old start drifted at {unit.hunk_header!r}")
+            self.assertEqual(new_start, new_cursor, f"new start drifted at {unit.hunk_header!r}")
+
+            # And its declared counts must match the lines it actually carries.
+            body = unit.body.splitlines()
+            piece = body[body.index(unit.hunk_header) + 1 :]
+            actual_old = sum(1 for line in piece if not line or line.startswith(("-", " ")))
+            actual_new = sum(1 for line in piece if not line or line.startswith(("+", " ")))
+            self.assertEqual(old_count, actual_old, f"old count wrong in {unit.hunk_header!r}")
+            self.assertEqual(new_count, actual_new, f"new count wrong in {unit.hunk_header!r}")
+
+            old_cursor += actual_old
+            new_cursor += actual_new
+
+        # The pieces together must still describe the whole original hunk.
+        self.assertEqual(old_cursor - 1, count)
+        self.assertEqual(new_cursor - 1, 1)
+
     def test_default_mode_still_collapses_and_discloses(self) -> None:
         count = pr_review.MAX_DELETION_LINES_PER_HUNK * 3
         units, _ = pr_review.parse_diff(self.diff_with_deletions(count), "default")

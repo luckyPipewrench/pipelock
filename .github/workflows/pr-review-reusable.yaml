@@ -48,6 +48,7 @@ jobs:
       base_sha: ${{ steps.claim.outputs.base_sha }}
       head_sha: ${{ steps.claim.outputs.head_sha }}
       status_comment_id: ${{ steps.claim.outputs.status_comment_id }}
+      correlation: ${{ steps.claim.outputs.correlation }}
     steps:
       # reviewer_sha is a free-form workflow input used directly as a checkout
       # ref. A branch or tag name would execute action code from a mutable ref,
@@ -173,20 +174,22 @@ jobs:
           COMMENT_ID: ${{ needs.admit.outputs.status_comment_id }}
           BASE_SHA: ${{ needs.admit.outputs.base_sha }}
           HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
-          REVIEWER_SHA: ${{ inputs.reviewer_sha }}
+          IDENTITY: ${{ needs.admit.outputs.correlation }}
         run: |
           set -euo pipefail
-          if [ -z "${COMMENT_ID}" ]; then
+          if [ -z "${COMMENT_ID}" ] || [ -z "${IDENTITY}" ]; then
             echo "pr-review phase=finalize status=no-claim"
             exit 0
           fi
           body="$(gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" --jq '.body')"
+          # Both conditions matter. The state check leaves a completed review
+          # alone, and the identity check makes this edit only ever land on the
+          # comment this run claimed, never on a newer review's.
           case "${body}" in
-            *"<!-- pr-review-status:v1 state=running"*) ;;
-            *) echo "pr-review phase=finalize status=already-final"; exit 0 ;;
+            *"<!-- pr-review-status:v1 state=running identity=${IDENTITY} -->"*) ;;
+            *) echo "pr-review phase=finalize status=not-ours-or-already-final"; exit 0 ;;
           esac
-          identity="${BASE_SHA:0:12}:${HEAD_SHA:0:12}:${REVIEWER_SHA:0:12}"
           printf '## AI PR Review\n\n**Status:** `failed`\n\n**Binding:** base `%s` head `%s`\n\nThe review job ended before the review completed.\n\n<!-- pr-review-status:v1 state=failed identity=%s -->\n' \
-            "${BASE_SHA}" "${HEAD_SHA}" "${identity}" > /tmp/pr-review-finalize.md
+            "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" > /tmp/pr-review-finalize.md
           gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null
           echo "pr-review phase=finalize status=closed"

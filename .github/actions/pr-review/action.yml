@@ -13,6 +13,9 @@ outputs:
   status_comment_id:
     description: Bot-owned status comment to edit during review.
     value: ${{ steps.run.outputs.status_comment_id }}
+  correlation:
+    description: Review identity written into the status comment marker.
+    value: ${{ steps.run.outputs.correlation }}
 inputs:
   github-token:
     description: Token permitted to read pull requests and update their status

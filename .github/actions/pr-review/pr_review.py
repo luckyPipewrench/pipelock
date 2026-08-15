@@ -1027,6 +1027,10 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
         base_sha=binding.base_sha,
         head_sha=binding.head_sha,
         status_comment_id=str(comment["id"]),
+        # Published so the workflow finalizer matches this exact review identity
+        # instead of rebuilding the string in shell, where it would drift from
+        # the correlation this module writes.
+        correlation=binding.correlation,
     )
 
 
@@ -1055,10 +1059,18 @@ def run_review(
     classification: list[str] = []
     manifest: list[dict[str, Any]] = []
     units: list[DiffUnit] = []
-    # Fail on a missing credential before any provider work, so the run ends as
-    # a configuration failure instead of a partial review.
-    provider_configuration()
     try:
+        # Checked before any provider work so a missing credential ends the run
+        # as a configuration failure rather than a partial review, and checked
+        # INSIDE this block so the failure still reaches finalization. Raising
+        # above it skipped the finally and left the claimed comment on running,
+        # which then refused every later review on the same head.
+        try:
+            provider_configuration()
+        except ProviderConfigurationError:
+            progress.fetch_failed = True
+            progress.incomplete_reasons.append("no usable provider credential was configured")
+            return "failed", progress
         try:
             diff = fetch_bound_diff(repo, binding, token)
         except FetchError:

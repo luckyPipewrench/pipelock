@@ -218,6 +218,23 @@ class ImmutableBindingTest(unittest.TestCase):
         self.assertEqual(create.call_count, 1)
 
 
+class ProviderConfigurationFinalizationTest(unittest.TestCase):
+    def test_missing_credential_finalizes_the_comment_instead_of_leaving_it_running(self) -> None:
+        # Raising outside the protected scope skipped finalization and stranded
+        # the claimed comment on running, which then refused later reviews.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "find_running_comment", return_value=None
+        ), mock.patch.object(pr_review, "create_comment", return_value={"id": 7}), mock.patch.object(
+            pr_review, "provider_configuration", side_effect=pr_review.ProviderConfigurationError("none")
+        ), mock.patch.object(pr_review, "update_comment") as update:
+            state, progress = pr_review.run_review("owner/repo", "42", "token", "default", "c" * 40)
+        self.assertEqual(state, "failed")
+        self.assertEqual(update.call_count, 1)
+        self.assertIn("state=failed", update.call_args.args[3])
+        self.assertTrue(any("provider credential" in reason for reason in progress.incomplete_reasons))
+
+
 class CompareCompletenessTest(unittest.TestCase):
     def _response(self, payload: object, status: int = 200) -> object:
         class Response:
@@ -289,6 +306,16 @@ class FinalizerIndependenceTest(unittest.TestCase):
         self.assertIn("if: always()", finalize)
         self.assertNotIn("trusted-pr-review", finalize)
         self.assertIn("needs.admit.outputs.status_comment_id", finalize)
+
+    def test_finalizer_matches_the_claimed_identity_not_a_rebuilt_one(self) -> None:
+        # Rebuilding the identity in shell would drift from PullBinding.correlation,
+        # and matching on state alone would let this edit land on another review's
+        # comment. It uses the identity the admission step published.
+        workflow = REUSABLE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("correlation: ${{ steps.claim.outputs.correlation }}", workflow)
+        finalize = workflow.split("Finalize an abandoned review", 1)[1]
+        self.assertIn("IDENTITY: ${{ needs.admit.outputs.correlation }}", finalize)
+        self.assertIn("state=running identity=${IDENTITY}", finalize)
 
     def test_finalizer_marker_matches_the_runner_status_marker(self) -> None:
         # The finalizer writes the marker in shell while the admission check

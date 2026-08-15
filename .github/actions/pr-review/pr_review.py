@@ -1064,6 +1064,12 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
             if fields:
                 fields["html_url"] = comment.get("html_url") if isinstance(comment.get("html_url"), str) else ""
                 markers.append(fields)
+        # A short page is the last page, the same termination find_running_comment
+        # uses against this endpoint. Without it the scan spends an extra request
+        # confirming what the short page already said, and two functions reading
+        # one endpoint disagree about when they have seen everything.
+        if len(comments) < 100:
+            return markers, notices, True
     return markers, notices, False
 
 
@@ -1641,8 +1647,14 @@ def run_review(
     try:
         prior, _, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
         seen_before = previously_reported(prior)
-    except requests.RequestException:
-        log_phase("prior-findings", status="request-error", correlation=binding.correlation)
+    except Exception:  # noqa: BLE001
+        # Deliberately broad. The narrow version was nearly unreachable, because
+        # the scan converts request failures into a returned tuple, so anything
+        # that did raise here escaped BEFORE the try/finally that publishes the
+        # status comment. The claimed comment would then sit on running until
+        # its stale timeout and block every later review of the same head. A
+        # label is not worth that.
+        log_phase("prior-findings", status="unavailable", correlation=binding.correlation)
     try:
         # Checked before any provider work so a missing credential ends the run
         # as a configuration failure rather than a partial review, and checked

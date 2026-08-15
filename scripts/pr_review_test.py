@@ -1501,6 +1501,51 @@ class RepeatReviewTest(unittest.TestCase):
         create.assert_not_called()
         self.assertIn("claimed=false", values)
 
+    def _page(self, count: int, body: str = "no marker") -> object:
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = [
+            {"user": {"login": "github-actions[bot]"}, "body": body, "html_url": "u"}
+            for _ in range(count)
+        ]
+        return response
+
+    def test_a_short_page_ends_the_scan(self) -> None:
+        # A short page is the last page. Without this the scan spends a request
+        # confirming what the short page already said, and disagrees with
+        # find_running_comment about when the same endpoint is exhausted.
+        with mock.patch.object(pr_review.requests, "get", side_effect=[self._page(100), self._page(3)]) as get:
+            _, _, complete = pr_review.scan_status_comments("o/r", "1", "t", "corr")
+        self.assertTrue(complete)
+        self.assertEqual(get.call_count, 2)
+
+    def test_exhausting_the_page_bound_is_not_completeness(self) -> None:
+        # The bound being reached means there may be more, so it must never be
+        # read as an absence: that is what would let a skip happen on a pull
+        # request whose real markers were never seen.
+        pages = [self._page(100) for _ in range(pr_review.ADMISSION_COMMENT_PAGES)]
+        with mock.patch.object(pr_review.requests, "get", side_effect=pages):
+            _, _, complete = pr_review.scan_status_comments("o/r", "1", "t", "corr")
+        self.assertFalse(complete)
+
+    def test_a_prior_findings_failure_cannot_cost_the_review(self) -> None:
+        # This lookup exists to label findings. Anything it raises escapes
+        # before the block that publishes the status comment, which would strand
+        # that comment on running until its stale timeout and block every later
+        # review of the same head.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", side_effect=RuntimeError("boom")
+        ), mock.patch.object(pr_review, "provider_configuration", side_effect=pr_review.ProviderConfigurationError("none")), mock.patch.object(
+            pr_review, "update_comment", return_value={"id": 1}
+        ):
+            state, progress = pr_review.run_review(
+                "owner/repo", "42", "token", "default", "c" * 40, binding=binding, status_comment_id=1
+            )
+        # It reached a published verdict instead of propagating the exception.
+        self.assertEqual(state, "failed")
+        self.assertIn("no usable provider credential was configured", progress.incomplete_reasons)
+
     def test_a_fingerprint_survives_a_line_number_moving(self) -> None:
         # Anything inserted above a finding shifts its line. Including the line
         # would make every finding look new after any push, which is the noise

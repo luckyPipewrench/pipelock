@@ -114,7 +114,7 @@ different review and it reads the whole diff again. That is deliberate rather
 than a cost oversight: reviewing only the newest commits assumes findings
 compose, and they do not. A commit that is fine alone can break code reviewed
 earlier, and a fix for a finding can itself be wrong. What the review does
-instead is mark any finding it has already reported on this pull request with
+instead is mark any finding reported by a completed review on this pull request with
 `(reported before)`, so the new work is visible without re-triaging the list.
 Every finding is still published; the label never hides one.
 

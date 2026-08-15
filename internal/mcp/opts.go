@@ -371,6 +371,15 @@ type MCPProxyOpts struct {
 	// swap-after-hash case can be reproduced; production wiring leaves it nil.
 	afterIntegrityPreparedForTest func()
 
+	// sessionExitForTest overrides the session-bound exit's parent-death
+	// watch and drain window. A test process cannot make its own parent
+	// die, so the in-process teardown path is otherwise reachable only
+	// from a helper subprocess; production wiring leaves it nil.
+	sessionExitForTest *sessionExitTestHooks
+	// sessionExit marks Pipelock-initiated descriptor closes during a
+	// session-bound teardown. It is wired only by proxy entry points.
+	sessionExit *sessionExitState
+
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage
 	OnChildReady func() // called after child process starts

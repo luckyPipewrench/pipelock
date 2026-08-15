@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -84,6 +85,14 @@ func RunHTTPProxy(
 	extraHeaders http.Header,
 	opts MCPProxyOpts,
 ) error {
+	// Capture before validating the upstream. Otherwise a launcher that dies
+	// during preflight can leave this bridge with PID 1 and no session binding.
+	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
+	safeClientOut := &syncWriter{w: clientOut}
+	safeLogW := &syncWriter{w: logW}
+	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
+	defer cancel()
+
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
 		opts.Transport = "mcp_http_upstream"
@@ -99,10 +108,6 @@ func RunHTTPProxy(
 		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
 	}
 
-	// Create a child context so we can stop the GET stream when stdin EOF is reached.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	// Per-invocation adaptive enforcement recorder. Mint the invocation
 	// key once so it can also feed scanHTTPInputDecision below, keeping
 	// CEE state and audit correlation scoped to this RunHTTPProxy call
@@ -113,9 +118,6 @@ func RunHTTPProxy(
 		rec = opts.Store.GetOrCreate(invocationKey)
 	}
 	defer recordMCPBaselineSample(opts, rec)
-
-	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := &syncWriter{w: logW}
 
 	httpClient := transport.NewHTTPClientWithDialer(upstreamURL, extraHeaders, opts.DialContext)
 	var upstreamMu sync.Mutex
@@ -151,6 +153,7 @@ func RunHTTPProxy(
 	fwdOpts.ToolCfg = fwdToolCfg
 	fwdOpts.ToolCfgFn = nil
 	fwdOpts.WarnContext = ctx
+	fwdOpts.sessionExit = sessionExit
 	resolverRuntime := newDeferResolverRuntime(ctx)
 	fwdOpts.DeferResolverRuntime = resolverRuntime
 	defer func() {
@@ -170,7 +173,7 @@ func RunHTTPProxy(
 	for {
 		msg, err := clientReader.ReadMessage()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) || (sessionExit.inProgress() && isSessionExitCloseErr(err)) {
 				break
 			}
 			return fmt.Errorf("reading stdin: %w", err)

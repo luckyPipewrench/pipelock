@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -171,7 +172,12 @@ func RunHTTPListenerProxy(
 	logW io.Writer,
 	opts MCPProxyOpts,
 ) error {
+	// Capture before listener validation and upstream preflight so an exit in
+	// either step cannot turn a real parent death into an inert PID-1 watch.
+	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	safeLogW := &syncWriter{w: logW}
+	ctx, stopSession, _ := newSessionBoundContext(ctx, startupParentWatch, nil, safeLogW, opts.sessionExitForTest)
+	defer stopSession()
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)
 	if err := validateListenerBearerToken(opts.ListenerBearerToken); err != nil {
 		return err

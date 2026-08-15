@@ -186,6 +186,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if wsutil.IsExpectedCloseErr(err) {
 				break
 			}
+			if opts.sessionExit.inProgress() && isSessionExitCloseErr(err) {
+				break
+			}
 			// Upstream response timeout: return the sentinel so the owning
 			// transport tears down the hung upstream and decides the failure
 			// scope. Returning (not break) is load-bearing: a clean-EOF break
@@ -1336,6 +1339,10 @@ type InputScanConfig struct {
 // starts and its PID is registered with the lineage tracker; callers use
 // this to start the file sentry event loop after attribution is ready.
 func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, opts MCPProxyOpts, extraEnv ...string) error {
+	// Capture before integrity preparation, pipe setup, and child startup. If
+	// the launcher dies during that work, the watcher must retain the original
+	// owner instead of observing PID 1 and incorrectly becoming inert.
+	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	var cmd *exec.Cmd
 	var prepared *integrity.PreparedCommand
 	if icfg := opts.IntegrityCfg; icfg != nil && icfg.Enabled {
@@ -1409,7 +1416,16 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 
-	cmd.Stderr = safeLogW
+	// Own the stderr pipe rather than assigning cmd.Stderr directly. The
+	// os/exec convenience path waits for its private copier inside cmd.Wait;
+	// a descendant that escapes the child group while holding stderr open
+	// would therefore make the adopted-descendant sweep unreachable. Owning
+	// the read end lets session teardown release it before Wait.
+	serverErr, serverErrW, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("creating stderr pipe: %w", err)
+	}
+	cmd.Stderr = serverErrW
 
 	// Put the child in its own process group so pipelock can tear down
 	// any grandchildren the MCP server spawned when the child exits.
@@ -1460,8 +1476,16 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = serverErr.Close()
+		_ = serverErrW.Close()
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
 	}
+	_ = serverErrW.Close()
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(safeLogW, serverErr)
+		close(stderrDone)
+	}()
 	if prepared != nil {
 		startedPreparation := prepared
 		prepared = nil
@@ -1518,6 +1542,78 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}()
 	defer close(pgidDone)
 
+	// Session-bound exit. A stdio proxy is owned by the interactive agent
+	// session that spawned it: when that session dies, this process and the
+	// MCP server it fronts have no reason to exist, but nothing in the
+	// lifetime handling above notices. Pdeathsig and the subreaper bit are
+	// both armed on the CHILD and answer "what happens when pipelock dies";
+	// neither answers "what happens when pipelock's own parent dies". The
+	// client stdin reader hitting EOF closes the wrapped server's stdin, and
+	// for a server that ignores stdin close that is not a shutdown at all -
+	// cmd.Wait pins forever and the whole tree leaks for days while still
+	// holding config, compiled pattern sets and credential-bearing children.
+	//
+	// The teardown ordering below is a drain, not a kill: stop intake, let
+	// in-flight responses finish, and only escalate to the process-tree
+	// teardown for a server that will not leave on its own.
+	//
+	// This is defense in depth for an unclean harness exit. The primary
+	// repair is a per-session cgroup boundary owned by the spawning harness,
+	// which is strictly stronger because it also catches descendants that
+	// create new process groups.
+	waitDone := make(chan struct{})
+	sessionExit := &sessionExitState{}
+	sessionCtx, sessionStop := context.WithCancel(ctx)
+	defer sessionStop()
+	// The parent PID was captured at function entry, before startup work can
+	// observe a post-exit PID 1 and make the watcher permanently inert.
+	sessionOpts := startupParentWatch
+	sessionOpts.logW = safeLogW
+	sessionGrace := defaultParentExitGrace
+	if h := opts.sessionExitForTest; h != nil {
+		sessionOpts = h.watch
+		sessionOpts.logW = safeLogW
+		sessionGrace = h.grace
+	}
+	if sessionOpts.startPPID > orphanedPPID {
+		go runSessionBoundExit(sessionCtx, sessionOpts, sessionExitActions{
+			onSessionExit: sessionExit.begin,
+			stopIntake: func() {
+				if c, ok := clientIn.(io.Closer); ok {
+					_ = c.Close()
+				}
+			},
+			closeServerStdin: func() { _ = serverIn.Close() },
+			// Tear down the whole process group, not just the direct child.
+			//
+			// Killing only cmd.Process is not enough and deadlocks: any
+			// sibling the server spawned inherited the stdout pipe, so the
+			// write end stays open after the direct child dies and the
+			// response reader blocks forever on a pipe that will never close.
+			// That reader has to return before cmd.Wait can, and the post-Wait
+			// teardown is what would have killed the pipe holders - so the
+			// shutdown waits on itself and the tree leaks exactly as it did
+			// before this watcher existed. Signaling the group first releases
+			// the descriptor and lets Wait return, after which the normal
+			// teardown reaps detached and adopted descendants the group kill
+			// could not reach.
+			terminateTree: func() {
+				terminateProcessGroup(childPgid)
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+				// A descendant can escape the child group with setsid while
+				// retaining stdout. Closing our read end releases ForwardScanned
+				// so cmd.Wait and its adopted-descendant sweep are reachable.
+				_ = serverOut.Close()
+				_ = serverErr.Close()
+			},
+			waitDone: waitDone,
+			grace:    sessionGrace,
+			logW:     safeLogW,
+		})
+	}
+
 	// Signal that the child is started and PID is tracked. The file sentry
 	// event loop starts here so attribution is ready before classifying writes.
 	if opts.OnChildReady != nil {
@@ -1567,6 +1663,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	inputOpts := opts
 	inputOpts.Rec = rec
 	inputOpts.WarnContext = ctx
+	inputOpts.sessionExit = sessionExit
 
 	// Forward client input to server stdin (with optional input scanning).
 	var wg sync.WaitGroup
@@ -1653,6 +1750,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()
+	// Release the session watcher's drain wait. A server that exited on its
+	// own after stdin close must not sit through the remaining grace window
+	// before the teardown below claims ownership.
+	close(waitDone)
 
 	// After the direct child exits, tear down everything it spawned.
 	// Three layers of cleanup that together cover fast common-case
@@ -1682,6 +1783,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Sweep orphans the pgid kill couldn't reach. Safe even on
 	// non-Linux builds - the stub is a no-op there.
 	killAdoptedDescendants()
+	// A detached descendant can retain stderr after the direct child exits.
+	// Drain it only after the sweep above has released every remaining writer.
+	<-stderrDone
 
 	if timedOut {
 		// Closing a closable clientIn above wakes the usual CLI/pipe readers.

@@ -288,7 +288,8 @@ func ForwardScannedInput(
 	for {
 		line, err := reader.ReadMessage()
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			expectedClose := opts.sessionExit.inProgress() && isSessionExitCloseErr(err)
+			if !errors.Is(err, io.EOF) && !expectedClose {
 				_, _ = fmt.Fprintf(logW, "pipelock: input scanner error: %v\n", err)
 			}
 			return

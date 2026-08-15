@@ -80,12 +80,9 @@ func currentUIDTaskCount() (uint64, error) {
 			return 0, fmt.Errorf("reading /proc/%s/status: %w", pid, err)
 		}
 		status, readErr := io.ReadAll(statusFile)
-		closeErr := statusFile.Close()
+		_ = statusFile.Close()
 		if readErr != nil {
 			return 0, fmt.Errorf("reading /proc/%s/status: %w", pid, readErr)
-		}
-		if closeErr != nil {
-			return 0, fmt.Errorf("closing /proc/%s/status: %w", pid, closeErr)
 		}
 		realUID, err := processRealUID(status)
 		if err != nil {
@@ -103,12 +100,9 @@ func currentUIDTaskCount() (uint64, error) {
 			return 0, fmt.Errorf("reading /proc/%s/task: %w", pid, err)
 		}
 		threadEntries, readErr := taskDir.ReadDir(-1)
-		closeErr = taskDir.Close()
+		_ = taskDir.Close()
 		if readErr != nil {
 			return 0, fmt.Errorf("reading /proc/%s/task: %w", pid, readErr)
-		}
-		if closeErr != nil {
-			return 0, fmt.Errorf("closing /proc/%s/task: %w", pid, closeErr)
 		}
 		if uint64(len(threadEntries)) > math.MaxUint64-tasks {
 			return 0, errors.New("shared UID task count overflows")
@@ -126,12 +120,7 @@ func openProcFile(procFD int, name string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(fd), name)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New("opening proc file")
-	}
-	return file, nil
+	return os.NewFile(uintptr(fd), name), nil
 }
 
 func processRealUID(status []byte) (int, error) {

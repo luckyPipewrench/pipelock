@@ -81,6 +81,9 @@ REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 RUBRIC_VERSION = "2026-08-14.1"
 STATUS_MARKER = "pr-review-status:v1"
+STATUS_MARKER_REQUIRED_FIELDS = frozenset({"state", "identity", "mode", "findings"})
+STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"model"}
+FINDING_FINGERPRINTS_RE = re.compile(r"(?:[0-9a-f]{12}(?:,[0-9a-f]{12})*)?")
 
 PUBLISHED_REVIEW_STATES = frozenset({"already-running", "clean", "failed", "findings", "partial", "superseded"})
 # A review that reached a verdict over the whole diff. Everything else left
@@ -944,16 +947,37 @@ def finding_fingerprint(finding: Finding) -> str:
     return hashlib.sha256(f"{finding.path}\x00{finding.severity}\x00{title}".encode()).hexdigest()[:12]
 
 
+def model_binding(mode: str) -> str:
+    """Bind a completed marker to the effective reviewer model.
+
+    The caller can change PR_REVIEW_MODEL_FAST or PR_REVIEW_MODEL_DEEP without
+    changing this action commit. The model is review input, so treating a
+    review from the previous model as identical would skip a pass that can
+    legitimately reach a different result. Store a digest rather than the
+    model name because a workflow variable is not safe comment markup.
+    """
+    return hashlib.sha256(model_for_mode(mode).encode("utf-8")).hexdigest()
+
+
 def parse_status_marker(body: str) -> dict[str, str] | None:
-    """Read one status marker's fields, or None when the body carries none."""
-    match = re.search(rf"<!-- {re.escape(STATUS_MARKER)} ([^>]*?)-->", body)
-    if not match:
+    """Read one complete terminal marker, rejecting ambiguity fail closed."""
+    matches = re.findall(rf"<!-- {re.escape(STATUS_MARKER)} ([^>\r\n]*?)-->", body)
+    if len(matches) != 1:
         return None
     fields: dict[str, str] = {}
-    for token in match.group(1).split():
+    for token in matches[0].split():
         key, separator, value = token.partition("=")
-        if separator:
-            fields[key] = value
+        if not separator or not key or key in fields:
+            return None
+        fields[key] = value
+    if (
+        set(fields) not in {STATUS_MARKER_REQUIRED_FIELDS, STATUS_MARKER_FIELDS}
+        or fields["state"] not in PUBLISHED_REVIEW_STATES
+        or fields["mode"] not in {"default", "deep"}
+        or ("model" in fields and not re.fullmatch(r"[0-9a-f]{64}", fields["model"]))
+        or not FINDING_FINGERPRINTS_RE.fullmatch(fields["findings"])
+    ):
+        return None
     return fields
 
 
@@ -1024,9 +1048,10 @@ def previously_reported(markers: list[dict[str, str]]) -> set[str]:
 def completed_identical_review(markers: list[dict[str, str]], correlation: str, mode: str) -> dict[str, str] | None:
     """Find a finished review of this exact input, which cannot differ from one run now.
 
-    The identity covers base, head, reviewer commit and rubric; mode is compared
-    alongside it because a deep pass over the same commits is a different review
-    and must never be skipped because a default pass already ran.
+    The identity covers base, head, reviewer commit and rubric. Mode and the
+    effective reviewer model are compared alongside it: a deep pass, or a pass
+    after the caller selects a different model, must never be skipped because a
+    prior default or differently configured pass already ran.
 
     Only a state that means the review covered the whole diff qualifies. A
     partial or failed run may have been short for a transient reason, so
@@ -1036,6 +1061,7 @@ def completed_identical_review(markers: list[dict[str, str]], correlation: str, 
         if (
             marker.get("identity") == correlation
             and marker.get("mode") == mode
+            and marker.get("model") == model_binding(mode)
             and marker.get("state") in COMPLETE_REVIEW_STATES
         ):
             return marker
@@ -1402,7 +1428,7 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         [
             "",
             f"<!-- {STATUS_MARKER} state={state} identity={binding.correlation} "
-            f"mode={mode} findings={fingerprints} -->",
+            f"mode={mode} model={model_binding(mode)} findings={fingerprints} -->",
         ]
     )
     return "\n".join(lines)
@@ -1463,8 +1489,8 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
     """Atomically enough for one operator: persist a running marker before review work."""
     binding = get_pull_binding(repo, pr_number, token, reviewer_sha)
 
-    # A finished review of this exact base, head, reviewer and rubric cannot
-    # differ from one run now, so running it again spends a full review to
+    # A finished review of this exact base, head, reviewer, rubric and model
+    # cannot differ from one run now, so running it again spends a full review to
     # reproduce an answer already on the pull request. On a large diff that is
     # twenty minutes and a deep-model bill for no new information.
     #

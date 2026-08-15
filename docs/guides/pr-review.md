@@ -100,8 +100,9 @@ Reviewing the same pull request twice is normal, and the two cases behave
 differently.
 
 **Nothing changed since the last review.** The command links the existing review
-and stops. A finished review of the same base, head, reviewer commit and rubric
-cannot reach a different answer, so running it again would spend a full review,
+and stops. A finished review of the same base, head, reviewer commit, rubric,
+and selected model cannot reach a different answer, so running it again would
+spend a full review,
 twenty minutes on a large diff, to reproduce what is already posted. Depth is
 part of that comparison, so `/review deep` still runs after `/review`. Only a
 review that covered the whole diff counts; a `partial` or `failed` one is worth

@@ -83,6 +83,8 @@ jobs:
           pr-number: ${{ inputs.pr_number }}
           review-mode: ${{ inputs.review_mode }}
           reviewer-sha: ${{ inputs.reviewer_sha }}
+          model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
+          model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
           operation: claim
 
 

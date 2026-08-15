@@ -110,7 +110,9 @@ class WorkflowPackagingTest(unittest.TestCase):
         admit = workflow["jobs"]["admit"]
         self.assertEqual(admit["concurrency"]["group"], "pr-review-${{ github.repository }}-${{ inputs.pr_number }}")
         self.assertEqual(admit["concurrency"]["cancel-in-progress"], "false")
-        self.assertTrue(any(step.get("name") == "Claim review status" for step in admit["steps"]))
+        claim = next(step for step in admit["steps"] if step.get("name") == "Claim review status")
+        self.assertEqual(claim["with"]["model-fast"], "${{ vars.PR_REVIEW_MODEL_FAST }}")
+        self.assertEqual(claim["with"]["model-deep"], "${{ vars.PR_REVIEW_MODEL_DEEP }}")
 
         review = workflow["jobs"]["review"]
         self.assertEqual(review["needs"], "admit")
@@ -1271,8 +1273,15 @@ class RepeatReviewTest(unittest.TestCase):
     IDENTITY = "aaaaaaaaaaaa:bbbbbbbbbbbb:cccccccccccc:2026-08-14.1"
 
     @staticmethod
-    def marker(state: str, identity: str, mode: str, findings: str = "") -> dict[str, str]:
-        return {"state": state, "identity": identity, "mode": mode, "findings": findings, "html_url": "u"}
+    def marker(state: str, identity: str, mode: str, findings: str = "", model: str | None = None) -> dict[str, str]:
+        return {
+            "state": state,
+            "identity": identity,
+            "mode": mode,
+            "model": model or pr_review.model_binding(mode),
+            "findings": findings,
+            "html_url": "u",
+        }
 
     def test_an_identical_completed_review_is_recognized(self) -> None:
         markers = [self.marker("findings", self.IDENTITY, "deep", "aaa,bbb")]
@@ -1312,6 +1321,7 @@ class RepeatReviewTest(unittest.TestCase):
         self.assertEqual(fields["state"], "findings")
         self.assertEqual(fields["identity"], binding.correlation)
         self.assertEqual(fields["mode"], "deep")
+        self.assertEqual(fields["model"], pr_review.model_binding("deep"))
         self.assertEqual(
             fields["findings"],
             pr_review.finding_fingerprint(progress.findings[0]),
@@ -1322,6 +1332,46 @@ class RepeatReviewTest(unittest.TestCase):
         self.assertIsNotNone(
             pr_review.completed_identical_review([fields], binding.correlation, "deep")
         )
+
+    def test_a_model_change_is_not_skipped(self) -> None:
+        with mock.patch.dict(pr_review.os.environ, {"PR_REVIEW_MODEL_FAST": "reviewer-before"}, clear=False):
+            marker = self.marker("clean", self.IDENTITY, "default")
+            self.assertIsNotNone(pr_review.completed_identical_review([marker], self.IDENTITY, "default"))
+        with mock.patch.dict(pr_review.os.environ, {"PR_REVIEW_MODEL_FAST": "reviewer-after"}, clear=False):
+            self.assertIsNone(pr_review.completed_identical_review([marker], self.IDENTITY, "default"))
+
+    def test_ambiguous_or_malformed_markers_are_not_evidence(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1)
+        terminal = pr_review.render_status(binding, "default", ["source:go"], progress, "clean", [])
+        self.assertIsNone(pr_review.parse_status_marker(terminal + "\n" + terminal))
+        marker = terminal.rsplit("<!-- ", 1)[1].removesuffix(" -->")
+        self.assertIsNone(pr_review.parse_status_marker(f"<!-- {marker} state=clean -->"))
+
+    def test_legacy_marker_labels_findings_but_never_skips(self) -> None:
+        legacy = pr_review.parse_status_marker(
+            f"<!-- {pr_review.STATUS_MARKER} state=findings identity={self.IDENTITY} "
+            "mode=default findings=aaaaaaaaaaaa -->"
+        )
+        self.assertIsNotNone(legacy)
+        self.assertEqual(pr_review.previously_reported([legacy]), {"aaaaaaaaaaaa"})
+        self.assertIsNone(pr_review.completed_identical_review([legacy], self.IDENTITY, "default"))
+
+    def test_workflow_dispatch_runs_even_when_a_matching_review_exists(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments"
+        ) as scan, mock.patch.object(pr_review, "find_running_comment", return_value=(None, True)), mock.patch.object(
+            pr_review, "create_comment", return_value={"id": 17}
+        ) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        scan.assert_not_called()
+        self.assertIn("claimed=true", values)
+        self.assertIn("state=running", create.call_args.args[3])
 
     def test_a_fingerprint_survives_a_line_number_moving(self) -> None:
         # Anything inserted above a finding shifts its line. Including the line

@@ -21,10 +21,11 @@ import (
 // Resource limit defaults for sandboxed child processes.
 // These prevent fork bombs, disk fill, FD exhaustion, and core dumps.
 const (
-	rlimitNProc  uint64 = 1024    // max child processes (prevents fork bomb)
-	rlimitNoFile uint64 = 4096    // max open file descriptors
-	rlimitFSize  uint64 = 1 << 30 // 1 GB max file size (prevents disk fill)
-	rlimitCore   uint64 = 0       // disable core dumps (prevents memory leak to disk)
+	rlimitNProc       uint64 = 1024    // max child processes (prevents fork bomb)
+	rlimitNoFile      uint64 = 4096    // max open file descriptors
+	rlimitFSize       uint64 = 1 << 30 // 1 GB max file size (prevents disk fill)
+	rlimitCore        uint64 = 0       // disable core dumps (prevents memory leak to disk)
+	initialUIDMapSize        = 1<<32 - 1
 )
 
 // sharedUIDNProcLimit returns a limit that leaves the sandbox process room for
@@ -138,14 +139,60 @@ func processRealUID(status []byte) (int, error) {
 	return 0, errors.New("uid field is missing")
 }
 
-// ApplyRlimits sets resource limits on the calling process. These are
-// inherited by exec'd children and constrain resource consumption.
-//
-// In a user namespace, RLIMIT_NPROC counts the namespace-local real UID, so a
-// fixed cap bounds only the sandbox. Best-effort fallback has no user namespace
-// and shares the host UID, so it receives current host-UID usage plus the same
-// 1024-task headroom. The latter is a shared-UID bound, not cgroup isolation.
-func ApplyRlimits(hasUserNamespace bool) error {
+func uidMapHasIsolatedAccounting(data []byte) (bool, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return false, errors.New("uid_map is empty")
+	}
+	lines := strings.Split(trimmed, "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			return false, errors.New("uid_map entry must contain three fields")
+		}
+		for i, field := range fields {
+			if _, err := strconv.ParseUint(field, 10, 64); err != nil {
+				return false, fmt.Errorf("parsing uid_map field %d: %w", i+1, err)
+			}
+		}
+	}
+	if len(lines) > 1 {
+		return true, nil
+	}
+	fields := strings.Fields(lines[0])
+	inside, _ := strconv.ParseUint(fields[0], 10, 64)
+	outside, _ := strconv.ParseUint(fields[1], 10, 64)
+	size, _ := strconv.ParseUint(fields[2], 10, 64)
+	return inside != 0 || outside != 0 || size != initialUIDMapSize, nil
+}
+
+func currentProcessHasIsolatedUIDAccounting() (bool, error) {
+	data, err := os.ReadFile("/proc/self/uid_map")
+	if err != nil {
+		return false, fmt.Errorf("reading current user namespace mapping: %w", err)
+	}
+	isolated, err := uidMapHasIsolatedAccounting(data)
+	if err != nil {
+		return false, fmt.Errorf("parsing current user namespace mapping: %w", err)
+	}
+	return isolated, nil
+}
+
+// ApplyRlimits sets resource limits on the calling process. It reads the
+// kernel's UID map instead of trusting launch-mode environment state to decide
+// whether RLIMIT_NPROC accounting is isolated from the host UID.
+func ApplyRlimits() error {
+	hasUserNamespace, err := currentProcessHasIsolatedUIDAccounting()
+	if err != nil {
+		return err
+	}
+	return applyRlimits(hasUserNamespace)
+}
+
+// applyRlimits applies the limits after the caller has established whether UID
+// accounting is isolated. Namespaced launches keep the fixed 1024-task bound.
+// Shared-UID launches receive current host usage plus the same headroom.
+func applyRlimits(hasUserNamespace bool) error {
 	nprocLimit := rlimitNProc
 	if !hasUserNamespace {
 		tasks, err := currentUIDTaskCount()

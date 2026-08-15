@@ -106,6 +106,41 @@ func TestProcessRealUID(t *testing.T) {
 	}
 }
 
+func TestUIDMapHasIsolatedAccounting(t *testing.T) {
+	tests := []struct {
+		name    string
+		mapping string
+		want    bool
+		wantErr string
+	}{
+		{name: "initial namespace", mapping: "0 0 4294967295\n"},
+		{name: "single mapped UID", mapping: "0 1000 1\n", want: true},
+		{name: "multiple mappings", mapping: "0 1000 1\n1 2000 1\n", want: true},
+		{name: "empty", mapping: "", wantErr: "empty"},
+		{name: "missing fields", mapping: "0 0\n", wantErr: "three fields"},
+		{name: "invalid size", mapping: "0 0 nope\n", wantErr: "field 3"},
+		{name: "malformed second mapping", mapping: "0 1000 1\nbad\n", wantErr: "three fields"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := uidMapHasIsolatedAccounting([]byte(tt.mapping))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("uidMapHasIsolatedAccounting() error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("uidMapHasIsolatedAccounting(): %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("uidMapHasIsolatedAccounting() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCurrentUIDTaskCount(t *testing.T) {
 	tasks, err := currentUIDTaskCount()
 	if err != nil {
@@ -161,7 +196,7 @@ func runNProcRegressionChild(mode string) {
 		}
 		_, _ = fmt.Fprintln(os.Stdout, "fixed cap child: resource temporarily unavailable")
 	case "best-effort":
-		if err := ApplyRlimits(false); err != nil {
+		if err := applyRlimits(false); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "apply best-effort rlimits: %v\n", err)
 			os.Exit(1)
 		}

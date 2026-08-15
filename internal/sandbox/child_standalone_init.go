@@ -144,7 +144,7 @@ func RunStandaloneInit() {
 	// Apply resource limits before Landlock. Best-effort fallback needs to count
 	// same-UID host tasks through /proc so RLIMIT_NPROC leaves usable headroom.
 	noNetNS := IsNoNetNS()
-	if err := ApplyRlimits(!noNetNS); err != nil {
+	if err := ApplyRlimits(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: %v\n", err)
 		if noNetNS {
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: best-effort mode requires a usable shared-UID RLIMIT_NPROC bound\n")

@@ -528,7 +528,7 @@ func TestApplyRlimits_ChildVerifiesAll(t *testing.T) {
 
 func init() {
 	if os.Getenv("__SANDBOX_RLIMIT_TEST") == "1" {
-		if err := ApplyRlimits(true); err != nil {
+		if err := applyRlimits(true); err != nil {
 			_, _ = os.Stderr.WriteString("rlimits: " + err.Error() + "\n")
 			os.Exit(1)
 		}

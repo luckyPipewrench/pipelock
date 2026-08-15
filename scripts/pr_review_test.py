@@ -35,6 +35,7 @@ def top_level_permissions(text: str) -> dict[str, str]:
     """
     permissions: dict[str, str] = {}
     inside = False
+    child_indent: int | None = None
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].rstrip()
         if not line:
@@ -43,8 +44,18 @@ def top_level_permissions(text: str) -> dict[str, str]:
             inside = True
             continue
         if inside:
-            if not line.startswith("  "):
+            indent = len(line) - len(line.lstrip(" "))
+            if indent == 0:
                 break
+            if child_indent is None:
+                child_indent = indent
+            if indent < child_indent:
+                break
+            # Only direct children count. A deeper entry reusing a permission
+            # name would otherwise overwrite the real top-level value, so a
+            # nested write could mask a top-level none.
+            if indent != child_indent:
+                continue
             key, _, value = line.strip().partition(":")
             permissions[key.strip()] = value.strip()
     return permissions
@@ -83,6 +94,27 @@ class WorkflowPackagingTest(unittest.TestCase):
         self.assertNotRegex(workflow, r"(?m)^\s*if:\s*.*secrets\.")
         # The explicit mapping must not accidentally turn into a secret inherit.
         self.assertNotRegex(workflow, r"(?m)^\s*secrets:\s*inherit\s*$")
+
+    def test_permission_reader_ignores_nested_entries_and_comments(self) -> None:
+        # A deeper entry reusing a permission name must not mask the real
+        # top-level value, and a permission named only in a comment must not
+        # count as set. Both would let the guard below pass on a workflow that
+        # cannot post comments.
+        document = "\n".join(
+            [
+                "permissions:",
+                "  pull-requests: none",
+                "  nested:",
+                "    pull-requests: write",
+                "  # pull-requests: write in prose only",
+                "",
+                "jobs:",
+                "  build:",
+                "    permissions:",
+                "      pull-requests: write",
+            ]
+        )
+        self.assertEqual(top_level_permissions(document).get("pull-requests"), "none")
 
     def test_both_workflows_keep_pull_request_write_for_comment_creation(self) -> None:
         # Posting a comment on a pull request needs pull-requests: write even

@@ -1288,10 +1288,27 @@ class GuideAccuracyTest(unittest.TestCase):
             if row.startswith("| `")
             for cell in [row.split("|")[1]]
         ]
-        self.assertGreaterEqual(len(paths), 5, "the file table must describe the whole system")
+        # The whole inventory, not a count. Requiring only a minimum meant
+        # deleting a row still passed, which is the drift this test exists to
+        # catch. Adding a file to this system is meant to require saying so
+        # here, so this list is a second place to update on purpose.
+        expected = {
+            ".github/workflows/pr-review.yaml",
+            ".github/workflows/pr-review-reusable.yaml",
+            ".github/actions/pr-review/action.yml",
+            ".github/actions/pr-review/pr_review.py",
+            ".github/actions/pr-review/requirements.txt",
+            ".github/requirements-pr-review-test.txt",
+            "scripts/pr_review_test.py",
+            ".github/workflows/ci.yaml",
+        }
+        self.assertEqual(set(paths), expected)
+        self.assertEqual(len(paths), len(expected), "the file table must not repeat a row")
         for path in paths:
             with self.subTest(path=path):
-                self.assertTrue((ROOT / path).exists(), f"the guide names {path}, which does not exist")
+                # is_file, not exists: a directory satisfies exists() while
+                # naming nothing a reader can open.
+                self.assertTrue((ROOT / path).is_file(), f"the guide names {path}, which is not a file")
 
     def test_the_guide_explains_how_to_test_a_change_to_this_workflow(self) -> None:
         # The single most expensive thing to not know here: a comment-triggered

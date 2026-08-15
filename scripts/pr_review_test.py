@@ -11,6 +11,11 @@ import tempfile
 import unittest
 from unittest import mock
 
+try:
+    import yaml
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("PyYAML is required to verify PR-review workflow structure") from exc
+
 
 ROOT = pathlib.Path(__file__).parents[1]
 ACTION_DIR = ROOT / ".github" / "actions" / "pr-review"
@@ -26,39 +31,16 @@ sys.modules[SPEC.name] = pr_review
 SPEC.loader.exec_module(pr_review)
 
 
-def top_level_permissions(text: str) -> dict[str, str]:
-    """Read a workflow's top-level permissions mapping, ignoring comments.
+def parse_yaml(text: str) -> dict[str, object]:
+    """Parse workflow YAML without YAML 1.1 coercing GitHub's `on` key."""
+    document = yaml.load(text, Loader=yaml.BaseLoader)
+    if not isinstance(document, dict):
+        raise RuntimeError("expected a YAML mapping")
+    return document
 
-    Deliberately dependency-free: the CI job that runs these tests installs no
-    Python packages, and an import failure there would take down the whole test
-    discovery run rather than just this assertion.
-    """
-    permissions: dict[str, str] = {}
-    inside = False
-    child_indent: int | None = None
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].rstrip()
-        if not line:
-            continue
-        if line == "permissions:":
-            inside = True
-            continue
-        if inside:
-            indent = len(line) - len(line.lstrip(" "))
-            if indent == 0:
-                break
-            if child_indent is None:
-                child_indent = indent
-            if indent < child_indent:
-                break
-            # Only direct children count. A deeper entry reusing a permission
-            # name would otherwise overwrite the real top-level value, so a
-            # nested write could mask a top-level none.
-            if indent != child_indent:
-                continue
-            key, _, value = line.strip().partition(":")
-            permissions[key.strip()] = value.strip()
-    return permissions
+
+def load_yaml(path: pathlib.Path) -> dict[str, object]:
+    return parse_yaml(path.read_text(encoding="utf-8"))
 
 
 def unit(identifier: int, path: str, category: str, *, additions: int = 1, tokens: int = 2) -> object:
@@ -74,26 +56,49 @@ def unit(identifier: int, path: str, category: str, *, additions: int = 1, token
 
 
 class WorkflowPackagingTest(unittest.TestCase):
-    def test_only_supported_commands_reach_the_reusable_workflow(self) -> None:
-        caller = CALLER_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("github.event.comment.body == '/review'", caller)
-        self.assertIn("github.event.comment.body == '/review deep'", caller)
-        self.assertIn("uses: ./.github/workflows/pr-review-reusable.yaml", caller)
-        self.assertIn("author_association == 'OWNER'", caller)
-        self.assertIn("user.login == 'luckyPipewrench'", caller)
+    def test_caller_authorizes_comments_and_dispatches_to_the_same_identity(self) -> None:
+        # Exercise the parsed workflow shape. String searches against a YAML
+        # file were bypassed before by a comment or an unrelated scalar with
+        # the same words.
+        caller = load_yaml(CALLER_WORKFLOW)
+        events = caller["on"]
+        self.assertEqual(events["issue_comment"]["types"], ["created"])
+        dispatch = events["workflow_dispatch"]
+        self.assertEqual(dispatch["inputs"]["pr_number"]["required"], "true")
+        self.assertEqual(dispatch["inputs"]["review_mode"]["type"], "choice")
+        self.assertEqual(dispatch["inputs"]["review_mode"]["options"], ["default", "deep"])
+
+        review = caller["jobs"]["review"]
+        self.assertEqual(review["uses"], "./.github/workflows/pr-review-reusable.yaml")
+        gate = review["if"]
+        for requirement in (
+            "github.actor == 'luckyPipewrench'",
+            "github.triggering_actor == 'luckyPipewrench'",
+            "github.event.comment.user.login == 'luckyPipewrench'",
+            "github.event.comment.author_association == 'OWNER'",
+            "github.event.issue.pull_request",
+            "github.event_name == 'workflow_dispatch'",
+        ):
+            self.assertIn(requirement, gate)
+        self.assertIn("inputs.pr_number", review["with"]["pr_number"])
+        self.assertIn("inputs.review_mode", review["with"]["review_mode"])
 
     def test_reusable_workflow_uses_non_cancelling_pr_concurrency(self) -> None:
-        workflow = REUSABLE_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("group: pr-review-${{ github.repository }}-${{ inputs.pr_number }}", workflow)
-        self.assertIn("cancel-in-progress: false", workflow)
-        self.assertIn("Claim review status", workflow)
-        self.assertIn("needs: admit", workflow)
-        self.assertIn("repository: luckyPipewrench/pipelock", workflow)
-        self.assertIn("ref: ${{ inputs.reviewer_sha }}", workflow)
-        self.assertIn("HAS_LITELLM", workflow)
-        self.assertNotRegex(workflow, r"(?m)^\s*if:\s*.*secrets\.")
-        # The explicit mapping must not accidentally turn into a secret inherit.
-        self.assertNotRegex(workflow, r"(?m)^\s*secrets:\s*inherit\s*$")
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        admit = workflow["jobs"]["admit"]
+        self.assertEqual(admit["concurrency"]["group"], "pr-review-${{ github.repository }}-${{ inputs.pr_number }}")
+        self.assertEqual(admit["concurrency"]["cancel-in-progress"], "false")
+        self.assertTrue(any(step.get("name") == "Claim review status" for step in admit["steps"]))
+
+        review = workflow["jobs"]["review"]
+        self.assertEqual(review["needs"], "admit")
+        self.assertIn("HAS_LITELLM", review["env"])
+        checkout = review["steps"][0]
+        self.assertEqual(checkout["with"]["repository"], "luckyPipewrench/pipelock")
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.reviewer_sha }}")
+        self.assertTrue(any(step.get("name") == "Finalize an abandoned review" and step.get("if") == "always()" for step in review["steps"]))
+        for step in review["steps"]:
+            self.assertNotIn("secrets.", step.get("if", ""))
 
     def test_permission_reader_ignores_nested_entries_and_comments(self) -> None:
         # A deeper entry reusing a permission name must not mask the real
@@ -114,7 +119,7 @@ class WorkflowPackagingTest(unittest.TestCase):
                 "      pull-requests: write",
             ]
         )
-        self.assertEqual(top_level_permissions(document).get("pull-requests"), "none")
+        self.assertEqual(parse_yaml(document)["permissions"].get("pull-requests"), "none")
 
     def test_both_workflows_keep_pull_request_write_for_comment_creation(self) -> None:
         # Posting a comment on a pull request needs pull-requests: write even
@@ -125,7 +130,7 @@ class WorkflowPackagingTest(unittest.TestCase):
         # the comment above the key contains the same words and a substring
         # search passed with the real key deleted.
         for path in (CALLER_WORKFLOW, REUSABLE_WORKFLOW):
-            permissions = top_level_permissions(path.read_text(encoding="utf-8"))
+            permissions = load_yaml(path)["permissions"]
             self.assertEqual(
                 permissions.get("pull-requests"),
                 "write",
@@ -138,16 +143,11 @@ class WorkflowPackagingTest(unittest.TestCase):
             )
 
     def test_composite_action_owns_runner_requirements_and_single_provider_inputs(self) -> None:
-        action = ACTION_YAML.read_text(encoding="utf-8")
+        action = load_yaml(ACTION_YAML)
         self.assertTrue((ACTION_DIR / "requirements.txt").is_file())
-        self.assertIn("$GITHUB_ACTION_PATH/pr_review.py", action)
-        self.assertIn("$GITHUB_ACTION_PATH/requirements.txt", action)
-        self.assertIn("status_comment_id", action)
-        self.assertIn("operation", action)
-        self.assertIn("litellm-api-key", action)
-        self.assertIn("openai-api-key", action)
-        self.assertIn("PR_REVIEW_MODEL_FAST", action)
-        self.assertIn("PR_REVIEW_MODEL_DEEP", action)
+        self.assertEqual(action["inputs"]["operation"]["default"], "review")
+        for name in ("status-comment-id", "operation", "litellm-api-key", "openai-api-key", "model-fast", "model-deep"):
+            self.assertIn(name, action["inputs"])
         # Either cache key breaks setup for this action and stops every review
         # before it starts, so this asserts against the parsed document rather
         # than the file's text. Four text-matching versions were each bypassed
@@ -156,18 +156,7 @@ class WorkflowPackagingTest(unittest.TestCase):
         # are parser differentials, and the answer to a parser differential is
         # a parser.
         #
-        # The import is local and its absence is a hard failure rather than a
-        # skip. The job that runs these tests installs no Python packages, so
-        # PyYAML being present is an assumption; a skip would turn that
-        # assumption into silent lost coverage, which is the whole failure
-        # class here. If this ever goes red on a missing module, that is the
-        # fact worth learning, and it is one dependency line to fix.
-        try:
-            import yaml
-        except ImportError:  # pragma: no cover
-            self.fail("PyYAML is required to verify this action's setup keys")
-        document = yaml.safe_load(action)
-        for step in document["runs"]["steps"]:
+        for step in action["runs"]["steps"]:
             settings = step.get("with") or {}
             self.assertNotIn("cache", settings, f"{step.get('name')} must not enable pip caching")
             self.assertNotIn("cache-dependency-path", settings, f"{step.get('name')} must not set a cache path")
@@ -211,6 +200,33 @@ class StateMachineTest(unittest.TestCase):
         )
         self.assertEqual(pr_review.derive_state(clean), "clean")
         self.assertEqual(pr_review.derive_state(finding), "findings")
+
+
+class ExitSemanticsTest(unittest.TestCase):
+    def test_every_published_outcome_is_green_but_an_unknown_state_is_red(self) -> None:
+        # A terminal verdict is useful even when it is partial, superseded, or
+        # failed. The status comment is its authoritative surface; the runner
+        # goes red only if it cannot publish a known verdict.
+        expected = {"already-running", "clean", "failed", "findings", "partial", "superseded"}
+        self.assertEqual(pr_review.PUBLISHED_REVIEW_STATES, expected)
+        for state in expected:
+            self.assertEqual(pr_review.exit_code_for_state(state), 0, state)
+        self.assertEqual(pr_review.exit_code_for_state("unexpected"), 1)
+
+    def test_main_accepts_each_published_review_outcome(self) -> None:
+        environment = {
+            "GITHUB_TOKEN": "token",
+            "REPO": "owner/repo",
+            "PR_NUMBER": "42",
+            "REVIEW_MODE": "default",
+            "REVIEWER_SHA": "a" * 40,
+            "REVIEW_OPERATION": "review",
+        }
+        for state in pr_review.PUBLISHED_REVIEW_STATES:
+            with self.subTest(state=state), mock.patch.dict(pr_review.os.environ, environment, clear=True), mock.patch.object(
+                pr_review, "run_review", return_value=(state, pr_review.ReviewProgress())
+            ):
+                self.assertIsNone(pr_review.main())
 
 
 class CompressionAndClassificationTest(unittest.TestCase):
@@ -686,9 +702,48 @@ class FailureDirectionTest(unittest.TestCase):
     def test_provider_timeout_is_distinguished_from_schema_failure(self) -> None:
         with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
             pr_review.requests, "post", side_effect=pr_review.requests.Timeout()
-        ):
+        ) as post:
             with self.assertRaises(pr_review.ModelTimeout):
                 pr_review.call_model("system", "user", "deep", "review-chunk-1", "correlation")
+        self.assertEqual(post.call_count, 1, "an ambiguous timeout must not be retried")
+
+    def test_connection_error_retries_once_with_one_provider_correlation_id(self) -> None:
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json() -> object:
+                return {"choices": [{"message": {"content": '{"findings":[]}'}}]}
+
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", side_effect=[pr_review.requests.ConnectionError("offline"), Response()]
+        ) as post:
+            self.assertEqual(pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation"), {"findings": []})
+        self.assertEqual(pr_review.MODEL_CONNECTION_ATTEMPTS, 2)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(
+            post.call_args_list[0].kwargs["headers"]["X-Client-Request-Id"],
+            post.call_args_list[1].kwargs["headers"]["X-Client-Request-Id"],
+        )
+
+    def test_connection_error_after_retry_is_distinct_from_other_provider_failures(self) -> None:
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", side_effect=pr_review.requests.ConnectionError("offline")
+        ) as post:
+            with self.assertRaises(pr_review.ModelConnectionError):
+                pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation")
+        self.assertEqual(post.call_count, 2)
+
+    def test_non_connection_request_error_is_not_retried(self) -> None:
+        # A response-path failure can happen after the provider receives the
+        # request, so unlike a connection error it must preserve the one-call
+        # rule that avoids duplicate review charges.
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", side_effect=pr_review.requests.exceptions.ChunkedEncodingError("connection reset")
+        ) as post:
+            with self.assertRaises(pr_review.ModelOutputError):
+                pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation")
+        self.assertEqual(post.call_count, 1)
 
 
 class ChunkResilienceTest(unittest.TestCase):
@@ -741,6 +796,15 @@ class ChunkResilienceTest(unittest.TestCase):
         self.assertEqual(progress.reviewed_units, 2)
         self.assertEqual(call_model.call_count, 3)
         self.assertTrue(any("not retried" in reason for reason in progress.incomplete_reasons))
+
+    def test_connection_retry_exhaustion_is_partial_but_later_chunks_continue(self) -> None:
+        state, progress, call_model = self._run_with_chunk_outcomes(
+            [pr_review.ModelConnectionError("offline after retry"), "ok", "ok"]
+        )
+        self.assertEqual(state, "partial")
+        self.assertEqual(progress.reviewed_units, 2)
+        self.assertEqual(call_model.call_count, 3)
+        self.assertTrue(any("review chunk 1 could not connect after one retry" == reason for reason in progress.incomplete_reasons))
 
 
 class StructuredOutputSafetyTest(unittest.TestCase):

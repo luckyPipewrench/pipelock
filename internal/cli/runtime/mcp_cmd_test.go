@@ -334,7 +334,7 @@ func TestMCPProxyCmdBuildsPinnedListenerResetAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(dir, "pipelock.yaml")
-	configData := fmt.Sprintf("mcp_tool_scanning:\n  enabled: true\n  action: block\n  listener_drift_reset_file: %q\n  listener_drift_reset_authority_public_key_file: %q\n  listener_drift_reset_target: mcp://runtime-listener-test\n",
+	configData := fmt.Sprintf("mcp_tool_scanning:\n  enabled: true\n  action: block\n  listener_drift_reset_file: %q\n  listener_drift_reset_authority_public_key_file: %q\n  listener_drift_reset_target: mcp://api.vendor.example\n",
 		filepath.Join(dir, "reset"), keyPath)
 	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestMCPProxyCmdBuildsAdaptiveResetAuthority(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--adaptive-reset-file", filepath.Join(dir, "reset"),
 		"--adaptive-reset-authority-public-key-file", keyPath,
-		"--adaptive-reset-target", "mcp://adaptive-runtime-test",
+		"--adaptive-reset-target", "mcp://api.vendor.example",
 		"--", "true",
 	})
 	var output bytes.Buffer

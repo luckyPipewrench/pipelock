@@ -543,9 +543,9 @@ func init() {
 			_, _ = os.Stderr.WriteString("getrlimit RLIMIT_NPROC: " + err.Error() + "\n")
 			os.Exit(1)
 		}
-		wantNProc := boundedNProcLimit(unix.Rlimit{Cur: inheritedNProc.Cur, Max: inheritedNProc.Max})
-		if nproc.Cur != wantNProc || nproc.Max != wantNProc {
-			_, _ = fmt.Fprintf(os.Stderr, "RLIMIT_NPROC cur=%d max=%d, want absolute shared-UID ceiling %d\n", nproc.Cur, nproc.Max, wantNProc)
+		nprocCeiling := boundedNProcLimit(unix.Rlimit{Cur: inheritedNProc.Cur, Max: inheritedNProc.Max})
+		if nproc.Cur > nprocCeiling || nproc.Cur != nproc.Max {
+			_, _ = fmt.Fprintf(os.Stderr, "RLIMIT_NPROC cur=%d max=%d, want equal values no greater than shared-UID ceiling %d\n", nproc.Cur, nproc.Max, nprocCeiling)
 			os.Exit(1)
 		}
 		// Verify the three per-process limits keep their fixed values.

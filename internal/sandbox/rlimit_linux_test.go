@@ -33,14 +33,15 @@ func TestBoundedNProcLimit(t *testing.T) {
 	}
 }
 
-func TestValidateNProcHeadroom(t *testing.T) {
-	if err := validateNProcHeadroom(10, 11); err != nil {
-		t.Fatalf("available headroom rejected: %v", err)
+func TestRequestedNProcLimit(t *testing.T) {
+	if got, err := requestedNProcLimit(100, 2048); err != nil || got != 1124 {
+		t.Fatalf("requestedNProcLimit(100, 2048) = (%d, %v), want (1124, nil)", got, err)
 	}
-	for _, tasks := range []uint64{10, 11} {
-		if err := validateNProcHeadroom(tasks, 10); err == nil {
-			t.Fatalf("tasks=%d accepted at limit 10", tasks)
-		}
+	if _, err := requestedNProcLimit(1025, 2048); err == nil {
+		t.Fatal("launch without full process headroom was accepted")
+	}
+	if _, err := requestedNProcLimit(^uint64(0), ^uint64(0)); err == nil {
+		t.Fatal("overflowing process headroom was accepted")
 	}
 }
 
@@ -52,4 +53,14 @@ func TestProcessUIDAndThreads(t *testing.T) {
 	if _, _, err := processUIDAndThreads([]byte("Name:\ttest\n")); err == nil {
 		t.Fatal("missing UID and thread fields accepted")
 	}
+	t.Run("malformed UID", func(t *testing.T) {
+		if _, _, err := processUIDAndThreads([]byte("Uid:\tinvalid\nThreads:\t7\n")); err == nil {
+			t.Fatal("malformed UID accepted")
+		}
+	})
+	t.Run("malformed threads", func(t *testing.T) {
+		if _, _, err := processUIDAndThreads([]byte("Uid:\t1000\nThreads:\tinvalid\n")); err == nil {
+			t.Fatal("malformed thread count accepted")
+		}
+	})
 }

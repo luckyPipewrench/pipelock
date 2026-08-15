@@ -22,6 +22,7 @@ import (
 // These prevent fork bombs, disk fill, FD exhaustion, and core dumps.
 const (
 	rlimitNProc           uint64 = 4096    // absolute shared-UID task ceiling
+	rlimitNProcHeadroom   uint64 = 1024    // tasks reserved for each admitted sandbox launch
 	rlimitNoFile          uint64 = 4096    // max open file descriptors
 	rlimitFSize           uint64 = 1 << 30 // 1 GB max file size (prevents disk fill)
 	rlimitCore            uint64 = 0       // disable core dumps (prevents memory leak to disk)
@@ -43,11 +44,15 @@ func boundedNProcLimit(inherited unix.Rlimit) uint64 {
 	return limit
 }
 
-func validateNProcHeadroom(tasks, limit uint64) error {
-	if tasks >= limit {
-		return fmt.Errorf("shared UID already has %d tasks at sandbox RLIMIT_NPROC ceiling %d", tasks, limit)
+func requestedNProcLimit(tasks, ceiling uint64) (uint64, error) {
+	if tasks > math.MaxUint64-rlimitNProcHeadroom {
+		return 0, errors.New("shared UID task headroom overflows")
 	}
-	return nil
+	requested := tasks + rlimitNProcHeadroom
+	if requested > ceiling {
+		return 0, fmt.Errorf("shared UID has %d tasks; reserving %d tasks exceeds sandbox RLIMIT_NPROC ceiling %d", tasks, rlimitNProcHeadroom, ceiling)
+	}
+	return requested, nil
 }
 
 // currentUIDTaskCount counts tasks for this real UID without retaining the
@@ -169,19 +174,21 @@ func processUIDAndThreads(status []byte) (int, uint64, error) {
 // ApplyRlimits sets resource limits on the calling process. Linux accounts
 // RLIMIT_NPROC against the real UID shared with the host even for mapped
 // sandbox launches, so every mode receives the same absolute shared-UID
-// ceiling. If the UID is already at that ceiling, later process creation is
-// denied; failing closed avoids expanding every same-UID sandbox's allowance.
+// ceiling. Each admitted launch receives 1,024 tasks above current shared-UID
+// usage without ever raising that absolute ceiling. A launch that cannot
+// receive the full headroom fails before the target executes.
 func ApplyRlimits() error {
 	var inherited unix.Rlimit
 	if err := unix.Getrlimit(unix.RLIMIT_NPROC, &inherited); err != nil {
 		return fmt.Errorf("getting inherited RLIMIT_NPROC: %w", err)
 	}
-	nprocLimit := boundedNProcLimit(inherited)
-	tasks, err := currentUIDTaskCount(nprocLimit)
+	nprocCeiling := boundedNProcLimit(inherited)
+	tasks, err := currentUIDTaskCount(nprocCeiling)
 	if err != nil {
 		return err
 	}
-	if err := validateNProcHeadroom(tasks, nprocLimit); err != nil {
+	nprocLimit, err := requestedNProcLimit(tasks, nprocCeiling)
+	if err != nil {
 		return err
 	}
 

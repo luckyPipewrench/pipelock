@@ -1065,21 +1065,44 @@ def parse_ledger(body: str) -> dict[str, object] | None:
     # assumed whole.
     if payload.get("complete") is not True:
         payload["complete"] = False
+    # A dropped entry is a finding that stays open and is never carried
+    # forward again, so silently discarding one while still calling the record
+    # whole is the same fail-open the completeness flag was added to close.
+    # Anything malformed marks the whole ledger unusable as a baseline; it may
+    # still label, because a label only adds information.
     entries = []
+    intact = True
     for item in payload["open"]:
-        if not isinstance(item, dict):
-            continue
-        if not {"f", "p", "s", "t"} <= set(item):
+        if not isinstance(item, dict) or not {"f", "p", "s", "t"} <= set(item):
+            intact = False
             continue
         if not all(isinstance(item[k], str) for k in ("f", "p", "s", "t")):
+            intact = False
             continue
         if item["s"] not in {"high", "medium", "low"}:
+            intact = False
+            continue
+        if not re.fullmatch(r"[0-9a-f]{12}", item["f"]):
+            intact = False
+            continue
+        if not item["p"] or len(item["p"]) > 200 or len(item["t"]) > MAX_LEDGER_TITLE:
+            intact = False
             continue
         line = item.get("l")
-        if line is not None and not isinstance(line, int):
+        if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+            intact = False
+            continue
+        # The fingerprint is recomputed from the claim rather than trusted.
+        # Stored and ignored, it let an edited title, path or severity change
+        # what the record says while the record still looked untouched.
+        rebuilt = Finding(severity=item["s"], path=item["p"], line=line, title=item["t"], why="", fix="")
+        if finding_fingerprint(rebuilt) != item["f"]:
+            intact = False
             continue
         entries.append(item)
     payload["open"] = entries
+    if not intact:
+        payload["complete"] = False
     return payload
 
 

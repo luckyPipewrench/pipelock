@@ -2082,7 +2082,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(pr_review.finding_fingerprint(rebuilt[0]), pr_review.finding_fingerprint(findings[0]))
 
     def test_a_ledger_is_bounded(self) -> None:
-        many = [pr_review.Finding("low", f"f{i}.go", i, f"t{i}", "w", "f") for i in range(80)]
+        many = [pr_review.Finding("low", f"f{i}.go", i + 1, f"t{i}", "w", "f") for i in range(80)]
         parsed = pr_review.parse_ledger(pr_review.render_ledger(many, "c" * 40))
         self.assertEqual(len(parsed["open"]), pr_review.MAX_LEDGER_ENTRIES)
 
@@ -2097,12 +2097,12 @@ class LedgerTest(unittest.TestCase):
         # The cap silently drops findings. A baseline whose record was clipped
         # would carry forward only part of what is still open, and the rest
         # would never be re-checked because they sit outside the delta.
-        many = [pr_review.Finding("low", f"f{i}.go", i, f"t{i}", "w", "f")
+        many = [pr_review.Finding("low", f"f{i}.go", i + 1, f"t{i}", "w", "f")
                 for i in range(pr_review.MAX_LEDGER_ENTRIES + 1)]
         clipped = pr_review.parse_ledger(pr_review.render_ledger(many, "c" * 40))
         self.assertFalse(clipped["complete"])
 
-        exact = [pr_review.Finding("low", f"f{i}.go", i, f"t{i}", "w", "f")
+        exact = [pr_review.Finding("low", f"f{i}.go", i + 1, f"t{i}", "w", "f")
                  for i in range(pr_review.MAX_LEDGER_ENTRIES)]
         whole = pr_review.parse_ledger(pr_review.render_ledger(exact, "c" * 40))
         self.assertTrue(whole["complete"])
@@ -2116,16 +2116,60 @@ class LedgerTest(unittest.TestCase):
         parsed = pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} {encoded} -->")
         self.assertFalse(parsed["complete"])
 
+
+    def test_an_edited_claim_invalidates_its_record(self) -> None:
+        # The fingerprint was stored and then ignored when rebuilding, so an
+        # edited title, path or severity changed what the record claimed while
+        # the record still looked untouched. It is recomputed and required to
+        # match, so a changed claim is a changed fingerprint.
+        import base64 as _b64
+        import json as _json
+        real = pr_review.Finding("high", "a.go", 4, "Guard removed", "w", "f")
+        for field, value in [("t", "Something else entirely"), ("p", "other.go"), ("s", "low")]:
+            with self.subTest(field=field):
+                entry = {
+                    "f": pr_review.finding_fingerprint(real),
+                    "p": real.path, "l": real.line, "s": real.severity, "t": real.title,
+                }
+                entry[field] = value
+                encoded = _b64.b64encode(
+                    _json.dumps({"head": "c" * 40, "open": [entry], "complete": True}).encode()
+                ).decode()
+                parsed = pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} {encoded} -->")
+                self.assertEqual(parsed["open"], [], "an edited claim must not survive")
+                self.assertFalse(parsed["complete"], "and the ledger must not be usable as a baseline")
+
+    def test_a_line_that_is_not_a_real_anchor_is_refused(self) -> None:
+        import base64 as _b64
+        import json as _json
+        real = pr_review.Finding("high", "a.go", 4, "t", "w", "f")
+        for line in (0, -3, True):
+            with self.subTest(line=line):
+                entry = {"f": pr_review.finding_fingerprint(real), "p": "a.go", "l": line, "s": "high", "t": "t"}
+                encoded = _b64.b64encode(
+                    _json.dumps({"head": "c" * 40, "open": [entry], "complete": True}).encode()
+                ).decode()
+                parsed = pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} {encoded} -->")
+                self.assertFalse(parsed["complete"])
+
     def test_an_entry_with_a_bad_severity_is_dropped(self) -> None:
         import base64 as _b64
         import json as _json
-        payload = {"head": "c" * 40, "open": [
+        good = pr_review.Finding("high", "b.go", 1, "ok", "w", "f")
+        # complete is True on purpose: without it the ledger is already
+        # incomplete via the missing-flag path, and this test would pass
+        # without ever exercising the dropped-entry rule it names.
+        payload = {"head": "c" * 40, "complete": True, "open": [
             {"f": "a" * 12, "p": "a.go", "l": 1, "s": "critical", "t": "t"},
-            {"f": "b" * 12, "p": "b.go", "l": 1, "s": "high", "t": "ok"},
+            {"f": pr_review.finding_fingerprint(good), "p": "b.go", "l": 1, "s": "high", "t": "ok"},
         ]}
         encoded = _b64.b64encode(_json.dumps(payload).encode()).decode()
         parsed = pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} {encoded} -->")
         self.assertEqual([e["s"] for e in parsed["open"]], ["high"])
+        # Dropping an entry means the record is no longer whole, so it cannot
+        # be a baseline. Silently discarding one and still calling the ledger
+        # complete is how a finding stays open and is never carried again.
+        self.assertFalse(parsed["complete"])
 
 
 if __name__ == "__main__":

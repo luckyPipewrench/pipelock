@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // processAlive reports whether pid names a live process. A reaped-but-not-yet
@@ -40,27 +42,35 @@ func processAlive(pid int) bool {
 	return len(fields) > 0 && fields[0] != "Z"
 }
 
+// aliveReport names the members of a process tree that are still running. It
+// formats lazily, so the list reflects the moment a wait actually timed out
+// rather than the moment the message was constructed.
+type aliveReport map[string]int
+
+func (a aliveReport) String() string {
+	parts := make([]string, 0, len(a))
+	for label, pid := range a {
+		if processAlive(pid) {
+			parts = append(parts, fmt.Sprintf("%s (pid %d)", label, pid))
+		}
+	}
+	sort.Strings(parts)
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
 func waitForGone(t *testing.T, pids map[string]int, deadline time.Duration) {
 	t.Helper()
-	stop := time.Now().Add(deadline)
-	for time.Now().Before(stop) {
-		alive := false
+	testwait.For(t, deadline, func() bool {
 		for _, pid := range pids {
 			if processAlive(pid) {
-				alive = true
-				break
+				return false
 			}
 		}
-		if !alive {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	for label, pid := range pids {
-		if processAlive(pid) {
-			t.Errorf("%s (pid %d) still alive %s after the spawning session was killed", label, pid, deadline)
-		}
-	}
+		return true
+	}, "the process tree to exit after its spawning session was killed; still alive: %s", aliveReport(pids))
 }
 
 // TestRunProxy_ResponseTimeoutReapsEscapedPipeHolder verifies the response
@@ -186,25 +196,22 @@ func TestSessionExit_RealParentDeathReapsWholeTree(t *testing.T) {
 
 	// Wait for the full tree to exist before killing anything.
 	var serverPID, grandchildPID, proxyPID int
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.For(t, 30*time.Second, func() bool {
 		pidBytes, err1 := os.ReadFile(filepath.Clean(pidFile))
 		proxyBytes, err2 := os.ReadFile(filepath.Clean(proxyPidFile))
-		if err1 == nil && err2 == nil {
-			fields := strings.Fields(string(pidBytes))
-			proxyFields := strings.Fields(string(proxyBytes))
-			if len(fields) == 2 && len(proxyFields) == 1 {
-				serverPID, _ = strconv.Atoi(fields[0])
-				grandchildPID, _ = strconv.Atoi(fields[1])
-				proxyPID, _ = strconv.Atoi(proxyFields[0])
-				break
-			}
+		if err1 != nil || err2 != nil {
+			return false
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if serverPID == 0 || grandchildPID == 0 || proxyPID == 0 {
-		t.Fatalf("process tree never came up (server=%d grandchild=%d proxy=%d)", serverPID, grandchildPID, proxyPID)
-	}
+		fields := strings.Fields(string(pidBytes))
+		proxyFields := strings.Fields(string(proxyBytes))
+		if len(fields) != 2 || len(proxyFields) != 1 {
+			return false
+		}
+		serverPID, _ = strconv.Atoi(fields[0])
+		grandchildPID, _ = strconv.Atoi(fields[1])
+		proxyPID, _ = strconv.Atoi(proxyFields[0])
+		return serverPID > 0 && grandchildPID > 0 && proxyPID > 0
+	}, "the process tree to come up")
 
 	tree := map[string]int{"wrapped server": serverPID, "detached grandchild": grandchildPID, "proxy": proxyPID}
 	t.Cleanup(func() {

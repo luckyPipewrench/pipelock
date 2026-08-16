@@ -642,10 +642,12 @@ class JudgeContextBoundTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 10) as fetch, mock.patch.object(
             pr_review, "build_judge_prompt", side_effect=record
         ), mock.patch.object(pr_review, "call_model", side_effect=decide):
-            _, judged, excluded, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, over_budget, over_files, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
         self.assertTrue(judged)
         self.assertLessEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
-        self.assertTrue(excluded)
+        # Either limit may be the one that bites here; what matters is that
+        # something was held back rather than silently dropped.
+        self.assertTrue(over_budget or over_files)
 
 
 class JudgeFetchCapTest(unittest.TestCase):
@@ -658,10 +660,14 @@ class JudgeFetchCapTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="x" * 200_000) as fetch, mock.patch.object(
             pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
         ):
-            _, judged, excluded, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, over_budget, over_files, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
         self.assertTrue(judged)
         self.assertEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
-        self.assertEqual(len(excluded), len(candidates) - 1)
+        # The two limits are now reported apart, because naming the wrong one
+        # sends an operator to shrink the wrong thing. The total held back is
+        # unchanged, which is what this test has always been about.
+        self.assertEqual(len(over_budget) + len(over_files), len(candidates) - 1)
+        self.assertTrue(over_files, "the file cap is what bites with 60 distinct paths")
 
 
 class TimeoutStillPublishesLaterFindingsTest(unittest.TestCase):
@@ -1570,7 +1576,7 @@ class RepeatReviewTest(unittest.TestCase):
             ],
             "summary": "an extra top-level key",
         }
-        verified, judged, excluded, undecided = self._judge(payload, candidates)
+        verified, judged, excluded, _over_files, undecided = self._judge(payload, candidates)
         self.assertTrue(judged)
         self.assertEqual([f.title for f in verified], ["T0"])
         self.assertEqual(undecided, [])
@@ -1588,7 +1594,7 @@ class RepeatReviewTest(unittest.TestCase):
                 {"index": 2, "verdict": "keep", "reason": "also real"},
             ]
         }
-        verified, judged, _excluded, undecided = self._judge(payload, candidates)
+        verified, judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
         self.assertTrue(judged)
         self.assertEqual(sorted(f.title for f in verified), ["T0", "T2"])
         self.assertEqual([f.title for f in undecided], ["T1"])
@@ -1597,7 +1603,7 @@ class RepeatReviewTest(unittest.TestCase):
         # Deciding 2 of 3 used to discard all three.
         candidates = self._cands(3)
         payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}, {"index": 1, "verdict": "drop", "reason": "r"}]}
-        verified, judged, _excluded, undecided = self._judge(payload, candidates)
+        verified, judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
         self.assertTrue(judged)
         self.assertEqual([f.title for f in verified], ["T0"])
         self.assertEqual([f.title for f in undecided], ["T2"])
@@ -1606,7 +1612,7 @@ class RepeatReviewTest(unittest.TestCase):
         # The security invariant this change must not weaken.
         candidates = self._cands(2)
         payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
-        verified, _judged, _excluded, undecided = self._judge(payload, candidates)
+        verified, _judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
         self.assertNotIn("T1", [f.title for f in verified])
         self.assertEqual([f.title for f in undecided], ["T1"])
 
@@ -1630,7 +1636,7 @@ class RepeatReviewTest(unittest.TestCase):
     def test_a_duplicate_index_cannot_overwrite_a_decision(self) -> None:
         candidates = self._cands(1)
         payload = {"findings": [{"index": 0, "verdict": "drop", "reason": "r"}, {"index": 0, "verdict": "keep", "reason": "r"}]}
-        verified, _judged, _excluded, _undecided = self._judge(payload, candidates)
+        verified, _judged, _excluded, _over_files, _undecided = self._judge(payload, candidates)
         self.assertEqual(verified, [], "the first decision for an index wins")
 
     def test_an_unhashable_verdict_does_not_crash_the_run(self) -> None:
@@ -1652,7 +1658,7 @@ class RepeatReviewTest(unittest.TestCase):
                         {"index": 1, "verdict": "keep", "reason": "r"},
                     ]
                 }
-                verified, judged, _excluded, undecided = self._judge(payload, self._cands(2))
+                verified, judged, _excluded, _over_files, undecided = self._judge(payload, self._cands(2))
                 self.assertTrue(judged)
                 self.assertEqual([f.title for f in verified], ["T1"])
                 self.assertEqual([f.title for f in undecided], ["T0"])

@@ -1222,7 +1222,7 @@ def _line_context(content: str, line: int | None) -> str:
 
 def judge_findings(
     repo: str, token: str, binding: PullBinding, mode: str, candidates: list[Finding]
-) -> tuple[list[Finding], bool, list[Finding], list[Finding]]:
+) -> tuple[list[Finding], bool, list[Finding], list[Finding], list[Finding]]:
     """Judge candidate findings against the real file, within a bounded payload.
 
     Each distinct path contributes up to 120 lines of context and the candidate
@@ -1232,7 +1232,7 @@ def judge_findings(
     record as incomplete coverage.
     """
     if not candidates:
-        return [], True, [], []
+        return [], True, [], [], []
     budget, _ = input_limits(mode)
     # Fetched contexts are cached and counted separately from the ones that end
     # up in the payload. Counting only payload entries bounded nothing: a path
@@ -1242,24 +1242,28 @@ def judge_findings(
     fetched: dict[str, str] = {}
     contexts: dict[str, str] = {}
     retained: list[Finding] = []
-    excluded: list[Finding] = []
+    # Kept apart because they are different facts: one means the review spans
+    # more files than the judge will open, the other that it carries more text
+    # than one call can hold.
+    over_files: list[Finding] = []
+    over_budget: list[Finding] = []
     used = 0
     for finding in candidates:
         addition = estimate_tokens(finding.title + finding.why + finding.fix + finding.path)
         context = fetched.get(finding.path)
         if context is None:
             if len(fetched) >= MAX_JUDGE_CONTEXT_FETCHES:
-                excluded.append(finding)
+                over_files.append(finding)
                 continue
             content = fetch_file_context(repo, finding.path, binding.head_sha, token, binding.correlation)
             if content is None:
-                return [], False, [], []
+                return [], False, [], [], []
             context = _line_context(content, finding.line)
             fetched[finding.path] = context
         if finding.path not in contexts:
             addition += estimate_tokens(context)
         if retained and used + addition > budget:
-            excluded.append(finding)
+            over_budget.append(finding)
             continue
         contexts[finding.path] = context
         retained.append(finding)
@@ -1318,7 +1322,7 @@ def judge_findings(
                     needs_verification=True,
                 )
             )
-    return verified, True, excluded, undecided
+    return verified, True, over_budget, over_files, undecided
 
 
 def coverage_gaps(_units: list[DiffUnit], omitted: list[DiffUnit], parse_errors: list[str]) -> list[str]:
@@ -1829,7 +1833,7 @@ def run_review(
             judge_ready = False
         if judge_ready:
             try:
-                progress.findings, judged, unjudged, undecided = judge_findings(
+                progress.findings, judged, over_budget, over_files, undecided = judge_findings(
                     repo, token, binding, mode, candidates
                 )
                 if not judged:
@@ -1838,9 +1842,15 @@ def run_review(
                     # is lost here as well.
                     if reason := discarded_candidates_reason(candidates):
                         progress.incomplete_reasons.append(reason)
-                if unjudged:
+                if over_budget:
                     progress.incomplete_reasons.append(
-                        f"{len(unjudged)} candidate finding(s) exceeded the judge payload budget and were not published"
+                        f"{len(over_budget)} candidate finding(s) exceeded the judge payload budget and were not published"
+                    )
+                if over_files:
+                    # Reported apart from the payload budget. Naming the wrong
+                    # limit sends an operator to shrink the wrong thing.
+                    progress.incomplete_reasons.append(
+                        f"{len(over_files)} candidate finding(s) spanned more files than the judge opens and were not published"
                     )
                 if undecided:
                     # Distinct from the budget case above. The review was not

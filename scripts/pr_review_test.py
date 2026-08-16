@@ -1969,5 +1969,140 @@ class AdoptionStubTest(unittest.TestCase):
         )
 
 
+class DeltaScopeTest(unittest.TestCase):
+    """A later review should read the change, not the whole pull request again."""
+
+    HEAD = "b" * 40
+    OLD = "d" * 40
+
+    def marker(self, *, mode="deep", state="findings", head=None, model=None, ledger=None):
+        entry = {
+            "state": state,
+            "identity": "x",
+            "mode": mode,
+            "model": model if model is not None else pr_review.model_binding(mode),
+            "findings": "",
+            "reviewed_head": head or self.OLD,
+            "scope": "full",
+        }
+        if ledger is not None:
+            entry["ledger"] = ledger
+        return entry
+
+    def test_the_baseline_is_the_last_complete_review_of_this_mode(self) -> None:
+        markers = [self.marker()]
+        found = pr_review.previous_review_for_mode(markers, "deep", self.HEAD)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["reviewed_head"], self.OLD)
+
+    def test_a_default_review_is_not_a_baseline_for_deep(self) -> None:
+        # A repository can point both model variables at the SAME model, and
+        # then the model comparison cannot tell the two passes apart. Depth is
+        # still different: default runs low reasoning and deep runs xhigh, so a
+        # deep review continuing from a default one inherits coverage that was
+        # never asked for at that depth. Pinned to one model on purpose, so
+        # this proves the mode check rather than the model check.
+        with mock.patch.dict(
+            pr_review.os.environ,
+            {"PR_REVIEW_MODEL_FAST": "one-model", "PR_REVIEW_MODEL_DEEP": "one-model"},
+            clear=False,
+        ):
+            self.assertEqual(pr_review.model_binding("default"), pr_review.model_binding("deep"))
+            markers = [self.marker(mode="default", model=pr_review.model_binding("deep"))]
+            self.assertIsNone(pr_review.previous_review_for_mode(markers, "deep", self.HEAD))
+
+    def test_an_incomplete_review_is_not_a_baseline(self) -> None:
+        for state in ("partial", "failed", "superseded"):
+            with self.subTest(state=state):
+                markers = [self.marker(state=state)]
+                self.assertIsNone(pr_review.previous_review_for_mode(markers, "deep", self.HEAD))
+
+    def test_a_review_under_a_different_model_is_not_a_baseline(self) -> None:
+        markers = [self.marker(model="0" * 64)]
+        self.assertIsNone(pr_review.previous_review_for_mode(markers, "deep", self.HEAD))
+
+    def test_the_current_head_is_not_its_own_baseline(self) -> None:
+        markers = [self.marker(head=self.HEAD)]
+        self.assertIsNone(pr_review.previous_review_for_mode(markers, "deep", self.HEAD))
+
+    def test_the_newest_qualifying_review_wins(self) -> None:
+        older = self.marker(head="1" * 40)
+        newer = self.marker(head="2" * 40)
+        found = pr_review.previous_review_for_mode([older, newer], "deep", self.HEAD)
+        self.assertEqual(found["reviewed_head"], "2" * 40)
+
+    def _compare(self, status):
+        response = mock.Mock()
+        response.status_code = 200 if status else 404
+        response.json.return_value = {"status": status} if status else {}
+        return response
+
+    def test_only_a_genuinely_behind_head_is_used(self) -> None:
+        # A force-push or rebase leaves the old head unreachable, and the change
+        # since it is not a slice of anything that exists.
+        for status, want in [("ahead", True), ("diverged", False), ("behind", False), ("identical", False)]:
+            with self.subTest(status=status):
+                with mock.patch.object(pr_review.requests, "get", return_value=self._compare(status)):
+                    self.assertIs(pr_review.is_ancestor("o/r", self.OLD, self.HEAD, "t", "c"), want)
+
+    def test_an_unreadable_comparison_falls_back_to_full(self) -> None:
+        with mock.patch.object(pr_review.requests, "get", side_effect=pr_review.requests.RequestException("x")):
+            self.assertFalse(pr_review.is_ancestor("o/r", self.OLD, self.HEAD, "t", "c"))
+        with mock.patch.object(pr_review.requests, "get", return_value=self._compare(None)):
+            self.assertFalse(pr_review.is_ancestor("o/r", self.OLD, self.HEAD, "t", "c"))
+
+    def test_the_same_head_is_never_a_delta_base(self) -> None:
+        # The comparison is mocked to say "ahead" so the ONLY thing that can
+        # return False is the identical-head guard. Without the mock the call
+        # failed for lack of a network and the test passed on that instead,
+        # proving nothing about the guard it names.
+        with mock.patch.object(pr_review.requests, "get", return_value=self._compare("ahead")) as get:
+            self.assertFalse(pr_review.is_ancestor("o/r", self.HEAD, self.HEAD, "t", "c"))
+        get.assert_not_called()
+
+
+class LedgerTest(unittest.TestCase):
+    """The record that lets a later run re-check what was left open."""
+
+    def test_a_ledger_round_trips(self) -> None:
+        findings = [
+            pr_review.Finding("high", "a.go", 12, "Guard   removed", "w", "f"),
+            pr_review.Finding("low", "b.go", None, "Something else", "w", "f"),
+        ]
+        body = "body" + chr(10) + pr_review.render_ledger(findings, "c" * 40)
+        parsed = pr_review.parse_ledger(body)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["head"], "c" * 40)
+        rebuilt = pr_review.ledger_findings(parsed)
+        self.assertEqual([f.path for f in rebuilt], ["a.go", "b.go"])
+        self.assertEqual([f.severity for f in rebuilt], ["high", "low"])
+        self.assertEqual(rebuilt[0].title, "Guard removed")
+        # A rebuilt claim keeps its own fingerprint, which is what lets a
+        # re-raised finding be recognized across runs.
+        self.assertEqual(pr_review.finding_fingerprint(rebuilt[0]), pr_review.finding_fingerprint(findings[0]))
+
+    def test_a_ledger_is_bounded(self) -> None:
+        many = [pr_review.Finding("low", f"f{i}.go", i, f"t{i}", "w", "f") for i in range(80)]
+        parsed = pr_review.parse_ledger(pr_review.render_ledger(many, "c" * 40))
+        self.assertEqual(len(parsed["open"]), pr_review.MAX_LEDGER_ENTRIES)
+
+    def test_a_malformed_or_ambiguous_ledger_is_refused(self) -> None:
+        good = pr_review.render_ledger([pr_review.Finding("high", "a.go", 1, "t", "w", "f")], "c" * 40)
+        self.assertIsNone(pr_review.parse_ledger(good + chr(10) + good), "two ledgers is ambiguous")
+        self.assertIsNone(pr_review.parse_ledger("no ledger here"))
+        self.assertIsNone(pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} bm90YmFzZTY0ISEh -->"))
+
+    def test_an_entry_with_a_bad_severity_is_dropped(self) -> None:
+        import base64 as _b64
+        import json as _json
+        payload = {"head": "c" * 40, "open": [
+            {"f": "a" * 12, "p": "a.go", "l": 1, "s": "critical", "t": "t"},
+            {"f": "b" * 12, "p": "b.go", "l": 1, "s": "high", "t": "ok"},
+        ]}
+        encoded = _b64.b64encode(_json.dumps(payload).encode()).decode()
+        parsed = pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} {encoded} -->")
+        self.assertEqual([e["s"] for e in parsed["open"]], ["high"])
+
+
 if __name__ == "__main__":
     unittest.main()

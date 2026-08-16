@@ -1827,7 +1827,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// A detached descendant can retain stderr after the direct child exits.
 	// Bound the drain so an escaped writer cannot hold the proxy open forever.
 	if !drainStderr(stderrDone, serverErr, sessionGrace) {
-		_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out draining MCP subprocess stderr after child exit\n")
+		// Bounded, because reaching this line means the stderr copy is already
+		// stuck. That copy holds the shared writer's lock while it blocks, and
+		// closing the read end cannot interrupt a write already in progress, so
+		// a synchronous diagnostic here would wait on the same lock and stop
+		// teardown from ever completing - failing in exactly the situation it
+		// exists to report.
+		logAsync(safeLogW, "pipelock: timed out draining MCP subprocess stderr after child exit\n")
 	}
 
 	if timedOut {

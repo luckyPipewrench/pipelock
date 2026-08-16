@@ -264,6 +264,90 @@ func TestRunProxy_SessionExitBoundsNonClosableInputDrain(t *testing.T) {
 	}
 }
 
+// blockingWriter wedges on its first write and never returns, standing in for
+// a log sink whose consumer has stopped reading.
+type blockingWriter struct {
+	entered chan struct{}
+	once    sync.Once
+	release chan struct{}
+}
+
+func newBlockingWriter() *blockingWriter {
+	return &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+func (w *blockingWriter) unblock() {
+	close(w.release)
+}
+
+// TestRunProxy_BlockedLogWriterDoesNotWedgeTeardown covers the deadlock a
+// synchronous teardown diagnostic creates. The child's stderr copy blocks
+// inside the shared log writer and holds its lock; closing the read end cannot
+// interrupt a write already in flight. A synchronous diagnostic would then wait
+// on that same lock, so the proxy would hang precisely when it was trying to
+// report that it could not drain stderr.
+func TestRunProxy_BlockedLogWriterDoesNotWedgeTeardown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real child process")
+	}
+
+	logW := newBlockingWriter()
+	t.Cleanup(logW.unblock)
+
+	clientIn := newBlockingReader()
+	defer func() { _ = clientIn.Close() }()
+
+	parentDied := make(chan struct{})
+	var stdout bytes.Buffer
+	opts := MCPProxyOpts{
+		sessionExitForTest: &sessionExitTestHooks{
+			watch: parentWatchOpts{
+				interval:  time.Millisecond,
+				startPPID: 4242,
+				getppid: func() int {
+					select {
+					case <-parentDied:
+						return orphanedPPID
+					default:
+						return 4242
+					}
+				},
+			},
+			grace: 20 * time.Millisecond,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		// The server writes to stderr so the copier enters the blocked writer
+		// and holds its lock for the rest of the run.
+		done <- RunProxy(ctx, clientIn, &stdout, logW,
+			[]string{"/bin/sh", "-c", "echo wedged >&2; sleep 120"}, opts)
+	}()
+
+	select {
+	case <-logW.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stderr copier never reached the log writer; test setup is wrong")
+	}
+	close(parentDied)
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("RunProxy never returned while the log writer was blocked; teardown deadlocked on its own diagnostic")
+	}
+}
+
 func TestDrainStderr_ReleasesEscapedPipeHolder(t *testing.T) {
 	t.Run("timeout closes escaped writer", func(t *testing.T) {
 		serverErr, escapedWriter, err := os.Pipe()

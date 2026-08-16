@@ -36,7 +36,7 @@ func liveSessionExitHooks() *sessionExitTestHooks {
 
 func TestSessionExit_HTTPForwardStopsBridge(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("session-bound bridge forwarded after its session exited")
+		t.Errorf("session-bound bridge forwarded after its session exited")
 	}))
 	defer upstream.Close()
 	sc := testScannerForHTTP(t)
@@ -68,7 +68,7 @@ func TestSessionExit_HTTPForwardStopsBridge(t *testing.T) {
 
 func TestSessionExit_HTTPForwardLiveSessionIsNotTornDown(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("live session should not send a request in this test")
+		t.Errorf("live session should not send a request in this test")
 	}))
 	defer upstream.Close()
 	sc := testScannerForHTTP(t)

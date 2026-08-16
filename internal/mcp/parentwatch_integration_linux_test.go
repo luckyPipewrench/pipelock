@@ -71,7 +71,8 @@ func TestRunProxy_ResponseTimeoutReapsEscapedPipeHolder(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "escaped.pid")
 	script := "setsid sleep 300 &\n" +
-		"echo $! > " + pidFile + "\n" +
+		"echo $! > " + pidFile + ".tmp\n" +
+		"mv " + pidFile + ".tmp " + pidFile + "\n" +
 		"sleep 300\n"
 
 	sc := testScannerWithAction(t, "warn")
@@ -239,8 +240,7 @@ func TestSessionExitHelperProcess(t *testing.T) {
 		t.Skip("helper process; driven by TestSessionExit_RealParentDeathReapsWholeTree")
 	}
 
-	serverScript := os.Getenv("PIPELOCK_SESSION_EXIT_SERVER")
-	if serverScript == "" {
+	if os.Getenv("PIPELOCK_SESSION_EXIT_SERVER") == "" {
 		t.Fatal("helper started without a server script")
 	}
 
@@ -257,6 +257,7 @@ func TestSessionExitHelperProcess(t *testing.T) {
 	// the leaked proxies on the live host did, and the parent test fails on
 	// its own deadline rather than being rescued by a context here.
 	err = RunProxy(context.Background(), stdinR, os.Stdout, os.Stderr,
-		[]string{"/bin/sh", serverScript}, MCPProxyOpts{})
+		[]string{"/bin/sh", "-c", "exec /bin/sh \"$PIPELOCK_SESSION_EXIT_SERVER\""}, MCPProxyOpts{},
+		"PIPELOCK_SESSION_EXIT_SERVER="+os.Getenv("PIPELOCK_SESSION_EXIT_SERVER"))
 	fmt.Fprintf(os.Stderr, "helper: RunProxy returned: %v\n", err)
 }

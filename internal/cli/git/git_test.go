@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/gitprotect"
 	"github.com/luckyPipewrench/pipelock/internal/sarif"
 )
@@ -175,6 +176,50 @@ func TestScanDiffCmd_FindsSecret(t *testing.T) {
 	}
 	if !errors.Is(err, ErrSecretsFound) {
 		t.Fatalf("expected ErrSecretsFound, got: %v", err)
+	}
+	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitGeneral {
+		t.Fatalf("secret finding exit code = %d, want %d", got, cliutil.ExitGeneral)
+	}
+}
+
+func TestScanDiffCmd_UnverifiableInputReturnsExitTwoWithoutFinding(t *testing.T) {
+	output, err := runScanDiffCmd(t, "garbage not a diff\n")
+	if err == nil {
+		t.Fatal("expected unverifiable input error")
+	}
+	if !errors.Is(err, ErrDiffUnverifiable) {
+		t.Fatalf("expected ErrDiffUnverifiable, got: %v", err)
+	}
+	if !errors.Is(err, gitprotect.ErrNoDiffHeaders) {
+		t.Fatalf("expected ErrNoDiffHeaders, got: %v", err)
+	}
+	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitConfig {
+		t.Fatalf("unverifiable input exit code = %d, want %d", got, cliutil.ExitConfig)
+	}
+	if !strings.Contains(output, "ERROR: unverifiable input") {
+		t.Fatalf("expected scanner error output, got: %q", output)
+	}
+	if strings.Contains(output, "Secret detected") || strings.Contains(output, ErrSecretsFound.Error()) {
+		t.Fatalf("unverifiable input was reported as a finding: %q", output)
+	}
+}
+
+func TestScanDiffCmd_WholeFileDeletionPassesClean(t *testing.T) {
+	diff := "diff --git a/secrets.txt b/secrets.txt\n" +
+		"deleted file mode 100644\n" +
+		"index abc1234..0000000\n" +
+		"--- a/secrets.txt\n" +
+		"+++ /dev/null\n" +
+		"@@ -1,3 +0,0 @@\n" +
+		"-first line\n" +
+		"-key = \\\"" + fakeKey() + "\\\"\n" +
+		"-third line\n"
+	output, err := runScanDiffCmd(t, diff)
+	if err != nil {
+		t.Fatalf("whole-file deletion should pass clean, got: %v; output: %s", err, output)
+	}
+	if strings.Contains(output, "Secret detected") {
+		t.Fatalf("whole-file deletion was reported as a finding: %q", output)
 	}
 }
 

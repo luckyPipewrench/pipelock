@@ -18,8 +18,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/sarif"
 )
 
-// ErrSecretsFound is returned when pipelock git scan-diff detects secrets.
-var ErrSecretsFound = errors.New("secrets found in diff")
+var (
+	// ErrSecretsFound is returned when pipelock git scan-diff detects secrets.
+	ErrSecretsFound = errors.New("secrets found in diff")
+	// ErrDiffUnverifiable is returned when pipelock git scan-diff cannot verify its input.
+	ErrDiffUnverifiable = errors.New("diff input is unverifiable")
+)
 
 // Output format constants.
 const (
@@ -61,7 +65,8 @@ func scanDiffCmd() *cobra.Command {
 		Short: "Scan a unified diff for secrets",
 		Long: `Reads a unified diff from stdin and scans added lines for DLP pattern matches.
 
-Designed for use in git hooks or CI pipelines. Exit code 1 if secrets are found.
+Designed for use in git hooks or CI pipelines. Exit code 0 means clean, 1 means
+secrets were found, and 2 means the input could not be verified as a diff.
 
 Examples:
   git diff HEAD~1 | pipelock git scan-diff
@@ -113,7 +118,7 @@ Examples:
 			result, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ERROR: %v\n", scanErr)
-				return scanErr
+				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%w: %w", ErrDiffUnverifiable, scanErr))
 			}
 
 			// ScanDiff handles inline pipelock:ignore from the diff content

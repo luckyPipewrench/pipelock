@@ -362,6 +362,119 @@ func TestTrustedScanBuildsItsOwnScanner(t *testing.T) {
 	}
 }
 
+func TestActionScanDiffDistinguishesFindingsFromUnverifiableInput(t *testing.T) {
+	t.Parallel()
+
+	step := actionScanDiffStep(t)
+	scriptPath := filepath.Join(t.TempDir(), "scan-pr-diff.sh")
+	if err := os.WriteFile(scriptPath, []byte(step.Run), 0o600); err != nil {
+		t.Fatalf("write action scan step: %v", err)
+	}
+
+	binDir := t.TempDir()
+	writeActionTestCommand(t, binDir, "git", "#!/bin/sh\nprintf '%s\\n' 'diff --git a/file b/file' '--- a/file' '+++ b/file' '@@ -0,0 +1 @@' '+clean'\n")
+	writeActionTestCommand(t, binDir, "pipelock", `#!/bin/sh
+cat >/dev/null
+case "${PIPELOCK_TEST_SCAN_EXIT}" in
+  1)
+    echo "Secret detected: AWS Access ID" >&2
+    exit 1
+    ;;
+  2)
+    echo "ERROR: unverifiable input: no recognizable unified diff structure" >&2
+    exit 2
+    ;;
+esac
+`)
+
+	for _, tc := range []struct {
+		name           string
+		scanExit       string
+		failOnFindings string
+		wantPass       bool
+		want           string
+		mustNotContain string
+	}{
+		{
+			name:           "unverifiable input fails as scanner error",
+			scanExit:       "2",
+			failOnFindings: "true",
+			want:           "Pipelock could not verify the PR diff",
+			mustNotContain: "Secrets detected in PR diff",
+		},
+		{
+			name:           "finding fails when enabled",
+			scanExit:       "1",
+			failOnFindings: "true",
+			want:           "Secrets detected in PR diff",
+		},
+		{
+			name:           "finding warns when disabled",
+			scanExit:       "1",
+			failOnFindings: "false",
+			wantPass:       true,
+			want:           "Potential secrets detected in PR diff",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), "bash", scriptPath)
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+":"+os.Getenv("PATH"),
+				"PIPELOCK_TEST_SCAN_EXIT="+tc.scanExit,
+				"PIPELOCK_FAIL_ON_FINDINGS="+tc.failOnFindings,
+				"PIPELOCK_EXCLUDE=",
+				"BASE_REF=main",
+				"CONFIG_PATH=",
+			)
+			output, err := cmd.CombinedOutput()
+			if tc.wantPass && err != nil {
+				t.Fatalf("scan action failed: %v\n%s", err, output)
+			}
+			if !tc.wantPass && err == nil {
+				t.Fatalf("scan action passed unexpectedly:\n%s", output)
+			}
+			if !strings.Contains(string(output), tc.want) {
+				t.Fatalf("action output missing %q:\n%s", tc.want, output)
+			}
+			if tc.mustNotContain != "" && strings.Contains(string(output), tc.mustNotContain) {
+				t.Fatalf("action misreported scanner error as finding:\n%s", output)
+			}
+		})
+	}
+}
+
+func actionScanDiffStep(t *testing.T) workflowStep {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "..", "action.yml")))
+	if err != nil {
+		t.Fatalf("read action.yml: %v", err)
+	}
+	var action struct {
+		Runs struct {
+			Steps []workflowStep `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	if err := yaml.Unmarshal(data, &action); err != nil {
+		t.Fatalf("parse action.yml: %v", err)
+	}
+	for _, step := range action.Runs.Steps {
+		if step.Name == "Scan PR diff" {
+			return step
+		}
+	}
+	t.Fatal("action.yml has no Scan PR diff step")
+	return workflowStep{}
+}
+
+func writeActionTestCommand(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
+		t.Fatalf("write %s fixture: %v", name, err)
+	}
+}
+
 // TestContinueOnErrorFailsOpenAcrossYAMLShapes covers every form YAML admits
 // for continue-on-error, because the parsed type differs per shape and getting
 // one wrong silently permits a fail-open gate.

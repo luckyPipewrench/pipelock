@@ -63,7 +63,11 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	}
 	isStrict := len(strict) > 0 && strict[0]
 	subreaperEnabled := true
-	if err := enableSubreaper(); err != nil {
+	enable := enableSubreaper
+	if opts.enableSubreaperForTest != nil {
+		enable = opts.enableSubreaperForTest
+	}
+	if err := enable(); err != nil {
 		subreaperEnabled = false
 		if isStrict {
 			return fmt.Errorf("strict mode: failed to set child subreaper: %w", err)

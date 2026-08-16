@@ -403,3 +403,20 @@ func TestDrainStderr_ReleasesEscapedPipeHolder(t *testing.T) {
 		}
 	})
 }
+
+func TestRunProxy_OrphanedParentStaysInert(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var stdout, logBuf bytes.Buffer
+	err := RunProxy(context.Background(), strings.NewReader(""), &stdout, &logBuf, []string{"cat"}, MCPProxyOpts{
+		Scanner: sc,
+		sessionExitForTest: &sessionExitTestHooks{watch: parentWatchOpts{
+			startPPID: orphanedPPID,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RunProxy with an unbound parent = %v", err)
+	}
+	if strings.Contains(logBuf.String(), "spawning session exited") {
+		t.Errorf("unbound parent ran the session-exit path, got %q", logBuf.String())
+	}
+}

@@ -432,6 +432,52 @@ func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
 	}
 }
 
+func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
+	failure := errors.New("subreaper unavailable")
+
+	t.Run("best effort continues with warning", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var logBuf syncBuffer
+		opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+		opts.enableSubreaperForTest = func() error { return failure }
+		cmd := exec.CommandContext(ctx, "cat")
+		if err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts); err != nil {
+			t.Fatalf("best-effort sandbox proxy = %v", err)
+		}
+		if !strings.Contains(logBuf.String(), "subtree teardown will be incomplete") {
+			t.Errorf("missing subreaper warning, got %q", logBuf.String())
+		}
+	})
+
+	t.Run("strict fails closed", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+		opts.enableSubreaperForTest = func() error { return failure }
+		cmd := exec.CommandContext(ctx, "cat")
+		err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, io.Discard, opts, true)
+		if !errors.Is(err, failure) {
+			t.Fatalf("strict sandbox proxy error = %v, want subreaper failure", err)
+		}
+	})
+}
+
+func TestRunProxyWithSandbox_OrphanedParentStaysInert(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var logBuf syncBuffer
+	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+	opts.sessionExitForTest = &sessionExitTestHooks{watch: parentWatchOpts{startPPID: orphanedPPID}}
+	cmd := exec.CommandContext(ctx, "cat")
+	if err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts); err != nil {
+		t.Fatalf("sandbox proxy with an unbound parent = %v", err)
+	}
+	if strings.Contains(logBuf.String(), "spawning session exited") {
+		t.Errorf("unbound parent ran the session-exit path, got %q", logBuf.String())
+	}
+}
+
 // TestSessionExitHelperProcess is the proxy level of the tree above. It is a
 // helper, not a test: it runs only when the parent test sets the env marker.
 func TestSessionExitHelperProcess(t *testing.T) {

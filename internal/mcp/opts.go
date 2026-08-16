@@ -382,6 +382,9 @@ type MCPProxyOpts struct {
 	// sessionExit marks Pipelock-initiated descriptor closes during a
 	// session-bound teardown. It is wired only by proxy entry points.
 	sessionExit *sessionExitState
+	// enableSubreaperForTest supplies a deterministic subreaper setup result.
+	// Production wiring leaves it nil and calls the platform implementation.
+	enableSubreaperForTest func() error
 
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage

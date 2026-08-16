@@ -129,6 +129,59 @@ func TestRunProxy_ResponseTimeoutReapsEscapedPipeHolder(t *testing.T) {
 	waitForGone(t, map[string]int{"escaped pipe holder": pid}, 5*time.Second)
 }
 
+func TestWaitForCommandWithProcessGroupSignalsBeforeReap(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "resolver-child.pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := exec.Command("/bin/sh", "-c", "sleep 300 & child=$!; echo $child > "+pidFile+"; wait")
+	setupChildProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting resolver tree: %v", err)
+	}
+	pgid := captureChildPgid(cmd.Process.Pid)
+	reaped := false
+	t.Cleanup(func() {
+		if !reaped {
+			terminateProcessGroup(pgid)
+			_ = cmd.Wait()
+		}
+	})
+
+	var childPID int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pidBytes, err := os.ReadFile(filepath.Clean(pidFile))
+		if err == nil {
+			childPID, err = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+			if err != nil || childPID <= 0 {
+				t.Fatalf("resolver child PID = %q, want positive integer", pidBytes)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if childPID == 0 {
+		t.Fatal("resolver child never wrote its PID")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- waitForCommandWithProcessGroup(ctx, cmd, pgid) }()
+	cancel()
+	select {
+	case err := <-done:
+		reaped = true
+		if err == nil {
+			t.Fatal("resolver tree exited cleanly after forced teardown")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolver tree was not reaped after cancellation")
+	}
+
+	waitForGone(t, map[string]int{"resolver child": childPID}, 5*time.Second)
+}
+
 // TestSessionExit_RealParentDeathReapsWholeTree drives the actual production
 // path with a real three-level process tree and a real kill. Nothing about
 // the parent PID is stubbed.

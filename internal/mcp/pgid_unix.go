@@ -41,7 +41,7 @@ func captureChildPgid(pid int) int {
 
 // signalProcessGroupTerm sends SIGTERM to the given process group.
 // Used by the ctx.Done watcher so cooperative descendants can exit
-// cleanly before the post-Wait SIGKILL backstop fires. No-op for
+// cleanly before the bounded SIGKILL backstop fires. No-op for
 // pgid <= 0 (Windows or failed capture).
 func signalProcessGroupTerm(pgid int) {
 	if pgid <= 0 {

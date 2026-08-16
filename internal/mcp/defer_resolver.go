@@ -202,18 +202,7 @@ func executeDeferApprovalResolver(
 		return config.ActionBlock, fmt.Errorf("defer resolver failed to start: %w", err)
 	}
 	pgid := captureChildPgid(cmd.Process.Pid)
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
-
-	var waitErr error
-	select {
-	case waitErr = <-waitCh:
-	case <-ctx.Done():
-		terminateProcessGroup(pgid)
-		waitErr = <-waitCh
-	}
+	waitErr := waitForCommandWithProcessGroup(ctx, cmd, pgid)
 	if waitErr != nil {
 		if ctx.Err() != nil {
 			return config.ActionBlock, ctx.Err()

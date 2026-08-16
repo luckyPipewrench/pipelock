@@ -306,6 +306,24 @@ class ExitSemanticsTest(unittest.TestCase):
             ):
                 self.assertIsNone(pr_review.main())
 
+    def test_a_delta_clean_result_does_not_claim_whole_pull_request_coverage(self) -> None:
+        environment = {
+            "GITHUB_TOKEN": "token",
+            "REPO": "owner/repo",
+            "PR_NUMBER": "42",
+            "REVIEW_MODE": "deep",
+            "REVIEWER_SHA": "a" * 40,
+            "REVIEW_OPERATION": "review",
+        }
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {**environment, "GITHUB_OUTPUT": output.name}, clear=True
+        ), mock.patch.object(
+            pr_review, "run_review", return_value=("clean", pr_review.ReviewProgress(scope="delta"))
+        ):
+            self.assertIsNone(pr_review.main())
+            output.seek(0)
+            self.assertIn("complete=false", output.read().decode("utf-8"))
+
 
 class CompressionAndClassificationTest(unittest.TestCase):
     def test_deep_plan_covers_321_small_units_in_six_chunks(self) -> None:
@@ -2079,6 +2097,106 @@ class DeltaScopeTest(unittest.TestCase):
 
 class LedgerTest(unittest.TestCase):
     """The record that lets a later run re-check what was left open."""
+
+    def trusted_marker(self, head: str = "c" * 40) -> dict[str, object]:
+        binding = pr_review.PullBinding("a" * 40, head, "e" * 40, pr_review.RUBRIC_VERSION)
+        progress = pr_review.ReviewProgress(
+            expected_units=1,
+            reviewed_units=1,
+            findings=[pr_review.Finding("high", "policy.go", 7, "Existing deny bypass", "why", "fix")],
+        )
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "ledger-test-key"}, clear=False):
+            body = pr_review.render_status(
+                binding, "deep", [], progress, "findings", [], repository="owner/repo", pr_number="42"
+            )
+            marker = pr_review.parse_status_marker(body)
+            self.assertIsNotNone(marker)
+            ledger = pr_review.parse_ledger(body)
+            self.assertIsNotNone(ledger)
+            marker["ledger"] = ledger
+            return marker
+
+    def test_only_an_authenticated_ledger_can_select_delta_scope(self) -> None:
+        # A writer can edit an issue comment without changing its displayed
+        # author. Before the MAC, clearing `open` below selected a delta with
+        # no carried finding even though the status marker still named one.
+        marker = self.trusted_marker()
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "ledger-test-key"}, clear=False):
+            self.assertIsNotNone(pr_review.usable_ledger(marker, "owner/repo", "42"))
+            tampered = {**marker, "ledger": {**marker["ledger"], "open": []}}
+            self.assertIsNone(pr_review.usable_ledger(tampered, "owner/repo", "42"))
+
+            # The signature covers the fields that admit a baseline as well
+            # as the findings. Relabelling an old review must not turn it into
+            # a review of a different head, depth, or verdict.
+            for field, replacement in (("reviewed_head", "d" * 40), ("mode", "default"), ("state", "clean")):
+                with self.subTest(field=field):
+                    changed = {**marker, field: replacement}
+                    self.assertIsNone(pr_review.usable_ledger(changed, "owner/repo", "42"))
+
+            self.assertIsNone(pr_review.usable_ledger(marker, "owner/other", "42"))
+            self.assertIsNone(pr_review.usable_ledger(marker, "owner/repo", "43"))
+
+    def test_a_missing_or_rotated_secret_forces_a_full_review(self) -> None:
+        marker = self.trusted_marker()
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            self.assertIsNone(pr_review.usable_ledger(marker, "owner/repo", "42"))
+
+    def test_a_tampered_ledger_fetches_the_whole_pull_request(self) -> None:
+        old_head = "b" * 40
+        current = pr_review.PullBinding("a" * 40, "c" * 40, "e" * 40, pr_review.RUBRIC_VERSION)
+        marker = self.trusted_marker(old_head)
+        marker["ledger"] = {**marker["ledger"], "open": []}
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "ledger-test-key"}, clear=False), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("u", "ledger-test-key")
+        ), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([marker], set(), True)
+        ), mock.patch.object(
+            pr_review, "is_ancestor"
+        ) as ancestry, mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value=""
+        ) as fetch, mock.patch.object(
+            pr_review, "compare_incompleteness", return_value=None
+        ), mock.patch.object(
+            pr_review, "get_pull_binding", return_value=current
+        ), mock.patch.object(
+            pr_review, "judge_findings", return_value=([], True, [], [], [])
+        ), mock.patch.object(pr_review, "update_comment"):
+            _state, progress = pr_review.run_review(
+                "owner/repo", "42", "token", "deep", "e" * 40, binding=current, status_comment_id=7
+            )
+        ancestry.assert_not_called()
+        self.assertEqual(progress.scope, "full")
+        self.assertEqual(fetch.call_args.args[1], current)
+
+    def test_an_authenticated_ledger_still_selects_the_delta(self) -> None:
+        old_head = "b" * 40
+        current = pr_review.PullBinding("a" * 40, "c" * 40, "e" * 40, pr_review.RUBRIC_VERSION)
+        marker = self.trusted_marker(old_head)
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "ledger-test-key"}, clear=False), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("u", "ledger-test-key")
+        ), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([marker], set(), True)
+        ), mock.patch.object(
+            pr_review, "is_ancestor", return_value=True
+        ) as ancestry, mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value=""
+        ) as fetch, mock.patch.object(
+            pr_review, "compare_incompleteness", return_value=None
+        ), mock.patch.object(
+            pr_review, "get_pull_binding", return_value=current
+        ), mock.patch.object(
+            pr_review, "judge_findings", return_value=([], True, [], [], [])
+        ), mock.patch.object(pr_review, "update_comment"):
+            _state, progress = pr_review.run_review(
+                "owner/repo", "42", "token", "deep", "e" * 40, binding=current, status_comment_id=7
+            )
+        ancestry.assert_called_once()
+        self.assertEqual(progress.scope, "delta")
+        self.assertEqual(
+            fetch.call_args.args[1],
+            pr_review.PullBinding(old_head, current.head_sha, current.reviewer_sha, current.rubric_version),
+        )
 
     def test_a_ledger_round_trips(self) -> None:
         findings = [

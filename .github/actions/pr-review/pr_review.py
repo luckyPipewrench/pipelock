@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -90,6 +91,10 @@ LEDGER_MARKER = "pr-review-ledger:v1"
 # published, and the cap keeps the comment well inside its size limit.
 MAX_LEDGER_ENTRIES = 24
 MAX_LEDGER_TITLE = 160
+LEDGER_SIGNATURE_FIELD = "signature"
+LEDGER_BINDING_FIELDS = frozenset(
+    {"state", "identity", "mode", "model", "findings", "reviewed_head", "scope"}
+)
 NOTICE_MARKER = "pr-review-notice:v1"
 STATUS_MARKER_REQUIRED_FIELDS = frozenset({"state", "identity", "mode", "findings"})
 # Older markers carry fewer fields. They are still readable, and simply do
@@ -192,6 +197,7 @@ class ReviewProgress:
     head_changed: bool = False
     incomplete_reasons: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    scope: str = "full"
 
 
 def log_phase(phase: str, *, attempt: int = 1, status: int | str = "n/a", correlation: str = "pending") -> None:
@@ -1029,7 +1035,35 @@ def model_binding(mode: str) -> str:
     return hashlib.sha256(model_for_mode(mode).encode("utf-8")).hexdigest()
 
 
-def render_ledger(findings: list[Finding], head_sha: str) -> str:
+def ledger_signature(payload: dict[str, object]) -> str | None:
+    """Authenticate continuity state with the credential already needed to review.
+
+    A pull-request comment is readable by everyone with repository access and
+    editable by writers. Its author remains github-actions[bot] after an edit,
+    so author filtering cannot establish that the ledger still says what this
+    action published. A later run must therefore refuse unsigned continuity
+    state rather than treating an edited empty ledger as an honest clean
+    baseline. Rotating the provider credential invalidates old signatures and
+    deliberately falls back to a full review.
+    """
+    key = os.environ.get("OPENAI_API_KEY", "")
+    if not key:
+        return None
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hmac.new(
+        key.encode("utf-8"), b"pr-review-ledger:v1:" + encoded, hashlib.sha256
+    ).hexdigest()
+
+
+def render_ledger(
+    findings: list[Finding],
+    head_sha: str,
+    marker: dict[str, str] | None = None,
+    repository: str | None = None,
+    pr_number: str | None = None,
+) -> str:
     """Record what was published, so a later run can ask whether it still holds.
 
     Fingerprints alone cannot be re-checked: they say a finding of some shape
@@ -1055,7 +1089,22 @@ def render_ledger(findings: list[Finding], head_sha: str) -> str:
     # Says whether this record is the whole set. A ledger clipped by the cap
     # cannot be used as a baseline: the findings it dropped are still open and
     # a later delta review would never look at them again.
-    payload = {"head": head_sha, "open": entries, "complete": len(findings) <= MAX_LEDGER_ENTRIES}
+    payload: dict[str, object] = {
+        "head": head_sha,
+        "open": entries,
+        "complete": len(findings) <= MAX_LEDGER_ENTRIES,
+    }
+    if marker is not None and repository is not None and pr_number is not None:
+        # Bind the ledger to every status-marker field that admits it as a
+        # baseline. Signing only the entries would still let a comment editor
+        # relabel an old review as one for a different head, mode, or verdict.
+        payload["binding"] = {field: marker[field] for field in LEDGER_BINDING_FIELDS}
+        # A valid record from another pull request is not evidence about this
+        # one. Without this context, an editor could replay a genuine signed
+        # comment from a sibling pull request whose old head is an ancestor.
+        payload["context"] = {"repository": repository, "pr_number": pr_number}
+        if signature := ledger_signature(payload):
+            payload[LEDGER_SIGNATURE_FIELD] = signature
     encoded = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
     return f"<!-- {LEDGER_MARKER} {encoded} -->"
 
@@ -1137,6 +1186,41 @@ def ledger_findings(payload: dict[str, object]) -> list[Finding]:
             )
         )
     return rebuilt
+
+
+def usable_ledger(
+    marker: dict[str, object], repository: str, pr_number: str
+) -> dict[str, object] | None:
+    """Return a whole, authenticated ledger bound to this status marker.
+
+    The comment is presentation, not a trust root. A writer may still delete
+    or corrupt it, which costs the optimization and makes the next review
+    whole. They cannot edit any field that selects a smaller diff or carries
+    fewer findings without the provider credential used to make the MAC.
+    """
+    ledger = marker.get("ledger")
+    if not isinstance(ledger, dict) or ledger.get("complete") is not True:
+        return None
+    binding = ledger.get("binding")
+    if not isinstance(binding, dict) or set(binding) != LEDGER_BINDING_FIELDS:
+        return None
+    if any(
+        not isinstance(binding.get(field), str) or binding[field] != marker.get(field)
+        for field in LEDGER_BINDING_FIELDS
+    ):
+        return None
+    if ledger.get("head") != marker.get("reviewed_head"):
+        return None
+    if ledger.get("context") != {"repository": repository, "pr_number": pr_number}:
+        return None
+    signature = ledger.get(LEDGER_SIGNATURE_FIELD)
+    if not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{64}", signature):
+        return None
+    signed = {field: value for field, value in ledger.items() if field != LEDGER_SIGNATURE_FIELD}
+    expected = ledger_signature(signed)
+    if expected is None or not hmac.compare_digest(signature, expected):
+        return None
+    return ledger
 
 
 def parse_status_marker(body: str) -> dict[str, str] | None:
@@ -1627,7 +1711,7 @@ def head_has_moved(repo: str, pr_number: str, token: str, binding: PullBinding, 
         return False
 
 
-def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None, scope: str = "full", scope_base: str | None = None) -> str:
+def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None, scope: str = "full", scope_base: str | None = None, repository: str | None = None, pr_number: str | None = None) -> str:
     seen_before = seen_before or set()
     # `full` means base..head. `delta` means a prior completed review's head
     # ..head, which is a smaller question and must never be read as a
@@ -1755,13 +1839,22 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
     # fingerprints let a later review say which of its findings a reader has
     # already seen, which is presentation only and never suppression.
     fingerprints = ",".join(sorted({finding_fingerprint(finding) for finding in findings}))
+    marker = {
+        "state": state,
+        "identity": binding.correlation,
+        "mode": mode,
+        "model": model_binding(mode),
+        "findings": fingerprints,
+        "reviewed_head": binding.head_sha,
+        "scope": scope,
+    }
     lines.extend(
         [
             "",
-            f"<!-- {STATUS_MARKER} state={state} identity={binding.correlation} "
-            f"mode={mode} model={model_binding(mode)} findings={fingerprints} "
-            f"reviewed_head={binding.head_sha} scope={scope} -->",
-            render_ledger(findings, binding.head_sha),
+            f"<!-- {STATUS_MARKER} "
+            + " ".join(f"{field}={value}" for field, value in marker.items())
+            + " -->",
+            render_ledger(findings, binding.head_sha, marker, repository, pr_number),
         ]
     )
     return "\n".join(lines)
@@ -1953,12 +2046,11 @@ def run_review(
         # Every condition here falls back to a full review, because a full
         # review is only expensive while a wrongly-scoped one is wrong.
         previous = previous_review_for_mode(prior, mode, binding.head_sha)
-        ledger = previous.get("ledger") if previous else None
+        ledger = usable_ledger(previous, repo, pr_number) if previous else None
         # A baseline is only usable when its record of open findings is whole.
         # Missing, malformed, or clipped by the cap all mean the same thing
         # here: this run cannot know what it would be carrying forward.
-        usable = isinstance(ledger, dict) and ledger.get("complete") is True
-        if previous and usable and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
+        if previous and ledger and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
             scope = "delta"
             scope_base = str(previous["reviewed_head"])
             carried = ledger_findings(ledger)
@@ -1973,6 +2065,7 @@ def run_review(
         # its stale timeout and block every later review of the same head. A
         # label is not worth that.
         log_phase("prior-findings", status="unavailable", correlation=binding.correlation)
+    progress.scope = scope
     try:
         # Checked before any provider work so a missing credential ends the run
         # as a configuration failure rather than a partial review, and checked
@@ -2165,7 +2258,25 @@ def run_review(
         manifest = [unit.manifest() for unit in units]
         state = derive_state(progress)
         try:
-            update_comment(repo, comment["id"], token, render_status(binding, mode, classification, progress, state, manifest, seen_before, scope, scope_base), binding.correlation)
+            update_comment(
+                repo,
+                comment["id"],
+                token,
+                render_status(
+                    binding,
+                    mode,
+                    classification,
+                    progress,
+                    state,
+                    manifest,
+                    seen_before,
+                    scope,
+                    scope_base,
+                    repo,
+                    pr_number,
+                ),
+                binding.correlation,
+            )
         except (requests.RequestException, ReviewError):
             log_phase("comment-update", status="failed", correlation=binding.correlation)
             raise ReviewError("final status comment update failed") from None
@@ -2210,7 +2321,7 @@ def main() -> None:
         if any((base_sha, head_sha, comment_id)):
             if not all((base_sha, head_sha, comment_id)) or not comment_id.isdigit():
                 raise ReviewError("review operation received incomplete admission data")
-            state, _ = run_review(
+            state, progress = run_review(
                 repo,
                 pr_number,
                 github_token,
@@ -2220,7 +2331,7 @@ def main() -> None:
                 status_comment_id=int(comment_id),
             )
         else:
-            state, _ = run_review(repo, pr_number, github_token, mode, reviewer_sha)
+            state, progress = run_review(repo, pr_number, github_token, mode, reviewer_sha)
     except (FetchError, ReviewError, requests.RequestException):
         print("pr-review phase=terminal attempt=1 status=failed correlation=pending", file=sys.stderr)
         raise SystemExit(1) from None
@@ -2231,7 +2342,8 @@ def main() -> None:
     # made a nine-finding review look like a crashed job, and inverting the
     # collapse would instead let an incomplete review show an all-green pull
     # request, which reads as reviewed when it was not.
-    write_action_outputs(state=state, complete="true" if state in COMPLETE_REVIEW_STATES else "false")
+    complete = state in COMPLETE_REVIEW_STATES and progress.scope == "full"
+    write_action_outputs(state=state, complete="true" if complete else "false")
     if exit_code_for_state(state):
         raise SystemExit(1)
 

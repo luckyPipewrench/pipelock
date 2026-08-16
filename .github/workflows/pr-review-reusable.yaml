@@ -208,6 +208,10 @@ jobs:
             echo "pr-review coverage: complete (${STATE})"
             exit 0
           fi
+          if [ "${STATE}" = "clean" ] || [ "${STATE}" = "findings" ]; then
+            echo "pr-review coverage: delta only (${STATE}); this is not a whole-pull-request review" >&2
+            exit 1
+          fi
           echo "pr-review coverage: NOT complete (state=${STATE:-none}, review job ${REVIEW_RESULT})" >&2
           echo "The review comment carries the verdict and the reasons it is incomplete." >&2
           exit 1

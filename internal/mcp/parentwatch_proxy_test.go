@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -21,6 +22,50 @@ import (
 type blockingReader struct {
 	once   sync.Once
 	closed chan struct{}
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+type nonClosableBlockingReader struct {
+	started     chan struct{}
+	returned    chan struct{}
+	release     chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newNonClosableBlockingReader() *nonClosableBlockingReader {
+	return &nonClosableBlockingReader{
+		started:  make(chan struct{}),
+		returned: make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+}
+
+func (b *nonClosableBlockingReader) Read(_ []byte) (int, error) {
+	b.startOnce.Do(func() { close(b.started) })
+	<-b.release
+	close(b.returned)
+	return 0, io.EOF
+}
+
+func (b *nonClosableBlockingReader) unblock() {
+	b.releaseOnce.Do(func() { close(b.release) })
 }
 
 func newBlockingReader() *blockingReader {
@@ -50,16 +95,26 @@ func TestRunProxy_SessionExitTerminatesIgnoringServer(t *testing.T) {
 	clientIn := newBlockingReader()
 	defer func() { _ = clientIn.Close() }()
 
+	parentDied := make(chan struct{})
+	outputForwardStarted := make(chan struct{})
 	var stdout, logBuf bytes.Buffer
 	opts := MCPProxyOpts{
 		sessionExitForTest: &sessionExitTestHooks{
 			watch: parentWatchOpts{
 				interval:  time.Millisecond,
 				startPPID: 4242,
-				getppid:   func() int { return orphanedPPID },
+				getppid: func() int {
+					select {
+					case <-parentDied:
+						return orphanedPPID
+					default:
+						return 4242
+					}
+				},
 			},
 			grace: 50 * time.Millisecond,
 		},
+		outputForwardStartedForTest: func() { close(outputForwardStarted) },
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -71,9 +126,18 @@ func TestRunProxy_SessionExitTerminatesIgnoringServer(t *testing.T) {
 		// forced process-tree teardown can end this call.
 		done <- RunProxy(ctx, clientIn, &stdout, &logBuf, []string{"sleep", "120"}, opts)
 	}()
+	select {
+	case <-outputForwardStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunProxy never entered the server-output forwarding loop")
+	}
+	close(parentDied)
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil && !errors.Is(err, ErrSubprocessExit) {
+			t.Errorf("RunProxy = %v, want no scanner error after session teardown", err)
+		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("RunProxy never returned after the spawning session died; the proxy leaked")
 	}
@@ -96,7 +160,8 @@ func TestRunProxy_LiveSessionIsNotTornDown(t *testing.T) {
 	}
 
 	clientIn := newBlockingReader()
-	var stdout, logBuf bytes.Buffer
+	var stdout bytes.Buffer
+	var logBuf lockedBuffer
 
 	opts := MCPProxyOpts{
 		sessionExitForTest: &sessionExitTestHooks{
@@ -136,4 +201,108 @@ func TestRunProxy_LiveSessionIsNotTornDown(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("RunProxy did not shut down after context cancellation")
 	}
+}
+
+func TestRunProxy_SessionExitBoundsNonClosableInputDrain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real child process")
+	}
+
+	clientIn := newNonClosableBlockingReader()
+	t.Cleanup(clientIn.unblock)
+	parentDied := make(chan struct{})
+	var stdout, logBuf bytes.Buffer
+	opts := MCPProxyOpts{
+		sessionExitForTest: &sessionExitTestHooks{
+			watch: parentWatchOpts{
+				interval:  time.Millisecond,
+				startPPID: 4242,
+				getppid: func() int {
+					select {
+					case <-parentDied:
+						return orphanedPPID
+					default:
+						return 4242
+					}
+				},
+			},
+			grace: 20 * time.Millisecond,
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxy(ctx, clientIn, &stdout, &logBuf, []string{"sleep", "120"}, opts)
+	}()
+
+	select {
+	case <-clientIn.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunProxy never started reading the non-closable client input")
+	}
+	close(parentDied)
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, ErrSubprocessExit) {
+			t.Errorf("RunProxy = %v, want clean session-bound shutdown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunProxy waited indefinitely for non-closable input after session exit")
+	}
+
+	clientIn.unblock()
+	select {
+	case <-clientIn.returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("non-closable client input did not release after the test")
+	}
+}
+
+func TestDrainStderr_ReleasesEscapedPipeHolder(t *testing.T) {
+	t.Run("timeout closes escaped writer", func(t *testing.T) {
+		serverErr, escapedWriter, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("creating stderr pipe: %v", err)
+		}
+		defer func() { _ = escapedWriter.Close() }()
+
+		stderrDone := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(io.Discard, serverErr)
+			close(stderrDone)
+		}()
+
+		if drained := drainStderr(stderrDone, serverErr, time.Millisecond); drained {
+			t.Fatal("drainStderr = true while an escaped stderr writer remained open")
+		}
+		select {
+		case <-stderrDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("stderr copier remained blocked after the drain timeout")
+		}
+	})
+
+	t.Run("normal drain closes reader", func(t *testing.T) {
+		serverErr, serverErrW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("creating stderr pipe: %v", err)
+		}
+		if err := serverErrW.Close(); err != nil {
+			t.Fatalf("closing stderr writer: %v", err)
+		}
+		stderrDone := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(io.Discard, serverErr)
+			close(stderrDone)
+		}()
+
+		if drained := drainStderr(stderrDone, serverErr, time.Second); !drained {
+			t.Fatal("drainStderr = false after normal stderr drain")
+		}
+		if _, err := serverErr.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("stderr reader error after normal drain = %v, want os.ErrClosed", err)
+		}
+	})
 }

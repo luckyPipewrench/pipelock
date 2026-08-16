@@ -376,6 +376,9 @@ type MCPProxyOpts struct {
 	// die, so the in-process teardown path is otherwise reachable only
 	// from a helper subprocess; production wiring leaves it nil.
 	sessionExitForTest *sessionExitTestHooks
+	// outputForwardStartedForTest signals that RunProxy has entered its
+	// server-output forwarding loop. Production wiring leaves it nil.
+	outputForwardStartedForTest func()
 	// sessionExit marks Pipelock-initiated descriptor closes during a
 	// session-bound teardown. It is wired only by proxy entry points.
 	sessionExit *sessionExitState

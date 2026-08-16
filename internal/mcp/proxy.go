@@ -75,6 +75,24 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 	return nil
 }
 
+// drainStderr waits for the wrapped process's stderr copier without allowing
+// an escaped descendant holding the write end to keep RunProxy alive. Closing
+// the read end releases io.Copy on timeout and also releases the descriptor
+// after a normal drain.
+func drainStderr(stderrDone <-chan struct{}, serverErr io.Closer, grace time.Duration) bool {
+	if grace <= 0 {
+		grace = defaultParentExitGrace
+	}
+	select {
+	case <-stderrDone:
+		_ = serverErr.Close()
+		return true
+	case <-time.After(grace):
+		_ = serverErr.Close()
+		return false
+	}
+}
+
 func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
 	if tracker == nil {
 		return
@@ -1574,7 +1592,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	if h := opts.sessionExitForTest; h != nil {
 		sessionOpts = h.watch
 		sessionOpts.logW = safeLogW
-		sessionGrace = h.grace
+		if h.grace > 0 {
+			sessionGrace = h.grace
+		}
 	}
 	if sessionOpts.startPPID > orphanedPPID {
 		go runSessionBoundExit(sessionCtx, sessionOpts, sessionExitActions{
@@ -1600,15 +1620,15 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			// could not reach.
 			terminateTree: func() bool {
 				return processExit.terminate(func() {
+					// A descendant can escape the child group with setsid while
+					// retaining stdout. Close the read ends first to release
+					// ForwardScanned while process-group teardown is in flight.
+					_ = serverOut.Close()
+					_ = serverErr.Close()
 					terminateProcessGroup(childPgid)
 					if cmd.Process != nil {
 						_ = cmd.Process.Kill()
 					}
-					// A descendant can escape the child group with setsid while
-					// retaining stdout. Closing our read end releases ForwardScanned
-					// so cmd.Wait and its adopted-descendant sweep are reachable.
-					_ = serverOut.Close()
-					_ = serverErr.Close()
 				})
 			},
 			waitDone: waitDone,
@@ -1669,10 +1689,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	inputOpts.sessionExit = sessionExit
 
 	// Forward client input to server stdin (with optional input scanning).
-	var wg sync.WaitGroup
-	wg.Add(1)
+	inputDone := make(chan struct{})
 	go func() {
-		defer wg.Done()
+		defer close(inputDone)
 		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
 		inputCfg := opts.inputCfg()
 		if inputCfg != nil && inputCfg.Enabled {
@@ -1703,10 +1722,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Drain blocked request channel and write error responses to client.
 	// Runs in a separate goroutine so ForwardScanned can proceed concurrently.
-	var wgBlocked sync.WaitGroup
-	wgBlocked.Add(1)
+	blockedDone := make(chan struct{})
 	go func() {
-		defer wgBlocked.Done()
+		defer close(blockedDone)
 		for blocked := range blockedCh {
 			if blocked.IsNotification {
 				// Notifications have no ID - silently drop (no error response per JSON-RPC spec).
@@ -1731,9 +1749,18 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// request but never replies fails closed instead of hanging the agent.
 	serverReader := opts.withResponseTimeout(transport.NewStdioReader(serverOut))
 
-	fwdOpts := inputOpts
+	fwdOpts := opts
+	fwdOpts.Rec = rec
+	fwdOpts.WarnContext = ctx
+	// Session teardown closes serverOut to release a descendant holding the
+	// pipe. ForwardScanned must see that ownership marker so os.ErrClosed is a
+	// clean shutdown instead of an upstream scanner error.
+	fwdOpts.sessionExit = sessionExit
 	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
 	fwdOpts.ToolCfgFn = nil
+	if opts.outputForwardStartedForTest != nil {
+		opts.outputForwardStartedForTest()
+	}
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 
@@ -1791,8 +1818,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// non-Linux builds - the stub is a no-op there.
 	killAdoptedDescendants()
 	// A detached descendant can retain stderr after the direct child exits.
-	// Drain it only after the sweep above has released every remaining writer.
-	<-stderrDone
+	// Bound the drain so an escaped writer cannot hold the proxy open forever.
+	if !drainStderr(stderrDone, serverErr, sessionGrace) {
+		_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out draining MCP subprocess stderr after child exit\n")
+	}
 
 	if timedOut {
 		// Closing a closable clientIn above wakes the usual CLI/pipe readers.
@@ -1802,8 +1831,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		defer drainCancel()
 		done := make(chan struct{})
 		go func() {
-			wg.Wait()
-			wgBlocked.Wait()
+			<-inputDone
+			<-blockedDone
 			close(done)
 		}()
 		select {
@@ -1812,12 +1841,23 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
 		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+	} else if sessionExit.inProgress() {
+		// An arbitrary io.Reader cannot be interrupted by closing the client
+		// side. Once session teardown has killed the server, do not let one
+		// such reader keep the proxy alive indefinitely.
+		select {
+		case <-inputDone:
+			<-blockedDone
+		case <-time.After(sessionGrace):
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after session teardown\n")
+		}
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	} else {
 		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
-		wg.Wait()
+		<-inputDone
 
 		// Wait for blocked channel drain to complete.
-		wgBlocked.Wait()
+		<-blockedDone
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}
 

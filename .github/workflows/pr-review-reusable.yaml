@@ -208,6 +208,12 @@ jobs:
             echo "pr-review coverage: complete (${STATE})"
             exit 0
           fi
+          if [ "${STATE}" = "clean" ] || [ "${STATE}" = "findings" ]; then
+            echo "pr-review coverage: ${STATE}, but the reviewed range does not reach the current base" >&2
+            echo "A review chain covers the whole pull request only while the base it started from is still the base." >&2
+            echo "Re-run the review to cover the range whole." >&2
+            exit 1
+          fi
           echo "pr-review coverage: NOT complete (state=${STATE:-none}, review job ${REVIEW_RESULT})" >&2
           echo "The review comment carries the verdict and the reasons it is incomplete." >&2
           exit 1

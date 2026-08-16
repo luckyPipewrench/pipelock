@@ -56,7 +56,7 @@ func TestWithAllowedSSRFDialScanSnapshotClearsOnDeny(t *testing.T) {
 	if got := withAllowedSSRFDialScanSnapshot(parent, nil, "api.vendor.example", "443", scanner.Result{}); got != nil {
 		t.Fatal("nil parent must stay nil")
 	}
-	cleared := withAllowedSSRFDialScanSnapshot(ctx, nil, "api.vendor.example", "443", scanner.Result{
+	cleared := withAllowedSSRFDialScanSnapshot(ctx, new(scanner.Scanner), "api.vendor.example", "443", scanner.Result{
 		Allowed:         false,
 		SSRFResolvedIPs: []string{"203.0.113.10"},
 	})

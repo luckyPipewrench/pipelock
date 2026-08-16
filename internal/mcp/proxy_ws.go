@@ -139,7 +139,8 @@ func RunWSProxy(
 	for {
 		msg, readErr := clientReader.ReadMessage()
 		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) && !(sessionExit.inProgress() && isSessionExitCloseErr(readErr)) {
+			if !errors.Is(readErr, io.EOF) &&
+				(!sessionExit.inProgress() || !isSessionExitCloseErr(readErr)) {
 				stdinErr = fmt.Errorf("reading stdin: %w", readErr)
 			}
 			break

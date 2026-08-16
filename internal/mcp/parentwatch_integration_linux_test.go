@@ -130,12 +130,15 @@ func TestRunProxy_ResponseTimeoutReapsEscapedPipeHolder(t *testing.T) {
 }
 
 func TestWaitForCommandWithProcessGroupSignalsBeforeReap(t *testing.T) {
+	const resolverScript = "sleep 300 & child=$!; printf '%s\\n' \"$child\" > \"$MCP_TEST_PID_FILE\"; wait"
+
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "resolver-child.pid")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cmd := exec.Command("/bin/sh", "-c", "sleep 300 & child=$!; echo $child > "+pidFile+"; wait")
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", resolverScript)
+	cmd.Env = append(os.Environ(), "MCP_TEST_PID_FILE="+pidFile)
 	setupChildProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting resolver tree: %v", err)
@@ -307,19 +310,21 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 		t.Skip("spawns a real sandbox proxy process tree")
 	}
 
+	const sandboxScript = "echo $$ > \"$MCP_TEST_SANDBOX_FILE\"\nsetsid sleep 300 &\necho $! > \"$MCP_TEST_GRANDCHILD_FILE\"\nsleep 300"
+
 	dir := t.TempDir()
 	sandboxFile := filepath.Join(dir, "sandbox.pid")
 	grandchildFile := filepath.Join(dir, "grandchild.pid")
-	serverScript := "echo $$ > " + sandboxFile + "\n" +
-		"setsid sleep 300 &\n" +
-		"echo $! > " + grandchildFile + "\n" +
-		"sleep 300\n"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	clientIn := newBlockingReader()
 	defer func() { _ = clientIn.Close() }()
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", serverScript)
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", sandboxScript)
+	cmd.Env = append(os.Environ(),
+		"MCP_TEST_SANDBOX_FILE="+sandboxFile,
+		"MCP_TEST_GRANDCHILD_FILE="+grandchildFile,
+	)
 	sc := testScannerWithAction(t, config.ActionWarn)
 	var logBuf syncBuffer
 	var parentDied atomic.Bool
@@ -380,6 +385,8 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 }
 
 func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
+	const liveSessionScript = "touch \"$MCP_TEST_READY_FILE\"; sleep 300"
+
 	if testing.Short() {
 		t.Skip("spawns a real sandbox proxy process")
 	}
@@ -389,7 +396,8 @@ func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	clientIn := newBlockingReader()
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "touch "+readyFile+"; sleep 300")
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", liveSessionScript)
+	cmd.Env = append(os.Environ(), "MCP_TEST_READY_FILE="+readyFile)
 	sc := testScannerWithAction(t, config.ActionWarn)
 	var logBuf syncBuffer
 	opts := testOpts(sc)

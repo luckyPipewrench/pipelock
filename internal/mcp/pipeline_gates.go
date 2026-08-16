@@ -54,8 +54,10 @@ const (
 )
 
 const (
-	dowMissingTrustedSessionReason = "subject identified below the minimum trust grade for denial-of-wallet enforcement"
-	dowMissingTrustedSessionBudget = "subject_identity"
+	dowMissingTrustedSessionReason      = "subject identified below the minimum trust grade for denial-of-wallet enforcement"
+	dowMissingTrustedSessionBudget      = "subject_identity"
+	dowMissingEnforcementIdentityReason = "callable identity missing for denial-of-wallet enforcement"
+	dowMissingEnforcementIdentityBudget = "callable_identity"
 )
 
 // BindingReason values populated by the stdio gate helper when a
@@ -323,11 +325,25 @@ func mcpFrameParams(frame MCPFrame) json.RawMessage {
 // decision exists twice a change applied to one copy leaves the other surface
 // open with nothing to catch it.
 func applyDoWGate(opts MCPProxyOpts, eval *MCPInputEvaluation, enforcementIdentity string, frame MCPFrame, msg []byte) bool {
-	if opts.DoWCheck == nil || enforcementIdentity == "" {
+	if opts.DoWCheck == nil {
 		return false
 	}
 	if !opts.dowEnabled() {
 		return false
+	}
+	if enforcementIdentity == "" {
+		// Handshake and inventory methods have no callable identity by
+		// design. DoW bills tools/call and A2A methods; blocking
+		// initialize here would refuse the session handshake.
+		if !dowRequiresCallableIdentity(frame, eval) {
+			return false
+		}
+		eval.DoWAllowed = false
+		eval.DoWAction = config.ActionBlock
+		eval.DoWReason = dowMissingEnforcementIdentityReason
+		eval.DoWBudgetType = dowMissingEnforcementIdentityBudget
+		eval.BlockingGate = blockingGateDoW
+		return true
 	}
 	subjectKey := opts.DoWSubjectKey
 	if subjectKey == "" {
@@ -351,6 +367,16 @@ func applyDoWGate(opts MCPProxyOpts, eval *MCPInputEvaluation, enforcementIdenti
 		return true
 	}
 	return false
+}
+
+func dowRequiresCallableIdentity(frame MCPFrame, eval *MCPInputEvaluation) bool {
+	if frame.IsToolsCall() || IsA2AMethod(frame.Method) {
+		return true
+	}
+	if eval == nil {
+		return false
+	}
+	return eval.ContentVerdict.Method == methodToolsCall || IsA2AMethod(eval.ContentVerdict.Method)
 }
 
 func mcpFrameDoWArgs(frame MCPFrame, msg []byte) string {

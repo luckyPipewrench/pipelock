@@ -30,22 +30,123 @@ func TestFrameParseErrFailsClosed(t *testing.T) {
 	}
 }
 
-func TestApplyDoWGateEmptyIdentityDoesNotRunCheck(t *testing.T) {
+func TestApplyDoWGateEmptyIdentityBlocksWhenEnabled(t *testing.T) {
 	t.Parallel()
 
 	opts := MCPProxyOpts{
 		DoWEnabledFn: func() bool { return true },
 		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
 			t.Fatal("DoWCheck ran with an empty enforcement identity")
+			return true, config.ActionAllow, "", ""
+		},
+	}
+	var eval MCPInputEvaluation
+	if !applyDoWGate(opts, &eval, "", MCPFrame{Method: methodToolsCall}, nil) {
+		t.Fatal("empty identity was allowed while DoW was enabled")
+	}
+	if eval.BlockingGate != blockingGateDoW {
+		t.Fatalf("BlockingGate = %q, want %q", eval.BlockingGate, blockingGateDoW)
+	}
+	if eval.DoWAction != config.ActionBlock || eval.DoWAllowed {
+		t.Fatalf("DoW verdict = allowed=%v action=%q", eval.DoWAllowed, eval.DoWAction)
+	}
+	if eval.DoWReason != dowMissingEnforcementIdentityReason {
+		t.Fatalf("DoWReason = %q", eval.DoWReason)
+	}
+	if eval.DoWBudgetType != dowMissingEnforcementIdentityBudget {
+		t.Fatalf("DoWBudgetType = %q", eval.DoWBudgetType)
+	}
+}
+
+func TestApplyDoWGateEmptyIdentitySkippedForHandshake(t *testing.T) {
+	t.Parallel()
+
+	opts := MCPProxyOpts{
+		DoWEnabledFn: func() bool { return true },
+		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+			t.Fatal("DoWCheck ran for a handshake with no callable identity")
+			return false, config.ActionBlock, "should not run", "test_budget"
+		},
+	}
+	for _, method := range []string{"initialize", "ping", "tools/list"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			var eval MCPInputEvaluation
+			if applyDoWGate(opts, &eval, "", MCPFrame{Method: method}, nil) {
+				t.Fatalf("%s blocked while DoW was enabled", method)
+			}
+			if eval.BlockingGate != "" || eval.DoWReason != "" {
+				t.Fatalf("%s populated DoW fields: %+v", method, eval)
+			}
+		})
+	}
+}
+
+func TestDoWRequiresCallableIdentityNilEval(t *testing.T) {
+	t.Parallel()
+
+	if dowRequiresCallableIdentity(MCPFrame{Method: "initialize"}, nil) {
+		t.Fatal("nil eval treated initialize as a billed callable")
+	}
+	if !dowRequiresCallableIdentity(MCPFrame{Method: methodToolsCall}, nil) {
+		t.Fatal("nil eval skipped a tools/call")
+	}
+}
+
+func TestApplyDoWGateEmptyIdentityBlocksWhenContentVerdictIsToolsCall(t *testing.T) {
+	t.Parallel()
+
+	opts := MCPProxyOpts{
+		DoWEnabledFn: func() bool { return true },
+		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+			t.Fatal("DoWCheck ran with an empty enforcement identity")
+			return true, config.ActionAllow, "", ""
+		},
+	}
+	eval := MCPInputEvaluation{ContentVerdict: InputVerdict{Method: methodToolsCall}}
+	if !applyDoWGate(opts, &eval, "", MCPFrame{}, nil) {
+		t.Fatal("content-verdict tools/call with empty identity was allowed")
+	}
+	if eval.DoWReason != dowMissingEnforcementIdentityReason {
+		t.Fatalf("DoWReason = %q", eval.DoWReason)
+	}
+}
+
+func TestApplyDoWGateEmptyA2AIdentityBlocksWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	opts := MCPProxyOpts{
+		DoWEnabledFn: func() bool { return true },
+		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+			t.Fatal("DoWCheck ran with an empty A2A enforcement identity")
+			return true, config.ActionAllow, "", ""
+		},
+	}
+	var eval MCPInputEvaluation
+	if !applyDoWGate(opts, &eval, "", MCPFrame{Method: testA2AMethod}, nil) {
+		t.Fatal("empty A2A identity was allowed while DoW was enabled")
+	}
+	if eval.DoWReason != dowMissingEnforcementIdentityReason {
+		t.Fatalf("DoWReason = %q", eval.DoWReason)
+	}
+}
+
+func TestApplyDoWGateEmptyIdentitySkippedWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	opts := MCPProxyOpts{
+		DoWEnabledFn: func() bool { return false },
+		DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+			t.Fatal("DoWCheck ran while DoW was disabled")
 			return false, config.ActionBlock, "should not run", "test_budget"
 		},
 	}
 	var eval MCPInputEvaluation
 	if applyDoWGate(opts, &eval, "", MCPFrame{Method: methodToolsCall}, nil) {
-		t.Fatal("empty identity blocked")
+		t.Fatal("disabled DoW blocked an empty identity")
 	}
 	if eval.BlockingGate != "" || eval.DoWReason != "" {
-		t.Fatalf("empty identity populated DoW fields: %+v", eval)
+		t.Fatalf("disabled DoW populated fields: %+v", eval)
 	}
 }
 

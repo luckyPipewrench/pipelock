@@ -57,7 +57,7 @@ func TestWithAllowedSSRFDialScanSnapshotClearsOnDeny(t *testing.T) {
 		t.Fatal("nil parent must stay nil")
 	}
 	cleared := withAllowedSSRFDialScanSnapshot(ctx, nil, "api.vendor.example", "443", scanner.Result{
-		Allowed:         true,
+		Allowed:         false,
 		SSRFResolvedIPs: []string{"203.0.113.10"},
 	})
 	if isSSRFDNSRebind(cleared, "api.vendor.example", net.ParseIP("127.0.0.1")) {

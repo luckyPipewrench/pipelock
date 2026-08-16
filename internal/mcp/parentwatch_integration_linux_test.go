@@ -428,7 +428,65 @@ func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(20 * time.Second):
-		t.Fatal("sandbox proxy did not stop after context cancellation")
+		// Report the operator log and the surviving processes. This assertion
+		// has failed on CI while passing on a development host, and a bare
+		// timeout says nothing about which stage did not finish.
+		t.Fatalf("sandbox proxy did not stop after context cancellation; log: %q; surviving descendants: %s",
+			logBuf.String(), describeOwnDescendants())
+	}
+}
+
+// TestSessionExit_SandboxCancellationWithSurvivingPipeHolder is the CI-shaped
+// version of the cancellation case above.
+//
+// The sibling test runs "sh -c '...; sleep 300'", which on many shells execs
+// the final sleep in place, so the direct-child SIGKILL that
+// exec.CommandContext sends happens to reach the process holding stdout. That
+// makes the test pass without any cancellation teardown at all, and it is why
+// it passed on a development host while failing on CI.
+//
+// Here the shell keeps a detached descendant that holds stdout and does not
+// exec in place, so the direct kill cannot reach the pipe holder. Without a
+// cancellation teardown the output reader never sees EOF and this call never
+// returns.
+func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real sandbox proxy process")
+	}
+
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	// setsid moves the descendant into its own session, so it survives both
+	// the direct-child kill and a plain process-group signal, while keeping
+	// the inherited stdout it was given.
+	script := "umask 077; setsid sleep 300 & touch \"$MCP_TEST_READY_FILE\"; wait"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientIn := newBlockingReader()
+	defer func() { _ = clientIn.Close() }()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(), "MCP_TEST_READY_FILE="+readyFile)
+	var logBuf syncBuffer
+	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+	opts.sessionExitForTest = liveSessionExitHooks()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxyWithSandbox(ctx, cmd, clientIn, io.Discard, &logBuf, opts)
+	}()
+
+	testwait.For(t, 10*time.Second, func() bool {
+		_, err := os.Stat(readyFile)
+		return err == nil
+	}, "the sandbox command to become ready")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("sandbox proxy did not stop after cancellation while a detached descendant held stdout; log: %q; surviving descendants: %s",
+			logBuf.String(), describeOwnDescendants())
 	}
 }
 
@@ -445,7 +503,7 @@ func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 		if err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts); err != nil {
 			t.Fatalf("best-effort sandbox proxy = %v", err)
 		}
-		if !strings.Contains(logBuf.String(), "subtree teardown will be incomplete") {
+		if !strings.Contains(logBuf.String(), "session descendant cleanup degraded") {
 			t.Errorf("missing subreaper warning, got %q", logBuf.String())
 		}
 	})
@@ -553,4 +611,48 @@ func TestSessionExitHelperProcess(t *testing.T) {
 		[]string{"/bin/sh", "-c", "exec /bin/sh \"$PIPELOCK_SESSION_EXIT_SERVER\""}, MCPProxyOpts{},
 		"PIPELOCK_SESSION_EXIT_SERVER="+os.Getenv("PIPELOCK_SESSION_EXIT_SERVER"))
 	fmt.Fprintf(os.Stderr, "helper: RunProxy returned: %v\n", err)
+}
+
+// describeOwnDescendants lists the live processes still parented to this
+// process, with their state and command name. It exists for one reason: a
+// teardown assertion that times out on CI and passes on a development host
+// says nothing about WHAT failed to finish, and a process holding a pipe open
+// is the difference between a hung wait and a hung scan.
+func describeOwnDescendants() string {
+	selfPID := os.Getpid()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return "unreadable /proc: " + err.Error()
+	}
+	var found []string
+	for _, entry := range entries {
+		name := entry.Name()
+		pid, convErr := strconv.Atoi(name)
+		if convErr != nil || pid == selfPID {
+			continue
+		}
+		statBytes, readErr := os.ReadFile(filepath.Clean("/proc/" + name + "/stat"))
+		if readErr != nil {
+			continue
+		}
+		stat := string(statBytes)
+		cmdEnd := strings.LastIndex(stat, ")")
+		cmdStart := strings.Index(stat, "(")
+		if cmdEnd < 0 || cmdStart < 0 || cmdEnd <= cmdStart || cmdEnd+2 > len(stat) {
+			continue
+		}
+		rest := strings.Fields(stat[cmdEnd+1:])
+		if len(rest) < 2 {
+			continue
+		}
+		if rest[1] != strconv.Itoa(selfPID) {
+			continue
+		}
+		found = append(found, fmt.Sprintf("pid=%d state=%s comm=%s", pid, rest[0], stat[cmdStart+1:cmdEnd]))
+	}
+	if len(found) == 0 {
+		return "none"
+	}
+	sort.Strings(found)
+	return strings.Join(found, "; ")
 }

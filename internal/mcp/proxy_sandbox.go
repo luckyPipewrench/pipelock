@@ -72,7 +72,12 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		if isStrict {
 			return fmt.Errorf("strict mode: failed to set child subreaper: %w", err)
 		}
-		_, _ = fmt.Fprintf(logW, "pipelock: warning: PR_SET_CHILD_SUBREAPER failed, sandbox subtree teardown will be incomplete: %v\n", err)
+		// Name the consequence, not just the failed call. An operator reading
+		// "teardown will be incomplete" cannot tell what they are now exposed
+		// to; degraded cleanup here means a detached descendant can outlive
+		// the session and can wedge proxy shutdown by holding inherited I/O.
+		// Use strict mode to refuse the launch instead of accepting that.
+		_, _ = fmt.Fprintf(logW, "pipelock: warning: session descendant cleanup degraded: PR_SET_CHILD_SUBREAPER failed (%v). Detached descendants can survive session exit and can block proxy shutdown by retaining inherited I/O. Run with strict mode to fail closed instead.\n", err)
 	}
 	var rec session.Recorder
 	if opts.Store != nil {
@@ -97,9 +102,17 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	// subprocess tree.
 	setupChildProcessGroup(sandboxCmd)
 
+	// Start and claim as one step. Between fork and the claim the child is a
+	// live process no session has registered, which is exactly what a sibling
+	// session's sweep is entitled to reap.
+	unlockStart := lockChildStart()
 	if err := start(); err != nil {
+		unlockStart()
 		return fmt.Errorf("starting sandboxed MCP server %q: %w", sandboxCmd.Path, err)
 	}
+	releaseChild := protectDirectChild(sandboxCmd.Process.Pid)
+	unlockStart()
+	defer releaseChild()
 	childPgid := captureChildPgid(sandboxCmd.Process.Pid)
 	processExit := &processExitHandoff{}
 	killDirectChild := func() bool {
@@ -108,19 +121,37 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		}
 		return sandboxCmd.Process.Kill() == nil
 	}
-	// Claim the direct child before any reaper can see it, and do so whether or
-	// not this session's own subreaper setup succeeded. startAdoptedReaper
-	// registers the same claim, but it only runs when the subreaper is
-	// available; on a host that refuses PR_SET_CHILD_SUBREAPER this session
-	// would otherwise leave its child unclaimed while a concurrent session in
-	// the same process still runs a reaper that walks /proc, reaps it, and
-	// steals its exit status.
-	defer protectDirectChild(sandboxCmd.Process.Pid)()
+	// The claim itself is made above, atomically with the start, and holds
+	// whether or not this session's subreaper setup succeeded. The reaper
+	// below registers the same claim again; the registry is counted, so both
+	// releases are safe.
 	if subreaperEnabled {
 		reaperDone := make(chan struct{})
 		defer close(reaperDone)
 		startAdoptedReaper(sandboxCmd.Process.Pid, reaperDone)
 	}
+
+	// Proactive teardown on context cancellation, mirroring the plain stdio
+	// path. exec.CommandContext delivers SIGKILL to the direct child's PID
+	// only. That is enough when sandbox-init execs the server in place, and it
+	// is not enough for a bridge supervisor or any descendant that inherited
+	// stdout: the reader below never sees EOF, so this call cannot reach its
+	// own teardown and cancellation hangs until the caller gives up.
+	//
+	// Closing our read end is the half that unblocks the scanner. Signalling
+	// the group is the half that lets cooperative descendants exit. This is
+	// not the ordinary exit path, where a group teardown would kill a server
+	// that is still finishing; reaching here means the caller asked to stop.
+	cancelDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			processExit.terminate(func() { signalProcessGroupTerm(childPgid) }, killDirectChild)
+			_ = serverOut.Close()
+		case <-cancelDone:
+		}
+	}()
+	defer close(cancelDone)
 
 	// The sandbox command is a subprocess tree just like the plain stdio
 	// command. In normal mode sandbox-init execs the server in place; with the

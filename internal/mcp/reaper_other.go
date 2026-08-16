@@ -16,3 +16,8 @@ func startAdoptedReaper(_ int, _ <-chan struct{}) {}
 // reaping adopted descendants here, so there is no sibling session that
 // could consume this child's exit status.
 func protectDirectChild(_ int) func() { return func() {} }
+
+// lockChildStart is a no-op on non-Linux builds. It exists so the start-and-
+// claim sequence reads identically on every platform; with no sweeps running
+// there is nothing to exclude.
+func lockChildStart() func() { return func() {} }

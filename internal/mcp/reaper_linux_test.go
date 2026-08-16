@@ -30,7 +30,10 @@ import (
 // (i.e. the reaper did not steal the direct child's exit status).
 func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
-		t.Skipf("PR_SET_CHILD_SUBREAPER unavailable (need CAP_SYS_RESOURCE in containers): %v", err)
+		// Not a capability question: the kernel sets a process flag here and
+		// performs no CAP_SYS_RESOURCE check. A failure means an old kernel or
+		// a seccomp/host policy blocking this prctl.
+		t.Skipf("PR_SET_CHILD_SUBREAPER unavailable (old kernel or a policy blocking this prctl): %v", err)
 	}
 
 	// Helper script: double-fork a grandchild that sleeps briefly and
@@ -265,5 +268,64 @@ func TestReaper_DoneChannelStopsGoroutine(t *testing.T) {
 	if delta := after - before; delta > 2 {
 		t.Fatalf("goroutine leak: %d goroutines before, %d after (delta=%d, iterations=%d)",
 			before, after, delta, iterations)
+	}
+}
+
+// TestReaper_SweepsExcludedDuringChildStart proves the window between forking a
+// child and claiming it is closed.
+//
+// The race it guards is not observable by chance: the window is a few
+// instructions wide, so a test that merely runs a sweeper alongside a starting
+// session passes whether or not the exclusion exists. This asserts the
+// exclusion property directly instead — while a start is in progress, a sweep
+// cannot proceed.
+func TestReaper_SweepsExcludedDuringChildStart(t *testing.T) {
+	unlock := lockChildStart()
+
+	swept := make(chan struct{})
+	go func() {
+		reapAdoptedZombies(-1)
+		close(swept)
+	}()
+
+	select {
+	case <-swept:
+		unlock()
+		t.Fatal("a descendant sweep ran while a child start held the start lock; an unclaimed child is reapable in that window")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case <-swept:
+	case <-time.After(5 * time.Second):
+		t.Fatal("descendant sweep did not resume after the child start completed")
+	}
+}
+
+// TestKillAdoptedDescendants_ExcludedDuringChildStart is the same property for
+// the signalling sweep. It is a separate entry point, so it needs its own
+// guard: killing an unclaimed child is worse than reaping one.
+func TestKillAdoptedDescendants_ExcludedDuringChildStart(t *testing.T) {
+	unlock := lockChildStart()
+
+	swept := make(chan struct{})
+	go func() {
+		killAdoptedDescendants()
+		close(swept)
+	}()
+
+	select {
+	case <-swept:
+		unlock()
+		t.Fatal("a descendant kill sweep ran while a child start held the start lock")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case <-swept:
+	case <-time.After(5 * time.Second):
+		t.Fatal("descendant kill sweep did not resume after the child start completed")
 	}
 }

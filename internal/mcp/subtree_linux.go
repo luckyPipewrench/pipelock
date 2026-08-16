@@ -60,6 +60,12 @@ func enableSubreaper() error {
 // (ESRCH because it already died, EPERM because of a namespace boundary)
 // is handled the same way: skip and move on.
 func killAdoptedDescendants() {
+	// Same exclusion as the zombie reaper: a session that is mid-start has a
+	// live child and no claim on it yet, and this sweep signals whatever it
+	// finds unclaimed.
+	unlock := lockChildStart()
+	defer unlock()
+
 	pid := os.Getpid()
 	entries, err := os.ReadDir("/proc")
 	if err != nil {

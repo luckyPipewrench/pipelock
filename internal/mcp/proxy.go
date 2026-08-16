@@ -1474,7 +1474,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// spawn. Non-fatal on error - the later pgid-kill backstop still
 	// handles the common case.
 	if srErr := enableSubreaper(); srErr != nil {
-		_, _ = fmt.Fprintf(logW, "pipelock: warning: PR_SET_CHILD_SUBREAPER failed, grandchild subtree teardown will be incomplete: %v\n", srErr)
+		_, _ = fmt.Fprintf(logW, "pipelock: warning: session descendant cleanup degraded: PR_SET_CHILD_SUBREAPER failed (%v). Detached descendants can survive session exit and can block proxy shutdown by retaining inherited I/O.\n", srErr)
 	}
 
 	// Enable subreaper before starting the child so we adopt orphaned
@@ -1493,11 +1493,21 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}
 
+	// Start and claim as one step, so no sweep can see this child before its
+	// owner has registered it. The reaper started further down registers the
+	// same claim; the registry counts, so both releases are safe. Without this
+	// the window between fork and that reaper start is wide, and a concurrent
+	// session's sweep can reap this child and take the exit status Wait needs.
+	unlockStart := lockChildStart()
 	if err := cmd.Start(); err != nil {
+		unlockStart()
 		_ = serverErr.Close()
 		_ = serverErrW.Close()
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
 	}
+	releaseChild := protectDirectChild(cmd.Process.Pid)
+	unlockStart()
+	defer releaseChild()
 	_ = serverErrW.Close()
 	stderrDone := make(chan struct{})
 	go func() {

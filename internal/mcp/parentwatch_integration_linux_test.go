@@ -10,12 +10,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -247,6 +249,137 @@ func TestSessionExit_RealParentDeathReapsWholeTree(t *testing.T) {
 		if logBytes, readErr := os.ReadFile(filepath.Clean(filepath.Join(dir, "helper.log"))); readErr == nil {
 			t.Logf("helper output:\n%s", logBytes)
 		}
+	}
+}
+
+// TestSessionExit_SandboxTreeIsReaped drives the sandbox proxy entry point
+// through its real child process tree. The watch uses a controllable PPID so
+// the test can first prove the sandbox command and its detached descendant
+// exist, then trigger the same teardown production runs after reparenting.
+func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real sandbox proxy process tree")
+	}
+
+	dir := t.TempDir()
+	grandchildFile := filepath.Join(dir, "grandchild.pid")
+	serverScript := "setsid sleep 300 &\n" +
+		"echo $! > " + grandchildFile + "\n" +
+		"sleep 300\n"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	clientIn := newBlockingReader()
+	defer func() { _ = clientIn.Close() }()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", serverScript)
+	sc := testScannerWithAction(t, config.ActionWarn)
+	var logBuf syncBuffer
+	var parentDied atomic.Bool
+	opts := testOpts(sc)
+	opts.sessionExitForTest = &sessionExitTestHooks{watch: parentWatchOpts{
+		interval:  time.Millisecond,
+		startPPID: 4242,
+		getppid: func() int {
+			if parentDied.Load() {
+				return orphanedPPID
+			}
+			return 4242
+		},
+	}, grace: 50 * time.Millisecond}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxyWithSandbox(ctx, cmd, clientIn, io.Discard, &logBuf, opts)
+	}()
+
+	var grandchildPID int
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		pidBytes, err := os.ReadFile(filepath.Clean(grandchildFile))
+		if err == nil {
+			grandchildPID, _ = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+			if grandchildPID > 0 && cmd.Process != nil {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if grandchildPID <= 0 || cmd.Process == nil {
+		t.Fatalf("sandbox tree never came up (sandbox=%v grandchild=%d)", cmd.Process, grandchildPID)
+	}
+
+	tree := map[string]int{
+		"sandbox command":        cmd.Process.Pid,
+		"detached sandbox child": grandchildPID,
+	}
+	for label, pid := range tree {
+		if !processAlive(pid) {
+			t.Fatalf("%s (pid %d) was not alive before session exit", label, pid)
+		}
+	}
+
+	parentDied.Store(true)
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("sandbox proxy stayed alive after the spawning session exited")
+	}
+
+	waitForGone(t, tree, 10*time.Second)
+	if !strings.Contains(logBuf.String(), "spawning session exited") {
+		t.Errorf("missing session-exit explanation in operator log, got %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "terminating process tree") {
+		t.Errorf("missing sandbox process-tree teardown notice, got %q", logBuf.String())
+	}
+}
+
+func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real sandbox proxy process")
+	}
+
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientIn := newBlockingReader()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "touch "+readyFile+"; sleep 300")
+	sc := testScannerWithAction(t, config.ActionWarn)
+	var logBuf syncBuffer
+	opts := testOpts(sc)
+	opts.sessionExitForTest = liveSessionExitHooks()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxyWithSandbox(ctx, cmd, clientIn, io.Discard, &logBuf, opts)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(readyFile); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(readyFile); err != nil {
+		t.Fatalf("sandbox command never became ready: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("sandbox proxy exited while its session was alive: %v; log: %q", err, logBuf.String())
+	case <-time.After(250 * time.Millisecond):
+	}
+	if strings.Contains(logBuf.String(), "spawning session exited") {
+		t.Errorf("session-exit path ran against a live parent, got %q", logBuf.String())
+	}
+
+	_ = clientIn.Close()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("sandbox proxy did not stop after context cancellation")
 	}
 }
 

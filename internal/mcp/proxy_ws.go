@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -31,6 +32,15 @@ func RunWSProxy(
 	upstreamURL string,
 	opts MCPProxyOpts,
 ) error {
+	// Capture before upstream validation and dialing. If the spawning session
+	// exits during either step, the watcher must retain the original parent
+	// rather than observe PID 1 and become inert.
+	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
+	safeClientOut := &syncWriter{w: clientOut}
+	safeLogW := &syncWriter{w: logW}
+	ctx, stopSession, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
+	defer stopSession()
+
 	if opts.ContractServer == "" {
 		opts.ContractServer = mcpContractServerFromUpstream(upstreamURL)
 	}
@@ -52,9 +62,6 @@ func RunWSProxy(
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
 	}
 	defer recordMCPBaselineSample(opts, rec)
-
-	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := &syncWriter{w: logW}
 
 	wsClient, err := transport.NewWSClientWithDialer(innerCtx, upstreamURL, opts.DialContext)
 	if err != nil {
@@ -107,6 +114,7 @@ func RunWSProxy(
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
 	wsOpts.WarnContext = innerCtx
+	wsOpts.sessionExit = sessionExit
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -131,7 +139,7 @@ func RunWSProxy(
 	for {
 		msg, readErr := clientReader.ReadMessage()
 		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) {
+			if !errors.Is(readErr, io.EOF) && !(sessionExit.inProgress() && isSessionExitCloseErr(readErr)) {
 				stdinErr = fmt.Errorf("reading stdin: %w", readErr)
 			}
 			break

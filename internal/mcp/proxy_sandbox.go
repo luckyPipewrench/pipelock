@@ -24,7 +24,9 @@ import (
 // It retains the legacy plain-command entry point for tests and callers that
 // do not have a UID/GID map phase. Mapped sandbox launches must use
 // RunProxyWithSandboxLaunch so target start is gated on parent hardening.
-// The optional strict parameter enables subreaper for orphan cleanup.
+// Strict mode fails closed if orphan cleanup cannot be enabled. Every sandbox
+// proxy attempts the same cleanup so a detached child cannot outlive its
+// spawning session merely because the sandbox uses best-effort containment.
 func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
 	// Refuse a mapped command here rather than starting it ungated. This entry
 	// point calls Start directly, so a mapped launch would get neither the map
@@ -49,6 +51,10 @@ func RunProxyWithSandboxLaunch(ctx context.Context, launch *sandbox.PreparedSand
 }
 
 func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func() error, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
+	// Capture before pipe setup and sandbox startup. The sandbox command
+	// re-execs pipelock, then either execs the wrapped server or supervises it
+	// for bridge mode, so this proxy process still owns the spawning session.
+	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	if opts.Transport == "" {
 		opts.Transport = "mcp_stdio"
 	}
@@ -56,10 +62,13 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		opts.ContractServer = mcpContractServerFromCommand([]string{sandboxCmd.Path})
 	}
 	isStrict := len(strict) > 0 && strict[0]
-	if isStrict {
-		if err := sandbox.SetChildSubreaper(); err != nil {
+	subreaperEnabled := true
+	if err := enableSubreaper(); err != nil {
+		subreaperEnabled = false
+		if isStrict {
 			return fmt.Errorf("strict mode: failed to set child subreaper: %w", err)
 		}
+		_, _ = fmt.Fprintf(logW, "pipelock: warning: PR_SET_CHILD_SUBREAPER failed, sandbox subtree teardown will be incomplete: %v\n", err)
 	}
 	var rec session.Recorder
 	if opts.Store != nil {
@@ -82,6 +91,54 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 
 	if err := start(); err != nil {
 		return fmt.Errorf("starting sandboxed MCP server %q: %w", sandboxCmd.Path, err)
+	}
+	childPgid := captureChildPgid(sandboxCmd.Process.Pid)
+	if subreaperEnabled {
+		reaperDone := make(chan struct{})
+		defer close(reaperDone)
+		startAdoptedReaper(sandboxCmd.Process.Pid, reaperDone)
+	}
+
+	// The sandbox command is a subprocess tree just like the plain stdio
+	// command. In normal mode sandbox-init execs the server in place; with the
+	// bridge it remains a supervisor for the server. Either way, parent death
+	// needs the full drain and process-group teardown rather than a context-only
+	// cancellation.
+	waitDone := make(chan struct{})
+	sessionExit := &sessionExitState{}
+	sessionCtx, stopSession := context.WithCancel(ctx)
+	defer stopSession()
+	sessionOpts := startupParentWatch
+	sessionOpts.logW = safeLogW
+	sessionGrace := defaultParentExitGrace
+	if h := opts.sessionExitForTest; h != nil {
+		sessionOpts = h.watch
+		sessionOpts.logW = safeLogW
+		sessionGrace = h.grace
+	}
+	if sessionOpts.startPPID > orphanedPPID {
+		go runSessionBoundExit(sessionCtx, sessionOpts, sessionExitActions{
+			onSessionExit: sessionExit.begin,
+			stopIntake: func() {
+				if c, ok := clientIn.(io.Closer); ok {
+					_ = c.Close()
+				}
+			},
+			closeServerStdin: func() { _ = serverIn.Close() },
+			terminateTree: func() {
+				terminateProcessGroup(childPgid)
+				if sandboxCmd.Process != nil {
+					_ = sandboxCmd.Process.Kill()
+				}
+				// A descendant can retain stdout after it leaves the direct
+				// process. Releasing our read end lets ForwardScanned return so
+				// Wait and the post-exit orphan cleanup can run.
+				_ = serverOut.Close()
+			},
+			waitDone: waitDone,
+			grace:    sessionGrace,
+			logW:     safeLogW,
+		})
 	}
 
 	blockedCh := make(chan BlockedRequest, 16)
@@ -121,7 +178,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	// Build per-invocation opts with session-specific recorder.
 	inputOpts := opts
 	inputOpts.Rec = rec
-	inputOpts.WarnContext = ctx
+	inputOpts.WarnContext = sessionCtx
+	inputOpts.sessionExit = sessionExit
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -176,7 +234,12 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		_ = sandboxCmd.Process.Signal(os.Kill)
 	}
 
+	// Signal the original process group before Wait reaps its leader. A process
+	// group identifier is a numeric PID, so using it after Wait leaves a window
+	// where an empty group leader can be recycled into an unrelated group.
+	terminateProcessGroup(childPgid)
 	waitErr := sandboxCmd.Wait()
+	close(waitDone)
 
 	// Clean up sandbox child and temp dir.
 	if sandboxCmd.Process != nil {
@@ -184,9 +247,11 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	}
 	sandbox.CleanupSandboxCmd(sandboxCmd)
 
-	// Strict: reap orphaned descendants adopted by subreaper.
-	if isStrict {
-		sandbox.ReapOrphans()
+	// A sandbox child can create a new session and escape the original process
+	// group. The subreaper makes it ours after the direct child exits, so sweep
+	// it before returning instead of leaving an orphaned server alive.
+	if subreaperEnabled {
+		killAdoptedDescendants()
 	}
 
 	// Drain with timeout - detached descendants can hold pipes open.

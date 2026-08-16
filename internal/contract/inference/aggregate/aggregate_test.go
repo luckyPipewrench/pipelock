@@ -4,6 +4,7 @@
 package aggregate
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -246,6 +247,70 @@ func TestAggregate_ConfigValidationAndDefault(t *testing.T) {
 	_, err := Aggregate(entries(), AggregateConfig{WindowDuration: -time.Second})
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("Aggregate() error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestCaptureDropCountEncodings(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		detail any
+		want   int
+		wantOK bool
+	}{
+		{name: "raw_json", detail: json.RawMessage(`{"count":2}`), want: 2, wantOK: true},
+		{name: "bytes", detail: []byte(`{"count":4}`), want: 4, wantOK: true},
+		{name: "string", detail: `{"count":5}`, want: 5, wantOK: true},
+		{name: "map_count_int", detail: map[string]any{"count": 6}, want: 6, wantOK: true},
+		{name: "map_Count_int64", detail: map[string]any{"Count": int64(7)}, want: 7, wantOK: true},
+		{name: "map_float", detail: map[string]any{"count": 8.0}, want: 8, wantOK: true},
+		{name: "map_number", detail: map[string]any{"count": json.Number("9")}, want: 9, wantOK: true},
+		{name: "invalid_json", detail: json.RawMessage(`not-json`), wantOK: false},
+		{name: "map_bad_value", detail: map[string]any{"count": "nope"}, wantOK: false},
+		{name: "number_not_int", detail: map[string]any{"count": json.Number("1.5")}, wantOK: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := captureDropCount(tt.detail)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("captureDropCount(%v) = (%d, %v), want (%d, %v)", tt.detail, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestAggregate_EmptySessionCollidesWithSentinel(t *testing.T) {
+	base := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	got, err := Aggregate(entries(
+		entry(base, "", "GET", "https://example.com/a", "read", "allow", 1, 1),
+		entry(base, "(empty)", "GET", "https://example.com/b", "read", "allow", 1, 1),
+	), AggregateConfig{})
+	if err != nil {
+		t.Fatalf("Aggregate() error = %v", err)
+	}
+	if got.SessionCount != 1 {
+		t.Fatalf("SessionCount = %d, want 1 empty-session sentinel collision", got.SessionCount)
+	}
+}
+
+func TestPathFamiliesMissingHost(t *testing.T) {
+	if got := (Aggregates{}).PathFamilies("missing.example"); len(got) != 0 {
+		t.Fatalf("PathFamilies(missing) = %#v, want empty", got)
+	}
+}
+
+func TestOpportunitiesForUnknownScope(t *testing.T) {
+	s := newAggregateState(time.Hour)
+	s.ruleScope["mystery"] = "other"
+	if got := s.opportunitiesFor("mystery"); got != 0 {
+		t.Fatalf("opportunitiesFor(unknown) = %d, want 0", got)
+	}
+}
+
+func TestNormalizeEventRejectsEmptyHost(t *testing.T) {
+	_, ok := normalizeEvent(entry(time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC), "s1", "GET", "https:///", "read", "allow", 1, 1))
+	if ok {
+		t.Fatal("normalizeEvent accepted a URL with an empty host")
 	}
 }
 

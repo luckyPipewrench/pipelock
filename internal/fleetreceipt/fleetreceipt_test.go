@@ -671,6 +671,204 @@ func TestUnmarshalEnvelopeRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestSignStatementRejectsShortPrivateKey(t *testing.T) {
+	_, err := SignStatement(testStatement(), "fleet", ed25519.PrivateKey("short"))
+	if err == nil || !errors.Is(err, ErrInvalidEnvelope) || !strings.Contains(err.Error(), "private key length") {
+		t.Fatalf("SignStatement error = %v, want private key length rejection", err)
+	}
+}
+
+func TestSignStatementRejectsInvalidStatement(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	stmt := testStatement()
+	stmt.Type = "wrong"
+	_, err = SignStatement(stmt, "fleet", priv)
+	if err == nil || !errors.Is(err, ErrInvalidStatement) {
+		t.Fatalf("SignStatement error = %v, want invalid statement", err)
+	}
+}
+
+func TestSignStatementEmptyKeyIDUsesPublicKeyHex(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	env, err := SignStatement(testStatement(), "  ", priv)
+	if err != nil {
+		t.Fatalf("SignStatement: %v", err)
+	}
+	want := hex.EncodeToString(pub)
+	if env.Signatures[0].KeyID != want {
+		t.Fatalf("KeyID = %q, want public-key hex %q", env.Signatures[0].KeyID, want)
+	}
+}
+
+func TestVerifyRejectsInvalidJSON(t *testing.T) {
+	_, err := Verify([]byte(`{`), nil)
+	if err == nil || !errors.Is(err, ErrInvalidEnvelope) {
+		t.Fatalf("Verify error = %v, want invalid envelope JSON", err)
+	}
+	if strings.Contains(err.Error(), "payloadType") {
+		t.Fatalf("Verify error = %v, want unmarshal error not VerifyEnvelope payloadType", err)
+	}
+}
+
+func TestUnmarshalEnvelopeRejectsTypeMismatch(t *testing.T) {
+	_, err := UnmarshalEnvelope([]byte(`{"payloadType":1}`))
+	if err == nil || !errors.Is(err, ErrInvalidEnvelope) {
+		t.Fatalf("UnmarshalEnvelope error = %v, want type mismatch", err)
+	}
+}
+
+func TestParseStatementRejectsInvalidJSON(t *testing.T) {
+	_, err := ParseStatement([]byte(`{`))
+	if err == nil || !errors.Is(err, ErrInvalidStatement) {
+		t.Fatalf("ParseStatement error = %v, want invalid JSON", err)
+	}
+}
+
+func TestParseStatementRejectsTypeMismatch(t *testing.T) {
+	_, err := ParseStatement([]byte(`{"_type":1}`))
+	if err == nil || !errors.Is(err, ErrInvalidStatement) {
+		t.Fatalf("ParseStatement error = %v, want type mismatch", err)
+	}
+}
+
+func TestVerifyEnvelopeRejectsUnparseablePayload(t *testing.T) {
+	env := Envelope{
+		PayloadType: DssePayloadType,
+		Payload:     base64.StdEncoding.EncodeToString([]byte(`{`)),
+		Signatures:  []Signature{{KeyID: "k"}},
+	}
+	_, err := VerifyEnvelope(env, nil)
+	if err == nil || !errors.Is(err, ErrInvalidStatement) {
+		t.Fatalf("VerifyEnvelope error = %v, want unparseable payload", err)
+	}
+	if strings.Contains(err.Error(), "_type=") {
+		t.Fatalf("VerifyEnvelope error = %v, want parse error not Validate header check", err)
+	}
+}
+
+func TestPredicateValidateRejectsWindowParseAndObservedMismatch(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		edit func(*Predicate)
+		want string
+	}{
+		{
+			name: "window_start",
+			edit: func(p *Predicate) { p.ReportWindow.Start = "not-a-time" },
+			want: "reportWindow.start",
+		},
+		{
+			name: "window_end",
+			edit: func(p *Predicate) { p.ReportWindow.End = "not-a-time" },
+			want: "reportWindow.end must be an RFC3339",
+		},
+		{
+			name: "observed_mismatch",
+			edit: func(p *Predicate) { p.Completeness.ObservedActions = 1 },
+			want: "completeness.observedActions",
+		},
+		{
+			name: "received_at",
+			edit: func(p *Predicate) { p.SourceBatches[0].ReceivedAt = "not-a-time" },
+			want: "receivedAt",
+		},
+		{
+			name: "fraction_noncanonical",
+			edit: func(p *Predicate) { p.Completeness.MediatedFraction = "00" },
+			want: "decimal string",
+		},
+		{
+			name: "fraction_one_point_zero",
+			edit: func(p *Predicate) { p.Completeness.MediatedFraction = "1.0" },
+			want: "",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := testStatement().Predicate
+			tt.edit(&p)
+			err := p.Validate()
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want success", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !errors.Is(err, ErrInvalidPredicate) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateSubjectsRejectsMismatches(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		edit func(*Statement)
+		want string
+	}{
+		{
+			name: "count",
+			edit: func(s *Statement) { s.Subject = s.Subject[:1] },
+			want: "subject count",
+		},
+		{
+			name: "empty_name",
+			edit: func(s *Statement) { s.Subject[0].Name = " " },
+			want: "subject.name required",
+		},
+		{
+			name: "duplicate",
+			edit: func(s *Statement) {
+				s.Subject[1].Name = s.Subject[0].Name
+				s.Subject[1].Digest = s.Subject[0].Digest
+			},
+			want: "duplicate subject",
+		},
+		{
+			name: "unknown",
+			edit: func(s *Statement) { s.Subject[0].Name = "conductor-audit-batch:other" },
+			want: "does not match a source batch",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt := testStatement()
+			tt.edit(&stmt)
+			err := stmt.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !errors.Is(err, ErrInvalidStatement) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsUnitDecimalString(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		in   string
+		want bool
+	}{
+		{in: "0", want: true},
+		{in: "1", want: true},
+		{in: "0.5", want: true},
+		{in: "0.x", want: false},
+		{in: "1.0", want: true},
+		{in: "1.01", want: false},
+		{in: "2", want: false},
+	} {
+		if got := isUnitDecimalString(tt.in); got != tt.want {
+			t.Fatalf("isUnitDecimalString(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
 func testStatement() Statement {
 	start := time.Date(2026, 6, 13, 11, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	end := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)

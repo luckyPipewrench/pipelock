@@ -103,6 +103,85 @@ func TestHexdump(t *testing.T) {
 	}
 }
 
+func TestHexdumpEmptyAndWrapped(t *testing.T) {
+	got := Hexdump(strings.Repeat("A", 17))
+	if !strings.Contains(got, "00000000") || !strings.Contains(got, "00000010") {
+		t.Fatalf("expected second hexdump line, got:\n%s", got)
+	}
+	if !strings.Contains(got, "|AAAAAAAAAAAAAAAA|") || !strings.Contains(got, "|A|") {
+		t.Fatalf("expected ASCII gutter for wrapped dump, got:\n%s", got)
+	}
+}
+
+func TestSanitizePreservesPlainWhitespace(t *testing.T) {
+	got := Sanitize("a\tb\nc\rd")
+	if got.Suspicious {
+		t.Fatalf("tab/newline/cr marked suspicious: %+v", got)
+	}
+	if got.Safe != "a\tb\nc\rd" {
+		t.Fatalf("Safe = %q, want original whitespace preserved", got.Safe)
+	}
+}
+
+func TestSanitizeControlDELAndC1(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "del", input: "a\u007fb", want: "U+007F"},
+		{name: "c1", input: "a\u009fb", want: "U+009F"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Sanitize(tt.input)
+			if !got.Suspicious || !hasClass(got.Annotations, ClassControl) {
+				t.Fatalf("annotations = %+v, want control", got.Annotations)
+			}
+			if !strings.Contains(got.Safe, tt.want) {
+				t.Fatalf("Safe = %q, want %q", got.Safe, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeHostCleanASCII(t *testing.T) {
+	got := SanitizeHost("api.vendor.example")
+	if got.Suspicious {
+		t.Fatalf("clean host marked suspicious: %+v", got)
+	}
+	if got.PunycodeASCII != "api.vendor.example" || got.PunycodeUnicode != "api.vendor.example" {
+		t.Fatalf("punycode forms = %q/%q", got.PunycodeASCII, got.PunycodeUnicode)
+	}
+}
+
+func TestHasPunycodeLabel(t *testing.T) {
+	if !hasPunycodeLabel("xn--pple-43d.com") {
+		t.Fatal("missing punycode label on xn-- prefix")
+	}
+	if !hasPunycodeLabel("FOO.XN--ABC") {
+		t.Fatal("punycode prefix should be case-insensitive")
+	}
+	if hasPunycodeLabel("api.vendor.example") {
+		t.Fatal("plain host reported as punycode")
+	}
+}
+
+func TestHasNonASCII(t *testing.T) {
+	if !hasNonASCII("münchen.example") {
+		t.Fatal("non-ASCII host reported as ASCII")
+	}
+	if hasNonASCII("api.vendor.example") {
+		t.Fatal("ASCII host reported as non-ASCII")
+	}
+}
+
+func TestSentinelUnknownName(t *testing.T) {
+	got := sentinel('\u0378')
+	if !strings.Contains(got, "UNKNOWN") {
+		t.Fatalf("sentinel = %q, want UNKNOWN fallback", got)
+	}
+}
+
 func TestRawIdentityFuzzCorpus(t *testing.T) {
 	corpus := []string{"", "abc", "p\u0430ypal.com", "\u202E", "\u200B", string([]byte{0, 1, 0xff})}
 	for _, s := range corpus {

@@ -81,3 +81,71 @@ func TestReadSecurityBoundary(t *testing.T) {
 		}
 	})
 }
+
+func TestReadRejectsNonPositiveMaxBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, max := range []int64{0, -1} {
+		_, err := Read(path, Options{MaxBytes: max, DisallowedPerms: 0o037})
+		if err == nil || !strings.Contains(err.Error(), "max bytes must be positive") {
+			t.Fatalf("MaxBytes=%d error = %v, want positive-max rejection", max, err)
+		}
+	}
+}
+
+func TestReadMissingFile(t *testing.T) {
+	_, err := Read(filepath.Join(t.TempDir(), "missing"), Options{MaxBytes: 16, DisallowedPerms: 0o037})
+	if err == nil || !os.IsNotExist(err) {
+		t.Fatalf("error = %v, want missing-file rejection", err)
+	}
+}
+
+func TestReadBrokenSymlink(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "token")
+	if err := os.Symlink("no-such-target", link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Read(link, Options{MaxBytes: 16, DisallowedPerms: 0o037})
+	if err == nil || !strings.Contains(err.Error(), "resolve symlink") {
+		t.Fatalf("error = %v, want broken-symlink rejection", err)
+	}
+}
+
+func TestReadSymlinkToDirectory(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "token")
+	if err := os.Symlink("sub", link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Read(link, Options{MaxBytes: 16, DisallowedPerms: 0o037})
+	if err == nil || !strings.Contains(err.Error(), "regular") {
+		t.Fatalf("error = %v, want regular-file rejection", err)
+	}
+}
+
+func TestReadOpenPermissionDenied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open mode 000 files")
+	}
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	_, err := Read(path, Options{MaxBytes: 16, DisallowedPerms: 0o037})
+	if err == nil {
+		t.Fatal("expected open failure for mode 000")
+	}
+	if strings.Contains(err.Error(), "permissions") || strings.Contains(err.Error(), "max bytes") {
+		t.Fatalf("error = %v, want open failure not policy rejection", err)
+	}
+}

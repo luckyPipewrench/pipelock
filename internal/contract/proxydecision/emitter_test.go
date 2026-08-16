@@ -4,6 +4,7 @@
 package proxydecision
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const testSpanDigest = "sha256:" +
@@ -704,5 +706,95 @@ func TestEmit_UsesInjectedClock(t *testing.T) {
 	}
 	if !rcpt.Timestamp.Equal(time.Date(2026, 6, 5, 22, 0, 0, 0, time.UTC)) {
 		t.Errorf("Timestamp = %v, want injected clock value", rcpt.Timestamp)
+	}
+}
+
+func TestSanitizeFromRedactor(t *testing.T) {
+	if got := SanitizeFromRedactor(nil); got != nil {
+		t.Fatal("nil redactor should produce a nil sanitizer")
+	}
+	fn := SanitizeFromRedactor(func(_ context.Context, text string) scanner.TextDLPResult {
+		return scanner.TextDLPResult{Clean: text != "leak"}
+	})
+	if fn == nil {
+		t.Fatal("expected sanitizer wrapper")
+	}
+	if !fn("ok") {
+		t.Fatal("clean text reported dirty")
+	}
+	if fn("leak") {
+		t.Fatal("dirty text reported clean")
+	}
+}
+
+func TestEmit_EventIDError(t *testing.T) {
+	rec := &captureRecorder{}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	em := NewEmitter(EmitterConfig{
+		Recorder: rec,
+		Signer:   NewKeyedSigner(priv),
+		EventID:  func() (string, error) { return "", errors.New("id boom") },
+	})
+	err = em.Emit(validDecision())
+	if err == nil || !strings.Contains(err.Error(), "generate proxy_decision event id") {
+		t.Fatalf("Emit error = %v, want event-id failure", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("recorded %d entries on event-id failure", len(rec.entries))
+	}
+}
+
+func TestEmit_SignerError(t *testing.T) {
+	rec := &captureRecorder{}
+	em := NewEmitter(EmitterConfig{
+		Recorder: rec,
+		Signer:   stubSigner{err: errors.New("sign boom")},
+	})
+	err := em.Emit(validDecision())
+	if err == nil || !strings.Contains(err.Error(), "sign proxy_decision receipt") {
+		t.Fatalf("Emit error = %v, want signer failure", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("recorded %d entries on signer failure", len(rec.entries))
+	}
+}
+
+func TestEmit_SignatureSizeMismatch(t *testing.T) {
+	rec := &captureRecorder{}
+	em := NewEmitter(EmitterConfig{
+		Recorder: rec,
+		Signer:   stubSigner{sig: []byte("short")},
+	})
+	err := em.Emit(validDecision())
+	if err == nil || !errors.Is(err, ErrSignatureSize) {
+		t.Fatalf("Emit error = %v, want ErrSignatureSize", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("recorded %d entries on signature-size failure", len(rec.entries))
+	}
+}
+
+type stubSigner struct {
+	keyID string
+	sig   []byte
+	err   error
+}
+
+func (s stubSigner) KeyID() string { return s.keyID }
+
+func (s stubSigner) Sign([]byte) ([]byte, error) { return s.sig, s.err }
+
+func validDecision() Decision {
+	return Decision{
+		ActionType:    "http_request",
+		Transport:     "forward",
+		Target:        "https://x.example/a",
+		Verdict:       "allow",
+		WinningSource: SourceScanner,
+		PolicySources: []string{SourceScanner},
+		PolicyHash:    testSpanDigest,
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEnvelope_Serialize(t *testing.T) {
@@ -310,5 +311,129 @@ func TestParse_RejectsNonIntegerHop(t *testing.T) {
 	input := `v=1, act="read", vd="allow", rid="id-str-hop", ts=1712345678, hop="three"`
 	if _, err := Parse(input); err == nil {
 		t.Error("Parse should reject non-integer hop value")
+	}
+}
+
+func TestParse_RejectsInnerListHop(t *testing.T) {
+	t.Parallel()
+	input := `v=1, act="read", vd="allow", rid="id-list-hop", ts=1712345678, hop=(1)`
+	_, err := Parse(input)
+	if err == nil || !strings.Contains(err.Error(), "unexpected member type") {
+		t.Fatalf("Parse error = %v, want hop member-type rejection", err)
+	}
+}
+
+func TestEnvelope_OptionalFieldsRoundTrip(t *testing.T) {
+	t.Parallel()
+	env := Envelope{
+		Version:        1,
+		Action:         testActionRead,
+		Verdict:        testVerdictAllow,
+		ActorAuth:      ActorAuthBound,
+		ReceiptID:      "id-opt",
+		Timestamp:      1712345678,
+		PolicyHash:     []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		SessionTaint:   "taint-1",
+		TaskID:         "task-1",
+		AuthorityKind:  "hitl",
+		AuthorityRef:   "ticket-9",
+		RequiresReauth: true,
+		Hop:            2,
+	}
+	wire, err := env.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	for _, key := range []string{"taint=", "task=", "auth=", "authr=", "reauth", "hop=2"} {
+		if !strings.Contains(wire, key) {
+			t.Fatalf("serialized envelope missing %q: %s", key, wire)
+		}
+	}
+	got, err := Parse(wire)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.SessionTaint != env.SessionTaint || got.TaskID != env.TaskID ||
+		got.AuthorityKind != env.AuthorityKind || got.AuthorityRef != env.AuthorityRef ||
+		got.RequiresReauth != env.RequiresReauth || got.Hop != env.Hop {
+		t.Fatalf("parsed optional fields = %+v, want %+v", got, env)
+	}
+}
+
+func TestEnvelope_ToMCPMetaOptionalFields(t *testing.T) {
+	t.Parallel()
+	meta := Envelope{
+		Version:        1,
+		Action:         testActionRead,
+		Verdict:        testVerdictAllow,
+		SessionTaint:   "taint-1",
+		TaskID:         "task-1",
+		AuthorityKind:  "hitl",
+		AuthorityRef:   "ticket-9",
+		RequiresReauth: true,
+		Hop:            4,
+	}.ToMCPMeta()
+	if meta["taint"] != "taint-1" || meta["task"] != "task-1" || meta["auth"] != "hitl" || meta["authr"] != "ticket-9" {
+		t.Fatalf("optional string fields = %#v", meta)
+	}
+	if meta["reauth"] != true {
+		t.Fatalf("reauth = %v, want true", meta["reauth"])
+	}
+	if meta["hop"] != 4 {
+		t.Fatalf("hop = %v, want 4", meta["hop"])
+	}
+}
+
+func TestParseActorRejectsEmptyQueryAndBareDomain(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: "  ", want: "actor must not be empty"},
+		{name: "bare_domain", raw: "spiffe://trust.example", want: "workload path must not be empty"},
+		{name: "query", raw: "spiffe://trust.example/agent/x?q=1", want: "query or fragment"},
+		{name: "fragment", raw: "spiffe://trust.example/agent/x#frag", want: "query or fragment"},
+		{name: "bad_percent", raw: "spiffe://trust.example/%zz", want: "parse SPIFFE actor"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseActor(tt.raw)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ParseActor(%q) = %v, want %q", tt.raw, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidTrustDomainRejectsIPv4(t *testing.T) {
+	t.Parallel()
+	if IsValidTrustDomain("192.0.2.1") {
+		t.Fatal("IPv4 trust domain accepted")
+	}
+	if !IsValidTrustDomain("trust.example") {
+		t.Fatal("valid DNS trust domain rejected")
+	}
+}
+
+func TestFormatActorRejectsInvalidExistingSPIFFE(t *testing.T) {
+	t.Parallel()
+	_, err := FormatActor("spiffe://trust.example", ActorFormatSPIFFE, "trust.example")
+	if err == nil || !strings.Contains(err.Error(), "workload path must not be empty") {
+		t.Fatalf("FormatActor error = %v, want invalid existing SPIFFE", err)
+	}
+}
+
+func TestNewReplayCacheUsesDefaults(t *testing.T) {
+	t.Parallel()
+	c := NewReplayCache(0, 0)
+	if c == nil || c.window != 5*time.Minute || c.max != 10000 {
+		t.Fatalf("defaults = %+v", c)
+	}
+	if err := c.CheckAndStore("n1", time.Time{}); err != nil {
+		t.Fatalf("CheckAndStore: %v", err)
+	}
+	if err := c.CheckAndStore("n1", time.Time{}); err == nil || !strings.Contains(err.Error(), "replay") {
+		t.Fatalf("second store error = %v, want replay", err)
 	}
 }

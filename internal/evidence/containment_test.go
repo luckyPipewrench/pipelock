@@ -219,6 +219,94 @@ func TestAssessContainmentUsesOptionNowForCapsuleExpiry(t *testing.T) {
 	}
 }
 
+func TestAssessContainmentRejectsUntrustedKeyLength(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	capsule := validContainmentCapsule(t, priv, posture.ContainmentEvidence{
+		Mode:                     posture.ContainmentModeKernelNFTOwnerMatch,
+		BoundaryVerified:         true,
+		ProbeRefusedDirectEgress: true,
+		KernelRuleHash:           strings.Repeat("a", 64),
+		TargetUID:                "966",
+	})
+	got := AssessContainment(ContainmentAssessmentOptions{
+		Capsule:    capsule,
+		TrustedKey: ed25519.PublicKey("short"),
+		Now:        capsule.GeneratedAt.Add(time.Second),
+	})
+	if got.Grade != ContainUnknown || got.AllowClaim {
+		t.Fatalf("assessment = %+v, want unknown no claim", got)
+	}
+	if len(got.Reasons) == 0 || got.Reasons[0] != "posture signer key is not trusted" {
+		t.Fatalf("reasons = %v, want untrusted signer key", got.Reasons)
+	}
+}
+
+func TestFormatContainmentAssessmentGrades(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   ContainmentAssessment
+		want string
+	}{
+		{
+			name: "kernel_enforced",
+			in:   ContainmentAssessment{Grade: ContainKernelEnforced, CapsuleID: "abc", Window: "w"},
+			want: "KERNEL-ENFORCED",
+		},
+		{
+			name: "proxy_env",
+			in:   ContainmentAssessment{Grade: ContainProxyEnv},
+			want: "PROXY-ENV",
+		},
+		{
+			name: "unknown",
+			in:   ContainmentAssessment{Grade: ContainUnknown},
+			want: "UNKNOWN",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatContainmentAssessment(tt.in)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("format = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCapsuleIDFallbacks(t *testing.T) {
+	if got := capsuleID(nil); got != "unknown" {
+		t.Fatalf("nil capsule ID = %q, want unknown", got)
+	}
+	if got := capsuleID(&posture.Capsule{}); got != "unknown" {
+		t.Fatalf("empty signature ID = %q, want unknown", got)
+	}
+	if got := capsuleID(&posture.Capsule{Signature: "abcd"}); got != "abcd" {
+		t.Fatalf("short signature ID = %q, want identity", got)
+	}
+}
+
+func TestDecodePostureKey(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	got, err := DecodePostureKey(hex.EncodeToString(pub))
+	if err != nil {
+		t.Fatalf("DecodePostureKey(valid) = %v", err)
+	}
+	if !bytes.Equal(got, pub) {
+		t.Fatalf("decoded key mismatch")
+	}
+	if _, err := DecodePostureKey("zz"); err == nil || !strings.Contains(err.Error(), "invalid byte") {
+		t.Fatalf("DecodePostureKey(invalid hex) = %v, want hex decode error", err)
+	}
+	if _, err := DecodePostureKey("abcd"); err == nil || !strings.Contains(err.Error(), "posture key length") {
+		t.Fatalf("DecodePostureKey(short) = %v, want length error", err)
+	}
+}
+
 func validContainmentCapsule(t *testing.T, priv ed25519.PrivateKey, ev posture.ContainmentEvidence) *posture.Capsule {
 	t.Helper()
 	capsule, err := posture.Emit(config.Defaults(), posture.Options{

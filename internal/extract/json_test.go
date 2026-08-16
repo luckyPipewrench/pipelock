@@ -122,3 +122,68 @@ func TestAllStringsFromJSON_NumericAndBool(t *testing.T) {
 		t.Error("missing float value 3.14")
 	}
 }
+
+func TestAllStringsFromJSONResult_ReportsTruncation(t *testing.T) {
+	raw := nestedJSON(maxExtractDepth + 6)
+	got := AllStringsFromJSONResult(raw)
+	if !got.Truncated {
+		t.Fatal("expected Truncated when nesting exceeds maxExtractDepth")
+	}
+	if len(got.Strings) == 0 {
+		t.Fatal("expected outer keys before the depth cap")
+	}
+	for _, s := range got.Strings {
+		if s == "deep" {
+			t.Fatal(`extracted "deep" past maxExtractDepth`)
+		}
+	}
+
+	shallow := AllStringsFromJSONResult(json.RawMessage(`{"a":"ok"}`))
+	if shallow.Truncated {
+		t.Fatal("did not expect Truncated on shallow JSON")
+	}
+}
+
+func TestAllStringsFromJSONOrderedResult_NumbersAndBools(t *testing.T) {
+	got := AllStringsFromJSONOrderedResult(json.RawMessage(`[true,false,42,3.5]`))
+	want := []string{"true", "false", "42", "3.5"}
+	if len(got.Strings) != len(want) {
+		t.Fatalf("strings = %#v, want %#v", got.Strings, want)
+	}
+	for i := range want {
+		if got.Strings[i] != want[i] {
+			t.Fatalf("strings[%d] = %q, want %q", i, got.Strings[i], want[i])
+		}
+	}
+	if got.Truncated {
+		t.Fatal("did not expect Truncated on a flat array")
+	}
+}
+
+func TestAllStringsFromJSONOrderedResult_DepthCapOmitsInnerTokens(t *testing.T) {
+	raw := nestedJSON(maxExtractDepth + 2)
+	got := AllStringsFromJSONOrderedResult(raw)
+	if !got.Truncated {
+		t.Fatal("expected Truncated when ordered extraction exceeds maxExtractDepth")
+	}
+	for _, s := range got.Strings {
+		if s == "deep" {
+			t.Fatal(`ordered extraction kept "deep" past maxExtractDepth`)
+		}
+	}
+	if len(got.Strings) == 0 {
+		t.Fatal("expected keys from levels inside the depth cap")
+	}
+}
+
+func nestedJSON(depth int) json.RawMessage {
+	var b strings.Builder
+	for i := 0; i < depth; i++ {
+		b.WriteString(`{"a":`)
+	}
+	b.WriteString(`"deep"`)
+	for i := 0; i < depth; i++ {
+		b.WriteString(`}`)
+	}
+	return json.RawMessage(b.String())
+}

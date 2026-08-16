@@ -136,8 +136,12 @@ func TestRejectCrossLanguageAmbiguity(t *testing.T) {
 		{name: "negative integer below JavaScript exact range", input: []byte(`{"count":-9007199254740993}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := RejectUnsafeNumbers(tc.input); err == nil {
+			err := RejectUnsafeNumbers(tc.input)
+			if err == nil {
 				t.Fatal("expected ambiguous JSON to be rejected")
+			}
+			if !strings.Contains(err.Error(), "exact range") {
+				t.Fatalf("RejectUnsafeNumbers() = %v, want exact-range error", err)
 			}
 		})
 	}
@@ -149,5 +153,45 @@ func TestRejectCrossLanguageAmbiguity(t *testing.T) {
 	}
 	if err := RejectDuplicateKeys([]byte(`{"count":18446744073709551615}`)); err != nil {
 		t.Fatalf("generic duplicate scanner rejected a legitimate uint64: %v", err)
+	}
+}
+
+func TestRejectUnsafeNumbers_InvalidUTF8(t *testing.T) {
+	t.Parallel()
+	err := RejectUnsafeNumbers([]byte{0xff})
+	if err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("RejectUnsafeNumbers(invalid UTF-8) = %v, want UTF-8 error", err)
+	}
+}
+
+func TestRejectUnsafeNumbers_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	err := RejectUnsafeNumbers([]byte(`{"a": tru}`))
+	if err == nil {
+		t.Fatal("RejectUnsafeNumbers accepted malformed JSON")
+	}
+	if strings.Contains(err.Error(), "UTF-8") || strings.Contains(err.Error(), "exact range") {
+		t.Fatalf("RejectUnsafeNumbers() = %v, want decoder parse error", err)
+	}
+}
+
+func TestRejectUnsafeNumbers_InvalidNumberToken(t *testing.T) {
+	t.Parallel()
+	err := RejectUnsafeNumbers([]byte("1e1000000"))
+	if err == nil {
+		t.Fatal("RejectUnsafeNumbers accepted a non-finite JSON number")
+	}
+	if !strings.Contains(err.Error(), "invalid JSON number") {
+		t.Fatalf("RejectUnsafeNumbers() = %v, want invalid JSON number", err)
+	}
+}
+
+func TestRejectDuplicateKeys_DepthBoundedMessage(t *testing.T) {
+	t.Parallel()
+	depth := MaxNestingDepth + 1
+	deep := strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth)
+	err := RejectDuplicateKeys([]byte(deep))
+	if err == nil || !strings.Contains(err.Error(), "nesting exceeds maximum depth") {
+		t.Fatalf("RejectDuplicateKeys(over-deep) = %v, want nesting-depth error", err)
 	}
 }

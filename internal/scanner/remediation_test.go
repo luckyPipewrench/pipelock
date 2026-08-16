@@ -104,12 +104,12 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 	}{
 		{"cross-request entropy", AuditCrossRequestEntropy, "cross-request entropy exceeded", "bits_per_window", false},
 		{"response integrity", AuditResponseScan, "compressed response cannot be scanned", "scan-integrity failure", false},
-		{"media policy", AuditMediaPolicy, "image exceeds limit", "max_image_bytes", false},
+		{"media policy", AuditMediaPolicy, "image exceeds limit", "decompression-bomb", false},
 		{"request policy", AuditRequestPolicy, "body exceeds max_body_bytes", "request_body_scanning.max_body_bytes", false},
-		{"reverse submit", AuditReverseSubmit, "method not in allowed_methods", "reverse_proxy.allowed_methods", false},
+		{"reverse submit", AuditReverseSubmit, "method not in allowed_methods", "add only that method", false},
 		{"redaction", AuditRedaction, "non_json_body", "allowlist_unparseable_routes", false},
 		{"a2a", AuditA2AScan, "invalid JSON", "no exemption knob", false},
-		{"agent budget", AuditAgentBudget, "request budget exceeded", "max_requests_per_session", false},
+		{"agent budget", AuditAgentBudget, "request budget exceeded", "request count is expected", false},
 		{"session anomaly", AuditSessionAnomaly, "baseline_deviation", "baseline show", false},
 		{"query entropy", ScannerEntropy, "high entropy query value", "query_entropy_param_exclusions", false},
 		{"denial of wallet", ScannerDenialOfWallet, "tool call limit exceeded", "max_tool_calls_per_session", false},
@@ -573,6 +573,64 @@ func TestOperatorHintForNonOverridableSSRFReasonNeverSuggestsAllowlist(t *testin
 			}
 			if !tt.isMetadata && mentionsMetadata {
 				t.Fatalf("non-metadata non-overridable block must not claim it is an instance-metadata endpoint, got %q", hint)
+			}
+		})
+	}
+}
+
+func TestOperatorHintForKnownAndUnknown(t *testing.T) {
+	t.Parallel()
+
+	got := OperatorHintFor(ScannerBodyDLP)
+	if got == "" || !strings.Contains(got, "suppress:") {
+		t.Fatalf("OperatorHintFor(body_dlp) = %q, want suppress: knob", got)
+	}
+	if OperatorHintFor("nonexistent") != "" {
+		t.Fatal("unknown label must return empty operator hint")
+	}
+}
+
+func TestGuidanceForResultRemainingReasonRoutes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		label  string
+		reason string
+		want   string
+	}{
+		{"reverse allowed paths", AuditReverseSubmit, "path not in allowed_paths", "allowed_paths[].exact"},
+		{"reverse body cap", AuditReverseSubmit, "body exceeds submit limit", "submit gate enforces their minimum"},
+		{"reverse raw path", AuditReverseSubmit, "raw path is not canonical", "encoded traversal"},
+		{"response inflight", AuditResponseScan, "size-exempt response scan inflight limit", "size_exempt_scan_max_inflight_bytes"},
+		{"response size-exempt", AuditResponseScan, "size-exempt response too large", "size_exempt_scan_max_bytes"},
+		{"response oversized", AuditResponseScan, "oversized upstream body", "transport response ceiling"},
+		{"media audio", AuditMediaPolicy, "audio stripped from request", "strip_audio: false"},
+		{"media video", AuditMediaPolicy, "video stripped from request", "strip_video: false"},
+		{"media images", AuditMediaPolicy, "images stripped from request", "strip_images: false"},
+		{"media type", AuditMediaPolicy, "image/webp not in allowed list", "SVG remains unsupported"},
+		{"media parse", AuditMediaPolicy, "media parse error", "unvalidated media payload"},
+		{"request unreadable", AuditRequestPolicy, "request body could not be inspected", "cannot be forwarded intact"},
+		{"a2a hostname", AuditA2AScan, "hostname exfiltration in card", "no A2A suppression knob"},
+		{"a2a url ssrf", AuditA2AScan, "url/ssrf finding in message", "before that field is consulted"},
+		{"a2a injection", AuditA2AScan, "injection: ignore previous", "intentionally audit-only"},
+		{"agent domain budget", AuditAgentBudget, "domain budget exceeded", "destination diversity"},
+		{"agent byte budget", AuditAgentBudget, "byte budget exceeded", "response volume"},
+		{"session domain burst", AuditSessionAnomaly, "domain_burst over window", "destination burst is expected"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := GuidanceForResult(tt.label, tt.reason)
+			if !ok {
+				t.Fatalf("GuidanceForResult(%q, %q) not found", tt.label, tt.reason)
+			}
+			if got == remediationGuidance[tt.label] {
+				t.Fatalf("GuidanceForResult(%q, %q) fell through to label-only guidance", tt.label, tt.reason)
+			}
+			if !strings.Contains(got.OperatorKnob, tt.want) {
+				t.Fatalf("OperatorKnob = %q, want substring %q", got.OperatorKnob, tt.want)
 			}
 		})
 	}

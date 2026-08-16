@@ -50,6 +50,93 @@ func TestRequestPolicy_ForwardBatch_BlocksWrappedOperation(t *testing.T) {
 	assertRequestPolicyBlock(t, w)
 }
 
+func TestApplyRequestPolicy_BatchUnreadBodyFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	cfg := batchReqPolicyConfig()
+	cfg.RequestPolicy.OnOpaqueOperation = config.ActionBlock
+	cfg.RequestPolicy.OnParseError = config.ActionAllow
+	p := newTestProxyWithConfig(t, cfg)
+
+	got := p.applyRequestPolicy(requestPolicyInput{
+		Host:     rpTestHost,
+		Method:   http.MethodPost,
+		Path:     "/v1.0/$batch",
+		BodyRead: false,
+	})
+	if !got.Block {
+		t.Fatal("unread batch body was allowed")
+	}
+	if got.Reason != "batch body could not be inspected" {
+		t.Fatalf("unread batch reason = %q", got.Reason)
+	}
+}
+
+func TestApplyRequestPolicy_BatchUnparseableBodyFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	cfg := batchReqPolicyConfig()
+	cfg.RequestPolicy.OnOpaqueOperation = config.ActionAllow
+	cfg.RequestPolicy.OnParseError = config.ActionBlock
+	p := newTestProxyWithConfig(t, cfg)
+
+	got := p.applyRequestPolicy(requestPolicyInput{
+		Host:     rpTestHost,
+		Method:   http.MethodPost,
+		Path:     "/v1.0/$batch",
+		Body:     []byte(`{"requests":`),
+		BodyRead: true,
+	})
+	if !got.Block {
+		t.Fatal("unparseable batch body was allowed")
+	}
+	if got.Reason != "batch body could not be inspected" {
+		t.Fatalf("unparseable batch reason = %q", got.Reason)
+	}
+}
+
+func TestApplyRequestPolicy_BatchMatchesBaseMethodWhenOverrideMisses(t *testing.T) {
+	t.Parallel()
+
+	cfg := batchReqPolicyConfig()
+	cfg.RequestPolicy.OnOpaqueOperation = config.ActionBlock
+	cfg.RequestPolicy.OnParseError = config.ActionAllow
+	cfg.RequestPolicy.Batch[0].Route.Methods = []string{http.MethodPost}
+	p := newTestProxyWithConfig(t, cfg)
+
+	h := http.Header{}
+	h.Set("X-HTTP-Method-Override", http.MethodGet)
+	got := p.applyRequestPolicy(requestPolicyInput{
+		Host:     rpTestHost,
+		Method:   http.MethodPost,
+		Path:     "/v1.0/$batch",
+		Headers:  h,
+		BodyRead: false,
+	})
+	if !got.Block {
+		t.Fatal("POST batch with GET override was allowed")
+	}
+	if got.Reason != "batch body could not be inspected" {
+		t.Fatalf("override batch reason = %q", got.Reason)
+	}
+}
+
+func TestApplyRequestPolicy_BatchBenignEnvelopeAllows(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProxyWithConfig(t, batchReqPolicyConfig())
+	got := p.applyRequestPolicy(requestPolicyInput{
+		Host:     rpTestHost,
+		Method:   http.MethodPost,
+		Path:     "/v1.0/$batch",
+		Body:     []byte(`{"requests":[{"id":"1","method":"GET","url":"/v1.0/me/messages"}]}`),
+		BodyRead: true,
+	})
+	if got.Block {
+		t.Fatalf("benign batch blocked: %+v", got)
+	}
+}
+
 func TestRequestPolicy_ForwardBatch_BenignForwards(t *testing.T) {
 	t.Parallel()
 	cfg := batchReqPolicyConfig()

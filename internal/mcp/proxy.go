@@ -1784,6 +1784,28 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		_ = cmd.Process.Kill()
 	}
 
+	// Tear the child's process group down BEFORE Wait, while its identifier is
+	// still tied to a live child and therefore cannot have been recycled.
+	//
+	// This has to happen somewhere, and after Wait is not an option: the kernel
+	// may reuse the group id the moment the leader is reaped, so a late signal
+	// can land on an unrelated group. Omitting it entirely leaks descendants on
+	// a NORMAL exit, because the adopted-descendant sweep below is a no-op off
+	// Linux and, on Linux, only finds processes the subreaper adopted - which
+	// requires enableSubreaper to have succeeded, and its failure is non-fatal.
+	//
+	// Doing it here is safe for the ordinary case: the server has already
+	// closed its output to reach this point, and terminateProcessGroup sends
+	// SIGTERM and allows a grace period before escalating, so a child still
+	// flushing gets the same chance it had when this ran after Wait.
+	processExit.terminate(
+		func() { terminateProcessGroup(childPgid) },
+		// Unreachable in practice: nothing can have started reaping before
+		// this call. Kept honest rather than assuming - if a reap somehow is
+		// in flight, no raw identifier may be signalled.
+		func() bool { return false },
+	)
+
 	// cmd.Wait permanently retires raw numeric process identifiers from the
 	// handoff. A concurrent session or context teardown can still use the Go
 	// process handle for the direct child, but can never signal its PID or PGID.
@@ -1841,7 +1863,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		case <-time.After(sessionGrace):
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after session teardown\n")
 		}
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
+		// Name the actual cause. Reusing "upstream_closed" here would attribute
+		// a session teardown to the server having closed the connection, so the
+		// receipt would record the wrong reason for an aborted request.
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "session_exit")
 	} else {
 		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 		<-inputDone

@@ -339,11 +339,35 @@ func logSessionExitAsync(logW io.Writer) {
 	logAsync(logW, "pipelock: spawning session exited; shutting down MCP proxy\n")
 }
 
+// logFlushGrace bounds how long an operator message may delay teardown. A
+// healthy writer completes far inside it; a wedged one costs at most this.
+const logFlushGrace = time.Second
+
+// logAsync emits an operator message without letting a blocked writer stall
+// teardown, and without silently dropping the message.
+//
+// Both failure directions are real. Writing synchronously lets a blocked log
+// pipe - including one held by a stalled stderr copy - defer descriptor
+// closure, cancellation and process termination indefinitely. But writing
+// fire-and-forget loses the line whenever the process finishes first, and that
+// line is the only explanation an operator ever gets for why their MCP server
+// was killed; a security control that tears down a process tree silently is
+// indistinguishable from a crash.
+//
+// So write from a goroutine, then wait a bounded moment for it. The message
+// always lands for a working writer, and a wedged writer delays teardown by at
+// most logFlushGrace instead of forever.
 func logAsync(logW io.Writer, format string, args ...any) {
 	if logW == nil {
 		return
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_, _ = fmt.Fprintf(logW, format, args...)
 	}()
+	select {
+	case <-done:
+	case <-time.After(logFlushGrace):
+	}
 }

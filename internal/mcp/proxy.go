@@ -1784,27 +1784,22 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		_ = cmd.Process.Kill()
 	}
 
-	// Tear the child's process group down BEFORE Wait, while its identifier is
-	// still tied to a live child and therefore cannot have been recycled.
+	// A numeric process-group teardown is deliberately NOT performed here.
 	//
-	// This has to happen somewhere, and after Wait is not an option: the kernel
-	// may reuse the group id the moment the leader is reaped, so a late signal
-	// can land on an unrelated group. Omitting it entirely leaks descendants on
-	// a NORMAL exit, because the adopted-descendant sweep below is a no-op off
-	// Linux and, on Linux, only finds processes the subreaper adopted - which
-	// requires enableSubreaper to have succeeded, and its failure is non-fatal.
+	// Moving it before Wait was tried, to keep the group identifier tied to a
+	// live child so it could not have been recycled. It is wrong: reaching this
+	// point is the ORDINARY exit path, and terminateProcessGroup signals the
+	// group and then escalates to SIGKILL, so every clean shutdown would kill a
+	// server that was still finishing. Reproduced by a sibling proxy test that
+	// passes alone and fails once the package runs together.
 	//
-	// Doing it here is safe for the ordinary case: the server has already
-	// closed its output to reach this point, and terminateProcessGroup sends
-	// SIGTERM and allows a grace period before escalating, so a child still
-	// flushing gets the same chance it had when this ran after Wait.
-	processExit.terminate(
-		func() { terminateProcessGroup(childPgid) },
-		// Unreachable in practice: nothing can have started reaping before
-		// this call. Kept honest rather than assuming - if a reap somehow is
-		// in flight, no raw identifier may be signalled.
-		func() bool { return false },
-	)
+	// After Wait is also unavailable: the kernel may reuse the group id as soon
+	// as the leader is reaped, so a late signal can land on an unrelated group.
+	//
+	// That leaves parentage-based cleanup, which needs no numeric identifier.
+	// It is complete on Linux whenever the subreaper is active, and its absence
+	// on other platforms is a real limitation rather than something this
+	// signal could safely close.
 
 	// cmd.Wait permanently retires raw numeric process identifiers from the
 	// handoff. A concurrent session or context teardown can still use the Go

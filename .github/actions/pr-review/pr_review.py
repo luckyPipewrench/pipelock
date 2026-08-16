@@ -81,9 +81,20 @@ REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 RUBRIC_VERSION = "2026-08-14.1"
 STATUS_MARKER = "pr-review-status:v1"
+# A separate marker so the compact record of published findings never has to
+# fit on the status line, and so a parser for one cannot be confused by the
+# other. The ledger is continuity state; the status marker is the verdict.
+LEDGER_MARKER = "pr-review-ledger:v1"
+# A ledger entry is a claim to re-check, not prose to republish, so each
+# field is clipped hard. Twelve entries is more than any review has
+# published, and the cap keeps the comment well inside its size limit.
+MAX_LEDGER_ENTRIES = 24
+MAX_LEDGER_TITLE = 160
 NOTICE_MARKER = "pr-review-notice:v1"
 STATUS_MARKER_REQUIRED_FIELDS = frozenset({"state", "identity", "mode", "findings"})
-STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"model"}
+# Older markers carry fewer fields. They are still readable, and simply do
+# not qualify as a baseline, which is the safe direction.
+STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"model", "reviewed_head", "scope"}
 FINDING_FINGERPRINTS_RE = re.compile(r"(?:[0-9a-f]{12}(?:,[0-9a-f]{12})*)?")
 
 PUBLISHED_REVIEW_STATES = frozenset({"already-running", "clean", "failed", "findings", "partial", "superseded"})
@@ -948,6 +959,17 @@ def _running_marker_is_stale(comment: dict[str, Any]) -> bool:
     return age > datetime.timedelta(minutes=STALE_RUNNING_MINUTES)
 
 
+def ledger_claim(finding: Finding) -> tuple[str, str]:
+    """The exact path and title a ledger stores, so both sides agree.
+
+    The fingerprint used the full values while the ledger stored clipped ones,
+    so any long path or title produced a record that failed its own integrity
+    check and forced a full review forever after. Bounding here means the
+    fingerprint describes what was actually written down.
+    """
+    return finding.path[:200], " ".join(finding.title.split())[:MAX_LEDGER_TITLE]
+
+
 def finding_fingerprint(finding: Finding) -> str:
     """Identify a finding across runs without depending on its line number.
 
@@ -955,8 +977,8 @@ def finding_fingerprint(finding: Finding) -> str:
     would make every finding look new after any push. Path, severity and the
     normalized title are what a reader recognizes as the same finding.
     """
-    title = " ".join(finding.title.lower().split())
-    return hashlib.sha256(f"{finding.path}\x00{finding.severity}\x00{title}".encode()).hexdigest()[:12]
+    path, title = ledger_claim(finding)
+    return hashlib.sha256(f"{path}\x00{finding.severity}\x00{title.lower()}".encode()).hexdigest()[:12]
 
 
 def notice_marker(kind: str, correlation: str, mode: str) -> str:
@@ -1007,6 +1029,116 @@ def model_binding(mode: str) -> str:
     return hashlib.sha256(model_for_mode(mode).encode("utf-8")).hexdigest()
 
 
+def render_ledger(findings: list[Finding], head_sha: str) -> str:
+    """Record what was published, so a later run can ask whether it still holds.
+
+    Fingerprints alone cannot be re-checked: they say a finding of some shape
+    existed without saying what it claimed. Re-verifying an open finding needs
+    the claim itself, so the entry carries path, line, severity and title.
+
+    Bounded on purpose. This rides in a pull-request comment, and an unbounded
+    record would eventually fail to publish, which would cost the verdict to
+    save the ledger.
+    """
+    entries = []
+    for finding in findings[:MAX_LEDGER_ENTRIES]:
+        path, title = ledger_claim(finding)
+        entries.append(
+            {
+                "f": finding_fingerprint(finding),
+                "p": path,
+                "l": finding.line if isinstance(finding.line, int) else None,
+                "s": finding.severity,
+                "t": title,
+            }
+        )
+    # Says whether this record is the whole set. A ledger clipped by the cap
+    # cannot be used as a baseline: the findings it dropped are still open and
+    # a later delta review would never look at them again.
+    payload = {"head": head_sha, "open": entries, "complete": len(findings) <= MAX_LEDGER_ENTRIES}
+    encoded = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    return f"<!-- {LEDGER_MARKER} {encoded} -->"
+
+
+def parse_ledger(body: str) -> dict[str, object] | None:
+    """Read one ledger, rejecting anything ambiguous or malformed."""
+    matches = re.findall(rf"<!-- {re.escape(LEDGER_MARKER)} ([A-Za-z0-9+/=]+) -->", body)
+    if len(matches) != 1:
+        return None
+    try:
+        payload = json.loads(base64.b64decode(matches[0]).decode())
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("open"), list):
+        return None
+    if not isinstance(payload.get("head"), str) or not re.fullmatch(r"[0-9a-f]{40}", payload["head"]):
+        return None
+    # Absent means an older ledger that never recorded it, which cannot be
+    # assumed whole.
+    if payload.get("complete") is not True:
+        payload["complete"] = False
+    # A dropped entry is a finding that stays open and is never carried
+    # forward again, so silently discarding one while still calling the record
+    # whole is the same fail-open the completeness flag was added to close.
+    # Anything malformed marks the whole ledger unusable as a baseline; it may
+    # still label, because a label only adds information.
+    entries = []
+    intact = True
+    # More entries than this writer will ever emit means the payload was not
+    # produced here, so it cannot be trusted as a record of what was published.
+    if len(payload["open"]) > MAX_LEDGER_ENTRIES:
+        intact = False
+    for item in payload["open"][:MAX_LEDGER_ENTRIES]:
+        if not isinstance(item, dict) or not {"f", "p", "s", "t"} <= set(item):
+            intact = False
+            continue
+        if not all(isinstance(item[k], str) for k in ("f", "p", "s", "t")):
+            intact = False
+            continue
+        if item["s"] not in {"high", "medium", "low"}:
+            intact = False
+            continue
+        if not re.fullmatch(r"[0-9a-f]{12}", item["f"]):
+            intact = False
+            continue
+        if not item["p"] or len(item["p"]) > 200 or len(item["t"]) > MAX_LEDGER_TITLE:
+            intact = False
+            continue
+        line = item.get("l")
+        if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+            intact = False
+            continue
+        # The fingerprint is recomputed from the claim rather than trusted.
+        # Stored and ignored, it let an edited title, path or severity change
+        # what the record says while the record still looked untouched.
+        rebuilt = Finding(severity=item["s"], path=item["p"], line=line, title=item["t"], why="", fix="")
+        if finding_fingerprint(rebuilt) != item["f"]:
+            intact = False
+            continue
+        entries.append(item)
+    payload["open"] = entries
+    if not intact:
+        payload["complete"] = False
+    return payload
+
+
+def ledger_findings(payload: dict[str, object]) -> list[Finding]:
+    """Rebuild the claims a prior review published, for re-checking only."""
+    rebuilt = []
+    for item in payload.get("open", []):
+        rebuilt.append(
+            Finding(
+                severity=str(item["s"]),
+                path=str(item["p"]),
+                line=item.get("l") if isinstance(item.get("l"), int) else None,
+                title=str(item["t"]),
+                why="Reported by an earlier review of this pull request.",
+                fix="Re-checked against the current code.",
+            )
+        )
+    return rebuilt
+
+
 def parse_status_marker(body: str) -> dict[str, str] | None:
     """Read one complete terminal marker, rejecting ambiguity fail closed."""
     matches = re.findall(rf"<!-- {re.escape(STATUS_MARKER)} ([^>\r\n]*?)-->", body)
@@ -1019,7 +1151,8 @@ def parse_status_marker(body: str) -> dict[str, str] | None:
             return None
         fields[key] = value
     if (
-        set(fields) not in {STATUS_MARKER_REQUIRED_FIELDS, STATUS_MARKER_FIELDS}
+        not STATUS_MARKER_REQUIRED_FIELDS <= set(fields)
+        or not set(fields) <= STATUS_MARKER_FIELDS
         or fields["state"] not in PUBLISHED_REVIEW_STATES
         or fields["mode"] not in {"default", "deep"}
         or ("model" in fields and not re.fullmatch(r"[0-9a-f]{64}", fields["model"]))
@@ -1029,14 +1162,14 @@ def parse_status_marker(body: str) -> dict[str, str] | None:
     return fields
 
 
-def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str) -> tuple[list[dict[str, str]], set[str], bool]:
+def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str) -> tuple[list[dict[str, Any]], set[str], bool]:
     """Collect this bot's status markers, and report whether the scan finished.
 
     Shares the paging bound and the fail-closed contract of the admission
     check: an unreadable page yields complete=False, and a caller must treat an
     incomplete scan as no evidence at all rather than as an absence.
     """
-    markers: list[dict[str, str]] = []
+    markers: list[dict[str, Any]] = []
     notices: set[str] = set()
     for page in range(1, ADMISSION_COMMENT_PAGES + 1):
         try:
@@ -1074,6 +1207,14 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
             fields = parse_status_marker(body)
             if fields:
                 fields["html_url"] = comment.get("html_url") if isinstance(comment.get("html_url"), str) else ""
+                # Recorded so a baseline can be chosen by when it was written.
+                fields["created_at"] = comment.get("created_at") if isinstance(comment.get("created_at"), str) else ""
+                # The ledger rides in the same comment. Absent or malformed, the
+                # marker still counts as a verdict; it simply cannot serve as a
+                # baseline to re-check, which falls back to a full review.
+                ledger = parse_ledger(body)
+                if ledger is not None:
+                    fields["ledger"] = ledger
                 markers.append(fields)
         # A short page is the last page, the same termination find_running_comment
         # uses against this endpoint. Without it the scan spends an extra request
@@ -1123,6 +1264,72 @@ def completed_identical_review(markers: list[dict[str, str]], correlation: str, 
         ):
             return marker
     return None
+
+
+def is_ancestor(repo: str, older: str, newer: str, token: str, correlation: str) -> bool:
+    """True only when `older` is genuinely behind `newer` on this pull request.
+
+    A force-push or rebase leaves a previous review's head unreachable, and the
+    change since it is no longer a meaningful slice of anything. GitHub answers
+    this directly with a compare status, so it is asked rather than assumed:
+    guessing here would mean reviewing a diff that never existed.
+
+    Any doubt returns False, which falls back to reviewing the whole pull
+    request. The expensive answer is the safe one.
+    """
+    if older == newer:
+        return False
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{repo}/compare/{older}...{newer}",
+            headers=github_headers(token),
+            timeout=30,
+        )
+    except requests.RequestException:
+        log_phase("ancestry", status="request-error", correlation=correlation)
+        return False
+    log_phase("ancestry", status=response.status_code, correlation=correlation)
+    if response.status_code != 200:
+        return False
+    try:
+        status = response.json().get("status")
+    except ValueError:
+        return False
+    return status == "ahead"
+
+
+def previous_review_for_mode(markers: list[dict[str, str]], mode: str, head: str) -> dict[str, str] | None:
+    """The most recent complete review of THIS pull request in THIS mode.
+
+    Mode and model are compared because a default pass and a deep pass ask
+    different questions of different models, so one cannot serve as the
+    reviewed baseline for the other. Only a review that covered its whole
+    scope qualifies: continuing from a partial one would inherit its gap
+    silently.
+    """
+    # Chosen by timestamp, not by position. Keeping the last qualifying marker
+    # made the baseline depend on the order the comments API returned, which
+    # this code never states and does not control. Reversed ordering would pick
+    # an older review and quietly widen the delta, which is the safe direction
+    # but not the intended one, and a reader could not tell which had happened.
+    qualifying = []
+    for marker in markers:
+        if marker.get("mode") != mode:
+            continue
+        if marker.get("model") != model_binding(mode):
+            continue
+        if marker.get("state") not in COMPLETE_REVIEW_STATES:
+            continue
+        if marker.get("reviewed_head") == head:
+            continue
+        if not re.fullmatch(r"[0-9a-f]{40}", str(marker.get("reviewed_head", ""))):
+            continue
+        qualifying.append(marker)
+    if not qualifying:
+        return None
+    # An absent timestamp sorts oldest, so a marker whose recency cannot be
+    # established never displaces one whose can.
+    return max(qualifying, key=lambda marker: str(marker.get("created_at") or ""))
 
 
 def find_running_comment(repo: str, pr_number: str, token: str, correlation: str) -> tuple[dict[str, Any] | None, bool]:
@@ -1420,15 +1627,29 @@ def head_has_moved(repo: str, pr_number: str, token: str, binding: PullBinding, 
         return False
 
 
-def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None) -> str:
+def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None, scope: str = "full", scope_base: str | None = None) -> str:
     seen_before = seen_before or set()
+    # `full` means base..head. `delta` means a prior completed review's head
+    # ..head, which is a smaller question and must never be read as a
+    # verdict on the whole pull request.
+    delta = scope == "delta" and bool(scope_base)
     model = model_for_mode(mode)
     severity_order = {"high": 0, "medium": 1, "low": 2}
     findings = sorted(progress.findings, key=lambda finding: (severity_order[finding.severity], finding.path, finding.line or 0, finding.title))
     counts = {severity: sum(finding.severity == severity for finding in findings) for severity in ("high", "medium", "low")}
     omitted = [entry for entry in manifest if entry["status"] != "reviewed"]
     collapsed = [entry for entry in manifest if entry["collapsed_deletions"]]
-    lines = ["## AI PR Review", "", f"**Verdict:** `{state}`"]
+    lines = ["## AI PR Review", ""]
+    if delta:
+        # Above the verdict, not below it. A reader who sees `clean` first has
+        # already drawn a conclusion about the whole pull request before
+        # reaching the line that narrows it.
+        lines.append(
+            f"**Scope: the change since `{scope_base[:12]}`, not the whole pull request.** "
+            "A clean result here means nothing was found in that change."
+        )
+        lines.append("")
+    lines.append(f"**Verdict:** `{state}`")
     if state == "partial":
         lines.append("**This is incomplete and must not be treated as a clean review.**")
     elif state == "superseded":
@@ -1475,6 +1696,11 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
             f"**Command:** `{'/review deep' if mode == 'deep' else '/review'}`",
             f"**Model:** `{model}` (`{reasoning_for_mode(mode)}` reasoning)",
             f"**Binding:** base `{binding.base_sha}` head `{binding.head_sha}`",
+            (
+                f"**Reviewed range:** `{scope_base}`..`{binding.head_sha}` (change only)"
+                if delta
+                else f"**Reviewed range:** `{binding.base_sha}`..`{binding.head_sha}` (whole pull request)"
+            ),
             f"**Review identity:** `{binding.correlation}`",
             f"**Classification:** {', '.join(classification) if classification else 'empty diff'}",
             f"**Completeness:** {progress.reviewed_units}/{progress.expected_units} representable units reviewed; {len(omitted)} omitted or unrepresentable; {len(collapsed)} deletion-collapsed.",
@@ -1533,7 +1759,9 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         [
             "",
             f"<!-- {STATUS_MARKER} state={state} identity={binding.correlation} "
-            f"mode={mode} model={model_binding(mode)} findings={fingerprints} -->",
+            f"mode={mode} model={model_binding(mode)} findings={fingerprints} "
+            f"reviewed_head={binding.head_sha} scope={scope} -->",
+            render_ledger(findings, binding.head_sha),
         ]
     )
     return "\n".join(lines)
@@ -1711,9 +1939,32 @@ def run_review(
     # incomplete scan yields fewer labels, never a wrong one, and requiring
     # completeness here would discard correct labels to no benefit.
     seen_before: set[str] = set()
+    scope = "full"
+    scope_base: str | None = None
+    carried: list[Finding] = []
     try:
         prior, _, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
         seen_before = previously_reported(prior)
+        # Reviewing the whole pull request again after a two-line fix costs the
+        # same as the first review and answers the same question. When a
+        # completed review of this mode already covered an earlier head, review
+        # the change since it instead, and re-check what it left open.
+        #
+        # Every condition here falls back to a full review, because a full
+        # review is only expensive while a wrongly-scoped one is wrong.
+        previous = previous_review_for_mode(prior, mode, binding.head_sha)
+        ledger = previous.get("ledger") if previous else None
+        # A baseline is only usable when its record of open findings is whole.
+        # Missing, malformed, or clipped by the cap all mean the same thing
+        # here: this run cannot know what it would be carrying forward.
+        usable = isinstance(ledger, dict) and ledger.get("complete") is True
+        if previous and usable and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
+            scope = "delta"
+            scope_base = str(previous["reviewed_head"])
+            carried = ledger_findings(ledger)
+            log_phase("scope", status=f"delta-from-{scope_base[:12]}", correlation=binding.correlation)
+        else:
+            log_phase("scope", status="full", correlation=binding.correlation)
     except Exception:  # noqa: BLE001
         # Deliberately broad. The narrow version was nearly unreachable, because
         # the scan converts request failures into a returned tuple, so anything
@@ -1735,12 +1986,25 @@ def run_review(
             progress.incomplete_reasons.append("no usable provider credential was configured")
             return "failed", progress
         try:
-            diff = fetch_bound_diff(repo, binding, token)
+            # A delta still names two immutable commits, so the fetch keeps the
+            # same guarantee: the review is bound to exact SHAs, not to a
+            # branch that can move under it.
+            fetch_binding = binding
+            if scope == "delta" and scope_base:
+                fetch_binding = PullBinding(scope_base, binding.head_sha, binding.reviewer_sha, binding.rubric_version)
+            diff = fetch_bound_diff(repo, fetch_binding, token)
         except FetchError:
             progress.fetch_failed = True
             progress.incomplete_reasons.append("immutable diff fetch failed after retry")
+            # A delta that cannot be fetched must not silently become a full
+            # review under a comment that says delta, nor the reverse.
             return "failed", progress
-        truncation = compare_incompleteness(repo, binding, token)
+        # Asked of the range this run actually read. Using the whole pull
+        # request here made a large history mark every small delta partial,
+        # which then disqualified that delta from ever becoming a baseline: the
+        # feature would have degraded to nothing on exactly the pull requests
+        # it exists for.
+        truncation = compare_incompleteness(repo, fetch_binding, token)
         if truncation:
             progress.incomplete_reasons.append(truncation)
         units, parse_errors = parse_diff(diff, mode)
@@ -1831,6 +2095,17 @@ def run_review(
         # actually produced while completeness still counted their units as
         # reviewed. timed_out keeps the verdict partial through derive_state,
         # which is where incompleteness belongs.
+        # Carried findings enter the judge as candidates against the CURRENT
+        # code. That is what makes a delta review honest about the whole pull
+        # request: the change is reviewed fresh, and everything the previous
+        # review left open is asked again rather than assumed fixed or assumed
+        # still broken. A carried finding the judge drops is simply not
+        # published, which is the existing rule and not a claim of resolution.
+        if carried:
+            known = {finding_fingerprint(item) for item in candidates}
+            for item in carried:
+                if finding_fingerprint(item) not in known:
+                    candidates.append(item)
         judge_ready = bool(candidates) and not progress.aggregation_failed
         if judge_ready and not budget_allows(deadline, mode):
             progress.incomplete_reasons.append("wall-clock budget exhausted before the judge pass")
@@ -1890,7 +2165,7 @@ def run_review(
         manifest = [unit.manifest() for unit in units]
         state = derive_state(progress)
         try:
-            update_comment(repo, comment["id"], token, render_status(binding, mode, classification, progress, state, manifest, seen_before), binding.correlation)
+            update_comment(repo, comment["id"], token, render_status(binding, mode, classification, progress, state, manifest, seen_before, scope, scope_base), binding.correlation)
         except (requests.RequestException, ReviewError):
             log_phase("comment-update", status="failed", correlation=binding.correlation)
             raise ReviewError("final status comment update failed") from None

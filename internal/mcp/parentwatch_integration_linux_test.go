@@ -80,7 +80,8 @@ func waitForGone(t *testing.T, pids map[string]int, deadline time.Duration) {
 func TestRunProxy_ResponseTimeoutReapsEscapedPipeHolder(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "escaped.pid")
-	script := "setsid sleep 300 &\n" +
+	script := "umask 077\n" +
+		"setsid sleep 300 &\n" +
 		"echo $! > " + pidFile + ".tmp\n" +
 		"mv " + pidFile + ".tmp " + pidFile + "\n" +
 		"sleep 300\n"
@@ -150,6 +151,7 @@ func TestSessionExit_RealParentDeathReapsWholeTree(t *testing.T) {
 	// which is precisely why EOF alone is not a shutdown signal.
 	serverScript := filepath.Join(dir, "server.sh")
 	script := "#!/bin/sh\n" +
+		"umask 077\n" +
 		"echo $$ > " + pidFile + ".tmp\n" +
 		// Detach a grandchild into its own session so it leaves the
 		// server's process group and can only be reached by the
@@ -171,10 +173,11 @@ func TestSessionExit_RealParentDeathReapsWholeTree(t *testing.T) {
 	// Fed to /bin/sh on stdin rather than exec'd as a file, so both the
 	// command name and its argument list are constants and the helper
 	// binary path travels in the environment instead.
-	sess := "\"$PIPELOCK_SESSION_EXIT_BIN\" -test.run=TestSessionExitHelperProcess >" +
+	sess := "umask 077\n" +
+		"\"$PIPELOCK_SESSION_EXIT_BIN\" -test.run=TestSessionExitHelperProcess >" +
 		filepath.Join(dir, "helper.log") + " 2>&1 &\n" +
 		"echo $! > " + proxyPidFile + "\n" +
-		"sleep 300\n"
+		"wait\n"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

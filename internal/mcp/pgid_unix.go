@@ -25,11 +25,11 @@ func setupChildProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-// captureChildPgid returns the process group ID of pid, locked in
-// immediately after cmd.Start so it remains stable across cmd.Wait.
-// Falls back to pid on Getpgid error (Setpgid=true guarantees pgid==pid
-// at spawn time anyway). Returns 0 on Windows so downstream signal
-// helpers become no-ops.
+// captureChildPgid returns the process group ID of a live child immediately
+// after cmd.Start. The numeric ID is safe to signal only until cmd.Wait begins;
+// after that it may be recycled. Falls back to pid on Getpgid error
+// (Setpgid=true guarantees pgid==pid at spawn time anyway). Returns 0 on
+// Windows so downstream signal helpers become no-ops.
 func captureChildPgid(pid int) int {
 	if got, err := syscall.Getpgid(pid); err == nil {
 		return got
@@ -48,10 +48,9 @@ func signalProcessGroupTerm(pgid int) {
 	_ = syscall.Kill(-pgid, syscall.SIGTERM)
 }
 
-// terminateProcessGroup runs the SIGTERM + 100ms grace + SIGKILL
-// sequence on the given process group. Called after cmd.Wait so any
-// descendants still alive in the group are drained before we move on
-// to the /proc-walk adopted-descendants sweep.
+// terminateProcessGroup runs the SIGTERM + 100ms grace + SIGKILL sequence on
+// a known-live process group. Callers must exclude a concurrent cmd.Wait: once
+// Wait starts, the leader and its numeric group ID can be recycled.
 func terminateProcessGroup(pgid int) {
 	if pgid <= 0 {
 		return

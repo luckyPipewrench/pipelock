@@ -1357,9 +1357,9 @@ type InputScanConfig struct {
 // starts and its PID is registered with the lineage tracker; callers use
 // this to start the file sentry event loop after attribution is ready.
 func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, opts MCPProxyOpts, extraEnv ...string) error {
-	// Capture before integrity preparation, pipe setup, and child startup. If
-	// the launcher dies during that work, the watcher must retain the original
-	// owner instead of observing PID 1 and incorrectly becoming inert.
+	// Capture before integrity preparation, pipe setup, and child startup to
+	// narrow the time later startup work can hide a parent death. A launcher can
+	// still die before this first syscall; PPID watching cannot close that race.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	var cmd *exec.Cmd
 	var prepared *integrity.PreparedCommand
@@ -1512,16 +1512,21 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}
 
-	// Capture the child's process group ID immediately after Start,
-	// before cmd.Wait has any chance to reap and before cmd.Process.Pid
-	// can go stale. Setpgid=true above guarantees pgid==pid at spawn
-	// time on unix; captureChildPgid returns that value (verified via
-	// Getpgid) so we can keep signaling the original group even after
-	// the leader is reaped and the kernel is free to recycle its PID.
-	// On Windows the helper returns 0 and the signal helpers below all
-	// no-op, matching the no-op setupChildProcessGroup call above.
+	// Capture the child's process group ID immediately after Start, while
+	// the direct child is known live. Setpgid=true above guarantees pgid==pid
+	// at spawn time on Unix. This is only safe to signal before cmd.Wait
+	// begins: once Wait can reap the group leader, the numeric group ID can be
+	// recycled and must never be signalled again. On Windows the helper returns
+	// 0 and the signal helpers below all no-op, matching the no-op
+	// setupChildProcessGroup call above.
 	childPgid := captureChildPgid(cmd.Process.Pid)
 	processExit := &processExitHandoff{}
+	killDirectChild := func() bool {
+		if cmd.Process == nil {
+			return false
+		}
+		return cmd.Process.Kill() == nil
+	}
 
 	// Drain adopted-descendant zombies live, while the direct child is
 	// still running. Without this, long-running MCP wraps (e.g. a code-assistant
@@ -1555,7 +1560,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	go func() {
 		select {
 		case <-ctx.Done():
-			processExit.terminate(func() { signalProcessGroupTerm(childPgid) })
+			processExit.terminate(func() { signalProcessGroupTerm(childPgid) }, killDirectChild)
 		case <-pgidDone:
 		}
 	}()
@@ -1576,22 +1581,21 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// in-flight responses finish, and only escalate to the process-tree
 	// teardown for a server that will not leave on its own.
 	//
-	// This is defense in depth for an unclean harness exit. The primary
-	// repair is a per-session cgroup boundary owned by the spawning harness,
-	// which is strictly stronger because it also catches descendants that
-	// create new process groups.
+	// This is defense in depth for an unclean harness exit. A harness-owned
+	// lifetime primitive is needed to cover the remaining launch window and
+	// descendants that create new process groups.
 	waitDone := make(chan struct{})
 	sessionExit := &sessionExitState{}
 	sessionCtx, sessionStop := context.WithCancel(ctx)
 	defer sessionStop()
-	// The parent PID was captured at function entry, before startup work can
-	// observe a post-exit PID 1 and make the watcher permanently inert.
+	// The parent PID is captured at function entry to narrow the startup
+	// window, but a launcher that dies before that first syscall remains an
+	// inherent PPID-watch limitation. A harness-owned owner pipe or cgroup is
+	// needed to close that earlier race.
 	sessionOpts := startupParentWatch
-	sessionOpts.logW = safeLogW
 	sessionGrace := defaultParentExitGrace
 	if h := opts.sessionExitForTest; h != nil {
 		sessionOpts = h.watch
-		sessionOpts.logW = safeLogW
 		if h.grace > 0 {
 			sessionGrace = h.grace
 		}
@@ -1619,17 +1623,19 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			// teardown reaps detached and adopted descendants the group kill
 			// could not reach.
 			terminateTree: func() bool {
+				// Close response descriptors before either branch. A descendant
+				// can retain stdout or stderr after the direct child exits, and
+				// these closes release forwarding without relying on a numeric
+				// process-group signal.
+				_ = serverOut.Close()
+				_ = serverErr.Close()
 				return processExit.terminate(func() {
 					// A descendant can escape the child group with setsid while
 					// retaining stdout. Close the read ends first to release
 					// ForwardScanned while process-group teardown is in flight.
-					_ = serverOut.Close()
-					_ = serverErr.Close()
 					terminateProcessGroup(childPgid)
-					if cmd.Process != nil {
-						_ = cmd.Process.Kill()
-					}
-				})
+					_ = killDirectChild()
+				}, killDirectChild)
 			},
 			waitDone: waitDone,
 			grace:    sessionGrace,
@@ -1778,42 +1784,28 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		_ = cmd.Process.Kill()
 	}
 
-	// cmd.Wait and forced teardown share one owner. A concurrent session or
-	// context teardown waits until reaping finishes, then sees that no process
-	// identifier remains safe to signal.
+	// cmd.Wait permanently retires raw numeric process identifiers from the
+	// handoff. A concurrent session or context teardown can still use the Go
+	// process handle for the direct child, but can never signal its PID or PGID.
 	waitErr := processExit.wait(cmd.Wait)
 	// Release the session watcher's drain wait. A server that exited on its
 	// own after stdin close must not sit through the remaining grace window
 	// before the teardown below claims ownership.
 	close(waitDone)
 
-	// After the direct child exits, tear down everything it spawned.
-	// Three layers of cleanup that together cover fast common-case
-	// grandchildren (same pgid), detached orphans (double-fork or
-	// setsid), and long-running cooperative descendants that ignore
-	// SIGTERM:
+	// After the direct child exits, sweep any descendants it spawned that the
+	// Linux subreaper adopted after an escape from the original process group.
 	//
-	//   1. SIGTERM the original pgid so well-behaved descendants still
-	//      in the child's process group exit cleanly on a trap.
-	//   2. 100ms grace, then SIGKILL the pgid for anything that ignored
-	//      SIGTERM (the pre-tag gate harness grandchild did exactly this).
-	//   3. killAdoptedDescendants sweeps /proc for processes whose PPID
+	// killAdoptedDescendants sweeps /proc for processes whose PPID
 	//      is now pipelock's own PID - any grandchild that escaped the
 	//      original pgid via setsid/double-fork should have reparented
 	//      to us once PR_SET_CHILD_SUBREAPER fired above. SIGKILL is
 	//      best-effort; ESRCH/EPERM are non-fatal.
-	// Use the pgid captured at Start rather than re-reading
-	// cmd.Process.Pid here. After cmd.Wait returns, cmd.Process.Pid
-	// refers to a reaped pid the kernel is free to recycle - signaling
-	// the negated pid at that point risks hitting an unrelated process
-	// that was assigned the same pgid. childPgid was locked in before
-	// Wait could reap the leader, so it remains the stable identifier
-	// for the process group we created. terminateProcessGroup runs the
-	// SIGTERM + 100ms grace + SIGKILL sequence; on Windows the helper
-	// no-ops because pgid is 0 there.
-	terminateProcessGroup(childPgid)
-	// Sweep orphans the pgid kill couldn't reach. Safe even on
-	// non-Linux builds - the stub is a no-op there.
+	// Numeric process-group cleanup is deliberately absent here: Wait may
+	// already have recycled the group leader's identifier. On Linux, the
+	// subreaper sweep handles descendants without that raw-ID hazard; on other
+	// platforms descendants outside the direct child's lifetime boundary need a
+	// harness-owned containment primitive.
 	killAdoptedDescendants()
 	// A detached descendant can retain stderr after the direct child exits.
 	// Bound the drain so an escaped writer cannot hold the proxy open forever.

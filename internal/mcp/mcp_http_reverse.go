@@ -172,8 +172,9 @@ func RunHTTPListenerProxy(
 	logW io.Writer,
 	opts MCPProxyOpts,
 ) error {
-	// Capture before listener validation and upstream preflight so an exit in
-	// either step cannot turn a real parent death into an inert PID-1 watch.
+	// Capture before listener validation and upstream preflight to narrow the
+	// startup race. A launcher can still exit before this first syscall; closing
+	// that earlier window needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	safeLogW := &syncWriter{w: logW}
 	ctx, stopSession, _ := newSessionBoundContext(ctx, startupParentWatch, nil, safeLogW, opts.sessionExitForTest)

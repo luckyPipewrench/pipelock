@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,7 +49,6 @@ func TestWatchParentSession_ReparentingIsDetected(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var logBuf bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
@@ -56,17 +56,87 @@ func TestWatchParentSession_ReparentingIsDetected(t *testing.T) {
 				interval:  time.Millisecond,
 				startPPID: tc.startPPID,
 				getppid:   stubPPID(tc.startPPID, tc.newPPID, 3),
-				logW:      &logBuf,
 			})
 
 			if !died {
 				t.Fatalf("watchParentSession = false, want true after reparent to %d", tc.newPPID)
 			}
-			if got := logBuf.String(); !strings.Contains(got, "spawning session exited") {
-				t.Errorf("missing operator explanation in log, got %q", got)
-			}
 		})
 	}
+}
+
+type gatedLogWriter struct {
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	started     chan struct{}
+	release     chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newGatedLogWriter() *gatedLogWriter {
+	return &gatedLogWriter{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *gatedLogWriter) Write(p []byte) (int, error) {
+	w.startOnce.Do(func() { close(w.started) })
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *gatedLogWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func (w *gatedLogWriter) Release() {
+	w.releaseOnce.Do(func() { close(w.release) })
+}
+
+func TestRunSessionBoundExit_BlockedLogDoesNotDelayTeardown(t *testing.T) {
+	t.Parallel()
+
+	logW := newGatedLogWriter()
+	defer logW.Release()
+	var marked, intakeStopped, stdinClosed, terminated atomic.Bool
+	done := make(chan bool, 1)
+	go func() {
+		done <- runSessionBoundExit(context.Background(), deadSession(), sessionExitActions{
+			onSessionExit:    func() { marked.Store(true) },
+			stopIntake:       func() { intakeStopped.Store(true) },
+			closeServerStdin: func() { stdinClosed.Store(true) },
+			terminateTree:    func() bool { terminated.Store(true); return true },
+			waitDone:         make(chan struct{}),
+			grace:            time.Millisecond,
+			logW:             logW,
+		})
+	}()
+
+	select {
+	case <-logW.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session-exit log was never attempted")
+	}
+
+	select {
+	case escalated := <-done:
+		if !escalated {
+			t.Fatal("session teardown did not escalate while its log writer was blocked")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked log writer delayed session teardown")
+	}
+	if !marked.Load() || !intakeStopped.Load() || !stdinClosed.Load() || !terminated.Load() {
+		t.Fatal("session teardown did not mark, close, and terminate before logging")
+	}
+
+	logW.Release()
+	testwait.For(t, 5*time.Second, func() bool {
+		return strings.Contains(logW.String(), "spawning session exited")
+	}, "the deferred session-exit explanation to reach the operator log")
 }
 
 // deadSession reports a reparent immediately, so teardown tests do not
@@ -235,11 +305,14 @@ func TestProcessExitHandoff_TerminateProceedsWhileReapInFlight(t *testing.T) {
 	// wait on a reap only that escalation could unblock, and the proxy would
 	// hang with the whole tree alive - the exact leak being fixed.
 	//
-	// Escalating here is also SAFE: the child is not reaped yet, so the kernel
-	// cannot have recycled its PID or process-group ID.
+	// A direct-child process handle remains safe here, but a raw process-group
+	// signal does not: reap can complete immediately after the handoff releases
+	// its lock and before a later goroutine sends that numeric signal.
 	handoff := &processExitHandoff{}
 	reapEntered := make(chan struct{})
 	releaseReap := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseReap) }) }
 	waitDone := make(chan error, 1)
 
 	go func() {
@@ -253,28 +326,38 @@ func TestProcessExitHandoff_TerminateProceedsWhileReapInFlight(t *testing.T) {
 	<-reapEntered
 	testwait.For(t, 2*time.Second, handoff.reapStarted, "the reap to be marked in flight")
 
-	var terminated atomic.Bool
+	var rawGroupSignal, stableDirectKill atomic.Bool
 	escalated := make(chan bool, 1)
 	go func() {
-		escalated <- handoff.terminate(func() { terminated.Store(true) })
+		escalated <- handoff.terminate(
+			func() { rawGroupSignal.Store(true) },
+			func() bool {
+				stableDirectKill.Store(true)
+				release()
+				return true
+			},
+		)
 	}()
 
 	select {
 	case ok := <-escalated:
-		if !ok || !terminated.Load() {
-			t.Error("escalation was refused while the reap was still in flight; the tree would be left running")
+		if !ok || !stableDirectKill.Load() {
+			t.Error("escalation did not use the stable direct-child handle while reap was in flight")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("terminate blocked on an in-flight reap; this is the deadlock that hangs the proxy with its tree alive")
 	}
 
-	close(releaseReap)
+	release()
+	if rawGroupSignal.Load() {
+		t.Error("escalation signalled a raw process group after cmd.Wait started")
+	}
 	if err := <-waitDone; err != nil {
 		t.Fatalf("process reaping returned %v", err)
 	}
 }
 
-func TestProcessExitHandoff_RejectsEscalationAfterReapingStarts(t *testing.T) {
+func TestProcessExitHandoff_UsesStableHandleAfterReapingStarts(t *testing.T) {
 	t.Parallel()
 
 	// Once cmd.Wait has RETURNED, a late signal could target a PID or process
@@ -283,13 +366,19 @@ func TestProcessExitHandoff_RejectsEscalationAfterReapingStarts(t *testing.T) {
 	if err := handoff.wait(func() error { return nil }); err != nil {
 		t.Fatalf("process reaping returned %v", err)
 	}
-	var terminated atomic.Bool
+	var rawGroupSignal, stableDirectKill atomic.Bool
 
-	if handoff.terminate(func() { terminated.Store(true) }) {
-		t.Error("session exit escalated after cmd.Wait owned process reaping")
+	if !handoff.terminate(
+		func() { rawGroupSignal.Store(true) },
+		func() bool { stableDirectKill.Store(true); return true },
+	) {
+		t.Error("session exit did not attempt the stable direct-child handle after reaping started")
 	}
-	if terminated.Load() {
-		t.Error("late session exit signalled process identifiers after reaping began")
+	if rawGroupSignal.Load() {
+		t.Error("late session exit signalled a raw process identifier after reaping began")
+	}
+	if !stableDirectKill.Load() {
+		t.Error("late session exit did not use the stable direct-child handle")
 	}
 }
 

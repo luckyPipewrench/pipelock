@@ -40,10 +40,6 @@ type parentWatchOpts struct {
 	getppid func() int
 	// startPPID is the parent PID recorded before the watch began.
 	startPPID int
-	// logW receives the single operator-visible line explaining why the
-	// proxy is shutting down. Never nil in production; the caller passes
-	// the mutex-wrapped writer.
-	logW io.Writer
 }
 
 // sessionExitTestHooks lets a test drive the session-bound exit in-process.
@@ -81,9 +77,11 @@ func isSessionExitCloseErr(err error) bool {
 // PID or process-group ID as soon as it reaps the child, so a late escalation
 // must not signal either value.
 type processExitHandoff struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// reaping remains true after reap returns. A numeric PID or PGID is safe
+	// to signal only before cmd.Wait begins; after that, the kernel can reap
+	// and recycle it before this package observes any later bookkeeping.
 	reaping bool
-	reaped  bool
 }
 
 // wait runs the blocking reap without holding the lock across it.
@@ -95,40 +93,40 @@ type processExitHandoff struct {
 // unblock, and the proxy hangs with the tree alive, which is precisely the
 // leak being fixed.
 //
-// Escalating WHILE a reap is in flight is safe, because the child has not been
-// reaped yet and so the kernel cannot have recycled its PID or process-group
-// ID. Only once reap RETURNS do those identifiers become reusable, and that is
-// the point at which terminate must refuse.
+// Raw numeric signals are safe only before reap begins. Once cmd.Wait starts,
+// it may reap the child and recycle its identifiers before this package can
+// observe reap's return, so terminate must use a kernel-stable process handle
+// instead.
 func (h *processExitHandoff) wait(reap func() error) error {
 	h.mu.Lock()
 	h.reaping = true
 	h.mu.Unlock()
 
-	err := reap()
-
-	h.mu.Lock()
-	h.reaped = true
-	h.mu.Unlock()
-	return err
+	return reap()
 }
 
-// reapStarted reports whether a reap is in flight or already finished. It
-// exists for tests and diagnostics; termination decisions use reaped, since an
-// in-flight reap has not yet freed any identifier.
+// reapStarted reports whether cmd.Wait has started. It remains true after
+// cmd.Wait returns because that boundary permanently retires numeric process
+// identifiers from this handoff.
 func (h *processExitHandoff) reapStarted() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.reaping
 }
 
-func (h *processExitHandoff) terminate(fn func()) bool {
+// terminate runs the raw process-group teardown only while it can exclude a
+// concurrent cmd.Wait. Once reaping has begun, it calls stable instead. For a
+// Go exec.Cmd, stable is cmd.Process.Kill: Go 1.25 uses its process handle and
+// returns os.ErrProcessDone after Wait, rather than signalling a reused PID.
+func (h *processExitHandoff) terminate(beforeReap func(), stable func() bool) bool {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.reaped {
-		return false
+	if !h.reaping {
+		beforeReap()
+		h.mu.Unlock()
+		return true
 	}
-	fn()
-	return true
+	h.mu.Unlock()
+	return stable()
 }
 
 // sessionExitActions are the teardown steps runSessionBoundExit performs
@@ -143,9 +141,10 @@ type sessionExitActions struct {
 	stopIntake func()
 	// closeServerStdin gives a cooperative server its shutdown signal.
 	closeServerStdin func()
-	// terminateTree tears down the whole process group and the direct
-	// child. It returns false when cmd.Wait already owns reaping, so no
-	// stale process identifier is ever signalled after that handoff.
+	// terminateTree tears down the whole process group before reaping
+	// starts, or safely targets the direct child through its process
+	// handle after that point. It returns false only when no live child
+	// remains for the stable handle to terminate.
 	terminateTree func() bool
 	// waitDone closes when cmd.Wait has returned, short-circuiting the
 	// grace window for a server that exited on its own.
@@ -182,6 +181,10 @@ func runSessionBoundExit(ctx context.Context, opts parentWatchOpts, act sessionE
 	if act.closeServerStdin != nil {
 		act.closeServerStdin()
 	}
+	// Logging is deliberately after the teardown state and descriptors have
+	// changed. A blocked stderr copier can hold safeLogW indefinitely; do not
+	// let that delay cancellation, descriptor closure, or forced teardown.
+	logSessionExitAsync(act.logW)
 
 	grace := act.grace
 	if grace <= 0 {
@@ -202,9 +205,8 @@ func runSessionBoundExit(ctx context.Context, opts parentWatchOpts, act sessionE
 	// The grace timer and waitDone can become ready in the same instant,
 	// and a select picks uniformly among ready cases. Re-check before
 	// escalating so a server that finished right at the deadline is not
-	// signalled after cmd.Wait already reaped its group. terminateTree has
-	// the synchronized handoff that closes the remaining check-to-signal
-	// race with cmd.Wait.
+	// signalled after cmd.Wait already reaped its group. terminateTree's
+	// handoff allows numeric group signals only before reaping begins.
 	select {
 	case <-act.waitDone:
 		return false
@@ -221,7 +223,7 @@ func runSessionBoundExit(ctx context.Context, opts parentWatchOpts, act sessionE
 		return false
 	}
 	if act.logW != nil {
-		_, _ = fmt.Fprintf(act.logW,
+		logAsync(act.logW,
 			"pipelock: wrapped MCP server did not exit within %s of session teardown; terminating process tree\n",
 			grace)
 	}
@@ -229,8 +231,10 @@ func runSessionBoundExit(ctx context.Context, opts parentWatchOpts, act sessionE
 }
 
 // newSessionBoundContext cancels a proxy context when the process that
-// launched it dies. The caller supplies a PPID captured at function entry so
-// startup work cannot turn a real parent death into an inert PID-1 watch.
+// launched it dies. Capturing a PPID at the caller's first startup step narrows
+// the time later setup can hide a parent death. It cannot close the earlier
+// launcher-to-first-syscall race; that needs a launcher-owned lifetime
+// primitive.
 // Closing a closable input wakes the stdio read that context cancellation alone
 // cannot interrupt.
 func newSessionBoundContext(
@@ -245,7 +249,6 @@ func newSessionBoundContext(
 	if hooks != nil {
 		watch = hooks.watch
 	}
-	watch.logW = logW
 
 	// An already orphaned launch is intentionally inert. Avoid parking a
 	// goroutine for a supervisor-managed proxy that has no session owner.
@@ -262,6 +265,7 @@ func newSessionBoundContext(
 			_ = c.Close()
 		}
 		stop()
+		logSessionExitAsync(logW)
 	}()
 
 	return sessionCtx, stop, state
@@ -290,6 +294,9 @@ func newSessionBoundContext(
 // A proxy whose recorded parent is already the orphan PID has no session
 // to bind to - it was started by a supervisor, daemonized, or re-parented
 // before the watch began - so the watch is inert and returns only on ctx.
+// Capturing a PPID at process entry narrows but cannot close the earlier
+// launcher-to-first-syscall race; closing that requires a launcher-owned
+// lifetime primitive such as an owner pipe or cgroup.
 func watchParentSession(ctx context.Context, opts parentWatchOpts) bool {
 	getppid := opts.getppid
 	if getppid == nil {
@@ -320,13 +327,23 @@ func watchParentSession(ctx context.Context, opts parentWatchOpts) bool {
 			if current == opts.startPPID {
 				continue
 			}
-			// Reparented. The session that spawned this proxy is gone.
-			if opts.logW != nil {
-				_, _ = fmt.Fprintf(opts.logW,
-					"pipelock: spawning session exited (parent pid %d reparented to %d); shutting down MCP proxy\n",
-					opts.startPPID, current)
-			}
+			// Reparented. The session that spawned this proxy is gone. Logging
+			// happens after callers mark and begin teardown, so a blocked writer
+			// cannot strand the proxy before it starts shutting down.
 			return true
 		}
 	}
+}
+
+func logSessionExitAsync(logW io.Writer) {
+	logAsync(logW, "pipelock: spawning session exited; shutting down MCP proxy\n")
+}
+
+func logAsync(logW io.Writer, format string, args ...any) {
+	if logW == nil {
+		return
+	}
+	go func() {
+		_, _ = fmt.Fprintf(logW, format, args...)
+	}()
 }

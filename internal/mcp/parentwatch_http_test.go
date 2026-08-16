@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func deadSessionExitHooks() *sessionExitTestHooks {
@@ -43,7 +45,8 @@ func TestSessionExit_HTTPForwardStopsBridge(t *testing.T) {
 
 	clientIn := newBlockingReader()
 	defer func() { _ = clientIn.Close() }()
-	var clientOut, logBuf bytes.Buffer
+	var clientOut bytes.Buffer
+	var logBuf lockedBuffer
 	done := make(chan error, 1)
 	go func() {
 		done <- RunHTTPProxy(context.Background(), clientIn, &clientOut, &logBuf, upstream.URL, nil, MCPProxyOpts{
@@ -61,8 +64,48 @@ func TestSessionExit_HTTPForwardStopsBridge(t *testing.T) {
 		t.Fatal("HTTP bridge stayed alive after the spawning session exited")
 	}
 
-	if got := logBuf.String(); !bytes.Contains([]byte(got), []byte("spawning session exited")) {
-		t.Errorf("missing session-exit explanation in operator log, got %q", got)
+	testwait.For(t, 5*time.Second, func() bool {
+		return bytes.Contains([]byte(logBuf.String()), []byte("spawning session exited"))
+	}, "the session-exit explanation to reach the HTTP forwarder log")
+}
+
+func TestSessionExit_HTTPForwardBoundsNonClosableInput(t *testing.T) {
+	clientIn := newNonClosableBlockingReader()
+	t.Cleanup(clientIn.unblock)
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Errorf("session-bound bridge forwarded after its session exited")
+	}))
+	defer upstream.Close()
+
+	var clientOut, logBuf lockedBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(context.Background(), clientIn, &clientOut, &logBuf, upstream.URL, nil, MCPProxyOpts{
+			Scanner:            testScannerForHTTP(t),
+			sessionExitForTest: deadSessionExitHooks(),
+		})
+	}()
+
+	select {
+	case <-clientIn.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP bridge never started reading the non-closable client input")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunHTTPProxy = %v, want clean session-bound shutdown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP bridge waited indefinitely for non-closable input after session exit")
+	}
+
+	clientIn.unblock()
+	select {
+	case <-clientIn.returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("non-closable HTTP input did not release after the test")
 	}
 }
 
@@ -115,7 +158,7 @@ func TestSessionExit_HTTPListenerStops(t *testing.T) {
 	}
 	defer func() { _ = ln.Close() }()
 
-	var logBuf bytes.Buffer
+	var logBuf lockedBuffer
 	done := make(chan error, 1)
 	go func() {
 		done <- RunHTTPListenerProxy(context.Background(), ln, upstream.URL, &logBuf, MCPProxyOpts{
@@ -133,9 +176,9 @@ func TestSessionExit_HTTPListenerStops(t *testing.T) {
 		t.Fatal("HTTP listener stayed alive after the spawning session exited")
 	}
 
-	if got := logBuf.String(); !bytes.Contains([]byte(got), []byte("spawning session exited")) {
-		t.Errorf("missing session-exit explanation in operator log, got %q", got)
-	}
+	testwait.For(t, 5*time.Second, func() bool {
+		return bytes.Contains([]byte(logBuf.String()), []byte("spawning session exited"))
+	}, "the session-exit explanation to reach the HTTP listener log")
 }
 
 func TestSessionExit_HTTPListenerLiveSessionIsNotTornDown(t *testing.T) {

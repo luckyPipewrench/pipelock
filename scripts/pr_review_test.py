@@ -2026,10 +2026,26 @@ class DeltaScopeTest(unittest.TestCase):
         self.assertIsNone(pr_review.previous_review_for_mode(markers, "deep", self.HEAD))
 
     def test_the_newest_qualifying_review_wins(self) -> None:
+        # By timestamp, in BOTH list orders. Keeping the last qualifying entry
+        # made this depend on the order the comments API returned, which the
+        # code never states and does not control.
         older = self.marker(head="1" * 40)
+        older["created_at"] = "2026-08-15T00:00:00Z"
         newer = self.marker(head="2" * 40)
-        found = pr_review.previous_review_for_mode([older, newer], "deep", self.HEAD)
-        self.assertEqual(found["reviewed_head"], "2" * 40)
+        newer["created_at"] = "2026-08-15T12:00:00Z"
+        for order in ([older, newer], [newer, older]):
+            with self.subTest(order=[m["created_at"] for m in order]):
+                found = pr_review.previous_review_for_mode(order, "deep", self.HEAD)
+                self.assertEqual(found["reviewed_head"], "2" * 40)
+
+    def test_a_marker_without_a_timestamp_never_displaces_one_with(self) -> None:
+        stamped = self.marker(head="1" * 40)
+        stamped["created_at"] = "2026-08-15T00:00:00Z"
+        unstamped = self.marker(head="2" * 40)
+        for order in ([stamped, unstamped], [unstamped, stamped]):
+            with self.subTest(order="both"):
+                found = pr_review.previous_review_for_mode(order, "deep", self.HEAD)
+                self.assertEqual(found["reviewed_head"], "1" * 40)
 
     def _compare(self, status):
         response = mock.Mock()

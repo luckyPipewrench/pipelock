@@ -1191,6 +1191,8 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
             fields = parse_status_marker(body)
             if fields:
                 fields["html_url"] = comment.get("html_url") if isinstance(comment.get("html_url"), str) else ""
+                # Recorded so a baseline can be chosen by when it was written.
+                fields["created_at"] = comment.get("created_at") if isinstance(comment.get("created_at"), str) else ""
                 # The ledger rides in the same comment. Absent or malformed, the
                 # marker still counts as a verdict; it simply cannot serve as a
                 # baseline to re-check, which falls back to a full review.
@@ -1289,7 +1291,12 @@ def previous_review_for_mode(markers: list[dict[str, str]], mode: str, head: str
     scope qualifies: continuing from a partial one would inherit its gap
     silently.
     """
-    best = None
+    # Chosen by timestamp, not by position. Keeping the last qualifying marker
+    # made the baseline depend on the order the comments API returned, which
+    # this code never states and does not control. Reversed ordering would pick
+    # an older review and quietly widen the delta, which is the safe direction
+    # but not the intended one, and a reader could not tell which had happened.
+    qualifying = []
     for marker in markers:
         if marker.get("mode") != mode:
             continue
@@ -1301,8 +1308,12 @@ def previous_review_for_mode(markers: list[dict[str, str]], mode: str, head: str
             continue
         if not re.fullmatch(r"[0-9a-f]{40}", str(marker.get("reviewed_head", ""))):
             continue
-        best = marker
-    return best
+        qualifying.append(marker)
+    if not qualifying:
+        return None
+    # An absent timestamp sorts oldest, so a marker whose recency cannot be
+    # established never displaces one whose can.
+    return max(qualifying, key=lambda marker: str(marker.get("created_at") or ""))
 
 
 def find_running_comment(repo: str, pr_number: str, token: str, correlation: str) -> tuple[dict[str, Any] | None, bool]:

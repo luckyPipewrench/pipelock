@@ -318,7 +318,65 @@ class ExitSemanticsTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
             pr_review.os.environ, {**environment, "GITHUB_OUTPUT": output.name}, clear=True
         ), mock.patch.object(
-            pr_review, "run_review", return_value=("clean", pr_review.ReviewProgress(scope="delta"))
+            pr_review,
+            "run_review",
+            # A delta whose chain starts somewhere other than the current base.
+            # This is the shape a rebase or a retarget produces: the reviews
+            # happened, but the range they account for is no longer the range
+            # the pull request presents.
+            return_value=(
+                "clean",
+                pr_review.ReviewProgress(scope="delta", coverage_base="b" * 40, base_sha="c" * 40),
+            ),
+        ):
+            self.assertIsNone(pr_review.main())
+            output.seek(0)
+            self.assertIn("complete=false", output.read().decode("utf-8"))
+
+    def test_a_delta_whose_chain_reaches_the_base_reports_whole_coverage(self) -> None:
+        # The counterpart to the case above, and the reason coverage is tracked
+        # as a base rather than as the scope of the last run. Gating on scope
+        # failed every review after the first even though the chain accounted
+        # for the whole diff, and a gate that is red on a correct run gets
+        # switched off.
+        environment = {
+            "GITHUB_TOKEN": "token",
+            "REPO": "owner/repo",
+            "PR_NUMBER": "42",
+            "REVIEW_MODE": "deep",
+            "REVIEWER_SHA": "a" * 40,
+            "REVIEW_OPERATION": "review",
+        }
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {**environment, "GITHUB_OUTPUT": output.name}, clear=True
+        ), mock.patch.object(
+            pr_review,
+            "run_review",
+            return_value=(
+                "clean",
+                pr_review.ReviewProgress(scope="delta", coverage_base="c" * 40, base_sha="c" * 40),
+            ),
+        ):
+            self.assertIsNone(pr_review.main())
+            output.seek(0)
+            self.assertIn("complete=true", output.read().decode("utf-8"))
+
+    def test_a_run_that_recorded_no_base_does_not_report_whole_coverage(self) -> None:
+        # Two unset fields compare equal. Without the presence check that reads
+        # as complete coverage established by a run that never bound itself to
+        # a base at all.
+        environment = {
+            "GITHUB_TOKEN": "token",
+            "REPO": "owner/repo",
+            "PR_NUMBER": "42",
+            "REVIEW_MODE": "deep",
+            "REVIEWER_SHA": "a" * 40,
+            "REVIEW_OPERATION": "review",
+        }
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {**environment, "GITHUB_OUTPUT": output.name}, clear=True
+        ), mock.patch.object(
+            pr_review, "run_review", return_value=("clean", pr_review.ReviewProgress(scope="full"))
         ):
             self.assertIsNone(pr_review.main())
             output.seek(0)
@@ -2136,6 +2194,32 @@ class LedgerTest(unittest.TestCase):
 
             self.assertIsNone(pr_review.usable_ledger(marker, "owner/other", "42"))
             self.assertIsNone(pr_review.usable_ledger(marker, "owner/repo", "43"))
+
+    def test_a_consistent_relabel_is_caught_only_by_the_signature(self) -> None:
+        # Its own test on purpose. The relabel cases in the test above are
+        # rejected by the binding and head equality checks, which run BEFORE
+        # the signature is compared, so they hold with the MAC deleted and
+        # prove nothing about it. Sharing a method with them would also hide
+        # this: the plain assertion there fails first and aborts before these
+        # ever run, so a neutralization check could not see them either.
+        #
+        # Moving the ledger's own copy of a field in step with the marker keeps
+        # every equality check satisfied, which leaves the signature as the
+        # only thing that can still catch the edit.
+        marker = self.trusted_marker()
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "ledger-test-key"}, clear=False):
+            self.assertIsNotNone(pr_review.usable_ledger(marker, "owner/repo", "42"))
+            for field, replacement in (("mode", "default"), ("state", "clean"), ("scope", "delta")):
+                with self.subTest(signed_field=field):
+                    consistent = {
+                        **marker,
+                        field: replacement,
+                        "ledger": {
+                            **marker["ledger"],
+                            "binding": {**marker["ledger"]["binding"], field: replacement},
+                        },
+                    }
+                    self.assertIsNone(pr_review.usable_ledger(consistent, "owner/repo", "42"))
 
     def test_a_missing_or_rotated_secret_forces_a_full_review(self) -> None:
         marker = self.trusted_marker()

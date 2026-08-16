@@ -92,14 +92,22 @@ LEDGER_MARKER = "pr-review-ledger:v1"
 MAX_LEDGER_ENTRIES = 24
 MAX_LEDGER_TITLE = 160
 LEDGER_SIGNATURE_FIELD = "signature"
+# coverage_base is signed with the rest because it is what lets a delta review
+# claim the whole pull request. An unsigned one would let a writer relabel a
+# narrow review as a complete one, which is the exact claim this field makes.
+# Adding it also retires every ledger written before it: the binding set no
+# longer matches, so an older record cannot be a baseline and its next review
+# is whole. That costs one full review per open pull request and is the safe
+# direction, since the alternative is inheriting a coverage claim from a record
+# that never made one.
 LEDGER_BINDING_FIELDS = frozenset(
-    {"state", "identity", "mode", "model", "findings", "reviewed_head", "scope"}
+    {"state", "identity", "mode", "model", "findings", "reviewed_head", "scope", "coverage_base"}
 )
 NOTICE_MARKER = "pr-review-notice:v1"
 STATUS_MARKER_REQUIRED_FIELDS = frozenset({"state", "identity", "mode", "findings"})
 # Older markers carry fewer fields. They are still readable, and simply do
 # not qualify as a baseline, which is the safe direction.
-STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"model", "reviewed_head", "scope"}
+STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"model", "reviewed_head", "scope", "coverage_base"}
 FINDING_FINGERPRINTS_RE = re.compile(r"(?:[0-9a-f]{12}(?:,[0-9a-f]{12})*)?")
 
 PUBLISHED_REVIEW_STATES = frozenset({"already-running", "clean", "failed", "findings", "partial", "superseded"})
@@ -198,6 +206,19 @@ class ReviewProgress:
     incomplete_reasons: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     scope: str = "full"
+    # The commit this review's coverage reaches back to, counting the baseline
+    # chain it was built on. A full review covers from the pull request base, so
+    # scope and coverage agree. A delta covers only its own span, but inherits
+    # the base its baseline already covered, so a chain of deltas on top of one
+    # full review still accounts for the whole range. Kept as the base itself
+    # rather than a complete flag so it can be checked against the CURRENT base:
+    # if the pull request is rebased or retargeted, the inherited value stops
+    # matching and coverage correctly reads incomplete instead of stale-true.
+    coverage_base: str = ""
+    # The pull request base this run was bound to, carried so completeness can
+    # be judged where the run's result is published without threading the
+    # binding through. Coverage is only whole while these two agree.
+    base_sha: str = ""
 
 
 def log_phase(phase: str, *, attempt: int = 1, status: int | str = "n/a", correlation: str = "pending") -> None:
@@ -1847,6 +1868,11 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         "findings": fingerprints,
         "reviewed_head": binding.head_sha,
         "scope": scope,
+        # What this review's coverage reaches back to, including the baselines
+        # it built on. scope says how this run was performed; coverage_base says
+        # how much of the pull request the result actually accounts for, and
+        # only the second one can answer whether the diff was covered.
+        "coverage_base": progress.coverage_base or binding.base_sha,
     }
     lines.extend(
         [
@@ -2034,6 +2060,10 @@ def run_review(
     seen_before: set[str] = set()
     scope = "full"
     scope_base: str | None = None
+    # A full review of this range is the default claim, and every fallback below
+    # lands here, so an unreadable or unusable baseline yields a whole review
+    # that honestly covers from the current base.
+    coverage_base = binding.base_sha
     carried: list[Finding] = []
     try:
         prior, _, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
@@ -2051,10 +2081,23 @@ def run_review(
         # Missing, malformed, or clipped by the cap all mean the same thing
         # here: this run cannot know what it would be carrying forward.
         if previous and ledger and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
-            scope = "delta"
-            scope_base = str(previous["reviewed_head"])
-            carried = ledger_findings(ledger)
-            log_phase("scope", status=f"delta-from-{scope_base[:12]}", correlation=binding.correlation)
+            # The baseline covered its own coverage_base up to reviewed_head,
+            # and this run covers reviewed_head up to the current head, so the
+            # two together account for the baseline's coverage_base up to here.
+            # Inherit it rather than recomputing: it is the signed record of what
+            # was actually reviewed, and it is only trusted after usable_ledger
+            # has authenticated it above.
+            inherited = str(previous.get("coverage_base", ""))
+            if re.fullmatch(r"[0-9a-f]{40}", inherited):
+                scope = "delta"
+                scope_base = str(previous["reviewed_head"])
+                coverage_base = inherited
+                carried = ledger_findings(ledger)
+                log_phase("scope", status=f"delta-from-{scope_base[:12]}", correlation=binding.correlation)
+            else:
+                # Authenticated, but it does not say what it covered. Reviewing
+                # the whole range is the only claim this run can then make.
+                log_phase("scope", status="full-unknown-coverage", correlation=binding.correlation)
         else:
             log_phase("scope", status="full", correlation=binding.correlation)
     except Exception:  # noqa: BLE001
@@ -2066,6 +2109,8 @@ def run_review(
         # label is not worth that.
         log_phase("prior-findings", status="unavailable", correlation=binding.correlation)
     progress.scope = scope
+    progress.coverage_base = coverage_base
+    progress.base_sha = binding.base_sha
     try:
         # Checked before any provider work so a missing credential ends the run
         # as a configuration failure rather than a partial review, and checked
@@ -2342,7 +2387,22 @@ def main() -> None:
     # made a nine-finding review look like a crashed job, and inverting the
     # collapse would instead let an incomplete review show an all-green pull
     # request, which reads as reviewed when it was not.
-    complete = state in COMPLETE_REVIEW_STATES and progress.scope == "full"
+    # Coverage, not scope. A delta review performed on top of a chain that
+    # reaches the current base has accounted for the whole pull request, and
+    # gating on scope instead failed every review after the first while the
+    # diff was in fact fully covered. A gate that is red on a correct run is one
+    # an operator switches off, which costs more than it protects. Comparing
+    # against the CURRENT base is what keeps this honest: a rebase or retarget
+    # moves it, the inherited value stops matching, and coverage reads
+    # incomplete until a full review re-establishes it.
+    # Both sides must be present as well as equal. Two empty strings compare
+    # equal, and a run that never recorded either did not establish coverage,
+    # so requiring a real base keeps an unset pair from reading as complete.
+    complete = (
+        state in COMPLETE_REVIEW_STATES
+        and bool(progress.base_sha)
+        and progress.coverage_base == progress.base_sha
+    )
     write_action_outputs(state=state, complete="true" if complete else "false")
     if exit_code_for_state(state):
         raise SystemExit(1)

@@ -1585,7 +1585,6 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// lifetime primitive is needed to cover the remaining launch window and
 	// descendants that create new process groups.
 	waitDone := make(chan struct{})
-	sessionWatchDone := make(chan struct{})
 	sessionExit := &sessionExitState{}
 	sessionCtx, sessionStop := context.WithCancel(ctx)
 	defer sessionStop()

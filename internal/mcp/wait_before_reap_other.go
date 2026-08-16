@@ -13,6 +13,9 @@ import (
 // waitForCommandWithProcessGroup waits for the direct child where the platform
 // cannot observe exit without reaping it. Do not signal a numeric process
 // group after Wait: that identifier may already name unrelated work.
-func waitForCommandWithProcessGroup(_ context.Context, cmd *exec.Cmd, _ int) error {
-	return cmd.Wait()
+func waitForCommandWithProcessGroup(_ context.Context, cmd *exec.Cmd, _ int, handoff *processExitHandoff) error {
+	if handoff == nil {
+		handoff = &processExitHandoff{}
+	}
+	return handoff.wait(cmd.Wait)
 }

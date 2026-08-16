@@ -98,11 +98,17 @@ type processExitHandoff struct {
 // observe reap's return, so terminate must use a kernel-stable process handle
 // instead.
 func (h *processExitHandoff) wait(reap func() error) error {
+	h.beginReaping()
+	return reap()
+}
+
+// beginReaping permanently retires raw numeric process identifiers from this
+// handoff. It is separate from wait so callers that must observe an exit before
+// reaping can still make the same boundary explicit and testable.
+func (h *processExitHandoff) beginReaping() {
 	h.mu.Lock()
 	h.reaping = true
 	h.mu.Unlock()
-
-	return reap()
 }
 
 // reapStarted reports whether cmd.Wait has started. It remains true after

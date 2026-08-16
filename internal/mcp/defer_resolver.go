@@ -202,7 +202,8 @@ func executeDeferApprovalResolver(
 		return config.ActionBlock, fmt.Errorf("defer resolver failed to start: %w", err)
 	}
 	pgid := captureChildPgid(cmd.Process.Pid)
-	waitErr := waitForCommandWithProcessGroup(ctx, cmd, pgid)
+	processExit := &processExitHandoff{}
+	waitErr := waitForCommandWithProcessGroup(ctx, cmd, pgid, processExit)
 	if waitErr != nil {
 		if ctx.Err() != nil {
 			return config.ActionBlock, ctx.Err()

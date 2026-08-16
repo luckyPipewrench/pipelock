@@ -124,11 +124,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	sessionCtx, stopSession := context.WithCancel(ctx)
 	defer stopSession()
 	sessionOpts := startupParentWatch
-	sessionOpts.logW = safeLogW
 	sessionGrace := defaultParentExitGrace
 	if h := opts.sessionExitForTest; h != nil {
 		sessionOpts = h.watch
-		sessionOpts.logW = safeLogW
 		sessionGrace = h.grace
 	}
 	if sessionOpts.startPPID > orphanedPPID {

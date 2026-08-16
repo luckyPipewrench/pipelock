@@ -130,7 +130,7 @@ func TestRunProxy_ResponseTimeoutReapsEscapedPipeHolder(t *testing.T) {
 }
 
 func TestWaitForCommandWithProcessGroupSignalsBeforeReap(t *testing.T) {
-	const resolverScript = "sleep 300 & child=$!; printf '%s\\n' \"$child\" > \"$MCP_TEST_PID_FILE\"; wait"
+	const resolverScript = "umask 077; sleep 300 & child=$!; printf '%s\\n' \"$child\" > \"$MCP_TEST_PID_FILE\"; wait"
 
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "resolver-child.pid")
@@ -163,7 +163,7 @@ func TestWaitForCommandWithProcessGroupSignalsBeforeReap(t *testing.T) {
 	}, "the resolver child to write its PID")
 
 	done := make(chan error, 1)
-	go func() { done <- waitForCommandWithProcessGroup(ctx, cmd, pgid) }()
+	go func() { done <- waitForCommandWithProcessGroup(ctx, cmd, pgid, &processExitHandoff{}) }()
 	cancel()
 	select {
 	case err := <-done:
@@ -310,7 +310,7 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 		t.Skip("spawns a real sandbox proxy process tree")
 	}
 
-	const sandboxScript = "echo $$ > \"$MCP_TEST_SANDBOX_FILE\"\nsetsid sleep 300 &\necho $! > \"$MCP_TEST_GRANDCHILD_FILE\"\nsleep 300"
+	const sandboxScript = "umask 077\necho $$ > \"$MCP_TEST_SANDBOX_FILE\"\nsetsid sleep 300 &\necho $! > \"$MCP_TEST_GRANDCHILD_FILE\"\nsleep 300"
 
 	dir := t.TempDir()
 	sandboxFile := filepath.Join(dir, "sandbox.pid")
@@ -385,7 +385,7 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 }
 
 func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
-	const liveSessionScript = "touch \"$MCP_TEST_READY_FILE\"; sleep 300"
+	const liveSessionScript = "umask 077; touch \"$MCP_TEST_READY_FILE\"; sleep 300"
 
 	if testing.Short() {
 		t.Skip("spawns a real sandbox proxy process")

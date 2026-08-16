@@ -321,13 +321,34 @@ runs:
           done <<< "$PIPELOCK_EXCLUDE"
         fi
 
-        if ! git diff "origin/${BASE_REF}...HEAD" | pipelock git scan-diff "${SCAN_ARGS[@]}"; then
+        # A non-zero exit from scan-diff means EITHER findings OR that the scan
+        # could not run, and reporting both as "secrets detected" sends the
+        # operator hunting a leak that was never found. The two are told apart
+        # by the output rather than the exit status: a scan that ran emits a
+        # JSON array, and one that failed emits a diagnostic instead.
+        SCAN_OUT="$(mktemp)"
+        SCAN_RC=0
+        git diff "origin/${BASE_REF}...HEAD" | pipelock git scan-diff --json "${SCAN_ARGS[@]}" > "$SCAN_OUT" 2>&1 || SCAN_RC=$?
+
+        if ! FINDINGS="$(jq -e 'if type == "array" then length else empty end' < "$SCAN_OUT" 2>/dev/null)"; then
+          # Fail closed regardless of fail-on-findings. That input decides what
+          # to do about secrets that were found; it cannot speak for a diff that
+          # was never examined, and treating an unscanned diff as clean is the
+          # one outcome this step exists to prevent.
+          echo "::error::Pipelock could not scan the PR diff, so it is unverified. This is a scan failure, not a secret finding."
+          sed 's/^/  /' "$SCAN_OUT"
+          exit 1
+        fi
+
+        if [ "$FINDINGS" -gt 0 ]; then
+          jq -r '.[] | "  \(.file):\(.line)  \(.pattern) (\(.severity))"' < "$SCAN_OUT"
           if [ "$PIPELOCK_FAIL_ON_FINDINGS" = "true" ]; then
-            echo "::error::Secrets detected in PR diff. Failing because fail-on-findings is enabled."
+            echo "::error::Secrets detected in PR diff (${FINDINGS}). Failing because fail-on-findings is enabled."
             exit 1
-          else
-            echo "::warning::Potential secrets detected in PR diff. Review the output above."
           fi
+          echo "::warning::Potential secrets detected in PR diff (${FINDINGS}). Review the output above."
+        else
+          echo "No secrets found in diff."
         fi
 
     - name: Upload audit report

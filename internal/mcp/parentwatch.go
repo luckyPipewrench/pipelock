@@ -219,15 +219,18 @@ func runSessionBoundExit(ctx context.Context, opts parentWatchOpts, act sessionE
 	if act.terminateTree != nil {
 		terminated = act.terminateTree()
 	}
-	if !terminated {
-		return false
-	}
+	// Record the escalation whatever the outcome. A false result means no live
+	// child remained to signal, because tearing the tree down releases the
+	// response reader and the main path can reach cmd.Wait first - not that
+	// nothing happened. Returning early there hides the message in exactly the
+	// case it matters most: the operator sees their MCP server disappear with
+	// no reason recorded, which is indistinguishable from a crash.
 	if act.logW != nil {
 		logAsync(act.logW,
 			"pipelock: wrapped MCP server did not exit within %s of session teardown; terminating process tree\n",
 			grace)
 	}
-	return true
+	return terminated
 }
 
 // newSessionBoundContext cancels a proxy context when the process that

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -296,6 +297,9 @@ func TestRunProxy_BlockedLogWriterDoesNotWedgeTeardown(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns a real child process")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell to make the server write to stderr")
+	}
 
 	logW := newBlockingWriter()
 	t.Cleanup(logW.unblock)
@@ -342,7 +346,12 @@ func TestRunProxy_BlockedLogWriterDoesNotWedgeTeardown(t *testing.T) {
 	close(parentDied)
 
 	select {
-	case <-done:
+	case err := <-done:
+		// Accepting any result would let a failure to even start the server
+		// pass as a successful teardown, which would make this test vacuous.
+		if err != nil && !errors.Is(err, ErrSubprocessExit) {
+			t.Errorf("RunProxy = %v, want a clean session-bound shutdown", err)
+		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("RunProxy never returned while the log writer was blocked; teardown deadlocked on its own diagnostic")
 	}

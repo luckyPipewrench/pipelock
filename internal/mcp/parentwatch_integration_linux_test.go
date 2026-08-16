@@ -150,21 +150,14 @@ func TestWaitForCommandWithProcessGroupSignalsBeforeReap(t *testing.T) {
 	})
 
 	var childPID int
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.For(t, 5*time.Second, func() bool {
 		pidBytes, err := os.ReadFile(filepath.Clean(pidFile))
-		if err == nil {
-			childPID, err = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-			if err != nil || childPID <= 0 {
-				t.Fatalf("resolver child PID = %q, want positive integer", pidBytes)
-			}
-			break
+		if err != nil {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if childPID == 0 {
-		t.Fatal("resolver child never wrote its PID")
-	}
+		childPID, err = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+		return err == nil && childPID > 0
+	}, "the resolver child to write its PID")
 
 	done := make(chan error, 1)
 	go func() { done <- waitForCommandWithProcessGroup(ctx, cmd, pgid) }()
@@ -315,8 +308,10 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 	}
 
 	dir := t.TempDir()
+	sandboxFile := filepath.Join(dir, "sandbox.pid")
 	grandchildFile := filepath.Join(dir, "grandchild.pid")
-	serverScript := "setsid sleep 300 &\n" +
+	serverScript := "echo $$ > " + sandboxFile + "\n" +
+		"setsid sleep 300 &\n" +
 		"echo $! > " + grandchildFile + "\n" +
 		"sleep 300\n"
 
@@ -345,24 +340,21 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 		done <- RunProxyWithSandbox(ctx, cmd, clientIn, io.Discard, &logBuf, opts)
 	}()
 
-	var grandchildPID int
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		pidBytes, err := os.ReadFile(filepath.Clean(grandchildFile))
-		if err == nil {
-			grandchildPID, _ = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-			if grandchildPID > 0 && cmd.Process != nil {
-				break
-			}
+	var sandboxPID, grandchildPID int
+	testwait.For(t, 15*time.Second, func() bool {
+		sandboxBytes, sandboxErr := os.ReadFile(filepath.Clean(sandboxFile))
+		grandchildBytes, grandchildErr := os.ReadFile(filepath.Clean(grandchildFile))
+		if sandboxErr != nil || grandchildErr != nil {
+			return false
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if grandchildPID <= 0 || cmd.Process == nil {
-		t.Fatalf("sandbox tree never came up (sandbox=%v grandchild=%d)", cmd.Process, grandchildPID)
-	}
+		var sandboxPIDErr, grandchildPIDErr error
+		sandboxPID, sandboxPIDErr = strconv.Atoi(strings.TrimSpace(string(sandboxBytes)))
+		grandchildPID, grandchildPIDErr = strconv.Atoi(strings.TrimSpace(string(grandchildBytes)))
+		return sandboxPIDErr == nil && grandchildPIDErr == nil && sandboxPID > 0 && grandchildPID > 0
+	}, "the sandbox tree to come up")
 
 	tree := map[string]int{
-		"sandbox command":        cmd.Process.Pid,
+		"sandbox command":        sandboxPID,
 		"detached sandbox child": grandchildPID,
 	}
 	for label, pid := range tree {
@@ -407,16 +399,12 @@ func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
 		done <- RunProxyWithSandbox(ctx, cmd, clientIn, io.Discard, &logBuf, opts)
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.For(t, 10*time.Second, func() bool {
 		if _, err := os.Stat(readyFile); err == nil {
-			break
+			return true
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if _, err := os.Stat(readyFile); err != nil {
-		t.Fatalf("sandbox command never became ready: %v", err)
-	}
+		return false
+	}, "the sandbox command to become ready")
 
 	select {
 	case err := <-done:

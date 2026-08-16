@@ -88,11 +88,22 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 	sandboxCmd.Stderr = safeLogW
+	// The sandbox launch preserves other SysProcAttr settings, but it must run
+	// in its own process group before session teardown can safely signal its
+	// subprocess tree.
+	setupChildProcessGroup(sandboxCmd)
 
 	if err := start(); err != nil {
 		return fmt.Errorf("starting sandboxed MCP server %q: %w", sandboxCmd.Path, err)
 	}
 	childPgid := captureChildPgid(sandboxCmd.Process.Pid)
+	processExit := &processExitHandoff{}
+	killDirectChild := func() bool {
+		if sandboxCmd.Process == nil {
+			return false
+		}
+		return sandboxCmd.Process.Kill() == nil
+	}
 	if subreaperEnabled {
 		reaperDone := make(chan struct{})
 		defer close(reaperDone)
@@ -125,15 +136,15 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 				}
 			},
 			closeServerStdin: func() { _ = serverIn.Close() },
-			terminateTree: func() {
-				terminateProcessGroup(childPgid)
-				if sandboxCmd.Process != nil {
-					_ = sandboxCmd.Process.Kill()
-				}
+			terminateTree: func() bool {
 				// A descendant can retain stdout after it leaves the direct
 				// process. Releasing our read end lets ForwardScanned return so
 				// Wait and the post-exit orphan cleanup can run.
 				_ = serverOut.Close()
+				return processExit.terminate(func() {
+					terminateProcessGroup(childPgid)
+					_ = killDirectChild()
+				}, killDirectChild)
 			},
 			waitDone: waitDone,
 			grace:    sessionGrace,
@@ -231,25 +242,31 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			_ = c.Close()
 		}
 		_ = serverIn.Close()
-		_ = sandboxCmd.Process.Signal(os.Kill)
+		_ = sandboxCmd.Process.Kill()
 	}
 
-	// Signal the original process group before Wait reaps its leader. A process
-	// group identifier is a numeric PID, so using it after Wait leaves a window
-	// where an empty group leader can be recycled into an unrelated group.
-	terminateProcessGroup(childPgid)
-	waitErr := sandboxCmd.Wait()
+	// Finish group signaling before Wait starts. processExit serializes this
+	// numeric-ID window with session teardown; after wait begins it permits only
+	// the stable direct-process handle.
+	processExit.terminate(func() { terminateProcessGroup(childPgid) }, killDirectChild)
+	// A sandbox child can detach from the process group while retaining the
+	// stderr pipe. Once the direct command has been signalled, it is adopted by
+	// the subreaper; sweep it before Wait so inherited descriptors cannot keep
+	// the direct command's pipe copy loop alive forever.
+	if subreaperEnabled {
+		killAdoptedDescendants()
+	}
+	waitErr := processExit.wait(sandboxCmd.Wait)
 	close(waitDone)
 
 	// Clean up sandbox child and temp dir.
 	if sandboxCmd.Process != nil {
-		_ = sandboxCmd.Process.Signal(os.Kill)
+		_ = sandboxCmd.Process.Kill()
 	}
 	sandbox.CleanupSandboxCmd(sandboxCmd)
 
-	// A sandbox child can create a new session and escape the original process
-	// group. The subreaper makes it ours after the direct child exits, so sweep
-	// it before returning instead of leaving an orphaned server alive.
+	// Sweep once more after Wait for a descendant that exited or reparented in
+	// the narrow interval around the first sweep.
 	if subreaperEnabled {
 		killAdoptedDescendants()
 	}

@@ -1749,7 +1749,7 @@ class RepeatReviewTest(unittest.TestCase):
         ):
             pr_review.run_review("o/r", "42", "t", "deep", "c" * 40, binding=binding, status_comment_id=1)
         self.assertIn("Old problem", published["body"])
-        self.assertIn("(reported before)", published["body"])
+        self.assertIn("(re-raised at this head)", published["body"])
 
     def test_an_incomplete_scan_does_not_let_admission_skip(self) -> None:
         # The other half. Admission decides to withhold a review, so a partial
@@ -1833,11 +1833,11 @@ class RepeatReviewTest(unittest.TestCase):
         # erase a finding.
         self.assertIn("Old problem", body)
         self.assertIn("New problem", body)
-        self.assertEqual(body.count("(reported before)"), 1)
+        self.assertEqual(body.count("(re-raised at this head)"), 1)
         old_line = next(line for line in body.splitlines() if "`a.go:10`" in line)
         new_line = next(line for line in body.splitlines() if "`b.go:20`" in line)
-        self.assertIn("(reported before)", old_line)
-        self.assertNotIn("(reported before)", new_line)
+        self.assertIn("(re-raised at this head)", old_line)
+        self.assertNotIn("(re-raised at this head)", new_line)
 
     def test_prior_fingerprints_come_only_from_completed_reviews(self) -> None:
         markers = [

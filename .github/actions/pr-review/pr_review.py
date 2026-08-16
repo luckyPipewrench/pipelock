@@ -1446,12 +1446,18 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         for index, finding in enumerate(findings, 1):
             location = display_path(finding.path) + (f":{finding.line}" if finding.line else "")
             marker = " (needs verification)" if finding.needs_verification else ""
-            # Says which findings a reader has already seen on this pull
-            # request, so a re-review after a push reads as a short list of new
-            # work rather than a wall to re-triage. Every finding is still
-            # printed; this only labels.
+            # "Re-raised", not "reported before". The judge found this in the
+            # CURRENT code, so a match against an earlier review means the
+            # problem survived whatever was done since. That deserves more
+            # attention than a first sighting, and the old wording read as old
+            # news to skip, which is exactly backwards.
+            #
+            # Deliberately not called "persists". This key is path, severity
+            # and normalized title: enough to say a finding of the same shape
+            # is here again, not enough to prove it is the same defect rather
+            # than a different one wearing the same title.
             if finding_fingerprint(finding) in seen_before:
-                marker += " (reported before)"
+                marker += " (re-raised at this head)"
             lines.extend(
                 [
                     f"#### {index}. {finding.severity} - `{location}`{marker}",

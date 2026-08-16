@@ -6,6 +6,7 @@ package securefile
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -87,11 +88,19 @@ func TestReadRejectsNonPositiveMaxBytes(t *testing.T) {
 	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, max := range []int64{0, -1} {
-		_, err := Read(path, Options{MaxBytes: max, DisallowedPerms: 0o037})
-		if err == nil || !strings.Contains(err.Error(), "max bytes must be positive") {
-			t.Fatalf("MaxBytes=%d error = %v, want positive-max rejection", max, err)
-		}
+	for _, tt := range []struct {
+		name string
+		max  int64
+	}{
+		{name: "zero", max: 0},
+		{name: "negative", max: -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Read(path, Options{MaxBytes: tt.max, DisallowedPerms: 0o037})
+			if err == nil || !strings.Contains(err.Error(), "max bytes must be positive") {
+				t.Fatalf("MaxBytes=%d error = %v, want positive-max rejection", tt.max, err)
+			}
+		})
 	}
 }
 
@@ -130,6 +139,9 @@ func TestReadSymlinkToDirectory(t *testing.T) {
 }
 
 func TestReadOpenPermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix mode 000")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root can open mode 000 files")
 	}

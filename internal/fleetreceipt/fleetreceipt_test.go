@@ -852,20 +852,23 @@ func TestValidateSubjectsRejectsMismatches(t *testing.T) {
 func TestIsUnitDecimalString(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
+		name string
 		in   string
 		want bool
 	}{
-		{in: "0", want: true},
-		{in: "1", want: true},
-		{in: "0.5", want: true},
-		{in: "0.x", want: false},
-		{in: "1.0", want: true},
-		{in: "1.01", want: false},
-		{in: "2", want: false},
+		{name: "zero", in: "0", want: true},
+		{name: "one", in: "1", want: true},
+		{name: "half", in: "0.5", want: true},
+		{name: "non_digit_fraction", in: "0.x", want: false},
+		{name: "one_point_zero", in: "1.0", want: true},
+		{name: "over_one", in: "1.01", want: false},
+		{name: "two", in: "2", want: false},
 	} {
-		if got := isUnitDecimalString(tt.in); got != tt.want {
-			t.Fatalf("isUnitDecimalString(%q) = %v, want %v", tt.in, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUnitDecimalString(tt.in); got != tt.want {
+				t.Fatalf("isUnitDecimalString(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

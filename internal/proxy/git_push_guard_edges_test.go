@@ -13,7 +13,7 @@ import (
 func TestEvaluateGitPushAllowlistNilAndUnparseable(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.GitProtection{Enabled: true, AllowedPushRepos: []string{"github.com/acme/private"}}
+	cfg := config.GitProtection{Enabled: true, AllowedPushRepos: []string{"git.vendor.example/acme/private"}}
 	if got := evaluateGitPushAllowlist(cfg, nil); got.Block {
 		t.Fatalf("nil URL blocked: %+v", got)
 	}
@@ -26,7 +26,7 @@ func TestEvaluateGitPushAllowlistNilAndUnparseable(t *testing.T) {
 		t.Fatalf("empty host treated as a push: %+v", got)
 	}
 
-	rootOnly, err := url.Parse("https://github.com/.git/git-receive-pack")
+	rootOnly, err := url.Parse("https://git.vendor.example/.git/git-receive-pack")
 	if err != nil {
 		t.Fatalf("parse empty-repo receive-pack: %v", err)
 	}

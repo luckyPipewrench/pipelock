@@ -204,10 +204,14 @@ func executeDeferApprovalResolver(
 	pgid := captureChildPgid(cmd.Process.Pid)
 	processExit := &processExitHandoff{}
 	waitErr := waitForCommandWithProcessGroup(ctx, cmd, pgid, processExit)
+	return finalizeDeferApprovalResolver(ctx, waitErr, &stdout, &stderr)
+}
+
+func finalizeDeferApprovalResolver(ctx context.Context, waitErr error, stdout, stderr *cappedOutputBuffer) (string, error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return config.ActionBlock, ctxErr
+	}
 	if waitErr != nil {
-		if ctx.Err() != nil {
-			return config.ActionBlock, ctx.Err()
-		}
 		return config.ActionBlock, fmt.Errorf("defer resolver failed: %w (stderr: %s)", waitErr, stderr.String())
 	}
 	if stdout.truncated || stderr.truncated {

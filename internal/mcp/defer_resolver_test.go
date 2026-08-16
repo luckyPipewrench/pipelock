@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -131,6 +132,24 @@ func TestExecuteDeferApprovalResolverStrictResults(t *testing.T) {
 		Action:       config.ActionBlock,
 	}, io.Discard); err == nil {
 		t.Fatal("resolver bypassed blocking binary integrity failure")
+	}
+}
+
+func TestFinalizeDeferApprovalResolver_CanceledContextBlocksCleanExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr cappedOutputBuffer
+	stdout.limit = maxDeferResolverOutputBytes
+	if _, err := stdout.Write([]byte(config.ActionAllow)); err != nil {
+		t.Fatalf("writing resolver output: %v", err)
+	}
+
+	got, err := finalizeDeferApprovalResolver(ctx, nil, &stdout, &stderr)
+	if got != config.ActionBlock {
+		t.Errorf("decision = %q, want %q after cancellation", got, config.ActionBlock)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context cancellation", err)
 	}
 }
 

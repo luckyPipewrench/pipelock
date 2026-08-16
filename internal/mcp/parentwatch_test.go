@@ -92,7 +92,7 @@ func TestRunSessionBoundExit_CooperativeServerIsNotKilled(t *testing.T) {
 		done <- runSessionBoundExit(context.Background(), deadSession(), sessionExitActions{
 			stopIntake:       func() { intake.Store(true) },
 			closeServerStdin: func() { stdinClosed.Store(true); close(waitDone) },
-			terminateTree:    func() { terminated.Store(true) },
+			terminateTree:    func() bool { terminated.Store(true); return true },
 			waitDone:         waitDone,
 			grace:            10 * time.Second, // must never be waited out
 		})
@@ -128,7 +128,7 @@ func TestRunSessionBoundExit_ServerIgnoringEOFIsTerminated(t *testing.T) {
 	escalated := runSessionBoundExit(context.Background(), deadSession(), sessionExitActions{
 		stopIntake:       func() {},
 		closeServerStdin: func() {}, // server ignores it
-		terminateTree:    func() { terminated.Store(true) },
+		terminateTree:    func() bool { terminated.Store(true); return true },
 		waitDone:         make(chan struct{}), // never closed
 		grace:            10 * time.Millisecond,
 	})
@@ -157,7 +157,7 @@ func TestRunSessionBoundExit_LiveSessionRunsNoTeardown(t *testing.T) {
 	}, sessionExitActions{
 		stopIntake:       func() { touched.Store(true) },
 		closeServerStdin: func() { touched.Store(true) },
-		terminateTree:    func() { touched.Store(true) },
+		terminateTree:    func() bool { touched.Store(true); return true },
 		waitDone:         make(chan struct{}),
 		grace:            time.Millisecond,
 	})
@@ -174,16 +174,16 @@ func TestRunSessionBoundExit_CancelDuringGraceStopsEscalation(t *testing.T) {
 	// stand down rather than signal a group the main path already reaped.
 	var terminated atomic.Bool
 	ctx, cancel := context.WithCancel(context.Background())
-
+	draining := make(chan struct{})
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		<-draining
 		cancel()
 	}()
 
 	escalated := runSessionBoundExit(ctx, deadSession(), sessionExitActions{
 		stopIntake:       func() {},
-		closeServerStdin: func() {},
-		terminateTree:    func() { terminated.Store(true) },
+		closeServerStdin: func() { close(draining) },
+		terminateTree:    func() bool { terminated.Store(true); return true },
 		waitDone:         make(chan struct{}),
 		grace:            10 * time.Second,
 	})
@@ -200,16 +200,20 @@ func TestRunSessionBoundExit_DefaultGraceApplies(t *testing.T) {
 	// instantly, which would give a cooperative server no drain at all.
 	start := time.Now()
 	waitDone := make(chan struct{})
+	draining := make(chan struct{})
 	go func() {
-		time.Sleep(30 * time.Millisecond)
+		<-draining
 		close(waitDone)
 	}()
 
 	escalated := runSessionBoundExit(context.Background(), deadSession(), sessionExitActions{
 		stopIntake:       func() {},
-		closeServerStdin: func() {},
-		terminateTree:    func() { t.Error("terminated during the default grace window") },
-		waitDone:         waitDone,
+		closeServerStdin: func() { close(draining) },
+		terminateTree: func() bool {
+			t.Error("terminated during the default grace window")
+			return true
+		},
+		waitDone: waitDone,
 	})
 
 	if escalated {
@@ -217,6 +221,34 @@ func TestRunSessionBoundExit_DefaultGraceApplies(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed >= defaultParentExitGrace {
 		t.Errorf("waited %s, expected to short-circuit well inside the %s default grace", elapsed, defaultParentExitGrace)
+	}
+}
+
+func TestProcessExitHandoff_RejectsEscalationAfterReapingStarts(t *testing.T) {
+	t.Parallel()
+
+	// Reproduce the ownership handoff: cmd.Wait starts after the grace timer
+	// fired but before the watcher obtains its termination turn. A late signal
+	// here could target a PID or process group the kernel has already reused.
+	handoff := &processExitHandoff{}
+	handoff.beginReap()
+	var terminated atomic.Bool
+
+	escalated := runSessionBoundExit(context.Background(), deadSession(), sessionExitActions{
+		stopIntake:       func() {},
+		closeServerStdin: func() {},
+		terminateTree: func() bool {
+			return handoff.terminate(func() { terminated.Store(true) })
+		},
+		waitDone: make(chan struct{}),
+		grace:    time.Millisecond,
+	})
+
+	if escalated {
+		t.Error("session exit escalated after cmd.Wait owned process reaping")
+	}
+	if terminated.Load() {
+		t.Error("late session exit signalled process identifiers after reaping began")
 	}
 }
 

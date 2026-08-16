@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -75,6 +76,31 @@ func isSessionExitCloseErr(err error) bool {
 	return errors.Is(err, os.ErrClosed)
 }
 
+// processExitHandoff gives teardown and reaping one owner for the child
+// identifiers. Once cmd.Wait starts, the kernel can reuse the direct child's
+// PID or process-group ID as soon as it reaps the child, so a late escalation
+// must not signal either value.
+type processExitHandoff struct {
+	mu      sync.Mutex
+	reaping bool
+}
+
+func (h *processExitHandoff) beginReap() {
+	h.mu.Lock()
+	h.reaping = true
+	h.mu.Unlock()
+}
+
+func (h *processExitHandoff) terminate(fn func()) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.reaping {
+		return false
+	}
+	fn()
+	return true
+}
+
 // sessionExitActions are the teardown steps runSessionBoundExit performs
 // once the spawning session is confirmed gone. They are injected so the
 // ordering can be tested in-process: the production path runs inside a
@@ -88,8 +114,9 @@ type sessionExitActions struct {
 	// closeServerStdin gives a cooperative server its shutdown signal.
 	closeServerStdin func()
 	// terminateTree tears down the whole process group and the direct
-	// child. Only called for a server that outlasts the grace window.
-	terminateTree func()
+	// child. It returns false when cmd.Wait already owns reaping, so no
+	// stale process identifier is ever signalled after that handoff.
+	terminateTree func() bool
 	// waitDone closes when cmd.Wait has returned, short-circuiting the
 	// grace window for a server that exited on its own.
 	waitDone <-chan struct{}
@@ -145,22 +172,28 @@ func runSessionBoundExit(ctx context.Context, opts parentWatchOpts, act sessionE
 	// The grace timer and waitDone can become ready in the same instant,
 	// and a select picks uniformly among ready cases. Re-check before
 	// escalating so a server that finished right at the deadline is not
-	// signalled after cmd.Wait already reaped its group - the PID the
-	// kernel is then free to recycle.
+	// signalled after cmd.Wait already reaped its group. terminateTree has
+	// the synchronized handoff that closes the remaining check-to-signal
+	// race with cmd.Wait.
 	select {
 	case <-act.waitDone:
 		return false
 	default:
 	}
 
-	// 4. The server outlasted its drain window.
+	// 4. The server outlasted its drain window. The process handoff can
+	// decline if cmd.Wait won the race to own reaping.
+	terminated := true
+	if act.terminateTree != nil {
+		terminated = act.terminateTree()
+	}
+	if !terminated {
+		return false
+	}
 	if act.logW != nil {
 		_, _ = fmt.Fprintf(act.logW,
 			"pipelock: wrapped MCP server did not exit within %s of session teardown; terminating process tree\n",
 			grace)
-	}
-	if act.terminateTree != nil {
-		act.terminateTree()
 	}
 	return true
 }

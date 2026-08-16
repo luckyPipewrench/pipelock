@@ -1503,6 +1503,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// On Windows the helper returns 0 and the signal helpers below all
 	// no-op, matching the no-op setupChildProcessGroup call above.
 	childPgid := captureChildPgid(cmd.Process.Pid)
+	processExit := &processExitHandoff{}
 
 	// Drain adopted-descendant zombies live, while the direct child is
 	// still running. Without this, long-running MCP wraps (e.g. a code-assistant
@@ -1536,7 +1537,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	go func() {
 		select {
 		case <-ctx.Done():
-			signalProcessGroupTerm(childPgid)
+			processExit.terminate(func() { signalProcessGroupTerm(childPgid) })
 		case <-pgidDone:
 		}
 	}()
@@ -1597,16 +1598,18 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			// the descriptor and lets Wait return, after which the normal
 			// teardown reaps detached and adopted descendants the group kill
 			// could not reach.
-			terminateTree: func() {
-				terminateProcessGroup(childPgid)
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-				// A descendant can escape the child group with setsid while
-				// retaining stdout. Closing our read end releases ForwardScanned
-				// so cmd.Wait and its adopted-descendant sweep are reachable.
-				_ = serverOut.Close()
-				_ = serverErr.Close()
+			terminateTree: func() bool {
+				return processExit.terminate(func() {
+					terminateProcessGroup(childPgid)
+					if cmd.Process != nil {
+						_ = cmd.Process.Kill()
+					}
+					// A descendant can escape the child group with setsid while
+					// retaining stdout. Closing our read end releases ForwardScanned
+					// so cmd.Wait and its adopted-descendant sweep are reachable.
+					_ = serverOut.Close()
+					_ = serverErr.Close()
+				})
 			},
 			waitDone: waitDone,
 			grace:    sessionGrace,
@@ -1748,6 +1751,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		_ = cmd.Process.Kill()
 	}
 
+	// Hand the process identifiers to cmd.Wait before reaping. Once this
+	// begins, concurrent session or context teardown must not signal a PID or
+	// process group that the kernel can recycle after the child exits.
+	processExit.beginReap()
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()
 	// Release the session watcher's drain wait. A server that exited on its

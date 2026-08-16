@@ -2092,6 +2092,30 @@ class LedgerTest(unittest.TestCase):
         self.assertIsNone(pr_review.parse_ledger("no ledger here"))
         self.assertIsNone(pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} bm90YmFzZTY0ISEh -->"))
 
+
+    def test_a_clipped_ledger_marks_itself_incomplete(self) -> None:
+        # The cap silently drops findings. A baseline whose record was clipped
+        # would carry forward only part of what is still open, and the rest
+        # would never be re-checked because they sit outside the delta.
+        many = [pr_review.Finding("low", f"f{i}.go", i, f"t{i}", "w", "f")
+                for i in range(pr_review.MAX_LEDGER_ENTRIES + 1)]
+        clipped = pr_review.parse_ledger(pr_review.render_ledger(many, "c" * 40))
+        self.assertFalse(clipped["complete"])
+
+        exact = [pr_review.Finding("low", f"f{i}.go", i, f"t{i}", "w", "f")
+                 for i in range(pr_review.MAX_LEDGER_ENTRIES)]
+        whole = pr_review.parse_ledger(pr_review.render_ledger(exact, "c" * 40))
+        self.assertTrue(whole["complete"])
+
+    def test_a_ledger_without_the_flag_is_not_complete(self) -> None:
+        # An older ledger predating the flag cannot be assumed whole.
+        import base64 as _b64
+        import json as _json
+        payload = {"head": "c" * 40, "open": []}
+        encoded = _b64.b64encode(_json.dumps(payload).encode()).decode()
+        parsed = pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} {encoded} -->")
+        self.assertFalse(parsed["complete"])
+
     def test_an_entry_with_a_bad_severity_is_dropped(self) -> None:
         import base64 as _b64
         import json as _json

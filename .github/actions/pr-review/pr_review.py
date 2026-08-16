@@ -1040,7 +1040,10 @@ def render_ledger(findings: list[Finding], head_sha: str) -> str:
                 "t": " ".join(finding.title.split())[:MAX_LEDGER_TITLE],
             }
         )
-    payload = {"head": head_sha, "open": entries}
+    # Says whether this record is the whole set. A ledger clipped by the cap
+    # cannot be used as a baseline: the findings it dropped are still open and
+    # a later delta review would never look at them again.
+    payload = {"head": head_sha, "open": entries, "complete": len(findings) <= MAX_LEDGER_ENTRIES}
     encoded = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
     return f"<!-- {LEDGER_MARKER} {encoded} -->"
 
@@ -1058,6 +1061,10 @@ def parse_ledger(body: str) -> dict[str, object] | None:
         return None
     if not isinstance(payload.get("head"), str) or not re.fullmatch(r"[0-9a-f]{40}", payload["head"]):
         return None
+    # Absent means an older ledger that never recorded it, which cannot be
+    # assumed whole.
+    if payload.get("complete") is not True:
+        payload["complete"] = False
     entries = []
     for item in payload["open"]:
         if not isinstance(item, dict):
@@ -1582,15 +1589,17 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
     counts = {severity: sum(finding.severity == severity for finding in findings) for severity in ("high", "medium", "low")}
     omitted = [entry for entry in manifest if entry["status"] != "reviewed"]
     collapsed = [entry for entry in manifest if entry["collapsed_deletions"]]
-    lines = ["## AI PR Review", "", f"**Verdict:** `{state}`"]
+    lines = ["## AI PR Review", ""]
     if delta:
-        # Stated before the verdict, because the verdict means something
-        # narrower here and a reader who misses that draws the wrong
-        # conclusion from a clean result.
+        # Above the verdict, not below it. A reader who sees `clean` first has
+        # already drawn a conclusion about the whole pull request before
+        # reaching the line that narrows it.
         lines.append(
             f"**Scope: the change since `{scope_base[:12]}`, not the whole pull request.** "
             "A clean result here means nothing was found in that change."
         )
+        lines.append("")
+    lines.append(f"**Verdict:** `{state}`")
     if state == "partial":
         lines.append("**This is incomplete and must not be treated as a clean review.**")
     elif state == "superseded":
@@ -1894,10 +1903,15 @@ def run_review(
         # Every condition here falls back to a full review, because a full
         # review is only expensive while a wrongly-scoped one is wrong.
         previous = previous_review_for_mode(prior, mode, binding.head_sha)
-        if previous and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
+        ledger = previous.get("ledger") if previous else None
+        # A baseline is only usable when its record of open findings is whole.
+        # Missing, malformed, or clipped by the cap all mean the same thing
+        # here: this run cannot know what it would be carrying forward.
+        usable = isinstance(ledger, dict) and ledger.get("complete") is True
+        if previous and usable and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
             scope = "delta"
             scope_base = str(previous["reviewed_head"])
-            carried = ledger_findings(previous.get("ledger") or {})
+            carried = ledger_findings(ledger)
             log_phase("scope", status=f"delta-from-{scope_base[:12]}", correlation=binding.correlation)
         else:
             log_phase("scope", status="full", correlation=binding.correlation)
@@ -1935,7 +1949,12 @@ def run_review(
             # A delta that cannot be fetched must not silently become a full
             # review under a comment that says delta, nor the reverse.
             return "failed", progress
-        truncation = compare_incompleteness(repo, binding, token)
+        # Asked of the range this run actually read. Using the whole pull
+        # request here made a large history mark every small delta partial,
+        # which then disqualified that delta from ever becoming a baseline: the
+        # feature would have degraded to nothing on exactly the pull requests
+        # it exists for.
+        truncation = compare_incompleteness(repo, fetch_binding, token)
         if truncation:
             progress.incomplete_reasons.append(truncation)
         units, parse_errors = parse_diff(diff, mode)

@@ -2296,6 +2296,18 @@ def run_review(
         try:
             latest = get_pull_binding(repo, pr_number, token, reviewer_sha)
             progress.head_changed = latest.head_sha != binding.head_sha
+            # The head can hold still while the base moves under it, because
+            # retargeting a pull request changes the range without producing a
+            # commit. Both bases recorded by this run are then the OLD base, so
+            # they still agree with each other and coverage would read complete
+            # for a range this review never saw. The equality check downstream
+            # cannot catch that on its own: it compares two values this run
+            # captured, and they are consistently stale together. Comparing
+            # against what the pull request says NOW is what closes it.
+            if latest.base_sha != binding.base_sha:
+                progress.incomplete_reasons.append(
+                    "the pull request base changed while the review was running"
+                )
         except FetchError:
             progress.incomplete_reasons.append("final head binding could not be re-read")
         return derive_state(progress), progress

@@ -490,6 +490,47 @@ class ImmutableBindingTest(unittest.TestCase):
         self.assertTrue(progress.head_changed)
         self.assertEqual(call_model.call_count, 0, "a moved head must not spend a provider call")
 
+    def test_run_marks_review_incomplete_when_the_base_moves_under_a_still_head(self) -> None:
+        # Retargeting a pull request changes the range it presents without
+        # producing a commit, so the head check cannot see it. Both bases this
+        # run recorded are then the old base and agree with each other, which is
+        # exactly the shape that would otherwise report complete coverage for a
+        # range the review never read.
+        original = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        retargeted = pr_review.PullBinding("f" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        diff = "\n".join(
+            [
+                "diff --git a/internal/a.go b/internal/a.go",
+                "--- a/internal/a.go",
+                "+++ b/internal/a.go",
+                "@@ -1 +1 @@",
+                "-old",
+                "+new",
+            ]
+        )
+        review_payload = {
+            "findings": [],
+            "changes": [{"path": "internal/a.go", "summary": "changes enforcement"}],
+        }
+        with mock.patch.object(
+            pr_review, "get_pull_binding", side_effect=[original, original, retargeted]
+        ), mock.patch.object(
+            pr_review, "find_running_comment", return_value=(None, True)
+        ), mock.patch.object(pr_review, "create_comment", return_value={"id": 7}), mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value=diff
+        ), mock.patch.object(
+            pr_review, "call_model", side_effect=[review_payload, {"findings": []}]
+        ), mock.patch.object(pr_review, "update_comment"), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("https://provider.example/v1/chat/completions", "key")
+        ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None):
+            state, progress = pr_review.run_review("owner/repo", "42", "token", "default", "c" * 40)
+        self.assertFalse(progress.head_changed, "the head did not move; only the base did")
+        self.assertIn(
+            "the pull request base changed while the review was running",
+            progress.incomplete_reasons,
+        )
+        self.assertNotIn(state, pr_review.COMPLETE_REVIEW_STATES)
+
     def test_claim_persists_binding_and_one_status_comment_id(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         with tempfile.NamedTemporaryFile() as output, mock.patch.dict(

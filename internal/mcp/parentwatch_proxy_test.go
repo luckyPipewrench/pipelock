@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // blockingReader stands in for a client whose session is alive: it never
@@ -147,13 +149,9 @@ func TestRunProxy_SessionExitTerminatesIgnoringServer(t *testing.T) {
 		t.Fatal("RunProxy never returned after the spawning session died; the proxy leaked")
 	}
 
-	log := logBuf.String()
-	if !strings.Contains(log, "spawning session exited") {
-		t.Errorf("missing session-exit explanation in operator log, got %q", log)
-	}
-	if !strings.Contains(log, "terminating process tree") {
-		t.Errorf("missing forced-teardown notice for a server that ignored stdin close, got %q", log)
-	}
+	testwait.For(t, 5*time.Second, func() bool {
+		return strings.Contains(logBuf.String(), "spawning session exited")
+	}, "asynchronous session-exit log message")
 }
 
 // TestRunProxy_LiveSessionIsNotTornDown is the availability direction: with

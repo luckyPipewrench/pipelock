@@ -959,6 +959,17 @@ def _running_marker_is_stale(comment: dict[str, Any]) -> bool:
     return age > datetime.timedelta(minutes=STALE_RUNNING_MINUTES)
 
 
+def ledger_claim(finding: Finding) -> tuple[str, str]:
+    """The exact path and title a ledger stores, so both sides agree.
+
+    The fingerprint used the full values while the ledger stored clipped ones,
+    so any long path or title produced a record that failed its own integrity
+    check and forced a full review forever after. Bounding here means the
+    fingerprint describes what was actually written down.
+    """
+    return finding.path[:200], " ".join(finding.title.split())[:MAX_LEDGER_TITLE]
+
+
 def finding_fingerprint(finding: Finding) -> str:
     """Identify a finding across runs without depending on its line number.
 
@@ -966,8 +977,8 @@ def finding_fingerprint(finding: Finding) -> str:
     would make every finding look new after any push. Path, severity and the
     normalized title are what a reader recognizes as the same finding.
     """
-    title = " ".join(finding.title.lower().split())
-    return hashlib.sha256(f"{finding.path}\x00{finding.severity}\x00{title}".encode()).hexdigest()[:12]
+    path, title = ledger_claim(finding)
+    return hashlib.sha256(f"{path}\x00{finding.severity}\x00{title.lower()}".encode()).hexdigest()[:12]
 
 
 def notice_marker(kind: str, correlation: str, mode: str) -> str:
@@ -1031,13 +1042,14 @@ def render_ledger(findings: list[Finding], head_sha: str) -> str:
     """
     entries = []
     for finding in findings[:MAX_LEDGER_ENTRIES]:
+        path, title = ledger_claim(finding)
         entries.append(
             {
                 "f": finding_fingerprint(finding),
-                "p": finding.path[:200],
+                "p": path,
                 "l": finding.line if isinstance(finding.line, int) else None,
                 "s": finding.severity,
-                "t": " ".join(finding.title.split())[:MAX_LEDGER_TITLE],
+                "t": title,
             }
         )
     # Says whether this record is the whole set. A ledger clipped by the cap
@@ -1072,7 +1084,11 @@ def parse_ledger(body: str) -> dict[str, object] | None:
     # still label, because a label only adds information.
     entries = []
     intact = True
-    for item in payload["open"]:
+    # More entries than this writer will ever emit means the payload was not
+    # produced here, so it cannot be trusted as a record of what was published.
+    if len(payload["open"]) > MAX_LEDGER_ENTRIES:
+        intact = False
+    for item in payload["open"][:MAX_LEDGER_ENTRIES]:
         if not isinstance(item, dict) or not {"f", "p", "s", "t"} <= set(item):
             intact = False
             continue

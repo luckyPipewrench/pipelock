@@ -2133,6 +2133,31 @@ class LedgerTest(unittest.TestCase):
         self.assertFalse(parsed["complete"])
 
 
+
+    def test_a_long_path_or_title_does_not_invalidate_its_own_ledger(self) -> None:
+        # The fingerprint used the full values while the ledger stored clipped
+        # ones, so a long title or path produced a record that failed its own
+        # integrity check and forced a full review from then on.
+        long_title = "x" * (pr_review.MAX_LEDGER_TITLE + 50)
+        long_path = "d/" * 150 + "a.go"
+        findings = [
+            pr_review.Finding("high", "a.go", 1, long_title, "w", "f"),
+            pr_review.Finding("low", long_path, 2, "t", "w", "f"),
+        ]
+        parsed = pr_review.parse_ledger(pr_review.render_ledger(findings, "c" * 40))
+        self.assertTrue(parsed["complete"], "a ledger this writer produced must verify")
+        self.assertEqual(len(parsed["open"]), 2)
+
+    def test_more_entries_than_the_cap_is_refused(self) -> None:
+        import base64 as _b64
+        import json as _json
+        entry = {"f": "0" * 12, "p": "a.go", "l": 1, "s": "high", "t": "t"}
+        payload = {"head": "c" * 40, "complete": True,
+                   "open": [dict(entry) for _ in range(pr_review.MAX_LEDGER_ENTRIES + 5)]}
+        encoded = _b64.b64encode(_json.dumps(payload).encode()).decode()
+        parsed = pr_review.parse_ledger(f"<!-- {pr_review.LEDGER_MARKER} {encoded} -->")
+        self.assertFalse(parsed["complete"])
+
     def test_an_edited_claim_invalidates_its_record(self) -> None:
         # The fingerprint was stored and then ignored when rebuilding, so an
         # edited title, path or severity changed what the record claimed while

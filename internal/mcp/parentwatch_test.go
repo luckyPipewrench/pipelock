@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // stubPPID returns a getppid func that reports first for the first n calls
@@ -224,10 +226,58 @@ func TestRunSessionBoundExit_DefaultGraceApplies(t *testing.T) {
 	}
 }
 
+func TestProcessExitHandoff_TerminateProceedsWhileReapInFlight(t *testing.T) {
+	t.Parallel()
+
+	// The deadlock this guards against: reap is cmd.Wait, and on the path the
+	// session-bound exit exists for, cmd.Wait does not return until the tree is
+	// terminated. If a reap in flight blocked terminate, the escalation would
+	// wait on a reap only that escalation could unblock, and the proxy would
+	// hang with the whole tree alive - the exact leak being fixed.
+	//
+	// Escalating here is also SAFE: the child is not reaped yet, so the kernel
+	// cannot have recycled its PID or process-group ID.
+	handoff := &processExitHandoff{}
+	reapEntered := make(chan struct{})
+	releaseReap := make(chan struct{})
+	waitDone := make(chan error, 1)
+
+	go func() {
+		waitDone <- handoff.wait(func() error {
+			close(reapEntered)
+			<-releaseReap // stands in for a cmd.Wait that never returns on its own
+			return nil
+		})
+	}()
+
+	<-reapEntered
+	testwait.For(t, 2*time.Second, handoff.reapStarted, "the reap to be marked in flight")
+
+	var terminated atomic.Bool
+	escalated := make(chan bool, 1)
+	go func() {
+		escalated <- handoff.terminate(func() { terminated.Store(true) })
+	}()
+
+	select {
+	case ok := <-escalated:
+		if !ok || !terminated.Load() {
+			t.Error("escalation was refused while the reap was still in flight; the tree would be left running")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminate blocked on an in-flight reap; this is the deadlock that hangs the proxy with its tree alive")
+	}
+
+	close(releaseReap)
+	if err := <-waitDone; err != nil {
+		t.Fatalf("process reaping returned %v", err)
+	}
+}
+
 func TestProcessExitHandoff_RejectsEscalationAfterReapingStarts(t *testing.T) {
 	t.Parallel()
 
-	// Once cmd.Wait has returned, a late signal could target a PID or process
+	// Once cmd.Wait has RETURNED, a late signal could target a PID or process
 	// group the kernel already reused.
 	handoff := &processExitHandoff{}
 	if err := handoff.wait(func() error { return nil }); err != nil {

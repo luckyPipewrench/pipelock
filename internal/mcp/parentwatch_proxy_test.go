@@ -42,11 +42,12 @@ func (b *lockedBuffer) String() string {
 }
 
 type nonClosableBlockingReader struct {
-	started     chan struct{}
-	returned    chan struct{}
-	release     chan struct{}
-	startOnce   sync.Once
-	releaseOnce sync.Once
+	started      chan struct{}
+	returned     chan struct{}
+	release      chan struct{}
+	startOnce    sync.Once
+	releaseOnce  sync.Once
+	returnedOnce sync.Once
 }
 
 func newNonClosableBlockingReader() *nonClosableBlockingReader {
@@ -60,7 +61,9 @@ func newNonClosableBlockingReader() *nonClosableBlockingReader {
 func (b *nonClosableBlockingReader) Read(_ []byte) (int, error) {
 	b.startOnce.Do(func() { close(b.started) })
 	<-b.release
-	close(b.returned)
+	// A reader can be polled more than once; closing an already-closed
+	// channel would panic and mask the behaviour under test.
+	b.returnedOnce.Do(func() { close(b.returned) })
 	return 0, io.EOF
 }
 
@@ -97,7 +100,8 @@ func TestRunProxy_SessionExitTerminatesIgnoringServer(t *testing.T) {
 
 	parentDied := make(chan struct{})
 	outputForwardStarted := make(chan struct{})
-	var stdout, logBuf bytes.Buffer
+	var stdout bytes.Buffer
+	var logBuf lockedBuffer
 	opts := MCPProxyOpts{
 		sessionExitForTest: &sessionExitTestHooks{
 			watch: parentWatchOpts{

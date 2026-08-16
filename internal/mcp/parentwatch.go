@@ -81,16 +81,44 @@ func isSessionExitCloseErr(err error) bool {
 // PID or process-group ID as soon as it reaps the child, so a late escalation
 // must not signal either value.
 type processExitHandoff struct {
-	mu     sync.Mutex
-	reaped bool
+	mu      sync.Mutex
+	reaping bool
+	reaped  bool
 }
 
+// wait runs the blocking reap without holding the lock across it.
+//
+// Holding the lock for the duration of reap deadlocks: reap is cmd.Wait, and
+// on the path this whole mechanism exists for, cmd.Wait does not return until
+// the process tree is terminated - which is what terminate does. A terminate
+// blocked on the mutex therefore waits on a reap that only that terminate can
+// unblock, and the proxy hangs with the tree alive, which is precisely the
+// leak being fixed.
+//
+// Escalating WHILE a reap is in flight is safe, because the child has not been
+// reaped yet and so the kernel cannot have recycled its PID or process-group
+// ID. Only once reap RETURNS do those identifiers become reusable, and that is
+// the point at which terminate must refuse.
 func (h *processExitHandoff) wait(reap func() error) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.reaping = true
+	h.mu.Unlock()
+
 	err := reap()
+
+	h.mu.Lock()
 	h.reaped = true
+	h.mu.Unlock()
 	return err
+}
+
+// reapStarted reports whether a reap is in flight or already finished. It
+// exists for tests and diagnostics; termination decisions use reaped, since an
+// in-flight reap has not yet freed any identifier.
+func (h *processExitHandoff) reapStarted() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.reaping
 }
 
 func (h *processExitHandoff) terminate(fn func()) bool {

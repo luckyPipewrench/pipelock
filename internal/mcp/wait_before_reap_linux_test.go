@@ -16,7 +16,7 @@ func TestWaitForCommandWithProcessGroup_CancellationAfterReapingUsesStableHandle
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	cmd := exec.Command("/bin/sh", "-c", "umask 077; while :; do :; done")
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "umask 077; while :; do :; done")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting resolver command: %v", err)
 	}

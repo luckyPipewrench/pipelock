@@ -22,8 +22,8 @@ func waitForCommandWithProcessGroup(ctx context.Context, cmd *exec.Cmd, pgid int
 	if handoff == nil {
 		handoff = &processExitHandoff{}
 	}
-	terminate := func() bool {
-		return handoff.terminate(func() { terminateProcessGroup(pgid) }, func() bool {
+	terminate := func() {
+		handoff.terminate(func() { terminateProcessGroup(pgid) }, func() bool {
 			return cmd.Process != nil && cmd.Process.Kill() == nil
 		})
 	}

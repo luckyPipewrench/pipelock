@@ -110,7 +110,9 @@ class WorkflowPackagingTest(unittest.TestCase):
         admit = workflow["jobs"]["admit"]
         self.assertEqual(admit["concurrency"]["group"], "pr-review-${{ github.repository }}-${{ inputs.pr_number }}")
         self.assertEqual(admit["concurrency"]["cancel-in-progress"], "false")
-        self.assertTrue(any(step.get("name") == "Claim review status" for step in admit["steps"]))
+        claim = next(step for step in admit["steps"] if step.get("name") == "Claim review status")
+        self.assertEqual(claim["with"]["model-fast"], "${{ vars.PR_REVIEW_MODEL_FAST }}")
+        self.assertEqual(claim["with"]["model-deep"], "${{ vars.PR_REVIEW_MODEL_DEEP }}")
 
         review = workflow["jobs"]["review"]
         self.assertEqual(review["needs"], "admit")
@@ -640,10 +642,12 @@ class JudgeContextBoundTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 10) as fetch, mock.patch.object(
             pr_review, "build_judge_prompt", side_effect=record
         ), mock.patch.object(pr_review, "call_model", side_effect=decide):
-            _, judged, excluded = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, over_budget, over_files, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
         self.assertTrue(judged)
         self.assertLessEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
-        self.assertTrue(excluded)
+        # Either limit may be the one that bites here; what matters is that
+        # something was held back rather than silently dropped.
+        self.assertTrue(over_budget or over_files)
 
 
 class JudgeFetchCapTest(unittest.TestCase):
@@ -656,10 +660,14 @@ class JudgeFetchCapTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="x" * 200_000) as fetch, mock.patch.object(
             pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
         ):
-            _, judged, excluded = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, over_budget, over_files, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
         self.assertTrue(judged)
         self.assertEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
-        self.assertEqual(len(excluded), len(candidates) - 1)
+        # The two limits are now reported apart, because naming the wrong one
+        # sends an operator to shrink the wrong thing. The total held back is
+        # unchanged, which is what this test has always been about.
+        self.assertEqual(len(over_budget) + len(over_files), len(candidates) - 1)
+        self.assertTrue(over_files, "the file cap is what bites with 60 distinct paths")
 
 
 class TimeoutStillPublishesLaterFindingsTest(unittest.TestCase):
@@ -1263,6 +1271,581 @@ class SingleProviderTest(unittest.TestCase):
             set(),
             "the guide names a secret the reusable workflow does not accept",
         )
+
+
+class GuideAccuracyTest(unittest.TestCase):
+    """The guide is where a session goes to find this system; keep it true.
+
+    A file table that names a moved or deleted path sends the next session
+    hunting, which is the cost this documentation exists to remove. Paths are
+    cheap to verify, so they are verified rather than trusted.
+    """
+
+    GUIDE = ROOT / "docs" / "guides" / "pr-review.md"
+
+    def test_every_path_in_the_file_table_exists(self) -> None:
+        guide = self.GUIDE.read_text(encoding="utf-8")
+        marker = "## Files"
+        self.assertIn(marker, guide)
+        section = guide.split(marker, 1)[1].split("\n## ", 1)[0]
+        paths = [
+            cell.strip("` ")
+            for row in section.splitlines()
+            if row.startswith("| `")
+            for cell in [row.split("|")[1]]
+        ]
+        # The whole inventory, not a count. Requiring only a minimum meant
+        # deleting a row still passed, which is the drift this test exists to
+        # catch. Adding a file to this system is meant to require saying so
+        # here, so this list is a second place to update on purpose.
+        expected = {
+            ".github/workflows/pr-review.yaml",
+            ".github/workflows/pr-review-reusable.yaml",
+            ".github/actions/pr-review/action.yml",
+            ".github/actions/pr-review/pr_review.py",
+            ".github/actions/pr-review/requirements.txt",
+            ".github/requirements-pr-review-test.txt",
+            "scripts/pr_review_test.py",
+            ".github/workflows/ci.yaml",
+        }
+        self.assertEqual(set(paths), expected)
+        self.assertEqual(len(paths), len(expected), "the file table must not repeat a row")
+        for path in paths:
+            with self.subTest(path=path):
+                # is_file, not exists: a directory satisfies exists() while
+                # naming nothing a reader can open.
+                self.assertTrue((ROOT / path).is_file(), f"the guide names {path}, which is not a file")
+
+    def test_the_guide_explains_how_to_test_a_change_to_this_workflow(self) -> None:
+        # The single most expensive thing to not know here: a comment-triggered
+        # workflow runs only the default-branch copy, so a change cannot be
+        # tested by the pull request that makes it. Every regression in this
+        # system shipped green because of it. If that explanation is ever
+        # dropped, the guide stops preventing the failure it was written for.
+        guide = self.GUIDE.read_text(encoding="utf-8")
+        self.assertIn("## Changing the reviewer", guide)
+        self.assertIn("## Propagating a change to the other repositories", guide)
+        self.assertIn("workflow_dispatch", guide)
+        caller = load_yaml(CALLER_WORKFLOW)
+        self.assertIn(
+            "workflow_dispatch",
+            caller["on"],
+            "the guide documents a dispatch the caller must actually offer",
+        )
+
+
+class RepeatReviewTest(unittest.TestCase):
+    """Re-running a review must be cheap when it cannot say anything new."""
+
+    IDENTITY = "aaaaaaaaaaaa:bbbbbbbbbbbb:cccccccccccc:2026-08-14.1"
+
+    @staticmethod
+    def marker(state: str, identity: str, mode: str, findings: str = "", model: str | None = None) -> dict[str, str]:
+        return {
+            "state": state,
+            "identity": identity,
+            "mode": mode,
+            "model": model or pr_review.model_binding(mode),
+            "findings": findings,
+            "html_url": "u",
+        }
+
+    def test_an_identical_completed_review_is_recognized(self) -> None:
+        markers = [self.marker("findings", self.IDENTITY, "deep", "aaa,bbb")]
+        self.assertIsNotNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_a_deep_pass_is_not_skipped_because_a_default_pass_ran(self) -> None:
+        # The identity covers base, head, reviewer and rubric, but NOT depth. A
+        # deep review of the same commits is a different review and asks a
+        # different model a harder question, so skipping it would silently
+        # downgrade what the operator asked for.
+        markers = [self.marker("findings", self.IDENTITY, "default", "aaa")]
+        self.assertIsNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_a_partial_review_is_not_treated_as_done(self) -> None:
+        # A partial run may have been short for a transient reason, so a rerun
+        # can genuinely do better and is worth the spend.
+        for state in ("partial", "failed", "superseded", "already-running"):
+            with self.subTest(state=state):
+                markers = [self.marker(state, self.IDENTITY, "deep")]
+                self.assertIsNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_a_different_head_is_not_skipped(self) -> None:
+        markers = [self.marker("clean", "zzzzzzzzzzzz:bbbbbbbbbbbb:cccccccccccc:2026-08-14.1", "deep")]
+        self.assertIsNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
+
+    def test_marker_round_trips_through_its_own_parser(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        progress = pr_review.ReviewProgress()
+        progress.expected_units = 1
+        progress.reviewed_units = 1
+        progress.findings = [
+            pr_review.Finding("high", "internal/a.go", 4, "Guard removed", "why", "fix"),
+        ]
+        body = pr_review.render_status(binding, "deep", ["source:go"], progress, "findings", [])
+        fields = pr_review.parse_status_marker(body)
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields["state"], "findings")
+        self.assertEqual(fields["identity"], binding.correlation)
+        self.assertEqual(fields["mode"], "deep")
+        self.assertEqual(fields["model"], pr_review.model_binding("deep"))
+        self.assertEqual(
+            fields["findings"],
+            pr_review.finding_fingerprint(progress.findings[0]),
+        )
+        # The round trip is what makes the skip safe: a marker this action
+        # writes must be readable by the next run, or an identical review is
+        # never recognized and the saving silently never happens.
+        self.assertIsNotNone(
+            pr_review.completed_identical_review([fields], binding.correlation, "deep")
+        )
+
+    def test_a_model_change_is_not_skipped(self) -> None:
+        with mock.patch.dict(pr_review.os.environ, {"PR_REVIEW_MODEL_FAST": "reviewer-before"}, clear=False):
+            marker = self.marker("clean", self.IDENTITY, "default")
+            self.assertIsNotNone(pr_review.completed_identical_review([marker], self.IDENTITY, "default"))
+        with mock.patch.dict(pr_review.os.environ, {"PR_REVIEW_MODEL_FAST": "reviewer-after"}, clear=False):
+            self.assertIsNone(pr_review.completed_identical_review([marker], self.IDENTITY, "default"))
+
+    def test_ambiguous_or_malformed_markers_are_not_evidence(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1)
+        terminal = pr_review.render_status(binding, "default", ["source:go"], progress, "clean", [])
+        self.assertIsNone(pr_review.parse_status_marker(terminal + "\n" + terminal))
+        marker = terminal.rsplit("<!-- ", 1)[1].removesuffix(" -->")
+        self.assertIsNone(pr_review.parse_status_marker(f"<!-- {marker} state=clean -->"))
+
+    def test_legacy_marker_labels_findings_but_never_skips(self) -> None:
+        legacy = pr_review.parse_status_marker(
+            f"<!-- {pr_review.STATUS_MARKER} state=findings identity={self.IDENTITY} "
+            "mode=default findings=aaaaaaaaaaaa -->"
+        )
+        self.assertIsNotNone(legacy)
+        self.assertEqual(pr_review.previously_reported([legacy]), {"aaaaaaaaaaaa"})
+        self.assertIsNone(pr_review.completed_identical_review([legacy], self.IDENTITY, "default"))
+
+    def test_workflow_dispatch_runs_even_when_a_matching_review_exists(self) -> None:
+        # Asserts the invariant rather than the implementation. An earlier
+        # version asserted the comment scan was never reached on a dispatch,
+        # which stopped being true once the scan also collects the notices that
+        # keep a declined command from commenting every time. The property that
+        # matters is that a matching completed review cannot stop a dispatch.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        self.assertIsNotNone(
+            pr_review.completed_identical_review([matching], binding.correlation, "default"),
+            "the marker must be one that WOULD skip a comment-triggered run",
+        )
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], set(), True)
+        ), mock.patch.object(pr_review, "find_running_comment", return_value=(None, True)), mock.patch.object(
+            pr_review, "create_comment", return_value={"id": 17}
+        ) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        self.assertIn("claimed=true", values)
+        self.assertIn("state=running", create.call_args.args[3])
+
+    def test_a_comment_triggered_run_does_skip_that_same_review(self) -> None:
+        # The paired negative. Without it the dispatch test above could pass
+        # because nothing skips at all, which is the failure mode of a guard
+        # that only ever proves the permissive direction.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "issue_comment"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], set(), True)
+        ), mock.patch.object(pr_review, "create_comment", return_value={"id": 17}) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        self.assertIn("claimed=false", values)
+        self.assertIn("already reviewed", create.call_args.args[3])
+
+    def test_a_declined_command_does_not_comment_again(self) -> None:
+        # Every declined command used to leave another comment. The admission
+        # scan reads a bounded number of pages and fails closed when it cannot
+        # finish, so an accumulating pile of notices eventually pushes the real
+        # status comments past that bound and stops reviewing altogether. That
+        # made repeatedly typing a command a way to disable the reviewer.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        already = {pr_review.notice_marker("already-reviewed", binding.correlation, "default")}
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "issue_comment"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], already, True)
+        ), mock.patch.object(pr_review, "create_comment", return_value={"id": 17}) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        create.assert_not_called()
+        self.assertIn("claimed=false", values)
+
+    def _page(self, count: int, body: str = "no marker") -> object:
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = [
+            {"user": {"login": "github-actions[bot]"}, "body": body, "html_url": "u"}
+            for _ in range(count)
+        ]
+        return response
+
+    def test_a_short_page_ends_the_scan(self) -> None:
+        # A short page is the last page. Without this the scan spends a request
+        # confirming what the short page already said, and disagrees with
+        # find_running_comment about when the same endpoint is exhausted.
+        with mock.patch.object(pr_review.requests, "get", side_effect=[self._page(100), self._page(3)]) as get:
+            _, _, complete = pr_review.scan_status_comments("o/r", "1", "t", "corr")
+        self.assertTrue(complete)
+        self.assertEqual(get.call_count, 2)
+
+    def test_exhausting_the_page_bound_is_not_completeness(self) -> None:
+        # The bound being reached means there may be more, so it must never be
+        # read as an absence: that is what would let a skip happen on a pull
+        # request whose real markers were never seen.
+        pages = [self._page(100) for _ in range(pr_review.ADMISSION_COMMENT_PAGES)]
+        with mock.patch.object(pr_review.requests, "get", side_effect=pages):
+            _, _, complete = pr_review.scan_status_comments("o/r", "1", "t", "corr")
+        self.assertFalse(complete)
+
+    def test_a_prior_findings_failure_cannot_cost_the_review(self) -> None:
+        # This lookup exists to label findings. Anything it raises escapes
+        # before the block that publishes the status comment, which would strand
+        # that comment on running until its stale timeout and block every later
+        # review of the same head.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", side_effect=RuntimeError("boom")
+        ), mock.patch.object(pr_review, "provider_configuration", side_effect=pr_review.ProviderConfigurationError("none")), mock.patch.object(
+            pr_review, "update_comment", return_value={"id": 1}
+        ):
+            state, progress = pr_review.run_review(
+                "owner/repo", "42", "token", "default", "c" * 40, binding=binding, status_comment_id=1
+            )
+        # It reached a published verdict instead of propagating the exception.
+        self.assertEqual(state, "failed")
+        self.assertIn("no usable provider credential was configured", progress.incomplete_reasons)
+
+    def _judge(self, payload: dict, candidates: list) -> tuple:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 40), mock.patch.object(
+            pr_review, "call_model", return_value=payload
+        ):
+            return pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+
+    @staticmethod
+    def _cands(n: int) -> list:
+        return [pr_review.Finding("high", f"f{i}.go", i + 1, f"T{i}", "w", "f") for i in range(n)]
+
+    def test_an_extra_key_does_not_discard_the_review(self) -> None:
+        # Observed live twice on one pull request: a deep review read every unit
+        # and published nothing. The schema gate required an EXACT key set, so a
+        # model adding one field threw the whole paid review away. An extra key
+        # is ordinary model output, not hostile, and nothing reads it.
+        candidates = self._cands(2)
+        payload = {
+            "findings": [
+                {"index": 0, "verdict": "keep", "reason": "real", "confidence": 0.9},
+                {"index": 1, "verdict": "drop", "reason": "not real"},
+            ],
+            "summary": "an extra top-level key",
+        }
+        verified, judged, excluded, _over_files, undecided = self._judge(payload, candidates)
+        self.assertTrue(judged)
+        self.assertEqual([f.title for f in verified], ["T0"])
+        self.assertEqual(undecided, [])
+        self.assertEqual(excluded, [])
+
+    def test_one_unusable_decision_does_not_take_the_others_down(self) -> None:
+        # The blast radius is the defect, not the strictness. An unjudged
+        # candidate must still fail closed and go unpublished; what it must not
+        # do is discard the candidates the judge DID decide.
+        candidates = self._cands(3)
+        payload = {
+            "findings": [
+                {"index": 0, "verdict": "keep", "reason": "real"},
+                {"index": 1, "verdict": "banana", "reason": "invalid verdict"},
+                {"index": 2, "verdict": "keep", "reason": "also real"},
+            ]
+        }
+        verified, judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
+        self.assertTrue(judged)
+        self.assertEqual(sorted(f.title for f in verified), ["T0", "T2"])
+        self.assertEqual([f.title for f in undecided], ["T1"])
+
+    def test_a_partial_answer_publishes_what_was_decided(self) -> None:
+        # Deciding 2 of 3 used to discard all three.
+        candidates = self._cands(3)
+        payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}, {"index": 1, "verdict": "drop", "reason": "r"}]}
+        verified, judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
+        self.assertTrue(judged)
+        self.assertEqual([f.title for f in verified], ["T0"])
+        self.assertEqual([f.title for f in undecided], ["T2"])
+
+    def test_an_unjudged_candidate_is_never_published(self) -> None:
+        # The security invariant this change must not weaken.
+        candidates = self._cands(2)
+        payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
+        verified, _judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
+        self.assertNotIn("T1", [f.title for f in verified])
+        self.assertEqual([f.title for f in undecided], ["T1"])
+
+    def test_a_judge_that_decides_nothing_still_fails(self) -> None:
+        # A response with no usable decision at all is a failed judge pass, not
+        # a clean review, and must keep raising so the verdict goes partial.
+        with self.assertRaises(pr_review.ModelOutputError):
+            self._judge({"findings": [{"nope": 1}]}, self._cands(2))
+
+    def test_a_structurally_unusable_payload_still_fails(self) -> None:
+        # Asserts WHICH guard fires, not merely that something raised. Both
+        # payloads are also caught downstream by the no-decision guard, so a
+        # test that only checked for an exception passed even with the
+        # structural check removed and proved nothing about it.
+        for payload in ({"findings": "not a list"}, {"other": []}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(pr_review.ModelOutputError) as caught:
+                    self._judge(payload, self._cands(1))
+                self.assertIn("violated its schema", str(caught.exception))
+
+    def test_a_duplicate_index_cannot_overwrite_a_decision(self) -> None:
+        candidates = self._cands(1)
+        payload = {"findings": [{"index": 0, "verdict": "drop", "reason": "r"}, {"index": 0, "verdict": "keep", "reason": "r"}]}
+        verified, _judged, _excluded, _over_files, _undecided = self._judge(payload, candidates)
+        self.assertEqual(verified, [], "the first decision for an index wins")
+
+    def test_an_unhashable_verdict_does_not_crash_the_run(self) -> None:
+        # A set-membership test on model output raises TypeError for any JSON
+        # array or object. TypeError is not ModelOutputError, so it escaped the
+        # handler written for bad model output entirely, and the publish-on-exit
+        # path then reported a verdict derived from state that never recorded
+        # the failure.
+        #
+        # A second, valid decision keeps the "judge decided no candidate" guard
+        # from firing, so this asserts the bad row was SKIPPED rather than that
+        # some guard somewhere raised. With one candidate the pass raised, and
+        # the test then proved a different guard than the one it names.
+        for verdict in (["keep"], {"v": "keep"}, 7, None):
+            with self.subTest(verdict=verdict):
+                payload = {
+                    "findings": [
+                        {"index": 0, "verdict": verdict, "reason": "r"},
+                        {"index": 1, "verdict": "keep", "reason": "r"},
+                    ]
+                }
+                verified, judged, _excluded, _over_files, undecided = self._judge(payload, self._cands(2))
+                self.assertTrue(judged)
+                self.assertEqual([f.title for f in verified], ["T1"])
+                self.assertEqual([f.title for f in undecided], ["T0"])
+
+    def test_an_unhashable_severity_or_path_is_a_model_output_error(self) -> None:
+        # The sibling of the same class in the chunk-finding parser. Found by
+        # grepping every set-membership test against a model-supplied value
+        # rather than fixing only the reported instance.
+        for bad in ({"severity": ["high"]}, {"path": {"p": "f.go"}}):
+            with self.subTest(bad=bad):
+                item = {
+                    "severity": "high", "path": "f.go", "line": 1, "title": "T",
+                    "why": "w", "fix": "f", "needs_verification": False,
+                }
+                item.update(bad)
+                # No "changes" key: require_changes is None here, so the
+                # payload schema expects findings alone. Passing changes made
+                # the payload fail the outer check and never reach the
+                # membership test this covers.
+                with self.assertRaises(pr_review.ModelOutputError) as caught:
+                    pr_review.parse_findings({"findings": [item]}, {"f.go"})
+                self.assertIn("invalid severity or path", str(caught.exception))
+
+    def test_candidates_discarded_unjudged_are_counted(self) -> None:
+        # Observed live: a deep review read 7 of 7 units, omitted nothing, and
+        # published "No verified material findings were published" because the
+        # judge pass returned an invalid result. Every candidate was dropped
+        # and nothing said so, which reads identically to a reviewer that found
+        # nothing. Those call for opposite responses from the reader.
+        candidates = [
+            pr_review.Finding("high", "a.go", 1, "One", "w", "f"),
+            pr_review.Finding("low", "b.go", 2, "Two", "w", "f"),
+        ]
+        reason = pr_review.discarded_candidates_reason(candidates)
+        self.assertIsNotNone(reason)
+        self.assertIn("2 candidate", reason)
+
+    def test_a_judge_that_rejected_everything_is_not_reported_as_a_gap(self) -> None:
+        # The other direction, and the reason this is not a blanket check after
+        # the fact. A judge that ran and rejected every candidate is a real
+        # clean review. Reporting that as discarded work would make a correct
+        # result look broken, which is the failure mode that teaches an
+        # operator to ignore the incompleteness section.
+        self.assertIsNone(pr_review.discarded_candidates_reason([]))
+
+    def test_an_incomplete_scan_still_labels_through_run_review(self) -> None:
+        # The integration half of the asymmetry. Asserting previously_reported
+        # alone could not catch a change that drops the label in run_review, so
+        # this drives the real path with a scan that reports complete=False.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        seen = pr_review.Finding("high", "f.go", 1, "Old problem", "w", "f")
+        marker = {
+            "state": "findings",
+            "identity": "old:old:old:x",
+            "mode": "deep",
+            "findings": pr_review.finding_fingerprint(seen),
+            "html_url": "u",
+        }
+        published: dict[str, str] = {}
+
+        def capture(_repo, comment_id, _token, body, _corr) -> dict[str, int]:
+            published["body"] = body
+            return {"id": comment_id}
+
+        diff = "diff --git a/f.go b/f.go\n--- a/f.go\n+++ b/f.go\n@@ -1,1 +1,1 @@\n+x\n"
+        finding_payload = {
+            "findings": [{"severity": "high", "path": "f.go", "line": 1, "title": "Old problem",
+                          "why": "w", "fix": "f", "needs_verification": False}],
+            "changes": [{"path": "f.go", "summary": "s"}],
+        }
+        # Deep mode calls the model three times: the chunk, then a cross-file
+        # synthesis pass, then the judge. Supplying two payloads handed the
+        # judge's answer to synthesis, which is worth knowing and is exactly
+        # what a unit test on the helper could never have surfaced.
+        synthesis_payload: dict[str, list] = {"findings": []}
+        judge_payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
+        with mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("u", "k")
+        ), mock.patch.object(pr_review, "fetch_bound_diff", return_value=diff), mock.patch.object(
+            pr_review, "compare_incompleteness", return_value=None
+        ), mock.patch.object(
+            # complete=False: the scan did not finish, and the label must still apply.
+            pr_review, "scan_status_comments", return_value=([marker], set(), False)
+        ), mock.patch.object(
+            pr_review, "fetch_file_context", return_value="x\n" * 40
+        ), mock.patch.object(pr_review, "update_comment", side_effect=capture), mock.patch.object(
+            pr_review, "call_model", side_effect=[finding_payload, synthesis_payload, judge_payload]
+        ):
+            pr_review.run_review("o/r", "42", "t", "deep", "c" * 40, binding=binding, status_comment_id=1)
+        self.assertIn("Old problem", published["body"])
+        self.assertIn("(re-raised at this head)", published["body"])
+
+    def test_an_incomplete_scan_does_not_let_admission_skip(self) -> None:
+        # The other half. Admission decides to withhold a review, so a partial
+        # view of the pull request must never authorize that, even when a
+        # matching completed marker is among the ones it did read.
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        matching = {
+            "state": "findings",
+            "identity": binding.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "u",
+        }
+        self.assertIsNotNone(
+            pr_review.completed_identical_review([matching], binding.correlation, "default"),
+            "the marker must be one that WOULD skip if the scan had completed",
+        )
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {"GITHUB_OUTPUT": output.name, "GITHUB_EVENT_NAME": "issue_comment"}, clear=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=binding), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([matching], set(), False)
+        ), mock.patch.object(pr_review, "find_running_comment", return_value=(None, True)), mock.patch.object(
+            pr_review, "create_comment", return_value={"id": 17}
+        ) as create:
+            pr_review.claim_review("owner/repo", "42", "token", "default", "c" * 40)
+            output.seek(0)
+            values = output.read().decode("utf-8")
+        self.assertIn("claimed=true", values)
+        self.assertIn("state=running", create.call_args.args[3])
+
+    def test_an_incomplete_scan_still_labels_what_it_did_read(self) -> None:
+        # Records a deliberate asymmetry, so a later reader does not "fix" it
+        # into consistency. Admission and this path share one scan and use it
+        # for opposite purposes. Admission DECIDES to withhold a review, so a
+        # partial view must never authorize that. A label only ADDS
+        # information, and a marker parsed from a page that was read is genuine
+        # regardless of whether a later page failed. Requiring completeness
+        # here would drop correct labels and prevent no wrong one.
+        real = {
+            "state": "findings",
+            "identity": self.IDENTITY,
+            "mode": "deep",
+            "findings": "abcabcabcabc",
+            "html_url": "u",
+        }
+        self.assertEqual(pr_review.previously_reported([real]), {"abcabcabcabc"})
+
+    def test_a_fingerprint_survives_a_line_number_moving(self) -> None:
+        # Anything inserted above a finding shifts its line. Including the line
+        # would make every finding look new after any push, which is the noise
+        # this is meant to remove.
+        first = pr_review.Finding("high", "a.go", 10, "Guard  removed", "w", "f")
+        moved = pr_review.Finding("high", "a.go", 480, "guard removed", "w2", "f2")
+        self.assertEqual(pr_review.finding_fingerprint(first), pr_review.finding_fingerprint(moved))
+
+    def test_a_different_finding_gets_a_different_fingerprint(self) -> None:
+        base = pr_review.Finding("high", "a.go", 10, "Guard removed", "w", "f")
+        for other in (
+            pr_review.Finding("medium", "a.go", 10, "Guard removed", "w", "f"),
+            pr_review.Finding("high", "b.go", 10, "Guard removed", "w", "f"),
+            pr_review.Finding("high", "a.go", 10, "Different problem", "w", "f"),
+        ):
+            with self.subTest(other=other.title):
+                self.assertNotEqual(pr_review.finding_fingerprint(base), pr_review.finding_fingerprint(other))
+
+    def test_repeats_are_labelled_and_never_dropped(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        old = pr_review.Finding("high", "a.go", 10, "Old problem", "w", "f")
+        new = pr_review.Finding("high", "b.go", 20, "New problem", "w", "f")
+        progress = pr_review.ReviewProgress()
+        progress.expected_units = 2
+        progress.reviewed_units = 2
+        progress.findings = [old, new]
+        body = pr_review.render_status(
+            binding, "deep", ["source:go"], progress, "findings", [],
+            {pr_review.finding_fingerprint(old)},
+        )
+        # Both are still published. Labelling is presentation; suppression from
+        # evidence this action wrote would let anything able to edit a comment
+        # erase a finding.
+        self.assertIn("Old problem", body)
+        self.assertIn("New problem", body)
+        self.assertEqual(body.count("(re-raised at this head)"), 1)
+        old_line = next(line for line in body.splitlines() if "`a.go:10`" in line)
+        new_line = next(line for line in body.splitlines() if "`b.go:20`" in line)
+        self.assertIn("(re-raised at this head)", old_line)
+        self.assertNotIn("(re-raised at this head)", new_line)
+
+    def test_prior_fingerprints_come_only_from_completed_reviews(self) -> None:
+        markers = [
+            self.marker("findings", self.IDENTITY, "deep", "keepme"),
+            self.marker("partial", self.IDENTITY, "deep", "dropme"),
+            self.marker("failed", self.IDENTITY, "deep", "dropme2"),
+        ]
+        self.assertEqual(pr_review.previously_reported(markers), {"keepme"})
 
 
 class AdoptionStubTest(unittest.TestCase):

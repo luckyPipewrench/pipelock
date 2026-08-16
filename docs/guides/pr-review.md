@@ -91,6 +91,115 @@ Values must name models available through the direct OpenAI API.
   contiguous review units rather than summarizing or dropping its deletion lines
 - `/review` uses the efficient model by default
 - `/review deep` is opt-in for the xhigh adversarial pass
+- Re-running a command against an unchanged head does not review again; it
+  links the review that already covered it
+
+## Repeat reviews
+
+Reviewing the same pull request twice is normal, and the two cases behave
+differently.
+
+**Nothing changed since the last review.** The command links the existing review
+and stops. A finished review of the same base, head, reviewer commit, rubric,
+and selected model cannot reach a different answer, so running it again would
+spend a full review,
+twenty minutes on a large diff, to reproduce what is already posted. Depth is
+part of that comparison, so `/review deep` still runs after `/review`. Only a
+review that covered the whole diff counts; a `partial` or `failed` one is worth
+retrying because it may have been short for a transient reason. To review an
+unchanged head anyway, run the workflow manually from Actions.
+
+**You pushed a fix and want another look.** The head changed, so this is a
+different review and it reads the whole diff again. That is deliberate rather
+than a cost oversight: reviewing only the newest commits assumes findings
+compose, and they do not. A commit that is fine alone can break code reviewed
+earlier, and a fix for a finding can itself be wrong. What the review does
+instead is mark any finding also reported by a completed review on this pull
+request with `(re-raised at this head)`. The judge found it in the current code,
+so a match means the problem survived whatever was done since, which is worth
+more attention than a first sighting rather than less.
+
+A finding that simply does not appear in a later review is NOT reported as
+fixed. Its absence is not evidence: the model may not have surfaced it this
+time. Nothing here claims a finding was resolved.
+
+## Changing the reviewer
+
+Read this before editing anything under `.github/actions/pr-review/` or either
+review workflow.
+
+**A change here cannot be tested by the pull request that makes it.** A workflow
+triggered by `issue_comment` only ever executes the copy already on the default
+branch. Comment `/review` on your own pull request and you exercise the old
+reviewer, not your change, and it reports success while proving nothing about
+what you wrote. That is how the trigger works, not a quirk to route around.
+
+**So test with the manual dispatch, which exists for exactly this.** From
+Actions, select **AI PR Review**, run the workflow from your branch, and give it
+a real pull request number and a mode. That runs your branch's caller against a
+real pull request. It is the only way to exercise a change before it merges, and
+it requires the same account the comment path requires.
+
+**Run the tests locally first; they are fast and they gate the pull request.**
+
+```bash
+pip install --require-hashes -r .github/actions/pr-review/requirements.txt
+pip install --require-hashes -r .github/requirements-pr-review-test.txt
+python -m unittest scripts.pr_review_test
+```
+
+The `pr-review-tests` job in `ci.yaml` runs the same command. A suite that runs
+only inside a review cannot gate a change to the reviewer, because a review runs
+the default-branch copy.
+
+**Two signals, and they mean different things.** The `review` job reports
+whether the runner published a verdict, so a published `partial` is a successful
+run. The `completeness` job reports whether the review covered the whole pull
+request, and fails when it did not. Do not make a red `completeness` green; read
+the review comment, which names what was not covered. One signal cannot carry
+both without either making a working review look crashed or showing a green
+check on a review that read part of the diff.
+
+**Deletions are a security change.** Removing a guard reads as a deletion hunk.
+Deep mode reads deletion hunks in full and splits an oversized one into bounded
+pieces rather than summarizing or dropping it. Default mode compresses large
+deletion runs and discloses that it did. Do not make deep mode compress them.
+
+**A disclosed compression is not a coverage gap.** `coverage_gaps()` names only
+what the review should have read and did not: omitted units, parse errors, a
+truncated compare, a timeout, a moved head, a failed fetch. Counting a
+compression there makes the completeness check fail on reviews that covered
+everything, and a check that is red on complete work is one an operator learns
+to ignore.
+
+**Structural assertions parse; they do not match text.** A guard that greps a
+workflow can be satisfied by a comment naming the thing it guards, by a quoted
+value, by a flow mapping, or by whitespace before a colon. Assert against parsed
+YAML. When you add a guard, break the thing it guards and watch that test fail
+before you trust it.
+
+## Propagating a change to the other repositories
+
+The reviewer lives in this repository only. Other repositories hold a caller of
+about forty lines with no logic in it, pinned to a Pipelock commit, so a fix
+here reaches them when their pin advances and not before.
+
+Confirm the current adopters live rather than trusting a list that rots:
+
+```bash
+gh search code --owner luckyPipewrench 'pr-review-reusable.yaml' --limit 20
+```
+
+Two rules for a pin bump:
+
+- **Advance both occurrences together.** `uses:` and `reviewer_sha:` must name
+  the same commit. They select the workflow and the reviewer source separately,
+  and a mismatch runs one version's workflow against another version's code.
+- **Carry any stub change in the same commit as the bump.** The caller's inputs
+  and secrets are a contract with the reusable workflow at the pinned commit. If
+  a bump removes or renames a secret, a caller still passing the old one fails
+  at workflow load. Because the pin is immutable, the old caller keeps working
+  against the old commit until both move, so this only breaks if they are split.
 
 ## Reusing the reviewer in another repository
 
@@ -177,4 +286,12 @@ Requiring both means a re-run cannot widen who is able to start a review.
 |------|------|
 | `.github/workflows/pr-review.yaml` | Thin Pipelock caller for the reusable workflow |
 | `.github/workflows/pr-review-reusable.yaml` | Shared job control plane, permissions, and concurrency |
-| `.github/actions/pr-review/` | Composite action, runner, and pinned Python requirements |
+| `.github/actions/pr-review/action.yml` | Composite action: runner inputs, outputs, and setup |
+| `.github/actions/pr-review/pr_review.py` | The reviewer: diff parsing, budgets, provider calls, state |
+| `.github/actions/pr-review/requirements.txt` | Pinned runtime dependencies, installed by the action |
+| `.github/requirements-pr-review-test.txt` | Pinned test-only dependency, installed by CI |
+| `scripts/pr_review_test.py` | The test suite, including the structural workflow guards |
+| `.github/workflows/ci.yaml` | The `pr-review-tests` job, which runs that suite on pull requests |
+
+Every other repository holds only its own `.github/workflows/pr-review.yaml`
+caller. Nothing in this table is duplicated into them.

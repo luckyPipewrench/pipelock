@@ -111,6 +111,17 @@ func reapAdoptedZombies(directPID int) {
 	}
 }
 
+// protectDirectChild claims pid as a session's own direct child so no other
+// session's reaper can consume its exit status, without starting a reaper of
+// its own. Every session must claim its child, including one whose subreaper
+// setup was refused by the host: reapAdoptedZombies walks /proc for any zombie
+// parented to this process, so an unclaimed child is reapable by a sibling
+// session's reaper. The owning session's cmd.Wait then fails with ECHILD,
+// surfacing as "waitid: no child processes".
+//
+// Returns the release function; call it once the child has been reaped.
+func protectDirectChild(pid int) func() { return registerProtectedDirectPID(pid) }
+
 func registerProtectedDirectPID(pid int) func() {
 	if pid <= 0 {
 		return func() {}

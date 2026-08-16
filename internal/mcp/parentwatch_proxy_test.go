@@ -152,6 +152,13 @@ func TestRunProxy_SessionExitTerminatesIgnoringServer(t *testing.T) {
 	testwait.For(t, 5*time.Second, func() bool {
 		return strings.Contains(logBuf.String(), "spawning session exited")
 	}, "asynchronous session-exit log message")
+	// `sleep` never reads stdin, so the cooperative shutdown cannot end it and
+	// the drain window has to expire into a forced teardown. That escalation is
+	// the behavior this test is named for, and this is the only assertion of it
+	// that runs on a non-Linux build.
+	testwait.For(t, 5*time.Second, func() bool {
+		return strings.Contains(logBuf.String(), "terminating process tree")
+	}, "forced process-tree teardown log message")
 }
 
 // TestRunProxy_LiveSessionIsNotTornDown is the availability direction: with

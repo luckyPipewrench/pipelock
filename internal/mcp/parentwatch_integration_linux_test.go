@@ -463,6 +463,54 @@ func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 	})
 }
 
+// TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper is the
+// cross-session direction of the subreaper failure case above.
+//
+// reapAdoptedZombies walks /proc and reaps any zombie parented to this process
+// except the direct children sessions have claimed. A session whose subreaper
+// setup was refused still owns a direct child, so if it does not claim that
+// child, a concurrent session's reaper consumes its exit status and the owning
+// cmd.Wait fails with ECHILD, surfacing as "waitid: no child processes".
+//
+// The sweeper here stands in for that concurrent session's reaper. It is
+// deliberately continuous: the theft window is between the child exiting and
+// this session reaping it, which is narrow and load-dependent, and is why this
+// reproduced on a loaded CI runner rather than on a development host.
+func TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+	opts.enableSubreaperForTest = func() error { return errors.New("subreaper unavailable") }
+
+	// A PID that is never one of ours, so the sweeper protects nothing of the
+	// session under test and behaves exactly like a foreign session's reaper.
+	const foreignDirectPID = -1
+	sweeperDone := make(chan struct{})
+	sweeperStopped := make(chan struct{})
+	go func() {
+		defer close(sweeperStopped)
+		for {
+			select {
+			case <-sweeperDone:
+				return
+			default:
+				reapAdoptedZombies(foreignDirectPID)
+			}
+		}
+	}()
+	defer func() {
+		close(sweeperDone)
+		<-sweeperStopped
+	}()
+
+	var logBuf syncBuffer
+	cmd := exec.CommandContext(ctx, "cat")
+	if err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts); err != nil {
+		t.Fatalf("best-effort sandbox proxy with a concurrent sibling reaper = %v, want the session to keep its own child", err)
+	}
+}
+
 func TestRunProxyWithSandbox_OrphanedParentStaysInert(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

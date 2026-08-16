@@ -5,8 +5,9 @@ package mcp
 
 import (
 	"context"
+	"net"
 	"net/http"
-	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,28 +16,49 @@ import (
 	gobwasutil "github.com/gobwas/ws/wsutil"
 )
 
-func wsSessionExitServer(t *testing.T) (*httptest.Server, <-chan struct{}) {
+// wsSessionExitServer serves the WebSocket upstream these tests dial, and
+// returns its ws:// URL plus a channel closed on the first successful upgrade.
+//
+// It uses a raw listener and http.Server rather than httptest.Server on
+// purpose. ws.UpgradeHTTP hijacks the connection, and httptest.Server.Close
+// blocks waiting for outstanding requests, so a test that leaves the
+// connection open would hang on cleanup rather than fail. Closing the listener
+// does not have that dependency.
+func wsSessionExitServer(t *testing.T) (string, <-chan struct{}) {
 	t.Helper()
 	connected := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		close(connected)
-		for {
-			if _, err := gobwasutil.ReadClientMessage(conn, nil); err != nil {
+	// The handler can be entered more than once. Closing an already-closed
+	// channel panics in the server goroutine, which takes down the whole test
+	// binary rather than failing one test.
+	var once sync.Once
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening for WebSocket upstream: %v", err)
+	}
+	srv := &http.Server{
+		ReadHeaderTimeout: 5 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, err := ws.UpgradeHTTP(r, w)
+			if err != nil {
 				return
 			}
-		}
-	}))
-	return srv, connected
+			defer func() { _ = conn.Close() }()
+			once.Do(func() { close(connected) })
+			for {
+				if _, err := gobwasutil.ReadClientMessage(conn, nil); err != nil {
+					return
+				}
+			}
+		}),
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = ln.Close() })
+	return "ws://" + ln.Addr().String(), connected
 }
 
 func TestSessionExit_WSStopsBridge(t *testing.T) {
-	upstream, connected := wsSessionExitServer(t)
-	defer upstream.Close()
+	upstreamURL, connected := wsSessionExitServer(t)
 
 	clientIn := newBlockingReader()
 	defer func() { _ = clientIn.Close() }()
@@ -45,7 +67,7 @@ func TestSessionExit_WSStopsBridge(t *testing.T) {
 	var clientOut, logBuf lockedHTTPBuffer
 	done := make(chan error, 1)
 	go func() {
-		done <- RunWSProxy(context.Background(), clientIn, &clientOut, &logBuf, wsURL(upstream), MCPProxyOpts{
+		done <- RunWSProxy(context.Background(), clientIn, &clientOut, &logBuf, upstreamURL, MCPProxyOpts{
 			Scanner: sc,
 			sessionExitForTest: &sessionExitTestHooks{watch: parentWatchOpts{
 				interval:  time.Millisecond,
@@ -82,15 +104,14 @@ func TestSessionExit_WSStopsBridge(t *testing.T) {
 }
 
 func TestSessionExit_WSLiveSessionIsNotTornDown(t *testing.T) {
-	upstream, connected := wsSessionExitServer(t)
-	defer upstream.Close()
+	upstreamURL, connected := wsSessionExitServer(t)
 
 	clientIn := newBlockingReader()
 	sc := testScannerForWS(t)
 	var clientOut, logBuf lockedHTTPBuffer
 	done := make(chan error, 1)
 	go func() {
-		done <- RunWSProxy(context.Background(), clientIn, &clientOut, &logBuf, wsURL(upstream), MCPProxyOpts{
+		done <- RunWSProxy(context.Background(), clientIn, &clientOut, &logBuf, upstreamURL, MCPProxyOpts{
 			Scanner:            sc,
 			sessionExitForTest: liveSessionExitHooks(),
 		})

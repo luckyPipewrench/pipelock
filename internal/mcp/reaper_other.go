@@ -11,3 +11,8 @@ package mcp
 // no-op). Without subreaper adoption there are no orphaned descendants
 // to reap.
 func startAdoptedReaper(_ int, _ <-chan struct{}) {}
+
+// protectDirectChild is a no-op on non-Linux builds. Nothing walks /proc
+// reaping adopted descendants here, so there is no sibling session that
+// could consume this child's exit status.
+func protectDirectChild(_ int) func() { return func() {} }

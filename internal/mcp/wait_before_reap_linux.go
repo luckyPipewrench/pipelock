@@ -32,18 +32,23 @@ func waitForCommandWithProcessGroup(ctx context.Context, cmd *exec.Cmd, pgid int
 		exited <- unix.Waitid(unix.P_PID, cmd.Process.Pid, nil, unix.WEXITED|unix.WNOWAIT, nil)
 	}()
 
+	var observeErr error
 	select {
-	case err := <-exited:
-		if err != nil {
-			return err
-		}
+	case observeErr = <-exited:
 	case <-ctx.Done():
 		terminate()
-		if err := <-exited; err != nil {
-			return err
-		}
+		observeErr = <-exited
 	}
 
+	// A failed observation must not skip the reap. Waitid only watches the
+	// child exit without consuming it, so returning here would leave a live or
+	// zombie child behind with nothing left to reap it, and the caller would
+	// read the error as a completed teardown. Terminate and reap regardless,
+	// and report the reap failure ahead of the observation failure because the
+	// reap is the part that had to happen.
 	terminate()
-	return handoff.wait(cmd.Wait)
+	if err := handoff.wait(cmd.Wait); err != nil {
+		return err
+	}
+	return observeErr
 }

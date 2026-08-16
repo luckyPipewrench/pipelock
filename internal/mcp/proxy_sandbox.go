@@ -108,6 +108,14 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		}
 		return sandboxCmd.Process.Kill() == nil
 	}
+	// Claim the direct child before any reaper can see it, and do so whether or
+	// not this session's own subreaper setup succeeded. startAdoptedReaper
+	// registers the same claim, but it only runs when the subreaper is
+	// available; on a host that refuses PR_SET_CHILD_SUBREAPER this session
+	// would otherwise leave its child unclaimed while a concurrent session in
+	// the same process still runs a reaper that walks /proc, reaps it, and
+	// steals its exit status.
+	defer protectDirectChild(sandboxCmd.Process.Pid)()
 	if subreaperEnabled {
 		reaperDone := make(chan struct{})
 		defer close(reaperDone)
@@ -261,10 +269,11 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	waitErr := processExit.wait(sandboxCmd.Wait)
 	close(waitDone)
 
-	// Clean up sandbox child and temp dir.
-	if sandboxCmd.Process != nil {
-		_ = sandboxCmd.Process.Kill()
-	}
+	// Clean up the sandbox temp dir. No kill belongs here: Wait has already
+	// reaped the direct child, so a Kill at this point can only return
+	// os.ErrProcessDone, and once the PID is retired signaling it risks landing
+	// on whatever the kernel assigns next. Termination happens before Wait,
+	// above.
 	sandbox.CleanupSandboxCmd(sandboxCmd)
 
 	// Sweep once more after Wait for a descendant that exited or reparented in

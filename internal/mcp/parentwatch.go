@@ -81,20 +81,22 @@ func isSessionExitCloseErr(err error) bool {
 // PID or process-group ID as soon as it reaps the child, so a late escalation
 // must not signal either value.
 type processExitHandoff struct {
-	mu      sync.Mutex
-	reaping bool
+	mu     sync.Mutex
+	reaped bool
 }
 
-func (h *processExitHandoff) beginReap() {
+func (h *processExitHandoff) wait(reap func() error) error {
 	h.mu.Lock()
-	h.reaping = true
-	h.mu.Unlock()
+	defer h.mu.Unlock()
+	err := reap()
+	h.reaped = true
+	return err
 }
 
 func (h *processExitHandoff) terminate(fn func()) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.reaping {
+	if h.reaped {
 		return false
 	}
 	fn()

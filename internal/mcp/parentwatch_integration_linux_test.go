@@ -151,7 +151,7 @@ func TestSessionExit_RealParentDeathReapsWholeTree(t *testing.T) {
 		"setsid sleep 300 &\n" +
 		"echo $! >> " + pidFile + ".tmp\n" +
 		"mv " + pidFile + ".tmp " + pidFile + "\n" +
-		"sleep 300\n"
+		"exec sleep 300\n"
 	if err := os.WriteFile(serverScript, []byte(script), 0o600); err != nil {
 		t.Fatalf("writing server script: %v", err)
 	}
@@ -207,6 +207,13 @@ func TestSessionExit_RealParentDeathReapsWholeTree(t *testing.T) {
 	}
 
 	tree := map[string]int{"wrapped server": serverPID, "detached grandchild": grandchildPID, "proxy": proxyPID}
+	t.Cleanup(func() {
+		for _, pid := range tree {
+			if processAlive(pid) {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
 	for label, pid := range tree {
 		if !processAlive(pid) {
 			t.Fatalf("%s (pid %d) was not alive before the kill; test setup is wrong", label, pid)

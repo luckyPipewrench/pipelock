@@ -227,24 +227,15 @@ func TestRunSessionBoundExit_DefaultGraceApplies(t *testing.T) {
 func TestProcessExitHandoff_RejectsEscalationAfterReapingStarts(t *testing.T) {
 	t.Parallel()
 
-	// Reproduce the ownership handoff: cmd.Wait starts after the grace timer
-	// fired but before the watcher obtains its termination turn. A late signal
-	// here could target a PID or process group the kernel has already reused.
+	// Once cmd.Wait has returned, a late signal could target a PID or process
+	// group the kernel already reused.
 	handoff := &processExitHandoff{}
-	handoff.beginReap()
+	if err := handoff.wait(func() error { return nil }); err != nil {
+		t.Fatalf("process reaping returned %v", err)
+	}
 	var terminated atomic.Bool
 
-	escalated := runSessionBoundExit(context.Background(), deadSession(), sessionExitActions{
-		stopIntake:       func() {},
-		closeServerStdin: func() {},
-		terminateTree: func() bool {
-			return handoff.terminate(func() { terminated.Store(true) })
-		},
-		waitDone: make(chan struct{}),
-		grace:    time.Millisecond,
-	})
-
-	if escalated {
+	if handoff.terminate(func() { terminated.Store(true) }) {
 		t.Error("session exit escalated after cmd.Wait owned process reaping")
 	}
 	if terminated.Load() {

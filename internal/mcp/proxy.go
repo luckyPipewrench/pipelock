@@ -1778,12 +1778,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		_ = cmd.Process.Kill()
 	}
 
-	// Hand the process identifiers to cmd.Wait before reaping. Once this
-	// begins, concurrent session or context teardown must not signal a PID or
-	// process group that the kernel can recycle after the child exits.
-	processExit.beginReap()
-	// Wait for subprocess to exit.
-	waitErr := cmd.Wait()
+	// cmd.Wait and forced teardown share one owner. A concurrent session or
+	// context teardown waits until reaping finishes, then sees that no process
+	// identifier remains safe to signal.
+	waitErr := processExit.wait(cmd.Wait)
 	// Release the session watcher's drain wait. A server that exited on its
 	// own after stdin close must not sit through the remaining grace window
 	// before the teardown below claims ownership.

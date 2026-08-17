@@ -265,8 +265,18 @@ class TestReleaseArtifacts(unittest.TestCase):
         bundle_gate = self.workflow.index("- name: Verify Kubernetes image digest bundle attestation")
         upload = self.workflow.index("- name: Upload Kubernetes image digest bundle")
         chart = self.workflow.index("- name: Publish Helm chart")
-        promotion = self.workflow.index("- name: Publish GitHub release")
+        promotion = self.workflow.index("- name: Verify the release manifest signature and publish")
         self.assertIn('gh release edit "$GITHUB_REF_NAME" --draft=false', self.workflow)
+
+        # Verification and promotion share one step so that release assets, which
+        # stay mutable while the release is a draft, cannot be replaced between
+        # the two. A separate promotion step would reopen that window, so assert
+        # the order inside the step rather than only the step's position.
+        verify = self.workflow.index("--verify --manifest")
+        undraft = self.workflow.index('gh release edit "$GITHUB_REF_NAME" --draft=false')
+        self.assertLess(promotion, verify)
+        self.assertLess(verify, undraft)
+        self.assertNotIn("- name: Publish GitHub release", self.workflow)
 
         self.assertLess(goreleaser, proof_gate)
         self.assertLess(proof_gate, bundle)

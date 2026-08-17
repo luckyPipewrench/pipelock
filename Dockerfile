@@ -10,11 +10,15 @@ FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a
 # reintroduces the stdlib advisories that release pins away from. The tag above
 # and this expectation are updated together, and a mismatch stops the build here
 # instead of producing an image whose Go version nothing states.
-ARG EXPECTED_GO_VERSION=go1.26.6
+# The expected version is written literally rather than taken from an ARG. A
+# build argument can be overridden on the command line, so an assertion that
+# reads one can be satisfied by whoever is building instead of by the toolchain,
+# which is the opposite of what this check is for. Change the tag, the digest
+# and this literal together.
 RUN got="$(go env GOVERSION)"; \
-    if [ "$got" != "$EXPECTED_GO_VERSION" ]; then \
-      echo "toolchain mismatch: base image reports $got, expected $EXPECTED_GO_VERSION" >&2; \
-      echo "update the golang base image tag and digest together with EXPECTED_GO_VERSION" >&2; \
+    if [ "$got" != "go1.26.6" ]; then \
+      echo "toolchain mismatch: base image reports $got, expected go1.26.6" >&2; \
+      echo "update the golang base image tag and digest together with this expectation" >&2; \
       exit 1; \
     fi; \
     echo "toolchain verified: $got"

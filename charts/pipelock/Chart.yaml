@@ -6,8 +6,8 @@ type: application
 # gate enforces that both equal the release tag. The chart publishes to an
 # OCI registry under this version as the tag, so a version that did not move
 # every release would overwrite the previously published chart in place.
-version: 3.3.0
-appVersion: "3.3.0"
+version: 3.4.0
+appVersion: "3.4.0"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock

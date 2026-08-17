@@ -13,6 +13,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `chain_kind` and `writer_instance_id`. The recorder continues to emit v2
   entries during the compatibility window.
 
+## [3.4.0] - 2026-08-18
+
+### Breaking Changes / Upgrade Notes
+
+- **Three `airlock.triggers` fields are now rejected at config load.** `on_severity`,
+  `anomaly_count` and `anomaly_window_minutes` parsed and validated in 3.3.0 while never
+  being read by any code, so setting them changed nothing and said nothing. Loading a
+  config that still carries any of them now fails with the replacement named. Airlock
+  fires from `on_elevated`, `on_high` and `on_critical`; remove the three old keys and
+  set those instead. A silently inert knob is worse than a rejected one, which is why
+  this refuses rather than warning.
+- **`pipelock git scan-diff` has a three-value exit contract.** `0` means the diff was
+  scanned and is clean, `1` means secrets were found, and `2` means no verified result
+  was produced, covering unreadable or unparseable input and configuration, encoding or
+  report-writing failures. A caller that treats every non-zero status as "secrets found"
+  will report leaks that were never detected. CI steps keying on this should distinguish
+  1 from 2.
+- **The container image asserts its Go toolchain and fails the build on a mismatch.**
+  The base image tag, its digest and the expected version are changed together; a base
+  that drifts stops the build rather than producing an image whose Go version nothing
+  states.
+- **Release publication now requires a verified release manifest.** Tagging halts before
+  publication until `release.json.sig` is signed and uploaded, so a release cannot leave
+  draft with an unverified manifest.
+
+### Added
+
+- Guard manifests gain filesystem and command-execution enforcement, declared path types
+  that refuse credential paths, and path-decision explanations.
+- `pipelock contain upgrade`, a containment-aware upgrade command that re-pins integrity.
+- Commitment keys gain a durable operator-owned keyring with recorded lifecycle
+  operations.
+- Exact protocol, host and port guard grants, on a transport-neutral destination
+  evaluator that unifies alternative IP literal handling.
+- Assessments are signed, gating content rather than integrity.
+- Conductor reports fleet and evidence convergence as four denominators, and exposes
+  build information in its metrics.
+- The Helm chart publishes as an OCI artifact.
+- An explicit applicability vocabulary for verification status, separating a check that
+  cannot apply from one that applies and has no measurement.
+
+### Changed
+
+- Human-readable CLI results go to stdout and diagnostics to stderr, so a caller can pipe
+  one without the other.
+- `pipelock explain` discloses every enabled control an allowed verdict did not evaluate.
+  It does not fetch the URL or resolve DNS, so response scanning, request body scanning
+  and the SSRF layer can still block a request the explanation allowed.
+- `pipelock doctor` reports action divergence under its own check name.
+- Configuration warns when a sub-detector action is weaker than its section, and ranks
+  every enforcement action when combining findings.
+- The developer environment reaches a sandboxed process over a pipe rather than the
+  command line, keeping values out of `/proc/<pid>/cmdline`.
+- Release verification binds to one tag predicate and an exact identity, so the readiness
+  gate and the publication path agree on what a product tag is.
+
+### Fixed
+
+- MCP proxies exit when their spawning session dies, and WebSocket and sandbox proxy
+  sessions are bound to their spawner.
+- MCP capacity bounds fail closed and require signed resets. Reaching a bound refuses
+  rather than evicting live state, which would make a prior request replayable.
+- Listener state is bound to authenticated principals, and the listener state token
+  defaults off.
+- Tool definition drift is blocked on introduced content, `tools/list` is scanned for
+  HTTP listener clients without a session token, and fragmented tool arguments are
+  reassembled for cross-request detection.
+- The scanner detects external data transfer directives.
+- Local authority grants are canonicalized with JCS, so a re-encoded grant is not
+  interchangeable with the signed one.
+- Evidence provenance commitments are unambiguous, and the provenance profile describes
+  the scanner transforms that actually run.
+- Recorder evidence is preserved under concurrent writers, and anchor bundle and marker
+  state are fsynced before success is reported.
+- Metrics stop reporting a self-awarded evidence assurance level and cap the current
+  level at the honestly-earned ceiling.
+- Signing publishes agent key pairs as a transaction, and CLI, license and integrity
+  commands refuse an output path that names the signing key they just used.
+- The commitment keyring refuses content that fails its own check, so an altered or
+  truncated backup is not adopted.
+- `contain` verifies the deployed binary against the integrity pin and the running
+  service image, validates managed configuration on upgrade, and constrains metrics
+  exposure to loopback or a declared, expiring, source-scoped exception.
+- The proxy preserves detection state across reload, gates receipt headers on successful
+  recording, and binds the SSRF dial snapshot to the CONNECT port.
+- `scan-diff` accepts whole-file deletion hunks, which previously failed the scan and,
+  through fail-on-findings, CI.
+- A second release no longer overwrites the published Helm chart.
+- The sandbox preserves capacity on busy hosts and treats its network lifecycle as a
+  fail-closed required service.
+
 ## [3.3.0] - 2026-07-30
 
 ### Breaking Changes / Upgrade Notes

@@ -75,6 +75,31 @@ uses normal command success/failure semantics for log lookup and rendering.
 
 The non-zero exit on a block lets scripts branch on the verdict without parsing output.
 
+## An allowed verdict says what it did not check
+
+`explain` runs the pre-resolution layers with no network access and no session
+history, so it cannot evaluate anything that depends on state it does not hold.
+A bare `ALLOWED` would read as "this URL is fine" when it means "the layers I
+could run found nothing."
+
+Every enabled control the verdict did not evaluate is therefore named in the
+report, together with the fact that it can still block the request at runtime:
+
+```
+Verdict: ALLOWED
+note: this config's SSRF layer (layer 8) resolves DNS at runtime; explain did not
+      resolve, so a private/metadata IP or DNS failure could still block this URL
+      when proxied
+note: this verdict covers URL-layer checks only; explain does not fetch the URL,
+      so response scanning and request body scanning did not run and can still
+      block this request at runtime
+```
+
+The notes follow the loaded config rather than printing unconditionally. With
+`response_scanning.enabled: false` the response-scanning note does not appear,
+because no enabled control is being skipped. A note that printed either way would
+be a disclaimer rather than a disclosure.
+
 ## JSON report fields
 
 `--json` emits a stable report shape: `url`, `config_file`, `mode`, `version`, `allowed`, `scanner`, `layer`, `target_view` (`url_query` / `host` / `path` / `scheme` / `url`), `host`, `pattern_name` (for DLP/blocklist), `reason`, `score`, `dns_dependent`, `notes`, `warn_matches`, and a `remediation` object with `knob`, `broader`, and `immutable`.

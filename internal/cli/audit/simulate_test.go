@@ -16,24 +16,46 @@ func TestSimulateCmd_Text(t *testing.T) {
 	cmd := testRoot()
 	// Also add simulate as a top-level command for this test.
 	cmd.AddCommand(SimulateCmd())
-	buf := &strings.Builder{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"simulate"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	output := stdout.String()
 	if !strings.Contains(output, "Attack Simulation") {
-		t.Error("expected simulation header in output")
+		t.Error("expected simulation header on stdout")
 	}
 	if !strings.Contains(output, "Grade:") {
-		t.Error("expected grade in output")
+		t.Error("expected grade on stdout")
 	}
 	if !strings.Contains(output, "Score:") {
-		t.Error("expected score in output")
+		t.Error("expected score on stdout")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("unexpected simulation output on stderr: %s", stderr.String())
+	}
+}
+
+func TestSimulateCmd_DiagnosticUsesStderr(t *testing.T) {
+	cmd := testRoot()
+	cmd.AddCommand(SimulateCmd())
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"simulate", "--config", "/missing/pipelock.yaml"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected an error for a missing config")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("unexpected result on stdout: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "loading config") {
+		t.Errorf("expected config diagnostic on stderr, got: %s", stderr.String())
 	}
 }
 

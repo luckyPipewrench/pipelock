@@ -108,11 +108,14 @@ tool poisoning, SSRF, and URL evasion techniques.
 Attacks are run directly against the scanner. SSRF scenarios may
 trigger DNS lookups as part of the scanner's DNS rebinding checks.
 
+Text simulation results and JSON results go to stdout. Diagnostics go to stderr.
+
 Examples:
   pipelock simulate --config pipelock.yaml
   pipelock simulate --config pipelock.yaml --json
   pipelock simulate  # test default config`,
-		Args: cobra.NoArgs,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := cliutil.LoadConfigOrDefault(configFile)
 			if err != nil {
@@ -657,22 +660,22 @@ func RunSimulation(scenarios []simScenario, cfgFile, mode string) SimulateResult
 }
 
 func printSimulation(cmd *cobra.Command, r SimulateResult) {
-	cmd.PrintErrln("Pipelock Attack Simulation")
-	cmd.PrintErrln("==========================")
+	cmd.Println("Pipelock Attack Simulation")
+	cmd.Println("==========================")
 	if r.ConfigFile != "" {
-		cmd.PrintErrf("Config: %s (mode: %s)\n", r.ConfigFile, r.Mode)
+		cmd.Printf("Config: %s (mode: %s)\n", r.ConfigFile, r.Mode)
 	} else {
-		cmd.PrintErrf("Config: defaults (mode: %s)\n", r.Mode)
+		cmd.Printf("Config: defaults (mode: %s)\n", r.Mode)
 	}
-	cmd.PrintErrln()
+	cmd.Println()
 
 	currentCat := ""
 	for _, s := range r.Scenarios {
 		if s.Category != currentCat {
 			if currentCat != "" {
-				cmd.PrintErrln()
+				cmd.Println()
 			}
-			cmd.PrintErrf("  %s\n", s.Category)
+			cmd.Printf("  %s\n", s.Category)
 			currentCat = s.Category
 		}
 
@@ -686,17 +689,17 @@ func printSimulation(cmd *cobra.Command, r SimulateResult) {
 			mark = "-"
 		}
 
-		cmd.PrintErrf("    %s %-45s %s\n", mark, s.Name, status)
+		cmd.Printf("    %s %-45s %s\n", mark, s.Name, status)
 	}
 
-	cmd.PrintErrln()
-	cmd.PrintErrf("Score: %d/%d (%d%%)  Grade: %s\n",
+	cmd.Println()
+	cmd.Printf("Score: %d/%d (%d%%)  Grade: %s\n",
 		r.Passed, r.Total-r.KnownLimits, r.Percentage, r.Grade)
 	if r.KnownLimits > 0 {
-		cmd.PrintErrf("Known limitations: %d (documented)\n", r.KnownLimits)
+		cmd.Printf("Known limitations: %d (documented)\n", r.KnownLimits)
 	}
 	if r.Failed > 0 {
-		cmd.PrintErrf("MISSED: %d scenarios not detected — review config\n", r.Failed)
+		cmd.Printf("MISSED: %d scenarios not detected — review config\n", r.Failed)
 	}
 }
 

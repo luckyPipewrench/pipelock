@@ -49,8 +49,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 	signOnly := fs.Bool("sign-only", false, "sign an existing release.json without regenerating it")
 	manifestPath := fs.String("manifest", "", "release.json path for --sign-only; defaults to <dist>/release.json")
 	genKey := fs.Bool("gen-key", false, "generate a fresh Ed25519 release-signing keypair and print private_hex + public_hex (private -> offline key safe; public -> RELEASE_KEYRING_HEX)")
+	verify := fs.Bool("verify", false, "verify an existing release.json against its release.json.sig and the release keyring; exits non-zero when the signature is missing or does not verify")
+	keyringHex := fs.String("keyring-hex", os.Getenv("RELEASE_KEYRING_HEX"), "hex Ed25519 public keys accepted as release signers; defaults to RELEASE_KEYRING_HEX")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *verify {
+		return runVerify(*dist, *manifestPath, *keyringHex, stdout)
 	}
 	if *genKey {
 		privHex, pubHex, err := generateReleaseKeypair()
@@ -113,6 +118,44 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := os.WriteFile(filepath.Join(*dist, releasetrust.ManifestFile), data, 0o600); err != nil {
 		return fmt.Errorf("write release.json: %w", err)
+	}
+	return nil
+}
+
+// runVerify checks that a release manifest carries a signature that verifies
+// against the release keyring.
+//
+// Signing happens offline, so no CI job can produce release.json.sig and no
+// test before the tag can prove it exists. What CI can do is refuse to publish
+// without it. `pipelock update` reads that signature to decide whether an update
+// is genuine, so a release that ships the manifest and not the signature leaves
+// self-update unable to verify anything, which is how v3.1.0 shipped.
+//
+// A missing signature file and a signature that does not verify are both
+// failures here. Treating absence as "nothing to check" is the fail-open
+// direction and is exactly the state this guard exists to catch.
+func runVerify(dist, manifestPath, keyringHex string, stdout io.Writer) error {
+	if strings.TrimSpace(keyringHex) == "" {
+		return errors.New("--keyring-hex or RELEASE_KEYRING_HEX is required to verify a release manifest")
+	}
+	if strings.TrimSpace(manifestPath) == "" {
+		manifestPath = filepath.Join(dist, releasetrust.ManifestFile)
+	}
+	data, err := readReleaseMetadata(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", releasetrust.ManifestFile, err)
+	}
+	sigPath := filepath.Join(filepath.Dir(manifestPath), releasetrust.ManifestSigFile)
+	sig, err := readReleaseMetadata(sigPath)
+	if err != nil {
+		return fmt.Errorf("read %s (sign the manifest offline with --sign-only before publishing): %w", releasetrust.ManifestSigFile, err)
+	}
+	verification, err := releasetrust.VerifyManifest(data, sig, keyringHex)
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", releasetrust.ManifestFile, err)
+	}
+	if _, err := fmt.Fprintf(stdout, "release manifest signature verified by %s (keyring index %d)\n", verification.SignerKeyHex, verification.SignerKeyIndex); err != nil {
+		return fmt.Errorf("write verification result: %w", err)
 	}
 	return nil
 }

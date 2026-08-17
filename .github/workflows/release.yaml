@@ -953,6 +953,28 @@ jobs:
       # have all succeeded. The draft kept GitHub Release assets private while
       # those checks ran. Container images and Homebrew remain separate
       # publication surfaces and are not made atomic by this promotion.
+      # `pipelock update` verifies release.json against release.json.sig before
+      # trusting an update, so a release published without that signature leaves
+      # self-update unable to verify anything. v3.1.0 shipped in exactly that
+      # state. Signing is offline by design and cannot move into CI, so this
+      # refuses to leave draft until the signature has been uploaded, rather
+      # than publishing and discovering the gap from a user report.
+      - name: Require a verified release manifest signature
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
+        run: |
+          set -euo pipefail
+          verify_dir="$RUNNER_TEMP/release-manifest-verify"
+          mkdir -p "$verify_dir"
+          if ! gh release download "$GITHUB_REF_NAME" \
+                 --pattern release.json --pattern release.json.sig \
+                 --dir "$verify_dir" --clobber; then
+            echo "::error::release.json.sig is not attached to ${GITHUB_REF_NAME}. Sign dist/release.json offline (pipelock-release-manifest --sign-only) and upload it before publishing."
+            exit 1
+          fi
+          go run ./cmd/pipelock-release-manifest --verify --manifest "$verify_dir/release.json"
+
       - name: Publish GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

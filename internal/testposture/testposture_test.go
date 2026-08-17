@@ -6,6 +6,7 @@ package testposture
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
@@ -51,13 +52,7 @@ func TestPinAbsentIsolatesFromHostPosture(t *testing.T) {
 	}
 
 	dir := filepath.Dir(got)
-	info, statErr := os.Stat(dir)
-	if statErr != nil {
-		t.Fatalf("stat pinned dir: %v", statErr)
-	}
-	if perm := info.Mode().Perm(); perm != dirMode {
-		t.Fatalf("pinned dir mode = %#o, want %#o", perm, dirMode)
-	}
+	assertOwnerOnlyDir(t, dir)
 
 	cleanup()
 	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
@@ -112,5 +107,58 @@ func TestPinIntoRefusesAMissingDirectory(t *testing.T) {
 
 	if err := pinInto(dir); err == nil {
 		t.Fatal("expected an error for a missing directory")
+	}
+}
+
+// assertOwnerOnlyDir checks the pinned directory grants nobody but its owner.
+// Windows does not model POSIX permission bits, so the check is Unix-only.
+func assertOwnerOnlyDir(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat pinned dir: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != dirMode {
+		t.Fatalf("pinned dir mode = %#o, want %#o", perm, dirMode)
+	}
+}
+
+func TestPinAbsentRestoresThePriorOverride(t *testing.T) {
+	// The override is process-wide, so cleanup must put back whatever was there
+	// rather than leave a path to a directory it just deleted.
+	const prior = "/var/lib/pipelock/contain/posture/prior-proof.json"
+	t.Setenv(posturebinding.RuntimeProofEnv, prior)
+
+	cleanup, err := PinAbsent()
+	if err != nil {
+		t.Fatalf("PinAbsent: %v", err)
+	}
+	if got := os.Getenv(posturebinding.RuntimeProofEnv); got == prior {
+		t.Fatal("PinAbsent did not replace the prior override")
+	}
+
+	cleanup()
+	if got := os.Getenv(posturebinding.RuntimeProofEnv); got != prior {
+		t.Fatalf("cleanup left the override as %q, want %q", got, prior)
+	}
+}
+
+func TestPinAbsentUnsetsAnOverrideItIntroduced(t *testing.T) {
+	t.Setenv(posturebinding.RuntimeProofEnv, "")
+	if err := os.Unsetenv(posturebinding.RuntimeProofEnv); err != nil {
+		t.Fatalf("unsetenv: %v", err)
+	}
+
+	cleanup, err := PinAbsent()
+	if err != nil {
+		t.Fatalf("PinAbsent: %v", err)
+	}
+	cleanup()
+
+	if got, ok := os.LookupEnv(posturebinding.RuntimeProofEnv); ok {
+		t.Fatalf("cleanup left the override set to %q", got)
 	}
 }

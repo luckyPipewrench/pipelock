@@ -18,6 +18,7 @@ import (
 func TestMain(m *testing.M) {
 	cleanup, err := testposture.PinAbsent()
 	if err != nil {
+		cleanup()
 		panic(err)
 	}
 

@@ -200,11 +200,25 @@ func TestLoadRuntimeUnsetUsesDefaultPath(t *testing.T) {
 	// A machine with containment installed is a production state, not an exotic
 	// one, so this must distinguish absence from refusal rather than collapse
 	// them.
-	if _, err := os.Stat(DefaultContainRunProofPath); !errors.Is(err, fs.ErrNotExist) {
-		t.Skipf(
-			"default proof path %s is not provably absent (%v); skipping missing-default assertion",
-			DefaultContainRunProofPath, err,
-		)
+	_, statErr := os.Stat(DefaultContainRunProofPath)
+	switch {
+	case statErr == nil:
+		t.Skipf("default proof path %s exists; skipping missing-default assertion",
+			DefaultContainRunProofPath)
+	case errors.Is(statErr, fs.ErrNotExist):
+		// Provably absent, which is the state this assertion is about.
+	case errors.Is(statErr, fs.ErrPermission):
+		// `pipelock contain install` creates the posture directory 0o750 owned
+		// by pipelock-proxy, so an ordinary user cannot tell whether the proof
+		// is there. Absence is unprovable, so the assertion is skipped rather
+		// than failed: a machine with containment installed is a production
+		// state, and failing here would be the defect this test was fixed for.
+		t.Skipf("default proof path %s is unreadable (%v); absence cannot be established",
+			DefaultContainRunProofPath, statErr)
+	default:
+		// Anything else is a genuine filesystem fault and must not be hidden
+		// behind a skip.
+		t.Fatalf("stat default proof path %s: %v", DefaultContainRunProofPath, statErr)
 	}
 	t.Setenv(RuntimeProofEnv, "")
 	got, err := LoadRuntime()

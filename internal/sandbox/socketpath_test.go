@@ -49,10 +49,15 @@ func TestCheckSocketPathLength_RefusesOverLongPathAndSaysWhy(t *testing.T) {
 func TestNewStandaloneControlDir_RefusesALongTMPDIR(t *testing.T) {
 	base := t.TempDir()
 	deep := filepath.Join(base, strings.Repeat("d", 90))
-	if err := os.MkdirAll(deep, 0o700); err != nil {
+	if err := os.MkdirAll(deep, 0o750); err != nil {
 		t.Skipf("cannot build a long temp path here: %v", err)
 	}
 	t.Setenv("TMPDIR", deep)
+
+	// Snapshot before and after. newStandaloneControlDir returns "" on this
+	// failure, so a check guarded on a non-empty return can never observe a
+	// leak; the directory listing can.
+	before := sandboxDirEntries(t, deep)
 
 	dir, err := newStandaloneControlDir()
 	if err == nil {
@@ -62,11 +67,8 @@ func TestNewStandaloneControlDir_RefusesALongTMPDIR(t *testing.T) {
 	if !strings.Contains(err.Error(), "TMPDIR") {
 		t.Errorf("refusal does not name TMPDIR, so an operator cannot act on it: %v", err)
 	}
-	// A rejected directory must not be left behind.
-	if dir != "" {
-		if _, statErr := os.Stat(dir); statErr == nil {
-			t.Errorf("rejected control dir %s was left on disk", dir)
-		}
+	if after := sandboxDirEntries(t, deep); len(after) != len(before) {
+		t.Errorf("rejected control dir left behind: before %v, after %v", before, after)
 	}
 }
 
@@ -90,4 +92,20 @@ func TestNewStandaloneControlDir_AcceptsAShortTMPDIR(t *testing.T) {
 	if got := len(ProxySocketPath(dir)); got > maxUnixSocketPath {
 		t.Fatalf("accepted a control dir whose socket path is %d bytes", got)
 	}
+}
+
+// sandboxDirEntries lists the per-invocation control directories under dir.
+func sandboxDirEntries(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "pipelock-sandbox-") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
 }

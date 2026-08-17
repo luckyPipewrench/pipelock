@@ -80,6 +80,10 @@ func TestMain(m *testing.M) {
 	// test reports a sandbox failure that has nothing to do with sandboxing.
 	posturePin, err := testposture.PinAbsent()
 	if err != nil {
+		// PinAbsent creates its temporary directory before it pins, and returns
+		// the cleanup either way, so exiting without calling it leaks that
+		// directory and can leave a partial environment override behind.
+		posturePin()
 		fmt.Fprintf(os.Stderr, "pinning posture proof: %v\n", err)
 		os.Exit(1)
 	}

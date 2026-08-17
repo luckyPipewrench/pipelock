@@ -531,7 +531,40 @@ func newStandaloneControlDir() (retDir string, retErr error) {
 	if int(stat.Uid) != os.Geteuid() {
 		return "", fmt.Errorf("sandbox control dir %s is owned by uid %d, not this process (uid %d)", sandboxDir, stat.Uid, os.Geteuid())
 	}
+	if err := checkSocketPathLength(ProxySocketPath(sandboxDir)); err != nil {
+		return "", err
+	}
 	return sandboxDir, nil
+}
+
+// maxUnixSocketPath is the usable length of sockaddr_un.sun_path.
+//
+// The kernel struct reserves 108 bytes on Linux and 104 on Darwin, including
+// the terminating NUL, so 103 is the longest path that is safe on both. The
+// limit is a fixed-size C array rather than anything configurable, which is why
+// this is a constant and not a knob.
+const maxUnixSocketPath = 103
+
+// checkSocketPathLength refuses a control socket path the kernel cannot bind.
+//
+// The path is derived from TMPDIR, and bind() answers an over-long one with
+// EINVAL, which surfaces as "invalid argument" naming neither the length nor
+// the variable that caused it. An operator on a host with a long TMPDIR -- a
+// container whose temp lives under an overlay storage path, for instance --
+// would see the sandbox fail to start with nothing to act on.
+//
+// Checked at directory creation rather than at bind so it fails before any
+// listener, child process or proxy has been set up, and so the message can name
+// the fix.
+func checkSocketPathLength(path string) error {
+	if len(path) <= maxUnixSocketPath {
+		return nil
+	}
+	return fmt.Errorf(
+		"sandbox control socket path is %d bytes, over the %d-byte kernel limit: %s; "+
+			"set TMPDIR to a shorter directory",
+		len(path), maxUnixSocketPath, path,
+	)
 }
 
 type standaloneProxyServer struct {

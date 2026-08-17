@@ -14,6 +14,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,11 +186,25 @@ func TestLoadRuntimeAbsoluteOverrideWorks(t *testing.T) {
 }
 
 func TestLoadRuntimeUnsetUsesDefaultPath(t *testing.T) {
-	// With no override, LoadRuntime reads DefaultContainRunProofPath. Skip if a
-	// real proof exists on the host so the test never depends on (or reads) live
-	// local state; the missing-default case is what we assert here.
-	if _, err := os.Stat(DefaultContainRunProofPath); err == nil {
-		t.Skipf("host has a real proof at %s; skipping missing-default assertion", DefaultContainRunProofPath)
+	// With no override, LoadRuntime reads DefaultContainRunProofPath, so this
+	// assertion is only meaningful when that path is provably absent.
+	//
+	// Skipping on `err == nil` alone was not that check. It treats every error
+	// as absence, and the error a containment host actually returns is
+	// permission denied: `pipelock contain install` creates the posture
+	// directory 0o750 owned by pipelock-proxy, so an ordinary user's stat fails
+	// without the file being missing. The guard then declined to skip,
+	// LoadRuntime surfaced that refusal, and the test failed for a reason that
+	// has nothing to do with the missing-default behavior it asserts.
+	//
+	// A machine with containment installed is a production state, not an exotic
+	// one, so this must distinguish absence from refusal rather than collapse
+	// them.
+	if _, err := os.Stat(DefaultContainRunProofPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Skipf(
+			"default proof path %s is not provably absent (%v); skipping missing-default assertion",
+			DefaultContainRunProofPath, err,
+		)
 	}
 	t.Setenv(RuntimeProofEnv, "")
 	got, err := LoadRuntime()

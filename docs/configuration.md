@@ -2572,6 +2572,8 @@ pipelock audit score --config pipelock.yaml
 pipelock audit score --config pipelock.yaml --json
 ```
 
+Both the text scorecard and JSON result go to stdout. Diagnostics go to stderr.
+
 **Categories scored:** DLP (pattern count, env scanning, entropy), response scanning (enabled, action, pattern count), MCP tool scanning, MCP tool policy (rule count, blocking rules, overpermission), MCP input scanning, MCP session binding, kill switch (source count), enforcement mode, domain blocklist, adaptive enforcement, tool chain detection, sandbox, live-lock contracts, redaction, browser shield, mediation envelope, flight recorder, request body scanning, cross-request detection, address protection, seed-phrase detection, git protection, and file sentry.
 
 **Tool policy overpermission audit:** flags wildcard `arg_pattern` values, high-risk tool patterns with non-blocking actions, and policies with no effective blocking rules. Respects section-level default action inheritance.

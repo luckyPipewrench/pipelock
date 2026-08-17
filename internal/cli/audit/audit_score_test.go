@@ -211,21 +211,42 @@ func TestScoreConfig_InheritedBlockAction(t *testing.T) {
 
 func TestAuditScoreCmd_Text(t *testing.T) {
 	cmd := testRoot()
-	buf := &strings.Builder{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"audit", "score"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	output := stdout.String()
 	if !strings.Contains(output, "Config Security Score") {
-		t.Error("expected score header in output")
+		t.Error("expected score header on stdout")
 	}
 	if !strings.Contains(output, "Grade:") {
-		t.Error("expected grade in output")
+		t.Error("expected grade on stdout")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("unexpected scorecard output on stderr: %s", stderr.String())
+	}
+}
+
+func TestAuditScoreCmd_DiagnosticUsesStderr(t *testing.T) {
+	cmd := testRoot()
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"audit", "score", "--config", "/missing/pipelock.yaml"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected an error for a missing config")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("unexpected result on stdout: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "loading config") {
+		t.Errorf("expected config diagnostic on stderr, got: %s", stderr.String())
 	}
 }
 

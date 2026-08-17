@@ -648,9 +648,9 @@ func TestPrintScoreResult(t *testing.T) {
 	cmd := testRoot()
 	cmd.AddCommand(Cmd())
 
-	var buf strings.Builder
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
 
 	result := &ScoreResult{
 		TotalScore: 80,
@@ -670,7 +670,7 @@ func TestPrintScoreResult(t *testing.T) {
 	}
 
 	printScoreResult(cmd, result)
-	output := buf.String()
+	output := stdout.String()
 
 	if !strings.Contains(output, "Config Security Score") {
 		t.Error("expected header")
@@ -686,6 +686,9 @@ func TestPrintScoreResult(t *testing.T) {
 	}
 	if !strings.Contains(output, "[INFO]") {
 		t.Error("expected INFO tag")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("unexpected scorecard output on stderr: %s", stderr.String())
 	}
 }
 

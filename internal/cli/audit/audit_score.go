@@ -52,13 +52,16 @@ func auditScoreCmd() *cobra.Command {
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
-		Use:   "score",
-		Short: "Score a pipelock config for security posture",
-		Args:  cobra.NoArgs,
+		Use:          "score",
+		Short:        "Score a pipelock config for security posture",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
 		Long: `Analyze a pipelock configuration file and produce a security posture score.
 
 Checks whether security features are enabled and properly configured.
 Identifies overly permissive tool policies and missing protections.
+
+Text scorecards and JSON results go to stdout. Diagnostics go to stderr.
 
 Examples:
   pipelock audit score --config pipelock.yaml
@@ -549,14 +552,14 @@ func scoreSandbox(cfg *config.Config, findings *[]ScoreFinding) ScoreCategory {
 }
 
 func printScoreResult(cmd *cobra.Command, r *ScoreResult) {
-	cmd.PrintErrln("Pipelock Config Security Score")
-	cmd.PrintErrln("==============================")
+	cmd.Println("Pipelock Config Security Score")
+	cmd.Println("==============================")
 	if r.ConfigFile != "" {
-		cmd.PrintErrf("Config: %s\n", r.ConfigFile)
+		cmd.Printf("Config: %s\n", r.ConfigFile)
 	} else {
-		cmd.PrintErrln("Config: (built-in defaults)")
+		cmd.Println("Config: (built-in defaults)")
 	}
-	cmd.PrintErrln()
+	cmd.Println()
 
 	for _, c := range r.Categories {
 		bar := scoreBar(c.Score, c.MaxScore)
@@ -564,15 +567,15 @@ func printScoreResult(cmd *cobra.Command, r *ScoreResult) {
 		if c.Detail != "" {
 			detail = " (" + c.Detail + ")"
 		}
-		cmd.PrintErrf("  %-25s %s %d/%d%s\n", c.Name, bar, c.Score, c.MaxScore, detail)
+		cmd.Printf("  %-25s %s %d/%d%s\n", c.Name, bar, c.Score, c.MaxScore, detail)
 	}
 
-	cmd.PrintErrln()
-	cmd.PrintErrf("Overall: %d/%d (%d%%) Grade: %s\n", r.TotalScore, r.MaxScore, r.Percentage, r.Grade)
+	cmd.Println()
+	cmd.Printf("Overall: %d/%d (%d%%) Grade: %s\n", r.TotalScore, r.MaxScore, r.Percentage, r.Grade)
 
 	if len(r.Findings) > 0 {
-		cmd.PrintErrln()
-		cmd.PrintErrln("Recommendations:")
+		cmd.Println()
+		cmd.Println("Recommendations:")
 		for _, f := range r.Findings {
 			var prefix string
 			switch f.Severity {
@@ -583,7 +586,7 @@ func printScoreResult(cmd *cobra.Command, r *ScoreResult) {
 			default:
 				prefix = "  [INFO]     "
 			}
-			cmd.PrintErrf("%s%s\n", prefix, f.Message)
+			cmd.Printf("%s%s\n", prefix, f.Message)
 		}
 	}
 }

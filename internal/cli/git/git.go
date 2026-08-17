@@ -21,8 +21,12 @@ import (
 var (
 	// ErrSecretsFound is returned when pipelock git scan-diff detects secrets.
 	ErrSecretsFound = errors.New("secrets found in diff")
-	// ErrDiffUnverifiable is returned when pipelock git scan-diff cannot verify its input.
-	ErrDiffUnverifiable = errors.New("diff input is unverifiable")
+	// ErrScanUnverified is returned when pipelock git scan-diff produced no
+	// trustworthy result. That covers input it could not read or parse, and also
+	// a configuration, encoding, or report-writing failure that prevents the
+	// scan from being run or its result from being delivered. It deliberately
+	// does NOT mean the diff was clean, and it never overlaps ErrSecretsFound.
+	ErrScanUnverified = errors.New("scan produced no verified result")
 )
 
 // Output format constants.
@@ -65,8 +69,11 @@ func scanDiffCmd() *cobra.Command {
 		Short: "Scan a unified diff for secrets",
 		Long: `Reads a unified diff from stdin and scans added lines for DLP pattern matches.
 
-Designed for use in git hooks or CI pipelines. Exit code 0 means clean, 1 means
-secrets were found, and 2 means the input could not be verified as a diff.
+Designed for use in git hooks or CI pipelines. Exit code 0 means the diff was
+scanned and is clean, 1 means secrets were found, and 2 means no verified result
+was produced: input that could not be read or parsed, or a configuration,
+encoding, or report-writing failure. A caller that treats any non-zero status as
+"secrets found" reports leaks that were never detected.
 
 Examples:
   git diff HEAD~1 | pipelock git scan-diff
@@ -86,39 +93,48 @@ Examples:
 			switch effectiveFormat {
 			case formatText, formatJSON, formatSARIF:
 			default:
-				return fmt.Errorf("unsupported format %q (valid: text, json, sarif)", effectiveFormat)
+				return cliutil.ExitCodeError(cliutil.ExitConfig,
+					fmt.Errorf("%w: unsupported format %q (valid: text, json, sarif)", ErrScanUnverified, effectiveFormat))
 			}
 
 			cfg, err := cliutil.LoadConfigOrDefault(configFile)
 			if err != nil {
-				return err
+				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%w: %w", ErrScanUnverified, err))
 			}
 
 			diffData, err := io.ReadAll(io.LimitReader(os.Stdin, gitprotect.MaxDiffBytes+1))
 			if err != nil {
-				return fmt.Errorf("reading diff from stdin: %w", err)
+				return cliutil.ExitCodeError(cliutil.ExitConfig,
+					fmt.Errorf("%w: reading diff from stdin: %w", ErrScanUnverified, err))
 			}
 			if len(diffData) > gitprotect.MaxDiffBytes {
-				return fmt.Errorf("%w of %d bytes", gitprotect.ErrDiffTooLarge, gitprotect.MaxDiffBytes)
+				return cliutil.ExitCodeError(cliutil.ExitConfig,
+					fmt.Errorf("%w: %w of %d bytes", ErrScanUnverified, gitprotect.ErrDiffTooLarge, gitprotect.MaxDiffBytes))
 			}
 
 			if len(diffData) == 0 {
 				if effectiveFormat == formatJSON {
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "[]")
-					return nil
+					return writeScanResult(cmd.OutOrStdout(), "[]\n")
 				}
 				if effectiveFormat == formatSARIF {
-					return writeGitSARIF(cmd, nil, outputFile)
+					if sarifErr := writeGitSARIF(cmd, nil, outputFile); sarifErr != nil {
+						return cliutil.ExitCodeError(cliutil.ExitConfig,
+							fmt.Errorf("%w: %w", ErrScanUnverified, sarifErr))
+					}
+					return nil
 				}
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "No diff content on stdin.")
-				return nil
+				// For empty input this line is the whole result, not a diagnostic
+				// alongside one, so a failed write leaves the caller with nothing
+				// and must not report clean. The JSON branch above already fails
+				// closed on the same condition.
+				return writeScanResult(cmd.ErrOrStderr(), "No diff content on stdin.\n")
 			}
 
 			patterns := gitprotect.CompileDLPPatterns(cfg.DLP.Patterns)
 			result, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ERROR: %v\n", scanErr)
-				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%w: %w", ErrDiffUnverifiable, scanErr))
+				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%w: %w", ErrScanUnverified, scanErr))
 			}
 
 			// ScanDiff handles inline pipelock:ignore from the diff content
@@ -153,15 +169,21 @@ Examples:
 			case formatJSON:
 				data, jsonErr := gitprotect.FindingsJSON(findings)
 				if jsonErr != nil {
-					return fmt.Errorf("encoding findings: %w", jsonErr)
+					return cliutil.ExitCodeError(cliutil.ExitConfig,
+						fmt.Errorf("%w: encoding findings: %w", ErrScanUnverified, jsonErr))
 				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data)) //nolint:gosec // G705: CLI output, not web
+				if writeErr := writeScanResult(cmd.OutOrStdout(), string(data)+"\n"); writeErr != nil {
+					return writeErr
+				}
 			case formatSARIF:
 				if sarifErr := writeGitSARIF(cmd, findings, outputFile); sarifErr != nil {
-					return sarifErr
+					return cliutil.ExitCodeError(cliutil.ExitConfig,
+						fmt.Errorf("%w: %w", ErrScanUnverified, sarifErr))
 				}
 			default:
-				_, _ = fmt.Fprint(cmd.ErrOrStderr(), gitprotect.FormatFindings(findings)) //nolint:gosec // G705: CLI output, not web
+				if writeErr := writeScanResult(cmd.ErrOrStderr(), gitprotect.FormatFindings(findings)); writeErr != nil {
+					return writeErr
+				}
 			}
 
 			if len(findings) > 0 {
@@ -244,6 +266,21 @@ Examples:
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing hook")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress config provenance output")
 	return cmd
+}
+
+// writeScanResult delivers a scan result and treats a failed write as no
+// verified result.
+//
+// A discarded write error lets a scan that found nothing exit 0 while its output
+// never reached the caller, which is indistinguishable from a clean, delivered
+// scan. Diagnostics on stderr stay best-effort; only the result itself is gated
+// here.
+func writeScanResult(w io.Writer, text string) error {
+	if _, err := fmt.Fprint(w, text); err != nil { //nolint:gosec // G705: CLI output, not web
+		return cliutil.ExitCodeError(cliutil.ExitConfig,
+			fmt.Errorf("%w: delivering scan result: %w", ErrScanUnverified, err))
+	}
+	return nil
 }
 
 func writeGitSARIF(cmd *cobra.Command, findings []gitprotect.Finding, outputPath string) error {

@@ -735,6 +735,89 @@ func TestDoMCPPostWithStartupRetry_RetriesRejectedResponse(t *testing.T) {
 	}
 }
 
+// A command that exits before the listener is ready has to come back as a
+// returned error. testport.WithRetry reads that error to decide whether a bind
+// collision should be retried on another port, and a fatal call here would end
+// the test in place and silently void the retry.
+func TestDoMCPPostWithStartupRetry_ReturnsEarlyCommandExit(t *testing.T) {
+	// Bind and release a port so the address is well-formed but nothing answers,
+	// which keeps the helper retrying until cmdErr fires.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve address: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release address: %v", err)
+	}
+	cmdErr := make(chan error, 1)
+	cmdErr <- errors.New("listen tcp: address already in use")
+	var stderr strings.Builder
+	stderr.WriteString("bind collision detail")
+
+	resp, err := doMCPPostWithStartupRetry(t, addr, `{}`, cmdErr, &stderr, acceptHTTPStatusOK)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected an error when the command exits before the listener is ready")
+	}
+	if !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("error does not carry the command failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bind collision detail") {
+		t.Fatalf("error does not carry stderr: %v", err)
+	}
+}
+
+// When neither the listener nor the command ever answers, the helper has to give
+// up on its own deadline and report the last POST error plus stderr. Reaching
+// that branch costs the helper's internal timeout in wall clock; it waits on the
+// context deadline rather than sleeping.
+func TestDoMCPPostWithStartupRetry_ReturnsOnDeadline(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve address: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release address: %v", err)
+	}
+
+	// Never written to, so only the deadline can end the loop.
+	cmdErr := make(chan error, 1)
+	var stderr strings.Builder
+	stderr.WriteString("listener never came up")
+
+	resp, err := doMCPPostWithStartupRetry(t, addr, `{}`, cmdErr, &stderr, acceptHTTPStatusOK)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected a deadline error when nothing ever answers")
+	}
+	if !strings.Contains(err.Error(), "mcp listener POST") {
+		t.Fatalf("error is not the deadline failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "listener never came up") {
+		t.Fatalf("deadline error dropped stderr: %v", err)
+	}
+}
+
+// A request that cannot even be constructed is returned rather than retried,
+// since no amount of waiting makes a malformed address valid.
+func TestDoMCPPostWithStartupRetry_ReturnsRequestConstructionFailure(t *testing.T) {
+	cmdErr := make(chan error)
+	var stderr strings.Builder
+
+	resp, err := doMCPPostWithStartupRetry(t, "invalid host\x7f", `{}`, cmdErr, &stderr, acceptHTTPStatusOK)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected an error for an unconstructable request")
+	}
+	if !strings.Contains(err.Error(), "new mcp request") {
+		t.Fatalf("error is not the request-construction failure: %v", err)
+	}
+}
+
 // doGet issues a context-aware GET and fails the test on error.
 func doGet(t *testing.T, client *http.Client, url string) *http.Response {
 	t.Helper()

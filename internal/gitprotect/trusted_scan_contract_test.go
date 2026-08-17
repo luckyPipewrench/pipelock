@@ -445,12 +445,16 @@ pipelock() {
 	}
 }
 
-func actionScanDiffStep(t *testing.T) workflowStep {
-	t.Helper()
-
-	data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "..", "action.yml")))
+// findActionStep reads an action definition and returns the named step.
+//
+// It returns errors rather than failing the test so its own failure paths can
+// be exercised directly. A missing step is an error, not an empty result: the
+// tests that consume this assert on the step's contents, and an empty step
+// would satisfy several of those assertions vacuously.
+func findActionStep(path, name string) (workflowStep, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		t.Fatalf("read action.yml: %v", err)
+		return workflowStep{}, fmt.Errorf("read %s: %w", path, err)
 	}
 	var action struct {
 		Runs struct {
@@ -458,15 +462,59 @@ func actionScanDiffStep(t *testing.T) workflowStep {
 		} `yaml:"runs"`
 	}
 	if err := yaml.Unmarshal(data, &action); err != nil {
-		t.Fatalf("parse action.yml: %v", err)
+		return workflowStep{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	for _, step := range action.Runs.Steps {
-		if step.Name == "Scan PR diff" {
-			return step
+		if step.Name == name {
+			return step, nil
 		}
 	}
-	t.Fatal("action.yml has no Scan PR diff step")
-	return workflowStep{}
+	return workflowStep{}, fmt.Errorf("%s has no %q step", path, name)
+}
+
+func actionScanDiffStep(t *testing.T) workflowStep {
+	t.Helper()
+
+	step, err := findActionStep(filepath.Join("..", "..", "action.yml"), "Scan PR diff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return step
+}
+
+func TestFindActionStepReportsItsFailures(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	unparseable := filepath.Join(dir, "unparseable.yml")
+	if err := os.WriteFile(unparseable, []byte("runs: [this: is: not: valid\n"), 0o600); err != nil {
+		t.Fatalf("write unparseable action: %v", err)
+	}
+	stepless := filepath.Join(dir, "stepless.yml")
+	if err := os.WriteFile(stepless, []byte("runs:\n  steps:\n    - name: Something Else\n"), 0o600); err != nil {
+		t.Fatalf("write stepless action: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "file that does not exist", path: filepath.Join(dir, "absent.yml"), want: "read"},
+		{name: "file that is not valid YAML", path: unparseable, want: "parse"},
+		{name: "action without the step", path: stepless, want: "no \"Scan PR diff\" step"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := findActionStep(tc.path, "Scan PR diff")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
 }
 
 // TestContinueOnErrorFailsOpenAcrossYAMLShapes covers every form YAML admits

@@ -187,8 +187,8 @@ func TestScanDiffCmd_UnverifiableInputReturnsExitTwoWithoutFinding(t *testing.T)
 	if err == nil {
 		t.Fatal("expected unverifiable input error")
 	}
-	if !errors.Is(err, ErrDiffUnverifiable) {
-		t.Fatalf("expected ErrDiffUnverifiable, got: %v", err)
+	if !errors.Is(err, ErrScanUnverified) {
+		t.Fatalf("expected ErrScanUnverified, got: %v", err)
 	}
 	if !errors.Is(err, gitprotect.ErrNoDiffHeaders) {
 		t.Fatalf("expected ErrNoDiffHeaders, got: %v", err)

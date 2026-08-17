@@ -14,6 +14,8 @@ import (
 
 	"github.com/gobwas/ws"
 	gobwasutil "github.com/gobwas/ws/wsutil"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // wsSessionExitServer serves the WebSocket upstream these tests dial, and
@@ -98,9 +100,13 @@ func TestSessionExit_WSStopsBridge(t *testing.T) {
 		t.Fatal("WebSocket bridge stayed alive after the spawning session exited")
 	}
 
-	if !logBuf.contains("spawning session exited") {
-		t.Errorf("missing session-exit explanation in operator log, got %q", logBuf.String())
-	}
+	// RunWSProxy returning and the operator log being written are not ordered
+	// with respect to each other, so reading the buffer the instant done fires
+	// races the write and fails under load. Poll for the explanation instead of
+	// assuming it has already landed.
+	testwait.For(t, 5*time.Second, func() bool {
+		return logBuf.contains("spawning session exited")
+	}, "missing session-exit explanation in operator log, got %q", logBuf.String())
 }
 
 func TestSessionExit_WSLiveSessionIsNotTornDown(t *testing.T) {

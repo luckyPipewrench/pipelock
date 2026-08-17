@@ -257,6 +257,17 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.workflow,
                 )
 
+    def _step_block(self, start: int) -> str:
+        """Return one workflow step's text, from its name to the next step's.
+
+        Assertions about what a step does have to read that step. A search over
+        the whole workflow answers a different question: whether the strings
+        appear anywhere in that order.
+        """
+        rest = self.workflow[start:]
+        nxt = rest.find("\n      - name: ", 1)
+        return rest if nxt == -1 else rest[:nxt]
+
     def test_github_release_promotion_follows_proof_bundle_and_chart(self) -> None:
         goreleaser = self.workflow.index("- name: Run GoReleaser")
         proof_gate = self.workflow.index("- name: Verify attestation")
@@ -268,13 +279,20 @@ class TestReleaseArtifacts(unittest.TestCase):
         promotion = self.workflow.index("- name: Verify the release manifest signature and publish")
         self.assertIn('gh release edit "$GITHUB_REF_NAME" --draft=false', self.workflow)
 
-        # Verification and promotion share one step so that release assets, which
-        # stay mutable while the release is a draft, cannot be replaced between
-        # the two. A separate promotion step would reopen that window, so assert
-        # the order inside the step rather than only the step's position.
-        verify = self.workflow.index("--verify --manifest")
-        undraft = self.workflow.index('gh release edit "$GITHUB_REF_NAME" --draft=false')
-        self.assertLess(promotion, verify)
+        # Release assets stay mutable while the release is a draft, and the job
+        # holds contents: write, so verifying and then promoting in one step
+        # NARROWS the window in which a verified manifest could be replaced. It
+        # does not close it. Preventing the substitution outright needs an
+        # immutable or pinned publication mechanism, which GitHub releases do not
+        # provide.
+        #
+        # Both commands must live inside the promotion step for even that
+        # narrowing to hold, so the ordering is asserted within the step's own
+        # text. Searching the whole workflow would pass while the two sat in
+        # different steps, which is the arrangement this is meant to rule out.
+        promotion_block = self._step_block(promotion)
+        verify = promotion_block.index("--verify --manifest")
+        undraft = promotion_block.index('gh release edit "$GITHUB_REF_NAME" --draft=false')
         self.assertLess(verify, undraft)
         self.assertNotIn("- name: Publish GitHub release", self.workflow)
 

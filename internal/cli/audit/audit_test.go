@@ -27,21 +27,27 @@ func TestAuditCmd_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 
 	cmd := testRoot()
-	buf := &strings.Builder{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"audit", dir})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	output := stdout.String()
 	if !strings.Contains(output, "Pipelock Security Audit") {
-		t.Error("expected audit header in output")
+		t.Error("expected audit header on stdout")
 	}
 	if !strings.Contains(output, "generic") {
-		t.Error("expected generic agent type")
+		t.Error("expected generic agent type on stdout")
+	}
+	if !strings.Contains(stderr.String(), "Suggested config") {
+		t.Errorf("expected config diagnostic on stderr, got: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Pipelock Security Audit") {
+		t.Errorf("audit report leaked to stderr: %s", stderr.String())
 	}
 }
 
@@ -243,9 +249,9 @@ func TestAuditCmd_WithSecretFile(t *testing.T) {
 
 func TestPrintReport_AllSeverities(t *testing.T) {
 	cmd := testRoot()
-	buf := &strings.Builder{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
 
 	report := &projectscan.Report{
 		Dir:       "/test/project",
@@ -261,11 +267,11 @@ func TestPrintReport_AllSeverities(t *testing.T) {
 		ScoreWith: 85,
 	}
 
-	// printReport writes to cmd.ErrOrStderr, so use the audit subcommand.
+	// Use the audit subcommand so it inherits the root command's output streams.
 	auditCmd := cmd.Commands()[0]
 	printReport(auditCmd, report)
 
-	output := buf.String()
+	output := stdout.String()
 	if !strings.Contains(output, "[CRITICAL]") {
 		t.Error("expected [CRITICAL] prefix")
 	}
@@ -289,6 +295,9 @@ func TestPrintReport_AllSeverities(t *testing.T) {
 	}
 	if !strings.Contains(output, "Info: 1") {
 		t.Error("expected 1 info in summary")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("unexpected report output on stderr: %s", stderr.String())
 	}
 }
 

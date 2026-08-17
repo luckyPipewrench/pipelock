@@ -34,6 +34,9 @@ func Cmd() *cobra.Command {
 Detects agent type, programming languages, package ecosystems, MCP servers,
 and secrets in environment variables and config files.
 
+Text reports and generated config go to stdout. Diagnostics, including
+suppression notes and output-file confirmations, go to stderr.
+
 Examples:
   pipelock audit .
   pipelock audit ./my-project -o pipelock-suggested.yaml
@@ -218,22 +221,22 @@ func writeAuditSARIF(cmd *cobra.Command, report *projectscan.Report, scanDir, ou
 }
 
 func printReport(cmd *cobra.Command, r *projectscan.Report) {
-	cmd.PrintErrln("Pipelock Security Audit")
-	cmd.PrintErrln("=======================")
-	cmd.PrintErrln()
+	cmd.Println("Pipelock Security Audit")
+	cmd.Println("=======================")
+	cmd.Println()
 
-	cmd.PrintErrf("Directory:  %s\n", r.Dir)
-	cmd.PrintErrf("Agent type: %s\n", r.AgentType)
+	cmd.Printf("Directory:  %s\n", r.Dir)
+	cmd.Printf("Agent type: %s\n", r.AgentType)
 	if len(r.Languages) > 0 {
-		cmd.PrintErrf("Languages:  %s\n", joinMax(r.Languages, 5))
+		cmd.Printf("Languages:  %s\n", joinMax(r.Languages, 5))
 	}
 	if len(r.Ecosystems) > 0 {
-		cmd.PrintErrf("Ecosystems: %s\n", joinMax(r.Ecosystems, 5))
+		cmd.Printf("Ecosystems: %s\n", joinMax(r.Ecosystems, 5))
 	}
 
-	cmd.PrintErrln()
-	cmd.PrintErrln("Findings:")
-	cmd.PrintErrln()
+	cmd.Println()
+	cmd.Println("Findings:")
+	cmd.Println()
 
 	criticals := 0
 	warnings := 0
@@ -261,17 +264,17 @@ func printReport(cmd *cobra.Command, r *projectscan.Report) {
 			}
 			msg += ")"
 		}
-		cmd.PrintErrln(msg)
+		cmd.Println(msg)
 	}
 
 	if len(r.Findings) == 0 {
-		cmd.PrintErrln("  No findings.")
+		cmd.Println("  No findings.")
 	}
 
-	cmd.PrintErrln()
-	cmd.PrintErrf("Security Score: %d/100 (unprotected)\n", r.Score)
-	cmd.PrintErrf("  With suggested config: %d/100\n", r.ScoreWith)
-	cmd.PrintErrf("  Criticals: %d  Warnings: %d  Info: %d\n", criticals, warnings, infos)
+	cmd.Println()
+	cmd.Printf("Security Score: %d/100 (unprotected)\n", r.Score)
+	cmd.Printf("  With suggested config: %d/100\n", r.ScoreWith)
+	cmd.Printf("  Criticals: %d  Warnings: %d  Info: %d\n", criticals, warnings, infos)
 }
 
 func joinMax(items []string, limit int) string {

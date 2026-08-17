@@ -15,6 +15,9 @@ Or scan your project and get a tailored config:
 pipelock audit ./my-project -o pipelock.yaml
 ```
 
+The default human audit report and generated config go to stdout. Suppression
+notes and output-file confirmations go to stderr.
+
 ## Hot Reload
 
 Config changes are picked up automatically via file watcher or SIGHUP signal (100ms debounce). Most fields reload without restart. Fields that require a restart are marked below.

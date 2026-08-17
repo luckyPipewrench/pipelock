@@ -493,6 +493,14 @@ jobs:
       - name: Python pin policy
         run: bash scripts/check-python-pins.sh
 
+      # The release-tooling tests read the release workflow as parsed YAML rather
+      # than as text, so PyYAML is a real dependency of this job. It is installed
+      # hash-pinned rather than taken from whatever the runner image happens to
+      # ship, because an undeclared dependency that works today breaks silently
+      # when the image changes.
+      - name: Install pinned release-tooling test dependencies
+        run: pip install --require-hashes -r .github/requirements-pr-review-test.txt
+
       # Release-tooling tests had no PR-time runner, so breaks stayed invisible
       # until tag time. The pattern covers both test_*.py and *_test.py modules.
       - name: Release tooling unit tests

@@ -336,13 +336,24 @@ class TestReleaseArtifacts(unittest.TestCase):
             f"draft removal must happen only in the promotion step, found {undrafting_steps}",
         )
 
-        # Both commands must EXECUTE here, not merely appear. A comment or an
-        # echo mentioning the verifier would satisfy a text search and would
-        # verify nothing.
-        verify_at = [i for i, line in enumerate(promotion_lines) if line.startswith(verify_cmd)]
-        undraft_at = [i for i, line in enumerate(promotion_lines) if line.startswith(undraft_cmd)]
+        # Both commands must EXECUTE here, not merely appear, and the verifier
+        # must be able to stop the publish. `... --verify --manifest x || true`
+        # starts with the verifier and permits an invalid signature through, so
+        # the line is required to be the canonical command exactly: no shell
+        # operator, no error suppression, no redirection appended to it.
+        canonical_verify = f'{verify_cmd} "$verify_dir/release.json"'
+        verify_at = [i for i, line in enumerate(promotion_lines) if canonical_verify in line]
+        undraft_at = [i for i, line in enumerate(promotion_lines) if undraft_cmd in line]
         self.assertEqual(len(verify_at), 1, "promotion step must run the verifier exactly once")
         self.assertEqual(len(undraft_at), 1, "promotion step must undraft exactly once")
+        for i in verify_at + undraft_at:
+            self.assertNotRegex(
+                promotion_lines[i],
+                r"(\|\||&&|;|\||>|<|\btrue\b)",
+                f"release-gating command must fail closed, found: {promotion_lines[i]}",
+            )
+        self.assertEqual(promotion_lines[verify_at[0]], canonical_verify)
+        self.assertEqual(promotion_lines[undraft_at[0]], undraft_cmd)
         self.assertLess(verify_at[0], undraft_at[0])
         self.assertNotIn("- name: Publish GitHub release", self.workflow)
 

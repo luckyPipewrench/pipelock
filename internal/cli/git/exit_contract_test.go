@@ -131,16 +131,18 @@ func TestScanDiffCmd_UndeliverableResultExitsTwo(t *testing.T) {
 			args:        []string{"--json"},
 		},
 		{
-			name: "text findings that cannot be written",
-			diff: diffWithSecret(),
-			args: []string{"--format", "text"},
+			name:        "text findings that cannot be written",
+			diff:        diffWithSecret(),
+			blockStdout: true,
+			args:        []string{"--format", "text"},
 		},
 		{
 			// For empty input the "no diff content" line is the entire result, so
 			// losing it is losing the result, not losing a diagnostic.
-			name: "empty text result that cannot be written",
-			diff: "",
-			args: []string{"--format", "text"},
+			name:        "empty text result that cannot be written",
+			diff:        "",
+			blockStdout: true,
+			args:        []string{"--format", "text"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -156,6 +158,78 @@ func TestScanDiffCmd_UndeliverableResultExitsTwo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScanDiffCmd_TextResultAndDiagnosticsUseSeparateStreams(t *testing.T) {
+	t.Run("text finding is a stdout result", func(t *testing.T) {
+		stdin, err := os.CreateTemp(t.TempDir(), "scan-diff-stdin-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stdin.WriteString(diffWithSecret()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stdin.Seek(0, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = stdin.Close() })
+
+		oldStdin := os.Stdin
+		os.Stdin = stdin
+		t.Cleanup(func() { os.Stdin = oldStdin })
+
+		cmd := testRootCmd()
+		cmd.SetArgs([]string{"git", "scan-diff", "--format", "text"})
+		var stdout, stderr strings.Builder
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+
+		err = cmd.Execute()
+		if !errors.Is(err, ErrSecretsFound) {
+			t.Fatalf("expected %v, got %v", ErrSecretsFound, err)
+		}
+		if !strings.Contains(stdout.String(), "Found 2 secret(s) in diff") {
+			t.Fatalf("expected text finding on stdout, got %q", stdout.String())
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("unexpected diagnostic on stderr: %q", stderr.String())
+		}
+	})
+
+	t.Run("scanner error is a stderr diagnostic", func(t *testing.T) {
+		stdin, err := os.CreateTemp(t.TempDir(), "scan-diff-stdin-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stdin.WriteString("not a diff\n"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stdin.Seek(0, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = stdin.Close() })
+
+		oldStdin := os.Stdin
+		os.Stdin = stdin
+		t.Cleanup(func() { os.Stdin = oldStdin })
+
+		cmd := testRootCmd()
+		cmd.SetArgs([]string{"git", "scan-diff", "--format", "text"})
+		var stdout, stderr strings.Builder
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+
+		err = cmd.Execute()
+		if !errors.Is(err, ErrScanUnverified) {
+			t.Fatalf("expected %v, got %v", ErrScanUnverified, err)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("unexpected result on stdout: %q", stdout.String())
+		}
+		if !strings.Contains(stderr.String(), "ERROR: unverifiable input") {
+			t.Fatalf("expected scanner diagnostic on stderr, got %q", stderr.String())
+		}
+	})
 }
 
 // Exit status 1 means findings are present. Every other failure has to leave

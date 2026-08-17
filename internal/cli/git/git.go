@@ -75,6 +75,9 @@ was produced: input that could not be read or parsed, or a configuration,
 encoding, or report-writing failure. A caller that treats any non-zero status as
 "secrets found" reports leaks that were never detected.
 
+Results are written to stdout unless --output directs a SARIF result to a file.
+Diagnostics, including errors and verbose suppression notes, are written to stderr.
+
 Examples:
   git diff HEAD~1 | pipelock git scan-diff
   git diff --cached | pipelock git scan-diff --config pipelock.yaml
@@ -127,7 +130,7 @@ Examples:
 				// alongside one, so a failed write leaves the caller with nothing
 				// and must not report clean. The JSON branch above already fails
 				// closed on the same condition.
-				return writeScanResult(cmd.ErrOrStderr(), "No diff content on stdin.\n")
+				return writeScanResult(cmd.OutOrStdout(), "No diff content on stdin.\n")
 			}
 
 			patterns := gitprotect.CompileDLPPatterns(cfg.DLP.Patterns)
@@ -181,7 +184,7 @@ Examples:
 						fmt.Errorf("%w: %w", ErrScanUnverified, sarifErr))
 				}
 			default:
-				if writeErr := writeScanResult(cmd.ErrOrStderr(), gitprotect.FormatFindings(findings)); writeErr != nil {
+				if writeErr := writeScanResult(cmd.OutOrStdout(), gitprotect.FormatFindings(findings)); writeErr != nil {
 					return writeErr
 				}
 			}

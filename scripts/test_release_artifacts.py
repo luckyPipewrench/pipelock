@@ -13,6 +13,8 @@ that introduced the drift.
 from __future__ import annotations
 
 import unittest
+
+import yaml
 from pathlib import Path
 
 
@@ -257,16 +259,35 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.workflow,
                 )
 
-    def _step_block(self, start: int) -> str:
-        """Return one workflow step's text, from its name to the next step's.
+    def _release_job_runs(self) -> list[tuple[str, str]]:
+        """Return (step name, run script) for every step of the release job.
 
-        Assertions about what a step does have to read that step. A search over
-        the whole workflow answers a different question: whether the strings
-        appear anywhere in that order.
+        Reading the parsed workflow rather than its text is the point. A string
+        search is satisfied by a comment or an echo that merely mentions a
+        command, and it cannot tell which step a command belongs to.
         """
-        rest = self.workflow[start:]
-        nxt = rest.find("\n      - name: ", 1)
-        return rest if nxt == -1 else rest[:nxt]
+        parsed = yaml.safe_load(WORKFLOW.read_text())
+        steps = parsed["jobs"]["release"]["steps"]
+        return [
+            (step.get("name", ""), step["run"])
+            for step in steps
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        ]
+
+    @staticmethod
+    def _executable_lines(script: str) -> list[str]:
+        """Return the lines of a run script that actually execute.
+
+        Comments do not run, so a check that accepts them proves nothing about
+        what the step does.
+        """
+        lines = []
+        for raw in script.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            lines.append(line)
+        return lines
 
     def test_github_release_promotion_follows_proof_bundle_and_chart(self) -> None:
         goreleaser = self.workflow.index("- name: Run GoReleaser")
@@ -290,10 +311,39 @@ class TestReleaseArtifacts(unittest.TestCase):
         # narrowing to hold, so the ordering is asserted within the step's own
         # text. Searching the whole workflow would pass while the two sat in
         # different steps, which is the arrangement this is meant to rule out.
-        promotion_block = self._step_block(promotion)
-        verify = promotion_block.index("--verify --manifest")
-        undraft = promotion_block.index('gh release edit "$GITHUB_REF_NAME" --draft=false')
-        self.assertLess(verify, undraft)
+        undraft_cmd = 'gh release edit "$GITHUB_REF_NAME" --draft=false'
+        verify_cmd = "go run ./cmd/pipelock-release-manifest --verify --manifest"
+
+        runs = self._release_job_runs()
+        promotion_steps = [
+            script
+            for name, script in runs
+            if name == "Verify the release manifest signature and publish"
+        ]
+        self.assertEqual(len(promotion_steps), 1, "expected exactly one promotion step")
+        promotion_lines = self._executable_lines(promotion_steps[0])
+
+        # The release must leave draft in exactly one place. An undraft anywhere
+        # else could publish before verification while a check scoped to this
+        # step still passed.
+        undrafting_steps = [
+            name for name, script in runs
+            if any(undraft_cmd in line for line in self._executable_lines(script))
+        ]
+        self.assertEqual(
+            undrafting_steps,
+            ["Verify the release manifest signature and publish"],
+            f"draft removal must happen only in the promotion step, found {undrafting_steps}",
+        )
+
+        # Both commands must EXECUTE here, not merely appear. A comment or an
+        # echo mentioning the verifier would satisfy a text search and would
+        # verify nothing.
+        verify_at = [i for i, line in enumerate(promotion_lines) if line.startswith(verify_cmd)]
+        undraft_at = [i for i, line in enumerate(promotion_lines) if line.startswith(undraft_cmd)]
+        self.assertEqual(len(verify_at), 1, "promotion step must run the verifier exactly once")
+        self.assertEqual(len(undraft_at), 1, "promotion step must undraft exactly once")
+        self.assertLess(verify_at[0], undraft_at[0])
         self.assertNotIn("- name: Publish GitHub release", self.workflow)
 
         self.assertLess(goreleaser, proof_gate)

@@ -1590,6 +1590,7 @@ airlock:
     soft_minutes: 5         # soft tier auto-recovers after 5 minutes
     hard_minutes: 15        # hard tier auto-drops to soft after 15 minutes
     drain_minutes: 0        # drain timer disabled
+    drain_timeout_seconds: 30  # drain deadline for in-flight completion
 ```
 
 `airlock.triggers` accepts exactly `on_elevated`, `on_high` and `on_critical`.
@@ -1605,10 +1606,6 @@ All three were inert: they passed validation and had no effect on enforcement, s
 a config carrying them described a policy the product was not applying. Loading
 now fails with the replacement named rather than accepting a setting that does
 nothing. Remove the old keys and set the severity triggers instead.
-
-```yaml
-    drain_timeout_seconds: 30  # drain deadline for in-flight completion
-```
 
 ## Event Emission
 

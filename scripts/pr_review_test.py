@@ -1088,6 +1088,8 @@ class StructuredOutputSafetyTest(unittest.TestCase):
             "google-api-key": ("41497a61", "E" * 35),
             "npm-token": ("6e706d5f", "F" * 36),
             "jwt": ("65794a68624763694f694a49557a49314e694a39", ".eyJzdWIiOiIxIn0." + "G" * 24),
+            "openai-key": ("736b2d", "I" * 30),
+            "bearer-token": ("6265617265722039", "J" * 24),
             "private-key-block": ("2d2d2d2d2d424547494e", " RSA PRIVATE" + " KEY-----"),
         }
         for label, (prefix_hex, suffix) in hexed.items():
@@ -1100,6 +1102,48 @@ class StructuredOutputSafetyTest(unittest.TestCase):
                 self.assertNotIn(sample[:14], rendered)
                 self.assertIn(label, rendered)
 
+    def test_credential_split_by_a_removed_markdown_character_is_redacted(self) -> None:
+        """The translation step removes characters, so a split token reassembles.
+
+        Redacting before that step was not enough. A token carrying one removed
+        markdown character failed to match beforehand and then came back together
+        as a whole credential in the published text. Reproduced on PR 1287 before
+        this was fixed.
+        """
+        prefix = bytes.fromhex("6768705f").decode()
+        body = "A" * 36
+        for splitter in ("*", "_", "|", "#", "`"):
+            with self.subTest(splitter=splitter):
+                split = prefix + body[:10] + splitter + body[10:]
+                rendered = pr_review.sanitize_public_text(f"hardcoded {split} here", limit=600)
+                reassembled = (prefix + body).replace("_", "")
+                self.assertNotIn(reassembled[:20], rendered)
+                self.assertIn("-token", rendered)
+
+    def test_documentation_key_is_exempt_only_as_a_standalone_token(self) -> None:
+        """Exempting it as a substring let a longer token through.
+
+        The allowlist replaced every occurrence, including inside a longer
+        credential-shaped value, and the remaining suffix could then evade the
+        pattern while the surrounding text was published.
+        """
+        dummy = bytes.fromhex("414b4941").decode() + "IOSFODNN7" + "EXAMPLE"
+        embedded = dummy + "TRAILINGSECRET99"
+        rendered = pr_review.sanitize_public_text(f"key {embedded} here", limit=600)
+        self.assertNotIn(embedded, rendered)
+        self.assertIn("aws-access-key", rendered)
+
+    def test_bearer_pattern_does_not_match_ordinary_hyphenated_prose(self) -> None:
+        """The value must look like a credential, not merely be long.
+
+        Requiring no digit made the pattern fire on any sufficiently long
+        hyphenated phrase after the word, which is ordinary review prose.
+        """
+        rendered = pr_review.sanitize_public_text(
+            "Pass the bearer authorization-header-for-the-client instead.", limit=600
+        )
+        self.assertNotIn("redacted:", rendered)
+
     def test_credential_redaction_precedes_underscore_stripping(self) -> None:
         """Ordering is the whole correctness of the redaction step.
 
@@ -1111,6 +1155,7 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         rendered = pr_review.sanitize_public_text(f"token {sample} here", limit=300)
         self.assertIn("github-token", rendered)
         self.assertNotIn(sample[:3], rendered)
+        self.assertNotIn(sample.replace("_", "")[:12], rendered)
 
     def test_credential_redaction_leaves_ordinary_review_prose_intact(self) -> None:
         """Over-redaction is a failure direction too.

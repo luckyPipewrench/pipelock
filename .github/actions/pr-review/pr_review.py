@@ -1710,19 +1710,23 @@ def derive_state(progress: ReviewProgress) -> str:
 # This is a LAST-RESORT publication guard, not a replacement for real scanning.
 # Routing reviewer traffic through the proxy is the fuller answer, tracked
 # separately.
+# Separators are OPTIONAL in every pattern that has one, because the markdown
+# translation in sanitize_public_text removes underscores and other characters.
+# A token that arrives split by one of those characters reassembles after that
+# step, so the pattern has to match the reassembled form as well as the original.
 SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     ('aws-access-key', '(?:AKIA|ASIA|AROA|AIDA|AGPA|AIPA|ANPA|ANVA|A3T)[A-Z0-9]{16,}'),
-    ('github-token', 'gh[pousr]_[A-Za-z0-9]{36,}'),
-    ('github-pat', 'github_pat_[A-Za-z0-9_]{22,}'),
+    ('github-token', 'gh[pousr]_?[A-Za-z0-9]{36,}'),
+    ('github-pat', 'github_?pat_?[A-Za-z0-9]{22,}'),
     ('slack-token', 'xox[abprs]-[A-Za-z0-9-]{10,}'),
-    ('stripe-key', '(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}'),
+    ('stripe-key', '(?:sk|rk)_?(?:live|test)_?[A-Za-z0-9]{16,}'),
     ('anthropic-key', 'sk-ant-[A-Za-z0-9_-]{20,}'),
     ('openai-key', 'sk-[A-Za-z0-9_-]{20,}'),
     ('google-api-key', 'AIza[0-9A-Za-z_-]{35}'),
-    ('npm-token', 'npm_[A-Za-z0-9]{36}'),
+    ('npm-token', 'npm_?[A-Za-z0-9]{36}'),
     ('jwt', 'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}'),
     ('private-key-block', '-----BEGIN[A-Z ]*PRIVATE KEY-----'),
-    ('bearer-token', '(?i)bearer\\s+[A-Za-z0-9._~+/-]{20,}={0,2}'),
+    ('bearer-token', '(?i)\\bbearer\\s+(?=[A-Za-z0-9._~+/-]*[0-9])[A-Za-z0-9._~+/-]{20,}={0,2}'),
 )
 
 # The cloud-provider documentation example key is published by its vendor as a
@@ -1745,10 +1749,14 @@ def redact_secrets(text: str) -> str:
     """
     placeholders: dict[str, str] = {}
     for index, allowed in enumerate(SECRET_ALLOWLIST):
-        if allowed in text:
+        # Standalone only. A plain substring replacement also exempted the key when
+        # it sat INSIDE a longer credential-shaped token, and the remaining suffix
+        # could then evade the pattern while the surrounding text was published.
+        boundary = re.compile(r"(?<![A-Za-z0-9])" + re.escape(allowed) + r"(?![A-Za-z0-9])")
+        if boundary.search(text):
             token = "\x00ALLOWED%d\x00" % index
             placeholders[token] = allowed
-            text = text.replace(allowed, token)
+            text = boundary.sub(token, text)
     for name, regex in _SECRET_REGEXES:
         text = regex.sub("[redacted:%s]" % name, text)
     for token, allowed in placeholders.items():
@@ -1760,14 +1768,15 @@ def sanitize_public_text(value: str, *, limit: int) -> str:
     """Flatten model text before putting it in a workflow-token GitHub comment."""
     text = unicodedata.normalize("NFKC", value)
     text = " ".join(text.split())
-    # Redact BEFORE the markdown translation below, which strips underscores and
-    # would turn an underscore-bearing token into a shape these patterns no longer
-    # match. Ordering is the whole correctness of this step.
-    text = redact_secrets(text)
     text = re.sub(r"@[A-Za-z0-9_-]+", "mention", text)
     text = re.sub(r"(?i)(?<![A-Za-z0-9_.-])/[a-z][a-z0-9_-]*\b", "command", text)
     text = text.translate(str.maketrans({"`": "", "[": "(", "]": ")", "<": "(", ">": ")", "*": "", "_": "", "|": "", "#": ""}))
     text = re.sub(r"[\x00-\x1f\x7f]", "", text).strip()
+    # Redact LAST, on the text that is actually published. The translation above
+    # both strips underscores and removes characters, so a token split by one of
+    # them reassembles here; scanning any earlier form would miss it. Truncation
+    # comes after, so a marker is never cut into a partial credential.
+    text = redact_secrets(text)
     return text[:limit] or "unspecified"
 
 

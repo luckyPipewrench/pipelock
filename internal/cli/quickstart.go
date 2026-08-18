@@ -38,7 +38,10 @@ func quickstartCmd() *cobra.Command {
 	}
 }
 
-const quickstartConfig = "pipelock.yaml"
+const (
+	quickstartConfig    = "pipelock.yaml"
+	quickstartWorkspace = "agent-workspace"
+)
 
 func writeQuickstart(w io.Writer, goos string) {
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format+"\n", a...) }
@@ -58,8 +61,10 @@ func writeQuickstart(w io.Writer, goos string) {
 		p("   %s", line)
 	}
 	p("")
-	p("4. Wrap an MCP server:")
-	p("   pipelock mcp proxy --config ./%s -- npx -y @modelcontextprotocol/server-filesystem /tmp", quickstartConfig)
+	p("4. Wrap an MCP server. Point it at one directory you make for the agent")
+	p("   rather than at your whole disk:")
+	p("   pipelock mcp proxy --config ./%s -- npx -y @modelcontextprotocol/server-filesystem ./%s",
+		quickstartConfig, quickstartWorkspace)
 	p("")
 	p("5. Verify the configuration and inspect a sample verdict:")
 	p("   pipelock doctor --config ./%s", quickstartConfig)
@@ -82,11 +87,17 @@ func writeQuickstart(w io.Writer, goos string) {
 func proxyEnvLines(goos string) []string {
 	const addr = "http://127.0.0.1:8888"
 	if goos == "windows" {
+		// Each label sits on its own line. Appending one to a command is not a
+		// note, it is part of the command: cmd assigns everything after the
+		// equals sign, so the variable would hold the URL, the padding, and the
+		// label, and the proxy address would never resolve.
 		return []string{
-			`set HTTPS_PROXY=` + addr + `                 (cmd)`,
-			`$env:HTTPS_PROXY = "` + addr + `"           (PowerShell)`,
-			`set HTTP_PROXY=` + addr + `                  (cmd)`,
-			`$env:HTTP_PROXY = "` + addr + `"            (PowerShell)`,
+			"cmd.exe:",
+			`  set HTTPS_PROXY=` + addr,
+			`  set HTTP_PROXY=` + addr,
+			"PowerShell:",
+			`  $env:HTTPS_PROXY = "` + addr + `"`,
+			`  $env:HTTP_PROXY = "` + addr + `"`,
 		}
 	}
 	return []string{

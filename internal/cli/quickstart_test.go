@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -104,5 +105,71 @@ func TestQuickstartReachesTheRealCLI(t *testing.T) {
 	}
 	if repoOnlyPath.MatchString(stdout) {
 		t.Errorf("shipped walkthrough names a repo-only path.\nstdout: %q", stdout)
+	}
+	// A successful walkthrough writes nothing to stderr. Duplicating the result
+	// onto both streams would satisfy the stdout check above and quietly undo
+	// the routing this change exists to establish.
+	if stderr != "" {
+		t.Errorf("successful quickstart wrote to stderr: %q", stderr)
+	}
+}
+
+func TestQuickstartRejectsAnArgument(t *testing.T) {
+	// quickstart takes no arguments. Without this, a reader who typed a stray
+	// word would get the walkthrough and a success status, and never learn the
+	// word did nothing.
+	cmd := quickstartCmd()
+	cmd.SetArgs([]string{"unexpected"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil {
+		t.Error("quickstart accepted a positional argument instead of rejecting it")
+	}
+}
+
+func TestQuickstartCommandLinesArePasteable(t *testing.T) {
+	// The Windows lines once read `set HTTPS_PROXY=http://127.0.0.1:8888   (cmd)`.
+	// cmd assigns everything after the equals sign, so that variable would have
+	// held the URL, the padding, and the word (cmd), and the proxy address would
+	// never have resolved. A label belongs on its own line, never appended to a
+	// command someone is told to run.
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			for _, line := range strings.Split(quickstartText(t, goos), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if !isCommandLine(trimmed) {
+					continue
+				}
+				if i := strings.Index(trimmed, "("); i != -1 && strings.Contains(trimmed[i:], ")") {
+					t.Errorf("%s: command line carries a parenthetical that would be run as part of it: %q",
+						goos, trimmed)
+				}
+			}
+		})
+	}
+}
+
+// isCommandLine reports whether a walkthrough line is something the reader is
+// meant to paste, as opposed to prose or a shell label.
+func isCommandLine(trimmed string) bool {
+	switch {
+	case strings.HasPrefix(trimmed, "pipelock "),
+		strings.HasPrefix(trimmed, "sudo pipelock "),
+		strings.HasPrefix(trimmed, "export "),
+		strings.HasPrefix(trimmed, "set "),
+		strings.HasPrefix(trimmed, "$env:"):
+		return true
+	}
+	return false
+}
+
+func TestQuickstartNamesNoUnixOnlyPathOnWindows(t *testing.T) {
+	// The MCP example passed /tmp on every platform. A Windows reader cannot run
+	// that, and the walkthrough claims to be written for their platform.
+	win := quickstartText(t, "windows")
+	for _, unixOnly := range []string{"/tmp", "/usr/", "/etc/", "/var/"} {
+		if strings.Contains(win, unixOnly) {
+			t.Errorf("windows walkthrough names %q, which does not exist there:\n%s", unixOnly, win)
+		}
 	}
 }

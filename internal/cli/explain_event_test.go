@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -507,14 +508,23 @@ func TestQuickstartCmd_PrintsConcreteCommands(t *testing.T) {
 	// clone, so this test required the walkthrough to hand a reader a file they
 	// did not have. The walkthrough now creates its own config first and every
 	// later step refers to that; see quickstart_test.go for the property tests.
-	for _, want := range []string{
-		"pipelock install /usr/local/bin/pipelock",
+	want := []string{
 		"pipelock init --output ./pipelock.yaml",
 		"pipelock run --config ./pipelock.yaml",
-		"export HTTPS_PROXY=http://127.0.0.1:8888",
 		"pipelock mcp proxy --config ./pipelock.yaml",
 		"pipelock status --config ./pipelock.yaml",
-	} {
+	}
+	// The walkthrough is written in the syntax of the platform it prints on, so
+	// requiring a shell export line or a Unix install path unconditionally would
+	// fail this test on Windows, which the project publishes binaries for.
+	if runtime.GOOS == "windows" {
+		want = append(want, "set HTTPS_PROXY=http://127.0.0.1:8888")
+	} else {
+		want = append(want,
+			"pipelock install /usr/local/bin/pipelock",
+			"export HTTPS_PROXY=http://127.0.0.1:8888")
+	}
+	for _, want := range want {
 		if !strings.Contains(got, want) {
 			t.Fatalf("quickstart output missing %q:\n%s", want, got)
 		}

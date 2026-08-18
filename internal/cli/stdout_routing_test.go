@@ -87,7 +87,24 @@ func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
 		t.Fatalf("resolve test binary: %v", err)
 	}
 	child := exec.CommandContext(t.Context(), self, "-test.run=XXX_NO_SUCH_TEST")
-	child.Env = append(os.Environ(), routingHelperEnv+"="+string(encoded))
+
+	// Drop any inherited copy of the helper variable before appending this
+	// call's. Two entries for one name is resolvable-but-unspecified, and an
+	// ambient value winning would silently run a different command than the
+	// test asked for.
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, routingHelperEnv+"=") || strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	// The child is standing in for a person running the binary, so it gets a
+	// home of its own. TestMain isolates the data directory for the whole
+	// package and the child inherits that; the home directory was never
+	// isolated, which left the child reading the developer's real one.
+	env = append(env, "HOME="+t.TempDir(), routingHelperEnv+"="+string(encoded))
+	child.Env = env
 
 	var outBuf, errBuf bytes.Buffer
 	child.Stdout = &outBuf

@@ -54,6 +54,14 @@ type Operation struct {
 // invalid in the other reference verifiers.
 type QueryIndices []uint8
 
+// isHexDigitRune reports whether a rune is a hexadecimal digit. Named rather
+// than inlined because the negated compound form trips staticcheck's De Morgan
+// check, and the rewritten boolean it suggests reads worse than the question
+// being asked.
+func isHexDigitRune(char rune) bool {
+	return (char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')
+}
+
 func (indices QueryIndices) MarshalJSON() ([]byte, error) {
 	values := make([]uint16, len(indices))
 	for index, value := range indices {
@@ -787,7 +795,7 @@ func scannerEncodedTokenNormalizeV1(value, alphabet string) string {
 			return ""
 		}
 		for _, char := range value {
-			if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			if !isHexDigitRune(char) {
 				return ""
 			}
 		}

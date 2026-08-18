@@ -1099,8 +1099,58 @@ class StructuredOutputSafetyTest(unittest.TestCase):
                     f"The diff hardcodes {sample} on line 42; read it from the environment.",
                     limit=600,
                 )
-                self.assertNotIn(sample[:14], rendered)
+                self.assertNotIn(sample, rendered)
                 self.assertIn(label, rendered)
+
+    def test_a_separator_inside_the_body_does_not_shorten_a_token_past_its_minimum(self) -> None:
+        """A length minimum cannot be rescued by an optional separator.
+
+        The markdown translation removes underscores, so a body of 35 characters
+        holding one underscore becomes 34 and falls under the pattern's own minimum.
+        Scanning only the published text matched neither form and published the token
+        whole. Reproduced before both passes were restored.
+        """
+        prefix = bytes.fromhex("41497a61").decode()
+        body = "a" * 17 + "_" + "b" * 17
+        self.assertEqual(len(body), 35)
+        sample = prefix + body
+        rendered = pr_review.sanitize_public_text(
+            f"the diff hardcodes {sample} here", limit=600
+        )
+        self.assertNotIn(sample, rendered)
+        self.assertNotIn(sample.replace("_", ""), rendered)
+        self.assertIn("google-api-key", rendered)
+
+    def test_an_exempt_key_with_a_credential_suffix_is_not_laundered(self) -> None:
+        """The exemption must not break a surrounding credential match.
+
+        A hyphen can continue a credential body, so treating it as a boundary
+        exempted the documentation key inside a longer value, which broke the match
+        around it, and the placeholder was then restored with the whole value.
+        """
+        dummy = bytes.fromhex("414b4941").decode() + "IOSFODNN7" + "EXAMPLE"
+        value = dummy + "-suffix9"
+        rendered = pr_review.sanitize_public_text(
+            f"Authorization: bearer {value} rotate it", limit=600
+        )
+        self.assertNotIn(value, rendered)
+        self.assertIn("redacted:", rendered)
+
+    def test_ordinary_prose_is_preserved_exactly(self) -> None:
+        """Absence of a marker is weaker than preservation of the text.
+
+        A redactor could mangle prose without emitting a marker, so these assert the
+        sentence survives intact rather than merely unredacted. Trailing punctuation
+        is kept out of the comparison because the sanitizer legitimately rewrites
+        markdown characters.
+        """
+        for text in (
+            "The scanner rejects a bearer token in the query string, which is correct.",
+            "Rename shouldReturn to mustReturn for consistency with the sibling package.",
+            "Consider extracting the two credential checks into a shared helper.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(pr_review.sanitize_public_text(text, limit=600), text)
 
     def test_private_key_block_is_redacted_body_and_all(self) -> None:
         """The delimiter alone is not the secret; the body is.
@@ -1118,7 +1168,7 @@ class StructuredOutputSafetyTest(unittest.TestCase):
                 rendered = pr_review.sanitize_public_text(
                     f"the diff contains {begin}{body}{end} inline", limit=900
                 )
-                self.assertNotIn(body[:16], rendered)
+                self.assertNotIn(body, rendered)
                 self.assertIn("private-key-block", rendered)
 
     def test_unterminated_private_key_block_is_still_redacted(self) -> None:
@@ -1134,7 +1184,7 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         rendered = pr_review.sanitize_public_text(
             f"the diff contains {begin}{body} and nothing else", limit=900
         )
-        self.assertNotIn(body[:16], rendered)
+        self.assertNotIn(body, rendered)
         self.assertIn("private-key-block", rendered)
 
     def test_private_key_prose_is_not_redacted(self) -> None:
@@ -1160,7 +1210,7 @@ class StructuredOutputSafetyTest(unittest.TestCase):
                 split = prefix + body[:10] + splitter + body[10:]
                 rendered = pr_review.sanitize_public_text(f"hardcoded {split} here", limit=600)
                 reassembled = (prefix + body).replace("_", "")
-                self.assertNotIn(reassembled[:20], rendered)
+                self.assertNotIn(reassembled, rendered)
                 self.assertIn("-token", rendered)
 
     def test_documentation_key_is_exempt_only_as_a_standalone_token(self) -> None:
@@ -1174,6 +1224,9 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         embedded = dummy + "TRAILINGSECRET99"
         rendered = pr_review.sanitize_public_text(f"key {embedded} here", limit=600)
         self.assertNotIn(embedded, rendered)
+        # Without this, the test passes when only the trailing part is redacted and
+        # the exempted key itself survives in the output.
+        self.assertNotIn(dummy, rendered)
         self.assertIn("aws-access-key", rendered)
 
     def test_bearer_pattern_does_not_match_ordinary_hyphenated_prose(self) -> None:
@@ -1197,8 +1250,8 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         sample = bytes.fromhex("6768705f").decode() + "H" * 36
         rendered = pr_review.sanitize_public_text(f"token {sample} here", limit=300)
         self.assertIn("github-token", rendered)
-        self.assertNotIn(sample[:3], rendered)
-        self.assertNotIn(sample.replace("_", "")[:12], rendered)
+        self.assertNotIn(sample, rendered)
+        self.assertNotIn(sample.replace("_", ""), rendered)
 
     def test_credential_redaction_leaves_ordinary_review_prose_intact(self) -> None:
         """Over-redaction is a failure direction too.

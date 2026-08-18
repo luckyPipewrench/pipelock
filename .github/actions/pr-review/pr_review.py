@@ -1755,7 +1755,13 @@ def redact_secrets(text: str) -> str:
         # Standalone only. A plain substring replacement also exempted the key when
         # it sat INSIDE a longer credential-shaped token, and the remaining suffix
         # could then evade the pattern while the surrounding text was published.
-        boundary = re.compile(r"(?<![A-Za-z0-9])" + re.escape(allowed) + r"(?![A-Za-z0-9])")
+        # A hyphen and an underscore can CONTINUE a credential body, so they must not
+        # count as boundaries: exempting the key inside `<key>-suffix9` broke the
+        # surrounding match and then restored the whole value. Sentence punctuation
+        # stays a boundary so an ordinary standalone mention is still exempt.
+        boundary = re.compile(
+            r"(?<![A-Za-z0-9_-])" + re.escape(allowed) + r"(?![A-Za-z0-9_-])"
+        )
         if boundary.search(text):
             token = "\x00ALLOWED%d\x00" % index
             placeholders[token] = allowed
@@ -1771,6 +1777,11 @@ def sanitize_public_text(value: str, *, limit: int) -> str:
     """Flatten model text before putting it in a workflow-token GitHub comment."""
     text = unicodedata.normalize("NFKC", value)
     text = " ".join(text.split())
+    # Redact BEFORE the translation as well as after it. Optional separators cover a
+    # token whose separator is stripped, but not a LENGTH minimum: a body holding one
+    # underscore loses a character and can fall under its own pattern's minimum,
+    # matching neither form. Verified. So both forms are scanned.
+    text = redact_secrets(text)
     text = re.sub(r"@[A-Za-z0-9_-]+", "mention", text)
     text = re.sub(r"(?i)(?<![A-Za-z0-9_.-])/[a-z][a-z0-9_-]*\b", "command", text)
     text = text.translate(str.maketrans({"`": "", "[": "(", "]": ")", "<": "(", ">": ")", "*": "", "_": "", "|": "", "#": ""}))

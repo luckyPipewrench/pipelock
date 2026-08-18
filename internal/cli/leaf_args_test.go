@@ -26,13 +26,24 @@ import (
 // advertising nothing must refuse an argument. Commands that do advertise one
 // are out of scope, and cobra is left to whatever constraint they declare.
 
-// positionalInUse matches a Use string that advertises a positional argument.
-// This codebase writes them several ways and all of them count: `<name>`, `[name]`,
-// `name...`, a `--` separator introducing a wrapped command, and a bare
-// uppercase word as in `receipts PATH`. Anything after the command name is an
-// advertised argument; only a Use string that is the command name alone
-// promises to take nothing.
-var positionalInUse = regexp.MustCompile(`^\S+\s+\S`)
+// flagsMarker matches the conventional `[flags]` or `(flags)` token, which
+// advertises flags rather than a positional argument.
+var flagsMarker = regexp.MustCompile(`\s*[\[(]flags[\])]`)
+
+var anyTokenAfterName = regexp.MustCompile(`^\S+\s+\S`)
+
+// positionalInUse reports whether a Use string advertises a positional
+// argument. This codebase writes them several ways and all of them count:
+// `<name>`, `[name]`, `name...`, a `--` separator introducing a wrapped
+// command, and a bare uppercase word as in `receipts PATH`.
+//
+// A flags marker is stripped first. Treating it as a positional would exclude a
+// command whose Use is `foo [flags]` from this test entirely, so the one command
+// shaped like that would be the one nobody checked. Nothing in the tree is shaped
+// that way today; this keeps a future one from slipping through.
+func positionalInUse(use string) bool {
+	return anyTokenAfterName.MatchString(flagsMarker.ReplaceAllString(use, ""))
+}
 
 // runnableCommandsTakingNoArguments returns every executable command whose Use
 // string advertises no positional argument.
@@ -51,7 +62,7 @@ func runnableCommandsTakingNoArguments(t *testing.T) []*cobra.Command {
 		if !c.HasParent() || !c.Runnable() {
 			return
 		}
-		if positionalInUse.MatchString(c.Use) {
+		if positionalInUse(c.Use) {
 			return
 		}
 		found = append(found, c)
@@ -84,6 +95,25 @@ func TestCommandsAdvertisingNoArgumentRejectOne(t *testing.T) {
 		}
 	}
 	t.Logf("checked %d command(s) that advertise no positional argument", len(commands))
+}
+
+func TestFlagsMarkerIsNotMistakenForAnArgument(t *testing.T) {
+	// The shape that motivated stripping it: a command advertising only flags
+	// must still be checked, not excused. The other cases pin the surrounding
+	// behaviour so the strip cannot quietly widen.
+	for use, want := range map[string]bool{
+		"version":                            false,
+		"run [flags]":                        false,
+		"run (flags)":                        false,
+		"scan [path...]":                     true,
+		"receipts PATH":                      true,
+		"guard [flags] -- COMMAND [ARGS...]": true,
+		"proxy [flags] [-- COMMAND]":         true,
+	} {
+		if got := positionalInUse(use); got != want {
+			t.Errorf("positionalInUse(%q) = %v, want %v", use, got, want)
+		}
+	}
 }
 
 func TestStrayArgumentFailsThroughTheRealCLI(t *testing.T) {

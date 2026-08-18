@@ -110,9 +110,11 @@ func TestFlagsMarkerIsNotMistakenForAnArgument(t *testing.T) {
 		"guard [flags] -- COMMAND [ARGS...]": true,
 		"proxy [flags] [-- COMMAND]":         true,
 	} {
-		if got := positionalInUse(use); got != want {
-			t.Errorf("positionalInUse(%q) = %v, want %v", use, got, want)
-		}
+		t.Run(use, func(t *testing.T) {
+			if got := positionalInUse(use); got != want {
+				t.Errorf("positionalInUse(%q) = %v, want %v", use, got, want)
+			}
+		})
 	}
 }
 

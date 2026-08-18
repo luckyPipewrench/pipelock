@@ -15,13 +15,37 @@ cd "$ROOT_DIR"
 #
 # Fail closed only where it belongs. Neither tool present is still fatal,
 # because a tripwire that cannot scan must not report clean.
-if ! command -v rg >/dev/null 2>&1 && ! command -v grep >/dev/null 2>&1; then
-	printf '%s\n' "ERROR: neither ripgrep (rg) nor grep is on PATH." >&2
+# Decide the search tool by CAPABILITY, not by name. grep implementations
+# differ in ways that would make this audit quietly useless rather than loudly
+# broken: BusyBox grep rejects --exclude, and a grep without POSIX character
+# classes would match nothing and report clean. Probe both behaviours against a
+# known string and refuse a grep that fails, so the audit can never run on a
+# tool that would miss what it is looking for.
+grep_is_usable() {
+	command -v grep >/dev/null 2>&1 || return 1
+	# POSIX character classes. A grep without them matches nothing in the audit
+	# pattern below, which would report clean rather than fail.
+	printf 'Probe.Field \t= x\n' | grep -qE 'Probe\.Field[[:space:]]*=' || return 1
+	# --exclude actually takes effect. BusyBox grep rejects the option, and one
+	# that accepted but ignored it would scan the test files this audit skips.
+	# Excluding this script from a listing of its own small directory proves it
+	# without a temporary directory or a large scan.
+	grep -Rl --exclude='runtime-policy-audit.sh' 'grep_is_usable' scripts 2>/dev/null \
+		| grep -q 'runtime-policy-audit\.sh$' && return 1
+	return 0
+}
+
+if ! command -v rg >/dev/null 2>&1 && ! grep_is_usable; then
+	printf '%s\n' "ERROR: no usable search tool. ripgrep (rg) is absent and grep either is missing," >&2
+	printf '%s\n' "does not support POSIX character classes, or ignores --exclude." >&2
 	printf '%s\n' "The runtime policy audit is release-blocking and must fail closed when it cannot scan." >&2
 	exit 127
 fi
 
-pattern='MCPInputScanning\.(Enabled|Action)\s*=|MCPToolScanning\.(Enabled|Action|DetectDrift)\s*=|MCPToolPolicy\.(Enabled|Action|Rules)\s*=|ResponseScanning\s*=|ResponseScanning\.(Enabled|Patterns)\s*=|DLP\.Patterns\s*=|Internal\s*='
+# [[:space:]] rather than \s: \s is a GNU extension, not POSIX ERE, so a grep
+# without it would match nothing and the audit would report clean. ripgrep
+# accepts the POSIX class as well, so both tools read the same pattern.
+pattern='MCPInputScanning\.(Enabled|Action)[[:space:]]*=|MCPToolScanning\.(Enabled|Action|DetectDrift)[[:space:]]*=|MCPToolPolicy\.(Enabled|Action|Rules)[[:space:]]*=|ResponseScanning[[:space:]]*=|ResponseScanning\.(Enabled|Patterns)[[:space:]]*=|DLP\.Patterns[[:space:]]*=|Internal[[:space:]]*='
 
 # Capture rg's exit code explicitly. ripgrep returns:
 #   0 — match(es) found (policy mutation detected — fail release)

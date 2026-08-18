@@ -59,6 +59,29 @@ func fakeGitHubToken() string {
 	return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
 }
 
+// highEntropyFiller deterministically generates n characters that read like
+// real base64url ciphertext (near-uniform symbol distribution, Shannon
+// entropy in the high 5-bits/char range) instead of a repeated or
+// structured filler. isProviderOpaqueCiphertext requires filler this shape
+// to qualify for the provider-opaque DLP downgrade - a strings.Repeat
+// filler no longer qualifies once the entropy floor is enforced, because it
+// is exactly the shape a real secret padded out to the length floor would
+// take. xorshift64 is deterministic (fixed seed) so these fixtures never
+// flake, and its output measured well clear of the 5.3 bits/char floor
+// (5.7-5.9 across the sizes these tests use).
+func highEntropyFiller(n int) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	state := uint64(0x9E3779B97F4A7C15)
+	b := make([]byte, n)
+	for i := range b {
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		b[i] = alphabet[state%uint64(len(alphabet))]
+	}
+	return string(b)
+}
+
 const testBodyDLPPatternName = "Request Body Test Secret"
 
 func fakeBodyDLPSecret() string {
@@ -1425,7 +1448,7 @@ func TestScanRequestBody_ModelProviderOpaqueReasoningFieldEmbeddedTokenSubstring
 	defer sc.Close()
 
 	token := fakeGitHubToken()
-	ciphertext := strings.Repeat("A", 260) + "." + token + "." + strings.Repeat("B", 260)
+	ciphertext := highEntropyFiller(260) + "." + token + "." + highEntropyFiller(260)
 	body := `{
 		"input": [{
 			"role": "assistant",
@@ -1534,7 +1557,7 @@ func TestScanRequestBody_ProviderTopLevelOpaqueFieldNameDoesNotBypassDLP(t *test
 }
 
 func TestExtractBodyTextForDLP_ProviderOpaqueReasoningFieldSeparated(t *testing.T) {
-	ciphertext := strings.Repeat("A", 260) + "." + fakeGitHubToken() + "." + strings.Repeat("B", 260)
+	ciphertext := highEntropyFiller(260) + "." + fakeGitHubToken() + "." + highEntropyFiller(260)
 	body := []byte(`{"input":[{"content":[{"type":"reasoning","encrypted_content":"` + ciphertext + `"}]}]}`)
 
 	extracted := extractBodyTextForDLP(body, BodyScanRequest{
@@ -1592,7 +1615,12 @@ func TestScanRequestBody_ProviderOpaqueDowngradeGates(t *testing.T) {
 		if totalBytes < len(suffix) {
 			t.Fatalf("test ciphertext length %d is smaller than suffix %d", totalBytes, len(suffix))
 		}
-		value := strings.Repeat("A", totalBytes-len(suffix)) + suffix
+		// highEntropyFiller, not strings.Repeat: the padding must read like
+		// genuine ciphertext to exercise the length/path/host gates in
+		// isolation from the entropy floor now enforced in
+		// isProviderOpaqueCiphertext (a repeated-character filler would
+		// fail that floor regardless of length, host, or path).
+		value := highEntropyFiller(totalBytes-len(suffix)) + suffix
 		if len(value) != totalBytes {
 			t.Fatalf("ciphertext length = %d, want %d", len(value), totalBytes)
 		}
@@ -1788,12 +1816,66 @@ func TestScanRequestBody_JSONRootValidationFailClosed(t *testing.T) {
 	}
 }
 
+// TestScanRequestBody_LowEntropyPaddedSecretDoesNotGetProviderOpaqueDowngrade
+// reproduces the fail-open carve-out where a real credential, padded with a
+// repeated character out to the provider-opaque length floor and placed in
+// the exact trusted host/path/field-path shape, got the same warn-only
+// downgrade as genuine provider ciphertext - and so forwarded a critical
+// secret unblocked. The padding here is deliberately low-effort (a single
+// repeated character), which is exactly the shape a real secret padded out
+// to the length floor would take and exactly what
+// providerOpaqueCiphertextMinEntropy's doc comment measured. It must now
+// fail closed as an ordinary critical DLP match, not warn.
+func TestScanRequestBody_LowEntropyPaddedSecretDoesNotGetProviderOpaqueDowngrade(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	token := fakeGitHubToken()
+	suffix := "." + token + "."
+	paddedSecret := strings.Repeat("A", providerOpaqueCiphertextMinBytes-len(suffix)) + suffix
+	if len(paddedSecret) != providerOpaqueCiphertextMinBytes {
+		t.Fatalf("test fixture length = %d, want %d", len(paddedSecret), providerOpaqueCiphertextMinBytes)
+	}
+	body := `{
+		"input": [{
+			"role": "assistant",
+			"content": [{
+				"type": "reasoning",
+				"encrypted_content": "` + paddedSecret + `"
+			}]
+		}]
+	}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                         strings.NewReader(body),
+		ContentType:                  "application/json",
+		Host:                         testTrustedProviderHost,
+		Path:                         testTrustedProviderPath,
+		MaxBytes:                     cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:                      sc,
+		Action:                       cfg.RequestBodyScanning.Action,
+		TrustedProviderOpaqueRequest: testTrustedProviderOpaqueRequest,
+	})
+	if result.Clean {
+		t.Fatal("expected token-shaped match inside padded low-entropy value")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q (low-entropy padding must not qualify for the provider-opaque downgrade); matches=%+v reason=%q",
+			result.Action, config.ActionBlock, result.DLPMatches, result.Reason)
+	}
+	assertBodyDLPBlocksWithoutProviderOpaque(t, result, "low-entropy padded secret in trusted field shape")
+	if !shouldHardBlockBodyCriticalDLP(result, testTrustedProviderHost, cfg) {
+		t.Fatal("low-entropy padded critical secret must hard-block, matching a critical match with no trusted-ciphertext evidence")
+	}
+}
+
 func TestScanRequestBody_ProviderOpaqueAndNormalDLPBlockPrecedence(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	ciphertext := strings.Repeat("A", 260) + "." + fakeGitHubToken() + "." + strings.Repeat("B", 260)
+	ciphertext := highEntropyFiller(260) + "." + fakeGitHubToken() + "." + highEntropyFiller(260)
 	body := `{
 		"input": [{
 			"content": [{
@@ -3401,37 +3483,6 @@ func TestScanRequestBody_MultipartTooManyParts(t *testing.T) {
 	}
 	if result.Action != config.ActionBlock {
 		t.Fatalf("expected block action for multipart limit, got %q", result.Action)
-	}
-}
-
-// --- isBinaryContentType unit tests ---
-
-func TestIsBinaryContentType(t *testing.T) {
-	tests := []struct {
-		ct     string
-		binary bool
-	}{
-		{"", false},
-		{"text/plain", false},
-		{"text/html", false},
-		{"application/json", false},
-		{"application/xml", false},
-		{"application/octet-stream", false}, // fallback raw scan, not skipped
-		{"image/png", true},
-		{"image/jpeg", true},
-		{"image/gif", true},
-		{"audio/mpeg", true},
-		{"audio/ogg", true},
-		{"video/mp4", true},
-		{"video/webm", true},
-		{"application/pdf", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.ct, func(t *testing.T) {
-			if got := isBinaryContentType(tt.ct); got != tt.binary {
-				t.Errorf("isBinaryContentType(%q) = %v, want %v", tt.ct, got, tt.binary)
-			}
-		})
 	}
 }
 

@@ -826,6 +826,72 @@ func TestReverseProxy_BinaryRequestPassthrough(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_FakeBinaryRequestIsScanned reproduces the fail-open
+// carve-out where a request declaring a binary Content-Type (image/png)
+// skipped DLP scanning entirely regardless of what the body actually
+// contained. A body that is plaintext carrying a credential - not real PNG
+// bytes - must fall through to the normal DLP scan and be blocked, the
+// same as if it had declared application/json.
+func TestReverseProxy_FakeBinaryRequestIsScanned(t *testing.T) {
+	cfg := reverseTestConfig()
+	upstreamHit := false
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	// No PNG magic bytes anywhere - plain JSON carrying a credential,
+	// mislabeled as image/png.
+	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	fakeImageData := `{"secret":"` + apiKey + `"}`
+	resp := testPost(t, proxy.URL+"/upload", "image/png", fakeImageData)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 (fake binary content-type must not bypass DLP), got %d", resp.StatusCode)
+	}
+	if upstreamHit {
+		t.Fatal("upstream received the request; a mislabeled body must be blocked before forwarding")
+	}
+}
+
+// TestReverseProxy_LargeRealBinaryRequestStreamsPastMaxBodyBytes proves the
+// sniff-then-skip fix still lets a genuine large media upload stream
+// through unbuffered, without being subjected to request_body_scanning's
+// max_body_bytes cap. Only the first 512 bytes are read to sniff; the fix
+// must not fully buffer the body to make that decision.
+func TestReverseProxy_LargeRealBinaryRequestStreamsPastMaxBodyBytes(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 // tiny cap, well under the upload size below
+
+	var receivedLen int
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		receivedLen = int(n)
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	// Real PNG signature followed by well over the 1024-byte cap of
+	// filler bytes - if the fix buffered the whole body to decide, this
+	// would trip max_body_bytes and block with 403.
+	const uploadSize = 4 * 1024 * 1024
+	imageData := "\x89PNG\r\n\x1a\n" + strings.Repeat("A", uploadSize)
+	resp := testPost(t, proxy.URL+"/upload", "image/png", imageData)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 (large real media streams past max_body_bytes), got %d", resp.StatusCode)
+	}
+	if receivedLen != len(imageData) {
+		t.Fatalf("upstream received %d bytes, want %d - body was truncated or altered", receivedLen, len(imageData))
+	}
+}
+
 func TestReverseProxy_UpstreamError(t *testing.T) {
 	cfg := reverseTestConfig()
 

@@ -1142,9 +1142,52 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		_ = rp.emitReceipt(opts)
 	}
 
-	// Skip binary content types - no secrets to scan in images/video.
-	if isBinaryMIME(r.Header.Get("Content-Type")) && redaction == nil {
-		return false, "", nil, false
+	// Skip binary content types - no secrets to scan in images/video -
+	// but ONLY when the bytes actually sniff as that declared media
+	// family. A declared Content-Type is attacker-controlled: a request
+	// that CLAIMS image/png while carrying plaintext secrets must fall
+	// through to the normal DLP scan below, exactly like every other
+	// transport (forward proxy, CONNECT, WebSocket, MCP) already scans
+	// every request body regardless of declared Content-Type, and exactly
+	// like the multipart-part reader a few hundred lines below in
+	// bodyscan.go, which reads every part body regardless of its declared
+	// Content-Type for the same reason. The peek is bounded to 512 bytes
+	// (http.DetectContentType's own ceiling, via sniffMediaType) so a
+	// genuine large media upload still streams through unbuffered instead
+	// of being fully read into memory here or subjected to
+	// max_body_bytes; only a request whose declared type is contradicted
+	// by its sniffed bytes pays the cost of the full buffered DLP scan.
+	if declaredFamily := mediaFamily(r.Header.Get("Content-Type")); declaredFamily != "" && redaction == nil && r.Body != nil {
+		prefix, reconstructed, peekErr := sniffRequestBodyPrefix(r.Body)
+		r.Body = reconstructed
+		if peekErr == nil && mediaFamily(sniffMediaType(prefix)) == declaredFamily {
+			clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
+			requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
+			actx := newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, "")
+			reason := fmt.Sprintf(
+				"declared Content-Type %q sniffed as %s media; request body DLP scan skipped",
+				r.Header.Get("Content-Type"), declaredFamily,
+			)
+			rp.logger.LogAnomaly(actx, mediaUnscannedOutcome, reason, 0)
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionAllow,
+				Layer:     mediaUnscannedOutcome,
+				Pattern:   reason,
+				Transport: TransportReverse,
+				Method:    r.Method,
+				Target:    receiptInput.Target,
+				RequestID: receiptInput.RequestID,
+				Agent:     receiptInput.Agent,
+			})
+			return false, "", nil, false
+		}
+		// Sniff did not confirm the declared media family (or the peek
+		// read itself failed) - fall through to the scan below with the
+		// reconstructed body so nothing already read is lost. A genuine
+		// peek read error reproduces identically inside scanRequestBody's
+		// own read a few lines down, which already fails closed on a
+		// body read error.
 	}
 
 	maxBytes := cfg.RequestBodyScanning.MaxBodyBytes
@@ -2171,6 +2214,50 @@ func isBinaryMIME(ct string) bool {
 	return strings.HasPrefix(mediaType, "image/") ||
 		strings.HasPrefix(mediaType, "audio/") ||
 		strings.HasPrefix(mediaType, "video/")
+}
+
+// mediaFamily returns "image", "audio", or "video" for a MIME type whose
+// primary type is one of the three families isBinaryMIME treats as clearly
+// binary. Returns "" for anything else, including an empty or unparseable
+// value. Used to compare a declared Content-Type against what the body's
+// own bytes sniff as - matching family, not exact subtype, is enough (a
+// declared image/png that sniffs as image/jpeg is still a real image).
+func mediaFamily(ct string) string {
+	if ct == "" {
+		return ""
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(mediaType, "image/"):
+		return "image"
+	case strings.HasPrefix(mediaType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mediaType, "video/"):
+		return "video"
+	}
+	return ""
+}
+
+// sniffRequestBodyPrefix peeks at most 512 bytes - the same ceiling
+// sniffMediaType/http.DetectContentType itself uses - from body and
+// returns a reconstructed ReadCloser that replays those bytes before the
+// remaining stream. It never fully buffers body, so a caller that decides
+// to skip scanning can still let a large media upload stream to upstream
+// unbuffered. A genuine read error is returned so the caller can decide
+// how to handle it; whatever was read before the error is still replayed,
+// so a later full read (e.g. inside scanRequestBody) reproduces the
+// identical error instead of silently truncating the body.
+func sniffRequestBodyPrefix(body io.ReadCloser) (prefix []byte, reconstructed io.ReadCloser, err error) {
+	const sniffPeekBytes = 512
+	prefix, err = io.ReadAll(io.LimitReader(body, sniffPeekBytes))
+	reconstructed = readCloserWithClose{
+		Reader: io.MultiReader(bytes.NewReader(prefix), body),
+		Closer: body,
+	}
+	return prefix, reconstructed, err
 }
 
 // reverseClientIP extracts a client IP for capture session keying. Falls

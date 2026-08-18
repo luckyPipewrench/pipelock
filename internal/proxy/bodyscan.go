@@ -753,6 +753,27 @@ func scanBodyTextsForContentEntropy(texts []string, req BodyScanRequest) *Conten
 
 const providerOpaqueCiphertextMinBytes = 256
 
+// providerOpaqueCiphertextMinEntropy is a Shannon-entropy floor (bits per
+// character, base 2) genuine provider ciphertext must clear to qualify for
+// the trusted-field DLP downgrade. Measured 2026-08-18 over base64/base64url
+// random-byte samples at the 256-byte minimum (200 trials: min 5.71, max
+// 5.91, mean 5.81 bits/char) versus deliberately low-effort padding shapes a
+// real secret could be stretched to 256+ bytes with while staying inside the
+// allowed alphabet (a-zA-Z0-9_-=+/.): repeated-character padding (~0.4-0.7),
+// English-prose padding (~3.9-4.7), random hex padding (~3.95-3.98), and a
+// varied-vocabulary/mixed-case/separator "word salad" built specifically to
+// look less uniform (~4.78-4.98). 5.3 sits roughly midway between the
+// highest observed padding shape (4.98) and the lowest observed genuine
+// sample (5.71), so it does not accept any padding shape measured here while
+// leaving comfortable margin below real ciphertext's observed floor.
+//
+// This floor does NOT close the gap completely: an attacker who pads with
+// genuinely random bytes drawn from the same alphabet (or a same-size
+// alphabet, e.g. base58) produces the same entropy profile as real
+// ciphertext and still qualifies for the downgrade. That residual gap is
+// accepted, not solved, by this change.
+const providerOpaqueCiphertextMinEntropy = 5.3
+
 type jsonBodyDLPFrame struct {
 	kind       json.Delim
 	expectKey  bool
@@ -978,6 +999,17 @@ func isProviderOpaqueCiphertext(value string) bool {
 		default:
 			return false
 		}
+	}
+	// Length and alphabet alone accept a real secret padded with
+	// low-effort filler out to the length floor - a repeated character,
+	// English prose, or hex padding all stay inside this alphabet while
+	// reading nothing like the near-uniform byte distribution genuine
+	// ciphertext has. Require the value to actually look like random
+	// bytes before it qualifies for the downgrade. This does not close
+	// the gap against padding that is itself genuinely random within the
+	// allowed alphabet - see the constant's doc comment.
+	if scanner.ShannonEntropy(value) < providerOpaqueCiphertextMinEntropy {
+		return false
 	}
 	return true
 }
@@ -1535,29 +1567,6 @@ func validateQuotedPrintable(body []byte) error {
 
 func isHexDigit(b byte) bool {
 	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
-}
-
-// isBinaryContentType returns true for content types that are clearly binary
-// (images, audio, video, application/octet-stream). Text-like types pass through
-// for scanning.
-func isBinaryContentType(ct string) bool {
-	if ct == "" {
-		return false
-	}
-	mediaType, _, _ := mime.ParseMediaType(ct)
-	switch {
-	case strings.HasPrefix(mediaType, "image/"):
-		return true
-	case strings.HasPrefix(mediaType, "audio/"):
-		return true
-	case strings.HasPrefix(mediaType, "video/"):
-		return true
-	case mediaType == "application/octet-stream":
-		// Don't skip: fallback raw scan catches plaintext secrets.
-		return false
-	default:
-		return false
-	}
 }
 
 // headerNameNoisyPrefixes are header name prefixes excluded from name scanning

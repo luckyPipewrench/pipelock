@@ -813,6 +813,32 @@ func TestReverseProxy_BinaryRequestSecretIsBlocked(t *testing.T) {
 	}
 }
 
+func TestReverseProxy_ValidImageWithAppendedSecretIsBlocked(t *testing.T) {
+	// The signature-prefix test above uses eight bytes and nothing else, so it
+	// could pass because the body is malformed rather than because the secret
+	// was found. A structurally valid PNG with a credential appended can only
+	// be blocked by inspecting the body, which is what this change claims to do.
+	cfg := reverseTestConfig()
+	var upstreamHit bool
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	imageData := string(buildMinimalValidPNG()) + ("AKIA" + "IOSFODNN7EXAMPLE")
+	resp := testPost(t, proxy.URL+"/upload", "image/png", imageData)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a valid PNG carrying a credential, got %d", resp.StatusCode)
+	}
+	if upstreamHit {
+		t.Fatal("upstream received a valid image with an appended credential")
+	}
+}
+
 func TestReverseProxy_GenuineImageRequestPasses(t *testing.T) {
 	cfg := reverseTestConfig()
 	imageData := buildMinimalValidPNG()

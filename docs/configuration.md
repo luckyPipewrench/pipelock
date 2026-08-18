@@ -3497,6 +3497,7 @@ pipelock run --reverse-proxy --reverse-upstream http://localhost:7899 --reverse-
 - **Request bodies:** Image, audio, and video uploads are scanned under `request_body_scanning`; a valid media signature is not an exemption. This detects plaintext secrets appended to a media file, not secrets steganographically embedded in its pixels or samples.
 - **Compressed bodies:** Fail-closed (blocked) on both request and response
 - **Oversized request bodies:** Bodies above `request_body_scanning.max_body_bytes` are denied. Known oversized `Content-Length` values are rejected before reading; chunked bodies are bounded while read and also consume the reverse-proxy in-flight scan budget.
+- **Scan admission exhaustion:** A request that cannot reserve capacity within `max_inflight_scan_bytes` is refused with 503 before its body is read, matching how Pipelock reports other temporary unavailability such as an engaged kill switch. This differs from the 413 an oversized body receives: 413 says the body will never be accepted at this cap, 503 says the instance is busy and the request is worth retrying.
 
 ### Hot-reload
 

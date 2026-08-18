@@ -10,6 +10,9 @@ import unicode15LowercaseMap from "@unicode/unicode-15.0.0/Simple_Case_Mapping/L
 /** The pinned, fixture-only evidence-provenance transform profile. */
 export const EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST =
   "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
+export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
+  "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9";
+type ProfileVersion = "v1" | "v2";
 
 const MAX_INPUT_BYTES = 2 << 20;
 const MAX_OUTPUT_BYTES = 1 << 20;
@@ -172,6 +175,15 @@ function assertFields(op: Record<string, unknown>, kind: string, allowed: readon
   }
 }
 
+function resolveEvidenceProvenanceProfile(digest: unknown): ProfileVersion {
+  if (digest === undefined || digest === "") fail("recipe: missing transform profile digest");
+  if (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(digest))
+    fail("recipe: transform profile digest: invalid SHA-256 digest");
+  if (digest === EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST) return "v1";
+  if (digest === EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST) return "v2";
+  fail("recipe: transform profile digest: unknown profile");
+}
+
 /** Validates an untrusted JSON recipe before any source bytes are transformed. */
 export function validateEvidenceProvenanceRecipe(
   recipe: unknown,
@@ -179,15 +191,7 @@ export function validateEvidenceProvenanceRecipe(
   if (recipe === null || typeof recipe !== "object" || Array.isArray(recipe))
     fail("recipe must be an object");
   const r = recipe as Record<string, unknown>;
-  if (r.transform_profile_digest === undefined || r.transform_profile_digest === "")
-    fail("recipe: missing transform profile digest");
-  if (
-    typeof r.transform_profile_digest !== "string" ||
-    !/^sha256:[0-9a-f]{64}$/u.test(r.transform_profile_digest)
-  )
-    fail("recipe: transform profile digest: invalid SHA-256 digest");
-  if (r.transform_profile_digest !== EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST)
-    fail("recipe: transform profile digest: unknown profile");
+  resolveEvidenceProvenanceProfile(r.transform_profile_digest);
   if (!Array.isArray(r.operations)) fail("recipe: operations must be an array");
   if (r.operations.length > MAX_OPERATIONS) fail(`recipe: exceeds ${MAX_OPERATIONS} operations`);
   for (const [index, raw] of r.operations.entries()) {
@@ -309,6 +313,7 @@ export function applyEvidenceProvenanceRecipe(
   const source = text(input, "recipe input");
   if (input.length > MAX_INPUT_BYTES) fail("recipe input: exceeds profile byte limit");
   validateEvidenceProvenanceRecipe(recipe);
+  const profile = resolveEvidenceProvenanceProfile(recipe.transform_profile_digest);
   let value = source;
   let remaining = MAX_CUMULATIVE_PROCESSED_BYTES;
   const charge = (processed: string): void => {
@@ -321,7 +326,7 @@ export function applyEvidenceProvenanceRecipe(
     const op = raw as Record<string, unknown>;
     try {
       charge(value);
-      value = apply(value, op, charge);
+      value = apply(value, op, charge, profile);
     } catch (error) {
       if (error instanceof Error && error.name === "FixtureWorkLimit") throw error;
       throw new Error(
@@ -515,7 +520,11 @@ function matching(value: string): string {
 // A character outside the alphabet no longer aborts normalization to "" --
 // every non-data character is now strippable, not just an enumerated
 // separator set.
-function encodedToken(value: string, alphabet: string): string {
+function encodedToken(value: string, alphabet: string, profile: ProfileVersion): string {
+  if (profile === "v1") return encodedTokenV1(value, alphabet);
+  return encodedTokenV2(value, alphabet);
+}
+function encodedTokenV2(value: string, alphabet: string): string {
   if (value.length < 4) return "";
   if (alphabet === "hex") {
     const v = value
@@ -537,6 +546,38 @@ function encodedToken(value: string, alphabet: string): string {
   for (const c of value) {
     if (data.test(c)) result += c;
     else changed = true;
+  }
+  return changed && result.length >= 4 ? result : "";
+}
+function encodedTokenV1(value: string, alphabet: string): string {
+  if (value.length < 4) return "";
+  if (alphabet === "hex") {
+    const v = value
+      .replaceAll("\\x", "")
+      .replaceAll("\\X", "")
+      .replaceAll("0x", "")
+      .replaceAll("0X", "")
+      .replace(/[: ,\-]/gu, "");
+    return v.length && v.length % 2 === 0 && /^[0-9a-f]+$/iu.test(v) ? v : "";
+  }
+  const data =
+    alphabet === "base32"
+      ? /^[A-Z2-7=]$/u
+      : alphabet === "base64_standard"
+        ? /^[A-Za-z0-9+/=]$/u
+        : /^[A-Za-z0-9_\-=]$/u;
+  const separator =
+    alphabet === "base32"
+      ? /^[ \t\n\r\f\v._\-/]$/u
+      : alphabet === "base64_standard"
+        ? /^[ \t\n\r\f\v._-]$/u
+        : /^[ \t\n\r\f\v._/+]$/u;
+  let changed = false,
+    result = "";
+  for (const c of value) {
+    if (data.test(c)) result += c;
+    else if (separator.test(c)) changed = true;
+    else return "";
   }
   return changed && result.length >= 4 ? result : "";
 }
@@ -583,6 +624,7 @@ function apply(
   value: string,
   op: Record<string, unknown>,
   charge: (value: string) => void,
+  profile: ProfileVersion,
 ): string {
   const kind = op.kind as string;
   switch (kind) {
@@ -660,7 +702,7 @@ function apply(
         false,
       );
     case "encoded_token_normalize":
-      return encodedToken(value, op.alphabet as string);
+      return encodedToken(value, op.alphabet as string, profile);
     case "text_segment": {
       const segments = value.split(/[/?&= \n\r\t"'`{}\[\]()<>:,;]/u).filter(Boolean);
       const occurrence = (op.occurrence as number | undefined) ?? 0;
@@ -672,10 +714,9 @@ function apply(
     case "whitespace_compact":
       return compactUnicode15Whitespace(value);
     case "url_noise_strip":
-      // Deny-list mirroring scanner.go's stripURLNoise: keep only the
-      // credential alphabet ([A-Za-z0-9] plus '-','_','=') and strip
-      // everything else, rather than removing a named separator set.
-      return value.replace(/[^A-Za-z0-9\-_=]/gu, "");
+      return profile === "v1"
+        ? value.replace(/[./ \t\n\r+,;|]/gu, "")
+        : value.replace(/[^A-Za-z0-9\-_=]/gu, "");
     case "ordered_query_concat":
       return value
         .split("&")

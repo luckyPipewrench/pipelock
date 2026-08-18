@@ -2,13 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use base64::Engine;
-use pipelock_verifier_rs::provenance::{Recipe, PROFILE_DIGEST};
+use pipelock_verifier_rs::provenance::{Recipe, PROFILE_DIGEST, PROFILE_DIGEST_V2};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const CORPUS: &str = "../../conformance/testdata/transform-profile/evidence-provenance-v1.json";
+const CORPORA: [(&str, &str); 2] = [
+    (
+        "../../conformance/testdata/transform-profile/evidence-provenance-v1.json",
+        PROFILE_DIGEST,
+    ),
+    (
+        "../../conformance/testdata/transform-profile/evidence-provenance-v2.json",
+        PROFILE_DIGEST_V2,
+    ),
+];
 
 #[test]
 fn provenance_cli_requires_explicit_incomplete_opt_in() {
@@ -48,35 +57,38 @@ fn unicode_normalization_tables_match_pinned_profile_version() {
 
 #[test]
 fn evidence_provenance_shared_corpus() {
-    let corpus: Value = serde_json::from_str(&fs::read_to_string(CORPUS).expect("read corpus"))
-        .expect("parse corpus");
-    assert_eq!(corpus["profile_digest"], PROFILE_DIGEST);
-    for vector in corpus["vectors"].as_array().expect("vectors") {
-        let id = vector["id"].as_str().unwrap_or("unnamed");
-        let input = base64::engine::general_purpose::STANDARD
-            .decode(vector["input_b64"].as_str().expect("input_b64"))
-            .expect("input base64");
-        let digest = vector
-            .get("transform_profile_digest")
-            .and_then(Value::as_str)
-            .unwrap_or(PROFILE_DIGEST);
-        let result = vector
-            .get("recipe")
-            .map(|recipe| Recipe::from_json(digest, recipe).and_then(|r| r.apply_bytes(&input)))
-            .unwrap_or_else(|| {
-                Recipe::from_json(digest, &Value::Array(vec![])).and_then(|r| r.apply_bytes(&input))
-            });
-        if let Some(want) = vector
-            .get("want_error")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-        {
-            assert!(result.expect_err(id).contains(want), "{id}");
-        } else {
-            let want = base64::engine::general_purpose::STANDARD
-                .decode(vector["output_b64"].as_str().expect("output_b64"))
-                .expect("output base64");
-            assert_eq!(result.expect(id), want, "{id}");
+    for (path, profile_digest) in CORPORA {
+        let corpus: Value = serde_json::from_str(&fs::read_to_string(path).expect("read corpus"))
+            .expect("parse corpus");
+        assert_eq!(corpus["profile_digest"], profile_digest, "{path}");
+        for vector in corpus["vectors"].as_array().expect("vectors") {
+            let id = vector["id"].as_str().unwrap_or("unnamed");
+            let input = base64::engine::general_purpose::STANDARD
+                .decode(vector["input_b64"].as_str().expect("input_b64"))
+                .expect("input base64");
+            let digest = vector
+                .get("transform_profile_digest")
+                .and_then(Value::as_str)
+                .unwrap_or(profile_digest);
+            let result = vector
+                .get("recipe")
+                .map(|recipe| Recipe::from_json(digest, recipe).and_then(|r| r.apply_bytes(&input)))
+                .unwrap_or_else(|| {
+                    Recipe::from_json(digest, &Value::Array(vec![]))
+                        .and_then(|r| r.apply_bytes(&input))
+                });
+            if let Some(want) = vector
+                .get("want_error")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                assert!(result.expect_err(id).contains(want), "{path}: {id}");
+            } else {
+                let want = base64::engine::general_purpose::STANDARD
+                    .decode(vector["output_b64"].as_str().expect("output_b64"))
+                    .expect("output base64");
+                assert_eq!(result.expect(id), want, "{path}: {id}");
+            }
         }
     }
 }

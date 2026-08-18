@@ -14,6 +14,7 @@ import pytest
 
 from pipelock_aarp_verify.provenance import (
     PROFILE_DIGEST,
+    PROFILE_DIGEST_V2,
     UNICODE_VERSION,
     ProvenanceError,
     Recipe,
@@ -27,6 +28,7 @@ CORPUS = (
     / "transform-profile"
     / "evidence-provenance-v1.json"
 )
+CORPUS_V2 = CORPUS.with_name("evidence-provenance-v2.json")
 
 
 def test_evidence_provenance_uses_profile_pinned_unicode_database() -> None:
@@ -102,6 +104,23 @@ def test_evidence_provenance_transform_corpus() -> None:
         covered == set(supported_operation_kinds()) == set(corpus["operation_coverage"])
     )
     assert errors == set(corpus["error_coverage"])
+
+
+def test_evidence_provenance_transform_v2_corpus() -> None:
+    corpus = json.loads(CORPUS_V2.read_text())
+    assert corpus["profile_digest"] == PROFILE_DIGEST_V2
+    for vector in corpus["vectors"]:
+        recipe = Recipe.from_json(
+            vector.get("transform_profile_digest", corpus["profile_digest"]),
+            vector.get("recipe", []),
+        )
+        if vector.get("want_error"):
+            with pytest.raises(ProvenanceError, match=vector["want_error"]):
+                recipe.apply_bytes(base64.b64decode(vector["input_b64"], validate=True))
+            continue
+        assert recipe.apply_bytes(
+            base64.b64decode(vector["input_b64"], validate=True)
+        ).encode() == base64.b64decode(vector["output_b64"], validate=True)
 
 
 @pytest.mark.parametrize(

@@ -19,9 +19,15 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote_to_bytes, urlsplit
 
-PROFILE_DIGEST = (
+PROFILE_DIGEST_V1 = (
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
 )
+PROFILE_DIGEST_V2 = (
+    "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9"
+)
+# Compatibility name for v1-focused callers. Recipes always dispatch from the
+# exact digest supplied on the wire and never fall back to this value.
+PROFILE_DIGEST = PROFILE_DIGEST_V1
 UNICODE_VERSION = "15.0.0"
 MAX_INPUT_BYTES = 2 << 20
 MAX_OUTPUT_BYTES = 1 << 20
@@ -68,6 +74,16 @@ _FIELDS = {
     "indices",
     "minimum_length",
 }
+
+
+def profile_version(digest: str) -> str:
+    if digest == PROFILE_DIGEST_V1:
+        return "v1"
+    if digest == PROFILE_DIGEST_V2:
+        return "v2"
+    raise ProvenanceError(
+        "recipe: transform profile digest: unknown profile " f"{digest!r}"
+    )
 _CONFUSABLES = {
     "А": "A",
     "В": "B",
@@ -350,11 +366,7 @@ class Recipe:
             raise ProvenanceError(
                 "recipe: transform profile digest: invalid SHA-256 digest"
             )
-        if self.transform_profile_digest != PROFILE_DIGEST:
-            raise ProvenanceError(
-                "recipe: transform profile digest: unknown profile "
-                f"{self.transform_profile_digest!r}"
-            )
+        profile_version(self.transform_profile_digest)
         if len(self.operations) > MAX_OPERATIONS:
             raise ProvenanceError(f"recipe: exceeds {MAX_OPERATIONS} operations")
         for index, op in enumerate(self.operations):
@@ -482,6 +494,7 @@ class Recipe:
         self, value: str, charge_fixture_work: Callable[[int], None] | None = None
     ) -> str:
         self.validate()
+        profile = profile_version(self.transform_profile_digest)
         if len(value.encode()) > MAX_INPUT_BYTES:
             raise ProvenanceError("recipe input: exceeds profile byte limit")
         remaining = MAX_CUMULATIVE_PROCESSED_BYTES
@@ -498,7 +511,7 @@ class Recipe:
         for index, op in enumerate(self.operations):
             try:
                 charge(value)
-                value = self._apply_op(value, op, charge)
+                value = self._apply_op(value, op, charge, profile)
             except ProvenanceError as exc:
                 raise ProvenanceError(
                     f"recipe operation {index} ({op['kind']}): {exc}"
@@ -511,7 +524,11 @@ class Recipe:
         return value
 
     def _apply_op(
-        self, v: str, op: dict[str, Any], charge: Callable[[str], None]
+        self,
+        v: str,
+        op: dict[str, Any],
+        charge: Callable[[str], None],
+        profile: str,
     ) -> str:
         k = op["kind"]
         if k == "identity":
@@ -577,7 +594,7 @@ class Recipe:
                 f"liberal {base} decode",
             )
         if k == "encoded_token_normalize":
-            return _encoded_token(v, op["alphabet"])
+            return _encoded_token(v, op["alphabet"], profile)
         if k == "text_segment":
             pattern = "[" + re.escape("".join(sorted(_TEXT_DELIMS))) + "]+"
             parts = [x for x in re.split(pattern, v) if x]
@@ -604,7 +621,9 @@ class Recipe:
                 )
             )
         if k == "url_noise_strip":
-            return v.translate(str.maketrans("", "", "./ +,;|\t\n\r"))
+            if profile == "v1":
+                return v.translate(str.maketrans("", "", "./ +,;|\t\n\r"))
+            return "".join(ch for ch in v if ch.isascii() and (ch.isalnum() or ch in "_-="))
         if k == "ordered_query_concat":
             return "".join(
                 _query_unescape(x.partition("=")[2], charge)
@@ -638,7 +657,13 @@ def _uint(value: Any, bits: int) -> bool:
     )
 
 
-def _encoded_token(value: str, alphabet: str) -> str:
+def _encoded_token(value: str, alphabet: str, profile: str) -> str:
+    if profile == "v1":
+        return _encoded_token_v1(value, alphabet)
+    return _encoded_token_v2(value, alphabet)
+
+
+def _encoded_token_v1(value: str, alphabet: str) -> str:
     if len(value) < 4:
         return ""
     if alphabet == "hex":
@@ -678,6 +703,29 @@ def _encoded_token(value: str, alphabet: str) -> str:
             return ""
     normalized = "".join(out)
     return normalized if changed and len(normalized) >= 4 else ""
+
+
+def _encoded_token_v2(value: str, alphabet: str) -> str:
+    if len(value) < 4:
+        return ""
+    if alphabet == "hex":
+        normalized = (
+            value.replace(r"\x", "")
+            .replace(r"\X", "")
+            .replace("0x", "")
+            .replace("0X", "")
+        )
+        normalized = "".join(ch for ch in normalized if ch in "0123456789abcdefABCDEF")
+        return normalized if normalized and len(normalized) % 2 == 0 else ""
+    data = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789="
+    if alphabet == "base32":
+        data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567="
+    elif alphabet == "base64_standard":
+        data += "+/"
+    else:
+        data += "-_"
+    normalized = "".join(ch for ch in value if ch in data)
+    return normalized if normalized != value and len(normalized) >= 4 else ""
 
 
 def _at(values: list[str], index: int, name: str) -> str:

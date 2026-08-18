@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   applyEvidenceProvenanceRecipe,
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+  EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
   supportedOperationKinds,
 } from "../src/provenance.js";
 import { findPackageRoot } from "./paths.js";
@@ -24,6 +25,10 @@ const packageRoot = findPackageRoot(import.meta.url);
 const corpusPath = resolve(
   packageRoot,
   "../../conformance/testdata/transform-profile/evidence-provenance-v1.json",
+);
+const corpusPathV2 = resolve(
+  packageRoot,
+  "../../conformance/testdata/transform-profile/evidence-provenance-v2.json",
 );
 const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as {
   profile_digest: string;
@@ -44,7 +49,7 @@ test("evidence provenance: pinned corpus profile and every operation are exercis
 
 for (const vector of corpus.vectors)
   test(`evidence provenance: ${vector.id}`, () => {
-    const recipe = {
+    const recipe: { transform_profile_digest: string; operations: unknown[] } = {
       transform_profile_digest: vector.transform_profile_digest ?? corpus.profile_digest,
       operations: vector.recipe ?? [],
     };
@@ -63,6 +68,35 @@ for (const vector of corpus.vectors)
       vector.output_b64,
     );
   });
+
+test("evidence provenance: v2 corpus executes every vector byte-exactly", () => {
+  const v2 = JSON.parse(readFileSync(corpusPathV2, "utf8")) as {
+    profile_digest: string;
+    vectors: Vector[];
+  };
+  assert.equal(v2.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST);
+  for (const vector of v2.vectors) {
+    const recipe: { transform_profile_digest: string; operations: unknown[] } = {
+      transform_profile_digest: vector.transform_profile_digest ?? v2.profile_digest,
+      operations: vector.recipe ?? [],
+    };
+    if (vector.want_error) {
+      assert.throws(
+        () => applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
+        (error: unknown) => error instanceof Error && error.message.includes(vector.want_error!),
+        vector.id,
+      );
+      continue;
+    }
+    assert.equal(
+      Buffer.from(
+        applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
+      ).toString("base64"),
+      vector.output_b64,
+      vector.id,
+    );
+  }
+});
 
 test("evidence provenance: HTML5 named entities decode repeatedly", () => {
   const recipe = {
@@ -112,19 +146,12 @@ test("evidence provenance: execution limits reject unbounded verifier work", () 
   );
 });
 
-// This used to assert that a non-ASCII whitespace separator (not part of the
-// old enumerated allow-list of skippable delimiters) made encodedToken abort
-// normalization to "". That was the pre-fix, allow-list behavior, and it was
-// itself the bypass: an attacker who split a secret with a delimiter absent
-// from the allow-list defeated reconstruction, hiding the token from DLP
-// entirely. encodedToken (mirroring scanner.go's normalizeHex /
-// normalizeEncodedToken) now treats every byte outside the target alphabet
-// as strippable noise instead of aborting, so these separators are removed
-// and the token is reconstructed and normalized like any other split.
-test("encoded token normalization strips non-ASCII whitespace separators instead of aborting", () => {
+// Profile v2 mirrors the scanner's current per-alphabet keep-set. Profile v1
+// remains the historical allow-list, so this change is selected by digest.
+test("v2 encoded token normalization strips non-ASCII whitespace separators", () => {
   for (const separator of ["\u00a0", "\u1680", "\u3000", "\ufeff"]) {
     const output = applyEvidenceProvenanceRecipe(Buffer.from(`SG${separator}k=`), {
-      transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+      transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
       operations: [{ kind: "encoded_token_normalize", alphabet: "base64_standard" }],
     });
     assert.equal(Buffer.from(output).toString(), "SGk=");

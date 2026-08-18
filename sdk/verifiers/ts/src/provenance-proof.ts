@@ -11,6 +11,7 @@ import { closeSync, openSync, readSync } from "node:fs";
 import { RawNumber, parseJSONStrict } from "./aarp/strictjson.js";
 import {
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+  EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
   applyEvidenceProvenanceRecipe,
   validateEvidenceProvenanceRecipe,
 } from "./provenance.js";
@@ -467,7 +468,12 @@ function invalid(failure: FailureStage, report: ProvenanceReport): ProvenanceRep
 }
 
 function validateProofStructure(proof: Proof): void {
-  if (proof.version !== proofVersion || proof.transform_profile_digest !== profileDigest) {
+  if (
+    proof.version !== proofVersion ||
+    ![EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST, EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST].includes(
+      proof.transform_profile_digest,
+    )
+  ) {
     throw new FixtureError("unsupported evidence provenance proof");
   }
   for (const value of [proof.producer.binary_digest, proof.producer.ruleset_digest]) {
@@ -490,6 +496,8 @@ function validateProofStructure(proof: Proof): void {
     sourceOrdinals.add(source.source_ordinal);
     previousSource = source.source_ordinal;
     validateRecipe(source.recipe);
+    if (source.recipe.transform_profile_digest !== proof.transform_profile_digest)
+      throw new FixtureError("recipe profile differs from proof");
     digest(source.view_commitment, "hmac-sha256:", "view commitment");
     let previousOrdinal = -1n;
     for (const match of source.matches) {

@@ -33,6 +33,7 @@ _TRANSFORM_CORPUS = (
     / "transform-profile"
     / "evidence-provenance-v1.json"
 )
+_TRANSFORM_CORPUS_V2 = _TRANSFORM_CORPUS.with_name("evidence-provenance-v2.json")
 
 
 def _fixture(
@@ -493,11 +494,32 @@ def test_missing_source_does_not_hide_later_available_source_mismatch() -> None:
 def test_transform_corpus_vectors_are_byte_exact() -> None:
     """The Python port executes every normative recipe vector directly."""
     corpus = json.loads(_TRANSFORM_CORPUS.read_text())
-    assert len(corpus["vectors"]) == 63
+    assert len(corpus["vectors"]) == 74
     for vector in corpus["vectors"]:
         recipe = {
             "transform_profile_digest": vector.get(
                 "transform_profile_digest", PROFILE_DIGEST
+            ),
+            "operations": vector.get("recipe") or [],
+        }
+        strict_recipe = parse_json_strict(json.dumps(recipe).encode())
+        input_bytes = base64.b64decode(vector["input_b64"])
+        want_error = vector.get("want_error", "")
+        if want_error:
+            with pytest.raises(ProvenanceError, match=re.escape(want_error)):
+                _apply_recipe(strict_recipe, input_bytes)
+            continue
+        assert _apply_recipe(strict_recipe, input_bytes) == base64.b64decode(
+            vector["output_b64"]
+        ), vector["id"]
+
+
+def test_transform_v2_corpus_vectors_are_byte_exact() -> None:
+    corpus = json.loads(_TRANSFORM_CORPUS_V2.read_text())
+    for vector in corpus["vectors"]:
+        recipe = {
+            "transform_profile_digest": vector.get(
+                "transform_profile_digest", corpus["profile_digest"]
             ),
             "operations": vector.get("recipe") or [],
         }

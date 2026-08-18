@@ -157,16 +157,16 @@ type SessionMetrics struct {
 
 // Config for behavioral baseline.
 type Config struct {
-	Enabled          bool     `yaml:"enabled"`
-	LearningWindow   int      `yaml:"learning_window"`
-	DeviationAction  string   `yaml:"deviation_action"`
-	ProfileDir       string   `yaml:"profile_dir"`
-	AutoRatify       bool     `yaml:"auto_ratify"`
-	SensitivitySigma float64  `yaml:"sensitivity_sigma"`
-	LockDimensions   []string `yaml:"lock_dimensions"`
-	PoisonResistance bool     `yaml:"poison_resistance"`
-	SeasonalityMode  string   `yaml:"seasonality_mode"`
-	IntegrityKeyPath string   `yaml:"-"`
+	Enabled          bool
+	LearningWindow   int
+	DeviationAction  string
+	ProfileDir       string
+	AutoRatify       bool
+	SensitivitySigma float64
+	LockDimensions   []string
+	PoisonResistance bool
+	SeasonalityMode  string
+	IntegrityKeyPath string
 }
 
 type integrityManifestFile struct {

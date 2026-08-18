@@ -31,13 +31,13 @@ const (
 // DoWConfig configures denial-of-wallet detection thresholds.
 // Zero values for limit fields mean unlimited (disabled).
 type DoWConfig struct {
-	MaxToolCallsPerSession int    `yaml:"max_tool_calls_per_session"`
-	MaxConcurrentToolCalls int    `yaml:"max_concurrent_tool_calls"`
-	MaxWallClockMinutes    int    `yaml:"max_wall_clock_minutes"`
-	WindowMinutes          int    `yaml:"window_minutes"`
-	MaxRetriesPerTool      int    `yaml:"max_retries_per_tool"`
-	LoopDetectionWindow    int    `yaml:"loop_detection_window"`
-	Action                 string `yaml:"action"` // "block" or "warn"
+	MaxToolCallsPerSession int
+	MaxConcurrentToolCalls int
+	MaxWallClockMinutes    int
+	WindowMinutes          int
+	MaxRetriesPerTool      int
+	LoopDetectionWindow    int
+	Action                 string // "block" or "warn"
 }
 
 // DoWSubjectManagerConfig configures bounded per-subject DoW tracking.

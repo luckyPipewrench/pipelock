@@ -89,10 +89,10 @@ func isInterpreterName(baseName string) bool {
 
 // Config controls MCP binary integrity verification.
 type Config struct {
-	Enabled      bool              `yaml:"enabled"`
-	ManifestPath string            `yaml:"manifest_path"` // path to JSON manifest on disk
-	Action       string            `yaml:"action"`        // "block" or "warn" (default "block")
-	Manifests    map[string]string `yaml:"-"`             // loaded: resolved_path -> expected SHA-256
+	Enabled      bool
+	ManifestPath string            // path to JSON manifest on disk
+	Action       string            // "block" or "warn" (default "block")
+	Manifests    map[string]string // loaded: resolved_path -> expected SHA-256
 }
 
 // Manifest is the on-disk JSON format for trusted binary hashes.

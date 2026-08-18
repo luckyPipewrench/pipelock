@@ -7,6 +7,8 @@
 package cli
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/anchor"
@@ -74,6 +76,22 @@ Quick start:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	// Route command results to stdout.
+	//
+	// cobra's Print, Printf, and Println all write to OutOrStderr(), which
+	// returns the configured out writer if one is set and otherwise falls back
+	// to stderr. Nothing set one, so every human-readable result in the CLI was
+	// landing on stderr while `pipelock version > file` produced an empty file.
+	// A test could not see it: SetOut in a test IS the writer OutOrStderr
+	// returns, so the text appeared exactly where the test looked for it.
+	//
+	// Setting it here makes the split the code already encodes mean what it
+	// reads as: Print* is a result and goes to stdout, PrintErr* is a
+	// diagnostic and still goes to stderr. Subcommands inherit it through the
+	// parent chain. Usage output is the one other consumer of this writer, and
+	// SilenceUsage on this command keeps cobra from ever emitting it.
+	cmd.SetOut(os.Stdout)
 
 	cmd.PersistentFlags().StringVar(&cliutil.PipelockHome, "home", "",
 		"pipelock home directory (default ~/.pipelock, or set PIPELOCK_HOME)")
@@ -177,5 +195,40 @@ Quick start:
 		cmd.AddCommand(extra)
 	}
 
+	guardGroupingCommands(cmd)
+
 	return cmd
+}
+
+// guardGroupingCommands makes a command that only groups subcommands reject a
+// subcommand it does not have, instead of reporting success.
+//
+// cobra checks for an unknown subcommand on the ROOT command only: legacyArgs
+// returns its "unknown command" error solely when the command has no parent.
+// Every nested group therefore accepted any word, fell through to the help
+// path, and returned nil, so the process exited 0. `pipelock contain instal`
+// printed help and reported success while nothing was installed, which in a
+// setup script reads as containment being in place when it is not.
+//
+// Setting Args alone does not fix it. cobra returns flag.ErrHelp for a
+// non-runnable command BEFORE it validates arguments (command.go, the
+// `!c.Runnable()` check precedes ValidateArgs), so an argument constraint on a
+// command with no action is never consulted. The group needs an action for the
+// constraint to be reached, and printing help is the action it already had.
+//
+// Applied by walking the assembled tree rather than by annotating each command,
+// so a group added later is covered without anyone remembering to.
+func guardGroupingCommands(cmd *cobra.Command) {
+	for _, sub := range cmd.Commands() {
+		guardGroupingCommands(sub)
+	}
+	// A group is a command with children and no action of its own. Anything
+	// runnable is left alone: it may legitimately take positional arguments.
+	if cmd.Runnable() || !cmd.HasSubCommands() {
+		return
+	}
+	cmd.Args = cobra.NoArgs
+	cmd.RunE = func(c *cobra.Command, _ []string) error {
+		return c.Help()
+	}
 }

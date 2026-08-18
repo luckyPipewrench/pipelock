@@ -22,6 +22,11 @@ import (
 // honors it when filepath.IsAbs returns true (merge.go:21). A relative
 // $TMPDIR would silently fall back to $HOME and defeat the isolation.
 func TestMain(m *testing.M) {
+	// This binary re-execs itself to exercise CLI stream routing against a real
+	// process. When that environment variable is set it runs the CLI and exits
+	// rather than running the suite. See stdout_routing_test.go.
+	runCLIHelper()
+
 	tmp, err := os.MkdirTemp("", "pipelock-cli-test-xdg-*")
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "TestMain: create temp dir: %v\n", err)

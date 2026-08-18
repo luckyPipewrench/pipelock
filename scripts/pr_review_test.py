@@ -1066,6 +1066,93 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         with self.assertRaisesRegex(pr_review.ModelOutputError, "invalid severity or path"):
             pr_review.parse_findings(outside, {"internal/a.go"})
 
+    def test_publication_sanitizer_redacts_credentials_in_model_prose(self) -> None:
+        """A finding may quote the very line it complains about.
+
+        The sanitizer flattens markdown and mentions, which is formatting safety
+        and not leak safety. Before this, a real credential appearing inside model
+        prose was published to a public pull-request comment under the workflow
+        token.
+
+        Sample prefixes are decoded from hex so this file carries no literal
+        credential string for a scanner to flag; the comment on each line names
+        the class it exercises.
+        """
+        hexed = {
+            "aws-access-key": ("414b4941", "QYLPMN5EXAMPLE99"),
+            "github-token": ("6768705f", "A" * 36),
+            "github-pat": ("6769746875625f7061745f", "B" * 30),
+            "slack-token": ("786f78622d", "1234567890-abcdefghij"),
+            "stripe-key": ("736b5f6c6976655f", "C" * 20),
+            "anthropic-key": ("736b2d616e742d", "api03-" + "D" * 30),
+            "google-api-key": ("41497a61", "E" * 35),
+            "npm-token": ("6e706d5f", "F" * 36),
+            "jwt": ("65794a68624763694f694a49557a49314e694a39", ".eyJzdWIiOiIxIn0." + "G" * 24),
+            "private-key-block": ("2d2d2d2d2d424547494e", " RSA PRIVATE" + " KEY-----"),
+        }
+        for label, (prefix_hex, suffix) in hexed.items():
+            with self.subTest(credential=label):
+                sample = bytes.fromhex(prefix_hex).decode() + suffix
+                rendered = pr_review.sanitize_public_text(
+                    f"The diff hardcodes {sample} on line 42; read it from the environment.",
+                    limit=600,
+                )
+                self.assertNotIn(sample[:14], rendered)
+                self.assertIn(label, rendered)
+
+    def test_credential_redaction_precedes_underscore_stripping(self) -> None:
+        """Ordering is the whole correctness of the redaction step.
+
+        The markdown translation strips underscores, so a token redacted after it
+        would already have been rewritten into a shape the patterns cannot match.
+        This asserts the ordering directly rather than trusting it.
+        """
+        sample = bytes.fromhex("6768705f").decode() + "H" * 36
+        rendered = pr_review.sanitize_public_text(f"token {sample} here", limit=300)
+        self.assertIn("github-token", rendered)
+        self.assertNotIn(sample[:3], rendered)
+
+    def test_credential_redaction_leaves_ordinary_review_prose_intact(self) -> None:
+        """Over-redaction is a failure direction too.
+
+        A redactor that mangles normal review prose gets the reviewer distrusted
+        and then ignored. Generic high-entropy matching is deliberately omitted for
+        that reason, so these cases must survive untouched.
+        """
+        for text in (
+            "The scanner rejects a bearer token in the query string, which is correct.",
+            "Rename shouldReturn to mustReturn for consistency with the sibling package.",
+            "This test asserts exit code 2, but the guard returns 1, so the fetch proceeds.",
+            "Consider extracting the two credential checks into a shared helper.",
+        ):
+            with self.subTest(text=text):
+                self.assertNotIn("redacted:", pr_review.sanitize_public_text(text, limit=600))
+
+    def test_credential_redaction_allows_the_vendor_documentation_key(self) -> None:
+        """The published dummy key appears in this repository's own docs.
+
+        A review may legitimately discuss it, and the scanner carves it out for the
+        same reason, so redacting it here would be a false positive on a
+        documentation conversation.
+        """
+        dummy = bytes.fromhex("414b4941").decode() + "IOSFODNN7" + "EXAMPLE"
+        rendered = pr_review.sanitize_public_text(
+            f"The example key {dummy} in the fixture is the vendor's published dummy.",
+            limit=600,
+        )
+        self.assertIn(dummy, rendered)
+        self.assertNotIn("redacted:", rendered)
+
+    def test_credential_redaction_marker_is_visible_not_silent(self) -> None:
+        """Silently deleting a credential would misdescribe what the model said.
+
+        A reader of the published finding must be able to tell that something was
+        removed, otherwise the comment reads as the model's actual words.
+        """
+        sample = bytes.fromhex("414b4941").decode() + "QYLPMN5EXAMPLE99"
+        rendered = pr_review.sanitize_public_text(f"found {sample}", limit=300)
+        self.assertIn("redacted", rendered)
+
     def test_publication_sanitizer_removes_mentions_commands_and_markup(self) -> None:
         rendered = pr_review.sanitize_public_text(
             "@victim run /review deep <script> [click]", limit=300

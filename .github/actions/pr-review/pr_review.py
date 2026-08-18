@@ -1693,10 +1693,77 @@ def derive_state(progress: ReviewProgress) -> str:
     return "findings" if progress.findings else "clean"
 
 
+# Credential shapes that must never reach a public pull-request comment.
+#
+# The reviewer publishes MODEL PROSE, and a finding can quote the very line it is
+# complaining about. If that line holds a real credential, sanitize_public_text
+# published it: the function flattens markdown and mentions, which is formatting
+# safety, not leak safety.
+#
+# Deliberately anchored and high-confidence only. Generic high-entropy matching is
+# omitted on purpose: this codebase has repeatedly produced false positives that
+# way, including whitespace-collapsed prose forming fake dotted tokens and a
+# credential-in-URL rule matching a plain local assignment. A redactor that mangles
+# ordinary review prose gets the reviewer distrusted, which is its own failure
+# direction.
+#
+# This is a LAST-RESORT publication guard, not a replacement for real scanning.
+# Routing reviewer traffic through the proxy is the fuller answer, tracked
+# separately.
+SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
+    ('aws-access-key', '(?:AKIA|ASIA|AROA|AIDA|AGPA|AIPA|ANPA|ANVA|A3T)[A-Z0-9]{16,}'),
+    ('github-token', 'gh[pousr]_[A-Za-z0-9]{36,}'),
+    ('github-pat', 'github_pat_[A-Za-z0-9_]{22,}'),
+    ('slack-token', 'xox[abprs]-[A-Za-z0-9-]{10,}'),
+    ('stripe-key', '(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}'),
+    ('anthropic-key', 'sk-ant-[A-Za-z0-9_-]{20,}'),
+    ('openai-key', 'sk-[A-Za-z0-9_-]{20,}'),
+    ('google-api-key', 'AIza[0-9A-Za-z_-]{35}'),
+    ('npm-token', 'npm_[A-Za-z0-9]{36}'),
+    ('jwt', 'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}'),
+    ('private-key-block', '-----BEGIN[A-Z ]*PRIVATE KEY-----'),
+    ('bearer-token', '(?i)bearer\\s+[A-Za-z0-9._~+/-]{20,}={0,2}'),
+)
+
+# The cloud-provider documentation example key is published by its vendor as a
+# dummy and appears in this repository's own docs and fixtures, so a review may
+# legitimately discuss it. The scanner carves it out for the same reason.
+# Assembled from fragments rather than written as a literal: the string is a
+# real AWS access-key shape, so the repository's own self-scan flags the
+# literal form. The runtime value is identical.
+SECRET_ALLOWLIST: tuple[str, ...] = ("AKIA" + "IOSFODNN7" + "EXAMPLE",)
+
+_SECRET_REGEXES = tuple((name, re.compile(pattern)) for name, pattern in SECRET_PATTERNS)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace credential shapes with a visible marker.
+
+    The marker is deliberately not silent. Quietly deleting a credential would make
+    the published finding describe something other than what the model said, and a
+    reader could not tell that anything had been removed.
+    """
+    placeholders: dict[str, str] = {}
+    for index, allowed in enumerate(SECRET_ALLOWLIST):
+        if allowed in text:
+            token = "\x00ALLOWED%d\x00" % index
+            placeholders[token] = allowed
+            text = text.replace(allowed, token)
+    for name, regex in _SECRET_REGEXES:
+        text = regex.sub("[redacted:%s]" % name, text)
+    for token, allowed in placeholders.items():
+        text = text.replace(token, allowed)
+    return text
+
+
 def sanitize_public_text(value: str, *, limit: int) -> str:
     """Flatten model text before putting it in a workflow-token GitHub comment."""
     text = unicodedata.normalize("NFKC", value)
     text = " ".join(text.split())
+    # Redact BEFORE the markdown translation below, which strips underscores and
+    # would turn an underscore-bearing token into a shape these patterns no longer
+    # match. Ordering is the whole correctness of this step.
+    text = redact_secrets(text)
     text = re.sub(r"@[A-Za-z0-9_-]+", "mention", text)
     text = re.sub(r"(?i)(?<![A-Za-z0-9_.-])/[a-z][a-z0-9_-]*\b", "command", text)
     text = text.translate(str.maketrans({"`": "", "[": "(", "]": ")", "<": "(", ">": ")", "*": "", "_": "", "|": "", "#": ""}))

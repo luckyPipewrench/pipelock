@@ -957,6 +957,13 @@ func TestReverseProxy_RequestScanInflightBudgetBoundsConcurrentBodies(t *testing
 
 	entered := make(chan struct{})
 	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseUpstream)
+		})
+	}
+	t.Cleanup(release)
 	var upstreamCalls atomic.Int32
 	proxy, handler := reverseTestSetupWithHandler(t, cfg, func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
@@ -1004,7 +1011,7 @@ func TestReverseProxy_RequestScanInflightBudgetBoundsConcurrentBodies(t *testing
 		t.Fatalf("upstream calls = %d, want 1; admitted body was forwarded without a reservation", got)
 	}
 
-	close(releaseUpstream)
+	release()
 	select {
 	case err := <-firstDone:
 		if err != nil {

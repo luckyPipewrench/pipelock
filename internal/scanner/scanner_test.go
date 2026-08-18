@@ -1552,6 +1552,16 @@ func TestNormalizeHex(t *testing.T) {
 	}
 }
 
+func TestIndexHexTokenView_NormalizesPrefixesAndUnlistedSeparators(t *testing.T) {
+	_, _, view, ok := indexHexTokenView("0a0b", []spanTextView{{
+		text:      "prefix 0x0a!0x0b suffix",
+		viewLabel: "test_view",
+	}})
+	if !ok || view != "test_view" {
+		t.Fatalf("indexHexTokenView() = view=%q ok=%v, want test_view/true", view, ok)
+	}
+}
+
 func TestHexByteSep(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2662,6 +2672,24 @@ func TestScan_DLP_PathMixedSeparatorBypass(t *testing.T) {
 	}
 }
 
+func TestScan_DLP_PathUnlistedNoiseSeparatorBypass(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+
+	// '!' was absent from the old stripURLNoise allow-list. The raw path
+	// cannot match the key, and the stricter query-only pass does not apply
+	// here, so this exercises the path noise-strip behavior directly.
+	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	result := s.Scan(context.Background(), "https://example.com/upload/"+key[:4]+"!"+key[4:])
+	if result.Allowed {
+		t.Fatal("expected DLP to catch an AWS-shaped key split in a path by an unlisted separator")
+	}
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Fatalf("scanner = %s, want DLP or core_dlp (reason: %s)", result.Scanner, result.Reason)
+	}
+}
+
 func TestScan_DLP_QueryNoiseInjectionBypass(t *testing.T) {
 	cfg := testConfig()
 	s := MustNew(cfg)
@@ -3672,6 +3700,7 @@ func TestScan_EnvLeak_DelimiterHex(t *testing.T) {
 		{"colon-separated", hexByteSep(contiguousHex, ":")},
 		{"space-separated", hexByteSep(contiguousHex, " ")},
 		{"hyphen-separated", hexByteSep(contiguousHex, "-")},
+		{"exclamation-separated", hexByteSep(contiguousHex, "!")},
 		{"backslash-x notation", hexBytePrefix(contiguousHex, `\x`)},
 		{"0x per-byte notation", hexBytePrefix(contiguousHex, "0x")},
 	}

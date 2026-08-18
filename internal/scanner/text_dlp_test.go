@@ -1611,6 +1611,7 @@ func TestCheckSecretsInText_DelimiterHexEnvSecret(t *testing.T) {
 		{"space-separated", "data: " + hexByteSep(contiguousHex, " ")},
 		{"hyphen-separated", "data: " + hexByteSep(contiguousHex, "-")},
 		{"comma-separated", "data: " + hexByteSep(contiguousHex, ",")},
+		{"exclamation-separated", "data: " + hexByteSep(contiguousHex, "!")},
 		{"backslash-x notation", "data: " + hexBytePrefix(contiguousHex, `\x`)},
 		{"0x per-byte notation", "data: " + hexBytePrefix(contiguousHex, "0x")},
 	}
@@ -1648,6 +1649,7 @@ func TestCheckSecretsInText_DelimiterEncodedEnvSecret(t *testing.T) {
 	}{
 		{"base64_spaces", stdSecret, "data: " + splitEncodedTokenForTest(t, stdB64, 5, " "), encodingBase64},
 		{"base64_dots", stdSecret, "data: " + splitEncodedTokenForTest(t, stdB64, 5, "."), encodingBase64},
+		{"base64_exclamations", stdSecret, "data: " + splitEncodedTokenForTest(t, stdB64, 5, "!"), encodingBase64},
 		{"base64url_slashes", urlSecret, "data: " + splitEncodedTokenForTest(t, urlB64, 5, "/"), "base64url"},
 		{"base32_hyphens", stdSecret, "data: " + splitEncodedTokenForTest(t, b32, 6, "-"), encodingBase32},
 		{"base32_dots", stdSecret, "data: " + splitEncodedTokenForTest(t, b32, 6, "."), encodingBase32},

@@ -1562,7 +1562,7 @@ func stripURLNoise(s string) string {
 // implementation in internal/normalize/provenance.go, which is forensic
 // receipt-replay infrastructure outside this fix's scope. stripURLNoise's
 // existing url_noise_strip operation only replays the LESS aggressive strip
-// (it keeps '-','_','+','/','='), so it would misrepresent what this
+// (it keeps '-','_','='), so it would misrepresent what this
 // function actually removed if reused here. See the adjacent-findings note
 // in the PR/task report: this DLP detection path is not currently
 // reconstructable through the provenance replay system.
@@ -2428,6 +2428,47 @@ func indexEncodedTokenView(needle string, views []spanTextView, kind encodedToke
 	return 0, 0, "", false
 }
 
+// indexHexTokenView finds a known hex encoding through every separator that
+// normalizeHex removes. Prefix pairs are skipped together before treating all
+// remaining non-hex bytes as noise, so env/file-secret matching cannot retain
+// a smaller, separately maintained delimiter allow-list.
+func indexHexTokenView(needle string, views []spanTextView) (int, int, string, bool) {
+	if len(needle) == 0 {
+		return 0, 0, "", false
+	}
+	for _, view := range views {
+		text := view.text
+		for start := 0; start < len(text); start++ {
+			if text[start] != needle[0] {
+				continue
+			}
+			textIdx := start
+			needleIdx := 0
+			for textIdx < len(text) && needleIdx < len(needle) {
+				c := text[textIdx]
+				if textIdx+1 < len(text) && ((c == '\\' && text[textIdx+1] == 'x') || (c == '0' && text[textIdx+1] == 'x')) {
+					textIdx += 2
+					continue
+				}
+				if c == needle[needleIdx] {
+					textIdx++
+					needleIdx++
+					continue
+				}
+				if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+					textIdx++
+					continue
+				}
+				break
+			}
+			if needleIdx == len(needle) {
+				return start, textIdx, view.viewLabel, true
+			}
+		}
+	}
+	return 0, 0, "", false
+}
+
 func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (bool, string, int, int, string) {
 	// Raw match.
 	if start, end, viewLabel, ok := indexAnyView(secret, texts); ok {
@@ -2496,6 +2537,9 @@ func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (b
 		if start, end, viewLabel, ok := indexAnyView(candidate, lowerTexts); ok {
 			return true, encodingHex, start, end, viewLabel
 		}
+	}
+	if start, end, viewLabel, ok := indexHexTokenView(hexEnc, lowerTexts); ok {
+		return true, encodingHex, start, end, viewLabel
 	}
 
 	// Base32 standard (padded + unpadded).

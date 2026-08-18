@@ -9218,6 +9218,9 @@ func TestApplyDefaults_RequestBodyScanning_ConditionalDefaults(t *testing.T) {
 	if cfg.RequestBodyScanning.MaxBodyBytes != 5*1024*1024 {
 		t.Fatalf("expected default max_body_bytes 5MB, got %d", cfg.RequestBodyScanning.MaxBodyBytes)
 	}
+	if cfg.ReverseProxy.MaxInflightScanBytes != DefaultReverseProxyMaxInflightScanBytes {
+		t.Fatalf("expected default reverse_proxy.max_inflight_scan_bytes %d, got %d", DefaultReverseProxyMaxInflightScanBytes, cfg.ReverseProxy.MaxInflightScanBytes)
+	}
 	if cfg.RequestBodyScanning.HeaderMode != HeaderModeSensitive {
 		t.Fatalf("expected default header_mode %q, got %q", HeaderModeSensitive, cfg.RequestBodyScanning.HeaderMode)
 	}
@@ -14553,6 +14556,44 @@ func TestValidate_ReverseProxy_ValidConfig(t *testing.T) {
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestValidate_ReverseProxy_MaxInflightScanBytes(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "nonpositive rejected",
+			mutate: func(cfg *Config) {
+				cfg.ReverseProxy.MaxInflightScanBytes = -1
+			},
+			wantErr: "max_inflight_scan_bytes must be positive",
+		},
+		{
+			name: "below one configured body rejected",
+			mutate: func(cfg *Config) {
+				cfg.RequestBodyScanning.MaxBodyBytes = 1024
+				cfg.ReverseProxy.MaxInflightScanBytes = 1023
+			},
+			wantErr: "must be >= request_body_scanning.max_body_bytes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ReverseProxy.Enabled = true
+			cfg.ReverseProxy.Listen = testRevProxyListen
+			cfg.ReverseProxy.Upstream = testRevProxyUpstream
+			tt.mutate(cfg)
+			cfg.ApplyDefaults()
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

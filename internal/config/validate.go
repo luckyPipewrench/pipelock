@@ -3227,6 +3227,12 @@ func (c *Config) validateReverseProxy() error {
 	if c.ReverseProxy.Listen == "" {
 		return fmt.Errorf("reverse_proxy.listen is required when reverse_proxy is enabled")
 	}
+	if c.ReverseProxy.MaxInflightScanBytes <= 0 {
+		return fmt.Errorf("reverse_proxy.max_inflight_scan_bytes must be positive when reverse_proxy is enabled")
+	}
+	if c.RequestBodyScanning.Enabled && c.ReverseProxy.MaxInflightScanBytes < c.RequestBodyScanning.MaxBodyBytes {
+		return fmt.Errorf("reverse_proxy.max_inflight_scan_bytes must be >= request_body_scanning.max_body_bytes when request body scanning is enabled")
+	}
 	return c.validateReverseProxyProfile(u)
 }
 

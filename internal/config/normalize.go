@@ -589,6 +589,9 @@ func (c *Config) ApplyDefaults() {
 	if c.RequestBodyScanning.MaxBodyBytes == 0 {
 		c.RequestBodyScanning.MaxBodyBytes = 5 * 1024 * 1024 // 5MB default
 	}
+	if c.ReverseProxy.MaxInflightScanBytes == 0 {
+		c.ReverseProxy.MaxInflightScanBytes = DefaultReverseProxyMaxInflightScanBytes
+	}
 	if c.RequestBodyScanning.Enabled || c.RequestBodyScanning.ContentEntropyEnabled {
 		if c.RequestBodyScanning.ContentEntropyAction == "" {
 			c.RequestBodyScanning.ContentEntropyAction = ActionWarn

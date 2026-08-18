@@ -142,6 +142,11 @@ const (
 
 	DefaultSizeExemptScanMaxBytes         = 64 * 1024 * 1024
 	DefaultSizeExemptScanMaxInflightBytes = 256 * 1024 * 1024
+	// DefaultReverseProxyMaxInflightScanBytes limits the buffered request
+	// bodies a single reverse-proxy instance can hold while inspecting them.
+	// It permits twelve default-sized (5 MiB) uploads at once while keeping the
+	// process-wide admission cost bounded.
+	DefaultReverseProxyMaxInflightScanBytes = 64 * 1024 * 1024
 
 	// DefaultMaxGap is the default maximum number of non-matching tool calls
 	// allowed between consecutive steps in a chain pattern.
@@ -971,6 +976,12 @@ type ReverseProxy struct {
 	// min(MaxBodyBytes, request_body_scanning.max_body_bytes); requests
 	// exceeding the cap return 413 BEFORE forwarding.
 	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+
+	// MaxInflightScanBytes caps the total configured request-body scan
+	// reservations held by this reverse-proxy instance. It prevents concurrent
+	// uploads from multiplying buffered-body memory; a request is rejected
+	// before its body is read when insufficient capacity remains.
+	MaxInflightScanBytes int `yaml:"max_inflight_scan_bytes"`
 
 	// RequestTimeoutSeconds bounds total per-request time including upstream
 	// dial + body forwarding. Required positive when profile is "submit".

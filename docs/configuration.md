@@ -3439,6 +3439,7 @@ reverse_proxy:
   enabled: false
   listen: ":8890"
   upstream: "http://localhost:7899"
+  max_inflight_scan_bytes: 67108864  # 64 MiB across buffered request scans
 ```
 
 | Field | Default | Description |
@@ -3446,6 +3447,7 @@ reverse_proxy:
 | `enabled` | `false` | Enable reverse proxy mode |
 | `listen` | (required) | Listen address for the reverse proxy |
 | `upstream` | (required) | Upstream service URL to forward to |
+| `max_inflight_scan_bytes` | `67108864` | Per-instance byte budget for buffered request-body scans. A request that cannot reserve capacity is denied before its body is read. Must be at least `request_body_scanning.max_body_bytes` when request-body scanning is enabled. |
 
 ### Submit Profile
 
@@ -3492,9 +3494,9 @@ pipelock run --reverse-proxy --reverse-upstream http://localhost:7899 --reverse-
 - **Request bodies:** Scanned for DLP patterns (secret exfiltration) using the `request_body_scanning` config
 - **Request headers:** Scanned when `request_body_scanning.scan_headers` is enabled
 - **Response bodies:** Scanned for prompt injection using the `response_scanning` config
-- **Binary content:** Image, audio, and video content types skip scanning
+- **Request bodies:** Image, audio, and video uploads are scanned under `request_body_scanning`; a valid media signature is not an exemption. This detects plaintext secrets appended to a media file, not secrets steganographically embedded in its pixels or samples.
 - **Compressed bodies:** Fail-closed (blocked) on both request and response
-- **Oversized bodies:** Bodies larger than 1MB pass through without scanning
+- **Oversized request bodies:** Bodies above `request_body_scanning.max_body_bytes` are denied. Known oversized `Content-Length` values are rejected before reading; chunked bodies are bounded while read and also consume the reverse-proxy in-flight scan budget.
 
 ### Hot-reload
 

@@ -91,27 +91,27 @@ jobs:
             "${merge_base}" "${HEAD_SHA}" "${diff_file}"
 
           "${RUNNER_TEMP}/pipelock" git scan-diff \
-            --exclude internal/scanner/scanner_test.go \ \
-            --exclude internal/scanner/scan_env_test.go \ \
-            --exclude internal/scanner/text_dlp_test.go \ \
-            --exclude internal/scanner/validate_test.go \ \
-            --exclude internal/proxy/intercept_test.go \ \
-            --exclude internal/proxy/session_api.go \ \
-            --exclude internal/cli/support/bundle_test.go \ \
-            --exclude 'enterprise/licenseservice/*_test.go' \ \
-            --exclude test/secureiqlab/ \ \
-            --exclude README.md \ \
-            --exclude assets/demo.cast \ \
-            --exclude .github/actions/pr-review/pr_review.py \ \
-            --exclude docs/attacks-blocked.md \ \
-            --exclude docs/bypass-resistance.md \ \
-            --exclude docs/configuration.md \ \
-            --exclude docs/scan-api.md \ \
-            --exclude docs/guides/deployment-recipes.md \ \
-            --exclude docs/guides/tls-interception.md \ \
-            --exclude docs/guides/zed.md \ \
-            --exclude examples/demo-readme.sh \ \
-            --exclude sdk/conformance/testdata/aarp-corpus/ \ \
+            --exclude internal/scanner/scanner_test.go \
+            --exclude internal/scanner/scan_env_test.go \
+            --exclude internal/scanner/text_dlp_test.go \
+            --exclude internal/scanner/validate_test.go \
+            --exclude internal/proxy/intercept_test.go \
+            --exclude internal/proxy/session_api.go \
+            --exclude internal/cli/support/bundle_test.go \
+            --exclude 'enterprise/licenseservice/*_test.go' \
+            --exclude test/secureiqlab/ \
+            --exclude README.md \
+            --exclude assets/demo.cast \
+            --exclude .github/actions/pr-review/pr_review.py \
+            --exclude docs/attacks-blocked.md \
+            --exclude docs/bypass-resistance.md \
+            --exclude docs/configuration.md \
+            --exclude docs/scan-api.md \
+            --exclude docs/guides/deployment-recipes.md \
+            --exclude docs/guides/tls-interception.md \
+            --exclude docs/guides/zed.md \
+            --exclude examples/demo-readme.sh \
+            --exclude sdk/conformance/testdata/aarp-corpus/ \
             < "${diff_file}"
 
   test-oss:

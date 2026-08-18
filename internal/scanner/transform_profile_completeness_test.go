@@ -287,7 +287,7 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 		{"canary canonicalization", "Ab-c_d/e?f", normalize.Operation{Kind: normalize.OperationCanaryCanonicalize}, func(*testing.T) string { return canonicalizeCanaryText("Ab-c_d/e?f") }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest, Operations: []normalize.Operation{test.operation}}
+			recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest, Operations: []normalize.Operation{test.operation}}
 			got, err := recipe.Apply(test.input)
 			if err != nil {
 				t.Fatal(err)

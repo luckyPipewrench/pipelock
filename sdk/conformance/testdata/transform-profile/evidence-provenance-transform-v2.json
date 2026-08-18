@@ -1,0 +1,140 @@
+{
+  "format": "pipelock-evidence-provenance-transform-profile/v2",
+  "profile": "pipelock-evidence-provenance-transform-v2",
+  "version": 2,
+  "normative": true,
+  "byte_interpretation": {
+    "input": "UTF-8 bytes",
+    "output": "UTF-8 bytes",
+    "validity": "MUST reject invalid UTF-8 before the first operation and after every operation; NEVER replace malformed bytes"
+  },
+  "limits": {
+    "max_decode_passes": 4,
+    "scanner_query_unescape_max_rounds": 500,
+    "html_entity_decode_max_passes": 16,
+    "query_subsequence_max_values": 20,
+    "query_subsequence_min_size": 2,
+    "query_subsequence_max_size": 4,
+    "max_operations": 32,
+    "max_cumulative_processed_bytes": 16777216,
+    "max_input_bytes": 2097152,
+    "max_output_bytes": 1048576,
+    "enforcement": "MUST reject more than max_operations before execution or commitment reconstruction; MUST charge every operation input and every repeated internal decode pass against max_cumulative_processed_bytes before processing it; MUST reject an input exceeding max_input_bytes before applying a recipe and an intermediate or final output exceeding max_output_bytes after every operation"
+  },
+  "malformed_input_policy": "reject_never_substitute",
+  "control_character_policy": {
+    "fields": ["selector", "profile"],
+    "rule": "MUST reject a Unicode control character in either field before evaluating the operation"
+  },
+  "url_component_policy": {
+    "input": "MUST be an absolute URL with a non-empty scheme and host",
+    "url": "returns the input bytes unchanged",
+    "hostname": "returns the URL hostname without a port",
+    "path": "returns the escaped path",
+    "raw_query": "returns the URL raw query bytes without the leading question mark",
+    "query_key_and_query_value": "parse the raw query with application/x-www-form-urlencoded semantics; malformed query escaping is an error; selector identifies a key; occurrence is zero-based among values for that key; a missing key or occurrence is an error"
+  },
+  "decoding": {
+    "percent_decode": {
+      "algorithm": "RFC 3986 percent decoding of path-escaped bytes; plus is not decoded as space",
+      "canonicality": "input need not be canonical, but malformed escapes are errors"
+    },
+    "hex_decode": {
+      "alphabet": "lowercase RFC 4648 base16",
+      "padding": "forbidden",
+      "canonicality": "decode then lowercase-hex re-encode; the result MUST equal the input exactly"
+    },
+    "base32_decode": {
+      "alphabet": "RFC 4648 standard base32 uppercase alphabet",
+      "padding_selector": "decode_padding",
+      "decode_padding_true": "use required RFC 4648 '=' padding",
+      "decode_padding_false": "use raw, unpadded RFC 4648 base32",
+      "canonicality": "decode then re-encode in the selected padding mode; the result MUST equal the input exactly"
+    },
+    "base64_decode": {
+      "alphabet": "RFC 4648 standard base64 alphabet; URL-safe alphabet is forbidden",
+      "padding_selector": "decode_padding",
+      "decode_padding_true": "use required RFC 4648 '=' padding",
+      "decode_padding_false": "use raw, unpadded RFC 4648 base64",
+      "canonicality": "decode then re-encode in the selected padding mode; the result MUST equal the input exactly"
+    },
+    "query_unescape": {
+      "algorithm": "application/x-www-form-urlencoded query decoding; plus decodes to ASCII space",
+      "passes": "repeat until unchanged, malformed input, or scanner_query_unescape_max_rounds; malformed input returns the last successfully decoded value"
+    },
+    "liberal_decoders": {
+      "hex": "Go encoding/hex DecodeString semantics without a canonical re-encoding check",
+      "base32": "RFC 4648 standard base32 selected by decode_padding, without a canonical re-encoding check",
+      "base64": "RFC 4648 standard or URL-safe base64 selected by alphabet and decode_padding, without a canonical re-encoding check"
+    }
+  },
+  "normalization": {
+    "lowercase": "Unicode simple lowercase mapping",
+    "invisible_strip": "remove C0 controls except TAB, LF, and CR; remove DEL, C1 controls, U+00AD, U+115F-U+1160, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+3164, U+FE00-U+FE0F, U+FEFF, U+FFF9-U+FFFB, U+E0000-U+E007F, and U+E0100-U+E01EF",
+    "leetspeak": {"0":"o","1":"i","3":"e","4":"a","5":"s","7":"t","@":"a","$":"s"},
+    "vowel_fold": {"a":"a","e":"a","i":"a","o":"a","u":"a","A":"A","E":"A","I":"A","O":"A","U":"A"},
+    "invisible_space": "replace the invisible_strip character set with ASCII space instead of removing it; preserve TAB, LF, and CR",
+    "matching_normalize": "apply invisible_strip, Unicode NFKC, dlp_normalize.confusable_to_ascii, Unicode NFD combining-mark removal, then replace only U+00A0, U+1680, U+180E, U+2000-U+200A, U+2028-U+2029, U+202F, U+205F, and U+3000 with ASCII space; preserve existing ASCII whitespace, including leading and repeated whitespace",
+    "encoded_token_normalize": "keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Za-z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible",
+    "text_segment": "split with the scanner text-DLP delimiter set and select the zero-based non-empty occurrence",
+    "html_entity_decode": "apply HTML5 entity decoding until unchanged or html_entity_decode_max_passes",
+    "whitespace_compact": "remove every Unicode White_Space rune",
+    "url_noise_strip": "keep only ASCII [A-Za-z0-9_-=]",
+    "ordered_query_concat": "split a raw query on ampersand, take each non-empty post-equals value in wire order, query_unescape it, and concatenate",
+    "query_subsequence": "from the first query_subsequence_max_values non-empty raw-query values in wire order, query_unescape each and concatenate the strictly increasing zero-based indices",
+    "hostname_dot_remove": "remove every ASCII dot",
+    "encoded_run": "select a zero-based scanner base64/hex-alphabet run meeting minimum_length, reattaching at most two immediately trailing equals signs",
+    "canary_canonicalize": "remove dot, slash, backslash, question mark, ampersand, equals, ASCII space/TAB/LF/CR, colon, semicolon, comma, hyphen, underscore, at sign, percent, plus, and hash",
+    "dlp_normalize": {
+      "profile": "pipelock-dlp-v1",
+      "unicode_version": "15.0.0",
+      "pipeline": ["remove C0, C1, DEL, and the invisible_strip Unicode ranges", "remove U+00A0, U+1680, U+180E, U+2000-U+200A, U+2028-U+2029, U+202F, U+205F, and U+3000", "Unicode NFKC", "apply confusable_to_ascii", "Unicode NFD then remove all Mn code points"],
+      "confusable_to_ascii": {
+        "single_code_points": {
+          "U+0410":"A","U+0412":"B","U+0421":"C","U+0415":"E","U+041D":"H","U+0406":"I","U+0408":"J","U+041A":"K","U+041C":"M","U+041E":"O","U+0420":"P","U+0405":"S","U+0422":"T","U+0425":"X",
+          "U+0430":"a","U+0432":"v","U+0435":"e","U+043D":"h","U+0456":"i","U+043A":"k","U+043C":"m","U+043E":"o","U+0440":"p","U+0441":"c","U+0442":"t","U+0443":"y","U+0445":"x","U+0458":"j","U+0455":"s",
+          "U+0391":"A","U+0392":"B","U+0395":"E","U+0396":"Z","U+0397":"H","U+0399":"I","U+039A":"K","U+039C":"M","U+039D":"N","U+039F":"O","U+03A1":"P","U+03A4":"T","U+03A5":"Y","U+03A7":"X",
+          "U+03B1":"a","U+03B5":"e","U+03B9":"i","U+03BA":"k","U+03BD":"v","U+03BF":"o",
+          "U+0555":"O","U+0585":"o","U+054D":"S","U+057D":"s","U+054C":"L","U+0570":"h","U+0578":"n","U+057C":"n","U+0561":"a",
+          "U+13AA":"A","U+13A2":"I","U+13D2":"P","U+13DA":"S","U+13A1":"E","U+13B3":"W","U+13D4":"T",
+          "U+00D8":"O","U+00F8":"o","U+0110":"D","U+0111":"d","U+0141":"L","U+0142":"l","U+0126":"H","U+0127":"h","U+0166":"T","U+0167":"t",
+          "U+1D00":"A","U+0299":"B","U+1D04":"C","U+1D05":"D","U+1D07":"E","U+A730":"F","U+0262":"G","U+029C":"H","U+026A":"I","U+1D0A":"J","U+1D0B":"K","U+029F":"L","U+1D0D":"M","U+0274":"N","U+1D0F":"O","U+1D18":"P","U+0280":"R","U+A731":"S","U+1D1B":"T","U+1D1C":"U","U+1D20":"V","U+1D21":"W","U+028F":"Y","U+1D22":"Z"
+        },
+        "sequential_ranges": [
+          {"from":"U+1F170","to":"U+1F189","outputs":"ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+          {"from":"U+1F1E6","to":"U+1F1FF","outputs":"ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+        ]
+      }
+    }
+  },
+  "operation_vocabulary": [
+    {"kind":"identity","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"return input unchanged"},
+    {"kind":"url_component","required":["kind","component"],"optional":["selector","occurrence"],"forbidden":["passes","profile","decode_padding","alphabet","indices","minimum_length"],"component":{"type":"string","enum":["url","hostname","path","query_key","query_value","raw_query"]},"selector":{"type":"string","required_for":["query_key","query_value"],"forbidden_for":["url","hostname","path","raw_query"],"must_not_contain":"Unicode control character"},"occurrence":{"type":"uint32","minimum":0,"default":0,"forbidden_for":["url","hostname","path","raw_query"]}},
+    {"kind":"percent_decode","required":["kind","passes"],"optional":[],"forbidden":["component","selector","occurrence","profile","decode_padding","alphabet","indices","minimum_length"],"passes":{"type":"uint8","minimum":1,"maximum":4}},
+    {"kind":"dlp_normalize","required":["kind","profile"],"optional":[],"forbidden":["component","selector","occurrence","passes","decode_padding","alphabet","indices","minimum_length"],"profile":{"type":"string","const":"pipelock-dlp-v1","must_not_contain":"Unicode control character"}},
+    {"kind":"lowercase","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.lowercase"},
+    {"kind":"invisible_strip","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.invisible_strip"},
+    {"kind":"hex_decode","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply decoding.hex_decode"},
+    {"kind":"base32_decode","required":["kind"],"optional":["decode_padding"],"forbidden":["component","selector","occurrence","passes","profile","alphabet","indices","minimum_length"],"decode_padding":{"type":"boolean","default":false},"semantics":"apply decoding.base32_decode"},
+    {"kind":"base64_decode","required":["kind"],"optional":["decode_padding"],"forbidden":["component","selector","occurrence","passes","profile","alphabet","indices","minimum_length"],"decode_padding":{"type":"boolean","default":false},"semantics":"apply decoding.base64_decode"},
+    {"kind":"leetspeak","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.leetspeak"},
+    {"kind":"vowel_fold","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.vowel_fold"},
+    {"kind":"query_unescape","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply decoding.query_unescape"},
+    {"kind":"invisible_space","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.invisible_space"},
+    {"kind":"matching_normalize","required":["kind","profile"],"optional":[],"forbidden":["component","selector","occurrence","passes","decode_padding","alphabet","indices","minimum_length"],"profile":{"type":"string","const":"pipelock-matching-v1","must_not_contain":"Unicode control character"}},
+    {"kind":"hex_decode_liberal","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply decoding.liberal_decoders.hex"},
+    {"kind":"base32_decode_liberal","required":["kind"],"optional":["decode_padding"],"forbidden":["component","selector","occurrence","passes","profile","alphabet","indices","minimum_length"],"decode_padding":{"type":"boolean","default":false},"semantics":"apply decoding.liberal_decoders.base32"},
+    {"kind":"base64_decode_liberal","required":["kind","alphabet"],"optional":["decode_padding"],"forbidden":["component","selector","occurrence","passes","profile","indices","minimum_length"],"alphabet":{"type":"string","enum":["standard","url"]},"decode_padding":{"type":"boolean","default":false},"semantics":"apply decoding.liberal_decoders.base64"},
+    {"kind":"encoded_token_normalize","required":["kind","alphabet"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","indices","minimum_length"],"alphabet":{"type":"string","enum":["hex","base32","base64_standard","base64_url"]},"semantics":"apply normalization.encoded_token_normalize"},
+    {"kind":"text_segment","required":["kind"],"optional":["occurrence"],"forbidden":["component","selector","passes","profile","decode_padding","alphabet","indices","minimum_length"],"occurrence":{"type":"uint32","minimum":0,"default":0},"semantics":"apply normalization.text_segment"},
+    {"kind":"html_entity_decode","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.html_entity_decode"},
+    {"kind":"whitespace_compact","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.whitespace_compact"},
+    {"kind":"url_noise_strip","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.url_noise_strip"},
+    {"kind":"ordered_query_concat","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.ordered_query_concat"},
+    {"kind":"query_subsequence","required":["kind","indices"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","minimum_length"],"indices":{"type":"array<uint8>","min_items":2,"max_items":4,"maximum_value":19,"ordering":"strictly increasing"},"semantics":"apply normalization.query_subsequence"},
+    {"kind":"hostname_dot_remove","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.hostname_dot_remove"},
+    {"kind":"encoded_run","required":["kind","minimum_length"],"optional":["occurrence"],"forbidden":["component","selector","passes","profile","decode_padding","alphabet","indices"],"occurrence":{"type":"uint32","minimum":0,"default":0},"minimum_length":{"type":"uint32","minimum":1},"semantics":"apply normalization.encoded_run"},
+    {"kind":"canary_canonicalize","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.canary_canonicalize"}
+  ],
+  "recipe_execution": "Apply operation_vocabulary in listed order only as selected by the ordered recipe. An unknown operation, unknown field, forbidden field, missing required field, malformed input, or canonicality failure MUST reject the recipe; no operation may preserve, skip, or substitute undecodable input."
+}

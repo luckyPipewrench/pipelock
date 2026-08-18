@@ -167,15 +167,38 @@ const (
 
 const (
 	// EvidenceProvenanceProfileV1Digest identifies the fixture-only evidence
-	// provenance transform profile, not the source-span transform profile.
-	EvidenceProvenanceProfileV1Digest       = "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
+	// provenance transform profile v1, not the source-span transform profile.
+	EvidenceProvenanceProfileV1Digest = "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
+	// EvidenceProvenanceProfileV2Digest identifies the profile whose token and
+	// URL-noise transforms match the current scanner keep-sets. Profiles are
+	// selected only by this exact digest; never by a profile name or fallback.
+	EvidenceProvenanceProfileV2Digest       = "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
+)
+
+type transformProfileVersion uint8
+
+const (
+	transformProfileV1 transformProfileVersion = iota + 1
+	transformProfileV2
 )
 
 type transformProfile struct {
 	maxInputBytes  int
 	maxOutputBytes int
+	version        transformProfileVersion
+}
+
+// evidenceProvenanceProfiles is the exact-digest registry for fixture replay.
+// An absent digest is rejected before a recipe operation is validated or run.
+var evidenceProvenanceProfiles = map[string]transformProfile{
+	EvidenceProvenanceProfileV1Digest: {
+		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV1,
+	},
+	EvidenceProvenanceProfileV2Digest: {
+		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV2,
+	},
 }
 
 func resolveTransformProfile(digest string) (transformProfile, error) {
@@ -187,10 +210,11 @@ func resolveTransformProfile(digest string) (transformProfile, error) {
 			return transformProfile{}, fmt.Errorf("transform profile digest: invalid SHA-256 digest")
 		}
 	}
-	if digest != EvidenceProvenanceProfileV1Digest {
+	profile, ok := evidenceProvenanceProfiles[digest]
+	if !ok {
 		return transformProfile{}, fmt.Errorf("transform profile digest: unknown profile %q", digest)
 	}
-	return transformProfile{maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes}, nil
+	return profile, nil
 }
 
 // Validate checks that the recipe names a known profile and has an unambiguous
@@ -263,7 +287,7 @@ func (r Recipe) apply(input string, budget chargeBudget) (string, error) {
 		if err := budget.charge(value); err != nil {
 			return "", err
 		}
-		value, err = op.apply(value, budget)
+		value, err = op.apply(value, budget, profile)
 		if err != nil {
 			return "", fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)
 		}
@@ -326,7 +350,7 @@ func (r Recipe) ValidateOutput(value string) error {
 	return nil
 }
 
-func (op Operation) apply(value string, budget chargeBudget) (string, error) {
+func (op Operation) apply(value string, budget chargeBudget, profile transformProfile) (string, error) {
 	switch op.Kind {
 	case OperationIdentity:
 		return value, nil
@@ -431,7 +455,7 @@ func (op Operation) apply(value string, budget chargeBudget) (string, error) {
 		}
 		return string(decoded), nil
 	case OperationEncodedTokenNormalize:
-		return scannerEncodedTokenNormalize(value, op.Alphabet), nil
+		return scannerEncodedTokenNormalize(value, op.Alphabet, profile.version), nil
 	case OperationTextSegment:
 		return selectScannerTextSegment(value, op.Occurrence)
 	case OperationHTMLEntityDecode:
@@ -439,7 +463,7 @@ func (op Operation) apply(value string, budget chargeBudget) (string, error) {
 	case OperationWhitespaceCompact:
 		return scannerWhitespaceCompact(value), nil
 	case OperationURLNoiseStrip:
-		return scannerURLNoiseStrip(value), nil
+		return scannerURLNoiseStrip(value, profile.version), nil
 	case OperationOrderedQueryConcat:
 		return scannerOrderedQueryConcat(value, budget)
 	case OperationQuerySubsequence:
@@ -672,18 +696,18 @@ func scannerBase64Encoding(alphabet string, padded bool) (*base64.Encoding, erro
 	return encoding, nil
 }
 
-// scannerEncodedTokenNormalize replays normalizeHex (alphabet=="hex") and
+func scannerEncodedTokenNormalize(value, alphabet string, version transformProfileVersion) string {
+	if version == transformProfileV1 {
+		return scannerEncodedTokenNormalizeV1(value, alphabet)
+	}
+	return scannerEncodedTokenNormalizeV2(value, alphabet)
+}
+
+// scannerEncodedTokenNormalizeV2 replays normalizeHex (alphabet=="hex") and
 // normalizeEncodedToken (all other alphabet values) from internal/scanner.
-// Both live functions strip every byte that is not part of the target
-// encoding's own data alphabet -- a deny-list, not an allow-list of "known"
-// separator characters -- because a legitimate contiguous encoded token can
-// only ever contain alphabet bytes, so nothing outside it can be real token
-// data. Keep this in lockstep with scanner.go's normalizeHex and
-// normalizeEncodedToken/isEncodedTokenByte: this is an independent replay
-// copy for forensic receipt reconstruction, and drifting from the live
-// scanner logic here means a recorded receipt no longer reconstructs what
-// the scanner actually matched.
-func scannerEncodedTokenNormalize(value, alphabet string) string {
+// It keeps only each target alphabet's data bytes. This replay deliberately
+// stays versioned because older receipts bind the v1 allow-list semantics.
+func scannerEncodedTokenNormalizeV2(value, alphabet string) string {
 	if len(value) < 4 {
 		return ""
 	}
@@ -742,6 +766,81 @@ func scannerEncodedTokenNormalize(value, alphabet string) string {
 	return result.String()
 }
 
+// scannerEncodedTokenNormalizeV1 preserves the normative v1 allow-list of
+// separator bytes. Do not fold this into v2: replaying a receipt is evidence
+// reconstruction, so selecting a newer transform changes what was attested.
+func scannerEncodedTokenNormalizeV1(value, alphabet string) string {
+	if len(value) < 4 {
+		return ""
+	}
+	if alphabet == "hex" {
+		value = strings.NewReplacer(`\x`, "", `\X`, "", "0x", "", "0X", "").Replace(value)
+		value = strings.Map(func(r rune) rune {
+			switch r {
+			case ':', ' ', '-', ',':
+				return -1
+			default:
+				return r
+			}
+		}, value)
+		if len(value) == 0 || len(value)%2 != 0 {
+			return ""
+		}
+		for _, char := range value {
+			if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+				return ""
+			}
+		}
+		return value
+	}
+	isData := func(char byte) bool {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '=' {
+			return true
+		}
+		switch alphabet {
+		case "base64_standard":
+			return char == '+' || char == '/'
+		case "base64_url":
+			return char == '-' || char == '_'
+		default:
+			return false
+		}
+	}
+	isSeparator := func(char byte) bool {
+		if char == ' ' || char == '\t' || char == '\n' || char == '\r' || char == '\f' || char == '\v' || char == '.' {
+			return true
+		}
+		switch alphabet {
+		case "base64_standard":
+			return char == '-' || char == '_'
+		case "base64_url":
+			return char == '/' || char == '+'
+		case "base32":
+			return char == '-' || char == '_' || char == '/'
+		default:
+			return false
+		}
+	}
+	var result strings.Builder
+	result.Grow(len(value))
+	changed := false
+	for index := range len(value) {
+		char := value[index]
+		switch {
+		case isData(char):
+			result.WriteByte(char)
+		case isSeparator(char):
+			changed = true
+		default:
+			return ""
+		}
+	}
+	if !changed || result.Len() < 4 {
+		return ""
+	}
+	return result.String()
+}
+
 func selectScannerTextSegment(value string, occurrence uint32) (string, error) {
 	segments := strings.FieldsFunc(value, func(r rune) bool {
 		switch r {
@@ -783,18 +882,16 @@ func scannerWhitespaceCompact(value string) string {
 	}, value)
 }
 
-// scannerURLNoiseStrip replays stripURLNoise from internal/scanner: keep only
-// ASCII alphanumerics plus '-','_','=' (the punctuation pipelock's
-// hyphen/underscore token formats use as key data, plus base64 padding);
-// strip everything else, INCLUDING '+' and '/' -- those are deliberately not
-// preserved here even though they are valid base64 data, because they occur
-// as ordinary URL/path structure (an encoded '/' path separator, a '+'
-// encoded space) far more often than as fragmented secret data. See the
-// longer rationale on stripURLNoise's doc comment in scanner.go. Keep this in
-// lockstep with scanner.go's stripURLNoise -- an independent replay copy
-// that drifts from the live logic means a recorded receipt no longer
-// reconstructs what the scanner actually matched.
-func scannerURLNoiseStrip(value string) string {
+func scannerURLNoiseStrip(value string, version transformProfileVersion) string {
+	if version == transformProfileV1 {
+		return scannerURLNoiseStripV1(value)
+	}
+	return scannerURLNoiseStripV2(value)
+}
+
+// scannerURLNoiseStripV2 replays the scanner's current keep-set. Its v1
+// counterpart remains separate so historical proof reconstruction is stable.
+func scannerURLNoiseStripV2(value string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
@@ -803,6 +900,17 @@ func scannerURLNoiseStrip(value string) string {
 			return r
 		}
 		return -1
+	}, value)
+}
+
+func scannerURLNoiseStripV1(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '.', '/', ' ', '\t', '\n', '\r', '+', ',', ';', '|':
+			return -1
+		default:
+			return r
+		}
 	}, value)
 }
 

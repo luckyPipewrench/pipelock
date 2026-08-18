@@ -7,11 +7,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Fail closed if ripgrep is missing. The release-blocking tripwire must
-# not silently pass when its only scan tool is unavailable.
-if ! command -v rg >/dev/null 2>&1; then
-	printf '%s\n' "ERROR: ripgrep (rg) is required for the runtime policy audit and is not on PATH." >&2
-	printf '%s\n' "Install ripgrep (e.g., apt-get install -y ripgrep) before running this script." >&2
+# Scan with ripgrep when it is available and fall back to grep, matching what
+# scripts/check-test-stability.sh already does. Requiring ripgrep made a
+# release-blocking gate depend on installing a package: a stalled distribution
+# mirror failed this job on main on 2026-08-18, and the same audit runs in
+# release.yaml, so a bad mirror day would have blocked a release.
+#
+# Fail closed only where it belongs. Neither tool present is still fatal,
+# because a tripwire that cannot scan must not report clean.
+if ! command -v rg >/dev/null 2>&1 && ! command -v grep >/dev/null 2>&1; then
+	printf '%s\n' "ERROR: neither ripgrep (rg) nor grep is on PATH." >&2
+	printf '%s\n' "The runtime policy audit is release-blocking and must fail closed when it cannot scan." >&2
 	exit 127
 fi
 
@@ -26,12 +32,16 @@ pattern='MCPInputScanning\.(Enabled|Action)\s*=|MCPToolScanning\.(Enabled|Action
 # (missing directory, permission denied) silently pass the audit. A
 # release-blocking tripwire must fail closed on scan failures.
 set +e
-matches="$(rg -n "$pattern" internal/cli/runtime internal/mcp internal/proxy --glob '!**/*_test.go')"
+if command -v rg >/dev/null 2>&1; then
+	matches="$(rg -n "$pattern" internal/cli/runtime internal/mcp internal/proxy --glob '!**/*_test.go')"
+else
+	matches="$(grep -RInE --exclude='*_test.go' "$pattern" internal/cli/runtime internal/mcp internal/proxy)"
+fi
 status=$?
 set -e
 
 if [[ "$status" -gt 1 ]]; then
-	printf '%s\n' "ERROR: runtime policy audit could not complete (ripgrep exit $status)." >&2
+	printf '%s\n' "ERROR: runtime policy audit could not complete (search exit $status)." >&2
 	printf '%s\n' "The audit is a release-blocking tripwire; a scan failure must not pass silently." >&2
 	printf '%s\n' "$matches" >&2
 	exit "$status"

@@ -43,6 +43,15 @@ linters:
       - path: internal/mcp/fdexec_linux_test\.go
         linters: [gosec]
         text: "G302|G306"
+      # CLI stream routing is proved by re-executing this test binary and
+      # reading the child's real stdout and stderr, because a test that installs
+      # its own writers is exactly what hid the routing bug it exists to catch.
+      # Re-exec means passing the resolved executable path to exec (G204). The
+      # path comes from os.Executable and the argument vector is constant; the
+      # pipelock arguments under test travel in an environment variable.
+      - path: internal/cli/stdout_routing_test\.go
+        linters: [gosec]
+        text: "G204"
       # The MCP server command is operator-supplied by construction: it is the
       # server the operator asked Pipelock to wrap. G204 fires on every branch
       # that launches it, and this file now has several (descriptor-bound,

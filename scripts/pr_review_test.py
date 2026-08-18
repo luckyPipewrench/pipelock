@@ -1102,6 +1102,49 @@ class StructuredOutputSafetyTest(unittest.TestCase):
                 self.assertNotIn(sample[:14], rendered)
                 self.assertIn(label, rendered)
 
+    def test_private_key_block_is_redacted_body_and_all(self) -> None:
+        """The delimiter alone is not the secret; the body is.
+
+        The pattern matched only the begin delimiter, so a finding quoting a key
+        had its header replaced and its encoded body published. Covers each key
+        type this is likely to see, and asserts the body is gone rather than just
+        that a marker appeared.
+        """
+        body = "MIIEowIBAAKCAQEA" + "b" * 40
+        for kind in ("RSA ", "EC ", "OPENSSH ", ""):
+            with self.subTest(key_type=kind.strip() or "plain"):
+                begin = "-----BEGIN" + " " + kind + "PRIVATE" + " KEY-----"
+                end = "-----END" + " " + kind + "PRIVATE" + " KEY-----"
+                rendered = pr_review.sanitize_public_text(
+                    f"the diff contains {begin}{body}{end} inline", limit=900
+                )
+                self.assertNotIn(body[:16], rendered)
+                self.assertIn("private-key-block", rendered)
+
+    def test_unterminated_private_key_block_is_still_redacted(self) -> None:
+        """A block with no end delimiter must not publish whole.
+
+        Matching begin-through-end alone fails open here: a truncated quote, or a
+        deliberately unterminated block, matches nothing. The fallback redacts to
+        the end of the text instead, which over-redacts the remainder of a finding
+        that quotes key material and is the correct trade.
+        """
+        body = "MIIEowIBAAKCAQEA" + "c" * 40
+        begin = "-----BEGIN" + " RSA PRIVATE" + " KEY-----"
+        rendered = pr_review.sanitize_public_text(
+            f"the diff contains {begin}{body} and nothing else", limit=900
+        )
+        self.assertNotIn(body[:16], rendered)
+        self.assertIn("private-key-block", rendered)
+
+    def test_private_key_prose_is_not_redacted(self) -> None:
+        """Talking about keys is not quoting one."""
+        rendered = pr_review.sanitize_public_text(
+            "Do not commit a private key to the repository; read it from the environment.",
+            limit=300,
+        )
+        self.assertNotIn("redacted:", rendered)
+
     def test_credential_split_by_a_removed_markdown_character_is_redacted(self) -> None:
         """The translation step removes characters, so a split token reassembles.
 

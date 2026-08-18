@@ -1725,7 +1725,10 @@ SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     ('google-api-key', 'AIza[0-9A-Za-z_-]{35}'),
     ('npm-token', 'npm_?[A-Za-z0-9]{36}'),
     ('jwt', 'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}'),
-    ('private-key-block', '-----BEGIN[A-Z ]*PRIVATE KEY-----'),
+    # Terminated block first; the second alternative redacts to the end of the
+    # text when there is no end delimiter, because a truncated or deliberately
+    # unterminated block would otherwise match nothing and publish whole.
+    ('private-key-block', '-----BEGIN(?: [A-Z]+)* PRIVATE KEY-----.*?-----END(?: [A-Z]+)* PRIVATE KEY-----|-----BEGIN(?: [A-Z]+)* PRIVATE KEY-----.*'),
     ('bearer-token', '(?i)\\bbearer\\s+(?=[A-Za-z0-9._~+/-]*[0-9])[A-Za-z0-9._~+/-]{20,}={0,2}'),
 )
 

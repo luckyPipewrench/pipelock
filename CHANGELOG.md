@@ -45,6 +45,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Release publication now requires a verified release manifest.** Tagging halts before
   publication until `release.json.sig` is signed and uploaded, so a release cannot leave
   draft with an unverified manifest.
+- **Reverse-proxy request bodies declaring an image, audio or video type are now
+  scanned.** They were skipped, so a secret placed after a genuine media signature left
+  the network unexamined. Media is now subject to the same request-body policy as
+  everything else, and a body above `request_body_scanning.max_body_bytes` returns 413
+  rather than streaming through unscanned. An operator who legitimately posts uploads
+  larger than the 5 MiB default through the reverse proxy must raise that cap or route
+  those uploads around it. This does not detect a secret embedded inside a valid image.
+- **Evidence provenance transforms move to a second profile.** Two registered operations
+  changed the bytes they strip, so the profile describing them was superseded rather than
+  edited: `evidence-provenance-transform-v1` keeps its bytes, its digest and its original
+  semantics, and a v2 profile describes the current behaviour. A receipt selects its
+  profile by exact digest and an unknown digest is rejected before any operation runs,
+  never falling back. A verifier that predates v2 will refuse a v2 proof rather than
+  replay it incorrectly, so publish verifier support before relying on v2 receipts.
 
 ### Added
 
@@ -61,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Helm chart publishes as an OCI artifact.
 - An explicit applicability vocabulary for verification status, separating a check that
   cannot apply from one that applies and has no measurement.
+- `reverse_proxy.max_inflight_scan_bytes`, a per-instance budget for request bodies held
+  while being inspected. A request that cannot reserve capacity is refused before its body
+  is read, so scanning media cannot be turned into a way to exhaust memory. It defaults to
+  64 MiB, which admits twelve concurrent uploads at the default body cap.
 
 ### Changed
 
@@ -97,6 +115,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interchangeable with the signed one.
 - Evidence provenance commitments are unambiguous, and the provenance profile describes
   the scanner transforms that actually run.
+- Encoded credentials split by an unlisted character are matched again. Normalization
+  named the characters it removed, so a value broken up by anything absent from that list
+  either survived unchanged or aborted normalization entirely, and reached DLP in a form
+  it could not match. Each transform now keeps only the bytes valid for its alphabet and
+  treats everything else as noise, which closes the rule over the alphabet rather than
+  over a list. Known environment and file secrets written as hex are matched through the
+  same set, where a separate smaller list had been maintained alongside it.
+- A credential spread across more than four query values is assembled before matching.
+- The provider-opaque request-body carve-out requires the body to measure as ciphertext.
+  A long opaque field previously qualified on length alone, so padded content skipped
+  inspection.
+- The Go, Rust and TypeScript provenance implementations agree with the profile they
+  claim to follow, and with the Python one, which was the only implementation still
+  matching the published description. The shared conformance corpus gains vectors that
+  distinguish the two rule sets; its previous vectors used only characters both rules
+  strip, so it could not have detected the disagreement.
 - Recorder evidence is preserved under concurrent writers, and anchor bundle and marker
   state are fsynced before success is reported.
 - Metrics stop reporting a self-awarded evidence assurance level and cap the current

@@ -99,11 +99,11 @@ pipelock hermes rollback --restore-backup ~/.hermes/config.yaml.bak.<ts>   # exp
 
 | Preset | Action | Best for |
 |---|---|---|
-| `balanced.yaml` | warn | Getting started, tuning phase |
-| `strict.yaml` | block | High-security workflows |
-| `hostile-model.yaml` | block | Running an uncensored or jailbroken model |
+| `balanced` | warn | Getting started, tuning phase |
+| `strict` | block | High-security workflows |
+| `hostile-model` | block | Running an uncensored or jailbroken model |
 
-Start with `balanced.yaml` to see what gets flagged, then move to a blocking preset once you have verified no false positives.
+Start with `balanced` to see what gets flagged, then move to a blocking preset once you have verified no false positives.
 
 ## See also
 

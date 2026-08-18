@@ -275,7 +275,7 @@ Verify the command works without pipelock first:
 npx -y @modelcontextprotocol/server-filesystem /tmp
 
 # Then wrap it
-pipelock mcp proxy -- npx -y @modelcontextprotocol/server-filesystem /tmp
+pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
 ### Config file not found

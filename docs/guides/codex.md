@@ -101,7 +101,7 @@ Codex stores MCP server config in `~/.codex/config.toml`:
 command = "pipelock"
 args = [
   "mcp", "proxy",
-  "--config", "/home/you/.config/pipelock/balanced.yaml",
+  "--config", "/home/you/pipelock.yaml",
   "--",
   "npx", "-y", "@modelcontextprotocol/server-filesystem", "/home/you/projects"
 ]
@@ -184,15 +184,19 @@ codex mcp add secure-filesystem \
 
 ## Choosing a Config
 
+A preset is chosen when the config is generated, with `pipelock generate config
+--preset <name> -o pipelock.yaml`, and the file it writes is what `--config`
+takes. Run `pipelock presets` to list them.
+
 | Preset | Action | Best For |
 |--------|--------|----------|
-| `balanced.yaml` | warn | Getting started, tuning phase |
-| `claude-code.yaml` | block | Unattended Codex sessions (works for Codex too) |
-| `strict.yaml` | block | High-security repos, sensitive code |
-| `hostile-model.yaml` | block | If using uncensored models via Codex |
+| `balanced` | warn | Getting started, tuning phase |
+| `claude-code` | block | Unattended Codex sessions (works for Codex too) |
+| `strict` | block | High-security repos, sensitive code |
+| `hostile-model` | block | If using uncensored models via Codex |
 
-Start with `balanced.yaml` to see what gets flagged. Switch to
-`claude-code.yaml` or `strict.yaml` once you've verified no false positives.
+Start with `balanced` to see what gets flagged. Switch to
+`claude-code` or `strict` once you've verified no false positives.
 
 ## Evidence and Audit Trail
 

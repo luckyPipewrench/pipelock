@@ -17,7 +17,7 @@ permissions:
 jobs:
   workflow-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -41,7 +41,7 @@ jobs:
     # release. The release workflow still runs this audit as a defense-
     # in-depth gate; this job catches regressions earlier.
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:

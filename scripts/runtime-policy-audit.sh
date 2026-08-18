@@ -26,12 +26,23 @@ grep_is_usable() {
 	# POSIX character classes. A grep without them matches nothing in the audit
 	# pattern below, which would report clean rather than fail.
 	printf 'Probe.Field \t= x\n' | grep -qE 'Probe\.Field[[:space:]]*=' || return 1
-	# --exclude actually takes effect. BusyBox grep rejects the option, and one
-	# that accepted but ignored it would scan the test files this audit skips.
+	# --exclude actually takes effect. Two distinct failures matter here and they
+	# need different evidence, so the first command's status is captured rather
+	# than piped: piping it into a second grep masked a rejection, because the
+	# rejection prints nothing and the second grep then reports no-match.
+	#
+	#   status 2+                    the option was rejected outright (BusyBox)
+	#   status 0 with this file      the option was accepted and ignored
+	#   anything else                the exclusion took effect
+	#
 	# Excluding this script from a listing of its own small directory proves it
 	# without a temporary directory or a large scan.
-	grep -Rl --exclude='runtime-policy-audit.sh' 'grep_is_usable' scripts 2>/dev/null \
-		| grep -q 'runtime-policy-audit\.sh$' && return 1
+	exclude_out="$(grep -Rl --exclude='runtime-policy-audit.sh' 'grep_is_usable' scripts 2>/dev/null)"
+	exclude_status=$?
+	[ "$exclude_status" -le 1 ] || return 1
+	case "$exclude_out" in
+	*runtime-policy-audit.sh*) return 1 ;;
+	esac
 	return 0
 }
 

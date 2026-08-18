@@ -329,7 +329,14 @@ const (
 	// period, comma, em-dash, and newline separators.
 	// Re-bumped for action-anchored connective forms such as "rules say to"
 	// and "instructions are to" without broadening ordinary task prose.
-	goldenHashDefaults = "92b218b5df48b838e164a6f9f5b26e7a1e4ece2cfbb1c34eb0c369ae15a20492"
+	// Re-bumped for the reverse-proxy scan admission budget: ReverseProxy
+	// now carries max_inflight_scan_bytes, which decides whether a request
+	// is scanned or refused with 413 under load. That is an enforcement
+	// outcome rather than plumbing, so it belongs in the policy view and
+	// must shift ph. Listen and Upstream on the same struct stay excluded,
+	// which the ops-field invariance test confirms by landing on this same
+	// hash.
+	goldenHashDefaults = "39b0e9ee2b528bb0831b2e69e8435c24e853643270984dd12d1c9ecf5c57e7ec"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -492,7 +499,14 @@ const (
 	// Re-bumped for the singular and hard-separator refinement above.
 	// Re-bumped for the authority-label separator expansion above.
 	// Re-bumped for the hard-separated directive expansion above.
-	goldenHashRichConfig = "b60a9dbc7da5ffe924408ac0b8a6f40a304c46ed1faac2c5ec0a1aab29cae370"
+	// Re-bumped for the reverse-proxy scan admission budget: ReverseProxy
+	// now carries max_inflight_scan_bytes, which decides whether a request
+	// is scanned or refused with 413 under load. That is an enforcement
+	// outcome rather than plumbing, so it belongs in the policy view and
+	// must shift ph. Listen and Upstream on the same struct stay excluded,
+	// which the ops-field invariance test confirms by landing on this same
+	// hash.
+	goldenHashRichConfig = "bd8ed545b6de3fa3d0f8d5a379bac5e99cac589f7a7fb0a39d59d5adaf80d2a6"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

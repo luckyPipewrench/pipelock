@@ -397,6 +397,8 @@ func operationKindByte(kind normalize.OperationKind) (byte, error) {
 		return 26, nil
 	case normalize.OperationCanaryCanonicalize:
 		return 27, nil
+	case normalize.OperationASCIIAlphanumericStrip:
+		return 28, nil
 	default:
 		return 0, fmt.Errorf("unknown operation %q", kind)
 	}

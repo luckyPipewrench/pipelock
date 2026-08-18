@@ -23,7 +23,7 @@ PROFILE_DIGEST_V1 = (
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
 )
 PROFILE_DIGEST_V2 = (
-    "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9"
+    "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6"
 )
 # Compatibility name for v1-focused callers. Recipes always dispatch from the
 # exact digest supplied on the wire and never fall back to this value.
@@ -61,6 +61,7 @@ _KINDS = (
     "hostname_dot_remove",
     "encoded_run",
     "canary_canonicalize",
+    "ascii_alphanumeric_strip",
 )
 _FIELDS = {
     "kind",
@@ -194,6 +195,12 @@ class ProvenanceError(ValueError):
 
 
 def supported_operation_kinds() -> tuple[str, ...]:
+    return _KINDS
+
+
+def supported_operation_kinds_for_profile(digest: str) -> tuple[str, ...]:
+    if profile_version(digest) == "v1":
+        return tuple(kind for kind in _KINDS if kind != "ascii_alphanumeric_strip")
     return _KINDS
 
 
@@ -366,23 +373,27 @@ class Recipe:
             raise ProvenanceError(
                 "recipe: transform profile digest: invalid SHA-256 digest"
             )
-        profile_version(self.transform_profile_digest)
+        profile = profile_version(self.transform_profile_digest)
         if len(self.operations) > MAX_OPERATIONS:
             raise ProvenanceError(f"recipe: exceeds {MAX_OPERATIONS} operations")
         for index, op in enumerate(self.operations):
             try:
-                self._validate_op(op)
+                self._validate_op(op, profile)
             except ProvenanceError as exc:
                 raise ProvenanceError(
                     f"recipe operation {index} ({op.get('kind', '')}): {exc}"
                 ) from exc
 
-    def _validate_op(self, op: dict[str, Any]) -> None:
+    def _validate_op(self, op: dict[str, Any], profile: str) -> None:
         if set(op) - _FIELDS:
             raise ProvenanceError("unknown operation field")
         kind = op.get("kind")
         if not isinstance(kind, str) or kind not in _KINDS:
             raise ProvenanceError(f"unknown operation {kind!r}")
+        if kind == "ascii_alphanumeric_strip" and profile != "v2":
+            raise ProvenanceError(
+                "ascii_alphanumeric_strip is unsupported by transform profile"
+            )
         for field in ("selector", "profile"):
             if field in op and (not isinstance(op[field], str) or _control(op[field])):
                 raise ProvenanceError(f"{field} for {kind} contains control character")
@@ -648,6 +659,8 @@ class Recipe:
             return _at(runs, op.get("occurrence", 0), "encoded run")
         if k == "canary_canonicalize":
             return v.translate(str.maketrans("", "", ".\\/?&= \t\n\r:;,-_@%+#"))
+        if k == "ascii_alphanumeric_strip":
+            return "".join(ch for ch in v if ch.isascii() and ch.isalnum())
         raise ProvenanceError(f"unknown operation {k!r}")
 
 

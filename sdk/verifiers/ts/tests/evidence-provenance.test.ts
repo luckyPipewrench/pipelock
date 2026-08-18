@@ -9,7 +9,7 @@ import {
   applyEvidenceProvenanceRecipe,
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
   EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
-  supportedOperationKinds,
+  supportedOperationKindsForProfile,
 } from "../src/provenance.js";
 import { findPackageRoot } from "./paths.js";
 
@@ -44,7 +44,10 @@ test("evidence provenance: pinned corpus profile and every operation are exercis
       .flatMap((v) => (v.recipe ?? []).map((op) => (op as { kind: string }).kind)),
   );
   assert.deepEqual([...seen].sort(), [...corpus.operation_coverage].sort());
-  assert.deepEqual([...supportedOperationKinds()].sort(), [...corpus.operation_coverage].sort());
+  assert.deepEqual(
+    [...supportedOperationKindsForProfile(EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST)].sort(),
+    [...corpus.operation_coverage].sort(),
+  );
 });
 
 for (const vector of corpus.vectors)
@@ -96,6 +99,17 @@ test("evidence provenance: v2 corpus executes every vector byte-exactly", () => 
       vector.id,
     );
   }
+});
+
+test("evidence provenance: v1 rejects the v2-only alphanumeric operation", () => {
+  assert.throws(
+    () =>
+      applyEvidenceProvenanceRecipe(Buffer.from("AKIA" + "----ABCDEFGHIJKLMNOP"), {
+        transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+        operations: [{ kind: "ascii_alphanumeric_strip" }],
+      }),
+    /unsupported by transform profile/u,
+  );
 });
 
 test("evidence provenance: HTML5 named entities decode repeatedly", () => {

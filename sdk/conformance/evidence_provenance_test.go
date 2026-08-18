@@ -117,7 +117,7 @@ func TestEvidenceProvenanceTransformCorpus(t *testing.T) {
 			}
 		})
 	}
-	for _, kind := range normalize.SupportedOperationKinds() {
+	for _, kind := range normalize.SupportedOperationKindsForProfile(corpus.ProfileDigest) {
 		if !covered[string(kind)] {
 			t.Fatalf("operation %q has no corpus vector", kind)
 		}

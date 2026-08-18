@@ -118,6 +118,13 @@ func TestRecipeApplyV2TransformSemantics(t *testing.T) {
 		op    Operation
 		want  string
 	}{
+		// Split so the literal never appears whole in source: the dogfood
+		// self-scan matches an AWS-shaped string in a diff regardless of it
+		// being a test vector, which is the repo convention for fake keys.
+		{"ASCII alphanumeric strip", "AKIA" + "----ABCDEFGHIJKLMNOP", Operation{Kind: OperationASCIIAlphanumericStrip}, "AKIA" + "ABCDEFGHIJKLMNOP"},
+		{"unchanged token is ineligible", "SGk=", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base64_standard"}, ""},
+		{"odd hex digit count is ineligible", "48;69;2", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, ""},
+		{"base32 strips lowercase", "MFRGGabc33FMZTS===", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base32"}, "MFRGG33FMZTS==="},
 		{"hex keeps only data bytes", "48;69,21:ff", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, "486921ff"},
 		{"standard base64 keeps only data bytes", "SG!k=", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base64_standard"}, "SGk="},
 		{"URL noise keeps only v2 bytes", "a!b~c#d", Operation{Kind: OperationURLNoiseStrip}, "abcd"},
@@ -146,6 +153,7 @@ func TestRecipeApplyRejectsInvalidInputs(t *testing.T) {
 		{"malformed profile", Recipe{TransformProfileDigest: "sha256:bad"}, "value", "invalid SHA-256 digest"},
 		{"unknown profile rejects before operation validation", Recipe{TransformProfileDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Operations: []Operation{{Kind: OperationPercentDecode}}}, "value", "unknown profile"},
 		{"unknown operation", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: "unknown"}}}, "value", "unknown operation"},
+		{"v1 rejects v2-only operation", Recipe{TransformProfileDigest: EvidenceProvenanceProfileV1Digest, Operations: []Operation{{Kind: OperationASCIIAlphanumericStrip}}}, "value", "unsupported by transform profile"},
 		{"invalid URL", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationURLComponent, Component: ComponentURL}}}, "://", "invalid absolute URL"},
 		{"unknown URL component", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationURLComponent, Component: "unknown"}}}, "https://api.vendor.example", "unknown URL component"},
 		{"missing query selector", Recipe{TransformProfileDigest: provenanceTestDigest, Operations: []Operation{{Kind: OperationURLComponent, Component: ComponentQueryVal}}}, "https://api.vendor.example", "missing selector"},
@@ -307,8 +315,8 @@ func TestTransformProfileV1DigestMatchesCanonicalDocument(t *testing.T) {
 	for _, operation := range profile.OperationVocabulary {
 		gotKinds = append(gotKinds, OperationKind(operation.Kind))
 	}
-	if !slices.Equal(gotKinds, SupportedOperationKinds()) {
-		t.Fatalf("profile operation vocabulary = %v, want %v", gotKinds, SupportedOperationKinds())
+	if !slices.Equal(gotKinds, SupportedOperationKindsForProfile(EvidenceProvenanceProfileV1Digest)) {
+		t.Fatalf("profile operation vocabulary = %v, want %v", gotKinds, SupportedOperationKindsForProfile(EvidenceProvenanceProfileV1Digest))
 	}
 	if !maps.Equal(profileConfusableToASCII(t, profile.Normalization.DLPNormalize.ConfusableToASCII.SingleCodePoints, profile.Normalization.DLPNormalize.ConfusableToASCII.SequentialRanges), confusableMap) {
 		t.Fatal("profile confusable-to-ASCII mapping differs from Go")
@@ -340,7 +348,7 @@ func TestTransformProfileV2DigestAndSemantics(t *testing.T) {
 	if profile.Format != "pipelock-evidence-provenance-transform-profile/v2" || profile.Profile != "pipelock-evidence-provenance-transform-v2" || profile.Version != 2 {
 		t.Fatalf("profile identity = format %q profile %q version %d", profile.Format, profile.Profile, profile.Version)
 	}
-	if got, want := profile.Normalization.EncodedTokenNormalize, "keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Za-z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible"; got != want {
+	if got, want := profile.Normalization.EncodedTokenNormalize, "keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible"; got != want {
 		t.Fatalf("v2 encoded_token_normalize semantics = %q, want %q", got, want)
 	}
 	if got, want := profile.Normalization.URLNoiseStrip, "keep only ASCII [A-Za-z0-9_-=]"; got != want {
@@ -527,6 +535,7 @@ func TestSupportedOperationKinds(t *testing.T) {
 		OperationHostnameDotRemove,
 		OperationEncodedRun,
 		OperationCanaryCanonicalize,
+		OperationASCIIAlphanumericStrip,
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("SupportedOperationKinds() = %v, want %v", got, want)

@@ -1,6 +1,6 @@
 {
   "format": "pipelock-evidence-transform-corpus/v1",
-  "profile_digest": "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9",
+  "profile_digest": "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6",
   "operation_coverage": [
     "identity",
     "url_component",
@@ -28,7 +28,8 @@
     "query_subsequence",
     "hostname_dot_remove",
     "encoded_run",
-    "canary_canonicalize"
+    "canary_canonicalize",
+    "ascii_alphanumeric_strip"
   ],
   "error_coverage": [
     "invalid_utf8",
@@ -616,6 +617,13 @@
       "input_b64": "QWItY19kL2U/Zg==",
       "output_b64": "QWJjZGVm",
       "recipe": [{"kind":"canary_canonicalize"}]
+    },
+    {
+      "id": "scanner-ascii-alphanumeric-strip",
+      "operations": ["ascii_alphanumeric_strip"],
+      "input_b64": "QUtJQS0tLS1BQkNERUZHSElKS0xNTk9Q",
+      "output_b64": "QUtJQUFCQ0RFRkdISUpLTE1OT1A=",
+      "recipe": [{"kind":"ascii_alphanumeric_strip"}]
     },
     {
       "id": "invalid-utf8",

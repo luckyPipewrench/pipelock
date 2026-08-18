@@ -75,7 +75,7 @@
     "vowel_fold": {"a":"a","e":"a","i":"a","o":"a","u":"a","A":"A","E":"A","I":"A","O":"A","U":"A"},
     "invisible_space": "replace the invisible_strip character set with ASCII space instead of removing it; preserve TAB, LF, and CR",
     "matching_normalize": "apply invisible_strip, Unicode NFKC, dlp_normalize.confusable_to_ascii, Unicode NFD combining-mark removal, then replace only U+00A0, U+1680, U+180E, U+2000-U+200A, U+2028-U+2029, U+202F, U+205F, and U+3000 with ASCII space; preserve existing ASCII whitespace, including leading and repeated whitespace",
-    "encoded_token_normalize": "keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Za-z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible",
+    "encoded_token_normalize": "keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible",
     "text_segment": "split with the scanner text-DLP delimiter set and select the zero-based non-empty occurrence",
     "html_entity_decode": "apply HTML5 entity decoding until unchanged or html_entity_decode_max_passes",
     "whitespace_compact": "remove every Unicode White_Space rune",
@@ -85,6 +85,7 @@
     "hostname_dot_remove": "remove every ASCII dot",
     "encoded_run": "select a zero-based scanner base64/hex-alphabet run meeting minimum_length, reattaching at most two immediately trailing equals signs",
     "canary_canonicalize": "remove dot, slash, backslash, question mark, ampersand, equals, ASCII space/TAB/LF/CR, colon, semicolon, comma, hyphen, underscore, at sign, percent, plus, and hash",
+    "ascii_alphanumeric_strip": "keep only ASCII [A-Za-z0-9]",
     "dlp_normalize": {
       "profile": "pipelock-dlp-v1",
       "unicode_version": "15.0.0",
@@ -134,7 +135,8 @@
     {"kind":"query_subsequence","required":["kind","indices"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","minimum_length"],"indices":{"type":"array<uint8>","min_items":2,"max_items":4,"maximum_value":19,"ordering":"strictly increasing"},"semantics":"apply normalization.query_subsequence"},
     {"kind":"hostname_dot_remove","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.hostname_dot_remove"},
     {"kind":"encoded_run","required":["kind","minimum_length"],"optional":["occurrence"],"forbidden":["component","selector","passes","profile","decode_padding","alphabet","indices"],"occurrence":{"type":"uint32","minimum":0,"default":0},"minimum_length":{"type":"uint32","minimum":1},"semantics":"apply normalization.encoded_run"},
-    {"kind":"canary_canonicalize","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.canary_canonicalize"}
+    {"kind":"canary_canonicalize","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.canary_canonicalize"},
+    {"kind":"ascii_alphanumeric_strip","required":["kind"],"optional":[],"forbidden":["component","selector","occurrence","passes","profile","decode_padding","alphabet","indices","minimum_length"],"semantics":"apply normalization.ascii_alphanumeric_strip"}
   ],
   "recipe_execution": "Apply operation_vocabulary in listed order only as selected by the ordered recipe. An unknown operation, unknown field, forbidden field, missing required field, malformed input, or canonicality failure MUST reject the recipe; no operation may preserve, skip, or substitute undecodable input."
 }

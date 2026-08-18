@@ -1557,15 +1557,13 @@ func stripURLNoise(s string) string {
 // decoy VALUE sitting between two real fragments is the thing being
 // defended against; a lone value has no adjacent fragment to reconstruct.
 //
-// Deliberately NOT tagged //pipelock:provenance-transform: doing so requires
-// registering a new normalize.OperationKind plus a scannerXxx replay
-// implementation in internal/normalize/provenance.go, which is forensic
-// receipt-replay infrastructure outside this fix's scope. stripURLNoise's
-// existing url_noise_strip operation only replays the LESS aggressive strip
-// (it keeps '-','_','='), so it would misrepresent what this
-// function actually removed if reused here. See the adjacent-findings note
-// in the PR/task report: this DLP detection path is not currently
-// reconstructable through the provenance replay system.
+// Replayed by the v2-only ascii_alphanumeric_strip operation. url_noise_strip
+// cannot stand in for it: that one keeps '-', '_' and '=', so reusing it would
+// claim this function removed less than it did. The operation is v2-only
+// because v1's frozen vocabulary does not contain it, and a v1 receipt that
+// named it would be replaying a rule its own profile never described.
+//
+//pipelock:provenance-transform ascii_alphanumeric_strip
 func stripToAlphanumeric(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {

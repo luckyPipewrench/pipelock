@@ -899,6 +899,7 @@ fn kind_byte(kind: &str) -> std::result::Result<u8, String> {
         "hostname_dot_remove" => Ok(25),
         "encoded_run" => Ok(26),
         "canary_canonicalize" => Ok(27),
+        "ascii_alphanumeric_strip" => Ok(28),
         _ => Err("unknown operation".into()),
     }
 }

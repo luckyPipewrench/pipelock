@@ -138,6 +138,10 @@ fn recipe_validation_rejects_malformed_operation_shapes() {
             "unknown encoded-token alphabet",
         ),
         (
+            serde_json::json!([{"kind": "ascii_alphanumeric_strip"}]),
+            "unsupported by transform profile",
+        ),
+        (
             serde_json::json!([{"kind": "query_subsequence", "indices": [1, 1]}]),
             "strictly increasing",
         ),

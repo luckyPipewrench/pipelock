@@ -571,6 +571,7 @@ function operationBytes(op: Operation): Buffer {
     hostname_dot_remove: 25,
     encoded_run: 26,
     canary_canonicalize: 27,
+    ascii_alphanumeric_strip: 28,
   };
   const component: Record<string, number> = {
     "": 0,

@@ -89,37 +89,40 @@ func (indices *QueryIndices) UnmarshalJSON(data []byte) error {
 type OperationKind string
 
 const (
-	OperationIdentity              OperationKind = "identity"
-	OperationURLComponent          OperationKind = "url_component"
-	OperationPercentDecode         OperationKind = "percent_decode"
-	OperationDLPNormalize          OperationKind = "dlp_normalize"
-	OperationLowercase             OperationKind = "lowercase"
-	OperationInvisibleStrip        OperationKind = "invisible_strip"
-	OperationHexDecode             OperationKind = "hex_decode"
-	OperationBase32Decode          OperationKind = "base32_decode"
-	OperationBase64Decode          OperationKind = "base64_decode"
-	OperationLeetspeak             OperationKind = "leetspeak"
-	OperationVowelFold             OperationKind = "vowel_fold"
-	OperationQueryUnescape         OperationKind = "query_unescape"
-	OperationInvisibleSpace        OperationKind = "invisible_space"
-	OperationMatchingNormalize     OperationKind = "matching_normalize"
-	OperationHexDecodeLiberal      OperationKind = "hex_decode_liberal"
-	OperationBase32DecodeLiberal   OperationKind = "base32_decode_liberal"
-	OperationBase64DecodeLiberal   OperationKind = "base64_decode_liberal"
-	OperationEncodedTokenNormalize OperationKind = "encoded_token_normalize"
-	OperationTextSegment           OperationKind = "text_segment"
-	OperationHTMLEntityDecode      OperationKind = "html_entity_decode"
-	OperationWhitespaceCompact     OperationKind = "whitespace_compact"
-	OperationURLNoiseStrip         OperationKind = "url_noise_strip"
-	OperationOrderedQueryConcat    OperationKind = "ordered_query_concat"
-	OperationQuerySubsequence      OperationKind = "query_subsequence"
-	OperationHostnameDotRemove     OperationKind = "hostname_dot_remove"
-	OperationEncodedRun            OperationKind = "encoded_run"
-	OperationCanaryCanonicalize    OperationKind = "canary_canonicalize"
+	OperationIdentity               OperationKind = "identity"
+	OperationURLComponent           OperationKind = "url_component"
+	OperationPercentDecode          OperationKind = "percent_decode"
+	OperationDLPNormalize           OperationKind = "dlp_normalize"
+	OperationLowercase              OperationKind = "lowercase"
+	OperationInvisibleStrip         OperationKind = "invisible_strip"
+	OperationHexDecode              OperationKind = "hex_decode"
+	OperationBase32Decode           OperationKind = "base32_decode"
+	OperationBase64Decode           OperationKind = "base64_decode"
+	OperationLeetspeak              OperationKind = "leetspeak"
+	OperationVowelFold              OperationKind = "vowel_fold"
+	OperationQueryUnescape          OperationKind = "query_unescape"
+	OperationInvisibleSpace         OperationKind = "invisible_space"
+	OperationMatchingNormalize      OperationKind = "matching_normalize"
+	OperationHexDecodeLiberal       OperationKind = "hex_decode_liberal"
+	OperationBase32DecodeLiberal    OperationKind = "base32_decode_liberal"
+	OperationBase64DecodeLiberal    OperationKind = "base64_decode_liberal"
+	OperationEncodedTokenNormalize  OperationKind = "encoded_token_normalize"
+	OperationTextSegment            OperationKind = "text_segment"
+	OperationHTMLEntityDecode       OperationKind = "html_entity_decode"
+	OperationWhitespaceCompact      OperationKind = "whitespace_compact"
+	OperationURLNoiseStrip          OperationKind = "url_noise_strip"
+	OperationOrderedQueryConcat     OperationKind = "ordered_query_concat"
+	OperationQuerySubsequence       OperationKind = "query_subsequence"
+	OperationHostnameDotRemove      OperationKind = "hostname_dot_remove"
+	OperationEncodedRun             OperationKind = "encoded_run"
+	OperationCanaryCanonicalize     OperationKind = "canary_canonicalize"
+	OperationASCIIAlphanumericStrip OperationKind = "ascii_alphanumeric_strip"
 )
 
-// SupportedOperationKinds is the complete, versioned recipe vocabulary. Corpus
-// tests require one vector for every returned operation.
+// SupportedOperationKinds is the union of the registered recipe vocabularies.
+// Scanner completeness checks use it to require a replay operation for every
+// production transform. Receipt validation must use the profile-specific
+// vocabulary instead.
 func SupportedOperationKinds() []OperationKind {
 	return []OperationKind{
 		OperationIdentity, OperationURLComponent, OperationPercentDecode, OperationDLPNormalize,
@@ -130,8 +133,22 @@ func SupportedOperationKinds() []OperationKind {
 		OperationEncodedTokenNormalize, OperationTextSegment, OperationHTMLEntityDecode,
 		OperationWhitespaceCompact, OperationURLNoiseStrip, OperationOrderedQueryConcat,
 		OperationQuerySubsequence, OperationHostnameDotRemove, OperationEncodedRun,
-		OperationCanaryCanonicalize,
+		OperationCanaryCanonicalize, OperationASCIIAlphanumericStrip,
 	}
+}
+
+// SupportedOperationKindsForProfile returns the exact recipe vocabulary for a
+// registered transform profile. V1 stays frozen even when a later profile adds
+// an operation.
+func SupportedOperationKindsForProfile(digest string) []OperationKind {
+	kinds := SupportedOperationKinds()
+	if digest == EvidenceProvenanceProfileV1Digest {
+		return kinds[:len(kinds)-1]
+	}
+	if digest == EvidenceProvenanceProfileV2Digest {
+		return kinds
+	}
+	return nil
 }
 
 type Component string
@@ -180,7 +197,7 @@ const (
 	// EvidenceProvenanceProfileV2Digest identifies the profile whose token and
 	// URL-noise transforms match the current scanner keep-sets. Profiles are
 	// selected only by this exact digest; never by a profile name or fallback.
-	EvidenceProvenanceProfileV2Digest       = "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9"
+	EvidenceProvenanceProfileV2Digest       = "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -231,7 +248,8 @@ func (r Recipe) Validate() error {
 	if r.TransformProfileDigest == "" {
 		return fmt.Errorf("recipe: missing transform profile digest")
 	}
-	if _, err := resolveTransformProfile(r.TransformProfileDigest); err != nil {
+	profile, err := resolveTransformProfile(r.TransformProfileDigest)
+	if err != nil {
 		return fmt.Errorf("recipe: %w", err)
 	}
 	if len(r.Operations) > evidenceProvenanceMaxOperations {
@@ -240,6 +258,9 @@ func (r Recipe) Validate() error {
 	for index, op := range r.Operations {
 		if err := op.validate(); err != nil {
 			return fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)
+		}
+		if op.Kind == OperationASCIIAlphanumericStrip && profile.version != transformProfileV2 {
+			return fmt.Errorf("recipe operation %d (%s): unsupported by transform profile", index, op.Kind)
 		}
 	}
 	return nil
@@ -482,6 +503,8 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 		return selectScannerEncodedRun(value, op.Occurrence, op.MinimumLength)
 	case OperationCanaryCanonicalize:
 		return scannerCanaryCanonicalize(value), nil
+	case OperationASCIIAlphanumericStrip:
+		return scannerASCIIAlphanumericStrip(value), nil
 	default:
 		return "", fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -511,7 +534,7 @@ func (op Operation) validate() error {
 	case OperationIdentity, OperationLowercase, OperationInvisibleStrip, OperationLeetspeak, OperationVowelFold,
 		OperationQueryUnescape, OperationInvisibleSpace, OperationWhitespaceCompact,
 		OperationURLNoiseStrip, OperationOrderedQueryConcat, OperationHostnameDotRemove,
-		OperationCanaryCanonicalize, OperationHTMLEntityDecode, OperationHexDecodeLiberal:
+		OperationCanaryCanonicalize, OperationASCIIAlphanumericStrip, OperationHTMLEntityDecode, OperationHexDecodeLiberal:
 		return noParameters()
 	case OperationURLComponent:
 		switch op.Component {
@@ -1002,6 +1025,20 @@ func scannerCanaryCanonicalize(value string) string {
 			return -1
 		default:
 			return r
+		}
+	}, value)
+}
+
+// scannerASCIIAlphanumericStrip replays the scanner's query-concatenation
+// alphanumeric view. It is v2-only because v1's frozen profile did not define
+// this operation.
+func scannerASCIIAlphanumericStrip(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		default:
+			return -1
 		}
 	}, value)
 }

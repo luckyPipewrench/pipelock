@@ -23,7 +23,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .number import IJSONNumber, StrictParseError, parse_json_strict
-from .provenance import PROFILE_DIGEST, profile_version
+from .provenance import PROFILE_DIGEST, ProvenanceError as TransformProvenanceError, profile_version
 from .provenance import Recipe as TransformRecipe
 
 FIXTURE_FORMAT = "pipelock-evidence-provenance-verification-fixture/v1"
@@ -75,6 +75,7 @@ _OP_BYTES = {
     "hostname_dot_remove": 25,
     "encoded_run": 26,
     "canary_canonicalize": 27,
+    "ascii_alphanumeric_strip": 28,
 }
 _COMPONENT_BYTES = {
     "": 0,
@@ -468,7 +469,7 @@ def _verify_entry(
             profile_version(
                 _require_str(proof["transform_profile_digest"], "proof profile")
             )
-        except ProvenanceError:
+        except TransformProvenanceError:
             raise ProvenanceError("proof_structure", "unknown proof profile")
         producer = _fields(proof["producer"], set(), _PRODUCER_KEYS, "producer")
         source_list = proof["sources"]

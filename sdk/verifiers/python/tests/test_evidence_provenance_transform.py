@@ -18,7 +18,7 @@ from pipelock_aarp_verify.provenance import (
     UNICODE_VERSION,
     ProvenanceError,
     Recipe,
-    supported_operation_kinds,
+    supported_operation_kinds_for_profile,
 )
 
 CORPUS = (
@@ -101,7 +101,9 @@ def test_evidence_provenance_transform_corpus() -> None:
             for op in vector.get("recipe", [])[: len(vector.get("operations", []))]
         }
     assert (
-        covered == set(supported_operation_kinds()) == set(corpus["operation_coverage"])
+        covered
+        == set(supported_operation_kinds_for_profile(PROFILE_DIGEST))
+        == set(corpus["operation_coverage"])
     )
     assert errors == set(corpus["error_coverage"])
 
@@ -130,6 +132,11 @@ def test_evidence_provenance_transform_v2_corpus() -> None:
         ("bad", [], "invalid SHA-256 digest"),
         ("sha256:" + "0" * 64, [], "unknown profile"),
         (PROFILE_DIGEST, None, "operations must be an array"),
+        (
+            PROFILE_DIGEST,
+            [{"kind": "ascii_alphanumeric_strip"}],
+            "unsupported by transform profile",
+        ),
         (PROFILE_DIGEST, [{"kind": "identity", "extra": 1}], "unknown operation field"),
         (
             PROFILE_DIGEST,

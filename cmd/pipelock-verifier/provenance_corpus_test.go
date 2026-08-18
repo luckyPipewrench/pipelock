@@ -412,6 +412,11 @@ func successfulOperationCases() []corpusOperationCase {
 		{"hostname-dot-remove", normalize.Recipe{TransformProfileDigest: digest, Operations: []normalize.Operation{{Kind: normalize.OperationHostnameDotRemove}}}, "api.vendor.example", "apivendorexample"},
 		{"encoded-run", normalize.Recipe{TransformProfileDigest: digest, Operations: []normalize.Operation{{Kind: normalize.OperationEncodedRun, Occurrence: 1, MinimumLength: 6}}}, "prefix:QUJDRA== suffix", "QUJDRA=="},
 		{"canary-canonicalize", normalize.Recipe{TransformProfileDigest: digest, Operations: []normalize.Operation{{Kind: normalize.OperationCanaryCanonicalize}}}, "Ab-c_d/e?f", "Abcdef"},
+		// v2-only: the frozen v1 vocabulary does not contain this operation, so
+		// this case must carry the v2 digest or the recipe is rejected before
+		// it runs. Keeping it in the same list preserves the guarantee that
+		// every supported operation owns a known-answer fixture.
+		{"ascii-alphanumeric-strip", normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest, Operations: []normalize.Operation{{Kind: normalize.OperationASCIIAlphanumericStrip}}}, "Ab-c_d=e.f", "Abcdef"},
 	}
 }
 
@@ -436,7 +441,12 @@ func corpusFixture(t *testing.T, recipe normalize.Recipe, input string, start, e
 		t.Fatal(err)
 	}
 	source.Matches = []contractreceipt.ProvenanceMatch{match}
-	proof := contractreceipt.EvidenceProvenanceProof{Version: contractreceipt.EvidenceProvenanceProofVersionV1, TransformProfileDigest: normalize.EvidenceProvenanceProfileV1Digest, Sources: []contractreceipt.ProvenanceSource{source}}
+	// The proof-level digest follows the recipe rather than being pinned to v1.
+	// A proof that declares one profile while its source recipe names another is
+	// a mixed-profile proof, which every verifier rejects at proof structure, so
+	// pinning it here would silently produce fixtures that never reach the view
+	// checks they exist to exercise.
+	proof := contractreceipt.EvidenceProvenanceProof{Version: contractreceipt.EvidenceProvenanceProofVersionV1, TransformProfileDigest: recipe.TransformProfileDigest, Sources: []contractreceipt.ProvenanceSource{source}}
 	signed := signedProvenanceProof{ChainSeq: 0, ChainPrevHash: "genesis", CriticalFeatures: []string{provenanceFeature}, Proof: proof}
 	raw := corpusMustJSON(t, signed)
 	return provenanceFixture{Format: provenanceFixtureFormat, Entries: []provenanceFixtureEntry{{SignedB64: base64.StdEncoding.EncodeToString(raw), Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(privateKey, raw))}}, Verification: provenanceVerificationInputs{SignerPublicKeyHex: hex.EncodeToString(publicKey), CommitmentKeyHex: hex.EncodeToString(commitmentKey[:]), Sources: []provenanceFixtureSource{{SourceID: source.SourceID, BytesB64: base64.StdEncoding.EncodeToString([]byte(input))}}}}

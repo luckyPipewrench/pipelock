@@ -9,13 +9,13 @@ The proof wire version remains `pipelock-evidence-provenance-proof/v1`. It has n
 The registry contains these immutable profiles:
 
 - v1: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v1.json`, digest `sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94`.
-- v2: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v2.json`, digest `sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9`.
+- v2: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v2.json`, digest `sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6`.
 
 Every normative profile document and its digest are frozen at publication, including experimental profiles. A semantic correction MUST create a new document and digest. It MUST NOT rewrite a prior profile in place. Verifiers retain every registered profile for the receipt-retention period.
 
 Before executing any operation, a verifier MUST resolve `transform_profile_digest` by exact allowlisted match. An unknown, malformed, or unsupported digest is a rejection. It MUST NOT fall back to v1, select the newest profile, or try another profile after a failure. Ordered fallback would let an attacker choose a weaker interpretation of the same bytes.
 
-The operation names are unchanged between v1 and v2. The digest is the semantic selector, so renaming operations would add wire churn without making unknown-profile handling safer.
+V2 adds `ascii_alphanumeric_strip`; v1 recipes MUST reject it. The digest remains the semantic selector, so no verifier may reinterpret a v1 recipe under v2 semantics.
 
 `encoded_token_normalize` and `url_noise_strip` differ between the profiles. v1 retains its original allow-list behavior: token normalization removes only its listed delimiters and rejects other separators, while URL noise stripping removes dot, slash, ASCII space/TAB/LF/CR, plus, comma, semicolon, and vertical bar. v2 keeps token data bytes by alphabet: hex `[0-9A-Fa-f]`; Base32 `[A-Z2-7=]`; standard Base64 `[A-Za-z0-9+/=]`; and URL-safe Base64 `[A-Za-z0-9_-=]`. v2 `url_noise_strip` keeps ASCII `[A-Za-z0-9_-=]`. The profile documents remain normative for the complete operation behavior.
 
@@ -44,6 +44,7 @@ Recipes are ordered arrays of typed operations. Operations are never labels or c
 - `encoded_token_normalize { alphabet }`, `text_segment { occurrence }`, `html_entity_decode`, and `whitespace_compact`.
 - `url_noise_strip`, `ordered_query_concat`, `query_subsequence { indices }`, and `hostname_dot_remove`.
 - `encoded_run { occurrence, minimum_length }` and `canary_canonicalize`.
+- V2 only: `ascii_alphanumeric_strip`, which keeps ASCII `[A-Za-z0-9]` and removes every other rune.
 
 Each operation consumes the preceding output; no operation may silently retain undecodable input. Unsupported parameters, malformed encodings, absent URL components, and limit failures are errors. `selector` and `profile` values MUST NOT contain Unicode control characters; implementations MUST reject them. `hex_decode` inputs MUST be canonical lowercase hex: re-encoding decoded bytes using lowercase hexadecimal MUST produce exactly the input. `base32_decode` and `base64_decode` inputs MUST be canonical for their selected padding mode: re-encoding decoded bytes using the selected RFC 4648 encoding MUST produce exactly the input. The `*_liberal` operations deliberately omit canonical re-encoding checks so they reproduce scanner-accepted decodings; they still reject malformed input and require valid UTF-8 output. Valid UTF-8 is required before the first operation and after every operation. The profile, not the producer or implementation, determines vocabulary, decoding ambiguity, limits, and policy.
 

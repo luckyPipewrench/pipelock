@@ -14,7 +14,7 @@ use url::Url;
 pub const PROFILE_DIGEST_V1: &str =
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 pub const PROFILE_DIGEST_V2: &str =
-    "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9";
+    "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6";
 // Retained for v1-oriented callers; receipt replay always resolves the exact
 // supplied digest rather than falling back to this value.
 pub const PROFILE_DIGEST: &str = PROFILE_DIGEST_V1;
@@ -50,7 +50,7 @@ impl Recipe {
     /// must be an array; each operation rejects unknown, missing, and forbidden
     /// fields, including explicit false/zero values.
     pub fn from_json(digest: &str, operations: &Value) -> Result<Self, String> {
-        validate_digest(digest)?;
+        let profile = validate_digest(digest)?;
         let operations = operations
             .as_array()
             .ok_or_else(|| "recipe operations must be an array".to_string())?;
@@ -62,6 +62,13 @@ impl Recipe {
             .enumerate()
             .map(|(i, v)| Operation::from_json(v).map_err(|e| format!("recipe operation {i}: {e}")))
             .collect::<Result<Vec<_>, _>>()?;
+        if profile == ProfileVersion::V1
+            && operations
+                .iter()
+                .any(|operation| operation.kind == "ascii_alphanumeric_strip")
+        {
+            return Err("ascii_alphanumeric_strip is unsupported by transform profile".to_string());
+        }
         Ok(Self {
             digest: digest.to_string(),
             operations,
@@ -205,7 +212,8 @@ impl Operation {
             | "url_noise_strip"
             | "ordered_query_concat"
             | "hostname_dot_remove"
-            | "canary_canonicalize" => (&["kind"], &[]),
+            | "canary_canonicalize"
+            | "ascii_alphanumeric_strip" => (&["kind"], &[]),
             "url_component" => (&["kind", "component"], &["selector", "occurrence"]),
             "percent_decode" => (&["kind", "passes"], &[]),
             "dlp_normalize" | "matching_normalize" => (&["kind", "profile"], &[]),
@@ -464,6 +472,10 @@ impl Operation {
                 required_u32(&self.fields, "minimum_length")?,
             ),
             "canary_canonicalize" => Ok(strip_chars(value, "./\\?&= \t\n\r:;,-_@%+#")),
+            "ascii_alphanumeric_strip" => Ok(value
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect()),
             _ => unreachable!(),
         }
     }

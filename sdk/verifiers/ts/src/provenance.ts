@@ -11,7 +11,7 @@ import unicode15LowercaseMap from "@unicode/unicode-15.0.0/Simple_Case_Mapping/L
 export const EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST =
   "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
-  "sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9";
+  "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6";
 type ProfileVersion = "v1" | "v2";
 
 const MAX_INPUT_BYTES = 2 << 20;
@@ -48,10 +48,18 @@ const kinds = new Set([
   "hostname_dot_remove",
   "encoded_run",
   "canary_canonicalize",
+  "ascii_alphanumeric_strip",
 ]);
 
 export function supportedOperationKinds(): string[] {
   return [...kinds];
+}
+
+export function supportedOperationKindsForProfile(digest: string): string[] {
+  const profile = resolveEvidenceProvenanceProfile(digest);
+  return profile === "v1"
+    ? [...kinds].filter((kind) => kind !== "ascii_alphanumeric_strip")
+    : [...kinds];
 }
 
 /** Unicode 15.0.0's Simple_Lowercase_Mapping table, pinned by dependency. */
@@ -191,7 +199,7 @@ export function validateEvidenceProvenanceRecipe(
   if (recipe === null || typeof recipe !== "object" || Array.isArray(recipe))
     fail("recipe must be an object");
   const r = recipe as Record<string, unknown>;
-  resolveEvidenceProvenanceProfile(r.transform_profile_digest);
+  const profile = resolveEvidenceProvenanceProfile(r.transform_profile_digest);
   if (!Array.isArray(r.operations)) fail("recipe: operations must be an array");
   if (r.operations.length > MAX_OPERATIONS) fail(`recipe: exceeds ${MAX_OPERATIONS} operations`);
   for (const [index, raw] of r.operations.entries()) {
@@ -201,6 +209,8 @@ export function validateEvidenceProvenanceRecipe(
     const kind = opString(op, "kind", true)!;
     if (!kinds.has(kind)) fail(`recipe operation ${index} (${kind}): unknown operation`);
     validateOperation(op, kind);
+    if (kind === "ascii_alphanumeric_strip" && profile !== "v2")
+      fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
   }
 }
 
@@ -222,6 +232,7 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
     case "ordered_query_concat":
     case "hostname_dot_remove":
     case "canary_canonicalize":
+    case "ascii_alphanumeric_strip":
       assertFields(op, kind, none);
       return;
     case "url_component": {
@@ -747,6 +758,8 @@ function apply(
     }
     case "canary_canonicalize":
       return value.replace(/[./\\?&= \t\n\r:;,\-_@%+#]/gu, "");
+    case "ascii_alphanumeric_strip":
+      return value.replace(/[^A-Za-z0-9]/gu, "");
     default:
       return fail(`unknown operation ${JSON.stringify(kind)}`);
   }

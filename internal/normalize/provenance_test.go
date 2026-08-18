@@ -92,6 +92,7 @@ func TestRecipeApplyOperations(t *testing.T) {
 		{"HTML entity decode", "&amp;amp;", Operation{Kind: OperationHTMLEntityDecode}, "&"},
 		{"whitespace compact", "a\u2003 b\n", Operation{Kind: OperationWhitespaceCompact}, "ab"},
 		{"URL noise strip", "a./ +,;|\tb", Operation{Kind: OperationURLNoiseStrip}, "ab"},
+		{"URL noise strip, newly-covered separators (CVE-class regression)", "a!b~c#d", Operation{Kind: OperationURLNoiseStrip}, "abcd"},
 		{"ordered query concat", "a=x%2521&empty=&b=y+z", Operation{Kind: OperationOrderedQueryConcat}, "x!y z"},
 		{"query subsequence", "a=one&b=junk&c=two&d=three", Operation{Kind: OperationQuerySubsequence, Indices: QueryIndices{0, 2, 3}}, "onetwothree"},
 		{"hostname dot remove", "api.vendor.example", Operation{Kind: OperationHostnameDotRemove}, "apivendorexample"},

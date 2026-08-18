@@ -261,11 +261,16 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 		}},
 		{"hex token normalization", `\x48 \x69`, normalize.Operation{Kind: normalize.OperationEncodedTokenNormalize, Alphabet: "hex"}, func(*testing.T) string { return normalizeHex(`\x48 \x69`) }},
 		{"base64 token normalization", "S G.k=", normalize.Operation{Kind: normalize.OperationEncodedTokenNormalize, Alphabet: "base64_standard"}, func(*testing.T) string { return normalizeEncodedToken("S G.k=", encodedTokenBase64Std) }},
+		{"base64 token normalization, comma-split (CVE-class regression)", "S,G,k=", normalize.Operation{Kind: normalize.OperationEncodedTokenNormalize, Alphabet: "base64_standard"}, func(*testing.T) string {
+			return normalizeEncodedToken("S,G,k=", encodedTokenBase64Std)
+		}},
+		{"hex token normalization, semicolon-split", `48;69`, normalize.Operation{Kind: normalize.OperationEncodedTokenNormalize, Alphabet: "hex"}, func(*testing.T) string { return normalizeHex(`48;69`) }},
 		{"base32 token normalization", "J B/UQ====", normalize.Operation{Kind: normalize.OperationEncodedTokenNormalize, Alphabet: "base32"}, func(*testing.T) string { return normalizeEncodedToken("J B/UQ====", encodedTokenBase32) }},
 		{"text segment", "pre https://host/path,tail", normalize.Operation{Kind: normalize.OperationTextSegment, Occurrence: 3}, func(t *testing.T) string { return productionSegment(t, "pre https://host/path,tail", 3) }},
 		{"HTML entities", "&amp;amp;", normalize.Operation{Kind: normalize.OperationHTMLEntityDecode}, func(*testing.T) string { return decodeHTMLEntities("&amp;amp;") }},
 		{"Unicode whitespace", "a\u2003 b\n", normalize.Operation{Kind: normalize.OperationWhitespaceCompact}, func(*testing.T) string { return compactTextDLPWhitespace("a\u2003 b\n") }},
 		{"URL noise", "a./ +,;|\tb", normalize.Operation{Kind: normalize.OperationURLNoiseStrip}, func(*testing.T) string { return stripURLNoise("a./ +,;|\tb") }},
+		{"URL noise, newly-covered separators (CVE-class regression)", "a!b~c#d", normalize.Operation{Kind: normalize.OperationURLNoiseStrip}, func(*testing.T) string { return stripURLNoise("a!b~c#d") }},
 		{"ordered query", "a=x%2521&empty=&b=y+z", normalize.Operation{Kind: normalize.OperationOrderedQueryConcat}, func(*testing.T) string { return orderedQueryConcat("a=x%2521&empty=&b=y+z") }},
 		{"query subsequence", "a=one&b=junk&c=two&d=three", normalize.Operation{Kind: normalize.OperationQuerySubsequence, Indices: []uint8{0, 2, 3}}, func(t *testing.T) string {
 			return productionSubsequence(t, "a=one&b=junk&c=two&d=three", []uint8{0, 2, 3})

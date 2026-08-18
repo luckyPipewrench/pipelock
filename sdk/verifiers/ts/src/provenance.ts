@@ -509,6 +509,12 @@ function matching(value: string): string {
     ),
   );
 }
+// Deny-list mirroring scanner.go's normalizeHex (alphabet === "hex") and
+// normalizeEncodedToken/isEncodedTokenByte (other alphabets): keep only the
+// target alphabet's own data characters and drop everything else as noise.
+// A character outside the alphabet no longer aborts normalization to "" --
+// every non-data character is now strippable, not just an enumerated
+// separator set.
 function encodedToken(value: string, alphabet: string): string {
   if (value.length < 4) return "";
   if (alphabet === "hex") {
@@ -517,7 +523,7 @@ function encodedToken(value: string, alphabet: string): string {
       .replaceAll("\\X", "")
       .replaceAll("0x", "")
       .replaceAll("0X", "")
-      .replace(/[: ,\-]/gu, "");
+      .replace(/[^0-9a-fA-F]/gu, "");
     return v.length && v.length % 2 === 0 && /^[0-9a-f]+$/iu.test(v) ? v : "";
   }
   const data =
@@ -526,18 +532,11 @@ function encodedToken(value: string, alphabet: string): string {
       : alphabet === "base64_standard"
         ? /^[A-Za-z0-9+/=]$/u
         : /^[A-Za-z0-9_\-=]$/u;
-  const separator =
-    alphabet === "base32"
-      ? /^[ \t\n\r\f\v._\-/]$/u
-      : alphabet === "base64_standard"
-        ? /^[ \t\n\r\f\v._-]$/u
-        : /^[ \t\n\r\f\v._/+]$/u;
   let changed = false,
     result = "";
   for (const c of value) {
     if (data.test(c)) result += c;
-    else if (separator.test(c)) changed = true;
-    else return "";
+    else changed = true;
   }
   return changed && result.length >= 4 ? result : "";
 }
@@ -673,7 +672,10 @@ function apply(
     case "whitespace_compact":
       return compactUnicode15Whitespace(value);
     case "url_noise_strip":
-      return value.replace(/[./ \t\n\r+,;|]/gu, "");
+      // Deny-list mirroring scanner.go's stripURLNoise: keep only the
+      // credential alphabet ([A-Za-z0-9] plus '-','_','=') and strip
+      // everything else, rather than removing a named separator set.
+      return value.replace(/[^A-Za-z0-9\-_=]/gu, "");
     case "ordered_query_concat":
       return value
         .split("&")

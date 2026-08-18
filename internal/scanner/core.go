@@ -797,6 +797,9 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		if stripped := stripURLNoise(concat); stripped != concat {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
 		}
+		if stripped := stripToAlphanumeric(concat); stripped != concat {
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped_alnum")})
+		}
 	}
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
@@ -834,7 +837,9 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 }
 
 // querySubsequenceCoreDLP checks ordered combinations of query values against
-// core DLP patterns. Mirrors the main scanner's querySubsequenceDLP.
+// core DLP patterns. Mirrors the main scanner's querySubsequenceDLP -- see
+// its doc comment for why the size-4 cap is a deliberately bounded secondary
+// defense, not the primary one, and is left unchanged.
 //
 //pipelock:provenance-transform query_subsequence
 func (s *Scanner) querySubsequenceCoreDLP(rawQuery string) Result {

@@ -672,6 +672,17 @@ func scannerBase64Encoding(alphabet string, padded bool) (*base64.Encoding, erro
 	return encoding, nil
 }
 
+// scannerEncodedTokenNormalize replays normalizeHex (alphabet=="hex") and
+// normalizeEncodedToken (all other alphabet values) from internal/scanner.
+// Both live functions strip every byte that is not part of the target
+// encoding's own data alphabet -- a deny-list, not an allow-list of "known"
+// separator characters -- because a legitimate contiguous encoded token can
+// only ever contain alphabet bytes, so nothing outside it can be real token
+// data. Keep this in lockstep with scanner.go's normalizeHex and
+// normalizeEncodedToken/isEncodedTokenByte: this is an independent replay
+// copy for forensic receipt reconstruction, and drifting from the live
+// scanner logic here means a recorded receipt no longer reconstructs what
+// the scanner actually matched.
 func scannerEncodedTokenNormalize(value, alphabet string) string {
 	if len(value) < 4 {
 		return ""
@@ -679,12 +690,11 @@ func scannerEncodedTokenNormalize(value, alphabet string) string {
 	if alphabet == "hex" {
 		value = strings.NewReplacer(`\x`, "", `\X`, "", "0x", "", "0X", "").Replace(value)
 		value = strings.Map(func(r rune) rune {
-			switch r {
-			case ':', ' ', '-', ',':
-				return -1
-			default:
+			switch {
+			case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
 				return r
 			}
+			return -1
 		}, value)
 		if len(value) == 0 || len(value)%2 != 0 {
 			return ""
@@ -715,34 +725,16 @@ func scannerEncodedTokenNormalize(value, alphabet string) string {
 			return false
 		}
 	}
-	isSeparator := func(char byte) bool {
-		if char == ' ' || char == '\t' || char == '\n' || char == '\r' || char == '\f' || char == '\v' || char == '.' {
-			return true
-		}
-		switch alphabet {
-		case "base64_standard":
-			return char == '-' || char == '_'
-		case "base64_url":
-			return char == '/' || char == '+'
-		case "base32":
-			return char == '-' || char == '_' || char == '/'
-		default:
-			return false
-		}
-	}
 	var result strings.Builder
 	result.Grow(len(value))
 	changed := false
 	for index := range len(value) {
 		char := value[index]
-		switch {
-		case isData(char):
+		if isData(char) {
 			result.WriteByte(char)
-		case isSeparator(char):
-			changed = true
-		default:
-			return ""
+			continue
 		}
+		changed = true
 	}
 	if !changed || result.Len() < 4 {
 		return ""
@@ -791,14 +783,26 @@ func scannerWhitespaceCompact(value string) string {
 	}, value)
 }
 
+// scannerURLNoiseStrip replays stripURLNoise from internal/scanner: keep only
+// ASCII alphanumerics plus '-','_','=' (the punctuation pipelock's
+// hyphen/underscore token formats use as key data, plus base64 padding);
+// strip everything else, INCLUDING '+' and '/' -- those are deliberately not
+// preserved here even though they are valid base64 data, because they occur
+// as ordinary URL/path structure (an encoded '/' path separator, a '+'
+// encoded space) far more often than as fragmented secret data. See the
+// longer rationale on stripURLNoise's doc comment in scanner.go. Keep this in
+// lockstep with scanner.go's stripURLNoise -- an independent replay copy
+// that drifts from the live logic means a recorded receipt no longer
+// reconstructs what the scanner actually matched.
 func scannerURLNoiseStrip(value string) string {
 	return strings.Map(func(r rune) rune {
-		switch r {
-		case '.', '/', ' ', '\t', '\n', '\r', '+', ',', ';', '|':
-			return -1
-		default:
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_' || r == '=':
 			return r
 		}
+		return -1
 	}, value)
 }
 

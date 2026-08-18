@@ -412,7 +412,13 @@ impl Operation {
             ),
             "html_entity_decode" => html_decode(value, budget),
             "whitespace_compact" => Ok(value.chars().filter(|c| !c.is_whitespace()).collect()),
-            "url_noise_strip" => Ok(strip_chars(value, "./ \t\n\r+,;|")),
+            // Deny-list mirroring scanner.go's stripURLNoise: keep only the
+            // credential alphabet ([A-Za-z0-9] plus '-','_','=') and strip
+            // everything else, rather than removing a named separator set.
+            "url_noise_strip" => Ok(value
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '='))
+                .collect()),
             "ordered_query_concat" => query_values(value)
                 .into_iter()
                 .map(|v| query_unescape(&v, budget))
@@ -860,6 +866,11 @@ fn matching_normalize(s: &str) -> String {
 fn dlp_control_or_invisible(c: char) -> bool {
     (c <= '\u{1f}' || c == '\u{7f}' || ('\u{80}'..='\u{9f}').contains(&c)) || invisible(c)
 }
+// Deny-list mirroring scanner.go's normalizeHex (a=="hex") and
+// normalizeEncodedToken/isEncodedTokenByte (other alphabets): keep only the
+// target alphabet's own data bytes and drop everything else as noise. A byte
+// outside the alphabet no longer aborts normalization to "" -- every
+// non-data byte is now strippable, not just an enumerated separator set.
 fn encoded_token_normalize(s: &str, a: &str) -> String {
     if s.len() < 4 {
         return String::new();
@@ -871,7 +882,7 @@ fn encoded_token_normalize(s: &str, a: &str) -> String {
             .replace("0x", "")
             .replace("0X", "")
             .chars()
-            .filter(|c| !matches!(c, ':' | ' ' | '-' | ','))
+            .filter(|c| c.is_ascii_hexdigit())
             .collect::<String>();
         return if !v.is_empty() && v.len() % 2 == 0 && v.bytes().all(|b| b.is_ascii_hexdigit()) {
             v
@@ -888,16 +899,10 @@ fn encoded_token_normalize(s: &str, a: &str) -> String {
             || b == b'='
             || (a == "base64_standard" && matches!(b, b'+' | b'/'))
             || (a == "base64_url" && matches!(b, b'-' | b'_'));
-        let sep = matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x0b | b'.')
-            || (a == "base64_standard" && matches!(b, b'-' | b'_'))
-            || (a == "base64_url" && matches!(b, b'/' | b'+'))
-            || (a == "base32" && matches!(b, b'-' | b'_' | b'/'));
         if data {
             out.push(b as char)
-        } else if sep {
-            changed = true
         } else {
-            return String::new();
+            changed = true
         }
     }
     if changed && out.len() >= 4 {

@@ -1534,6 +1534,13 @@ func TestNormalizeHex(t *testing.T) {
 		{"uppercase hex", "73:6B:2D:61:6E:74", "736B2D616E74"},
 		{"0x per-byte", "0x730x6b0x2d0x610x6e0x74", "736b2d616e74"},
 		{"0x per-byte with commas", "0x73,0x6b,0x2d,0x61,0x6e,0x74", "736b2d616e74"},
+		// CVE-class regression: semicolon/pipe/exclamation were not
+		// recognized delimiters, so a hex secret split on any of them was
+		// previously treated as containing invalid data and rejected
+		// outright, hiding the secret instead of reconstructing it.
+		{"semicolon-separated", "73;6b;2d;61;6e;74", "736b2d616e74"},
+		{"pipe-separated", "73|6b|2d|61|6e|74", "736b2d616e74"},
+		{"exclamation-separated", "73!6b!2d!61!6e!74", "736b2d616e74"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2743,6 +2750,162 @@ func TestScan_DLP_QuerySubsequence_Over20ParamsCapped(t *testing.T) {
 	}
 }
 
+// TestScan_DLP_QuerySubsequence_FiveFragmentPunctuationDecoyBypass reproduces
+// the exact CVE-class bypass: querySubsequenceCoreDLP/querySubsequenceDLP
+// only tried combinations up to size 4, so a credential split into 5
+// genuinely-necessary fragments with non-alphanumeric decoy values
+// interleaved (one decoy per fragment boundary) sailed through uncaught,
+// because no 4-value subset of the 9 total query values reconstructs the
+// secret. The fix does not depend on the combination-size cap at all: the
+// noise-stripped full query concatenation (stripURLNoise, now a deny-list
+// keyed to the credential alphabet) drops the punctuation decoys
+// unconditionally, regardless of how many fragments the secret was split
+// into.
+func TestScan_DLP_QuerySubsequence_FiveFragmentPunctuationDecoyBypass(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+
+	// Build a fake AWS access key ID at runtime (avoid gitleaks): AKIA + 16
+	// uppercase-alnum chars, split into 5 fragments, each followed by a
+	// decoy built from '!' -- a byte that is not part of the credential
+	// alphabet stripURLNoise preserves, and is the exact byte the task's
+	// reproduction used.
+	key := "AKIA" + "ABCDEFGHIJKLMNOP" // AKIA + 16 chars
+	frags := []string{key[0:4], key[4:8], key[8:12], key[12:16], key[16:20]}
+	u := "https://example.com/x?p0=" + frags[0]
+	for i := 1; i < len(frags); i++ {
+		u += fmt.Sprintf("&junk%d=%s&p%d=%s", i, url.QueryEscape("!!!!!"), i, frags[i])
+	}
+	result := s.Scan(context.Background(), u)
+	if result.Allowed {
+		t.Fatal("expected DLP to catch a 5-fragment key split with punctuation decoys (9 total query values, exceeds the old size<=4 combination cap)")
+	}
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Fatalf("scanner = %s, want DLP or core_dlp (reason: %s)", result.Scanner, result.Reason)
+	}
+}
+
+// TestScan_DLP_QuerySubsequence_ManyFragmentsUnboundedDecoy proves the fix is
+// unbounded in the number of query values: 17 single-character real
+// fragments plus 17 underscore-only decoys (34 total values) reconstruct an
+// AWS-shaped key. 34 exceeds both the old combination-size cap (4) and the
+// combination search's own value-pool cap (querySubsequenceValues caps at
+// 20), so this can only be caught by the unbounded, full-concat
+// noise-stripped pass -- never by the bounded subsequence search.
+func TestScan_DLP_QuerySubsequence_ManyFragmentsUnboundedDecoy(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := MustNew(cfg)
+	defer s.Close()
+
+	key := "AKIA" + "ABCDEFGHIJKLMNOP" // AKIA + 16 chars = 20 total
+	u := "https://example.com/x?p0=" + string(key[0])
+	for i := 1; i < len(key); i++ {
+		u += fmt.Sprintf("&junk%d=____&p%d=%s", i, i, string(key[i]))
+	}
+	result := s.Scan(context.Background(), u)
+	if result.Allowed {
+		t.Fatal("expected DLP to catch a key fragmented across 34 total query values (well beyond any fixed combination-size or value-pool cap)")
+	}
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Fatalf("scanner = %s, want DLP or core_dlp (reason: %s) -- must be caught by DLP reconstruction, not an unrelated scanner", result.Scanner, result.Reason)
+	}
+}
+
+// TestScan_DLP_QuerySubsequence_DashDecoyAgainstAlnumOnlyPattern closes the
+// residual left after only widening stripURLNoise's separator set: dashes
+// are legitimate DATA for some DLP patterns (e.g. "sk-ant-..."), so
+// stripURLNoise must preserve them -- which means a decoy value built purely
+// from dashes survives stripURLNoise unchanged and still breaks
+// reconstruction of a PURE-ALPHANUMERIC pattern like the AWS access key ID.
+// stripToAlphanumeric is the second, stricter pass that closes this: it
+// drops '-'/'_'/'+'/'/'/'=' too, so a dash-only decoy cannot survive either
+// pass.
+func TestScan_DLP_QuerySubsequence_DashDecoyAgainstAlnumOnlyPattern(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+
+	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	frags := []string{key[0:4], key[4:8], key[8:12], key[12:16], key[16:20]}
+	u := "https://example.com/x?p0=" + frags[0]
+	for i := 1; i < len(frags); i++ {
+		u += fmt.Sprintf("&junk%d=----&p%d=%s", i, i, frags[i])
+	}
+	result := s.Scan(context.Background(), u)
+	if result.Allowed {
+		t.Fatal("expected DLP to catch a 5-fragment AWS-shaped key split with dash-only decoys")
+	}
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Fatalf("scanner = %s, want DLP or core_dlp (reason: %s)", result.Scanner, result.Reason)
+	}
+}
+
+// TestScan_DLP_QuerySubsequence_PunctuatedTargetForeignCharDecoy_KnownLimitation
+// documents a residual, honestly-scoped gap. stripURLNoise and
+// stripToAlphanumeric together close decoys built from ANY byte outside a
+// target pattern's own character class, EXCEPT when the target pattern's
+// class itself uses some of the shared credential punctuation
+// ('-','_','+','/','=') and the decoy is built from a DIFFERENT byte in that
+// same shared set. Example: the Anthropic key pattern's captured class is
+// [a-zA-Z0-9\-_] (dash and underscore, but not '=' or '/'); stripURLNoise
+// must preserve '=' and '/' for OTHER patterns (base64-shaped secrets), so a
+// decoy built purely from '=' survives and sits inside the reconstructed
+// span, breaking the Anthropic pattern's own class. Closing this exactly
+// requires a per-pattern noise-stripping pass (one stripped variant per
+// distinct character-class the shipped DLP patterns use) or a genuine
+// subsequence-automaton match; both are unbounded solutions this fix does
+// NOT implement, in favor of the bounded querySubsequenceDLP /
+// querySubsequenceCoreDLP combination search, capped at size 4. This
+// specific case needs 5 real fragments (below the cap is 4), so it is
+// currently NOT caught. If this test starts failing (the URL gets BLOCKED),
+// the residual gap was closed -- flip the assertion.
+func TestScan_DLP_QuerySubsequence_PunctuatedTargetForeignCharDecoy_KnownLimitation(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+
+	prefix := "sk-" + "ant-api03-"
+	// 5 real fragments: the prefix (whose own captured tail "api03-"
+	// already contributes 6 class-valid chars) plus 4 more 4-char chunks,
+	// totaling well over the 20-char Anthropic key minimum. No 4-of-5
+	// subset reaches the 20-char minimum, so the bounded combination
+	// search (size<=4) cannot select all 5.
+	u := "https://example.com/x?a=" + prefix +
+		"&j1=" + url.QueryEscape("====") + "&b=AAAA" +
+		"&j2=" + url.QueryEscape("====") + "&c=BBBB" +
+		"&j3=" + url.QueryEscape("====") + "&d=CCCC" +
+		"&j4=" + url.QueryEscape("====") + "&e=DDDD"
+	result := s.Scan(context.Background(), u)
+	if !result.Allowed {
+		t.Error("this is a documented KNOWN LIMITATION (see comment) -- if this now blocks, the residual gap was closed; update this test")
+	}
+}
+
+// TestScan_DLP_QuerySubsequence_ManyPunctuatedParams_CleanNoFalsePositive
+// confirms the noise-stripping fix does not turn ordinary dash/underscore
+// query values into false positives, even at a query-value count well
+// beyond the old combination cap.
+func TestScan_DLP_QuerySubsequence_ManyPunctuatedParams_CleanNoFalsePositive(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := MustNew(cfg)
+	defer s.Close()
+
+	u := "https://example.com/search?"
+	for i := range 20 {
+		if i > 0 {
+			u += "&"
+		}
+		u += fmt.Sprintf("field_%d=value-%d_ok", i, i)
+	}
+	result := s.Scan(context.Background(), u)
+	if !result.Allowed {
+		t.Errorf("false positive on clean many-param URL with ordinary dash/underscore values: %s", result.Reason)
+	}
+}
+
 // --- DLP new pattern tests ---
 
 func TestScan_DLP_GitHubFinegrainedPAT(t *testing.T) {
@@ -3352,6 +3515,34 @@ func TestScan_DLP_DelimiterEncodedTokensInURLComponents(t *testing.T) {
 			name: "query_base32_hyphens",
 			url:  "https://example.com/api?key=" + splitEncodedTokenForTest(t, b32, 6, "-"),
 		},
+		// CVE-class regression: comma was NOT a recognized separator in
+		// normalizeEncodedToken's old allow-list (isEncodedTokenSeparator),
+		// so a single comma anywhere in the token aborted normalization
+		// entirely and the whole encoded credential evaded decoding. The
+		// doc comment on the old function even named comma as a known,
+		// accepted gap. Also cover colon, semicolon, pipe, and '!' -- none
+		// of those were recognized either, and '!' is the exact byte the
+		// task's reproduction used.
+		{
+			name: "query_base64_commas",
+			url:  "https://example.com/api?key=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, ",")),
+		},
+		{
+			name: "query_base64_colons",
+			url:  "https://example.com/api?key=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, ":")),
+		},
+		{
+			name: "query_base64_semicolons",
+			url:  "https://example.com/api?key=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, ";")),
+		},
+		{
+			name: "query_base64_pipes",
+			url:  "https://example.com/api?key=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, "|")),
+		},
+		{
+			name: "query_base64_exclamations",
+			url:  "https://example.com/api?key=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, "!")),
+		},
 		{
 			name: "path_base64_dots",
 			url:  "https://example.com/exfil/" + splitEncodedTokenForTest(t, stdB64, 5, ".") + "/data",
@@ -3405,6 +3596,10 @@ func TestScan_DLP_DelimiterEncodedTokensNoFalsePositives(t *testing.T) {
 		{
 			name: "query_base64_dots_clean",
 			url:  "https://example.com/api?data=" + splitEncodedTokenForTest(t, stdB64, 5, "."),
+		},
+		{
+			name: "query_base64_commas_clean",
+			url:  "https://example.com/api?data=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, ",")),
 		},
 		{
 			name: "query_base64url_plus_clean",

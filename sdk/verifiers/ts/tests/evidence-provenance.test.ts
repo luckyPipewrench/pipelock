@@ -112,13 +112,22 @@ test("evidence provenance: execution limits reject unbounded verifier work", () 
   );
 });
 
-test("encoded token normalization rejects non-ASCII whitespace separators", () => {
+// This used to assert that a non-ASCII whitespace separator (not part of the
+// old enumerated allow-list of skippable delimiters) made encodedToken abort
+// normalization to "". That was the pre-fix, allow-list behavior, and it was
+// itself the bypass: an attacker who split a secret with a delimiter absent
+// from the allow-list defeated reconstruction, hiding the token from DLP
+// entirely. encodedToken (mirroring scanner.go's normalizeHex /
+// normalizeEncodedToken) now treats every byte outside the target alphabet
+// as strippable noise instead of aborting, so these separators are removed
+// and the token is reconstructed and normalized like any other split.
+test("encoded token normalization strips non-ASCII whitespace separators instead of aborting", () => {
   for (const separator of ["\u00a0", "\u1680", "\u3000", "\ufeff"]) {
     const output = applyEvidenceProvenanceRecipe(Buffer.from(`SG${separator}k=`), {
       transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
       operations: [{ kind: "encoded_token_normalize", alphabet: "base64_standard" }],
     });
-    assert.equal(Buffer.from(output).toString(), "");
+    assert.equal(Buffer.from(output).toString(), "SGk=");
   }
 });
 

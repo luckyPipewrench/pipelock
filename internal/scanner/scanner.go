@@ -1477,19 +1477,102 @@ func IterativeDecode(s string) string {
 	return s
 }
 
-// stripURLNoise removes URL separator characters that break DLP regex matching
-// when secrets are fragmented across path/query boundaries. Strips characters that
-// are valid in URLs but not in API key character classes [a-zA-Z0-9\-_]. Attackers
-// insert dots, slashes, spaces, and other noise to split key patterns.
+// stripURLNoise removes every byte that cannot legitimately appear as DATA in
+// one of pipelock's DLP credential alphabets, so an attacker-chosen delimiter
+// inserted between fragments of a split secret does not survive to break
+// contiguous-string matching.
+//
+// This is a DENY-list, not an allow-list. The KEPT set is deliberately
+// narrow: ASCII letters and digits, plus '-', '_', '=' -- the punctuation
+// pipelock's hyphen/underscore token formats ("sk-ant-...", "ghp_...",
+// "glpat-...") use as key data, plus base64 padding. Everything outside it
+// -- not just the handful of characters previously enumerated by name
+// (whitespace, '.', '+', ',', ';', '|') -- is noise and is stripped. An
+// allow-list of "known" separator characters is inherently incomplete: an
+// attacker who notices a delimiter is absent from the list (this codebase's
+// own reproduction used '!', which was never in the list) simply splits on
+// that instead. Keeping only the credential alphabet has no such gap,
+// because there is no byte outside it that a real secret can ever need
+// preserved.
+//
+// '+' and '/' are DELIBERATELY excluded even though they are legitimate
+// base64-standard data (AWS Secret Key, Azure Storage Account Key both use
+// them). A decoded path or query value routinely contains a literal '/' or
+// '+' as ordinary URL STRUCTURE -- an encoded path separator (%2f), a
+// space encoded as '+' -- not as credential data, and those two patterns are
+// config/env-var values that get exfiltrated whole far more often than
+// fragmented across query params. Preserving them regressed a real,
+// previously-passing case (see TestScan_DLP_PathMixedSeparatorBypass): a
+// dash/underscore-only secret like "sk-ant-..." split across a decoded path
+// by an encoded '/' stopped reconstructing, because the '/' survived instead
+// of bridging the gap. stripToAlphanumeric (below) is the layer that closes
+// decoys built from base64 punctuation against a PURE-alphanumeric target;
+// it does not have this same false-negative risk because it strips '+'/'/'
+// unconditionally rather than trying to decide when they are data.
 //
 //pipelock:provenance-transform url_noise_strip
 func stripURLNoise(s string) string {
 	return strings.Map(func(r rune) rune {
-		switch r {
-		case '.', '/', ' ', '\t', '\n', '\r', '+', ',', ';', '|':
-			return -1
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_' || r == '=':
+			return r
 		}
-		return r
+		return -1
+	}, s)
+}
+
+// stripToAlphanumeric is a STRICTER companion to stripURLNoise: it keeps only
+// ASCII letters and digits, stripping '-', '_', '+', '/', '=' as well. Those
+// five characters are legitimate DATA for some DLP patterns (the hyphen in
+// "sk-ant-...", the underscore in "ghp_...", base64's '+/='), so
+// stripURLNoise must preserve them -- but that is exactly what an attacker
+// can exploit: a decoy query VALUE built entirely from one of those five
+// characters (e.g. "----") survives stripURLNoise unchanged and sits inside
+// the reconstructed concatenation, breaking the contiguous alphanumeric run
+// that patterns like the AWS access key ID ("AKIA[A-Z0-9]{16,}") require.
+// Patterns whose entire matched span is pure alphanumeric (AWS keys, hex
+// tokens, Ethereum addresses, credit card numbers, ...) don't need those five
+// characters preserved at all, so running a second, stricter pass alongside
+// stripURLNoise closes that gap without weakening stripURLNoise's own
+// coverage of hyphen/underscore-bearing formats: the two targets are
+// additive, and a pattern only needs ONE of them to still see its secret
+// reconstructed. What stripToAlphanumeric does NOT close: a decoy built from
+// one of these five characters can still defeat reconstruction of a pattern
+// that itself requires that same character as data (e.g. dash-only decoys
+// against "sk-ant-..."), because stripping it there would also destroy the
+// real secret. That narrower case -- the decoy alphabet must match the
+// target credential's OWN separator -- is left to the bounded subsequence
+// search (querySubsequenceDLP / querySubsequenceCoreDLP).
+//
+// Only wired into the full ordered query-value CONCATENATION, not into the
+// URL path or an individual query key/value. A single value or a path
+// segment is ordinary content far more often than it is a decoy: a region
+// slug like "asia-pacific-southeast" or a product name like
+// "aida-assistant" is exactly AWS-prefix-shaped once its dashes are gone
+// (verified false positive, closed by scoping this to the concatenation
+// where the multi-value decoy-stripping is actually needed -- see
+// TestScan_DLPFalsePositiveRegression). The concatenation is where a
+// decoy VALUE sitting between two real fragments is the thing being
+// defended against; a lone value has no adjacent fragment to reconstruct.
+//
+// Deliberately NOT tagged //pipelock:provenance-transform: doing so requires
+// registering a new normalize.OperationKind plus a scannerXxx replay
+// implementation in internal/normalize/provenance.go, which is forensic
+// receipt-replay infrastructure outside this fix's scope. stripURLNoise's
+// existing url_noise_strip operation only replays the LESS aggressive strip
+// (it keeps '-','_','+','/','='), so it would misrepresent what this
+// function actually removed if reused here. See the adjacent-findings note
+// in the PR/task report: this DLP detection path is not currently
+// reconstructable through the provenance replay system.
+func stripToAlphanumeric(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		}
+		return -1
 	}, s)
 }
 
@@ -1570,14 +1653,21 @@ func normalizeHex(s string) string {
 	// leaving stray 'x' characters from partially-matched patterns.
 	out := hexPrefixReplacer.Replace(s)
 
-	// Strip single-char delimiters.
+	// Strip every byte that is not a hex digit. Same deny-list reasoning as
+	// isEncodedTokenSeparator: hex has only 16 valid data characters, so
+	// anything else can only be attacker-insertable noise -- there is no
+	// separator character an enumerated allow-list could omit, because the
+	// final all-hex-digit validation below rejects any candidate that still
+	// isn't pure hex after stripping. That validation is also why widening
+	// this has no meaningful false-positive cost: ordinary prose fails it
+	// regardless of how permissively it was stripped, since English words
+	// contain letters outside a-f.
 	out = strings.Map(func(r rune) rune {
-		switch r {
-		case ':', ' ', '-', ',':
-			return -1
-		default:
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
 			return r
 		}
+		return -1
 	}, out)
 
 	// Validate: must be even-length, non-empty, and pure hex.
@@ -1600,15 +1690,6 @@ const (
 	encodedTokenBase32
 )
 
-func isASCIIWhitespaceByte(c byte) bool {
-	switch c {
-	case ' ', '\t', '\n', '\r', '\f', '\v':
-		return true
-	default:
-		return false
-	}
-}
-
 func isEncodedTokenByte(c byte, kind encodedTokenKind) bool {
 	switch {
 	case c >= 'A' && c <= 'Z':
@@ -1630,34 +1711,34 @@ func isEncodedTokenByte(c byte, kind encodedTokenKind) bool {
 
 // isEncodedTokenSeparator reports whether c is a delimiter an attacker may
 // interleave between encoded-token characters to evade contiguous-string
-// matching. The recognized set is intentionally narrow: ASCII whitespace, '.',
-// and the cross-encoding characters that are invalid for the target alphabet
-// (so they cannot be data bytes). Any other byte aborts normalization rather
-// than being skipped, which keeps false positives down at the cost of missing
-// exotic splitters (',', ':', ';', '|'). The contiguous hex path in
-// matchSecretEncodingSpan covers ',', ':', '\x', and '0x' explicitly; encoded
-// (base64/base32) splitting on those separators is a known, documented gap, not
-// full coverage.
+// matching.
+//
+// This is a DENY-list, not an allow-list: any byte that is not part of the
+// target encoding's own alphabet (isEncodedTokenByte) is treated as
+// attacker-insertable noise and stripped. A legitimate, contiguous encoded
+// token can only ever contain alphabet bytes by construction, so nothing
+// outside that alphabet can ever be real token data -- it is always safe to
+// strip it. This used to be an enumerated allow-list (ASCII whitespace, '.',
+// and the cross-encoding characters), and the list was incomplete by
+// construction: an attacker who noticed a byte was missing (comma, colon,
+// semicolon, pipe, or any other unlisted delimiter such as '!' or '~') simply
+// split on that instead, aborting normalization entirely (normalizeEncodedToken
+// returned "" the moment it hit an unrecognized byte) and hiding the whole
+// token from decoding. A deny-list keyed to the alphabet has no such gap:
+// there is no byte outside the alphabet that stripping could ever be wrong
+// about, so there is nothing left for an attacker to pick.
 func isEncodedTokenSeparator(c byte, kind encodedTokenKind) bool {
-	if isASCIIWhitespaceByte(c) || c == '.' {
-		return true
-	}
-	switch kind {
-	case encodedTokenBase64Std:
-		return c == '-' || c == '_'
-	case encodedTokenBase64URL:
-		return c == '/' || c == '+'
-	case encodedTokenBase32:
-		return c == '-' || c == '_' || c == '/'
-	default:
-		return false
-	}
+	return !isEncodedTokenByte(c, kind)
 }
 
-// normalizeEncodedToken strips only characters that are invalid for the target
-// encoding. It preserves URL-safe base64 '-' and '_' for URL-safe decode and
-// preserves standard base64 '/' for standard decode, so data bytes are not
-// treated as delimiters.
+// normalizeEncodedToken strips every byte that is not part of the target
+// encoding's own alphabet (isEncodedTokenByte). It preserves URL-safe base64
+// '-' and '_' for URL-safe decode and preserves standard base64 '/' for
+// standard decode, so data bytes are never treated as delimiters -- only
+// bytes that could not possibly be data for this encoding are. Because
+// isEncodedTokenSeparator is defined as the complement of isEncodedTokenByte,
+// every byte is either alphabet or separator; normalization never aborts
+// partway through, it only strips.
 //
 //pipelock:provenance-transform encoded_token_normalize
 func normalizeEncodedToken(s string, kind encodedTokenKind) string {
@@ -1673,11 +1754,7 @@ func normalizeEncodedToken(s string, kind encodedTokenKind) string {
 			b.WriteByte(c)
 			continue
 		}
-		if isEncodedTokenSeparator(c, kind) {
-			changed = true
-			continue
-		}
-		return ""
+		changed = true
 	}
 	if !changed {
 		return ""
@@ -1930,6 +2007,9 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 		if stripped := stripURLNoise(concat); stripped != concat {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
 		}
+		if stripped := stripToAlphanumeric(concat); stripped != concat {
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped_alnum")})
+		}
 	}
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
@@ -2076,6 +2156,25 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 // multiple parameters with arbitrary junk values interleaved between fragments.
 // Tries subsequences of size 2-4 for URLs with 3-20 query params.
 // Cost: O(n^4) worst case, bounded at ~6k combinations for n=20.
+//
+// The size-4 / value-20 caps are a KNOWN, deliberately bounded (evadable)
+// defense, not the primary one: they are also part of the cross-language
+// receipt-replay protocol (see the QuerySubsequence index bounds validated
+// in sdk/verifiers/{rust,ts}/src/provenance*.{rs,ts}), so widening them here
+// alone would break replay parity, on top of the raw combinatorial cost
+// (~3.5x combinations at size 5 vs size 4 for n=20; see
+// TestScan_DLP_QuerySubsequence_ManyPunctuatedParams_CleanNoFalsePositive
+// for the false-positive budget this has to stay under). The PRIMARY,
+// UNBOUNDED-in-query-value-count defense against decoy-interleaved secret
+// fragmentation is stripURLNoise / stripToAlphanumeric applied to the full
+// ordered query concatenation below (orderedQueryConcat) -- a single O(n)
+// pass that reconstructs the secret regardless of how many decoy values
+// separate the real fragments, as long as the decoy bytes fall outside the
+// pattern's own character class. This bounded subsequence search only
+// matters for the narrower residual where a decoy is built from exactly the
+// same punctuation ('-','_','=') the target pattern's own class uses (see
+// TestScan_DLP_QuerySubsequence_PunctuatedTargetForeignCharDecoy_KnownLimitation
+// for the specific case this still cannot close).
 //
 //pipelock:provenance-transform query_subsequence
 func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) (Result, []WarnMatch) {

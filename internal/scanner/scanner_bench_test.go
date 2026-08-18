@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -228,4 +229,28 @@ func BenchmarkMatchDomain(b *testing.B) {
 			MatchDomain("sub.example.com", "*.example.com")
 		}
 	})
+}
+
+// BenchmarkScan_ManyQueryParamsAllowed exercises the worst realistic case for
+// the query-value noise-stripping and subsequence-combination DLP checks: a
+// clean (allowed) URL carrying a realistic-looking spread of query params, so
+// every DLP pass runs to completion instead of short-circuiting on an early
+// match. This is the cost profile that matters for legitimate traffic when
+// the subsequence-combination search size is changed.
+func BenchmarkScan_ManyQueryParamsAllowed(b *testing.B) {
+	s := MustNew(benchConfig())
+	b.Cleanup(s.Close)
+
+	var q strings.Builder
+	for i := range 20 {
+		if i > 0 {
+			q.WriteByte('&')
+		}
+		fmt.Fprintf(&q, "field%d=value%d-token", i, i)
+	}
+	target := "https://example.com/api?" + q.String()
+	b.ResetTimer()
+	for b.Loop() {
+		s.Scan(context.Background(), target)
+	}
 }

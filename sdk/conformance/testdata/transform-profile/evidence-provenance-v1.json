@@ -506,6 +506,83 @@
       "recipe": [{"kind":"url_noise_strip"}]
     },
     {
+      "id": "scanner-encoded-token-comma-b64",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "VTBjLHNhdz09",
+      "output_b64": "VTBjc2F3PT0=",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"base64_standard"}]
+    },
+    {
+      "id": "scanner-encoded-token-semicolon-b64url",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "VTBjO3Nhdz09",
+      "output_b64": "VTBjc2F3PT0=",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"base64_url"}]
+    },
+    {
+      "id": "scanner-encoded-token-pipe-base32",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "TUZSR0d8MzNGTVpUUz09PQ==",
+      "output_b64": "TUZSR0czM0ZNWlRTPT09",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"base32"}]
+    },
+    {
+      "id": "scanner-encoded-token-bang-b64",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "VTBjIXNhdz09",
+      "output_b64": "VTBjc2F3PT0=",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"base64_standard"}]
+    },
+    {
+      "id": "scanner-encoded-token-hex-punctuation",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "NDg7NjksMjE6ZmY=",
+      "output_b64": "NDg2OTIxZmY=",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"hex"}]
+    },
+    {
+      "id": "scanner-encoded-token-nbsp",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "U0fCoGs9",
+      "output_b64": "U0drPQ==",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"base64_standard"}]
+    },
+    {
+      "id": "scanner-encoded-token-ideographic-space",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "U0fjgIBrPQ==",
+      "output_b64": "U0drPQ==",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"base64_standard"}]
+    },
+    {
+      "id": "scanner-encoded-token-bom",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "U0fvu79rPQ==",
+      "output_b64": "U0drPQ==",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"base64_standard"}]
+    },
+    {
+      "id": "scanner-url-noise-bang",
+      "operations": ["url_noise_strip"],
+      "input_b64": "YSFi",
+      "output_b64": "YWI=",
+      "recipe": [{"kind":"url_noise_strip"}]
+    },
+    {
+      "id": "scanner-url-noise-mixed-punctuation",
+      "operations": ["url_noise_strip"],
+      "input_b64": "YShiKWN7ZH1l",
+      "output_b64": "YWJjZGU=",
+      "recipe": [{"kind":"url_noise_strip"}]
+    },
+    {
+      "id": "scanner-url-noise-preserves-token-bytes",
+      "operations": ["url_noise_strip"],
+      "input_b64": "c2stYW50X2FwaTAzPVJFREFDVEVE",
+      "output_b64": "c2stYW50X2FwaTAzPVJFREFDVEVE",
+      "recipe": [{"kind":"url_noise_strip"}]
+    },
+    {
       "id": "scanner-ordered-query",
       "operations": ["ordered_query_concat"],
       "input_b64": "YT14JTI1MjEmZW1wdHk9JmI9eSt6",

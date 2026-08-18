@@ -1211,7 +1211,7 @@ mod tests {
             vectors,
             ..
         } = corpus;
-        assert_eq!(vectors.len(), 63, "corpus vector count changed");
+        assert_eq!(vectors.len(), 74, "corpus vector count changed");
         for vector in vectors {
             let input = STANDARD.decode(&vector.input_b64).unwrap();
             let result = String::from_utf8(input)

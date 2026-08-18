@@ -450,7 +450,11 @@ test("PR3 transform corpus executes every recipe vector byte-exactly", () => {
   const corpus = rawObject(parseJSONStrict(readFileSync(corpusPath, "utf8")), "corpus");
   const profile = rawString(corpus.profile_digest, "profile_digest");
   const vectors = corpus.vectors as unknown[];
-  assert.equal(vectors.length, 63, "the pinned PR3 transform corpus must not shrink");
+  assert.equal(
+    vectors.length,
+    74,
+    "the pinned PR3 transform corpus must not change size without a deliberate update",
+  );
   for (const value of vectors) {
     const vector = rawObject(value, "vector");
     const id = rawString(vector.id, "vector.id");

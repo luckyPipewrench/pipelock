@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -92,18 +93,41 @@ func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	// call's. Two entries for one name is resolvable-but-unspecified, and an
 	// ambient value winning would silently run a different command than the
 	// test asked for.
-	env := make([]string, 0, len(os.Environ())+2)
+	// The child stands in for a person running the binary, so it gets a home of
+	// its own. TestMain isolates the data directory for the whole package and
+	// the child inherits that; the home directory was not isolated, which left
+	// the child reading the developer's real one.
+	//
+	// Both spellings are set, because os.UserHomeDir reads HOME on Unix and
+	// USERPROFILE on Windows, and os.UserConfigDir reads APPDATA there.
+	// Isolating only the Unix name would leave the child unisolated on the one
+	// platform this project has only just started running on.
+	home := t.TempDir()
+	isolated := map[string]string{
+		"HOME":           home,
+		"USERPROFILE":    home,
+		"APPDATA":        filepath.Join(home, "AppData", "Roaming"),
+		"LOCALAPPDATA":   filepath.Join(home, "AppData", "Local"),
+		routingHelperEnv: string(encoded),
+	}
+
+	env := make([]string, 0, len(os.Environ())+len(isolated))
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, routingHelperEnv+"=") || strings.HasPrefix(kv, "HOME=") {
-			continue
+		// Drop any inherited copy of a name being set below. Two entries for one
+		// name is resolvable-but-unspecified, and an ambient value winning would
+		// silently run a different command, or in a different home, than the
+		// test asked for.
+		name, _, ok := strings.Cut(kv, "=")
+		if ok {
+			if _, replaced := isolated[name]; replaced {
+				continue
+			}
 		}
 		env = append(env, kv)
 	}
-	// The child is standing in for a person running the binary, so it gets a
-	// home of its own. TestMain isolates the data directory for the whole
-	// package and the child inherits that; the home directory was never
-	// isolated, which left the child reading the developer's real one.
-	env = append(env, "HOME="+t.TempDir(), routingHelperEnv+"="+string(encoded))
+	for name, value := range isolated {
+		env = append(env, name+"="+value)
+	}
 	child.Env = env
 
 	var outBuf, errBuf bytes.Buffer

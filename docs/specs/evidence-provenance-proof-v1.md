@@ -2,15 +2,22 @@
 
 Status: experimental and fixture-only. This document specifies no registered receipt payload, production emitter, verifier command, or capability claim.
 
-## Profile lifecycle and the freeze boundary
+## Transform-profile registry and immutability
 
-While this profile is experimental, `v1` names a schema-major profile FAMILY and the exact revision in force is its digest, not its filename. Revising the vocabulary therefore changes the digest in place, and that is deliberate: no production emitter, published verifier, or released artifact consumes this profile, so no issued proof is invalidated by doing so. Implementations pin one exact digest and reject every other value, which means an unknown digest fails closed rather than degrading to a weaker interpretation.
+The proof wire version remains `pipelock-evidence-provenance-proof/v1`. It has not changed. A transform profile selects replay semantics and is identified by its exact document digest, not by an operation name or a best-effort profile version.
 
-That permission ends at a hard boundary. On the FIRST of either a production emission or a published verifier that implements this profile, the profile bytes and digest become immutable permanently. After that point a vocabulary change MUST be published as a new profile, every frozen profile MUST be retained by digest for the full receipt-retention period, and dispatch MUST be exact allowlisted digest matching.
+The registry contains these immutable profiles:
 
-Dispatch must never be ordered fallback. Trying one profile and then another on failure lets an attacker choose the weaker interpretation of the same bytes, which converts a verification control into a downgrade oracle. An unknown digest is a rejection, not a prompt to try again.
+- v1: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v1.json`, digest `sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94`.
+- v2: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v2.json`, digest `sha256:35c0859720b0eac51bfa7c663b7e79f3fea5d62e8837d8a88512b8b035e904a9`.
 
-The reason to state this now rather than at the freeze is cost. Today the migration is a digest change. After one real receipt exists it requires archival profile support, mixed-version verification tests, downgrade controls, and a documented retention period, and it must be designed under the pressure of already having something to preserve.
+Every normative profile document and its digest are frozen at publication, including experimental profiles. A semantic correction MUST create a new document and digest. It MUST NOT rewrite a prior profile in place. Verifiers retain every registered profile for the receipt-retention period.
+
+Before executing any operation, a verifier MUST resolve `transform_profile_digest` by exact allowlisted match. An unknown, malformed, or unsupported digest is a rejection. It MUST NOT fall back to v1, select the newest profile, or try another profile after a failure. Ordered fallback would let an attacker choose a weaker interpretation of the same bytes.
+
+The operation names are unchanged between v1 and v2. The digest is the semantic selector, so renaming operations would add wire churn without making unknown-profile handling safer.
+
+`encoded_token_normalize` and `url_noise_strip` differ between the profiles. v1 retains its original allow-list behavior: token normalization removes only its listed delimiters and rejects other separators, while URL noise stripping removes dot, slash, ASCII space/TAB/LF/CR, plus, comma, semicolon, and vertical bar. v2 keeps token data bytes by alphabet: hex `[0-9A-Fa-f]`; Base32 `[A-Z2-7=]`; standard Base64 `[A-Za-z0-9+/=]`; and URL-safe Base64 `[A-Za-z0-9_-=]`. v2 `url_noise_strip` keeps ASCII `[A-Za-z0-9_-=]`. The profile documents remain normative for the complete operation behavior.
 
 ## Scope and terms
 
@@ -20,9 +27,9 @@ Implementations MUST reject invalid UTF-8 source or view bytes; starts or ends i
 
 ## Typed recipe language
 
-`transform_profile_digest` is a `sha256:<lowercase hex>` digest of the profile document. A verifier MUST possess the exact digest-matched profile before reconstructing a view. The canonical evidence-provenance v1 profile document is `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v1.json`; its exact committed bytes have digest `sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94`.
+`transform_profile_digest` is a `sha256:<lowercase hex>` digest of the profile document. A verifier MUST possess the exact digest-matched registry profile before reconstructing a view. The v1 and v2 documents and digests are listed above.
 
-That profile document—not a Pipelock implementation—is the normative source of truth for the ordered vocabulary, operation parameter shapes, Unicode/control-character and malformed-input policy, decoding and padding selection, canonical encodings, UTF-8 checks, and execution limits. It declares a 32-operation maximum, a 16 MiB cumulative processing budget charged before every operation and repeated internal decode pass, a 2 MiB input limit, a 1 MiB post-operation output limit, and at most four percent-decode passes. Implementations MUST reject an oversized recipe before execution or commitment reconstruction. The Go implementation deliberately does not load a conformance document at runtime; its digest test parses the document and fails if those implementation constants or the operation order diverge. This keeps receipt validation hermetic while preventing a second source of truth. It is a distinct document from `pipelock-transform-v1.json`, which remains the source-span transform profile.
+That profile document, rather than a Pipelock implementation, is the normative source of truth for the ordered vocabulary, operation parameter shapes, Unicode/control-character and malformed-input policy, decoding and padding selection, canonical encodings, UTF-8 checks, and execution limits. It declares a 32-operation maximum, a 16 MiB cumulative processing budget charged before every operation and repeated internal decode pass, a 2 MiB input limit, a 1 MiB post-operation output limit, and at most four percent-decode passes. Implementations MUST reject an oversized recipe before execution or commitment reconstruction. The Go implementation deliberately does not load a conformance document at runtime; its digest test parses the document and fails if those implementation constants or the operation order diverge. This keeps receipt validation hermetic while preventing a second source of truth. It is a distinct document from `pipelock-transform-v1.json`, which remains the source-span transform profile.
 
 Recipes are ordered arrays of typed operations. Operations are never labels or concatenated strings; the following is a convenience summary, while the profile document is authoritative:
 
@@ -61,4 +68,4 @@ Fixture verification also has availability limits. The outer fixture is at most 
 
 ## Conformance corpus
 
-`sdk/conformance/testdata/transform-profile/evidence-provenance-v1.json` is byte-exact via base64 values, including hostile invalid UTF-8. Its profile digest is regenerated whenever the separately pinned evidence-provenance profile changes. Meta-tests require a vector for each operation and each declared error. Corpus keys are harmless test-only HMAC keys and do not change the no-offline-oracle rule for emitted receipts.
+`sdk/conformance/testdata/transform-profile/evidence-provenance-v1.json` and `evidence-provenance-v2.json` are byte-exact via base64 values, including hostile invalid UTF-8. Each corpus pins its own profile digest. The 63 historical vectors remain under v1; both corpora also exercise the separator cases whose outputs differ by profile. Meta-tests require a vector for each operation and each declared error. Corpus keys are harmless test-only HMAC keys and do not change the no-offline-oracle rule for emitted receipts.

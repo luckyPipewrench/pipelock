@@ -933,7 +933,7 @@ func TestReverseProxy_DeclaredOversizeRejectedBeforeBodyRead(t *testing.T) {
 	})
 
 	body := &reverseBodyReadTracker{}
-	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/upload", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.test/upload", body)
 	req.Header.Set("Content-Type", "image/png")
 	req.ContentLength = int64(cfg.RequestBodyScanning.MaxBodyBytes + 1)
 	resp := httptest.NewRecorder()

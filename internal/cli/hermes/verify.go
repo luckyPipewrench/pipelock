@@ -85,6 +85,7 @@ terminal network egress is enforced. The plugin path is proven end-to-end
 against a live Hermes by 'make hermes-e2e'; terminal egress stays cooperative
 (it routes through pipelock only when the proxy env values are set in Hermes'
 environment).`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := opts.resolvePaths(); err != nil {
 				return err

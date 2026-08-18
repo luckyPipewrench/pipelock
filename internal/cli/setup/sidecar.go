@@ -90,6 +90,7 @@ Examples:
   pipelock init sidecar --inject-spec deployment.yaml --mcp-upstream http://openclaw:3000/mcp --mcp-server-name openclaw`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runSidecar(cmd, opts)
 		},

@@ -64,6 +64,7 @@ Examples:
   pipelock report --input events.jsonl --since 2026-03-01 --until 2026-03-05
   pipelock report --input events.jsonl --format bundle -o ./report-bundle/
   pipelock report --input events.jsonl --format bundle -o ./bundle/ --sign --agent claude-code`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if input == "" {
 				return fmt.Errorf("--input is required (file path or - for stdin)")

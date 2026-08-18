@@ -86,6 +86,7 @@ Re-run as the pipelock service user for an accurate "can the service read
 this" report.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, cfgLabel, err := loadTestConfig(configFile)
 			if err != nil {

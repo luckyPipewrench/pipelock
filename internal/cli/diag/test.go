@@ -105,6 +105,7 @@ Examples:
   pipelock test --config pipelock.yaml                   # validate a specific config
   pipelock test --json --fail-on-gap --config my.yaml    # CI gate (recommended)
   pipelock test --category dlp,entropy                   # run specific categories`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, cfgLabel, err := loadTestConfig(configFile)
 			if err != nil {

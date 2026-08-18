@@ -98,6 +98,7 @@ Already-wrapped servers are skipped (idempotent). Non-server top-level
 fields in settings.json are preserved.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runZedInstall(cmd, path, dryRun, configFile)
 		},
@@ -127,6 +128,7 @@ Default discovery is the same as install. Use --path to target a single
 specific file.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runZedRemove(cmd, path, dryRun)
 		},

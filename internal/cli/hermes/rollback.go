@@ -59,6 +59,7 @@ after install is left untouched.
 --restore-backup PATH instead overwrites ~/.hermes/config.yaml with the named
 .bak file produced by a prior install. Use this only for explicit recovery; it
 discards config changes made after that backup.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRollback(cmd, opts)
 		},

@@ -60,6 +60,7 @@ func licenseKeygenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "keygen",
 		Short: "Generate Ed25519 keypair for signing license tokens",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if outDir == "" {
 				home, err := os.UserHomeDir()
@@ -128,6 +129,7 @@ func licenseIssueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "issue",
 		Short: "Issue a signed license token",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if keyPath == "" {
 				home, err := os.UserHomeDir()
@@ -428,6 +430,7 @@ func licenseStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Verify the configured license and show renewal status",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			report, err := buildLicenseStatusReport(configFile, crlFile)
 			if jsonOutput {

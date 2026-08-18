@@ -53,6 +53,7 @@ Examples:
   pipelock update --yes                # update without the confirmation prompt
   pipelock update --version v2.7.0     # install a specific release tag
   pipelock update --rollback           # restore the previous binary`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if checkOnly && doRollOut {
 				return fmt.Errorf("use only one of --check / --rollback")

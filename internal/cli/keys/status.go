@@ -154,6 +154,7 @@ Examples:
   pipelock keys status --json`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// A --home on this command overrides the root persistent flag for
 			// path resolution, matching keygen/trust ergonomics.

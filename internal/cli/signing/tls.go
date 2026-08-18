@@ -38,6 +38,7 @@ func TlsInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Generate a TLS CA certificate and private key",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dur, err := time.ParseDuration(validity)
 			if err != nil {
@@ -85,6 +86,7 @@ func TlsInstallCACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install-ca",
 		Short: "Install the Pipelock CA certificate in the system trust store",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if certPath == "" {
 				dir, err := cliutil.ResolveKeystoreDir("")
@@ -110,6 +112,7 @@ func TlsShowCACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show-ca",
 		Short: "Print the Pipelock CA certificate PEM to stdout",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if certPath == "" {
 				dir, err := cliutil.ResolveKeystoreDir("")

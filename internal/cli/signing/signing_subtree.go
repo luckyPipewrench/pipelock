@@ -90,6 +90,7 @@ indented JSON.
 
 Examples:
   pipelock signing roster show --path roster.json --root-fingerprint sha256:abc123...`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			loaded, err := domsigning.LoadRoster(filepath.Clean(path), rootFingerprint)
 			if err != nil {
@@ -126,6 +127,7 @@ Exit 0 on success, non-zero on failure.
 
 Examples:
   pipelock signing roster verify --path roster.json --root-fingerprint sha256:abc123...`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			loaded, err := domsigning.LoadRoster(filepath.Clean(path), rootFingerprint)
 			if err != nil {
@@ -181,6 +183,7 @@ Examples:
   pipelock signing recovery verify --path recovery.json --recovery-pubkey-file pub.hex --pinned-fingerprint sha256:abc123...
   pipelock signing recovery verify --path recovery.json --recovery-pubkey <64-char-hex> --pinned-fingerprint sha256:abc...
   pipelock signing recovery verify --path recovery.json --recovery-pubkey-file pub.hex --pinned-fingerprint sha256:abc... --expected-target-roster-hash sha256:def...`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			pubBytes, err := resolvePubkey("recovery-pubkey", recoveryPubkeyHex, recoveryPubkeyFile)
 			if err != nil {
@@ -269,6 +272,7 @@ Exit 0 on success, non-zero on failure.
 Examples:
   pipelock signing transition verify --path transition.json --old-pubkey-file old.hex --new-pubkey-file new.hex
   pipelock signing transition verify --path transition.json --old-pubkey <hex> --new-pubkey <hex> --pinned sha256:abc123...`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			oldPub, err := resolvePubkey("old-pubkey", oldPubkeyHex, oldPubkeyFile)
 			if err != nil {

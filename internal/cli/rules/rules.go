@@ -161,6 +161,7 @@ func rulesStatusCmd() *cobra.Command {
 		Long: `Display the effective state of all rule tiers: core (compiled),
 standard (bundle or compiled fallback), and community/pro bundles.
 Uses the same config resolution as runtime for accurate reporting.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
 
@@ -527,6 +528,7 @@ func rulesListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List installed rule bundles",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir := domrules.ResolveRulesDir(rulesDir)
 			out := cmd.OutOrStdout()
@@ -1151,6 +1153,7 @@ func rulesResetFreshnessCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reset-freshness",
 		Short: "Reset rules rollback freshness state from installed bundles",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir := domrules.ResolveRulesDir(rulesDir)
 			if err := domrules.WithFreshnessLock(dir, func() error {
@@ -1175,6 +1178,7 @@ func rulesVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Re-verify integrity of all installed bundles",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
 			dir := domrules.ResolveRulesDir(rulesDir)

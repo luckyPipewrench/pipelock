@@ -91,6 +91,7 @@ Exit codes:
   0  All checks passed (skipped checks are OK)
   1  One or more checks failed
   2  Config load error`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Sandbox mode: run only sandbox capability checks (no proxy).
 			if sandboxCheck {

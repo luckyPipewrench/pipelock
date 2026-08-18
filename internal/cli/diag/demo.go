@@ -62,6 +62,7 @@ disk so a third party can verify it offline with
 "pipelock verify-receipt <file> --key <key>".
 
 Use --interactive for live demos (pauses between scenarios).`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			color := !noColor && cliutil.UseColor()
 			return runDemo(cmd, interactive, color, receiptsDir)

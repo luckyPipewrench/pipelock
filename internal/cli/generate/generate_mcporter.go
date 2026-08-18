@@ -38,6 +38,7 @@ Examples:
   pipelock generate mcporter -i servers.json
   pipelock generate mcporter -i servers.json -o wrapped.json
   pipelock generate mcporter -i servers.json --in-place --backup`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if inPlace && outputFile != "" {
 				return fmt.Errorf("--in-place and --output are mutually exclusive")

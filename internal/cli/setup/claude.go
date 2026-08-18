@@ -113,6 +113,7 @@ By default, always exits 0 and writes structured JSON with permissionDecision.
 With --exit-code, exits 0 for allow and 2 for deny (reason on stderr).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runClaudeHook(cmd, configFile, exitCode)
 		},
@@ -502,6 +503,7 @@ overwriting other hooks or settings. A .bak backup is created before
 modification. Runs are idempotent: running twice produces the same result.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runClaudeSetup(cmd, global, project, dryRun, configFile, quiet)
 		},
@@ -597,6 +599,7 @@ Non-pipelock hooks and all other settings are preserved.
 A .bak backup is created before modification.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runClaudeRemove(cmd, global, project, dryRun)
 		},

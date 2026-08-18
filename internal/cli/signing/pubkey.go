@@ -40,6 +40,7 @@ Examples:
   pipelock signing pubkey --config /etc/pipelock/pipelock.yaml
   pipelock signing pubkey --key-file /etc/pipelock/keys/flight-recorder-signing.key
   pipelock signing pubkey --config /etc/pipelock/pipelock.yaml --out /etc/pipelock/keys/flight-recorder-signing.key.pub`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			keyPath, err := resolveRecorderSigningKeyPath(keyFile, configFile)
 			if err != nil {

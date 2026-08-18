@@ -37,6 +37,7 @@ Examples:
   pipelock check --config pipelock.yaml
   pipelock check --config pipelock.yaml --url https://example.com
   pipelock check --url https://pastebin.com/raw/abc123`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Load and validate config
 			var cfg *config.Config

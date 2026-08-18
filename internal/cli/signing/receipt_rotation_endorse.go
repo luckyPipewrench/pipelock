@@ -69,6 +69,7 @@ Example:
     --new-key-file /etc/pipelock/keys/flight-recorder-signing.next.key \
     --root-key /etc/pipelock/keys/flight-recorder-signing.root.pub \
     --out /etc/pipelock/keys/rotation-2026-07-30.json`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !filepath.IsAbs(outPath) {
 				return fmt.Errorf("--out must be absolute, got %q", outPath)

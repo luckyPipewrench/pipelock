@@ -17,6 +17,7 @@ func versionCmd() *cobra.Command {
 
 The build metadata is injected via ldflags when building with "make build".
 When building with plain "go build", default values are shown.`,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			cmd.Printf("pipelock version %s\n", cliutil.Version)
 			cmd.Printf("  build date: %s\n", cliutil.BuildDate)

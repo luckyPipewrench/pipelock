@@ -44,6 +44,7 @@ func keyExportPublicCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export-public",
 		Short: "Export a deployment signing key's public half",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !filepath.IsAbs(keyPath) || !filepath.IsAbs(outPath) {
 				return errors.New("--key and --out must be absolute paths")
@@ -91,6 +92,7 @@ func resetMintCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mint",
 		Short: "Mint one signed MCP reset delegation",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !filepath.IsAbs(keyPath) || !filepath.IsAbs(outPath) {
 				return errors.New("--key and --out must be absolute paths")
@@ -152,6 +154,7 @@ func resetInspectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inspect",
 		Short: "Inspect and verify a signed MCP reset delegation",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			publicKey, err := readResetAuthorityPublicKey(publicKeyPath)
 			if err != nil {
@@ -188,6 +191,7 @@ func resetRevokeCmd() *cobra.Command {
 This cancels that path only. A copied delegation remains valid until expiry;
 rotate the configured authority public key to revoke every delegation from the
 old issuer.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			clean := filepath.Clean(path)
 			info, err := os.Lstat(clean)

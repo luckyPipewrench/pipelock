@@ -181,6 +181,7 @@ servers are skipped (idempotent). A .bak backup is created before modification.
 Non-server fields (inputs, sandbox) are preserved.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVscodeInstall(cmd, global, project, dryRun, configFile)
 		},
@@ -209,6 +210,7 @@ pipelock install. Original server configurations are restored from the
 _pipelock metadata field. Non-wrapped servers are left unchanged.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVscodeRemove(cmd, global, project, dryRun)
 		},

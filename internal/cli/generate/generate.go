@@ -49,6 +49,7 @@ Examples:
   pipelock generate config --list
   pipelock generate config --preset balanced
   pipelock generate config --preset strict --output pipelock.yaml`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if list {
 				return presets.PrintList(cmd.OutOrStdout())

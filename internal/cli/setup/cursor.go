@@ -159,6 +159,7 @@ Always exits 0. The "permission" field in the JSON response is the authoritative
 decision. Diagnostics go to stderr only.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCursorHook(cmd, configFile)
 		},
@@ -359,6 +360,7 @@ overwriting other hooks. A .bak backup is created before modification.
 Runs are idempotent: running twice produces the same result.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCursorInstall(cmd, global, project, dryRun, configFile, quiet)
 		},
@@ -463,6 +465,7 @@ func cursorRemoveCmd() *cobra.Command {
 Non-pipelock hooks are preserved. A .bak backup is created before modification.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCursorRemove(cmd, global, project, dryRun)
 		},

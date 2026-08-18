@@ -115,6 +115,7 @@ Use --config to point pipelock at a specific YAML config when wrapping.
 Use --codex-path to override the codex binary location (default: PATH lookup).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCodexInstall(cmd, dryRun, configFile, codexPath, quiet)
 		},
@@ -139,6 +140,7 @@ the running pipelock binary, the original command/args are recovered from the
 wrapped args list and re-registered. Non-wrapped servers are left unchanged.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCodexRemove(cmd, dryRun, codexPath)
 		},

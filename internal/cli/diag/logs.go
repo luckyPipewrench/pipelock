@@ -33,6 +33,7 @@ Examples:
   pipelock logs --file pipelock-audit.log --last 20
   pipelock logs --file pipelock-audit.log --filter blocked
   pipelock logs --file pipelock-audit.log -f`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if logFile == "" {
 				return errLogFileRequired

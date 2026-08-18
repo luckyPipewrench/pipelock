@@ -54,6 +54,7 @@ func Cmd() *cobra.Command {
 		Use:   "presets",
 		Short: "List built-in config presets",
 		Long:  "List every built-in config preset accepted by `pipelock generate config --preset <name>`.",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return PrintList(cmd.OutOrStdout())
 		},

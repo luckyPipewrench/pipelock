@@ -34,6 +34,7 @@ Examples:
   pipelock generate docker-compose
   pipelock generate docker-compose --agent claude-code
   pipelock generate docker-compose --agent openhands -o docker-compose.yaml`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			tmpl, err := composeTemplate(agentType)
 			if err != nil {

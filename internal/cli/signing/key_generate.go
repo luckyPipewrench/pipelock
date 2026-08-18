@@ -137,6 +137,7 @@ Examples:
   pipelock signing key generate --purpose roster-root --out /etc/pipelock/keys/fleet-root.json
   pipelock signing key generate --purpose contract-activation-signing \
     --out /etc/pipelock/keys/activation.json --id activation-primary`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
 

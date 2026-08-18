@@ -108,6 +108,7 @@ Exit code is 0 when the command completes successfully; the decision JSON
 drives Hermes-side behaviour.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()

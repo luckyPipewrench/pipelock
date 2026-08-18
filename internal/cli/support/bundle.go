@@ -74,6 +74,7 @@ Examples:
   pipelock support bundle --json`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runBundle(cmd, configFile, outputPath, jsonManifest, !noLogs)
 		},

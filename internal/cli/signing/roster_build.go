@@ -79,6 +79,7 @@ Examples:
     --include id=compile-agentA,key=$HOME/.pipelock/agents/agentA/id_ed25519.pub,purpose=contract-compile-signing \
     --data-class internal \
     --out /etc/pipelock/roster.json`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
 

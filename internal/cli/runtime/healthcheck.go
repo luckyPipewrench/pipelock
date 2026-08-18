@@ -26,6 +26,7 @@ Examples:
   pipelock healthcheck
   pipelock healthcheck --addr 0.0.0.0:8888`,
 		SilenceUsage: true,
+		Args:         cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()

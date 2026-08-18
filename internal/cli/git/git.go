@@ -84,6 +84,7 @@ Examples:
   git diff HEAD~1 | pipelock git scan-diff --json
   git diff HEAD~1 | pipelock git scan-diff --format sarif -o results.sarif
   git diff HEAD~1 | pipelock git scan-diff --exclude vendor/ --exclude "*.generated.go"`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Resolve format: --json is shorthand for --format json
 			effectiveFormat := format
@@ -224,6 +225,7 @@ Examples:
   pipelock git install-hooks
   pipelock git install-hooks --config /etc/pipelock/pipelock.yaml
   pipelock git install-hooks --force`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			gitDir, err := findGitDir()
 			if err != nil {

@@ -83,6 +83,7 @@ servers are skipped (idempotent). A .bak backup is created before
 modification. Non-server fields are preserved.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runClineInstall(cmd, path, dryRun, configFile)
 		},
@@ -109,6 +110,7 @@ pipelock install. Original server configurations are restored from the
 _pipelock metadata field. Non-wrapped servers are left unchanged.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runClineRemove(cmd, path, dryRun)
 		},

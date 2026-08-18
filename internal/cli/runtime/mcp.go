@@ -638,6 +638,7 @@ each line that can be read produces a verdict.
 Examples:
   mcp-server | pipelock mcp scan
   pipelock mcp scan --json --config pipelock.yaml < responses.jsonl`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := cliutil.LoadConfigOrDefault(configFile)
 			if err != nil {

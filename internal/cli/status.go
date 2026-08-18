@@ -68,6 +68,7 @@ command loads config and stats any configured kill-switch sentinel file, but it
 does not mutate runtime state or contact the proxy.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, cfgLabel, err := explainLoadConfig(configFile)
 			if err != nil {

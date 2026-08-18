@@ -45,7 +45,8 @@ pipelock cline install
 For outbound HTTP that Cline executes through tool calls (`curl`, `wget`, etc.), run pipelock as a forward proxy and point the agent shell at it:
 
 ```bash
-pipelock run --config configs/balanced.yaml &
+pipelock generate config --preset balanced > pipelock.yaml
+pipelock run --config pipelock.yaml &
 export HTTPS_PROXY=http://127.0.0.1:8888
 export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=127.0.0.1,localhost

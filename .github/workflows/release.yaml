@@ -195,7 +195,7 @@ jobs:
         run: bash scripts/ci-retry.sh go mod verify
 
       - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: bash scripts/ci-apt-install.sh ripgrep
 
       - name: Run release audit
         run: make release-audit

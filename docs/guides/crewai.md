@@ -259,7 +259,8 @@ For scanning HTTP traffic from CrewAI agents (web searches, API calls), run
 Pipelock as a fetch proxy:
 
 ```bash
-pipelock run --preset balanced
+pipelock generate config --preset balanced > pipelock.yaml
+pipelock run --config pipelock.yaml
 ```
 
 Configure your agent to route HTTP requests through `http://localhost:8888/fetch`.

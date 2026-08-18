@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fires from `on_elevated`, `on_high` and `on_critical`; remove the three old keys and
   set those instead. A silently inert knob is worse than a rejected one, which is why
   this refuses rather than warning.
+- **A reasoning trust class can no longer weaken a stricter response action.** An MCP
+  server marked `trust: reasoning` maps to `warn`, but Pipelock now applies whichever of
+  that mapping and `response_scanning.action` is stricter. An operator running `block`,
+  `ask` or `strip` with a reasoning server configured was getting warn-and-forward for
+  that server; those responses now take the section action. A trust class can tighten the
+  enclosing action and can no longer relax it. If you relied on the old behaviour, set
+  `response_scanning.action: warn` explicitly rather than expecting the server entry to
+  override a stricter setting.
 - **`pipelock git scan-diff` has a three-value exit contract.** `0` means the diff was
   scanned and is clean, `1` means secrets were found, and `2` means no verified result
   was produced, covering unreadable or unparseable input and configuration, encoding or
@@ -57,7 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Human-readable CLI results go to stdout and diagnostics to stderr, so a caller can pipe
-  one without the other.
+  one without the other. `pipelock version > file` and `pipelock generate docker-compose >
+  docker-compose.yml` produce their content rather than an empty file.
+- A command group rejects a subcommand it does not have instead of printing help and
+  reporting success. A setup step whose subcommand name is wrong now fails, where it
+  previously looked like it had run.
 - `pipelock explain` discloses every enabled control an allowed verdict did not evaluate.
   It does not fetch the URL or resolve DNS, so response scanning, request body scanning
   and the SSRF layer can still block a request the explanation allowed.
@@ -103,6 +115,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A second release no longer overwrites the published Helm chart.
 - The sandbox preserves capacity on busy hosts and treats its network lifecycle as a
   fail-closed required service.
+- `pipelock quickstart` prints a walkthrough a reader can run. It creates the config its
+  later steps use, instead of naming one that ships only in a source checkout, and writes
+  each step in the syntax of the platform it is printed on.
+- Integration guides and the README no longer show commands that cannot run: a flag that
+  does not exist on `run` or `mcp proxy`, config paths present only in a source checkout,
+  and an evidence-viewer invocation pointed at a directory it cannot read.
 
 ## [3.3.0] - 2026-07-30
 

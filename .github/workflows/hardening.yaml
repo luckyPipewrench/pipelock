@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
 
       - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: bash scripts/ci-apt-install.sh ripgrep
 
       - name: Workflow and release audit
         run: make release-audit
@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
 
       - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: bash scripts/ci-apt-install.sh ripgrep
 
       - name: Runtime policy audit
         run: make runtime-policy-audit

@@ -44,7 +44,8 @@ pipelock opencode install
 For shell-executed HTTP (curl, wget, fetch), run pipelock as a forward proxy:
 
 ```bash
-pipelock run --config configs/balanced.yaml &
+pipelock generate config --preset balanced > pipelock.yaml
+pipelock run --config pipelock.yaml &
 export HTTPS_PROXY=http://127.0.0.1:8888
 export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=127.0.0.1,localhost

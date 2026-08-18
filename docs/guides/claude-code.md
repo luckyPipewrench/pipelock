@@ -13,8 +13,11 @@ go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 # 2. Verify it works
 pipelock version
 
-# 3. Wrap an MCP server
-pipelock mcp proxy --preset claude-code -- npx -y @modelcontextprotocol/server-filesystem /tmp
+# 3. Generate a config from the Claude Code preset
+pipelock generate config --preset claude-code -o pipelock.yaml
+
+# 4. Wrap an MCP server with it
+pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
 ## MCP Proxy Mode
@@ -154,7 +157,7 @@ pipelock as an HTTP proxy server:
 
 ```bash
 # Start the proxy (background or separate terminal)
-pipelock run --preset claude-code
+pipelock run --config pipelock.yaml
 ```
 
 The proxy listens on `127.0.0.1:8888` by default and exposes:
@@ -244,7 +247,10 @@ interception. They scan traffic directly without certificates.
 
 ## Choosing a Config
 
-Pipelock ships with agent-specific presets selectable via `--preset`:
+Pipelock ships with agent-specific presets. A preset is selected when the config is
+generated, with `pipelock generate config --preset <name> -o pipelock.yaml`, and the
+resulting file is what `run` and `mcp proxy` take through `--config`. Run
+`pipelock presets` to list them:
 
 | Preset | Action | Entropy | Rate Limit | Best For |
 |--------|--------|---------|------------|----------|
@@ -305,5 +311,5 @@ during development, run the MCP server manually:
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
-  pipelock mcp proxy --preset claude-code -- npx -y @modelcontextprotocol/server-filesystem /tmp
+  pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```

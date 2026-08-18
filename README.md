@@ -88,11 +88,15 @@ pipelock verify-receipt "$(ls ./out/*.json | head -1)" --key ./out/signer.pub  #
 
 The scorecard grades each claim on its own and states what it does not prove: whether anything happened outside the boundary Pipelock mediates. Below it, the receipt timeline lists the recorded mediated decisions with their verdicts and hash links. A receipt that is honest about its own limits beats a green checkmark that hides them.
 
-The evidence viewer is free and needs no license:
+The evidence viewer is free and needs no license. It reads a flight-recorder
+session, which is what Pipelock writes while it runs, rather than the demo
+receipts above:
 
 ```bash
-pipelock evidence serve --receipt-dir ./out   # read-only HTML report for one recorded session
-pipelock evidence view --receipt-dir ./out    # static offline report, no server
+pipelock init --output ./pipelock.yaml        # names a recorder directory and generates its signing key
+pipelock run --config ./pipelock.yaml         # record while your agent works
+pipelock evidence view --receipt-dir ./recorder --out report.html   # static offline report, no server
+pipelock evidence serve --receipt-dir ./recorder                    # same report, served read-only
 ```
 
 Two honesty notes, stated up front. The demo signs with an ephemeral key it prints for the run, which proves the receipts are self-consistent rather than tied to a named identity. The public Pipelock playground is a separate path that verifies against a key Pipelock publishes. And the operator running Pipelock holds the signing key, so a receipt proves what the boundary decided and that the key holder signed it, not that the operator is honest. `pipelock anchor receipts` records receipt-chain checkpoints to a local backend or a Rekor transparency log for later audit, and operator-independent verification against that anchor is still being proven end to end.

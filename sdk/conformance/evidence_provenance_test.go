@@ -156,6 +156,42 @@ func TestEvidenceProvenanceTransformCorpus(t *testing.T) {
 	}
 }
 
+func TestEvidenceProvenanceTransformCorpusV2(t *testing.T) {
+	corpus := loadProvenanceCorpusVersion(t, "v2")
+	if corpus.ProfileDigest != normalize.EvidenceProvenanceProfileV2Digest {
+		t.Fatalf("profile digest = %q, want %q", corpus.ProfileDigest, normalize.EvidenceProvenanceProfileV2Digest)
+	}
+	for _, vector := range corpus.Vectors {
+		t.Run(vector.ID, func(t *testing.T) {
+			input, err := base64.StdEncoding.DecodeString(vector.InputB64)
+			if err != nil {
+				t.Fatalf("input: %v", err)
+			}
+			recipe := normalize.Recipe{TransformProfileDigest: corpus.ProfileDigest, Operations: vector.Recipe}
+			if vector.TransformProfileDigest != nil {
+				recipe.TransformProfileDigest = *vector.TransformProfileDigest
+			}
+			output, err := recipe.Apply(string(input))
+			if vector.WantError != "" {
+				if err == nil || !strings.Contains(err.Error(), vector.WantError) {
+					t.Fatalf("error = %v, want %q", err, vector.WantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := base64.StdEncoding.DecodeString(vector.OutputB64)
+			if err != nil {
+				t.Fatalf("output: %v", err)
+			}
+			if output != string(want) {
+				t.Fatalf("output = %q, want %q", output, string(want))
+			}
+		})
+	}
+}
+
 const conformanceCommitment = "hmac-sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 func TestEvidenceProvenanceCorpusRejectsMetadataThatDoesNotExecute(t *testing.T) {
@@ -199,8 +235,12 @@ func TestEvidenceProvenanceCorpusRejectsTrailingJSONValue(t *testing.T) {
 }
 
 func loadProvenanceCorpus(t *testing.T) provenanceCorpus {
+	return loadProvenanceCorpusVersion(t, "v1")
+}
+
+func loadProvenanceCorpusVersion(t *testing.T, version string) provenanceCorpus {
 	t.Helper()
-	path := filepath.Clean(filepath.Join(testdataDir, "transform-profile", "evidence-provenance-v1.json"))
+	path := filepath.Clean(filepath.Join(testdataDir, "transform-profile", "evidence-provenance-"+version+".json"))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

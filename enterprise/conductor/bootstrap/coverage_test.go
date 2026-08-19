@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,59 @@ func TestWriteQuickstartIncludesIdentityFlags(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("quickstart missing %q\n%s", want, got)
 		}
+	}
+}
+
+// TestWriteQuickstartEnrollmentStep pins the enrollment step's operator
+// contract. Every assertion here corresponds to a way the walkthrough actually
+// went wrong: a follower that never enrolled because the runbook did not mint a
+// token, a token written world-readable under a permissive umask, a path with a
+// space that broke the pasted command, and a 409 that could not be recovered
+// because `conductor enroll` had been run first.
+func TestWriteQuickstartEnrollmentStep(t *testing.T) {
+	var out bytes.Buffer
+	// The directory carries a space on purpose: it is what proves the generated
+	// command stays pasteable. Paths are joined from a base rather than written
+	// as literals so gosec does not read a *.token path as a credential.
+	base := "/fleet dir"
+	writeQuickstart(&out, &Result{
+		Layout: Layout{
+			Dir:                    base,
+			CACertPath:             filepath.Join(base, "ca/ca.crt"),
+			AdminTokenPath:         filepath.Join(base, "conductor/admin.token"),
+			FollowerClientCertPath: filepath.Join(base, "follower/client.crt"),
+			FollowerClientKeyPath:  filepath.Join(base, "follower/client.key"),
+			FollowerBundleCacheDir: filepath.Join(base, "follower/bundles"),
+			FollowerConfigPath:     filepath.Join(base, "follower/follower.yaml"),
+			LicenseTokenPath:       filepath.Join(base, "license/license.token"),
+		},
+		Identity:      controlplane.FollowerIdentity{OrgID: "org", FleetID: "fleet", InstanceID: "inst", Environment: "dev"},
+		TrustDomain:   "custom.example",
+		ConductorID:   "conductor-dev",
+		ConductorURL:  "https://127.0.0.1:8895",
+		LicensePubHex: strings.Repeat("a", 64),
+	})
+	got := out.String()
+	for _, want := range []string{
+		// The token is minted, not assumed to exist.
+		"conductor enrollment-token mint",
+		// Minted under a restrictive umask in a subshell, so the redirect
+		// cannot inherit a permissive caller umask.
+		"(umask 077 && pipelock conductor enrollment-token mint",
+		"--ttl 1h > '/fleet dir/follower/bundles/enrollment.token')",
+		// Paths carrying a space stay pasteable.
+		"--admin-token-file '/fleet dir/conductor/admin.token'",
+		"--server-ca '/fleet dir/ca/ca.crt'",
+		// The config key the follower actually reads, and the ordering trap.
+		`enrollment_token_path: "/fleet dir/follower/bundles/enrollment.token"`,
+		"Do NOT run `conductor enroll` first",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("quickstart missing %q\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "--ttl 1h > /fleet dir/") {
+		t.Fatalf("quickstart wrote an unquoted redirect target\n%s", got)
 	}
 }
 

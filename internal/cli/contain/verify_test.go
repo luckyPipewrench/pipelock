@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -3439,8 +3440,15 @@ func TestMutatingSubcommandsRequireRoot(t *testing.T) {
 			if code := cliutil.ExitCodeOf(err); code != cliutil.ExitConfig {
 				t.Errorf("%s exit code: got %d, want %d (ExitConfig)", tc.subcmd, code, cliutil.ExitConfig)
 			}
-			if !strings.Contains(err.Error(), "must be run as root") {
-				t.Errorf("%s error: got %q, want substring 'must be run as root'", tc.subcmd, err)
+			// The gate refuses for a different reason per platform: Windows
+			// has no containment implementation at all, so it fails on the
+			// platform check before privilege is ever considered.
+			want := "must be run as root"
+			if runtime.GOOS == "windows" {
+				want = "not supported on Windows"
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s error: got %q, want substring %q", tc.subcmd, err, want)
 			}
 		})
 	}

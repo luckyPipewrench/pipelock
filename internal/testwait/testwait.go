@@ -6,6 +6,7 @@ package testwait
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -40,7 +41,15 @@ const ciDeadlineScale = 4
 func scaleDeadline(d time.Duration) time.Duration {
 	if raw := strings.TrimSpace(os.Getenv("PIPELOCK_TEST_DEADLINE_SCALE")); raw != "" {
 		if f, err := strconv.ParseFloat(raw, 64); err == nil && f > 0 {
-			return time.Duration(float64(d) * f)
+			// An absurd factor must saturate, not wrap. A float64 product past
+			// the int64 range converts to a negative Duration, which would make
+			// every wait expire immediately: the failure direction is a false
+			// test failure, so clamp rather than trust the input.
+			scaled := float64(d) * f
+			if scaled >= float64(math.MaxInt64) {
+				return time.Duration(math.MaxInt64)
+			}
+			return time.Duration(scaled)
 		}
 	}
 	if strings.TrimSpace(os.Getenv("CI")) != "" {

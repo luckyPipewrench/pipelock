@@ -8,6 +8,8 @@ package bootstrap
 import (
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 )
 
 // writeQuickstart prints the proof summary and the copy-pasteable runbook that
@@ -70,15 +72,19 @@ func writeQuickstart(out io.Writer, r *Result) {
 	w("   names a one-shot token. Skip this and the follower LOOKS healthy — policy\n")
 	w("   and remote-kill polls return 204 — while its audit batches are rejected 401\n")
 	w("   and it never appears in `conductor fleet status`:\n")
-	w("  pipelock conductor enrollment-token mint \\\n")
-	w("    --conductor-url %s \\\n", r.ConductorURL)
-	w("    --admin-token-file %s \\\n", r.Layout.AdminTokenPath)
-	w("    --server-ca %s \\\n", r.Layout.CACertPath)
-	w("    --tls-cert %s --tls-key %s \\\n", r.Layout.FollowerClientCertPath, r.Layout.FollowerClientKeyPath)
-	w("    --org %s --fleet %s --env %s --instance %s \\\n", r.Identity.OrgID, r.Identity.FleetID, r.Identity.Environment, r.Identity.InstanceID)
-	w("    --token-id bootstrap-enroll-1 --ttl 1h > %s/enrollment.token\n", r.Layout.FollowerBundleCacheDir)
+	tokenPath := filepath.Join(r.Layout.FollowerBundleCacheDir, "enrollment.token")
+	// The subshell umask is load-bearing: this one-hour token authorizes
+	// enrollment, so it must never inherit a permissive caller umask and land
+	// group- or world-readable.
+	w("  (umask 077 && pipelock conductor enrollment-token mint \\\n")
+	w("    --conductor-url %s \\\n", shellQuote(r.ConductorURL))
+	w("    --admin-token-file %s \\\n", shellQuote(r.Layout.AdminTokenPath))
+	w("    --server-ca %s \\\n", shellQuote(r.Layout.CACertPath))
+	w("    --tls-cert %s --tls-key %s \\\n", shellQuote(r.Layout.FollowerClientCertPath), shellQuote(r.Layout.FollowerClientKeyPath))
+	w("    --org %s --fleet %s --env %s --instance %s \\\n", shellQuote(r.Identity.OrgID), shellQuote(r.Identity.FleetID), shellQuote(r.Identity.Environment), shellQuote(r.Identity.InstanceID))
+	w("    --token-id bootstrap-enroll-1 --ttl 1h > %s)\n", shellQuote(tokenPath))
 	w("   then add this line under `conductor:` in %s\n", r.Layout.FollowerConfigPath)
-	w("     enrollment_token_path: \"%s/enrollment.token\"\n", r.Layout.FollowerBundleCacheDir)
+	w("     enrollment_token_path: \"%s\"\n", tokenPath)
 	w("\n3) Start the follower (separate shell, same exported license):\n")
 	w("  pipelock run -c %s\n", r.Layout.FollowerConfigPath)
 	w("   It auto-enrolls on first start and prints \"follower enrollment completed\".\n")
@@ -95,6 +101,14 @@ func writeQuickstart(out io.Writer, r *Result) {
 	w("is co-located on this machine for a fast local round-trip. A production\n")
 	w("fleet keeps signing keys in KMS/HSM and off Conductor disk per the\n")
 	w("Conductor design's hard gates.\n")
+}
+
+// shellQuote wraps s in single quotes so a generated path is safe to paste
+// verbatim even when it contains spaces or shell metacharacters. Embedded
+// single quotes are escaped by closing the quoted string, adding an escaped
+// quote, and reopening it.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // trimScheme reduces an https://host:port URL to host:port for --listen.

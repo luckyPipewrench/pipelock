@@ -35,8 +35,23 @@ type conductorPolicyStatusReporter struct {
 	client   policysync.HTTPDoer
 	endpoint string
 	cfg      config.Conductor
-	identity conductorEnrollmentMarker
 	cache    *applycache.Cache
+	// markerPath is the follower's local enrollment marker, and identity is
+	// resolved from it lazily rather than once at construction.
+	//
+	// The poller that owns this reporter is built early in server startup, while
+	// auto-enrolment writes the marker much later in the same startup. Resolving
+	// at construction therefore found no marker on the one run that enrols, and
+	// the reporter stayed nil for that whole process: a freshly enrolled follower
+	// reported no runtime status until someone restarted it, which left fleet
+	// status blind and made every publish need the admin-only skew override.
+	// Measured before this change: zero posts across 35 poll cycles and a
+	// successful bundle apply, then one post immediately after a restart.
+	//
+	// Resolution stays fail-closed. No marker means no report, exactly as before,
+	// so the follower can never publish status while it is not enrolled.
+	markerPath string
+	identity   atomic.Pointer[conductorEnrollmentMarker]
 	// latest holds the most recent StatusEvent so the audit producer's
 	// applied-state provider (invoked asynchronously off recorder-entry
 	// observation) can read the same poll/apply outcome the unsigned status POST
@@ -51,26 +66,42 @@ func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTP
 	if client == nil {
 		return nil, errors.New("conductor runtime status reporter HTTP client required")
 	}
-	marker, ok, err := readConductorEnrollmentMarker(filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName), cfg.Conductor)
-	if err != nil {
-		// Runtime status is best-effort telemetry; a bad marker must not block
-		// the core policy bundle poller from starting.
-		return nil, nil
-	}
-	if !ok {
-		return nil, nil
-	}
+	markerPath := filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName)
 	endpoint, err := conductorStatusEndpoint(cfg.Conductor.ConductorURL)
 	if err != nil {
 		return nil, err
 	}
-	return &conductorPolicyStatusReporter{
-		client:   client,
-		endpoint: endpoint,
-		cfg:      cfg.Conductor,
-		identity: marker,
-		cache:    cache,
-	}, nil
+	r := &conductorPolicyStatusReporter{
+		client:     client,
+		endpoint:   endpoint,
+		cfg:        cfg.Conductor,
+		cache:      cache,
+		markerPath: markerPath,
+	}
+	// Resolve now when the marker already exists, so an already-enrolled follower
+	// behaves exactly as before and never pays a lookup on its first report.
+	r.resolveIdentity()
+	return r, nil
+}
+
+// resolveIdentity returns the enrollment identity, reading the marker on first
+// use and caching it. A missing or unreadable marker returns false, which keeps
+// the reporter silent rather than reporting under an identity it cannot prove.
+// Runtime status is best-effort telemetry, so a bad marker must never fail the
+// poll it rides along with.
+func (r *conductorPolicyStatusReporter) resolveIdentity() (conductorEnrollmentMarker, bool) {
+	if r == nil {
+		return conductorEnrollmentMarker{}, false
+	}
+	if cached := r.identity.Load(); cached != nil {
+		return *cached, true
+	}
+	marker, ok, err := readConductorEnrollmentMarker(r.markerPath, r.cfg)
+	if err != nil || !ok {
+		return conductorEnrollmentMarker{}, false
+	}
+	r.identity.Store(&marker)
+	return marker, true
 }
 
 func conductorStatusEndpoint(rawBaseURL string) (string, error) {
@@ -101,7 +132,15 @@ func (r *conductorPolicyStatusReporter) ReportPolicyStatus(ctx context.Context, 
 	// the same event.
 	evCopy := ev
 	r.latest.Store(&evCopy)
-	status := r.status(ev)
+	// The applied-state provider above works without an identity, so latest is
+	// stored first and unconditionally. The POST below cannot be: without a
+	// resolved enrollment identity there is nothing to report under, so stay
+	// silent until the marker appears rather than posting an unattributed status.
+	identity, ok := r.resolveIdentity()
+	if !ok {
+		return nil
+	}
+	status := r.status(ev, identity)
 	body, err := json.Marshal(struct {
 		Status controlplane.FollowerRuntimeStatus `json:"status"`
 	}{Status: status})
@@ -126,13 +165,13 @@ func (r *conductorPolicyStatusReporter) ReportPolicyStatus(ctx context.Context, 
 	return nil
 }
 
-func (r *conductorPolicyStatusReporter) status(ev policysync.StatusEvent) controlplane.FollowerRuntimeStatus {
+func (r *conductorPolicyStatusReporter) status(ev policysync.StatusEvent, identity conductorEnrollmentMarker) controlplane.FollowerRuntimeStatus {
 	applied := r.buildAppliedState(ev)
 	return controlplane.FollowerRuntimeStatus{
 		OrgID:                          r.cfg.OrgID,
 		FleetID:                        r.cfg.FleetID,
 		InstanceID:                     r.cfg.InstanceID,
-		Environment:                    r.identity.Environment,
+		Environment:                    identity.Environment,
 		PipelockVersion:                applied.PipelockVersion,
 		GitCommit:                      applied.GitCommit,
 		BuildDate:                      applied.BuildDate,

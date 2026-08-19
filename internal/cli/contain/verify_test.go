@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -3418,6 +3419,12 @@ func TestMutatingSubcommandsRequireRoot(t *testing.T) {
 		{"rollback", nil},
 		{"add-tool", []string{"validname"}},
 		{"ca-refresh", nil},
+		// upgrade and the two workspace subcommands run the same gate and were
+		// absent from this table, so the branch that refuses an unprivileged
+		// mutation was unexercised for three of the seven sites.
+		{"upgrade", nil},
+		{"grant-workspace", []string{"/tmp/pipelock-workspace-gate-probe"}},
+		{"revoke-workspace", []string{"/tmp/pipelock-workspace-gate-probe"}},
 	}
 	root := Cmd()
 	for _, tc := range cases {
@@ -3433,8 +3440,15 @@ func TestMutatingSubcommandsRequireRoot(t *testing.T) {
 			if code := cliutil.ExitCodeOf(err); code != cliutil.ExitConfig {
 				t.Errorf("%s exit code: got %d, want %d (ExitConfig)", tc.subcmd, code, cliutil.ExitConfig)
 			}
-			if !strings.Contains(err.Error(), "must be run as root") {
-				t.Errorf("%s error: got %q, want substring 'must be run as root'", tc.subcmd, err)
+			// The gate refuses for a different reason per platform: Windows
+			// has no containment implementation at all, so it fails on the
+			// platform check before privilege is ever considered.
+			want := "must be run as root"
+			if runtime.GOOS == "windows" {
+				want = "not supported on Windows"
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s error: got %q, want substring %q", tc.subcmd, err, want)
 			}
 		})
 	}

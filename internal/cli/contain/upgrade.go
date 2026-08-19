@@ -149,8 +149,8 @@ Exit codes:
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if os.Geteuid() != 0 {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("upgrade must be run as root (use sudo)"))
+			if err := requireContainPrivilege("upgrade"); err != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
 			env := defaultUpgradeEnv(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			return runUpgrade(cmd.Context(), env, opts)

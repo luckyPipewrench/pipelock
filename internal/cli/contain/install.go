@@ -80,8 +80,10 @@ Exit codes:
 			if err := validatePort(opts.proxyPort); err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			if !opts.dryRun && os.Geteuid() != 0 {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("install must be run as root (use sudo)"))
+			if !opts.dryRun {
+				if err := requireContainPrivilege("install"); err != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				}
 			}
 			env := defaultInstallEnv(cmd.OutOrStdout())
 			if opts.operatorUser != "" {

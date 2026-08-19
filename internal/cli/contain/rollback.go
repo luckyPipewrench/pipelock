@@ -51,8 +51,10 @@ Exit codes:
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !opts.dryRun && os.Geteuid() != 0 {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("rollback must be run as root (use sudo)"))
+			if !opts.dryRun {
+				if err := requireContainPrivilege("rollback"); err != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				}
 			}
 			env := defaultInstallEnv(cmd.OutOrStdout())
 			return runRollback(cmd.Context(), env, opts)

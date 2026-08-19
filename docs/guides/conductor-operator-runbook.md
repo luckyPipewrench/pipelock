@@ -334,7 +334,9 @@ files, you can rotate one role without disturbing the others.
 
 ## Policy Publish
 
-Policy publication is an HTTP API surface, not a standalone CLI command in the current help output. The source-verified endpoint is:
+Policy publication has a CLI command, `pipelock conductor publish`. Prefer it: it signs the bundle, runs the fleet preflight, and reports the resulting bundle id and hash. Note that `--allow-fleet-skew`, which overrides a preflight block for stale, unseen, or last-apply-failed followers, is admin-only and requires a recorded reason; a normal publish to a healthy fleet needs only the publisher token.
+
+The underlying endpoint, for callers that need it directly, is:
 
 ```http
 PUT /api/v1/conductor/policy-bundles
@@ -370,7 +372,7 @@ The request body shape is source-verified from `enterprise/conductor/controlplan
 
 The server authorizes the request with the publisher token file configured on `conductor serve`, verifies the signed bundle, rejects forbidden config sections such as license and local trust-boundary fields, and stores accepted bundles under the Conductor storage directory. Followers poll `GET /api/v1/conductor/policy/latest` over mTLS and apply only bundles addressed to their org, fleet, environment, and audience.
 
-This runbook does not include a one-line policy signing helper because none exists in the verified CLI help. Use the signed bundle producer in your operator workflow, then publish through the API above.
+`pipelock conductor publish` builds, signs, and publishes the bundle in one step, and is the path to use. Publish through the API above only when you need direct HTTP access, such as from an existing integration that already produces its own signed bundle.
 
 ### Publish conflicts (HTTP 409)
 

@@ -75,7 +75,7 @@
     "vowel_fold": {"a":"a","e":"a","i":"a","o":"a","u":"a","A":"A","E":"A","I":"A","O":"A","U":"A"},
     "invisible_space": "replace the invisible_strip character set with ASCII space instead of removing it; preserve TAB, LF, and CR",
     "matching_normalize": "apply invisible_strip, Unicode NFKC, dlp_normalize.confusable_to_ascii, Unicode NFD combining-mark removal, then replace only U+00A0, U+1680, U+180E, U+2000-U+200A, U+2028-U+2029, U+202F, U+205F, and U+3000 with ASCII space; preserve existing ASCII whitespace, including leading and repeated whitespace",
-    "encoded_token_normalize": "keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible",
+    "encoded_token_normalize": "for hex, consume a 0x, 0X, \\x, or \\X prefix only when it is immediately followed by two ASCII hex bytes; then keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible",
     "text_segment": "split with the scanner text-DLP delimiter set and select the zero-based non-empty occurrence",
     "html_entity_decode": "apply HTML5 entity decoding until unchanged or html_entity_decode_max_passes",
     "whitespace_compact": "remove every Unicode White_Space rune",

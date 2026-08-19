@@ -14,7 +14,7 @@ use url::Url;
 pub const PROFILE_DIGEST_V1: &str =
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 pub const PROFILE_DIGEST_V2: &str =
-    "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6";
+    "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62";
 // Retained for v1-oriented callers; receipt replay always resolves the exact
 // supplied digest rather than falling back to this value.
 pub const PROFILE_DIGEST: &str = PROFILE_DIGEST_V1;
@@ -911,11 +911,7 @@ fn encoded_token_normalize_v2(s: &str, a: &str) -> String {
         return String::new();
     }
     if a == "hex" {
-        let v = s
-            .replace("\\x", "")
-            .replace("\\X", "")
-            .replace("0x", "")
-            .replace("0X", "")
+        let v = strip_v2_hex_prefixes(s)
             .chars()
             .filter(|c| c.is_ascii_hexdigit())
             .collect::<String>();
@@ -945,6 +941,26 @@ fn encoded_token_normalize_v2(s: &str, a: &str) -> String {
     } else {
         String::new()
     }
+}
+
+fn strip_v2_hex_prefixes(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut output = String::with_capacity(s.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if index + 3 < bytes.len()
+            && matches!(bytes[index], b'0' | b'\\')
+            && matches!(bytes[index + 1], b'x' | b'X')
+            && bytes[index + 2].is_ascii_hexdigit()
+            && bytes[index + 3].is_ascii_hexdigit()
+        {
+            index += 2;
+            continue;
+        }
+        output.push(bytes[index] as char);
+        index += 1;
+    }
+    output
 }
 
 fn encoded_token_normalize_v1(s: &str, a: &str) -> String {

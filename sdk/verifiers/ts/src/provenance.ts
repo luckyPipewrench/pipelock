@@ -11,7 +11,7 @@ import unicode15LowercaseMap from "@unicode/unicode-15.0.0/Simple_Case_Mapping/L
 export const EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST =
   "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
-  "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6";
+  "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62";
 type ProfileVersion = "v1" | "v2";
 
 const MAX_INPUT_BYTES = 2 << 20;
@@ -538,12 +538,7 @@ function encodedToken(value: string, alphabet: string, profile: ProfileVersion):
 function encodedTokenV2(value: string, alphabet: string): string {
   if (value.length < 4) return "";
   if (alphabet === "hex") {
-    const v = value
-      .replaceAll("\\x", "")
-      .replaceAll("\\X", "")
-      .replaceAll("0x", "")
-      .replaceAll("0X", "")
-      .replace(/[^0-9a-fA-F]/gu, "");
+    const v = stripV2HexPrefixes(value).replace(/[^0-9a-fA-F]/gu, "");
     return v.length && v.length % 2 === 0 && /^[0-9a-f]+$/iu.test(v) ? v : "";
   }
   const data =
@@ -559,6 +554,22 @@ function encodedTokenV2(value: string, alphabet: string): string {
     else changed = true;
   }
   return changed && result.length >= 4 ? result : "";
+}
+function stripV2HexPrefixes(value: string): string {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    if (
+      index + 3 < value.length &&
+      (value[index] === "0" || value[index] === "\\") &&
+      (value[index + 1] === "x" || value[index + 1] === "X") &&
+      /^[0-9a-fA-F]{2}$/u.test(value.slice(index + 2, index + 4))
+    ) {
+      index += 1;
+      continue;
+    }
+    result += value[index];
+  }
+  return result;
 }
 function encodedTokenV1(value: string, alphabet: string): string {
   if (value.length < 4) return "";

@@ -1,6 +1,6 @@
 # Evidence provenance proof v1 (experimental, fixture-only)
 
-Status: experimental and fixture-only. This document specifies no registered receipt payload, production emitter, verifier command, or capability claim.
+Status: experimental and fixture-only. This document specifies no registered receipt payload, production emitter, or capability claim. The shipped `pipelock-verifier provenance` command verifies experimental evidence-provenance fixtures.
 
 ## Transform-profile registry and immutability
 
@@ -9,7 +9,7 @@ The proof wire version remains `pipelock-evidence-provenance-proof/v1`. It has n
 The registry contains these immutable profiles:
 
 - v1: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v1.json`, digest `sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94`.
-- v2: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v2.json`, digest `sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6`.
+- v2: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v2.json`, digest `sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62`.
 
 Every normative profile document and its digest are frozen at publication, including experimental profiles. A semantic correction MUST create a new document and digest. It MUST NOT rewrite a prior profile in place. Verifiers retain every registered profile for the receipt-retention period.
 
@@ -17,7 +17,7 @@ Before executing any operation, a verifier MUST resolve `transform_profile_diges
 
 V2 adds `ascii_alphanumeric_strip`; v1 recipes MUST reject it. The digest remains the semantic selector, so no verifier may reinterpret a v1 recipe under v2 semantics.
 
-`encoded_token_normalize` and `url_noise_strip` differ between the profiles. v1 retains its original allow-list behavior: token normalization removes only its listed delimiters and rejects other separators, while URL noise stripping removes dot, slash, ASCII space/TAB/LF/CR, plus, comma, semicolon, and vertical bar. v2 keeps token data bytes by alphabet: hex `[0-9A-Fa-f]`; Base32 `[A-Z2-7=]`; standard Base64 `[A-Za-z0-9+/=]`; and URL-safe Base64 `[A-Za-z0-9_-=]`. v2 `url_noise_strip` keeps ASCII `[A-Za-z0-9_-=]`. The profile documents remain normative for the complete operation behavior.
+`encoded_token_normalize` and `url_noise_strip` differ between the profiles. v1 retains its original allow-list behavior: token normalization removes only its listed delimiters and rejects other separators, while URL noise stripping removes dot, slash, ASCII space/TAB/LF/CR, plus, comma, semicolon, and vertical bar. For hex, v2 consumes `0x`, `0X`, `\\x`, or `\\X` only when the prefix is immediately followed by two ASCII hex bytes, then keeps token data bytes by alphabet: hex `[0-9A-Fa-f]`; Base32 `[A-Z2-7=]`; standard Base64 `[A-Za-z0-9+/=]`; and URL-safe Base64 `[A-Za-z0-9_-=]`. v2 `url_noise_strip` keeps ASCII `[A-Za-z0-9_-=]`. The profile documents remain normative for the complete operation behavior.
 
 ## Scope and terms
 

@@ -126,6 +126,9 @@ func TestRecipeApplyV2TransformSemantics(t *testing.T) {
 		{"odd hex digit count is ineligible", "48;69;2", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, ""},
 		{"base32 strips lowercase", "MFRGGabc33FMZTS===", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base32"}, "MFRGG33FMZTS==="},
 		{"hex keeps only data bytes", "48;69,21:ff", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, "486921ff"},
+		{"hex radix prefix", "0x0a0b", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, "0a0b"},
+		{"hex escape prefixes", `\x0a\x0b`, Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, "0a0b"},
+		{"hex stray prefix preserves zero", "0a0xb", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "hex"}, "0a0b"},
 		{"standard base64 keeps only data bytes", "SG!k=", Operation{Kind: OperationEncodedTokenNormalize, Alphabet: "base64_standard"}, "SGk="},
 		{"URL noise keeps only v2 bytes", "a!b~c#d", Operation{Kind: OperationURLNoiseStrip}, "abcd"},
 	} {
@@ -348,7 +351,7 @@ func TestTransformProfileV2DigestAndSemantics(t *testing.T) {
 	if profile.Format != "pipelock-evidence-provenance-transform-profile/v2" || profile.Profile != "pipelock-evidence-provenance-transform-v2" || profile.Version != 2 {
 		t.Fatalf("profile identity = format %q profile %q version %d", profile.Format, profile.Profile, profile.Version)
 	}
-	if got, want := profile.Normalization.EncodedTokenNormalize, "keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible"; got != want {
+	if got, want := profile.Normalization.EncodedTokenNormalize, "for hex, consume a 0x, 0X, \\x, or \\X prefix only when it is immediately followed by two ASCII hex bytes; then keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible"; got != want {
 		t.Fatalf("v2 encoded_token_normalize semantics = %q, want %q", got, want)
 	}
 	if got, want := profile.Normalization.URLNoiseStrip, "keep only ASCII [A-Za-z0-9_-=]"; got != want {

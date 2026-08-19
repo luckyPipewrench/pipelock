@@ -1,6 +1,6 @@
 {
   "format": "pipelock-evidence-transform-corpus/v1",
-  "profile_digest": "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6",
+  "profile_digest": "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62",
   "operation_coverage": [
     "identity",
     "url_component",
@@ -469,6 +469,27 @@
       "operations": ["encoded_token_normalize"],
       "input_b64": "XHg0OCBceDY5",
       "output_b64": "NDg2OQ==",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"hex"}]
+    },
+    {
+      "id": "scanner-encoded-token-hex-radix-prefix",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "MHgwYTBi",
+      "output_b64": "MGEwYg==",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"hex"}]
+    },
+    {
+      "id": "scanner-encoded-token-hex-escape-prefixes",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "XHgwYVx4MGI=",
+      "output_b64": "MGEwYg==",
+      "recipe": [{"kind":"encoded_token_normalize","alphabet":"hex"}]
+    },
+    {
+      "id": "scanner-encoded-token-hex-stray-prefix",
+      "operations": ["encoded_token_normalize"],
+      "input_b64": "MGEweGI=",
+      "output_b64": "MGEwYg==",
       "recipe": [{"kind":"encoded_token_normalize","alphabet":"hex"}]
     },
     {

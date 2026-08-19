@@ -23,7 +23,7 @@ PROFILE_DIGEST_V1 = (
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
 )
 PROFILE_DIGEST_V2 = (
-    "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6"
+    "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62"
 )
 # Compatibility name for v1-focused callers. Recipes always dispatch from the
 # exact digest supplied on the wire and never fall back to this value.
@@ -722,12 +722,7 @@ def _encoded_token_v2(value: str, alphabet: str) -> str:
     if len(value) < 4:
         return ""
     if alphabet == "hex":
-        normalized = (
-            value.replace(r"\x", "")
-            .replace(r"\X", "")
-            .replace("0x", "")
-            .replace("0X", "")
-        )
+        normalized = _strip_v2_hex_prefixes(value)
         normalized = "".join(ch for ch in normalized if ch in "0123456789abcdefABCDEF")
         return normalized if normalized and len(normalized) % 2 == 0 else ""
     data = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789="
@@ -739,6 +734,24 @@ def _encoded_token_v2(value: str, alphabet: str) -> str:
         data += "-_"
     normalized = "".join(ch for ch in value if ch in data)
     return normalized if normalized != value and len(normalized) >= 4 else ""
+
+
+def _strip_v2_hex_prefixes(value: str) -> str:
+    output: list[str] = []
+    index = 0
+    while index < len(value):
+        if (
+            index + 3 < len(value)
+            and value[index] in ("0", "\\")
+            and value[index + 1] in ("x", "X")
+            and value[index + 2] in "0123456789abcdefABCDEF"
+            and value[index + 3] in "0123456789abcdefABCDEF"
+        ):
+            index += 2
+            continue
+        output.append(value[index])
+        index += 1
+    return "".join(output)
 
 
 def _at(values: list[str], index: int, name: str) -> str:

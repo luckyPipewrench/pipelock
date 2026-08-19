@@ -197,7 +197,7 @@ const (
 	// EvidenceProvenanceProfileV2Digest identifies the profile whose token and
 	// URL-noise transforms match the current scanner keep-sets. Profiles are
 	// selected only by this exact digest; never by a profile name or fallback.
-	EvidenceProvenanceProfileV2Digest       = "sha256:7bcfcd894c76a74b1a84567edf9e95f021473ce8c41e9469fa97ce0cb91a28e6"
+	EvidenceProvenanceProfileV2Digest       = "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -743,7 +743,7 @@ func scannerEncodedTokenNormalizeV2(value, alphabet string) string {
 		return ""
 	}
 	if alphabet == "hex" {
-		value = strings.NewReplacer(`\x`, "", `\X`, "", "0x", "", "0X", "").Replace(value)
+		value = stripV2HexPrefixes(value)
 		value = strings.Map(func(r rune) rune {
 			switch {
 			case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
@@ -793,6 +793,26 @@ func scannerEncodedTokenNormalizeV2(value, alphabet string) string {
 	}
 	if !changed || result.Len() < 4 {
 		return ""
+	}
+	return result.String()
+}
+
+// stripV2HexPrefixes removes a hexadecimal radix or escape prefix only when
+// the following two bytes form the hex pair it introduces. A stray "0x" must
+// leave its zero for the alphabet filter: consuming it would erase token data.
+func stripV2HexPrefixes(value string) string {
+	var result strings.Builder
+	result.Grow(len(value))
+	for index := 0; index < len(value); {
+		if index+3 < len(value) &&
+			(value[index] == '0' || value[index] == '\\') &&
+			(value[index+1] == 'x' || value[index+1] == 'X') &&
+			isHexDigitRune(rune(value[index+2])) && isHexDigitRune(rune(value[index+3])) {
+			index += 2
+			continue
+		}
+		result.WriteByte(value[index])
+		index++
 	}
 	return result.String()
 }

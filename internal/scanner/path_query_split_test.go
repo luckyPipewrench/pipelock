@@ -93,6 +93,7 @@ func TestCheckDLP_PathQuerySplitSecret(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("configured/"+tc.name, func(t *testing.T) {
 			s := MustNew(splitSecretConfig(t))
+			defer s.Close()
 			res := s.Scan(t.Context(), tc.url)
 			if res.Allowed {
 				t.Errorf("configured DLP ALLOWED a secret split across the path-query seam: %s", tc.url)
@@ -128,6 +129,7 @@ func TestCheckDLP_PathQuerySplitSecret(t *testing.T) {
 			cfg.DLP.IncludeDefaults = &noDefaults
 			cfg.DLP.Patterns = nil
 			s := MustNew(cfg)
+			defer s.Close()
 			res := s.Scan(t.Context(), tc.url)
 			if res.Allowed {
 				t.Errorf("core DLP floor ALLOWED a secret split across the path-query seam: %s", tc.url)
@@ -158,6 +160,7 @@ func TestCheckDLP_PathQueryMultiEscapedPrefix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("configured/"+tc.name, func(t *testing.T) {
 			s := MustNew(splitSecretConfig(t))
+			defer s.Close()
 			if s.Scan(t.Context(), tc.url).Allowed {
 				t.Errorf("configured DLP ALLOWED a multi-escaped split credential: %s", tc.url)
 			}
@@ -178,6 +181,7 @@ func TestCheckDLP_PathQueryMultiEscapedPrefix(t *testing.T) {
 			cfg.DLP.IncludeDefaults = &noDefaults
 			cfg.DLP.Patterns = nil
 			s := MustNew(cfg)
+			defer s.Close()
 			if s.Scan(t.Context(), tc.url).Allowed {
 				t.Errorf("core DLP floor ALLOWED a multi-escaped split credential: %s", tc.url)
 			}
@@ -223,6 +227,7 @@ func TestCheckDLP_PathQuerySplitNoRegression(t *testing.T) {
 	for _, tc := range blocked {
 		t.Run(tc.name, func(t *testing.T) {
 			s := MustNew(splitSecretConfig(t))
+			defer s.Close()
 			if s.Scan(t.Context(), tc.url).Allowed {
 				t.Errorf("previously-detected case regressed to ALLOWED: %s", tc.url)
 			}
@@ -248,6 +253,7 @@ func TestCheckDLP_PathQueryConcatAvailability(t *testing.T) {
 	for _, tc := range allowed {
 		t.Run(tc.name, func(t *testing.T) {
 			s := MustNew(splitSecretConfig(t))
+			defer s.Close()
 			res := s.Scan(t.Context(), tc.url)
 			if !res.Allowed {
 				t.Errorf("benign URL blocked (%s): %s -- reason %q", tc.name, tc.url, res.Reason)

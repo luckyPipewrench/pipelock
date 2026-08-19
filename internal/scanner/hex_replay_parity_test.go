@@ -136,32 +136,69 @@ func TestReassemblyLengthBoundary(t *testing.T) {
 	// The cap is shared, so the encoded-token edges need the same replay
 	// agreement the hex edges get. Checking only hex would leave the base64
 	// and base32 alphabets free to drift at exactly the boundary.
-	t.Run("v2 replay agrees on encoded-token edges", func(t *testing.T) {
-		for _, alphabet := range []struct {
-			name string
-			kind encodedTokenKind
-		}{
-			{"base64_standard", encodedTokenBase64Std},
-			{"base64_url", encodedTokenBase64URL},
-			{"base32", encodedTokenBase32},
-		} {
-			for _, size := range []int{maxReassembledTokenLen, maxReassembledTokenLen + 1} {
-				input := strings.Repeat("A", size) + "!"
+	//
+	// Every case carries a marker byte that is data in some alphabets and
+	// noise in others, because a payload of "A" alone is valid in all three:
+	// it would prove the shared cap while a replay reading the wrong alphabet
+	// still passed. The kept column is read off the alphabet definitions
+	// rather than computed, so the table disagrees with a wrong
+	// implementation instead of matching it by construction.
+	//
+	// A trailing "!" is noise everywhere, which is what makes the reassembly
+	// eligible at all.
+	for _, tc := range []struct {
+		alphabet   string
+		kind       encodedTokenKind
+		marker     string
+		markerKept bool
+	}{
+		{"base64_standard", encodedTokenBase64Std, "+", true},
+		{"base64_standard", encodedTokenBase64Std, "-", false},
+		{"base64_standard", encodedTokenBase64Std, "a", true},
+		{"base64_url", encodedTokenBase64URL, "+", false},
+		{"base64_url", encodedTokenBase64URL, "-", true},
+		{"base64_url", encodedTokenBase64URL, "a", true},
+		{"base32", encodedTokenBase32, "+", false},
+		{"base32", encodedTokenBase32, "-", false},
+		{"base32", encodedTokenBase32, "a", false},
+	} {
+		for _, size := range []int{maxReassembledTokenLen, maxReassembledTokenLen + 1} {
+			name := fmt.Sprintf("%s marker %q at %d", tc.alphabet, tc.marker, size)
+			t.Run(name, func(t *testing.T) {
+				input := strings.Repeat("A", size-1) + tc.marker + "!"
+
+				kept := size - 1
+				if tc.markerKept {
+					kept++
+				}
+				want := strings.Repeat("A", size-1)
+				if tc.markerKept {
+					want += tc.marker
+				}
+				if kept > maxReassembledTokenLen {
+					want = ""
+				}
+
+				scanned := normalizeEncodedToken(input, tc.kind)
+				if scanned != want {
+					t.Fatalf("scanner kept %d bytes, want %d", len(scanned), len(want))
+				}
+
 				replayed, err := (normalize.Recipe{
 					TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest,
 					Operations: []normalize.Operation{{
 						Kind:     normalize.OperationEncodedTokenNormalize,
-						Alphabet: alphabet.name,
+						Alphabet: tc.alphabet,
 					}},
 				}).Apply(input)
 				if err != nil {
-					t.Fatalf("%s replay of %d bytes: %v", alphabet.name, size, err)
+					t.Fatalf("replay: %v", err)
 				}
-				if scanned := normalizeEncodedToken(input, alphabet.kind); scanned != replayed {
-					t.Fatalf("%s at %d bytes: the scanner kept %d and the replay kept %d",
-						alphabet.name, size, len(scanned), len(replayed))
+				if replayed != scanned {
+					t.Fatalf("the scanner kept %d bytes and the replay kept %d",
+						len(scanned), len(replayed))
 				}
-			}
+			})
 		}
-	})
+	}
 }

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_blocked": true,
+  "release_blocked": false,
   "verifiers": [
     {
       "language": "Go",
@@ -21,13 +21,13 @@
       "package": "@pipelock/verifier-ts",
       "version": "0.3.0",
       "install_source": "npm",
-      "artifact_digest": "REPLACE_WITH_NPM_DIST_INTEGRITY",
+      "artifact_digest": "sha512-toSGcJXUjXWmEpFcByA+Q8PGP/WatIAqWYIvhR4WjAz3IbcURAWyc32k0Ev+tknUbNdyaykRwkxNKhwKS+2rFg==",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
         "source_ref": "verifier-v0.3.0",
-        "source_commit": "REPLACE_WITH_VERIFIER_V0_3_0_TAG_COMMIT"
+        "source_commit": "a2bc6cb18d728841b0edd7f714aca67d234f2e52"
       }
     },
     {
@@ -35,13 +35,13 @@
       "package": "pipelock-verifier-rs",
       "version": "0.3.0",
       "install_source": "crates.io",
-      "artifact_digest": "REPLACE_WITH_CRATES_IO_SHA256",
+      "artifact_digest": "381ed98d8b945e05f06b98d1c432ab5f9920b7932e5381458224511864ce2c0e",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
         "source_ref": "verifier-v0.3.0",
-        "source_commit": "REPLACE_WITH_VERIFIER_V0_3_0_TAG_COMMIT"
+        "source_commit": "a2bc6cb18d728841b0edd7f714aca67d234f2e52"
       }
     },
     {

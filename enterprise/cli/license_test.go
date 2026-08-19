@@ -71,9 +71,10 @@ func TestLicenseStatusValidWithWarningBand(t *testing.T) {
 	lic := license.License{
 		ID:        "lic_status",
 		Email:     "status@example.com",
+		Org:       "Status Org",
 		IssuedAt:  time.Now().Unix(),
 		ExpiresAt: time.Now().Add(7 * 24 * time.Hour).Unix(),
-		Features:  []string{license.FeatureAgents},
+		Features:  []string{license.FeatureAgents, license.FeatureFleet},
 		Tier:      "pro",
 	}
 	token, err := license.Issue(lic, priv)
@@ -94,6 +95,15 @@ func TestLicenseStatusValidWithWarningBand(t *testing.T) {
 	}
 	if report.Severity != license.ExpirySeverityWarn {
 		t.Errorf("Severity = %q, want warn", report.Severity)
+	}
+	// Entitlements belong on the VERIFIED surface. Without these, status answered
+	// "are you licensed" but not "for what", and the only way to read features was
+	// license inspect, which states plainly that it does not check the signature.
+	if report.Org != "Status Org" {
+		t.Errorf("Org = %q, want %q", report.Org, "Status Org")
+	}
+	if len(report.Features) != 2 || report.Features[0] != license.FeatureAgents || report.Features[1] != license.FeatureFleet {
+		t.Errorf("Features = %v, want [%s %s]", report.Features, license.FeatureAgents, license.FeatureFleet)
 	}
 }
 

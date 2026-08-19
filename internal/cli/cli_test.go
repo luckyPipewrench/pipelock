@@ -1236,7 +1236,7 @@ func TestRunCmd_WithAgentArgs(t *testing.T) {
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected error: %v", err)
+				return fmt.Errorf("unexpected error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1283,7 +1283,7 @@ func TestRunCmd_DefaultMode(t *testing.T) {
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected error: %v", err)
+				return fmt.Errorf("unexpected error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1352,7 +1352,7 @@ func TestRunCmd_ModeFlag(t *testing.T) {
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected error: %v", err)
+				return fmt.Errorf("unexpected error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1425,7 +1425,7 @@ fetch_proxy:
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected error: %v", err)
+				return fmt.Errorf("unexpected error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1537,7 +1537,7 @@ response_scanning:
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected error: %v", err)
+				return fmt.Errorf("unexpected error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1596,7 +1596,7 @@ response_scanning:
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected error: %v", err)
+				return fmt.Errorf("unexpected error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1668,7 +1668,7 @@ forward_proxy:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1779,7 +1779,7 @@ logging:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -1909,7 +1909,7 @@ func TestRunCmd_MCPListenBanner(t *testing.T) {
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -2028,7 +2028,7 @@ fetch_proxy:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -2149,7 +2149,7 @@ kill_switch:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -2298,7 +2298,7 @@ fetch_proxy:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -2377,7 +2377,7 @@ fetch_proxy:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -2456,7 +2456,7 @@ fetch_proxy:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
@@ -2540,7 +2540,7 @@ fetch_proxy:
 		select {
 		case cmdErr := <-errCh:
 			if cmdErr != nil {
-				t.Errorf("unexpected error: %v", cmdErr)
+				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")

@@ -490,17 +490,38 @@ func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
 	}
 }
 
+// subreaperDirectionDeadline bounds a hang; it is not part of either assertion.
+//
+// Both subtests below pass one context to RunProxyWithSandbox AND to
+// exec.CommandContext, so the deadline owns the subprocess lifetime as well as
+// the test. At 10 seconds that made the deadline a participant in the result: on
+// a loaded runner the context expired during startup, exec killed "cat", and the
+// best-effort subtest reported "subprocess exited: signal: terminated" as though
+// best-effort mode had refused. It failed exactly that way on main at 022ee66f6
+// while the same commit passed the full race suite locally, and 15 consecutive
+// isolated runs passed in 2.4s.
+//
+// Neither subtest waits for anything by design: "cat" reads an empty stdin and
+// exits on EOF. So the deadline only needs to be large enough that a healthy run
+// cannot reach it, with the package -timeout as the real backstop. Each subtest
+// also attributes an expiry explicitly, so if this ever does fire the failure
+// says it was the clock rather than implying a product verdict.
+const subreaperDirectionDeadline = 2 * time.Minute
+
 func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 	failure := errors.New("subreaper unavailable")
 
 	t.Run("best effort continues with warning", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), subreaperDirectionDeadline)
 		defer cancel()
 		var logBuf syncBuffer
 		opts := testOpts(testScannerWithAction(t, config.ActionWarn))
 		opts.enableSubreaperForTest = func() error { return failure }
 		cmd := exec.CommandContext(ctx, "cat")
 		if err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts); err != nil {
+			if ctx.Err() != nil {
+				t.Fatalf("deadline expired before startup finished, so this is a timing failure and not a best-effort refusal: %v (context: %v)", err, ctx.Err())
+			}
 			t.Fatalf("best-effort sandbox proxy = %v", err)
 		}
 		if !strings.Contains(logBuf.String(), "session descendant cleanup degraded") {
@@ -509,13 +530,16 @@ func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 	})
 
 	t.Run("strict fails closed", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), subreaperDirectionDeadline)
 		defer cancel()
 		opts := testOpts(testScannerWithAction(t, config.ActionWarn))
 		opts.enableSubreaperForTest = func() error { return failure }
 		cmd := exec.CommandContext(ctx, "cat")
 		err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, io.Discard, opts, true)
 		if !errors.Is(err, failure) {
+			if ctx.Err() != nil {
+				t.Fatalf("deadline expired before strict mode reported, so this is a timing failure and not a missing refusal: %v (context: %v)", err, ctx.Err())
+			}
 			t.Fatalf("strict sandbox proxy error = %v, want subreaper failure", err)
 		}
 	})

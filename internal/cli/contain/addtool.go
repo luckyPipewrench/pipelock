@@ -60,8 +60,10 @@ Exit codes:
 					fmt.Errorf("invalid tool name %q (expected [a-z0-9][a-z0-9_-]{0,30})", name),
 				)
 			}
-			if !opts.dryRun && os.Geteuid() != 0 {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("add-tool must be run as root (use sudo)"))
+			if !opts.dryRun {
+				if err := requireContainPrivilege("add-tool"); err != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				}
 			}
 			env := defaultInstallEnv(cmd.OutOrStdout())
 			return runAddTool(cmd.Context(), env, name, opts)

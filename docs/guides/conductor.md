@@ -119,7 +119,7 @@ pipelock conductor serve \
 | `--storage-dir` | (required) | Directory for policy bundles and the audit store. |
 | `--conductor-id` | `conductor` | Conductor ID advertised in capabilities. |
 | `--follower-trust-domain` | `pipelock.local` | SPIFFE trust domain for follower mTLS identities. |
-| `--publisher-token-file` | (required) | File holding the bearer token required to publish policy bundles. |
+| `--publisher-token-file` | (required) | File holding the bearer token required to publish policy bundles. Sufficient for a normal publish to a healthy fleet, and **not** sufficient to override a fleet-skew preflight block: `--allow-fleet-skew` is admin-only, so a publish that needs it must present the admin token instead. `pipelock conductor publish` has no separate admin-token flag, so point its own `--publisher-token-file` at the admin token file for that one publish. |
 | `--auditor-token-file` | (required) | File holding the bearer token required to query audit metadata. |
 | `--admin-token-file` | (required) | File holding the bearer token required for Conductor admin requests. |
 | `--audit-retention` | `0` (keep forever) | Duration to keep audit evidence; older batches are pruned at startup. |

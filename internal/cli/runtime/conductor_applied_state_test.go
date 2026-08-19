@@ -125,7 +125,11 @@ func TestAppliedStateProvider_MatchesUnsignedStatus(t *testing.T) {
 		AppliedBundle: &conductor.PolicyBundle{BundleID: "bundle-1"},
 		ApplyError:    applycache.ErrRollbackRequired,
 	}
-	unsigned := reporter.status(ev)
+	identity, ok := reporter.resolveIdentity()
+	if !ok {
+		t.Fatal("reporter did not resolve its enrollment identity from the marker written above")
+	}
+	unsigned := reporter.status(ev, identity)
 	applied := reporter.buildAppliedState(ev)
 	if unsigned.PipelockVersion != applied.PipelockVersion ||
 		unsigned.GitCommit != applied.GitCommit ||

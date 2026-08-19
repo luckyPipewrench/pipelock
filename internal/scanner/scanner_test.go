@@ -1554,18 +1554,44 @@ func TestNormalizeHex(t *testing.T) {
 
 func TestIndexHexTokenView_PrefixDoesNotSwallowANeedleByte(t *testing.T) {
 	// A radix or escape prefix is only a prefix when the pair the needle wants
-	// follows it. Without that condition an '"x"' inserted after a zero consumed
+	// follows it. Without that condition an 'x' inserted after a zero consumed
 	// the zero, so one character hid the rest of an encoded secret.
-	for _, tc := range []struct{ name, needle, text string }{
-		{"contiguous", "0a0b", "prefix 0a0b suffix"},
-		{"radix prefix", "0a0b", "prefix 0x0a0b suffix"},
-		{"escape prefix per byte", "0a0b", `prefix \x0a\x0b suffix`},
-		{"unlisted separator", "0a0b", "prefix 0a!0b suffix"},
-		{"x inserted after a needle zero", "0a0b", "prefix 0a0xb suffix"},
+	//
+	// The negative cases matter as much as the positive ones: every case here
+	// asserting a match would pass against a function that always returned
+	// true, which is no test at all. The span assertion is the same argument in
+	// miniature, since a match at the wrong offset is a wrong answer that a
+	// boolean check cannot see.
+	for _, tc := range []struct {
+		name, needle, text string
+		want               bool
+		wantSpan           string
+	}{
+		{"contiguous", "0a0b", "prefix 0a0b suffix", true, "0a0b"},
+		{"radix prefix", "0a0b", "prefix 0x0a0b suffix", true, "0x0a0b"},
+		// The span starts at the first needle byte, so a leading prefix sits
+		// outside it. Asserting the whole prefix here was my own wrong
+		// assumption, which is what the span check exists to catch.
+		{"escape prefix per byte", "0a0b", `prefix \x0a\x0b suffix`, true, `0a\x0b`},
+		{"unlisted separator", "0a0b", "prefix 0a!0b suffix", true, "0a!0b"},
+		{"x inserted after a needle zero", "0a0b", "prefix 0a0xb suffix", true, "0a0xb"},
+
+		{"absent entirely", "0a0b", "prefix nothing here suffix", false, ""},
+		{"bytes present but out of order", "0a0b", "prefix 0b0a suffix", false, ""},
+		{"only a prefix of the needle", "0a0bcc", "prefix 0a0b suffix", false, ""},
+		{"empty needle", "", "prefix 0a0b suffix", false, ""},
+		{"hex digits interrupted by another hex digit", "0a0b", "prefix 0a90b suffix", false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, _, ok := indexHexTokenView(tc.needle, []spanTextView{{text: tc.text, viewLabel: "t"}}); !ok {
-				t.Errorf("indexHexTokenView(%q) missed it in %q", tc.needle, tc.text)
+			start, end, _, ok := indexHexTokenView(tc.needle, []spanTextView{{text: tc.text, viewLabel: "t"}})
+			if ok != tc.want {
+				t.Fatalf("indexHexTokenView(%q) in %q = %v, want %v", tc.needle, tc.text, ok, tc.want)
+			}
+			if !tc.want {
+				return
+			}
+			if got := tc.text[start:end]; got != tc.wantSpan {
+				t.Errorf("span = %q, want %q", got, tc.wantSpan)
 			}
 		})
 	}

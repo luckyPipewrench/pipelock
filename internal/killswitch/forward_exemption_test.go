@@ -71,9 +71,9 @@ func TestIsActiveHTTP_ForwardProxyGetsNoEndpointExemption(t *testing.T) {
 		for _, method := range methods {
 			t.Run(method+" "+path, func(t *testing.T) {
 				c := activeController(t)
-				req := absProxyRequest(t, method, "http://attacker.example"+path)
+				req := absProxyRequest(t, method, "http://proxy-target.vendor.example"+path)
 				if d := c.IsActiveHTTP(req); !d.Active {
-					t.Errorf("forward-proxy %s http://attacker.example%s was EXEMPTED under an active kill switch; egress bypass", method, path)
+					t.Errorf("forward-proxy %s http://proxy-target.vendor.example%s was EXEMPTED under an active kill switch; egress bypass", method, path)
 				}
 			})
 		}
@@ -81,7 +81,7 @@ func TestIsActiveHTTP_ForwardProxyGetsNoEndpointExemption(t *testing.T) {
 
 	t.Run("query string does not change the verdict", func(t *testing.T) {
 		c := activeController(t)
-		req := absProxyRequest(t, http.MethodGet, "http://attacker.example/health?exfil=secret")
+		req := absProxyRequest(t, http.MethodGet, "http://proxy-target.vendor.example/health?exfil=secret")
 		if d := c.IsActiveHTTP(req); !d.Active {
 			t.Error("forward-proxy request with exempt path plus query was exempted")
 		}
@@ -90,8 +90,8 @@ func TestIsActiveHTTP_ForwardProxyGetsNoEndpointExemption(t *testing.T) {
 	t.Run("CONNECT is denied", func(t *testing.T) {
 		c := activeController(t)
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "/", nil)
-		r.URL = &url.URL{Host: "attacker.example:443"}
-		r.RequestURI = "attacker.example:443"
+		r.URL = &url.URL{Host: "proxy-target.vendor.example:443"}
+		r.RequestURI = "proxy-target.vendor.example:443"
 		if d := c.IsActiveHTTP(r); !d.Active {
 			t.Error("CONNECT was exempted under an active kill switch")
 		}
@@ -126,7 +126,7 @@ func TestIsActiveHTTP_OwnEndpointExemptionsStillWork(t *testing.T) {
 
 	t.Run("non-exempt own path is still denied", func(t *testing.T) {
 		c := activeController(t)
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fetch?url=http://example.com", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fetch?url=http://api.vendor.example", nil)
 		if d := c.IsActiveHTTP(req); !d.Active {
 			t.Error("/fetch was exempted under an active kill switch")
 		}
@@ -159,7 +159,7 @@ func TestIsActiveHTTP_AllowlistStillAppliesToProxiedTraffic(t *testing.T) {
 	}
 
 	t.Run("allowlisted client is exempt", func(t *testing.T) {
-		req := absProxyRequest(t, http.MethodGet, "http://attacker.example/health")
+		req := absProxyRequest(t, http.MethodGet, "http://proxy-target.vendor.example/health")
 		req.RemoteAddr = "10.9.9.5:5555"
 		if d := c.IsActiveHTTP(req); d.Active {
 			t.Error("allowlisted client IP should stay exempt for proxied traffic")
@@ -167,12 +167,91 @@ func TestIsActiveHTTP_AllowlistStillAppliesToProxiedTraffic(t *testing.T) {
 	})
 
 	t.Run("non-allowlisted client is denied", func(t *testing.T) {
-		req := absProxyRequest(t, http.MethodGet, "http://attacker.example/health")
+		req := absProxyRequest(t, http.MethodGet, "http://proxy-target.vendor.example/health")
 		req.RemoteAddr = "203.0.113.7:5555"
 		if d := c.IsActiveHTTP(req); !d.Active {
 			t.Error("non-allowlisted client was exempted via the destination path")
 		}
 	})
+}
+
+// TestAllowlistExempt_MalformedClientAddress covers the two error paths in
+// allowlistExempt, both of which decide whether traffic is exempt and so must
+// fail in the safe direction.
+//
+// RemoteAddr is normally host:port, but it is not guaranteed to be: a Unix
+// socket or a synthetic request can carry a bare address. SplitHostPort fails
+// there, and the fallback treats the whole string as the host so a legitimate
+// allowlisted operator is not locked out. An address that is neither parses to
+// a nil IP, and that must NOT be treated as allowlisted, because a client
+// choosing an unparseable address would otherwise select its own exemption.
+func TestAllowlistExempt_MalformedClientAddress(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		wantActive bool // true = denied, false = exempt
+	}{
+		{
+			name:       "bare allowlisted ip without a port stays exempt",
+			remoteAddr: "10.9.9.5",
+			wantActive: false,
+		},
+		{
+			name:       "bare non-allowlisted ip is denied",
+			remoteAddr: "203.0.113.7",
+			wantActive: true,
+		},
+		{
+			name:       "unparseable address is denied",
+			remoteAddr: "not-an-ip-address",
+			wantActive: true,
+		},
+		{
+			name:       "empty address is denied",
+			remoteAddr: "",
+			wantActive: true,
+		},
+		{
+			name:       "host:port with a non-ip host is denied",
+			remoteAddr: "some-hostname:5555",
+			wantActive: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.KillSwitch.AllowlistIPs = []string{"10.9.9.0/24"}
+			c := New(cfg)
+			if !c.ToggleSignal() {
+				t.Fatal("ToggleSignal should report the switch now active")
+			}
+
+			req := absProxyRequest(t, http.MethodGet, "http://proxy-target.vendor.example/health")
+			req.RemoteAddr = tc.remoteAddr
+
+			got := c.IsActiveHTTP(req).Active
+			if got != tc.wantActive {
+				verb := "denied"
+				if !tc.wantActive {
+					verb = "exempt"
+				}
+				t.Errorf("RemoteAddr %q: Active = %v, want %v (expected %s)",
+					tc.remoteAddr, got, tc.wantActive, verb)
+			}
+		})
+	}
+}
+
+// TestAllowlistExempt_NoAllowlistConfigured pins the common case: with no
+// allowlist set, no client address can produce an exemption.
+func TestAllowlistExempt_NoAllowlistConfigured(t *testing.T) {
+	c := activeController(t)
+	req := absProxyRequest(t, http.MethodGet, "http://proxy-target.vendor.example/health")
+	req.RemoteAddr = "10.9.9.5:5555"
+	if d := c.IsActiveHTTP(req); !d.Active {
+		t.Error("an unconfigured allowlist exempted a client")
+	}
 }
 
 // TestIsProxiedRequest covers the helper directly, including the nil-URL case a
@@ -184,8 +263,8 @@ func TestIsProxiedRequest(t *testing.T) {
 		u      *url.URL
 		want   bool
 	}{
-		{"absolute uri", http.MethodGet, &url.URL{Scheme: "http", Host: "h.example", Path: "/health"}, true},
-		{"connect authority form", http.MethodConnect, &url.URL{Host: "h.example:443"}, true},
+		{"absolute uri", http.MethodGet, &url.URL{Scheme: "http", Host: "api.vendor.example", Path: "/health"}, true},
+		{"connect authority form", http.MethodConnect, &url.URL{Host: "api.vendor.example:443"}, true},
 		{"connect with nil url", http.MethodConnect, nil, true},
 		{"origin form", http.MethodGet, &url.URL{Path: "/health"}, false},
 		{"scheme without host", http.MethodGet, &url.URL{Scheme: "http", Path: "/health"}, false},

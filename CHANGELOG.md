@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `chain_kind` and `writer_instance_id`. The recorder continues to emit v2
   entries during the compatibility window.
 
-## [3.4.0] - 2026-08-18
+## [3.4.0] - 2026-08-19
 
 ### Breaking Changes / Upgrade Notes
 

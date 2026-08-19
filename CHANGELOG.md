@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Recorder readers accept the v3 outer-chain namespace fields
-  `chain_kind` and `writer_instance_id`. The recorder continues to emit v2
-  entries during the compatibility window.
-
 ## [3.4.0] - 2026-08-19
 
 ### Breaking Changes / Upgrade Notes
@@ -79,6 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while being inspected. A request that cannot reserve capacity is refused before its body
   is read, so scanning media cannot be turned into a way to exhaust memory. It defaults to
   64 MiB, which admits twelve concurrent uploads at the default body cap.
+- Recorder readers accept the v3 outer-chain namespace fields
+  `chain_kind` and `writer_instance_id`. The recorder continues to emit v2
+  entries during the compatibility window.
 
 ### Changed
 

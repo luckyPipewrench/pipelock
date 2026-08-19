@@ -168,10 +168,31 @@ func TestConductorPolicyStatusReporterErrorPaths(t *testing.T) {
 		}
 	})
 
+	// The next two subtests assert the property rather than the old shape. The
+	// constructor used to return a nil reporter when the marker was absent, which
+	// meant the run that auto-enrolled never got a reporter at all, because the
+	// marker is written later in the same startup. The reporter is now built
+	// regardless and resolves the marker lazily, so what has to hold is that it
+	// stays SILENT until an identity exists: it must not post an unattributed
+	// status. A doer that fails the test if it is called states that directly.
+	refuseToPost := func(t *testing.T) statusReporterDoer {
+		t.Helper()
+		return statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+			t.Errorf("posted runtime status with no enrollment identity: %s %s", req.Method, req.URL)
+			return responseWithBody(http.StatusOK, "{}"), nil
+		}}
+	}
+
 	t.Run("missing marker", func(t *testing.T) {
-		reporter, err := newConductorPolicyStatusReporter(baseConfig(t.TempDir()), statusReporterDoer{}, nil)
-		if err != nil || reporter != nil {
-			t.Fatalf("reporter = (%v, %v), want nil nil", reporter, err)
+		reporter, err := newConductorPolicyStatusReporter(baseConfig(t.TempDir()), refuseToPost(t), nil)
+		if err != nil || reporter == nil {
+			t.Fatalf("reporter = (%v, %v), want a reporter and no error", reporter, err)
+		}
+		if _, ok := reporter.resolveIdentity(); ok {
+			t.Fatal("resolveIdentity() succeeded with no marker on disk")
+		}
+		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err != nil {
+			t.Fatalf("ReportPolicyStatus() error = %v, want nil no-op", err)
 		}
 	})
 
@@ -180,9 +201,54 @@ func TestConductorPolicyStatusReporterErrorPaths(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, conductorEnrolledStateFileName), []byte(`{`), 0o600); err != nil {
 			t.Fatalf("write malformed marker: %v", err)
 		}
-		reporter, err := newConductorPolicyStatusReporter(baseConfig(dir), statusReporterDoer{}, nil)
-		if err != nil || reporter != nil {
-			t.Fatalf("reporter = (%v, %v), want nil nil", reporter, err)
+		reporter, err := newConductorPolicyStatusReporter(baseConfig(dir), refuseToPost(t), nil)
+		if err != nil || reporter == nil {
+			t.Fatalf("reporter = (%v, %v), want a reporter and no error", reporter, err)
+		}
+		if _, ok := reporter.resolveIdentity(); ok {
+			t.Fatal("resolveIdentity() succeeded on a malformed marker")
+		}
+		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err != nil {
+			t.Fatalf("ReportPolicyStatus() error = %v, want nil no-op", err)
+		}
+	})
+
+	t.Run("marker written after construction is picked up", func(t *testing.T) {
+		dir := t.TempDir()
+		var posts int
+		doer := statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
+			posts++
+			return responseWithBody(http.StatusOK, "{}"), nil
+		}}
+		reporter, err := newConductorPolicyStatusReporter(baseConfig(dir), doer, nil)
+		if err != nil || reporter == nil {
+			t.Fatalf("reporter = (%v, %v), want a reporter and no error", reporter, err)
+		}
+		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err != nil {
+			t.Fatalf("pre-enrolment ReportPolicyStatus() error = %v", err)
+		}
+		if posts != 0 {
+			t.Fatalf("posts before the marker existed = %d, want 0", posts)
+		}
+		// This is the regression the fix exists for: enrolment writes the marker
+		// after the reporter was constructed, and status has to start flowing
+		// without a process restart.
+		cc := baseConfig(dir).Conductor
+		if err := writeConductorEnrollmentMarker(filepath.Join(dir, conductorEnrolledStateFileName), enrollmentclient.Response{
+			OrgID:       cc.OrgID,
+			FleetID:     cc.FleetID,
+			InstanceID:  cc.InstanceID,
+			Environment: "prod",
+			AuditKeyID:  cc.AuditSigningKeyID,
+			EnrolledAt:  time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("writeConductorEnrollmentMarker() error = %v", err)
+		}
+		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err != nil {
+			t.Fatalf("post-enrolment ReportPolicyStatus() error = %v", err)
+		}
+		if posts != 1 {
+			t.Fatalf("posts after the marker appeared = %d, want 1", posts)
 		}
 	})
 
@@ -192,8 +258,16 @@ func TestConductorPolicyStatusReporterErrorPaths(t *testing.T) {
 		}
 	})
 
+	// These three exercise the POST itself, so they need a reporter that already
+	// holds an identity. Without one the reporter is correctly silent and the
+	// error paths below are never reached.
+	enrolled := func(r *conductorPolicyStatusReporter) *conductorPolicyStatusReporter {
+		r.identity.Store(&conductorEnrollmentMarker{Environment: "prod"})
+		return r
+	}
+
 	t.Run("bad endpoint", func(t *testing.T) {
-		reporter := &conductorPolicyStatusReporter{endpoint: ":// bad", client: statusReporterDoer{}}
+		reporter := enrolled(&conductorPolicyStatusReporter{endpoint: ":// bad", client: statusReporterDoer{}})
 		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err == nil || !strings.Contains(err.Error(), "build conductor runtime status request") {
 			t.Fatalf("ReportPolicyStatus() error = %v, want build request error", err)
 		}
@@ -201,24 +275,24 @@ func TestConductorPolicyStatusReporterErrorPaths(t *testing.T) {
 
 	t.Run("client error", func(t *testing.T) {
 		wantErr := errors.New("dial failed")
-		reporter := &conductorPolicyStatusReporter{
+		reporter := enrolled(&conductorPolicyStatusReporter{
 			endpoint: "https://conductor.example" + controlplane.FollowerRuntimeStatusPath,
 			client: statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
 				return nil, wantErr
 			}},
-		}
+		})
 		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); !errors.Is(err, wantErr) {
 			t.Fatalf("ReportPolicyStatus() = %v, want %v", err, wantErr)
 		}
 	})
 
 	t.Run("non-200 response", func(t *testing.T) {
-		reporter := &conductorPolicyStatusReporter{
+		reporter := enrolled(&conductorPolicyStatusReporter{
 			endpoint: "https://conductor.example" + controlplane.FollowerRuntimeStatusPath,
 			client: statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
 				return responseWithBody(http.StatusConflict, "bad\n"+strings.Repeat("x", 300)), nil
 			}},
-		}
+		})
 		err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{})
 		if err == nil || !strings.Contains(err.Error(), "HTTP 409") {
 			t.Fatalf("ReportPolicyStatus() error = %v, want HTTP 409", err)

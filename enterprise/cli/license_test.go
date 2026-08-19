@@ -286,9 +286,10 @@ func TestLicenseStatusCommandOutputs(t *testing.T) {
 	lic := license.License{
 		ID:             "lic_status_cmd",
 		Email:          "status@example.com",
+		Org:            "Status Cmd Org",
 		IssuedAt:       now.Unix(),
 		ExpiresAt:      now.Add(45 * 24 * time.Hour).Unix(),
-		Features:       []string{license.FeatureAgents},
+		Features:       []string{license.FeatureAgents, license.FeatureFleet},
 		Tier:           "enterprise",
 		SubscriptionID: "sub_status",
 	}
@@ -307,10 +308,85 @@ func TestLicenseStatusCommandOutputs(t *testing.T) {
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("status: %v", err)
 		}
-		for _, want := range []string{"License status: valid", "lic_status_cmd", "enterprise", "sub_status"} {
+		// Entitlements are asserted on the rendered output, not only on the
+		// report struct: the point of the change is that an operator running
+		// `license status` can read what the license actually grants, and a
+		// populated struct with an unprinted field would satisfy a struct-only
+		// test while telling the operator nothing.
+		for _, want := range []string{
+			"License status: valid", "lic_status_cmd", "enterprise", "sub_status",
+			"Org:", "Status Cmd Org",
+			"Features:", license.FeatureAgents, license.FeatureFleet,
+		} {
 			if !strings.Contains(buf.String(), want) {
 				t.Fatalf("output missing %q:\n%s", want, buf.String())
 			}
+		}
+	})
+
+	t.Run("json valid", func(t *testing.T) {
+		cmd := licenseStatusCmd()
+		cmd.SilenceUsage = true
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetArgs([]string{"--config", cfgPath, "--json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("status --json: %v", err)
+		}
+		var report licenseStatusReport
+		if jsonErr := json.Unmarshal(buf.Bytes(), &report); jsonErr != nil {
+			t.Fatalf("invalid JSON: %v\n%s", jsonErr, buf.String())
+		}
+		if report.Status != licenseStatusValid {
+			t.Fatalf("status = %q, want valid", report.Status)
+		}
+		if report.Org != "Status Cmd Org" {
+			t.Errorf("json org = %q, want %q", report.Org, "Status Cmd Org")
+		}
+		want := []string{license.FeatureAgents, license.FeatureFleet}
+		if len(report.Features) != len(want) {
+			t.Fatalf("json features = %v, want %v", report.Features, want)
+		}
+		for i, f := range want {
+			if report.Features[i] != f {
+				t.Errorf("json features[%d] = %q, want %q", i, report.Features[i], f)
+			}
+		}
+	})
+
+	t.Run("invalid signature carries no entitlements", func(t *testing.T) {
+		// A token signed by a key the config does not trust must not leak the
+		// org or features it CLAIMS. Verification returns a zero license on a
+		// signature failure, so status reports entitlements only for a license
+		// whose signature actually verified.
+		otherPub, _, keyErr := ed25519.GenerateKey(rand.Reader)
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		badCfg := writeLicenseStatusConfig(t, token, otherPub, "")
+		cmd := licenseStatusCmd()
+		cmd.SilenceUsage = true
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetArgs([]string{"--config", badCfg, "--json"})
+		if err := cmd.Execute(); err == nil {
+			t.Fatal("expected an invalid-signature error")
+		}
+		var report licenseStatusReport
+		if jsonErr := json.Unmarshal(buf.Bytes(), &report); jsonErr != nil {
+			t.Fatalf("invalid JSON: %v\n%s", jsonErr, buf.String())
+		}
+		if report.Status == licenseStatusValid {
+			t.Fatalf("status = valid for an untrusted signer; report=%+v", report)
+		}
+		if report.Org != "" {
+			t.Errorf("org = %q for an unverified license, want empty", report.Org)
+		}
+		if len(report.Features) != 0 {
+			t.Errorf("features = %v for an unverified license, want none", report.Features)
+		}
+		if strings.Contains(buf.String(), "Status Cmd Org") {
+			t.Errorf("unverified license leaked its claimed org:\n%s", buf.String())
 		}
 	})
 

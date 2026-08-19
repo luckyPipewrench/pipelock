@@ -1552,6 +1552,25 @@ func TestNormalizeHex(t *testing.T) {
 	}
 }
 
+func TestIndexHexTokenView_PrefixDoesNotSwallowANeedleByte(t *testing.T) {
+	// A radix or escape prefix is only a prefix when the pair the needle wants
+	// follows it. Without that condition an '"x"' inserted after a zero consumed
+	// the zero, so one character hid the rest of an encoded secret.
+	for _, tc := range []struct{ name, needle, text string }{
+		{"contiguous", "0a0b", "prefix 0a0b suffix"},
+		{"radix prefix", "0a0b", "prefix 0x0a0b suffix"},
+		{"escape prefix per byte", "0a0b", `prefix \x0a\x0b suffix`},
+		{"unlisted separator", "0a0b", "prefix 0a!0b suffix"},
+		{"x inserted after a needle zero", "0a0b", "prefix 0a0xb suffix"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, _, ok := indexHexTokenView(tc.needle, []spanTextView{{text: tc.text, viewLabel: "t"}}); !ok {
+				t.Errorf("indexHexTokenView(%q) missed it in %q", tc.needle, tc.text)
+			}
+		})
+	}
+}
+
 func TestIndexHexTokenView_NormalizesPrefixesAndUnlistedSeparators(t *testing.T) {
 	_, _, view, ok := indexHexTokenView("0a0b", []spanTextView{{
 		text:      "prefix 0x0a!0x0b suffix",

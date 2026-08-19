@@ -1584,7 +1584,45 @@ func removeHostnameDots(value string) string {
 // (e.g., "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
 // Uses RawQuery instead of url.Values to preserve parameter order.
 //
+// dlpTarget is one view of a request that DLP patterns are matched against,
+// carrying the text and the label that tells an operator which view matched.
+// Package level rather than local to each scan function so the views can be
+// built in one place: two identical local types were what forced the ordered
+// query-concatenation block to be duplicated between the core floor and the
+// configured scanner.
+type dlpTarget struct {
+	text      string
+	viewLabel string
+}
+
+// appendQueryConcatTargets adds the ordered query-value concatenation views a
+// credential split across parameters is reconstructed from: the concatenation
+// itself, its recursive decodings, and two strip views.
+//
+// Shared because the core floor and the configured scanner both need exactly
+// these views. They were duplicated byte for byte, so a view added to one and
+// not the other would have left the two paths disagreeing about what they
+// looked at, which is the failure this concatenation exists to prevent.
+//
 //pipelock:provenance-transform ordered_query_concat
+func appendQueryConcatTargets(targets []dlpTarget, rawQuery string) []dlpTarget {
+	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
+		return targets
+	}
+	concat := orderedQueryConcat(rawQuery)
+	targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat")})
+	for _, d := range decodeEncodingsRecursive(concat) {
+		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+	}
+	if stripped := stripURLNoise(concat); stripped != concat {
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
+	}
+	if stripped := stripToAlphanumeric(concat); stripped != concat {
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped_alnum")})
+	}
+	return targets
+}
+
 func orderedQueryConcat(rawQuery string) string {
 	var b strings.Builder
 	for _, pair := range strings.Split(rawQuery, "&") {
@@ -1917,10 +1955,6 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// DLP patterns don't cover. Both are evaluated - DLP wins if it matches.
 
 	var warnMatches []WarnMatch
-	type dlpTarget struct {
-		text      string
-		viewLabel string
-	}
 
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.
@@ -1996,19 +2030,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// Uses RawQuery to preserve parameter order (url.Values is a map with random iteration).
 	// Also noise-strip the concatenation to defeat inserted garbage params
 	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
-	if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
-		concat := orderedQueryConcat(parsed.RawQuery)
-		targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat")})
-		for _, d := range decodeEncodingsRecursive(concat) {
-			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
-		}
-		if stripped := stripURLNoise(concat); stripped != concat {
-			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
-		}
-		if stripped := stripToAlphanumeric(concat); stripped != concat {
-			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped_alnum")})
-		}
-	}
+	targets = appendQueryConcatTargets(targets, parsed.RawQuery)
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.
@@ -2430,6 +2452,21 @@ func indexEncodedTokenView(needle string, views []spanTextView, kind encodedToke
 // normalizeHex removes. Prefix pairs are skipped together before treating all
 // remaining non-hex bytes as noise, so env/file-secret matching cannot retain
 // a smaller, separately maintained delimiter allow-list.
+// isHexPrefixFor reports whether text[i:] opens with a "0x" or "\\x" prefix that
+// introduces the hex pair needle[j:] expects. Requiring the pair to follow is
+// what keeps the prefix rule from eating a needle byte: without it, any 'x'
+// after a '0' in the scanned text consumed that '0'.
+func isHexPrefixFor(text string, i int, needle string, j int) bool {
+	if i+3 >= len(text) || j+1 >= len(needle) {
+		return false
+	}
+	c := text[i]
+	if (c != '\\' && c != '0') || text[i+1] != 'x' {
+		return false
+	}
+	return text[i+2] == needle[j] && text[i+3] == needle[j+1]
+}
+
 func indexHexTokenView(needle string, views []spanTextView) (int, int, string, bool) {
 	if len(needle) == 0 {
 		return 0, 0, "", false
@@ -2444,7 +2481,12 @@ func indexHexTokenView(needle string, views []spanTextView) (int, int, string, b
 			needleIdx := 0
 			for textIdx < len(text) && needleIdx < len(needle) {
 				c := text[textIdx]
-				if textIdx+1 < len(text) && ((c == '\\' && text[textIdx+1] == 'x') || (c == '0' && text[textIdx+1] == 'x')) {
+				// Consume a radix or escape prefix ONLY when it introduces the
+				// hex pair the needle expects next. The unconditional form
+				// swallowed a '0' the needle needed whenever an 'x' followed
+				// it, so inserting one 'x' after a zero hid the rest of an
+				// encoded secret: matching "0a0b" against "0a0xb" missed.
+				if isHexPrefixFor(text, textIdx, needle, needleIdx) {
 					textIdx += 2
 					continue
 				}

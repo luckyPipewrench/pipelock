@@ -136,11 +136,45 @@ func (c *Controller) IsActiveForIP(clientIP string) Decision {
 // IsActiveHTTP checks whether the kill switch should deny an HTTP request.
 // Checks exemptions (health/metrics/API endpoints, allowlisted IPs) before
 // computing the active state from all sources.
+// isProxiedRequest reports whether r is a request to be PROXIED somewhere else
+// rather than a request against pipelock's own endpoints. A forward-proxy
+// request carries an absolute-URI request-target and CONNECT carries an
+// authority-form one, so in neither case does the request path name a pipelock
+// endpoint - it names a path on the DESTINATION host.
+//
+// Every endpoint exemption below must be gated on this, because those
+// exemptions compare the request path against pipelock's own endpoint paths.
+// Without the gate, a request for http://any-host/health takes the health
+// exemption and is forwarded while the kill switch is active, which defeats the
+// emergency control entirely. The gate lives in one helper consulted ahead of
+// all exemptions so that any exemption added later inherits it by construction
+// rather than by the next author remembering this.
+func isProxiedRequest(r *http.Request) bool {
+	if r.Method == http.MethodConnect {
+		return true
+	}
+	return r.URL != nil && r.URL.IsAbs() && r.URL.Host != ""
+}
+
 func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	rt := c.cfg.Load()
 
-	// Check endpoint exemptions first.
-	path := r.URL.Path
+	// Proxied traffic gets no endpoint exemption: the request path belongs to
+	// the destination, not to pipelock. The IP allowlist is deliberately still
+	// honoured here, because it keys on the CLIENT address rather than on a
+	// path the client chooses.
+	if isProxiedRequest(r) {
+		if d := c.allowlistExempt(rt, r); d != nil {
+			return *d
+		}
+		return c.computeDecision(rt)
+	}
+
+	// Check endpoint exemptions first. Compare on EscapedPath so an exemption
+	// cannot be broader than the routes it is meant to cover: sessionAPIRouter
+	// routes on EscapedPath, so matching the decoded path here would exempt
+	// e.g. /api/v1/sessions/x/%74erminate, which the router then 404s.
+	path := r.URL.EscapedPath()
 	if rt.healthExempt && path == "/health" {
 		return Decision{}
 	}
@@ -149,18 +183,8 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	}
 
 	// Check IP allowlist.
-	if len(rt.allowlistNets) > 0 {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr
-		}
-		if clientIP := net.ParseIP(host); clientIP != nil {
-			for _, ipNet := range rt.allowlistNets {
-				if ipNet.Contains(clientIP) {
-					return Decision{}
-				}
-			}
-		}
+	if d := c.allowlistExempt(rt, r); d != nil {
+		return *d
 	}
 
 	// Check API exemption. When the API runs on a separate port
@@ -180,6 +204,30 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	}
 
 	return c.computeDecision(rt)
+}
+
+// allowlistExempt returns a non-nil zero Decision when the request's client IP
+// is allowlisted, and nil when it is not. Keyed on the client address, so it is
+// safe to honour for proxied traffic: a client cannot choose its own source IP
+// the way it chooses a request path.
+func (c *Controller) allowlistExempt(rt *runtime, r *http.Request) *Decision {
+	if len(rt.allowlistNets) == 0 {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	clientIP := net.ParseIP(host)
+	if clientIP == nil {
+		return nil
+	}
+	for _, ipNet := range rt.allowlistNets {
+		if ipNet.Contains(clientIP) {
+			return &Decision{}
+		}
+	}
+	return nil
 }
 
 // IsActiveMCP checks whether the kill switch should deny an MCP message.

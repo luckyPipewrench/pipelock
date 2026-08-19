@@ -334,7 +334,9 @@ files, you can rotate one role without disturbing the others.
 
 ## Policy Publish
 
-Policy publication is an HTTP API surface, not a standalone CLI command in the current help output. The source-verified endpoint is:
+Policy publication has a CLI command, `pipelock conductor publish`. Prefer it: it signs the bundle, runs the fleet preflight, and reports the resulting bundle id and hash. Note that `--allow-fleet-skew`, which overrides a preflight block for stale, unseen, or last-apply-failed followers, is admin-only and requires a recorded reason; a normal publish to a healthy fleet needs only the publisher token.
+
+The underlying endpoint, for callers that need it directly, is:
 
 ```http
 PUT /api/v1/conductor/policy-bundles

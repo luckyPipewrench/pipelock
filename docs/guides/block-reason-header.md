@@ -129,6 +129,21 @@ The header is set on every HTTP-capable block path. MCP-internal blocks that hap
 | MCP HTTP / SSE | `internal/mcp/proxy_http.go` | HTTP response header |
 | MCP stdio (JSON-RPC) | `internal/mcp/proxy.go`, `internal/mcp/input.go` | JSON-RPC error metadata — no HTTP header surface |
 
+### The two status codes on `/fetch`
+
+`/fetch` carries two independent statuses and they answer different questions. Reading one as the other is the single easiest mistake to make against this endpoint.
+
+| Where | What it means |
+|---|---|
+| The HTTP status Pipelock returns | **Pipelock's own verdict.** `200` means Pipelock allowed the request and completed the fetch. `403` means Pipelock refused it, and the `X-Pipelock-Block-Reason` header says which layer and why. |
+| `status_code` in the JSON body | **What the upstream said.** Present only on an allowed request, because a blocked request never reached the upstream. |
+
+So `HTTP 200` with `"status_code": 404` is a normal, correct response: Pipelock permitted the request, fetched the URL, and the site returned 404. Nothing was blocked.
+
+Pipelock deliberately does **not** propagate the upstream status into its own. Doing so would make a `403` ambiguous between "Pipelock refused this" and "the site refused this", and a caller keying on `403` to detect enforcement would start seeing false positives. Keeping them separate means `403` plus `X-Pipelock-Block-Reason` is unambiguous proof that Pipelock made the decision.
+
+For a caller that wants both facts at the HTTP layer, check the block-reason header rather than inferring from the status: its presence means Pipelock blocked, and its absence on a `200` means the body's `status_code` is the upstream's own answer.
+
 WebSocket close-frame payloads have a 123-byte limit (RFC 6455). When the bare `{block_reason: <code>}` payload would exceed that, Pipelock substitutes the dedicated `block_reason_overflow` sentinel rather than truncating the code mid-string.
 
 ### Production-path matrix exemptions

@@ -352,6 +352,60 @@ func TestReleaseVerifierInventoryRejectsLockRootDriftWithPythonOptimize(t *testi
 	}
 }
 
+// rewriteStagedVerifierInventory rewrites the staged inventory through its JSON
+// structure. A fixture must set the state it asserts on rather than inheriting
+// whatever the real release currently holds, because the real file legitimately
+// changes across a release cycle.
+func rewriteStagedVerifierInventory(t *testing.T, root string, apply func(inventory map[string]interface{})) {
+	t.Helper()
+	inventoryPath := filepath.Join(root, "release", "verifier-installers.json")
+	raw, err := os.ReadFile(inventoryPath) // #nosec G304 -- fixed inventory path under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged inventory: %v", err)
+	}
+	var inventory map[string]interface{}
+	if err := json.Unmarshal(raw, &inventory); err != nil {
+		t.Fatalf("decode staged inventory: %v", err)
+	}
+	apply(inventory)
+	raw, err = json.Marshal(inventory)
+	if err != nil {
+		t.Fatalf("encode staged inventory: %v", err)
+	}
+	if err := os.WriteFile(inventoryPath, raw, 0o600); err != nil {
+		t.Fatalf("write staged inventory: %v", err)
+	}
+}
+
+// setStagedVerifierSourceCommits pins the named languages' publisher source
+// commit. It fails when a named language is absent so a renamed or removed entry
+// surfaces as a test failure instead of leaving the fixture asserting nothing.
+func setStagedVerifierSourceCommits(t *testing.T, inventory map[string]interface{}, commit string, languages ...string) {
+	t.Helper()
+	entries, ok := inventory["verifiers"].([]interface{})
+	if !ok {
+		t.Fatal("staged inventory has no verifiers array")
+	}
+	for _, language := range languages {
+		found := false
+		for _, entry := range entries {
+			record, ok := entry.(map[string]interface{})
+			if !ok || record["language"] != language {
+				continue
+			}
+			publisher, ok := record["publisher"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("%s entry has no publisher object", language)
+			}
+			publisher["source_commit"] = commit
+			found = true
+		}
+		if !found {
+			t.Fatalf("staged inventory has no %s verifier entry", language)
+		}
+	}
+}
+
 func TestReleaseVerifierInstallGateRejectsMissingVerifierTag(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	inventoryPath := filepath.Join(root, "release", "verifier-installers.json")
@@ -384,6 +438,13 @@ func TestReleaseVerifierInstallGateRejectsMissingVerifierTag(t *testing.T) {
 
 func TestReleaseVerifierInstallGateHonorsExplicitReleaseBlock(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
+	// Set the flag this test is named for instead of depending on the real
+	// inventory still carrying it. Once a release records its published digests
+	// and unblocks, an inventory staged verbatim reaches a different refusal and
+	// this test stops exercising the release block at all.
+	rewriteStagedVerifierInventory(t, root, func(inventory map[string]interface{}) {
+		inventory["release_blocked"] = true
+	})
 	command := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "release-verifier-install-gate.sh"), // #nosec G204 -- executes the checked-in script copied under t.TempDir.
 		"--tag", "v3.4.0")
 	output, err := command.CombinedOutput()
@@ -421,16 +482,15 @@ func TestReleaseVerifierInstallGateRejectsPostTagSourceDrift(t *testing.T) {
 
 	tagCommit := runGit("rev-parse", "HEAD")
 	runGit("tag", "verifier-v0.3.0")
-	inventoryPath := filepath.Join(root, "release", "verifier-installers.json")
-	raw, err := os.ReadFile(inventoryPath) // #nosec G304 -- fixed inventory path under t.TempDir.
-	if err != nil {
-		t.Fatalf("read staged inventory: %v", err)
-	}
-	raw = bytes.ReplaceAll(raw, []byte("REPLACE_WITH_VERIFIER_V0_3_0_TAG_COMMIT"), []byte(tagCommit))
-	raw = bytes.Replace(raw, []byte(`"release_blocked": true`), []byte(`"release_blocked": false`), 1)
-	if err := os.WriteFile(inventoryPath, raw, 0o600); err != nil {
-		t.Fatalf("write staged inventory: %v", err)
-	}
+	// Point the inventory at this fixture's own tag commit and unblock it, so the
+	// gate reaches the source-drift check. These were find-and-replace edits
+	// against REPLACE_WITH_* and `"release_blocked": true`; both silently became
+	// no-ops once the real release recorded its published digests, and the gate
+	// then failed earlier on a commit mismatch instead.
+	rewriteStagedVerifierInventory(t, root, func(inventory map[string]interface{}) {
+		inventory["release_blocked"] = false
+		setStagedVerifierSourceCommits(t, inventory, tagCommit, "TypeScript", "Rust")
+	})
 	sourcePath := filepath.Join(root, "sdk", "verifiers", "ts", "src", "types.ts")
 	source, err := os.ReadFile(sourcePath) // #nosec G304 -- fixed source path under t.TempDir.
 	if err != nil {

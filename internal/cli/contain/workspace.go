@@ -93,8 +93,10 @@ Must be run as root.`,
 		SilenceErrors: true,
 		Args:          cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !opts.dryRun && os.Geteuid() != 0 {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("grant-workspace must be run as root (use sudo)"))
+			if !opts.dryRun {
+				if err := requireContainPrivilege("grant-workspace"); err != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				}
 			}
 			if opts.agentUser == "" {
 				opts.agentUser = defaultAgentUser
@@ -133,8 +135,10 @@ Must be run as root.`,
 		SilenceErrors: true,
 		Args:          cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !opts.dryRun && os.Geteuid() != 0 {
-				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("revoke-workspace must be run as root (use sudo)"))
+			if !opts.dryRun {
+				if err := requireContainPrivilege("revoke-workspace"); err != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				}
 			}
 			if opts.agentUser == "" {
 				opts.agentUser = defaultAgentUser

@@ -12,10 +12,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
@@ -163,50 +166,119 @@ func TestWriteQuickstartIncludesIdentityFlags(t *testing.T) {
 // space that broke the pasted command, and a 409 that could not be recovered
 // because `conductor enroll` had been run first.
 func TestWriteQuickstartEnrollmentStep(t *testing.T) {
-	var out bytes.Buffer
-	// The directory carries a space on purpose: it is what proves the generated
-	// command stays pasteable. Paths are joined from a base rather than written
-	// as literals so gosec does not read a *.token path as a credential.
-	base := "/fleet dir"
-	writeQuickstart(&out, &Result{
-		Layout: Layout{
-			Dir:                    base,
-			CACertPath:             filepath.Join(base, "ca/ca.crt"),
-			AdminTokenPath:         filepath.Join(base, "conductor/admin.token"),
-			FollowerClientCertPath: filepath.Join(base, "follower/client.crt"),
-			FollowerClientKeyPath:  filepath.Join(base, "follower/client.key"),
-			FollowerBundleCacheDir: filepath.Join(base, "follower/bundles"),
-			FollowerConfigPath:     filepath.Join(base, "follower/follower.yaml"),
-			LicenseTokenPath:       filepath.Join(base, "license/license.token"),
-		},
-		Identity:      controlplane.FollowerIdentity{OrgID: "org", FleetID: "fleet", InstanceID: "inst", Environment: "dev"},
-		TrustDomain:   "custom.example",
-		ConductorID:   "conductor-dev",
-		ConductorURL:  "https://127.0.0.1:8895",
-		LicensePubHex: strings.Repeat("a", 64),
-	})
-	got := out.String()
-	for _, want := range []string{
-		// The token is minted, not assumed to exist.
-		"conductor enrollment-token mint",
-		// Minted under a restrictive umask in a subshell, so the redirect
-		// cannot inherit a permissive caller umask.
-		"(umask 077 && pipelock conductor enrollment-token mint",
-		"--ttl 1h > '/fleet dir/follower/bundles/enrollment.token')",
-		// Paths carrying a space stay pasteable.
-		"--admin-token-file '/fleet dir/conductor/admin.token'",
-		"--server-ca '/fleet dir/ca/ca.crt'",
-		// The config key the follower actually reads, and the ordering trap.
-		`enrollment_token_path: "/fleet dir/follower/bundles/enrollment.token"`,
-		"Do NOT run `conductor enroll` first",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("quickstart missing %q\n%s", want, got)
+	// Each base directory is a character class that breaks a different one of the
+	// two escaping mechanisms in the generated step. A space breaks an unquoted
+	// shell word; a single quote breaks naive shell quoting; a double quote or a
+	// backslash breaks a hand-wrapped YAML value. The paths are joined from the
+	// base rather than written as literals so gosec does not read a *.token path
+	// as a credential.
+	bases := []struct {
+		name string
+		dir  string
+	}{
+		{name: "plain", dir: "/fleet"},
+		{name: "space", dir: "/fleet dir"},
+		{name: "single quote", dir: "/fleet's dir"},
+		{name: "double quote", dir: `/fleet "q" dir`},
+		{name: "backslash", dir: `/fleet\dir`},
+		{name: "shell metacharacters", dir: "/fleet;$(id)`id`dir"},
+	}
+
+	for _, b := range bases {
+		t.Run(b.name, func(t *testing.T) {
+			bundleDir := filepath.Join(b.dir, "follower/bundles")
+			tokenPath := filepath.Join(bundleDir, "enrollment.token")
+			adminToken := filepath.Join(b.dir, "conductor/admin.token")
+			caCert := filepath.Join(b.dir, "ca/ca.crt")
+
+			var out bytes.Buffer
+			writeQuickstart(&out, &Result{
+				Layout: Layout{
+					Dir:                    b.dir,
+					CACertPath:             caCert,
+					AdminTokenPath:         adminToken,
+					FollowerClientCertPath: filepath.Join(b.dir, "follower/client.crt"),
+					FollowerClientKeyPath:  filepath.Join(b.dir, "follower/client.key"),
+					FollowerBundleCacheDir: bundleDir,
+					FollowerConfigPath:     filepath.Join(b.dir, "follower/follower.yaml"),
+					LicenseTokenPath:       filepath.Join(b.dir, "license/license.token"),
+				},
+				Identity:      controlplane.FollowerIdentity{OrgID: "org", FleetID: "fleet", InstanceID: "inst", Environment: "dev"},
+				TrustDomain:   "custom.example",
+				ConductorID:   "conductor-dev",
+				ConductorURL:  "https://127.0.0.1:8895",
+				LicensePubHex: strings.Repeat("a", 64),
+			})
+			got := out.String()
+
+			for _, want := range []string{
+				// The token is minted rather than assumed to exist, and it is
+				// minted under a restrictive umask with the target removed
+				// first, so a rerun cannot truncate a permissive file in place.
+				"(umask 077 && rm -f " + shellQuote(tokenPath) + " && pipelock conductor enrollment-token mint",
+				"--ttl 1h > " + shellQuote(tokenPath) + ")",
+				"--admin-token-file " + shellQuote(adminToken),
+				"--server-ca " + shellQuote(caCert),
+				// The ordering trap that makes auto-enrolment fail 409 for good.
+				"Do NOT run `conductor enroll` first",
+			} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("quickstart missing %q\n%s", want, got)
+				}
+			}
+
+			// Every quoted path must round-trip through a REAL shell back to the
+			// exact path, because "pasteable" is a claim about what /bin/sh does,
+			// not about what the string looks like. A quoting bug that still
+			// contains the right substring passes the checks above and fails
+			// here. printf %s is used so the shell reports exactly one word.
+			for _, p := range []string{tokenPath, adminToken, caCert} {
+				// Handing the string to a real shell is the assertion, not an
+				// oversight: the claim under test is what /bin/sh does with the
+				// quoted path. The script arrives on STDIN rather than as an
+				// argument, so the command line itself carries no interpolated
+				// value while the shell still does the parsing.
+				cmd := exec.CommandContext(t.Context(), "/bin/sh")
+				cmd.Stdin = strings.NewReader("printf %s " + shellQuote(p))
+				parsed, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("shell rejected the quoted form of %q: %v", p, err)
+				}
+				if string(parsed) != p {
+					t.Fatalf("shell parsed the quoted form of %q back as %q", p, parsed)
+				}
+			}
+
+			// The generated config line must be valid YAML AND decode back to
+			// the same path the token was written to. A hand-wrapped value can
+			// satisfy neither for a path containing a quote or a backslash.
+			line := enrollmentTokenPathLine(t, got)
+			var decoded struct {
+				Path string `yaml:"enrollment_token_path"`
+			}
+			if err := yaml.Unmarshal([]byte(line), &decoded); err != nil {
+				t.Fatalf("generated config line is not valid YAML: %v\nline: %s", err, line)
+			}
+			if decoded.Path != tokenPath {
+				t.Fatalf("enrollment_token_path decoded to %q, want %q\nline: %s", decoded.Path, tokenPath, line)
+			}
+		})
+	}
+}
+
+// enrollmentTokenPathLine extracts the generated enrollment_token_path line with
+// its leading indentation removed, so it can be parsed as a standalone YAML
+// mapping.
+func enrollmentTokenPathLine(t *testing.T, quickstart string) string {
+	t.Helper()
+	for _, line := range strings.Split(quickstart, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "enrollment_token_path:") {
+			return trimmed
 		}
 	}
-	if strings.Contains(got, "--ttl 1h > /fleet dir/") {
-		t.Fatalf("quickstart wrote an unquoted redirect target\n%s", got)
-	}
+	t.Fatalf("quickstart contains no enrollment_token_path line:\n%s", quickstart)
+	return ""
 }
 
 func TestSnippet(t *testing.T) {

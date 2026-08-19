@@ -49,7 +49,15 @@ func scaleDeadline(d time.Duration) time.Duration {
 			if scaled >= float64(math.MaxInt64) {
 				return time.Duration(math.MaxInt64)
 			}
-			return time.Duration(scaled)
+			// Both ends of the range fail the same way, so both are rejected
+			// here. Overflow wraps to a negative Duration; a factor small enough
+			// to put the product under one nanosecond truncates to zero. Either
+			// makes every wait expire before it polls, reporting a passing
+			// condition as a failure. Anything unrepresentable falls through to
+			// the unscaled default rather than producing a useless deadline.
+			if scaled >= 1 {
+				return time.Duration(scaled)
+			}
 		}
 	}
 	if strings.TrimSpace(os.Getenv("CI")) != "" {

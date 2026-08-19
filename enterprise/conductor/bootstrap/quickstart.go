@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // writeQuickstart prints the proof summary and the copy-pasteable runbook that
@@ -73,10 +76,13 @@ func writeQuickstart(out io.Writer, r *Result) {
 	w("   and remote-kill polls return 204 — while its audit batches are rejected 401\n")
 	w("   and it never appears in `conductor fleet status`:\n")
 	tokenPath := filepath.Join(r.Layout.FollowerBundleCacheDir, "enrollment.token")
-	// The subshell umask is load-bearing: this one-hour token authorizes
-	// enrollment, so it must never inherit a permissive caller umask and land
-	// group- or world-readable.
-	w("  (umask 077 && pipelock conductor enrollment-token mint \\\n")
+	// Two things are load-bearing here, and the umask alone is not enough.
+	// This one-hour token authorizes enrollment, so it must never land group- or
+	// world-readable. `umask 077` covers only a file the redirect CREATES; on a
+	// rerun the target already exists and `>` truncates it in place, preserving
+	// whatever mode it already had. Removing it first makes every run take the
+	// create path, so the rerun gets the same protection as the first run.
+	w("  (umask 077 && rm -f %s && pipelock conductor enrollment-token mint \\\n", shellQuote(tokenPath))
 	w("    --conductor-url %s \\\n", shellQuote(r.ConductorURL))
 	w("    --admin-token-file %s \\\n", shellQuote(r.Layout.AdminTokenPath))
 	w("    --server-ca %s \\\n", shellQuote(r.Layout.CACertPath))
@@ -84,7 +90,11 @@ func writeQuickstart(out io.Writer, r *Result) {
 	w("    --org %s --fleet %s --env %s --instance %s \\\n", shellQuote(r.Identity.OrgID), shellQuote(r.Identity.FleetID), shellQuote(r.Identity.Environment), shellQuote(r.Identity.InstanceID))
 	w("    --token-id bootstrap-enroll-1 --ttl 1h > %s)\n", shellQuote(tokenPath))
 	w("   then add this line under `conductor:` in %s\n", r.Layout.FollowerConfigPath)
-	w("     enrollment_token_path: \"%s\"\n", tokenPath)
+	// Emit the path as a real YAML scalar rather than wrapping it in double
+	// quotes by hand. A path containing a quote or a backslash would otherwise
+	// produce a config that either fails to parse or parses to a different path
+	// than the one the token was written to.
+	w("     enrollment_token_path: %s\n", yamlScalar(tokenPath))
 	w("\n3) Start the follower (separate shell, same exported license):\n")
 	w("  pipelock run -c %s\n", r.Layout.FollowerConfigPath)
 	w("   It auto-enrolls on first start and prints \"follower enrollment completed\".\n")
@@ -109,6 +119,21 @@ func writeQuickstart(out io.Writer, r *Result) {
 // quote, and reopening it.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// yamlScalar encodes s as a YAML scalar suitable for pasting as a mapping value.
+// It defers the quoting rules to the YAML encoder instead of hand-wrapping the
+// value, which is what keeps a path containing a quote or a backslash both valid
+// and unchanged. The encoder appends a newline; callers place their own.
+func yamlScalar(s string) string {
+	enc, err := yaml.Marshal(s)
+	if err != nil {
+		// Marshalling a string does not fail. Fall back to the encoder's own
+		// double-quoted form rather than emitting a bare value that could be
+		// misparsed.
+		return strconv.Quote(s)
+	}
+	return strings.TrimRight(string(enc), "\n")
 }
 
 // trimScheme reduces an https://host:port URL to host:port for --listen.

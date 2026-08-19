@@ -35,6 +35,11 @@ func TestScaleDeadline(t *testing.T) {
 		{name: "pin to 1 beats ci", ci: "true", scale: "1", want: base},
 		{name: "pin to 1 locally", ci: "", scale: "1", want: base},
 		{name: "fractional pin", ci: "true", scale: "0.5", want: 5 * time.Second},
+		// Under one nanosecond the product truncates to zero, which expires
+		// every wait immediately. It is positive, so the f > 0 check passes and
+		// only the representability check catches it.
+		{name: "sub-nanosecond falls through to local", ci: "", scale: "5e-324", want: base},
+		{name: "sub-nanosecond falls through to ci", ci: "true", scale: "1e-20", want: ci},
 		{name: "unparseable falls through to ci", ci: "true", scale: "bogus", want: ci},
 		{name: "unparseable falls through to local", ci: "", scale: "bogus", want: base},
 		{name: "zero is rejected", ci: "true", scale: "0", want: ci},

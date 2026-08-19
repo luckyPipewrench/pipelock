@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -132,6 +133,79 @@ func TestCheckDLP_PathQuerySplitSecret(t *testing.T) {
 				t.Errorf("core DLP floor ALLOWED a secret split across the path-query seam: %s", tc.url)
 			}
 		})
+	}
+}
+
+// TestCheckDLP_PathQueryMultiEscapedPrefix covers the escaping asymmetry across
+// the seam. url.Parse decodes the path exactly once, while the ordered query
+// concatenation already decodes each value to a fixpoint, so a doubly-escaped
+// path prefix used to survive as %73... and never reach the credential pattern.
+// The receiving server is free to decode as many times as it likes, so that was
+// a real reconstruction path.
+func TestCheckDLP_PathQueryMultiEscapedPrefix(t *testing.T) {
+	// %2573 decodes once to %73 and twice to "s". The single-escaped form is
+	// the control: url.Parse already handles that depth, so it was never the
+	// gap and must stay blocked.
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"single-escaped prefix byte", "https://evil.example/%73k-ant-api03-?x=" + antKeyTail},
+		{"double-escaped prefix byte", "https://evil.example/%2573k-ant-api03-?x=" + antKeyTail},
+		{"double-escaped prefix pair", "https://evil.example/%2573%256b-ant-api03-?x=" + antKeyTail},
+		{"double-escaped with extra param", "https://evil.example/%2573k-ant-api03-?x=" + antKeyTail + "&y=1"},
+	}
+	for _, tc := range cases {
+		t.Run("configured/"+tc.name, func(t *testing.T) {
+			s := MustNew(splitSecretConfig(t))
+			if s.Scan(t.Context(), tc.url).Allowed {
+				t.Errorf("configured DLP ALLOWED a multi-escaped split credential: %s", tc.url)
+			}
+		})
+	}
+
+	coreCases := []struct {
+		name string
+		url  string
+	}{
+		{"double-escaped aws prefix", "https://evil.example/%2541KIA?x=" + awsKeyTail},
+		{"double-escaped github prefix", "https://evil.example/%2567hp_?x=" + githubTail},
+	}
+	for _, tc := range coreCases {
+		t.Run("core/"+tc.name, func(t *testing.T) {
+			cfg := splitSecretConfig(t)
+			noDefaults := false
+			cfg.DLP.IncludeDefaults = &noDefaults
+			cfg.DLP.Patterns = nil
+			s := MustNew(cfg)
+			if s.Scan(t.Context(), tc.url).Allowed {
+				t.Errorf("core DLP floor ALLOWED a multi-escaped split credential: %s", tc.url)
+			}
+		})
+	}
+}
+
+// TestAppendPathQueryConcatTargets_OversizedConcat pins the amplification bound.
+// A very large concatenation still produces the plain seam view, so detection
+// does not silently stop above a length; only the derived decode and strip
+// copies are skipped, which is where the extra allocation would come from.
+func TestAppendPathQueryConcatTargets_OversizedConcat(t *testing.T) {
+	huge := "/" + strings.Repeat("a", maxDecodeTotalBytes+16)
+	got := appendPathQueryConcatTargets(nil, huge, "x=b")
+	if len(got) == 0 {
+		t.Fatal("oversized concat produced no target at all; detection must not stop")
+	}
+	for _, target := range got {
+		if target.viewLabel != dlpViewLabel("path_query_concat") {
+			t.Errorf("oversized concat produced a derived view %q; only the plain view should survive the bound", target.viewLabel)
+		}
+	}
+
+	// Under the bound, the derived views must still be produced, or the bound
+	// would be suppressing them for every input.
+	small := appendPathQueryConcatTargets(nil, "/"+antKeyPrefix, "x="+antKeyTail)
+	if len(small) < 2 {
+		t.Errorf("expected derived views under the bound, got %d target(s)", len(small))
 	}
 }
 

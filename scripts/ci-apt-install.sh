@@ -17,14 +17,24 @@
 # THE BUDGET IS THE WHOLE POINT, so the arithmetic is written out to be checked
 # rather than trusted:
 #
-#   no-update probe    = PROBE_TIMEOUT                      = 45s
-#   one attempt        = UPDATE_TIMEOUT + INSTALL_TIMEOUT = 90 + 60 = 150s
-#   worst case overall = PROBE_TIMEOUT + (ATTEMPTS * 150s) + BACKOFF
-#                      = 45s + (2 * 150s) + 10s
-#                      = 355s
+# Each bound also carries KILL_GRACE, since a command that ignores TERM is only
+# gone after the KILL. The worst path escalates at FIVE points, not three: the
+# probe, then update and install on each of the two attempts. Counting call sites
+# instead of escalations undercounts it by two grace periods.
 #
-# The hardening jobs allow 480s, leaving about 125s for checkout and the audit
+#   no-update probe    = PROBE_TIMEOUT + KILL_GRACE          = 45 + 5  = 50s
+#   one attempt        = (UPDATE_TIMEOUT + KILL_GRACE)
+#                        + (INSTALL_TIMEOUT + KILL_GRACE)
+#                      = (90 + 5) + (60 + 5)                           = 160s
+#   worst case overall = probe + (ATTEMPTS * one attempt) + BACKOFF
+#                      = 50s + (2 * 160s) + 10s
+#                      = 380s
+#
+# The hardening jobs allow 480s, leaving about 100s for checkout and the audit
 # work itself, against a job that normally finishes in well under two minutes.
+# The probe is the common path and costs about two seconds in practice, so the
+# expected time is far below either number; the 380s is the pathological path
+# where every single bound has to be enforced by force.
 #
 # The probe is the common path and costs seconds, so it lowers the EXPECTED time
 # while raising the worst case by its own bound. Both numbers still fit, and the
@@ -49,6 +59,13 @@ readonly UPDATE_TIMEOUT=90
 readonly INSTALL_TIMEOUT=60
 readonly BACKOFF=10
 
+# Every bound below is enforced with a forced-kill grace period, because a bound
+# that only sends TERM is not a bound. apt-get waiting on the dpkg lock can be
+# slow to act on TERM or ignore it outright, and the process then outlives the
+# timeout it was supposedly held to, which makes the arithmetic above a claim
+# rather than a limit. KILL sends the process away after the grace period.
+readonly KILL_GRACE=5
+
 # The runner image already carries some of these. Skipping the network entirely
 # when every package is present is both faster and one less thing to stall.
 missing=()
@@ -68,8 +85,8 @@ fi
 # that looks like an option would be read as one. The trailing -- stops apt-get
 # reading a package name as a flag.
 attempt_install() {
-  sudo timeout "$UPDATE_TIMEOUT" apt-get update \
-    && sudo timeout "$INSTALL_TIMEOUT" apt-get install -y -- "${missing[@]}"
+  sudo timeout --kill-after "$KILL_GRACE" "$UPDATE_TIMEOUT" apt-get update \
+    && sudo timeout --kill-after "$KILL_GRACE" "$INSTALL_TIMEOUT" apt-get install -y -- "${missing[@]}"
 }
 
 # Try installing from the lists the image already carries, before fetching any.
@@ -92,7 +109,7 @@ attempt_install() {
 # satisfy the request.
 readonly PROBE_TIMEOUT=45
 attempt_install_without_update() {
-  sudo timeout "$PROBE_TIMEOUT" apt-get install -y -- "${missing[@]}"
+  sudo timeout --kill-after "$KILL_GRACE" "$PROBE_TIMEOUT" apt-get install -y -- "${missing[@]}"
 }
 
 # Announce the path taken. The previous version of this logic had no marker, so a

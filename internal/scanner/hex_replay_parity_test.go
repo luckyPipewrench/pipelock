@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -72,4 +73,63 @@ func TestHexReplayMatchesScannerNormalizer(t *testing.T) {
 		t.Fatalf("%d of %d inputs disagreed between the scanner and the v2 replay", mismatched, checked)
 	}
 	t.Logf("%d inputs agreed", checked)
+}
+
+// TestReassemblyLengthBoundary pins maxReassembledTokenLen from both sides. A
+// cap that is never exercised at its edge is the shape that silently becomes
+// off-by-one, and this one decides whether a candidate is scanned at all.
+//
+// The rejecting hex case is 4098 rather than 4097 so the cap is what rejects
+// it: hex also requires an even length, and 4097 would fail that instead and
+// prove nothing about the bound.
+func TestReassemblyLengthBoundary(t *testing.T) {
+	hexAt := func(n int) string { return strings.Repeat("a", n) }
+
+	t.Run("hex at the cap is kept", func(t *testing.T) {
+		if got := normalizeHex(hexAt(maxReassembledTokenLen)); len(got) != maxReassembledTokenLen {
+			t.Fatalf("normalizeHex kept %d bytes, want %d", len(got), maxReassembledTokenLen)
+		}
+	})
+
+	t.Run("hex one pair over the cap is refused", func(t *testing.T) {
+		if got := normalizeHex(hexAt(maxReassembledTokenLen + 2)); got != "" {
+			t.Fatalf("normalizeHex kept %d bytes, want it refused", len(got))
+		}
+	})
+
+	t.Run("v2 replay agrees at both edges", func(t *testing.T) {
+		for _, size := range []int{maxReassembledTokenLen, maxReassembledTokenLen + 2} {
+			input := hexAt(size)
+			replayed, err := (normalize.Recipe{
+				TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest,
+				Operations: []normalize.Operation{{
+					Kind:     normalize.OperationEncodedTokenNormalize,
+					Alphabet: "hex",
+				}},
+			}).Apply(input)
+			if err != nil {
+				t.Fatalf("replay of %d bytes: %v", size, err)
+			}
+			if scanned := normalizeHex(input); scanned != replayed {
+				t.Fatalf("at %d bytes the scanner kept %d and the replay kept %d",
+					size, len(scanned), len(replayed))
+			}
+		}
+	})
+
+	// The encoded-token path needs a stripped byte before it will reassemble
+	// at all, so each case carries one separator that does not survive.
+	t.Run("encoded token at the cap is kept", func(t *testing.T) {
+		input := strings.Repeat("A", maxReassembledTokenLen) + "!"
+		if got := normalizeEncodedToken(input, encodedTokenBase64Std); len(got) != maxReassembledTokenLen {
+			t.Fatalf("kept %d bytes, want %d", len(got), maxReassembledTokenLen)
+		}
+	})
+
+	t.Run("encoded token one byte over the cap is refused", func(t *testing.T) {
+		input := strings.Repeat("A", maxReassembledTokenLen+1) + "!"
+		if got := normalizeEncodedToken(input, encodedTokenBase64Std); got != "" {
+			t.Fatalf("kept %d bytes, want it refused", len(got))
+		}
+	})
 }

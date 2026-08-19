@@ -66,6 +66,16 @@ readonly BACKOFF=10
 # rather than a limit. KILL sends the process away after the grace period.
 readonly KILL_GRACE=5
 
+# Wait for the dpkg lock instead of failing on it.
+#
+# timeout signals only its direct child, which is apt-get. apt-get spawns dpkg,
+# and a dpkg that outlives a killed apt-get keeps the lock, so the retry would
+# otherwise collide with the corpse of the attempt it is retrying and fail on a
+# lock rather than on the condition it was retrying. Waiting is bounded twice
+# over: by this value and by the enclosing install timeout. Only the install
+# paths need it, since apt-get update never invokes dpkg.
+readonly LOCK_WAIT=30
+
 # The runner image already carries some of these. Skipping the network entirely
 # when every package is present is both faster and one less thing to stall.
 missing=()
@@ -86,7 +96,8 @@ fi
 # reading a package name as a flag.
 attempt_install() {
   sudo timeout --kill-after "$KILL_GRACE" "$UPDATE_TIMEOUT" apt-get update \
-    && sudo timeout --kill-after "$KILL_GRACE" "$INSTALL_TIMEOUT" apt-get install -y -- "${missing[@]}"
+    && sudo timeout --kill-after "$KILL_GRACE" "$INSTALL_TIMEOUT" \
+      apt-get -o "DPkg::Lock::Timeout=$LOCK_WAIT" install -y -- "${missing[@]}"
 }
 
 # Try installing from the lists the image already carries, before fetching any.
@@ -109,7 +120,8 @@ attempt_install() {
 # satisfy the request.
 readonly PROBE_TIMEOUT=45
 attempt_install_without_update() {
-  sudo timeout --kill-after "$KILL_GRACE" "$PROBE_TIMEOUT" apt-get install -y -- "${missing[@]}"
+  sudo timeout --kill-after "$KILL_GRACE" "$PROBE_TIMEOUT" \
+    apt-get -o "DPkg::Lock::Timeout=$LOCK_WAIT" install -y -- "${missing[@]}"
 }
 
 # Announce the path taken. The previous version of this logic had no marker, so a

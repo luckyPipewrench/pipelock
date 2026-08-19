@@ -239,6 +239,18 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 		{"Linear token followed by underscore suffix", "https://example.com/api?k=lin_api_" + strings.Repeat("a", 40) + "_payload"},
 		{"Notion token followed by underscore suffix", "https://example.com/api?k=ntn_" + strings.Repeat("a", 40) + "_payload"},
 		{"Sentry token followed by underscore suffix", "https://example.com/api?k=sntrys_" + strings.Repeat("a", 40) + "_payload"},
+		// Ordinary URLs carrying the separators the strip rules were widened
+		// to remove. Widening the rules is what closes the split-credential
+		// bypasses; these prove it did not also start reconstructing secrets
+		// out of benign punctuation. The positive table has each of these
+		// separators splitting a real credential, and nothing paired it with
+		// the benign case until now.
+		{"comma-separated list values", "https://example.com/r?cols=id,name,email,created_at,status"},
+		{"semicolon-separated cookie-style pairs", "https://example.com/api?opts=a=1;b=2;c=3;d=4;e=5"},
+		{"pipe-separated filter", "https://example.com/search?f=red|green|blue|yellow|purple"},
+		{"colon-separated timestamps", "https://example.com/logs?t=12:34:56&u=01:02:03&v=23:59:59"},
+		{"exclamations in a message", "https://example.com/post?body=wow!really!great!news!today"},
+		{"mixed punctuation in prose", "https://example.com/q?text=one,two;three|four:five!six"},
 		// GOCSPX too short
 		{"GOCSPX short value", "https://example.com/api?code=GOCSPX-short"},
 		// Slack xapp too short / wrong format
@@ -2860,9 +2872,9 @@ func TestScan_DLP_QuerySubsequence_FiveFragmentPunctuationDecoyBypass(t *testing
 }
 
 // TestScan_DLP_QuerySubsequence_ManyFragmentsUnboundedDecoy proves the fix is
-// unbounded in the number of query values: 17 single-character real
-// fragments plus 17 underscore-only decoys (34 total values) reconstruct an
-// AWS-shaped key. 34 exceeds both the old combination-size cap (4) and the
+// unbounded in the number of query values: 20 single-character real
+// fragments plus 19 underscore-only decoys (39 total values) reconstruct an
+// AWS-shaped key. 39 exceeds both the old combination-size cap (4) and the
 // combination search's own value-pool cap (querySubsequenceValues caps at
 // 20), so this can only be caught by the unbounded, full-concat
 // noise-stripped pass -- never by the bounded subsequence search.
@@ -2879,7 +2891,7 @@ func TestScan_DLP_QuerySubsequence_ManyFragmentsUnboundedDecoy(t *testing.T) {
 	}
 	result := s.Scan(context.Background(), u)
 	if result.Allowed {
-		t.Fatal("expected DLP to catch a key fragmented across 34 total query values (well beyond any fixed combination-size or value-pool cap)")
+		t.Fatal("expected DLP to catch a key fragmented across 39 total query values (well beyond any fixed combination-size or value-pool cap)")
 	}
 	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
 		t.Fatalf("scanner = %s, want DLP or core_dlp (reason: %s) -- must be caught by DLP reconstruction, not an unrelated scanner", result.Scanner, result.Reason)

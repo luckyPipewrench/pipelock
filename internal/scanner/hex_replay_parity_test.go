@@ -132,4 +132,36 @@ func TestReassemblyLengthBoundary(t *testing.T) {
 			t.Fatalf("kept %d bytes, want it refused", len(got))
 		}
 	})
+
+	// The cap is shared, so the encoded-token edges need the same replay
+	// agreement the hex edges get. Checking only hex would leave the base64
+	// and base32 alphabets free to drift at exactly the boundary.
+	t.Run("v2 replay agrees on encoded-token edges", func(t *testing.T) {
+		for _, alphabet := range []struct {
+			name string
+			kind encodedTokenKind
+		}{
+			{"base64_standard", encodedTokenBase64Std},
+			{"base64_url", encodedTokenBase64URL},
+			{"base32", encodedTokenBase32},
+		} {
+			for _, size := range []int{maxReassembledTokenLen, maxReassembledTokenLen + 1} {
+				input := strings.Repeat("A", size) + "!"
+				replayed, err := (normalize.Recipe{
+					TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest,
+					Operations: []normalize.Operation{{
+						Kind:     normalize.OperationEncodedTokenNormalize,
+						Alphabet: alphabet.name,
+					}},
+				}).Apply(input)
+				if err != nil {
+					t.Fatalf("%s replay of %d bytes: %v", alphabet.name, size, err)
+				}
+				if scanned := normalizeEncodedToken(input, alphabet.kind); scanned != replayed {
+					t.Fatalf("%s at %d bytes: the scanner kept %d and the replay kept %d",
+						alphabet.name, size, len(scanned), len(replayed))
+				}
+			}
+		}
+	})
 }

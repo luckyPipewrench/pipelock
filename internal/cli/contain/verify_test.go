@@ -3418,6 +3418,12 @@ func TestMutatingSubcommandsRequireRoot(t *testing.T) {
 		{"rollback", nil},
 		{"add-tool", []string{"validname"}},
 		{"ca-refresh", nil},
+		// upgrade and the two workspace subcommands run the same gate and were
+		// absent from this table, so the branch that refuses an unprivileged
+		// mutation was unexercised for three of the seven sites.
+		{"upgrade", nil},
+		{"grant-workspace", []string{"/tmp/pipelock-workspace-gate-probe"}},
+		{"revoke-workspace", []string{"/tmp/pipelock-workspace-gate-probe"}},
 	}
 	root := Cmd()
 	for _, tc := range cases {

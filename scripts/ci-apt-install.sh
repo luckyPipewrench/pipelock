@@ -57,6 +57,34 @@ if [ "${#missing[@]}" -eq 0 ]; then
   exit 0
 fi
 
+# Drop the runner's regional mirror before updating.
+#
+# GitHub's Ubuntu images point apt at azure.archive.ubuntu.com. When that mirror
+# is unreachable apt does not fail, it waits: every index line comes back Ign,
+# apt falls back to archive.ubuntu.com for the InRelease files, and the package
+# indices never finish inside UPDATE_TIMEOUT. Both attempts then burn their full
+# bound and the job fails having installed nothing. That is not a transient
+# flake — it reproduced across two runs fifteen minutes apart on 2026-08-19,
+# failing `workflow-audit` and `runtime-policy` on a PR whose own code was fine.
+#
+# Retrying a dead mirror cannot help, and raising the bound only trades a red
+# check for a cancelled job (see the budget note above). Removing the mirror is
+# what changes the outcome: archive.ubuntu.com answered in the same logs where
+# the regional mirror did not.
+#
+# Both source layouts are rewritten because the path moved in Ubuntu 24.04: the
+# deb822 file is authoritative on noble, the one-line list on older images. A
+# missing file is not an error, so absence of either is ignored rather than
+# treated as a failure.
+use_primary_mirror() {
+  local f
+  for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+    [ -f "$f" ] || continue
+    sudo sed -i 's|[a-z0-9-]*\.archive\.ubuntu\.com|archive.ubuntu.com|g' "$f" || return 1
+  done
+  return 0
+}
+
 # Package names reach apt-get as an argument array and are never rebuilt into a
 # command string. Interpolating them into a shell program would re-parse them,
 # so a name carrying whitespace or a glob would change the invocation and a name
@@ -66,6 +94,14 @@ attempt_install() {
   sudo timeout "$UPDATE_TIMEOUT" apt-get update \
     && sudo timeout "$INSTALL_TIMEOUT" apt-get install -y -- "${missing[@]}"
 }
+
+# Rewrite once, before the first attempt. A failure here is reported and does not
+# abort: the mirror swap is an availability fix, so falling through to the
+# unmodified sources leaves the original behaviour rather than turning a slow
+# install into no install at all.
+if ! use_primary_mirror; then
+  echo "ci-apt-install: could not rewrite apt sources; continuing with the image defaults" >&2
+fi
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
   if attempt_install; then

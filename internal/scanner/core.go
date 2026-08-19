@@ -784,7 +784,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	}
 
 	// Ordered query-value concatenation (catches secrets split across params).
-	targets = appendQueryConcatTargets(targets, parsed.RawQuery)
+	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.

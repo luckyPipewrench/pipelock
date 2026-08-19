@@ -1605,7 +1605,8 @@ type dlpTarget struct {
 // looked at, which is the failure this concatenation exists to prevent.
 //
 //pipelock:provenance-transform ordered_query_concat
-func appendQueryConcatTargets(targets []dlpTarget, rawQuery string) []dlpTarget {
+func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []dlpTarget {
+	targets = appendPathQueryConcatTargets(targets, path, rawQuery)
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return targets
 	}
@@ -1619,6 +1620,48 @@ func appendQueryConcatTargets(targets []dlpTarget, rawQuery string) []dlpTarget 
 	}
 	if stripped := stripToAlphanumeric(concat); stripped != concat {
 		targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped_alnum")})
+	}
+	return targets
+}
+
+// appendPathQueryConcatTargets adds the view a credential split across the
+// path-to-query seam is reconstructed from: the noise-stripped path joined
+// directly to the ordered query values.
+//
+// Without it, every target is one side of the '?' or the other. A secret whose
+// prefix sits in the path and whose remainder sits in a query value therefore
+// matches nothing: the path holds too few characters after the prefix to satisfy
+// the pattern's minimum length, the value carries no prefix, and the full-URL
+// view fails because '?' and '=' are not in any credential pattern's character
+// class, so the match terminates at the seam.
+//
+// Deliberately NOT gated on '&' or on a parameter count, unlike the
+// query-values-only concatenation above. Those gates are correct there, because
+// reconstructing a secret from several PARAMETERS requires several parameters to
+// exist. They are wrong here: this seam needs only one parameter, so gating on a
+// second one is what left a single-parameter URL unexamined.
+//
+// Composes two transforms that are already registered in the provenance profile
+// (url_noise_strip and ordered_query_concat), so it introduces no new operation
+// kind and needs no profile version bump.
+func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []dlpTarget {
+	if path == "" || path == "/" || rawQuery == "" {
+		return targets
+	}
+	// Strip the path's structural noise ('/' and friends) so a secret split
+	// across path SEGMENTS is rejoined too, then butt it directly against the
+	// ordered query values with no separator, mirroring how the receiving
+	// server reassembles the two halves.
+	concat := stripURLNoise(path) + orderedQueryConcat(rawQuery)
+	if concat == "" {
+		return targets
+	}
+	targets = append(targets, dlpTarget{concat, dlpViewLabel("path_query_concat")})
+	for _, d := range decodeEncodingsRecursive(concat) {
+		targets = append(targets, dlpTarget{d.text, dlpViewLabel("path_query_concat_" + d.encoding)})
+	}
+	if stripped := stripToAlphanumeric(concat); stripped != concat {
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("path_query_concat_noise_stripped_alnum")})
 	}
 	return targets
 }
@@ -2068,7 +2111,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// Uses RawQuery to preserve parameter order (url.Values is a map with random iteration).
 	// Also noise-strip the concatenation to defeat inserted garbage params
 	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
-	targets = appendQueryConcatTargets(targets, parsed.RawQuery)
+	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.

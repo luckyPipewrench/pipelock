@@ -1663,9 +1663,20 @@ const (
 	maxDecodeTotalBytes = 8 * 1024 * 1024
 )
 
-// hexPrefixReplacer strips two-char hex prefix notations (\x, \X, 0x, 0X).
+// maxReassembledTokenLen bounds the separator-stripped reassembly views. The
+// widened separator set is what catches a credential split on punctuation, and
+// it is also what lets ordinary prose collapse into one enormous "token": 74 KB
+// of English separated by "!" reassembled into a 72 KB base64 candidate that
+// decoded to 54 KB and was rescanned by every DLP pattern. Real credentials are
+// bounded -- the longest are JWTs at a few KB -- so a reassembly larger than
+// this is prose, not a split secret.
+//
+// Tradeoff, stated rather than hidden: a secret deliberately split across an
+// alphabet run longer than this evades THIS view. It remains subject to every
+// other pass, including the raw and contiguous-decode passes.
+const maxReassembledTokenLen = 4096
+
 // Package-level to avoid repeated construction on every normalizeHex call.
-var hexPrefixReplacer = strings.NewReplacer(`\x`, "", `\X`, "", "0x", "", "0X", "")
 
 // normalizeHex strips common hex-notation delimiters so that delimiter-separated
 // hex strings can be decoded by hex.DecodeString. Handles:
@@ -1684,38 +1695,65 @@ func normalizeHex(s string) string {
 		return ""
 	}
 
-	// Strip two-char prefix sequences first (\x, 0x).
-	// Must happen before single-char delimiter stripping to avoid
-	// leaving stray 'x' characters from partially-matched patterns.
-	out := hexPrefixReplacer.Replace(s)
+	// Consume a radix or escape prefix only when two hex digits follow it.
+	// An unconditional replace ate the zero in a value such as "000x", which
+	// both hid needle bytes from the matcher and reconstructed a different
+	// view than the receipt replay builds from the same recipe.
+	out := stripHexPrefixes(s)
 
-	// Strip every byte that is not a hex digit. Same deny-list reasoning as
-	// isEncodedTokenSeparator: hex has only 16 valid data characters, so
-	// anything else can only be attacker-insertable noise -- there is no
-	// separator character an enumerated allow-list could omit, because the
-	// final all-hex-digit validation below rejects any candidate that still
-	// isn't pure hex after stripping. That validation is also why widening
-	// this has no meaningful false-positive cost: ordinary prose fails it
-	// regardless of how permissively it was stripped, since English words
-	// contain letters outside a-f.
-	out = strings.Map(func(r rune) rune {
-		switch {
-		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
-			return r
-		}
-		return -1
-	}, out)
-
-	// Validate: must be even-length, non-empty, and pure hex.
-	if len(out) == 0 || len(out)%2 != 0 {
-		return ""
-	}
-	for _, c := range out {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+	// Strip separator bytes, but reject on an out-of-alphabet LETTER. A
+	// separator an attacker can insert is punctuation or whitespace; it is
+	// never a letter. That distinction is what keeps ordinary prose out:
+	// stripping every non-hex byte turns "abcdefghijklmnopqrstuvwxyz0123456789!"
+	// into a long run of a-f digits that is valid, even-length hex, so 74 KB of
+	// English collapsed into a 32 KB token that decoded and rescanned for
+	// seconds. Rejecting at the first g-z keeps the widened separator coverage
+	// while prose fails immediately.
+	var b strings.Builder
+	b.Grow(len(out))
+	for i := 0; i < len(out); i++ {
+		switch c := out[i]; {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+			b.WriteByte(c)
+		case c == 'x', c == 'X':
+			// the radix/escape marker itself. A stray one is noise
+			// rather than data, and rejecting it would reopen the swallow case
+			// this profile exists to fix ("0a0xb" must still yield "0a0b").
+		case c >= 'g' && c <= 'z', c >= 'G' && c <= 'Z':
 			return ""
 		}
 	}
+	out = b.String()
+
+	// Validate: must be even-length, non-empty, and credential-sized.
+	if len(out) == 0 || len(out)%2 != 0 || len(out) > maxReassembledTokenLen {
+		return ""
+	}
 	return out
+}
+
+// stripHexPrefixes removes a hex radix or escape prefix only when the two
+// bytes that follow it are hex digits. internal/normalize must keep the same
+// rule byte for byte: TestHexReplayMatchesScannerNormalizer proves it does.
+func stripHexPrefixes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if i+3 < len(s) &&
+			(s[i] == '0' || s[i] == '\\') &&
+			(s[i+1] == 'x' || s[i+1] == 'X') &&
+			isHexDigitByte(s[i+2]) && isHexDigitByte(s[i+3]) {
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func isHexDigitByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 type encodedTokenKind int
@@ -1796,7 +1834,7 @@ func normalizeEncodedToken(s string, kind encodedTokenKind) string {
 		return ""
 	}
 	out := b.String()
-	if len(out) < 4 {
+	if len(out) < 4 || len(out) > maxReassembledTokenLen {
 		return ""
 	}
 	return out

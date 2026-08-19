@@ -11,7 +11,7 @@ import unicode15LowercaseMap from "@unicode/unicode-15.0.0/Simple_Case_Mapping/L
 export const EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST =
   "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
-  "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62";
+  "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7";
 type ProfileVersion = "v1" | "v2";
 
 const MAX_INPUT_BYTES = 2 << 20;
@@ -538,8 +538,12 @@ function encodedToken(value: string, alphabet: string, profile: ProfileVersion):
 function encodedTokenV2(value: string, alphabet: string): string {
   if (value.length < 4) return "";
   if (alphabet === "hex") {
-    const v = stripV2HexPrefixes(value).replace(/[^0-9a-fA-F]/gu, "");
-    return v.length && v.length % 2 === 0 && /^[0-9a-f]+$/iu.test(v) ? v : "";
+    const stripped = stripV2HexPrefixes(value);
+    // A separator is punctuation or whitespace, never a letter, so an
+    // out-of-alphabet letter means prose rather than a split token.
+    if (/[g-wy-zG-WY-Z]/u.test(stripped)) return "";
+    const v = stripped.replace(/[^0-9a-fA-F]/gu, "");
+    return v.length && v.length % 2 === 0 ? v : "";
   }
   const data =
     alphabet === "base32"

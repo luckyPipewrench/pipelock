@@ -117,8 +117,13 @@ def test_evidence_provenance_transform_v2_corpus() -> None:
             vector.get("recipe", []),
         )
         if vector.get("want_error"):
-            with pytest.raises(ProvenanceError, match=vector["want_error"]):
+            # Assert literal containment. pytest.raises(match=...) is a REGEX,
+            # so an expectation such as "recipe operation 0 (percent_decode):"
+            # reads its parentheses as a group and silently fails to match the
+            # very message it names, while accepting messages it should not.
+            with pytest.raises(ProvenanceError) as excinfo:
                 recipe.apply_bytes(base64.b64decode(vector["input_b64"], validate=True))
+            assert vector["want_error"] in str(excinfo.value)
             continue
         assert recipe.apply_bytes(
             base64.b64decode(vector["input_b64"], validate=True)

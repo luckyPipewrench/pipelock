@@ -197,7 +197,7 @@ const (
 	// EvidenceProvenanceProfileV2Digest identifies the profile whose token and
 	// URL-noise transforms match the current scanner keep-sets. Profiles are
 	// selected only by this exact digest; never by a profile name or fallback.
-	EvidenceProvenanceProfileV2Digest       = "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62"
+	EvidenceProvenanceProfileV2Digest       = "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -744,20 +744,26 @@ func scannerEncodedTokenNormalizeV2(value, alphabet string) string {
 	}
 	if alphabet == "hex" {
 		value = stripV2HexPrefixes(value)
-		value = strings.Map(func(r rune) rune {
-			switch {
-			case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
-				return r
-			}
-			return -1
-		}, value)
-		if len(value) == 0 || len(value)%2 != 0 {
-			return ""
-		}
-		for _, char := range value {
-			if (char < '0' || char > '9') && (char < 'a' || char > 'f') && (char < 'A' || char > 'F') {
+		// Reject on an out-of-alphabet letter rather than stripping it. A
+		// separator is punctuation or whitespace, never a letter, so a g-z
+		// byte means this is prose rather than a separator-split token. The
+		// scanner applies the identical rule; they are proven equal by
+		// TestHexReplayMatchesScannerNormalizer.
+		var builder strings.Builder
+		builder.Grow(len(value))
+		for index := 0; index < len(value); index++ {
+			switch char := value[index]; {
+			case char >= '0' && char <= '9', char >= 'a' && char <= 'f', char >= 'A' && char <= 'F':
+				builder.WriteByte(char)
+			case char == 'x', char == 'X':
+				// the radix/escape marker; a stray one is noise, not data.
+			case char >= 'g' && char <= 'z', char >= 'G' && char <= 'Z':
 				return ""
 			}
+		}
+		value = builder.String()
+		if len(value) == 0 || len(value)%2 != 0 || len(value) > maxReassembledTokenLen {
+			return ""
 		}
 		return value
 	}
@@ -791,11 +797,16 @@ func scannerEncodedTokenNormalizeV2(value, alphabet string) string {
 		}
 		changed = true
 	}
-	if !changed || result.Len() < 4 {
+	if !changed || result.Len() < 4 || result.Len() > maxReassembledTokenLen {
 		return ""
 	}
 	return result.String()
 }
+
+// maxReassembledTokenLen mirrors internal/scanner. A reassembly view larger
+// than a plausible credential is prose, and the scanner refuses to build one,
+// so the replay must refuse identically or a receipt would not reproduce.
+const maxReassembledTokenLen = 4096
 
 // stripV2HexPrefixes removes a hexadecimal radix or escape prefix only when
 // the following two bytes form the hex pair it introduces. A stray "0x" must

@@ -14,7 +14,7 @@ use url::Url;
 pub const PROFILE_DIGEST_V1: &str =
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 pub const PROFILE_DIGEST_V2: &str =
-    "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62";
+    "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7";
 // Retained for v1-oriented callers; receipt replay always resolves the exact
 // supplied digest rather than falling back to this value.
 pub const PROFILE_DIGEST: &str = PROFILE_DIGEST_V1;
@@ -911,11 +911,20 @@ fn encoded_token_normalize_v2(s: &str, a: &str) -> String {
         return String::new();
     }
     if a == "hex" {
-        let v = strip_v2_hex_prefixes(s)
+        let stripped = strip_v2_hex_prefixes(s);
+        // A separator is punctuation or whitespace, never a letter, so an
+        // out-of-alphabet letter means prose rather than a split token.
+        if stripped
+            .bytes()
+            .any(|b| b.is_ascii_alphabetic() && !b.is_ascii_hexdigit() && b != b'x' && b != b'X')
+        {
+            return String::new();
+        }
+        let v = stripped
             .chars()
             .filter(|c| c.is_ascii_hexdigit())
             .collect::<String>();
-        return if !v.is_empty() && v.len() % 2 == 0 && v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return if !v.is_empty() && v.len() % 2 == 0 {
             v
         } else {
             String::new()

@@ -23,7 +23,7 @@ PROFILE_DIGEST_V1 = (
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
 )
 PROFILE_DIGEST_V2 = (
-    "sha256:cb02b9b84dfecfb253f3ee7baa8cf61150b4dc30fc1a5ac945dfdb39335adb62"
+    "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
 )
 # Compatibility name for v1-focused callers. Recipes always dispatch from the
 # exact digest supplied on the wire and never fall back to this value.
@@ -723,6 +723,13 @@ def _encoded_token_v2(value: str, alphabet: str) -> str:
         return ""
     if alphabet == "hex":
         normalized = _strip_v2_hex_prefixes(value)
+        # A separator is punctuation or whitespace, never a letter, so an
+        # out-of-alphabet letter means prose rather than a split token.
+        if any(
+            ch.isascii() and ch.isalpha() and ch not in "abcdefABCDEFxX"
+            for ch in normalized
+        ):
+            return ""
         normalized = "".join(ch for ch in normalized if ch in "0123456789abcdefABCDEF")
         return normalized if normalized and len(normalized) % 2 == 0 else ""
     data = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789="

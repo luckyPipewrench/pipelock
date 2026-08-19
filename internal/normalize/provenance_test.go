@@ -351,7 +351,7 @@ func TestTransformProfileV2DigestAndSemantics(t *testing.T) {
 	if profile.Format != "pipelock-evidence-provenance-transform-profile/v2" || profile.Profile != "pipelock-evidence-provenance-transform-v2" || profile.Version != 2 {
 		t.Fatalf("profile identity = format %q profile %q version %d", profile.Format, profile.Profile, profile.Version)
 	}
-	if got, want := profile.Normalization.EncodedTokenNormalize, "for hex, consume a 0x, 0X, \\x, or \\X prefix only when it is immediately followed by two ASCII hex bytes; then keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; return the empty string when the token is ineligible"; got != want {
+	if got, want := profile.Normalization.EncodedTokenNormalize, "for hex, consume a 0x, 0X, \\x, or \\X prefix only when it is immediately followed by two ASCII hex bytes, then reject the token when any remaining ASCII letter falls outside [A-Fa-f] and is not x or X, because a separator is punctuation or whitespace and never a letter while x marks the radix; then keep only bytes in the selected token alphabet: hex [0-9A-Fa-f]; base32 [A-Z2-7=]; standard base64 [A-Za-z0-9+/=]; URL-safe base64 [A-Za-z0-9_-=]; reject a retained result longer than 4096 bytes, which exceeds any credential and marks prose rather than a separated token; return the empty string when the token is ineligible"; got != want {
 		t.Fatalf("v2 encoded_token_normalize semantics = %q, want %q", got, want)
 	}
 	if got, want := profile.Normalization.URLNoiseStrip, "keep only ASCII [A-Za-z0-9_-=]"; got != want {

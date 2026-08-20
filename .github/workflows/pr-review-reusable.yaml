@@ -107,6 +107,14 @@ jobs:
           path: trusted-pr-review
           persist-credentials: false
 
+      - name: Check out immutable reviewed repository head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          path: reviewed-repository
+          persist-credentials: false
+
       # The runner receives one provider credential, never both. Named secret
       # mappings are required because personal-account repositories cannot use
       # secrets: inherit with a reusable workflow.
@@ -127,6 +135,7 @@ jobs:
           openai-api-key: ${{ secrets.openai_api_key }}
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
+          reviewed-repository-path: ${{ github.workspace }}/reviewed-repository
 
       - name: Report missing provider credential
         id: nocreds

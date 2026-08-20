@@ -61,6 +61,9 @@ inputs:
   status-comment-id:
     description: Comment identifier from the admission step.
     required: false
+  reviewed-repository-path:
+    description: Immutable checkout of the target repository at the captured head.
+    required: false
 runs:
   using: composite
   steps:
@@ -98,4 +101,5 @@ runs:
         BASE_SHA: ${{ inputs.base-sha }}
         HEAD_SHA: ${{ inputs.head-sha }}
         STATUS_COMMENT_ID: ${{ inputs.status-comment-id }}
+        REVIEWED_REPOSITORY_PATH: ${{ inputs.reviewed-repository-path }}
       run: python "$GITHUB_ACTION_PATH/pr_review.py"

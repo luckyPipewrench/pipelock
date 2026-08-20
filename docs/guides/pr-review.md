@@ -31,11 +31,17 @@ diffs.
 The runner binds the review to the PR's captured base and head SHAs, reviewer
 source SHA, and rubric version. It fetches the comparison by those exact commits
 and marks the result `superseded` if the head changes before finalization. It
-uses deterministic token budgeting instead of character slicing: Go source and
-additions rank above tests, configuration, and documentation. The final comment
-contains an omission manifest and never reports `clean` when a unit was omitted,
-unparseable, or left without a valid structured result. Default-mode deletion
-compression is disclosed separately; deep mode reads deletions in full.
+also checks out the captured head for the judge, then searches that checkout for
+the consumers and tests related to each candidate. A same-file hunk isn't enough
+to verify a cross-file claim.
+
+The runner uses deterministic token budgeting instead of character slicing: Go
+source and additions rank above tests, configuration, and documentation. The
+final comment contains an omission manifest and never reports `clean` when a
+unit was omitted, unparseable, or left without a valid structured result. A
+candidate the judge can't settle stays unpublished and makes the review partial.
+It doesn't become an actionable "needs verification" finding. Default-mode
+deletion compression is disclosed separately; deep mode reads deletions in full.
 
 Each run creates one bot-owned status comment and edits it in place. The runner
 uses strict JSON output, a cross-file synthesis pass, and a second actual-code
@@ -110,14 +116,15 @@ retrying because it may have been short for a transient reason. To review an
 unchanged head anyway, run the workflow manually from Actions.
 
 **You pushed a fix and want another look.** The head changed, so this is a
-different review and it reads the whole diff again. That is deliberate rather
-than a cost oversight: reviewing only the newest commits assumes findings
-compose, and they do not. A commit that is fine alone can break code reviewed
-earlier, and a fix for a finding can itself be wrong. What the review does
-instead is mark any finding also reported by a completed review on this pull
-request with `(re-raised at this head)`. The judge found it in the current code,
-so a match means the problem survived whatever was done since, which is worth
-more attention than a first sighting rather than less.
+different review. When the PR base is unchanged, the reviewer reads the new
+delta and rechecks every open finding against the current head. When a merge or
+rebase advances the PR base, it reads the effective `current-base..head` pull
+request whole. It doesn't spend its budget reviewing upstream commits that are
+already on the base branch.
+
+The review marks any finding also reported by a completed review on this pull
+request with `(re-raised at this head)`. The current-head judge found it again,
+so the prior fix didn't close it or introduced the same failure elsewhere.
 
 A finding that simply does not appear in a later review is NOT reported as
 fixed. Its absence is not evidence: the model may not have surfaced it this

@@ -1595,17 +1595,26 @@ _EVIDENCE_STOP_WORDS = frozenset(
 )
 
 
-def _evidence_terms(finding: Finding, _context: str) -> list[str]:
-    """Choose bounded, code-shaped terms that can locate consumers and tests."""
-    candidate_source = " ".join((finding.title, finding.why, finding.fix))
-    words = re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", candidate_source)
-    phrases = {
+def _identifier_tokens(text: str) -> list[str]:
+    return re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text)
+
+
+def _token_phrases(words: list[str]) -> set[str]:
+    return {
         f"{left} {right}"
-        for left, right in zip(words, words[1:])
+        for left, right in zip(words, words[1:], strict=False)
         if left.lower() not in _EVIDENCE_STOP_WORDS and right.lower() not in _EVIDENCE_STOP_WORDS
     }
+
+
+def _evidence_terms(finding: Finding, context: str) -> list[str]:
+    """Choose bounded, code-shaped terms that can locate consumers and tests."""
+    candidate_words = _identifier_tokens(" ".join((finding.title, finding.why, finding.fix)))
+    context_words = _identifier_tokens(context)
+    words = [*candidate_words, *context_words]
+    phrases = _token_phrases(candidate_words) | _token_phrases(context_words)
     counts: dict[str, tuple[int, int]] = {}
-    candidate_tokens = set(words)
+    candidate_tokens = set(candidate_words)
     for token in words:
         lowered = token.lower()
         if lowered in _EVIDENCE_STOP_WORDS:
@@ -1749,11 +1758,24 @@ def _bounded_git_grep(root: Path, term: str) -> tuple[list[str], bool, bool]:
     data = bytearray()
     truncated = False
     try:
-        while process.poll() is None:
+        # Drain stdout until EOF. poll() is only a deadline/exit check; a child
+        # that already exited can still have unread output in the pipe.
+        while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 process.kill()
                 return [], False, True
+            if process.poll() is not None:
+                while True:
+                    chunk = os.read(process.stdout.fileno(), 16_384)
+                    if not chunk:
+                        break
+                    if len(data) + len(chunk) > 262_144:
+                        data.extend(chunk[: 262_144 - len(data)])
+                        truncated = True
+                        break
+                    data.extend(chunk)
+                break
             if not selector.select(timeout=min(0.25, remaining)):
                 continue
             chunk = os.read(process.stdout.fileno(), 16_384)
@@ -1869,16 +1891,16 @@ def judge_findings(
     summary_tokens = estimate_tokens(json.dumps(judge_summaries, separators=(",", ":")))
     evidence_budget = budget - used - summary_tokens - 1_000
     if evidence_budget < 1_000:
-        return [], False, [], [], candidates
-    evidence, evidence_truncated = cross_file_evidence(
+        return [], False, over_budget, over_files, candidates
+    evidence, evidence_unavailable = cross_file_evidence(
         binding,
         candidates,
         contexts,
         change_summaries,
         max_tokens=evidence_budget,
     )
-    if evidence_truncated:
-        return [], False, [], [], candidates
+    if evidence_unavailable:
+        return [], False, over_budget, over_files, candidates
     system, user = build_judge_prompt(candidates, contexts, judge_summaries, evidence)
     payload = call_model(system, user, mode, "judge", binding.correlation)
     # Structural failure only. The payload must be a usable shape; anything

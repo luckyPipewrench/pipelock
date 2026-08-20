@@ -40,8 +40,10 @@ source and additions rank above tests, configuration, and documentation. The
 final comment contains an omission manifest and never reports `clean` when a
 unit was omitted, unparseable, or left without a valid structured result. A
 candidate the judge can't settle stays unpublished and makes the review partial.
-It doesn't become an actionable "needs verification" finding. Default-mode
-deletion compression is disclosed separately; deep mode reads deletions in full.
+That unpublished candidate is not an actionable finding. A finding the judge
+does keep can still show `(needs verification)` when the reviewer marked it.
+Default-mode deletion compression is disclosed separately; deep mode reads
+deletions in full.
 
 Each run creates one bot-owned status comment and edits it in place. The runner
 uses strict JSON output, a cross-file synthesis pass, and a second actual-code

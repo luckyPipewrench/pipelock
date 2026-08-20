@@ -6,6 +6,7 @@
 
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -58,6 +59,15 @@ def parse_yaml(text: str) -> dict[str, object]:
 
 def load_yaml(path: pathlib.Path) -> dict[str, object]:
     return parse_yaml(path.read_text(encoding="utf-8"))
+
+
+def init_git_fixture(root: pathlib.Path) -> None:
+    """Create an isolated git repo that does not inherit contributor git config."""
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "review@test.invalid"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "review-test"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "commit.gpgsign", "false"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "core.hooksPath", "/dev/null"], check=True)
 
 
 def unit(identifier: int, path: str, category: str, *, additions: int = 1, tokens: int = 2) -> object:
@@ -131,10 +141,11 @@ class WorkflowPackagingTest(unittest.TestCase):
         self.assertEqual(target_checkout["with"]["repository"], "${{ github.repository }}")
         self.assertEqual(target_checkout["with"]["ref"], "${{ needs.admit.outputs.head_sha }}")
         self.assertEqual(target_checkout["with"]["persist-credentials"], "false")
+        self.assertEqual(target_checkout["with"]["path"], "reviewed-repository")
         openai = next(step for step in review["steps"] if step.get("id") == "openai")
         self.assertEqual(
             openai["with"]["reviewed-repository-path"],
-            "${{ github.workspace }}/reviewed-repository",
+            "${{ github.workspace }}/" + target_checkout["with"]["path"],
         )
         # Finalization is its own job, not a step inside review. As a step it
         # was skipped in the case it most needs to cover: admission claims the
@@ -845,12 +856,85 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertEqual(verified, [])
         self.assertEqual(undecided, [candidate])
 
+    def test_evidence_terms_search_context_identifiers(self) -> None:
+        finding = pr_review.Finding(
+            "medium",
+            "schema.json",
+            1,
+            "Duplicate keys are accepted",
+            "the schema does not reject duplicate keys",
+            "validate uniqueness in the consumer",
+        )
+        without_context = pr_review._evidence_terms(finding, "")
+        with_context = pr_review._evidence_terms(finding, "reject_duplicate_prerequisites uniqueItems")
+        self.assertNotIn("reject_duplicate_prerequisites", without_context)
+        self.assertIn("reject_duplicate_prerequisites", with_context)
+
+    def test_bounded_git_grep_reads_output_after_the_child_has_exited(self) -> None:
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"HEAD:a.go:1:match\n")
+        os.close(write_fd)
+
+        class Finished:
+            def __init__(self) -> None:
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+                self.returncode = 0
+
+            def poll(self) -> int:
+                return 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+            def kill(self) -> None:
+                return None
+
+        with mock.patch.object(pr_review.subprocess, "Popen", return_value=Finished()):
+            lines, truncated, failed = pr_review._bounded_git_grep(pathlib.Path("."), "match")
+        self.assertFalse(failed)
+        self.assertFalse(truncated)
+        self.assertEqual(lines, ["HEAD:a.go:1:match"])
+
+    def test_unavailable_evidence_preserves_overflow_diagnostics(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        extra = 5
+        candidates = [
+            pr_review.Finding("low", f"internal/pkg{index}/a.go", 1, "title", "why", "fix")
+            for index in range(pr_review.MAX_JUDGE_CONTEXT_FETCHES + extra)
+        ]
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 10), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("", True)
+        ), mock.patch.object(pr_review, "call_model") as model:
+            verified, judged, _over_budget, over_files, undecided = pr_review.judge_findings(
+                "owner/repo", "token", binding, "deep", candidates
+            )
+        model.assert_not_called()
+        self.assertFalse(judged)
+        self.assertEqual(verified, [])
+        self.assertEqual(len(over_files), extra)
+        self.assertEqual(len(undecided), pr_review.MAX_JUDGE_CONTEXT_FETCHES)
+
+    def test_truncated_repository_evidence_is_still_judged(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "a.go", 1, "title", "why", "fix")
+        truncated = "<evidence-search-truncated: use unresolved unless the evidence above already decides the premise>"
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="1: code"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=(truncated, False)
+        ), mock.patch.object(
+            pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "keep", "reason": "closed"}]}
+        ) as model:
+            verified, judged, _budget, _files, undecided = pr_review.judge_findings(
+                "owner/repo", "token", binding, "default", [candidate]
+            )
+        model.assert_called_once()
+        self.assertTrue(judged)
+        self.assertEqual(verified, [candidate])
+        self.assertEqual(undecided, [])
+
     def test_cross_file_evidence_reads_consumers_and_tests_from_exact_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.email", "review@test.invalid"], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.name", "review-test"], check=True)
+            init_git_fixture(root)
             (root / "schema.json").write_text('{"prerequisites":{"uniqueItems":true}}\n')
             (root / "validator.py").write_text("def validate_prerequisites(value):\n    return reject_duplicate_prerequisites(value)\n")
             (root / "validator_test.py").write_text("def test_duplicate_prerequisites_rejected():\n    validate_prerequisites([])\n")
@@ -905,9 +989,7 @@ class JudgeEvidenceTest(unittest.TestCase):
     def test_a_mismatched_checkout_cannot_supply_judge_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.email", "review@test.invalid"], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.name", "review-test"], check=True)
+            init_git_fixture(root)
             (root / "a.go").write_text("package a\n")
             subprocess.run(["git", "-C", str(root), "add", "a.go"], check=True)
             subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
@@ -918,6 +1000,25 @@ class JudgeEvidenceTest(unittest.TestCase):
                 evidence, incomplete = pr_review.cross_file_evidence(binding, [], {})
         self.assertEqual(evidence, "")
         self.assertTrue(incomplete)
+
+    def test_git_fixture_does_not_inherit_commit_signing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            signing = subprocess.run(
+                ["git", "-C", str(root), "config", "--local", "--get", "commit.gpgsign"],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            hooks = subprocess.run(
+                ["git", "-C", str(root), "config", "--local", "--get", "core.hooksPath"],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+        self.assertEqual(signing.stdout.strip(), "false")
+        self.assertEqual(hooks.stdout.strip(), "/dev/null")
 
     def test_local_file_context_refuses_a_symlink_outside_the_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:

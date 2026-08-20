@@ -42,6 +42,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Release-readiness gate
+        # The gate asserts the release keyring secret is present BEFORE any build runs, so
+        # it has to receive that secret. Without this mapping the check reads an empty value
+        # and fails every release, which is how it behaved when it was introduced.
+        env:
+          RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
         run: scripts/check-release-ready.sh "$GITHUB_REF_NAME"
 
   release-tests:

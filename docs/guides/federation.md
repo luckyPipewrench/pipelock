@@ -167,9 +167,9 @@ External verifiers fetch this endpoint on a configurable interval and use it as 
 
 The directory is served on the same listener as the proxy. There is no auth on the endpoint; the keys are public verification keys, not secrets. If you do not want this endpoint exposed publicly, gate it at your ingress layer.
 
-### Prepared `pipelock-verify-python` 0.2.0 example
+### `pipelock-verify-python` directory-fetch example
 
-The prepared Python verifier update includes a directory-fetch helper:
+The published Python verifier includes a directory-fetch helper:
 
 ```python
 from pipelock_verify import fetch_directory, verify
@@ -180,7 +180,7 @@ if not result.valid:
     raise SystemExit(f"verification failed: {result.error}")
 ```
 
-The 0.1.x example pinned a SHA hex out of band; the prepared 0.2.0 update uses well-known fetch to resolve the public key for individual receipt verification once published. See [`receipt-transports.md`](receipt-transports.md) and the Python verifier's README.
+The 0.1.x example pinned a SHA hex out of band; current releases use well-known fetch to resolve the public key for individual receipt verification. See [`receipt-transports.md`](receipt-transports.md) and the Python verifier's README.
 
 ## Authenticated agent identity
 
@@ -220,7 +220,7 @@ Different deployments (region A, region B) sign their own envelopes. A central a
 
 ### External auditor
 
-The auditor doesn't run Pipelock at all. They can use the standalone Go `pipelock-verifier` today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the Pipelock deployment's well-known directory. The auditor verifies individual receipts the deployment emits without ever needing the deployment's blessing — the public verification keys are public, the directory endpoint is open.
+The auditor doesn't run Pipelock at all. They can use the standalone Go `pipelock-verifier` today, or `pipelock-verify-python`, against the Pipelock deployment's well-known directory. The auditor verifies individual receipts the deployment emits without ever needing the deployment's blessing — the public verification keys are public, the directory endpoint is open.
 
 ## Receipt verification
 
@@ -229,7 +229,7 @@ A request that traverses two mediated Pipelocks accumulates two layers of signed
 1. The originating Pipelock signs an outbound envelope.
 2. The receiving Pipelock verifies the inbound envelope and emits its own outbound envelope on the next hop (or on the response). The `EvidenceReceipt v2` schema reserves `proxy_decision.policy_sources` for runtime contract-aware decision evidence as that emit path is wired progressively.
 
-External auditors verify both envelopes independently using the standalone Go `pipelock-verifier` today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the corresponding deployments' well-known directories.
+External auditors verify both envelopes independently using the standalone Go `pipelock-verifier` today, or `pipelock-verify-python`, against the corresponding deployments' well-known directories.
 
 ## Failure modes
 
@@ -272,4 +272,4 @@ deployment, enabling it before clients sign envelopes will fail closed with
 - [`receipt-transports.md`](receipt-transports.md) — receipt verification recipe.
 - [`mediation-envelope.md`](mediation-envelope.md) — outbound envelope format and signing.
 - [`learn-and-lock.md`](learn-and-lock.md) — `EvidenceReceipt v2` envelope (independent of mediation-envelope verification).
-- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; prepared v0.2.0 update uses well-known fetch for individual receipt verification once published.
+- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; uses well-known fetch for individual receipt verification.

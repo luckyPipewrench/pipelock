@@ -187,7 +187,7 @@ The v2.4 receipt schema defines an `EvidenceReceipt v2` envelope for contract-aw
 
 v2 envelopes are distinguished from legacy v1 by the top-level `record_type` field. v1 verifiers reject v2 with `unsupported version 2 (expected 1)`; the existing audit pipeline keeps working unchanged for non-contract-aware deployments.
 
-External verification for individual EvidenceReceipt v2 envelopes and v2 receipt chains is supported by the standalone Go `pipelock-verifier` today. Use `pipelock-verifier receipt --key <receipt-signing.pub> ...` for a single envelope, or `pipelock-verifier chain --key <receipt-signing.pub> ...` / `pipelock-verifier evidence ...` for a recorder JSONL chain. Without `--key`, v2 chain verification reports self-consistency only; provenance requires a pinned public key. A prepared `pipelock-verify-python` 0.2.0 update adds individual v2-envelope verification once published; v2 chain verification is not part of that Python update. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the full `pipelock-verifier` recipe covering v2 envelopes and chains.
+External verification for individual EvidenceReceipt v2 envelopes and v2 receipt chains is supported by the standalone Go `pipelock-verifier` today. Use `pipelock-verifier receipt --key <receipt-signing.pub> ...` for a single envelope, or `pipelock-verifier chain --key <receipt-signing.pub> ...` / `pipelock-verifier evidence ...` for a recorder JSONL chain. Without `--key`, v2 chain verification reports self-consistency only; provenance requires a pinned public key. `pipelock-verify-python` verifies individual v2 envelopes; v2 chain verification is not part of the Python verifier. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the full `pipelock-verifier` recipe covering v2 envelopes and chains.
 
 ## Signing keys
 
@@ -344,4 +344,4 @@ The runtime watches the active-manifest store via fsnotify with a 100ms debounce
 - [`docs/configuration.md`](../configuration.md#learn-and-lock) — `learn` configuration reference.
 - [`docs/guides/receipt-transports.md`](receipt-transports.md) — verifying receipts externally.
 - [`docs/guides/federation.md`](federation.md) — cross-org envelope verification (independent of contracts).
-- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; prepared v0.2.0 update adds individual EvidenceReceipt v2 envelope verification once published.
+- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; verifies individual EvidenceReceipt v2 envelopes.

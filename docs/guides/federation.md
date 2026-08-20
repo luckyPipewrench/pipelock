@@ -174,7 +174,7 @@ The published Python verifier includes a directory-fetch helper:
 ```python
 from pipelock_verify import fetch_directory, verify
 
-directory = fetch_directory("https://pipelock.example.com")
+directory = fetch_directory("pipelock.example.com")
 result = verify(receipt, public_key_hex=directory.public_key_hex())
 if not result.valid:
     raise SystemExit(f"verification failed: {result.error}")

@@ -906,6 +906,7 @@ class JudgeEvidenceTest(unittest.TestCase):
                 self.returncode = None
                 self.killed = False
                 self.waited = False
+                self.wait_timeout: float | None = None
 
             def poll(self) -> int | None:
                 return None
@@ -916,6 +917,7 @@ class JudgeEvidenceTest(unittest.TestCase):
 
             def wait(self, timeout: float | None = None) -> int:
                 self.waited = True
+                self.wait_timeout = timeout
                 return -9
 
         child = Hung()
@@ -931,6 +933,7 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertTrue(failed)
         self.assertTrue(child.killed)
         self.assertTrue(child.waited)
+        self.assertEqual(child.wait_timeout, 1)
 
     def test_cross_file_evidence_deduplicates_shared_search_terms(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)

@@ -6,10 +6,13 @@ How Pipelock's runtime security controls map to the [EU AI Act (Regulation 2024/
 
 **Disclaimer:** This document maps Pipelock's security features to EU AI Act requirements for informational purposes. It does not constitute legal advice or guarantee regulatory compliance. Organizations should consult qualified legal counsel for compliance obligations specific to their AI systems.
 
-**Last reviewed:** July 2026 against v3.3.0. This mapping describes current
+**Last reviewed:** August 2026 against v3.4.0. This mapping describes current
 behavior; see [CHANGELOG.md](../../CHANGELOG.md) for release history.
 
 Recent control additions reviewed:
+
+- Art. 12 / 15: v3.4 distinguishes policy findings from incomplete scan results and blocks unscanned oversized reverse-proxy media bodies.
+- Art. 13 / 14: v3.4 removes configuration fields that had no runtime consumer, reducing the chance that an operator mistakes inert configuration for enforcement.
 
 - Art. 12: block-reason receipts, scan API tool-call findings, and file_sentry skip visibility improve operator records for mediated decisions and uninspected local files.
 - Art. 13: `request_policy_deny` block reasons and explicit scan-cap failure behavior make denial causes more transparent to operators and agent clients.

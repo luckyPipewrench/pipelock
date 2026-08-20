@@ -139,8 +139,8 @@ brew install luckyPipewrench/tap/pipelock
 <summary>Verify release integrity</summary>
 
 ```bash
-gh attestation verify pipelock_3.3.0_linux_amd64.tar.gz --owner luckyPipewrench
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.3.0 --owner luckyPipewrench
+gh attestation verify pipelock_3.4.0_linux_amd64.tar.gz --owner luckyPipewrench
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.4.0 --owner luckyPipewrench
 ```
 
 Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images. Source builds with `go install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
@@ -572,7 +572,7 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v2
+- uses: luckyPipewrench/pipelock@4c748ab986d611138ce202ab800b16eca6fb589f # v3.4.0
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -748,7 +748,7 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 
-Run `make test` to verify locally. Independent benchmark: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/).
+Run `make test` to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/).
 
 ---
 

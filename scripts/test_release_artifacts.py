@@ -13,14 +13,17 @@ that introduced the drift.
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 import yaml
-from pathlib import Path
+
+from scripts.chart_changes_version import changes_appversion
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/release.yaml"
 GORELEASER = ROOT / ".goreleaser.yaml"
+CHART = ROOT / "charts/pipelock/Chart.yaml"
 
 GORELEASER_VERSION = "v2.17.1"
 GORELEASER_LINUX_AMD64_SHA256 = "a99bbc7ae0d8d897b07c4c497a9b62f222558804715ef219d1af05a7e417bc80"
@@ -65,6 +68,27 @@ IMAGE_SBOM_ATTESTATION_IDS = (
 
 
 class TestReleaseArtifacts(unittest.TestCase):
+    def test_chart_changes_version_is_scoped_to_annotation(self) -> None:
+        chart = """description: Pipelock appVersion 9.9.9. Decoy.\nannotations:\n  artifacthub.io/changes: |\n    - kind: fixed\n      note: description: Pipelock appVersion 8.8.8. Nested decoy.\n      description: Pipelock appVersion 3.4.0. Real notes.\n  artifacthub.io/containsSecurityUpdates: \"true\"\n"""
+        self.assertEqual(changes_appversion(chart), "3.4.0")
+
+    def test_chart_changes_version_rejects_match_outside_annotation(self) -> None:
+        chart = """description: Pipelock appVersion 9.9.9. Decoy.\nannotations:\n  artifacthub.io/changes: |\n    - kind: fixed\n      description: Notes without a version marker.\n  artifacthub.io/containsSecurityUpdates: \"true\"\n"""
+        self.assertEqual(changes_appversion(chart), "")
+
+    def test_chart_changes_version_matches_real_chart_appversion(self) -> None:
+        chart_text = CHART.read_text(encoding="utf-8")
+        chart = yaml.safe_load(chart_text)
+        self.assertEqual(changes_appversion(chart_text), str(chart["appVersion"]))
+
+    def test_chart_changes_version_accepts_prerelease(self) -> None:
+        chart = """annotations:
+  artifacthub.io/changes: |
+    - kind: fixed
+      description: Pipelock appVersion 3.5.0-preview.1. Candidate notes.
+"""
+        self.assertEqual(changes_appversion(chart), "3.5.0-preview.1")
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -240,8 +264,34 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn("grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+$'", self.workflow)
         self.assertIn('if [[ "$newest_stable" = "$version" ]]; then', self.workflow)
         self.assertIn('if [[ "$latest_digest" != "$index_digest" ]]; then', self.workflow)
-        self.assertIn("grep -E '^v2\\.[0-9]+\\.[0-9]+$'", self.workflow)
-        self.assertIn('if [[ "$TAG_NAME" != "$latest_stable_tag" ]]; then', self.workflow)
+        runs = self._release_job_runs()
+        floating_steps = [script for name, script in runs if name == "Update floating major tag for GitHub Action"]
+        self.assertEqual(len(floating_steps), 1, "expected exactly one floating-tag step")
+        floating_lines = self._executable_lines(floating_steps[0])
+        self.assertTrue(any("git ls-remote --tags --refs origin" in line for line in floating_lines))
+        self.assertFalse(any("git tag --list" in line for line in floating_lines))
+        self.assertTrue(
+            any(
+                "sed -nE 's/^v([0-9]+)\\.[0-9]+\\.[0-9]+$/\\1/p'" in line
+                for line in floating_lines
+            )
+        )
+        self.assertTrue(any('grep -E "^v${major}\\.[0-9]+\\.[0-9]+$"' in line for line in floating_lines))
+        self.assertTrue(
+            any('if [[ "$TAG_NAME" != "$latest_stable_tag" ]]; then' in line for line in floating_lines)
+        )
+        self.assertTrue(
+            any(
+                line.startswith("remote_oid=")
+                and 'git ls-remote --refs origin "$floating_ref" | awk' in line
+                for line in floating_lines
+            )
+        )
+        push_lines = [line for line in floating_lines if line.startswith("git push ")]
+        self.assertEqual(
+            push_lines,
+            ['git push origin "$floating_ref" --force-with-lease="${floating_ref}:${remote_oid}"'],
+        )
 
         digest_vars = {
             "pipelock": "PIPELOCK_INDEX_DIGEST",

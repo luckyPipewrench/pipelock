@@ -6,9 +6,13 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 > **Note:** Coverage levels reflect architectural capabilities against known attack patterns, not guarantees of threat prevention. Pipelock is a network-layer proxy; some MCP risks require complementary controls at the client, server, or identity layer. This mapping is for informational purposes and does not constitute compliance certification.
 
-**Last reviewed:** July 2026 against v3.3.0. This mapping describes current
+**Last reviewed:** August 2026 against v3.4.0. This mapping describes current
 behavior; see [CHANGELOG.md](../../CHANGELOG.md) for release history. The
 appendix remains an explicitly historical list of v2.5 deltas.
+
+The v3.4 review includes fail-closed media-body scanning, stricter composition
+of MCP reasoning trust with response actions, and removal of inert airlock
+trigger fields.
 
 ---
 

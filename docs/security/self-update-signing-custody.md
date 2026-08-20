@@ -15,36 +15,46 @@ and uploads `release.json.sig` as a release asset.
 keyring embedded into release binaries. The private manifest signing key is not
 referenced by the release workflow.
 
-## Offline Signing Runbook
+## Current Signing Custody
 
-1. On a networked machine, download `release.json` from the draft GitHub release,
-   then transfer it to the offline signing machine on removable media. The signing
-   machine stays air-gapped and never connects to the network.
+The private manifest signing key is kept off persistent host storage and loaded
+only for the signing operation. This limits persistence but is not an air gap:
+a compromised signing host could still access key material while it is in use.
+A non-exportable hardware-backed key is the preferred next hardening step; the
+current signer can read key material from standard input so it does not appear
+in the process argument list.
 
-2. Unlock the offline release signing key from the designated removable media,
-   using the same custody handling as the license signer.
+## Signing Runbook
+
+1. Download `release.json` from the draft GitHub release. If signing happens on
+   a separate offline machine, transfer the manifest there. Only public bytes
+   need to cross the boundary: `release.json` in and `release.json.sig` out.
+
+2. Load the release signing key using the designated custody procedure. Remove
+   access to it as soon as signing finishes.
 
 3. Sign the manifest:
 
-```bash
-read -rsp 'release Ed25519 seed/private key hex: ' PIPELOCK_RELEASE_PRIVATE_KEY_HEX
-echo
-go run ./cmd/pipelock-release-manifest \
-  -sign-only \
-  -manifest ./release.json \
-  -private-key-hex "$PIPELOCK_RELEASE_PRIVATE_KEY_HEX"
-unset PIPELOCK_RELEASE_PRIVATE_KEY_HEX
-```
+   ```bash
+   read -rsp 'release Ed25519 seed/private key hex: ' PIPELOCK_RELEASE_PRIVATE_KEY_HEX
+   echo
+   printf '%s\n' "$PIPELOCK_RELEASE_PRIVATE_KEY_HEX" | \
+     go run ./cmd/pipelock-release-manifest \
+       -sign-only \
+       -manifest ./release.json \
+       -private-key-stdin
+   unset PIPELOCK_RELEASE_PRIVATE_KEY_HEX
+   ```
 
-4. Transfer the generated `release.json.sig` off the signing machine on removable
-   media, then from a networked machine upload it to the same release assets as
-   `release.json`.
+4. If signing happened on a separate offline machine, transfer the generated
+   `release.json.sig` off it on removable media. Upload the signature from a
+   networked machine to the same release assets as `release.json`.
 
 5. Confirm the release contains both files:
 
-```bash
-gh release view v3.1.0 --json assets --jq '.assets[].name' | sort
-```
+   ```bash
+   gh release view v3.4.0 --json assets --jq '.assets[].name' | sort
+   ```
 
 The client verification path is unchanged: `pipelock update` downloads
 `release.json` and `release.json.sig`, verifies the Ed25519 signature against

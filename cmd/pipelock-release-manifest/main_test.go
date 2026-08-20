@@ -52,11 +52,11 @@ func TestRunGenerateUnsignedThenOfflineSign(t *testing.T) {
 		t.Fatalf("VerifyManifest without sig error = %v, want ErrReleaseSignature", err)
 	}
 
-	if err := run([]string{
+	if err := runWithInput([]string{
 		"-sign-only",
 		"-manifest", manifestPath,
-		"-private-key-hex", hex.EncodeToString(priv.Seed()),
-	}, ioDiscard{}, ioDiscard{}); err != nil {
+		"-private-key-stdin",
+	}, strings.NewReader(hex.EncodeToString(priv.Seed())+"\n"), ioDiscard{}, ioDiscard{}); err != nil {
 		t.Fatalf("offline sign manifest: %v", err)
 	}
 	sigData, err := os.ReadFile(filepath.Join(dist, releasetrust.ManifestSigFile)) // #nosec G304 -- test reads release.json.sig from its own temp dist dir
@@ -65,6 +65,44 @@ func TestRunGenerateUnsignedThenOfflineSign(t *testing.T) {
 	}
 	if _, err := releasetrust.VerifyManifest(manifestData, sigData, pubHex); err != nil {
 		t.Fatalf("VerifyManifest offline signature: %v", err)
+	}
+}
+
+func TestSigningKeyHexReadsStdin(t *testing.T) {
+	want := strings.Repeat("4b", ed25519.SeedSize)
+	got, err := signingKeyHex("", false, true, strings.NewReader(want+"\n"))
+	if err != nil {
+		t.Fatalf("read private key from stdin: %v", err)
+	}
+	if got != want {
+		t.Fatalf("private key = %q, want %q", got, want)
+	}
+}
+
+func TestSigningKeyHexRejectsMultipleInputs(t *testing.T) {
+	for _, flagValue := range []string{strings.Repeat("00", ed25519.SeedSize), "   "} {
+		err := runWithInput([]string{
+			"-sign-only",
+			"-private-key-hex", flagValue,
+			"-private-key-stdin",
+		}, strings.NewReader(strings.Repeat("11", ed25519.SeedSize)), ioDiscard{}, ioDiscard{})
+		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("flag value %q: error = %v, want mutually exclusive input rejection", flagValue, err)
+		}
+	}
+}
+
+func TestSigningKeyHexBoundsStdin(t *testing.T) {
+	_, err := signingKeyHex("", false, true, strings.NewReader(strings.Repeat("a", 257)))
+	if err == nil || !strings.Contains(err.Error(), "exceeds 256 bytes") {
+		t.Fatalf("error = %v, want bounded-input rejection", err)
+	}
+}
+
+func TestSigningKeyHexReportsStdinReadFailure(t *testing.T) {
+	_, err := signingKeyHex("", false, true, failingReader{})
+	if err == nil || !strings.Contains(err.Error(), "read release private key from stdin") {
+		t.Fatalf("error = %v, want stdin read failure", err)
 	}
 }
 
@@ -78,6 +116,12 @@ type failingWriter struct{}
 
 func (failingWriter) Write(_ []byte) (int, error) {
 	return 0, errors.New("write blocked")
+}
+
+type failingReader struct{}
+
+func (failingReader) Read(_ []byte) (int, error) {
+	return 0, errors.New("read blocked")
 }
 
 func TestRunGenKeyWritesKeyMaterialOnlyToStdout(t *testing.T) {

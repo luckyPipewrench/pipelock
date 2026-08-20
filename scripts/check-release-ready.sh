@@ -112,6 +112,28 @@ else
   echo "  [ok]   Chart version: $chart_version"
 fi
 
+# 2c. The Artifact Hub changes annotation must describe THIS release.
+#
+# Both version fields above are mechanically enforced, and the human-readable
+# release notes beside them were not. v3.4.0 published a chart whose version and
+# appVersion read 3.4.0 while its artifacthub.io/changes block still described
+# 3.3.0, so Artifact Hub showed the previous release's notes under this
+# release's number. The published chart is immutable, so the only available
+# remedy was to correct it for the following release.
+#
+# Every release since v3.2.0 opens that block with "Pipelock appVersion <ver>.",
+# which makes the drift mechanically visible. Assert that line rather than
+# trying to judge the prose: this catches the copy-forward that actually
+# happened without having an opinion about how the notes are worded.
+changes_appversion="$(python3 "$REPO_ROOT/scripts/chart_changes_version.py" "$CHART")"
+if [ -z "$changes_appversion" ]; then
+  note "charts/pipelock/Chart.yaml artifacthub.io/changes has no 'description: Pipelock appVersion <version>.' entry. That line is what makes stale release notes visible; Artifact Hub renders this block as $VER's notes, so an unlabelled block cannot be checked."
+elif [ "$changes_appversion" != "$VER" ]; then
+  note "charts/pipelock/Chart.yaml artifacthub.io/changes describes appVersion '$changes_appversion', expected '$VER'. Artifact Hub renders this block as $VER's release notes and the published chart is immutable, so a stale block cannot be corrected after the tag. Rewrite the changes entries for this release."
+else
+  echo "  [ok]   Chart changes annotation: appVersion $changes_appversion"
+fi
+
 # 3. The release keyring must be present BEFORE anything is built.
 #
 # GoReleaser embeds the public release keyring via

@@ -17,7 +17,7 @@ on:
       - 'v[0-9]*.[0-9]*.[0-9]*'
 
 # Serialize release publications so two overlapping tag pushes cannot race on the
-# GoReleaser uploads or the shared force-updated v2 tag (an older run could
+# GoReleaser uploads or a shared force-updated major tag (an older run could
 # otherwise overwrite a newer completed release pointer). Do not cancel a run in
 # progress: a half-finished publish must complete, not be interrupted.
 concurrency:
@@ -992,23 +992,39 @@ jobs:
           sha256sum "$verify_dir/release.json" "$verify_dir/release.json.sig"
           gh release edit "$GITHUB_REF_NAME" --draft=false
 
-      # Move the v2 floating tag only for the newest stable product release.
-      # A prerelease or an older-line backport still publishes its immutable
-      # version, but cannot move this consumer-facing pointer backward.
-      - name: Update v2 floating tag for GitHub Action
+      # Move the floating major tag for this tag's major line, and only when
+      # this tag is the newest stable release in that line. A prerelease or an
+      # older patch still publishes its immutable version, but cannot move a
+      # consumer-facing pointer backward.
+      - name: Update floating major tag for GitHub Action
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          latest_stable_tag="$(git tag --list | grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          # Only an exact vX.Y.Z tag moves a pointer. A prerelease suffix makes
+          # this pattern fail to match, so major stays empty and the step stops.
+          major="$(printf '%s\n' "$TAG_NAME" | sed -nE 's/^v([0-9]+)\.[0-9]+\.[0-9]+$/\1/p')"
+          if [[ -z "$major" ]]; then
+            echo "Not moving any floating tag: ${TAG_NAME} is not an exact vX.Y.Z product tag"
+            exit 0
+          fi
+          remote_stable_tags="$(git ls-remote --tags --refs origin "refs/tags/v${major}.*")"
+          latest_stable_tag="$(printf '%s\n' "$remote_stable_tags" | awk '{sub("refs/tags/", "", $2); print $2}' | grep -E "^v${major}\.[0-9]+\.[0-9]+$" | sort -V | tail -n 1 || true)"
+          if [[ -z "$latest_stable_tag" ]]; then
+            echo "Cannot determine the newest stable v${major} tag from origin" >&2
+            exit 1
+          fi
           if [[ "$TAG_NAME" != "$latest_stable_tag" ]]; then
-            echo "Not moving v2 for non-latest, off-major, or prerelease tag ${TAG_NAME}"
+            echo "Not moving v${major}: ${TAG_NAME} is not the newest stable tag in the v${major} line (newest is ${latest_stable_tag:-none})"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          floating_ref="refs/tags/v${major}"
+          remote_oid="$(git ls-remote --refs origin "$floating_ref" | awk '{print $1}')"
           # The ^{} suffix dereferences TAG_NAME (annotated tag) to its commit.
-          # Without it, git tag -fa v2 "${TAG_NAME}" creates a nested tag
-          # (v2 -> v2.2.0 -> commit) which clutters ls-remote and some tooling rejects it.
-          git tag -fa v2 "${TAG_NAME}^{}" -m "Update v2 to ${TAG_NAME}"
-          git push origin v2 --force
+          # Without it, git tag -fa "v${major}" "${TAG_NAME}" creates a nested tag
+          # (v3 -> v3.4.0 -> commit) which clutters ls-remote and some tooling rejects it.
+          git tag -fa "v${major}" "${TAG_NAME}^{}" -m "Update v${major} to ${TAG_NAME}"
+          git push origin "$floating_ref" --force-with-lease="${floating_ref}:${remote_oid}"
+          echo "Moved floating tag v${major} to ${TAG_NAME}"

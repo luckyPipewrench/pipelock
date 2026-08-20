@@ -321,14 +321,20 @@ runs:
           done <<< "$PIPELOCK_EXCLUDE"
         fi
 
-        # A non-zero exit from scan-diff means EITHER findings OR that the scan
-        # could not run, and reporting both as "secrets detected" sends the
-        # operator hunting a leak that was never found. The two are told apart
-        # by the output rather than the exit status: a scan that ran emits a
-        # JSON array, and one that failed emits a diagnostic instead.
+        # Exit 0 is a verified clean scan, 1 is a verified scan with findings,
+        # and 2 is an instrument error. JSON shape alone cannot prove which
+        # state occurred.
         SCAN_OUT="$(mktemp)"
+        SCAN_ERR="$(mktemp)"
+        trap 'rm -f "$SCAN_OUT" "$SCAN_ERR"' EXIT
         SCAN_RC=0
-        git diff "origin/${BASE_REF}...HEAD" | pipelock git scan-diff --json "${SCAN_ARGS[@]}" > "$SCAN_OUT" 2>&1 || SCAN_RC=$?
+        git diff "origin/${BASE_REF}...HEAD" | pipelock git scan-diff --json "${SCAN_ARGS[@]}" > "$SCAN_OUT" 2> "$SCAN_ERR" || SCAN_RC=$?
+
+        if [ "$SCAN_RC" -ne 0 ] && [ "$SCAN_RC" -ne 1 ]; then
+          echo "::error::Pipelock could not scan the PR diff, so it is unverified (exit ${SCAN_RC}). This is a scan failure, not a secret finding."
+          sed 's/^/  /' "$SCAN_ERR"
+          exit 1
+        fi
 
         if ! FINDINGS="$(jq -e 'if type == "array" then length else empty end' < "$SCAN_OUT" 2>/dev/null)"; then
           # Fail closed regardless of fail-on-findings. That input decides what
@@ -336,7 +342,12 @@ runs:
           # was never examined, and treating an unscanned diff as clean is the
           # one outcome this step exists to prevent.
           echo "::error::Pipelock could not scan the PR diff, so it is unverified. This is a scan failure, not a secret finding."
-          sed 's/^/  /' "$SCAN_OUT"
+          sed 's/^/  /' "$SCAN_ERR"
+          exit 1
+        fi
+
+        if { [ "$FINDINGS" -eq 0 ] && [ "$SCAN_RC" -ne 0 ]; } || { [ "$FINDINGS" -gt 0 ] && [ "$SCAN_RC" -ne 1 ]; }; then
+          echo "::error::Pipelock scan result disagrees with its exit status, so the PR diff is unverified."
           exit 1
         fi
 

@@ -39,12 +39,17 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
+	return runWithInput(args, os.Stdin, stdout, stderr)
+}
+
+func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("pipelock-release-manifest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dist := fs.String("dist", "dist", "GoReleaser dist directory")
 	tag := fs.String("tag", "", "release tag, e.g. v3.1.0")
 	commit := fs.String("commit", "", "release commit SHA")
 	keyHex := fs.String("private-key-hex", "", "hex Ed25519 private key or 32-byte seed; required only with --sign-only")
+	keyStdin := fs.Bool("private-key-stdin", false, "read the hex Ed25519 private key or seed from stdin for --sign-only")
 	signerKeyID := fs.String("signer-key-id", firstReleaseKey(os.Getenv("RELEASE_KEYRING_HEX")), "hex Ed25519 public key expected to sign release.json")
 	signOnly := fs.Bool("sign-only", false, "sign an existing release.json without regenerating it")
 	manifestPath := fs.String("manifest", "", "release.json path for --sign-only; defaults to <dist>/release.json")
@@ -54,6 +59,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	keyHexSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "private-key-hex" {
+			keyHexSet = true
+		}
+	})
 	if *verify {
 		return runVerify(*dist, *manifestPath, *keyringHex, stdout)
 	}
@@ -71,7 +82,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	if *signOnly {
-		return runSignOnly(*dist, *manifestPath, *keyHex)
+		privateKeyHex, err := signingKeyHex(*keyHex, keyHexSet, *keyStdin, stdin)
+		if err != nil {
+			return err
+		}
+		return runSignOnly(*dist, *manifestPath, privateKeyHex)
 	}
 	if strings.TrimSpace(*tag) == "" {
 		return errors.New("--tag is required")
@@ -120,6 +135,24 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("write release.json: %w", err)
 	}
 	return nil
+}
+
+func signingKeyHex(flagValue string, flagSet, fromStdin bool, stdin io.Reader) (string, error) {
+	if flagSet && fromStdin {
+		return "", errors.New("--private-key-hex and --private-key-stdin are mutually exclusive")
+	}
+	if !fromStdin {
+		return flagValue, nil
+	}
+	const maxPrivateKeyHexBytes = 256
+	value, err := io.ReadAll(io.LimitReader(stdin, maxPrivateKeyHexBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read release private key from stdin: %w", err)
+	}
+	if len(value) > maxPrivateKeyHexBytes {
+		return "", errors.New("release private key from stdin exceeds 256 bytes")
+	}
+	return strings.TrimSpace(string(value)), nil
 }
 
 // runVerify checks that a release manifest carries a signature that verifies
@@ -190,7 +223,7 @@ func runSignOnly(dist, manifestPath, keyHex string) error {
 func parsePrivateKey(value string) (ed25519.PrivateKey, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil, errors.New("--private-key-hex is required for --sign-only")
+		return nil, errors.New("a private key is required for --sign-only")
 	}
 	raw, err := hex.DecodeString(value)
 	if err != nil {

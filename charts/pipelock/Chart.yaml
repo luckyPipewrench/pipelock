@@ -41,12 +41,12 @@ annotations:
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: changed
-      description: Pipelock appVersion 3.3.0. Denial-of-wallet budgets are keyed by subject, MCP denial-of-wallet settings follow hot reload, and unversioned rule bundles degrade visibly instead of loading implicitly.
+      description: Pipelock appVersion 3.4.0. MCP reasoning trust can no longer weaken a stricter response action, and scan-diff now distinguishes findings from instrument errors.
     - kind: added
-      description: Opaque high-entropy egress detection, safety-reclassification response detection, receipt-chain auto-anchoring, audit-sink health metrics, and HTTP/OCSF output.
+      description: Containment-aware upgrades, filesystem and command guard enforcement, exact destination grants, and commitment-key lifecycle operations.
     - kind: added
-      description: Encrypted Conductor durable audit queues with Helm keyring mounts and audit-queue-key lifecycle commands.
+      description: Reverse-proxy scan-capacity budgeting and v3 outer-chain namespace support for recorder readers.
     - kind: fixed
-      description: Audit Packet verification requires external trust anchors, full evidence directories no longer stop receipt emission, and Conductor leaders survive policy-hash-moving upgrades.
+      description: Reverse-proxy media request bodies are scanned, oversized bodies fail closed, and provider-opaque carve-outs require ciphertext-like content.
     - kind: fixed
-      description: Opaque CONNECT can require TLS with SNI, local integrity state has explicit permission policies, matched credentials are redacted from core audit events, and containment reinstall waits for readiness.
+      description: Credential matching covers encoding noise, path-query seams, and credentials split across more than four query values.

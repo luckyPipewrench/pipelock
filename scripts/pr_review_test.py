@@ -895,6 +895,91 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertFalse(truncated)
         self.assertEqual(lines, ["HEAD:a.go:1:match"])
 
+    def test_bounded_git_grep_reaps_the_child_on_timeout(self) -> None:
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        ticks = {"n": 0}
+
+        class Hung:
+            def __init__(self) -> None:
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+                self.returncode = None
+                self.killed = False
+                self.waited = False
+
+            def poll(self) -> int | None:
+                return None
+
+            def kill(self) -> None:
+                self.killed = True
+                self.returncode = -9
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.waited = True
+                return -9
+
+        child = Hung()
+
+        def monotonic() -> float:
+            ticks["n"] += 1
+            return 100.0 if ticks["n"] == 1 else 111.0
+
+        with mock.patch.object(pr_review.time, "monotonic", side_effect=monotonic), mock.patch.object(
+            pr_review.subprocess, "Popen", return_value=child
+        ):
+            _lines, _truncated, failed = pr_review._bounded_git_grep(pathlib.Path("."), "match")
+        self.assertTrue(failed)
+        self.assertTrue(child.killed)
+        self.assertTrue(child.waited)
+
+    def test_cross_file_evidence_deduplicates_shared_search_terms(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        shared = pr_review.Finding(
+            "medium",
+            "schema.json",
+            1,
+            "Duplicate keys are accepted",
+            "the schema does not reject duplicate keys",
+            "validate uniqueness in the consumer",
+        )
+        other = pr_review.Finding(
+            "medium",
+            "other.json",
+            1,
+            "Duplicate keys are accepted",
+            "the schema does not reject duplicate keys",
+            "validate uniqueness in the consumer",
+        )
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}, clear=False), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=([], False, False)) as grep:
+            pr_review.cross_file_evidence(
+                binding,
+                [shared, other],
+                {"schema.json": "1: keys", "other.json": "1: keys"},
+            )
+        terms = {call.args[1] for call in grep.call_args_list}
+        self.assertEqual(grep.call_count, len(terms))
+        self.assertGreater(grep.call_count, 0)
+
+    def test_cross_file_evidence_caps_repository_searches(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidates = [
+            pr_review.Finding("low", f"path{index}.go", 1, f"Identifier{index}_guard", "why text here", "restore Identifier{index}_guard")
+            for index in range(pr_review.MAX_EVIDENCE_SEARCHES + 4)
+        ]
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}, clear=False), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=([], False, False)) as grep:
+            evidence, incomplete = pr_review.cross_file_evidence(
+                binding,
+                candidates,
+                {finding.path: f"1: Identifier{index}_guard" for index, finding in enumerate(candidates)},
+            )
+        self.assertFalse(incomplete)
+        self.assertLessEqual(grep.call_count, pr_review.MAX_EVIDENCE_SEARCHES)
+        self.assertIn("evidence-search-truncated", evidence)
+
     def test_unavailable_evidence_preserves_overflow_diagnostics(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         extra = 5

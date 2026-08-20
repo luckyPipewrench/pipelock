@@ -77,6 +77,10 @@ DEEP_MAX_UNITS_PER_CHUNK = 60
 # Each judge context fetch allows 30 seconds, so an unbounded candidate set
 # could spend longer on requests than the whole job is permitted to run.
 MAX_JUDGE_CONTEXT_FETCHES = 20
+# Each git-grep is itself time-bounded. This is how many we are willing to start
+# for one judge pass; without it, twenty candidates times four terms can spend
+# minutes rescanning HEAD before a partial review is even published.
+MAX_EVIDENCE_SEARCHES = 8
 MAX_DELETION_LINES_PER_HUNK = 24
 MAX_RENDERED_MANIFEST_ENTRIES = 8
 REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
@@ -1670,7 +1674,10 @@ def cross_file_evidence(
         return "", True
     matches: list[tuple[int, str, int, str]] = []
     seen: set[tuple[str, int]] = set()
+    searched_terms: set[str] = set()
+    searches = 0
     search_output_truncated = False
+    search_budget_exhausted = False
     changed_paths = {finding.path for finding in candidates}
     changed_paths.update(
         summary["path"]
@@ -1679,6 +1686,14 @@ def cross_file_evidence(
     )
     for finding in candidates:
         for term in _evidence_terms(finding, contexts.get(finding.path, "")):
+            if term in searched_terms:
+                continue
+            if searches >= MAX_EVIDENCE_SEARCHES:
+                search_output_truncated = True
+                search_budget_exhausted = True
+                break
+            searched_terms.add(term)
+            searches += 1
             lines, search_truncated, search_failed = _bounded_git_grep(root, term)
             if search_failed:
                 return "", True
@@ -1697,6 +1712,8 @@ def cross_file_evidence(
                 if "test" in path.lower():
                     priority -= 1
                 matches.append((priority, path, line, text))
+        if search_budget_exhausted:
+            break
     matches.sort(key=lambda item: (item[0], item[1], item[2]))
     selected: list[tuple[int, str, int, str]] = []
     for match in matches:
@@ -1739,6 +1756,15 @@ def cross_file_evidence(
     return "\n".join(rendered), False
 
 
+def _reap_process(process: subprocess.Popen[Any]) -> None:
+    """Wait for a killed or finished child so it cannot linger unreaped."""
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
 def _bounded_git_grep(root: Path, term: str) -> tuple[list[str], bool, bool]:
     """Read repository search output with hard time and byte bounds."""
     try:
@@ -1751,6 +1777,7 @@ def _bounded_git_grep(root: Path, term: str) -> tuple[list[str], bool, bool]:
         return [], False, True
     if process.stdout is None:
         process.kill()
+        _reap_process(process)
         return [], False, True
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
@@ -1764,6 +1791,7 @@ def _bounded_git_grep(root: Path, term: str) -> tuple[list[str], bool, bool]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 process.kill()
+                _reap_process(process)
                 return [], False, True
             if process.poll() is not None:
                 while True:

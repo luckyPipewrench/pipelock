@@ -120,6 +120,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over a list. Known environment and file secrets written as hex are matched through the
   same set, where a separate smaller list had been maintained alongside it.
 - A credential spread across more than four query values is assembled before matching.
+- The kill switch denies proxied requests whatever destination path they carry. Its
+  endpoint exemptions keep Pipelock's own operational endpoints answering while traffic is
+  denied, but they compared the request path without first establishing that the request
+  was addressed to Pipelock, and a forward-proxy request carries the destination's path.
+  Exemptions now sit behind a single check consulted ahead of all of them, so one added
+  later inherits it. The IP allowlist still applies to proxied traffic, because it keys on
+  the client address rather than a path the client chooses. Upgrade if you treat the kill
+  switch as an absolute stop.
+- URL DLP joins the path and the query when matching credential patterns. Targets were
+  built from each side of the separator with nothing joining them, so a credential divided
+  across that boundary matched no target: neither half satisfies a pattern alone, and the
+  whole-URL view cannot bridge the separator because it falls outside every credential
+  pattern's character class. The seam is now its own target, in the shared helper both the
+  configured scanner and the core floor use, so the core copy cannot shadow the fix. The
+  path side is decoded to a fixpoint first, because `url.Parse` decodes a path once while
+  the query values were already decoded repeatedly, and a multi-escaped prefix survived
+  that asymmetry.
 - The provider-opaque request-body carve-out requires the body to measure as ciphertext.
   A long opaque field previously qualified on length alone, so padded content skipped
   inspection.

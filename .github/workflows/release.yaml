@@ -923,6 +923,12 @@ jobs:
           PIPELOCK_INDEX_DIGEST: ${{ needs.release-build.outputs.pipelock_index }}
           PIPELOCK_INIT_INDEX_DIGEST: ${{ needs.release-build.outputs.pipelock_init_index }}
           LICENSE_SERVICE_INDEX_DIGEST: ${{ needs.release-build.outputs.license_service_index }}
+          PIPELOCK_AMD64_DIGEST: ${{ needs.release-build.outputs.pipelock_amd64 }}
+          PIPELOCK_ARM64_DIGEST: ${{ needs.release-build.outputs.pipelock_arm64 }}
+          PIPELOCK_INIT_AMD64_DIGEST: ${{ needs.release-build.outputs.pipelock_init_amd64 }}
+          PIPELOCK_INIT_ARM64_DIGEST: ${{ needs.release-build.outputs.pipelock_init_arm64 }}
+          LICENSE_SERVICE_AMD64_DIGEST: ${{ needs.release-build.outputs.license_service_amd64 }}
+          LICENSE_SERVICE_ARM64_DIGEST: ${{ needs.release-build.outputs.license_service_arm64 }}
         run: |
           set -euo pipefail
           test -s dist/homebrew/Formula/pipelock.rb || {
@@ -940,6 +946,17 @@ jobs:
           test "$(jq -er '.images[] | select(.name == "pipelock-init") | .digest' dist/release-images.json)" = "$PIPELOCK_INIT_INDEX_DIGEST"
           test "$(jq -er '.images[] | select(.name == "pipelock-license-service") | .digest' dist/release-images.json)" = "$LICENSE_SERVICE_INDEX_DIGEST"
           test "$(jq '.images | length' dist/release-images.json)" -eq 3
+          for digest_name in \
+            PIPELOCK_INDEX_DIGEST PIPELOCK_INIT_INDEX_DIGEST LICENSE_SERVICE_INDEX_DIGEST \
+            PIPELOCK_AMD64_DIGEST PIPELOCK_ARM64_DIGEST \
+            PIPELOCK_INIT_AMD64_DIGEST PIPELOCK_INIT_ARM64_DIGEST \
+            LICENSE_SERVICE_AMD64_DIGEST LICENSE_SERVICE_ARM64_DIGEST; do
+            digest="${!digest_name}"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+              echo "::error::${digest_name} is missing or is not a lowercase sha256 digest"
+              exit 1
+            }
+          done
           python3 - <<'PY'
           import json
           import os
@@ -1068,6 +1085,10 @@ jobs:
           candidate_dir="$RUNNER_TEMP/candidate-chart-${chart_version}"
           mkdir -p "$existing_dir" "$candidate_dir"
           if chart_lookup_output="$(helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" --destination "$existing_dir" 2>&1)"; then
+            cmp -s "$chart_archive" "$existing_dir/pipelock-${chart_version}.tgz" || {
+              echo "::error::published chart archive ${chart_version} differs from the staged release archive"
+              exit 1
+            }
             tar -xzf "$chart_archive" -C "$candidate_dir"
             tar -xzf "$existing_dir/pipelock-${chart_version}.tgz" -C "$existing_dir"
             diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock" || {
@@ -1104,6 +1125,14 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          version="${TAG_NAME#v}"
+          remote_stable_tags="$(git ls-remote --tags --refs origin 'refs/tags/v*')"
+          newest_stable="$(printf '%s\n' "$remote_stable_tags" | awk '{sub("refs/tags/v", "", $2); print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          test -n "$newest_stable" || { echo "::error::could not determine newest stable release tag"; exit 1; }
+          if [[ "$version" != "$newest_stable" ]]; then
+            echo "Not updating Homebrew for ${TAG_NAME}; newest stable release is v${newest_stable}"
+            exit 0
+          fi
           formula="dist/homebrew/Formula/pipelock.rb"
           test -s "$formula" || { echo "::error::promotion bundle has no Homebrew formula"; exit 1; }
           path="Formula/pipelock.rb"

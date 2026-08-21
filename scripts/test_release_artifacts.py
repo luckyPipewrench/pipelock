@@ -481,8 +481,24 @@ class TestReleaseArtifacts(unittest.TestCase):
             "pipelock_index",
             "pipelock_init_index",
             "license_service_index",
+            "pipelock_amd64",
+            "pipelock_arm64",
+            "pipelock_init_amd64",
+            "pipelock_init_arm64",
+            "license_service_amd64",
+            "license_service_arm64",
         ):
             self.assertIn(f"needs.release-build.outputs.{output}", self.workflow)
+        for digest_name in (
+            "PIPELOCK_AMD64_DIGEST",
+            "PIPELOCK_ARM64_DIGEST",
+            "PIPELOCK_INIT_AMD64_DIGEST",
+            "PIPELOCK_INIT_ARM64_DIGEST",
+            "LICENSE_SERVICE_AMD64_DIGEST",
+            "LICENSE_SERVICE_ARM64_DIGEST",
+        ):
+            self.assertIn(digest_name, input_checks)
+        self.assertIn("^sha256:[a-f0-9]{64}$", input_checks)
 
         undraft_cmd = 'gh release edit "$GITHUB_REF_NAME" --draft=false'
         verify_cmd = "go run ./cmd/pipelock-release-manifest --verify --manifest"
@@ -579,7 +595,18 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertNotIn('-commit "$GITHUB_SHA"', self.workflow)
         self.assertIn('steps.attest-release-images.outcome != \'success\'', self.workflow)
         self.assertIn('diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock"', self.workflow)
+        self.assertIn(
+            'cmp -s "$chart_archive" "$existing_dir/pipelock-${chart_version}.tgz"',
+            self.workflow,
+        )
         self.assertIn('test "$chart_app_version" = "$app_version"', self.workflow)
+        homebrew = dict(promote_runs)["Publish Homebrew formula"]
+        self.assertIn("git ls-remote --tags --refs origin 'refs/tags/v*'", homebrew)
+        self.assertIn('if [[ "$version" != "$newest_stable" ]]; then', homebrew)
+        self.assertLess(
+            homebrew.index('if [[ "$version" != "$newest_stable" ]]; then'),
+            homebrew.index("gh api --method PUT"),
+        )
         digest_vars = {
             "pipelock": "PIPELOCK_INDEX_DIGEST",
             "pipelock_init": "PIPELOCK_INIT_INDEX_DIGEST",

@@ -2962,6 +2962,7 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var finalRequestHits atomic.Int32
 			var finalMethod, finalBody string
+			finalCaptured := make(chan struct{}, 1)
 			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == tt.requestPath && r.URL.RawQuery == "" {
 					http.Redirect(w, r, "http://git.vendor.example"+tt.redirectPath, tt.redirectStatus)
@@ -2974,6 +2975,7 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 					t.Errorf("read redirected body: %v", err)
 				}
 				finalBody = string(body)
+				finalCaptured <- struct{}{}
 				_, _ = fmt.Fprint(w, "final")
 			}))
 			defer backend.Close()
@@ -3016,6 +3018,7 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 			if tt.wantFinalRequestHits == 0 {
 				return
 			}
+			<-finalCaptured
 			if finalMethod != tt.wantFinalMethod {
 				t.Errorf("final method = %q, want %q", finalMethod, tt.wantFinalMethod)
 			}

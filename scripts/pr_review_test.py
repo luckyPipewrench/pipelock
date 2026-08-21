@@ -2514,10 +2514,6 @@ class AdoptionStubTest(unittest.TestCase):
     published stub is compared against the real caller here.
     """
 
-    # A caller outside this repository must name the reviewer by immutable
-    # commit, where a same-repository call resolves it implicitly. Those two
-    # keys are expected to differ; nothing else is.
-    EXPECTED_DIFFERENCES = frozenset({"uses", "reviewer_sha"})
     PLACEHOLDER_LOGIN = "YOUR_GITHUB_LOGIN"
     REAL_LOGIN = "luckyPipewrench"
 
@@ -2545,58 +2541,25 @@ class AdoptionStubTest(unittest.TestCase):
             return {key: AdoptionStubTest.collapse(item) for key, item in value.items()}
         return value
 
-    @staticmethod
-    def triggers(document: dict[str, object]) -> object:
-        """Compare the whole trigger set, folding only line breaks.
-
-        This once stripped the descriptions out of manual-dispatch inputs so an
-        improved wording could not fail the comparison. Both callers now accept
-        one event and carry no inputs at all, so that normalizing is gone rather
-        than kept as a dormant allowance for a trigger neither may have.
-        """
-        return AdoptionStubTest.collapse(document.get("on"))
-
     def test_documented_stub_matches_the_caller_this_repository_runs(self) -> None:
         stub = self.documented_stub()
         real = load_yaml(CALLER_WORKFLOW)
+        stub_contract = self.collapse(stub)
+        real_contract = self.collapse(real)
 
+        # An external caller names the reusable workflow and reviewer source by
+        # immutable commit, while this repository resolves its local workflow at
+        # github.sha. Normalize exactly those two repository-specific values,
+        # then compare the complete executable example: trigger, permissions,
+        # guard, target, inputs, and secrets.
+        stub_contract["jobs"]["review"]["uses"] = real_contract["jobs"]["review"]["uses"]
+        stub_contract["jobs"]["review"]["with"]["reviewer_sha"] = real_contract["jobs"]["review"]["with"][
+            "reviewer_sha"
+        ]
         self.assertEqual(
-            self.triggers(stub),
-            self.triggers(real),
-            "the stub must accept exactly the events the real caller accepts; if these "
-            "differ, change the stub, and do not reach for a manual dispatch to close "
-            "the gap, because that lets a branch choose the code holding the credential",
-        )
-        self.assertEqual(
-            stub.get("permissions"),
-            real.get("permissions"),
-            "a called workflow cannot hold a permission its caller withheld, so a stub "
-            "granting less silently strips it from the reviewer",
-        )
-
-        stub_job = stub["jobs"]["review"]
-        real_job = real["jobs"]["review"]
-        self.assertEqual(
-            self.collapse(stub_job.get("if")),
-            self.collapse(real_job.get("if")),
-            "the stub must authorize exactly who the real caller authorizes",
-        )
-        self.assertEqual(
-            stub_job.get("secrets"),
-            real_job.get("secrets"),
-            "every secret is mapped by name because personal accounts cannot inherit them",
-        )
-
-        stub_with = self.collapse(stub_job.get("with"))
-        real_with = self.collapse(real_job.get("with"))
-        self.assertEqual(
-            set(stub_with), set(real_with), "the stub must pass the same inputs"
-        )
-        differing = {key for key in stub_with if stub_with[key] != real_with[key]}
-        self.assertEqual(
-            differing,
-            self.EXPECTED_DIFFERENCES & set(stub_with),
-            "only the reviewer pin may differ between an external stub and this caller",
+            stub_contract,
+            real_contract,
+            "the documented caller may differ only in its immutable external workflow pins",
         )
 
     def test_stub_pins_the_reviewer_by_commit_in_both_positions(self) -> None:

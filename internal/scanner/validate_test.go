@@ -90,6 +90,10 @@ func TestValidCardIssuer(t *testing.T) {
 		{name: "discover 65", card: "6500000000000002", want: true},
 		{name: "discover 644", card: "6440000000000007", want: true},
 		{name: "discover 649", card: "6490000000000002", want: true},
+		{name: "discover 622126 lower edge", card: "6221260000000000", want: true},
+		{name: "discover 622925 upper edge", card: "6229250000000003", want: true},
+		{name: "discover 622125 below range", card: "6221250000000001", want: false},
+		{name: "discover 622926 above range", card: "6229260000000002", want: false},
 
 		// JCB
 		{name: "jcb 3528", card: "3528000000000007", want: true},

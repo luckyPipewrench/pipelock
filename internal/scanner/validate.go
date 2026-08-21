@@ -77,6 +77,7 @@ func validCardIssuer(digits []byte, n int) bool {
 
 	// 4-digit prefix for range checks.
 	prefix4 := int(digits[0])*1000 + int(digits[1])*100 + int(digits[2])*10 + int(digits[3])
+	prefix6 := prefix4*100 + int(digits[4])*10 + int(digits[5])
 
 	switch d0 {
 	case 4: // Visa: starts with 4, 16/19 digits (13-digit Visa retired in the '90s)
@@ -91,9 +92,9 @@ func validCardIssuer(digits []byte, n int) bool {
 			return n >= 16 && n <= 19 // JCB
 		}
 		return false
-	case 6: // Discover: 6011, 644-649, 65xx, 16/19 digits
+	case 6: // Discover: 6011, 622126-622925, 644-649, 65xx, 16/19 digits
 		if prefix4 == 6011 || (prefix4 >= 6440 && prefix4 <= 6499) ||
-			(digits[1] == 5) {
+			(prefix6 >= 622126 && prefix6 <= 622925) || digits[1] == 5 {
 			return n == 16 || n == 19
 		}
 		return false

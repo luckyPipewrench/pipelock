@@ -726,6 +726,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			scannerMatched := !result.Allowed
 
+			// A 307/308 redirect preserves the original method and body. A
+			// git-receive-pack POST therefore remains a push on the redirected
+			// target, which must satisfy the same repository allowlist as the
+			// admitted request.
+			if gitPush := evaluateGitPushAllowlist(currentCfg.GitProtection, req.URL); gitPush.Block {
+				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				logger.LogBlocked(actx, "git_protection", "redirect from "+originalURL+" blocked: "+gitPush.Reason)
+				return newRedirectBlockedRequest("git_protection", gitPush.Reason)
+			}
+
 			// request_policy runs before the contract gate so a contract
 			// allow can never suppress an operation-policy block.
 			if rpRes := p.applyRequestPolicy(requestPolicyInput{

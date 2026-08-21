@@ -2915,6 +2915,117 @@ func TestForwardHTTPBlocksNonAllowlistedGitPush(t *testing.T) {
 	}
 }
 
+func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		requestPath          string
+		redirectPath         string
+		redirectStatus       int
+		wantStatus           int
+		wantFinalMethod      string
+		wantFinalBody        string
+		wantFinalRequestHits int32
+	}{
+		{
+			name:                 "307 blocks redirected non-allowlisted push",
+			requestPath:          "/acme/private.git/git-receive-pack",
+			redirectPath:         "/acme/public.git/git-receive-pack",
+			redirectStatus:       http.StatusTemporaryRedirect,
+			wantStatus:           http.StatusForbidden,
+			wantFinalRequestHits: 0,
+		},
+		{
+			name:                 "308 allows redirected allowlisted push",
+			requestPath:          "/acme/private.git/git-receive-pack",
+			redirectPath:         "/acme/private.git/git-receive-pack?redirected=1",
+			redirectStatus:       http.StatusPermanentRedirect,
+			wantStatus:           http.StatusOK,
+			wantFinalMethod:      http.MethodPost,
+			wantFinalBody:        "0000",
+			wantFinalRequestHits: 1,
+		},
+		{
+			name:                 "303 non-push redirect remains method changing",
+			requestPath:          "/non-push-start",
+			redirectPath:         "/non-push-final",
+			redirectStatus:       http.StatusSeeOther,
+			wantStatus:           http.StatusOK,
+			wantFinalMethod:      http.MethodGet,
+			wantFinalBody:        "",
+			wantFinalRequestHits: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var finalRequestHits atomic.Int32
+			var finalMethod, finalBody string
+			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == tt.requestPath && r.URL.RawQuery == "" {
+					http.Redirect(w, r, "http://github.com"+tt.redirectPath, tt.redirectStatus)
+					return
+				}
+				finalRequestHits.Add(1)
+				finalMethod = r.Method
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read redirected body: %v", err)
+				}
+				finalBody = string(body)
+				_, _ = fmt.Fprint(w, "final")
+			}))
+			defer backend.Close()
+
+			proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.GitProtection.Enabled = true
+				cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+			})
+			defer cleanup()
+			p.client.Transport = &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					if addr == "github.com:80" {
+						return (&net.Dialer{}).DialContext(ctx, network, backend.Listener.Addr().String())
+					}
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				},
+				DisableCompression: true,
+			}
+
+			proxyURL, err := url.Parse("http://" + proxyAddr)
+			if err != nil {
+				t.Fatalf("parse proxy URL: %v", err)
+			}
+			client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 2 * time.Second}
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://github.com"+tt.requestPath, strings.NewReader("0000"))
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("forward redirected request: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if got := finalRequestHits.Load(); got != tt.wantFinalRequestHits {
+				t.Fatalf("final request hits = %d, want %d", got, tt.wantFinalRequestHits)
+			}
+			if tt.wantFinalRequestHits == 0 {
+				return
+			}
+			if finalMethod != tt.wantFinalMethod {
+				t.Errorf("final method = %q, want %q", finalMethod, tt.wantFinalMethod)
+			}
+			if finalBody != tt.wantFinalBody {
+				t.Errorf("final body = %q, want %q", finalBody, tt.wantFinalBody)
+			}
+		})
+	}
+}
+
 // TestForwardHTTPBlocksEncodedSubdomainExfil proves transport parity for the
 // absolute-URI forward path: an encoded-subdomain exfil target is blocked at
 // the scan (pre-dial), matching the fetch and CONNECT paths.

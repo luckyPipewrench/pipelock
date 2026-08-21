@@ -93,7 +93,7 @@ Values must name models available through the direct OpenAI API.
 
 ## Cost Control
 
-- Only runs when manually triggered (no auto-review on push)
+- Only runs from an authorized `/review` comment (no auto-review on push)
 - Never retries an ambiguous provider timeout, which could double-spend
 - Uses explicit token budgets; deep mode splits an oversized hunk into complete
   contiguous review units rather than summarizing or dropping its deletion lines

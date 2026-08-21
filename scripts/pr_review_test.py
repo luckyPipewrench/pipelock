@@ -116,7 +116,10 @@ class WorkflowPackagingTest(unittest.TestCase):
         )
         self.assertEqual(" ".join(review["if"].split()), expected)
         self.assertEqual(review["with"]["pr_number"], "${{ github.event.issue.number }}")
-        self.assertNotIn("inputs.", review["with"]["review_mode"])
+        self.assertEqual(
+            " ".join(review["with"]["review_mode"].split()),
+            "${{ github.event.comment.body == '/review deep' && 'deep' || 'default' }}",
+        )
 
     def test_reusable_workflow_is_reachable_only_through_a_caller(self) -> None:
         # The caller is not the only way into the reviewer. Adding a trigger to

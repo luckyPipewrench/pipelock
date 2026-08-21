@@ -119,7 +119,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         config = yaml.safe_load(self.goreleaser)
         brews = config.get("brews", [])
         self.assertEqual(len(brews), 1)
-        self.assertIs(brews[0].get("skip_upload"), True)
+        self.assertTrue(brews[0].get("skip_upload") is True)
         self.assertEqual(brews[0].get("directory"), "Formula")
 
     def test_tap_token_reaches_only_the_protected_publish_step(self) -> None:
@@ -373,7 +373,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             lines.append(line)
         return lines
 
-    def test_promotion_is_separate_protected_and_signature_gated(self) -> None:
+    def test_promotion_is_separate_protected_and_signature_gated(self) -> None:  # noqa: PLR0915
         parsed = yaml.safe_load(WORKFLOW.read_text())
         build = parsed["jobs"]["release-build"]
         promote = parsed["jobs"]["release-promote"]
@@ -396,6 +396,7 @@ class TestReleaseArtifacts(unittest.TestCase):
 
         names = [name for name, _ in promote_runs]
         verify = names.index("Verify release manifest signature before promotion")
+        inputs_verified = names.index("Verify promotion image inputs")
         for public_write in (
             "Promote verified image manifests",
             "Publish Helm chart",
@@ -404,6 +405,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             "Update floating major tag for GitHub Action",
         ):
             self.assertLess(verify, names.index(public_write))
+            self.assertLess(inputs_verified, names.index(public_write))
 
         self.assertIn("actions/upload-artifact@043fb46d", self.workflow)
         self.assertIn("actions/download-artifact@3e5f45b", self.workflow)
@@ -416,7 +418,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         save = build["steps"][build_step_names.index("Save promotion inputs")]
         self.assertEqual(save["with"]["retention-days"], 7)
         self.assertEqual(save["with"]["if-no-files-found"], "error")
-        self.assertIs(save["with"]["overwrite"], True)
+        self.assertTrue(save["with"]["overwrite"] is True)
         self.assertEqual(
             [line.strip() for line in save["with"]["path"].split("\n") if line.strip()],
             [
@@ -438,6 +440,14 @@ class TestReleaseArtifacts(unittest.TestCase):
             self.assertIn(required, completeness)
 
         promote_step_names = [step.get("name", "") for step in promote["steps"]]
+        login = promote_step_names.index("Login to GHCR for promotion")
+        self.assertLess(login, promote_step_names.index("Promote verified image manifests"))
+        login_step = promote["steps"][login]
+        self.assertEqual(
+            login_step["uses"],
+            "docker/login-action@dbcb813823bdd20940b903addbd779551569679f",
+        )
+        self.assertEqual(login_step["with"]["registry"], "ghcr.io")
         download = promote_step_names.index("Download promotion inputs")
         for consumer in (
             "Verify release manifest signature before promotion",

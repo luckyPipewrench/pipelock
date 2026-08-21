@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -121,6 +122,35 @@ func TestFetchEndpoint_CEEPathFragmentRepeatedRoute(t *testing.T) {
 	}
 }
 
+// TestFetchEndpoint_CEEPathFragmentPositionShiftDocumentsCoverageBound proves
+// the explicit limitation of absolute-position reassembly. The two halves are
+// at positions one and two, so CEE must not invent a cross-position join.
+// Per-request DLP still scans each full URL, but neither incomplete half is a
+// match on its own.
+func TestFetchEndpoint_CEEPathFragmentPositionShiftDocumentsCoverageBound(t *testing.T) {
+	p, upstream := newPathFragmentProxy(t)
+	half1, half2 := pathSecretHalves()
+
+	if code := fetchPath(t, p, upstream.URL, "/a/"+half1); code == http.StatusForbidden {
+		t.Fatalf("first incomplete position-shift half blocked, got %d", code)
+	}
+	if code := fetchPath(t, p, upstream.URL, "/b/c/"+half2); code == http.StatusForbidden {
+		t.Fatalf("position-shifted half unexpectedly reassembled, got %d", code)
+	}
+}
+
+func TestFetchEndpoint_CEEPathDepthCapFailsClosedWithoutBufferState(t *testing.T) {
+	p, upstream := newPathFragmentProxy(t)
+	path := "/" + strings.Repeat("x/", scanner.MaxPathPositions+1)
+
+	if code := fetchPath(t, p, upstream.URL, path); code != http.StatusForbidden {
+		t.Fatalf("over-depth path = %d, want 403", code)
+	}
+	if got := p.fragmentBufferPtr.Load().TotalBufferBytes(); got != 0 {
+		t.Fatalf("over-depth path buffered %d bytes", got)
+	}
+}
+
 func TestPathSegments(t *testing.T) {
 	tests := []struct {
 		name string
@@ -137,7 +167,11 @@ func TestPathSegments(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := pathSegments(tt.u)
+			payload := pathSegments(tt.u)
+			var got [][]byte
+			if payload != nil {
+				got = payload.segments
+			}
 			if len(got) != len(tt.want) {
 				t.Fatalf("pathSegments = %q, want %q", got, tt.want)
 			}
@@ -147,5 +181,15 @@ func TestPathSegments(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPathSegments_DepthBoundStopsParsing(t *testing.T) {
+	payload := pathSegments(&url.URL{Path: "/" + strings.Repeat("x/", scanner.MaxPathPositions+1)})
+	if payload == nil || !payload.depthExceeded {
+		t.Fatal("over-depth path did not report a bounded-parser failure")
+	}
+	if got := len(payload.segments); got != scanner.MaxPathPositions {
+		t.Fatalf("retained path positions = %d, want %d", got, scanner.MaxPathPositions)
 	}
 }

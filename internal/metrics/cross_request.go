@@ -32,6 +32,11 @@ func (m *Metrics) registerCrossRequestMetrics(reg *prometheus.Registry) {
 		Name:      "cross_request_fragment_session_capacity_exceeded_total",
 		Help:      "Fragment reassembly requests denied because the session ledger is full.",
 	})
+	m.CrossRequestPathDepthExceeded = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "cross_request_path_depth_exceeded_total",
+		Help:      "URL requests denied because their path exceeds the CEE tracking depth cap.",
+	})
 	m.CrossRequestFragmentBytes = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "pipelock",
 		Name:      "cross_request_fragment_buffer_bytes",
@@ -39,7 +44,7 @@ func (m *Metrics) registerCrossRequestMetrics(reg *prometheus.Registry) {
 	})
 
 	reg.MustRegister(
-		m.CrossRequestEntropyExceeded, m.CrossRequestDLPMatch, m.CrossRequestFragmentCapacityExceeded, m.CrossRequestFragmentBytes,
+		m.CrossRequestEntropyExceeded, m.CrossRequestDLPMatch, m.CrossRequestFragmentCapacityExceeded, m.CrossRequestPathDepthExceeded, m.CrossRequestFragmentBytes,
 	)
 }
 
@@ -62,6 +67,13 @@ func (m *Metrics) RecordCrossRequestDLPMatch() {
 func (m *Metrics) RecordCrossRequestFragmentCapacityExceeded() {
 	if m != nil {
 		m.CrossRequestFragmentCapacityExceeded.Inc()
+	}
+}
+
+// RecordCrossRequestPathDepthExceeded increments the path-depth denial counter.
+func (m *Metrics) RecordCrossRequestPathDepthExceeded() {
+	if m != nil {
+		m.CrossRequestPathDepthExceeded.Inc()
 	}
 }
 

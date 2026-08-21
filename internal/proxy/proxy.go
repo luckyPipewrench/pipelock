@@ -2023,7 +2023,7 @@ type ceeAdmitRequest struct {
 	SessionKey       string
 	Outbound         []byte
 	KeyPayload       []byte
-	PathPayload      [][]byte
+	PathPayload      *ceePathPayload
 	TargetURL        string
 	Agent            string
 	ClientIP         string

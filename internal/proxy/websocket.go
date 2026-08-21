@@ -560,6 +560,67 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// CEE handshake admission: the WebSocket target path is outbound data just
+	// like a fetch or forward-proxy path. Frames are handled below after the
+	// upgrade; this pre-upgrade check catches a secret split across two target
+	// URLs before the second upstream handshake is dialed.
+	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
+		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), PathPayload: pathSegments(parsed),
+		TargetURL: targetURL, Agent: agent, ClientIP: clientIP, RequestID: requestID, IncludeFragments: true,
+	})
+	if ceeAdmission.Active {
+		ceeRes := ceeAdmission.Result
+		ceeKey := ceeSessionKey(agent, clientIP, id.Auth)
+		ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
+			Result: ceeRes, Sessions: ceeAdmission.Sessions, SessionKey: ceeKey,
+			AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: log, Metrics: p.metrics,
+			ClientIP: clientIP, RequestID: requestID,
+		})
+
+		if ceeRes.Blocked {
+			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, "cross_request", ceeRes.Reason, clientIP, requestID)
+			p.metrics.RecordWSBlocked()
+			emitWebSocketReceipt(receipt.EmitOpts{
+				ActionID:   receipt.NewActionID(),
+				Verdict:    config.ActionBlock,
+				Layer:      "cross_request",
+				PolicyHash: ceeAdmission.PolicyHash,
+				Pattern:    ceeRes.Reason,
+				Transport:  TransportWS,
+				Method:     "WS",
+				Target:     targetURL,
+				RequestID:  requestID,
+				Agent:      agent,
+			})
+			writeBlockedError(w,
+				blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+				"WebSocket blocked: "+ceeRes.Reason, http.StatusForbidden)
+			return
+		}
+
+		if ceeBlockAll {
+			level := recEscalationLevel(ceeRec)
+			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: ceeKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
+			p.metrics.RecordWSBlocked()
+			emitWebSocketReceipt(receipt.EmitOpts{
+				ActionID:   receipt.NewActionID(),
+				Verdict:    config.ActionBlock,
+				Layer:      adaptiveSessionDeny,
+				PolicyHash: ceeAdmission.PolicyHash,
+				Pattern:    "session escalation level " + session.EscalationLabel(level),
+				Transport:  TransportWS,
+				Method:     "WS",
+				Target:     targetURL,
+				RequestID:  requestID,
+				Agent:      agent,
+			})
+			writeBlockedError(w,
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
+				"WebSocket "+adaptiveBlockedReason, http.StatusForbidden)
+			return
+		}
+	}
+
 	// request_policy runs before the contract gate so a contract allow can
 	// never suppress an operation-policy block. The upgrade carries no
 	// operation body, so body-predicate (GraphQL / discriminator) rules defer

@@ -1550,6 +1550,22 @@ func TestRecordCrossRequestFragmentCapacityExceeded(t *testing.T) {
 	nilMetrics.RecordCrossRequestFragmentCapacityExceeded()
 }
 
+func TestRecordCrossRequestPathDepthExceeded(t *testing.T) {
+	m := New()
+	m.RecordCrossRequestPathDepthExceeded()
+	m.RecordCrossRequestPathDepthExceeded()
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "pipelock_cross_request_path_depth_exceeded_total 2") {
+		t.Fatalf("expected path-depth denial count 2:\n%s", rec.Body.String())
+	}
+
+	var nilMetrics *Metrics
+	nilMetrics.RecordCrossRequestPathDepthExceeded()
+}
+
 func TestSetCrossRequestFragmentBytes(t *testing.T) {
 	m := New()
 	m.SetCrossRequestFragmentBytes(42.0)

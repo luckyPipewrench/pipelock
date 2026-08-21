@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,6 +316,19 @@ func setupWSProxyDefaultWithCaptureAndProxy(t *testing.T, cfgMod func(*config.Co
 // when the proxy relays frames without per-message deflate negotiation.
 func dialWSConn(proxyAddr, backendAddr string) (net.Conn, error) {
 	return dialWSConnWithHeader(proxyAddr, backendAddr, nil)
+}
+
+func dialWSConnToTarget(proxyAddr, targetURL string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := fmt.Sprintf("ws://%s/ws?url=%s", proxyAddr, url.QueryEscape(targetURL))
+	dialer := ws.Dialer{Extensions: nil}
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 func dialWSConnWithHeader(proxyAddr, backendAddr string, header http.Header) (net.Conn, error) {
@@ -4062,6 +4076,35 @@ func TestWSProxyCEEEntropyBlocked(t *testing.T) {
 	// Must not block on the first message - proves accumulation, not single-frame blocking.
 	if blockedAt == 0 {
 		t.Fatalf("CEE blocked on first message (budget 100 bits should require multiple frames)")
+	}
+}
+
+func TestWebSocketHandshake_CEEPathFragmentsBlockSecondUpgrade(t *testing.T) {
+	backendAddr, handshakes, _, _ := websocketBoundaryBackend(t)
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = config.ActionBlock
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+		cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+		// Defaults() does not normalize these values. A zero cap would silently
+		// trim every fragment and make this handler-level regression vacuous.
+		cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536
+		cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+	})
+	defer proxyCleanup()
+
+	half1, half2 := pathSecretHalves()
+	first, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half1)
+	if err != nil {
+		t.Fatalf("first incomplete handshake failed: %v", err)
+	}
+	defer first.Close() //nolint:errcheck // test
+
+	if _, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half2); err == nil {
+		t.Fatal("second path fragment completed a WebSocket upgrade")
+	}
+	if got := handshakes.Load(); got != 1 {
+		t.Fatalf("upstream handshakes = %d, want only the first incomplete handshake", got)
 	}
 }
 

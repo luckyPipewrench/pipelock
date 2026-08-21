@@ -715,7 +715,7 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	et.Record(key, []byte("high-entropy-payload-for-testing"))
 	fb.Append(key, []byte("fragment-data"))
 	fb.Append(key+"|keys", []byte("keys-data"))
-	fb.Append(key+"|path", []byte("path-data"))
+	fb.AppendPathSegments(key+"|path", [][]byte{[]byte("upload"), []byte("path-data")})
 
 	if et.CurrentUsage(key) == 0 {
 		t.Fatal("expected non-zero entropy before reset")

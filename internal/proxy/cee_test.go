@@ -1229,6 +1229,47 @@ func TestReload_CEEPreservesStateAndAppliesLimits(t *testing.T) {
 	}
 }
 
+func TestReload_CEEPathPositionStatePersistsAndAppliesLimits(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 32
+	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	buffer := p.FragmentBufferPtr().Load()
+	const pathKey = "path-session|path"
+	buffer.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("one")})
+
+	unrelated := cfg.Clone()
+	unrelated.KillSwitch.Message = "preserve path CEE history"
+	if ok := p.Reload(unrelated, scanner.MustNew(unrelated)); !ok {
+		t.Fatal("unrelated reload failed")
+	}
+	if p.FragmentBufferPtr().Load() != buffer {
+		t.Fatal("unrelated reload replaced path CEE state")
+	}
+	buffer.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("two")})
+	if got, want := buffer.TotalBufferBytes(), len("uploadonetwo"); got != want {
+		t.Fatalf("reload lost path position state: buffered %d bytes, want %d", got, want)
+	}
+
+	tuned := unrelated.Clone()
+	tuned.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 8
+	if ok := p.Reload(tuned, scanner.MustNew(tuned)); !ok {
+		t.Fatal("path CEE limit reload failed")
+	}
+	if retained := buffer.TotalBufferBytes(); retained > 8 {
+		t.Fatalf("path CEE retained %d bytes after limit reload, want at most 8", retained)
+	}
+}
+
 func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -1553,11 +1594,13 @@ func TestResetCEEState(t *testing.T) {
 	ip := "10.0.0.1"
 	key := CeeSessionKey(agent, ip)
 	keysKey := key + "|keys"
+	pathKey := key + ceeStreamPathSuffix
 
 	// Build up state.
 	et.Record(key, []byte("high-entropy-payload-abcdefghijklmnop"))
 	fb.Append(key, []byte("fragment-a"))
 	fb.Append(keysKey, []byte("fragment-b"))
+	fb.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("path-data")})
 
 	if et.CurrentUsage(key) == 0 {
 		t.Fatal("expected non-zero entropy before reset")
@@ -1568,14 +1611,21 @@ func TestResetCEEState(t *testing.T) {
 	if et.CurrentUsage(key) != 0 {
 		t.Error("entropy should be cleared after reset")
 	}
+	fb.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("IOSFODNN7EXAMPLE")})
+	sc := scanner.MustNew(config.Defaults())
+	defer sc.Close()
+	if matches := fb.ScanPathForSecrets(t.Context(), pathKey, sc); len(matches) != 0 {
+		t.Errorf("reset retained path-position fragments: got %d cross-request matches", len(matches))
+	}
 
 	// Verify fragment buffer is cleared: append a partial secret suffix after
 	// reset. If old fragments were still present, concatenation with the old
 	// prefix could produce a match. An empty buffer + this suffix alone cannot.
 	fb.Append(key, []byte("OSFODNN7EXAMPLE"))
 	totalAfter := fb.TotalBufferBytes()
-	// Only the new 15-byte append should be present, not the old data.
-	if totalAfter > len("OSFODNN7EXAMPLE") {
+	// Only post-reset data should be present: the generic suffix plus the
+	// position-aware path's static route and suffix.
+	if totalAfter > len("OSFODNN7EXAMPLE")+len("upload")+len("IOSFODNN7EXAMPLE") {
 		t.Errorf("fragment buffer should be cleared; total bytes %d suggests old data remains", totalAfter)
 	}
 }

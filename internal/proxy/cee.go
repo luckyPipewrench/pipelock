@@ -148,6 +148,14 @@ const (
 
 var ceeFragmentStreamSuffixes = []string{ceeStreamKeysSuffix, ceeStreamPathSuffix}
 
+// ceePathPayload carries parsed path segments plus the bounded-parser result.
+// A path deeper than scanner.MaxPathPositions must be denied before forwarding:
+// silently ignoring the tail would let it bypass cross-request inspection.
+type ceePathPayload struct {
+	segments      [][]byte
+	depthExceeded bool
+}
+
 // maxCEEBodyRead limits the body bytes read for CEE payload extraction.
 // Larger bodies are unlikely to be fragment-based exfiltration attempts.
 const maxCEEBodyRead = 65536 // 64KB
@@ -255,11 +263,14 @@ func urlPayload(u *url.URL) []byte {
 }
 
 // pathSegments splits a URL path into decoded, non-empty segments in wire
-// order. These feed a dedicated CEE fragment stream (see
-// FragmentBuffer.AppendNovelSegments), which suppresses segments already seen
-// in the session so a repeated static route cannot break the contiguity of a
-// secret split across request paths, nor exhaust the session byte cap.
-func pathSegments(u *url.URL) [][]byte {
+// order. It stops after scanner.MaxPathPositions segments without allocating a
+// slice for the remainder. The returned depth flag makes the CEE admission
+// fail closed rather than silently leaving a secret-bearing tail uninspected.
+//
+// CEE reassembles only equal absolute positions across requests. A fragment
+// that shifts from one position to another is deliberately not joined: there
+// is no route-independent ordering proof that it belongs in the same stream.
+func pathSegments(u *url.URL) *ceePathPayload {
 	if u == nil {
 		return nil
 	}
@@ -272,14 +283,27 @@ func pathSegments(u *url.URL) [][]byte {
 	if raw == "" || raw == "/" {
 		return nil
 	}
-	var segs [][]byte
-	for _, part := range strings.Split(raw, "/") {
+	payload := &ceePathPayload{}
+	for raw != "" {
+		part := raw
+		if slash := strings.IndexByte(raw, '/'); slash >= 0 {
+			part, raw = raw[:slash], raw[slash+1:]
+		} else {
+			raw = ""
+		}
 		if part == "" {
 			continue
 		}
-		segs = append(segs, []byte(part))
+		if len(payload.segments) == scanner.MaxPathPositions {
+			payload.depthExceeded = true
+			break
+		}
+		payload.segments = append(payload.segments, []byte(part))
 	}
-	return segs
+	if len(payload.segments) == 0 && !payload.depthExceeded {
+		return nil
+	}
+	return payload
 }
 
 // extractOutboundPayload extracts the outbound data visible to the proxy for
@@ -366,11 +390,13 @@ type ceeResult struct {
 // indicating whether the request should be blocked. Callers are responsible for
 // writing the HTTP response and recording metrics/signals based on the result.
 //
-// Two fragment streams are scanned independently:
+// Three fragment streams are scanned independently:
 //   - outbound (values + bare tokens + body): reconstructs secrets split
 //     across parameter values or request bodies
 //   - keyPayload (query parameter names only): reconstructs secrets split across
 //     parameter names (e.g. ?AKIA=1 then ?IOSFODNN7EXAMPLE=2)
+//   - pathPayload (absolute URL path positions): reconstructs path fragments
+//     without repeated static route text interrupting the dynamic position
 //
 // Parameters:
 //   - sessionKey: the session identity from CeeSessionKey()
@@ -387,7 +413,7 @@ func ceeAdmit(
 	ctx context.Context,
 	sessionKey string,
 	outbound, keyPayload []byte,
-	pathPayload [][]byte,
+	pathPayload *ceePathPayload,
 	targetURL, agent, clientIP, requestID string,
 	ceeCfg config.CrossRequestDetection,
 	et *scanner.EntropyTracker,
@@ -396,7 +422,7 @@ func ceeAdmit(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 ) ceeResult {
-	if len(outbound) == 0 && len(keyPayload) == 0 && len(pathPayload) == 0 {
+	if len(outbound) == 0 && len(keyPayload) == 0 && (pathPayload == nil || (len(pathPayload.segments) == 0 && !pathPayload.depthExceeded)) {
 		return ceeResult{}
 	}
 
@@ -429,7 +455,7 @@ func ceeAdmit(
 		}
 	}
 
-	// Fragment reassembly DLP check (two independent streams).
+	// Fragment reassembly DLP check (three independent streams).
 	if fb != nil && ceeCfg.FragmentReassembly.Enabled {
 		// Stream 1: values + bare tokens + body.
 		if res := ceeFragmentScan(ctx, sessionKey, outbound, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
@@ -455,11 +481,9 @@ func ceeAdmit(
 			}
 		}
 
-		// Stream 3: URL path segments (separate buffer, catches secrets split
-		// across request paths like /upload/AKIA... then /upload/IOSF...).
-		// Novel-segment appends keep the repeated route text from breaking
-		// contiguity and from consuming the session byte cap.
-		if len(pathPayload) > 0 {
+		// Stream 3: URL path positions. Static route positions contribute once;
+		// a position that varies keeps every value in arrival order.
+		if pathPayload != nil && (len(pathPayload.segments) > 0 || pathPayload.depthExceeded) {
 			pathSessionKey := sessionKey + ceeStreamPathSuffix
 			if res := ceeFragmentScanSegments(ctx, pathSessionKey, pathPayload, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
 				result.FragmentHit = true
@@ -492,16 +516,16 @@ func ceeFragmentScan(
 		return nil
 	}
 	return ceeFragmentEvaluate(ctx, bufferKey, fb.Append(bufferKey, data),
-		targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m)
+		false, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m)
 }
 
-// ceeFragmentScanSegments is ceeFragmentScan for a segmented stream: only
-// segments the session has not already buffered are appended, so repeated
-// static text neither interrupts a reassembled secret nor fills the buffer.
+// ceeFragmentScanSegments is ceeFragmentScan for a position-aware path stream.
+// Static positions contribute once; changing positions retain every later
+// value, including repeats, so priming cannot suppress a completing suffix.
 func ceeFragmentScanSegments(
 	ctx context.Context,
 	bufferKey string,
-	segments [][]byte,
+	payload *ceePathPayload,
 	targetURL, agent, clientIP, requestID string,
 	ceeCfg config.CrossRequestDetection,
 	fb *scanner.FragmentBuffer,
@@ -509,11 +533,17 @@ func ceeFragmentScanSegments(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 ) *ceeResult {
-	if len(segments) == 0 {
+	if payload == nil {
 		return nil
 	}
-	return ceeFragmentEvaluate(ctx, bufferKey, fb.AppendNovelSegments(bufferKey, segments),
-		targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m)
+	appendResult := scanner.FragmentAppendResult{}
+	if payload.depthExceeded {
+		appendResult.PathDepthExceeded = true
+	} else {
+		appendResult = fb.AppendPathSegments(bufferKey, payload.segments)
+	}
+	return ceeFragmentEvaluate(ctx, bufferKey, appendResult,
+		true, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m)
 }
 
 // ceeFragmentEvaluate turns an append outcome into a CEE result: it fails
@@ -523,6 +553,7 @@ func ceeFragmentEvaluate(
 	ctx context.Context,
 	bufferKey string,
 	appendResult scanner.FragmentAppendResult,
+	pathStream bool,
 	targetURL, agent, clientIP, requestID string,
 	ceeCfg config.CrossRequestDetection,
 	fb *scanner.FragmentBuffer,
@@ -530,6 +561,17 @@ func ceeFragmentEvaluate(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 ) *ceeResult {
+	if appendResult.PathDepthExceeded {
+		m.RecordCrossRequestPathDepthExceeded()
+		detail := fmt.Sprintf("URL path exceeds CEE depth cap (%d segments); request cannot be safely inspected", scanner.MaxPathPositions)
+		actx := newHTTPAuditContext(logger, "CEE", targetURL, clientIP, requestID, agent)
+		logger.LogBlocked(actx, "cross_request_path_depth", detail)
+		return &ceeResult{
+			Blocked:     true,
+			FragmentHit: true,
+			Reason:      detail,
+		}
+	}
 	if appendResult.CapacityExceeded {
 		m.RecordCrossRequestFragmentCapacityExceeded()
 		detail := "fragment reassembly session capacity exhausted; request cannot be safely inspected"
@@ -542,6 +584,9 @@ func ceeFragmentEvaluate(
 		}
 	}
 	matches := fb.ScanForSecrets(ctx, bufferKey, sc)
+	if pathStream {
+		matches = fb.ScanPathForSecrets(ctx, bufferKey, sc)
+	}
 	if len(matches) == 0 {
 		return nil
 	}

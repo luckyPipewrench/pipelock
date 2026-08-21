@@ -299,12 +299,8 @@ func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []Respon
 
 type coreResponseSuppressor func([]ResponseMatch) []ResponseMatch
 
-func filterCoreResponsePass(content, educationalContent string, matches []ResponseMatch, viewLabel string, suppress coreResponseSuppressor) []ResponseMatch {
+func filterCoreResponsePass(content, _ string, matches []ResponseMatch, viewLabel string, suppress coreResponseSuppressor) []ResponseMatch {
 	matches = filterDefensiveCredentialSolicitationMatches(content, matches)
-	matches = filterEducationalQuotedResponseMatches(content, matches)
-	if educationalContent != "" && educationalContent != content && hasIdentityByteOffsetMap(educationalContent, content) {
-		matches = filterCoreEducationalContent(educationalContent, matches)
-	}
 	matches = withResponseSpans(matches, viewLabel)
 	if suppress != nil {
 		matches = suppress(matches)
@@ -322,21 +318,6 @@ func hasIdentityByteOffsetMap(source, transformed string) bool {
 		}
 	}
 	return true
-}
-
-func filterCoreEducationalContent(content string, matches []ResponseMatch) []ResponseMatch {
-	filtered := matches[:0]
-	for _, match := range matches {
-		adjusted := match
-		end := adjusted.Position + adjusted.matchLength
-		if adjusted.Position >= 0 && end <= len(content) && adjusted.Position < end {
-			adjusted.MatchText = content[adjusted.Position:end]
-		}
-		if len(filterEducationalQuotedResponseMatches(content, []ResponseMatch{adjusted})) > 0 {
-			filtered = append(filtered, match)
-		}
-	}
-	return filtered
 }
 
 func (s *Scanner) scanCoreResponse(ctx context.Context, content string, suppress coreResponseSuppressor) responseMatchSet {

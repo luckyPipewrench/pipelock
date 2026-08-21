@@ -401,7 +401,7 @@ func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled b
 		return false
 	}
 	for _, match := range matches {
-		if match.Warn || match.ProviderOpaque {
+		if match.Warn {
 			continue
 		}
 		if strings.EqualFold(match.Severity, config.SeverityCritical) {
@@ -416,7 +416,7 @@ func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Confi
 		return false
 	}
 	for _, match := range matches {
-		if match.Warn || match.ProviderOpaque {
+		if match.Warn {
 			continue
 		}
 		if !strings.EqualFold(match.Severity, config.SeverityCritical) {
@@ -1127,10 +1127,6 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 func requestBodyDLPAction(matches []scanner.TextDLPMatch, defaultAction string, patternActions map[string]string) string {
 	action := ""
 	for _, match := range matches {
-		if match.ProviderOpaque {
-			action = config.StrongestAction(action, config.ActionWarn)
-			continue
-		}
 		matchAction := defaultAction
 		if override := patternActions[match.PatternName]; override != "" && !config.IsCoreDLPPatternName(match.PatternName) {
 			matchAction = override

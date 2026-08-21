@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"time"
@@ -28,12 +29,44 @@ type sessionBuffer struct {
 	totalBytes int
 }
 
+// MaxPathPositions is the largest URL path depth that CEE tracks. It bounds
+// attacker-controlled position cardinality while leaving ample room for normal
+// application routes. A path that exceeds this bound is not safely
+// reconstructable and is reported to the caller as a capacity-style failure.
+const MaxPathPositions = 64
+
+// pathPositionBuffer holds one zero-based URL path position. The first value
+// is retained so a position that remains static adds only one fragment. Once a
+// position changes, every subsequent value is retained in arrival order.
+//
+// This is deliberately position-scoped rather than value-scoped. A value sent
+// early at a position cannot suppress its later occurrence after that position
+// has become dynamic.
+type pathPositionBuffer struct {
+	initial    []byte
+	varied     bool
+	fragments  []fragment
+	totalBytes int
+}
+
+// pathSessionBuffer groups every tracked path position for one logical CEE
+// session. It is one global FragmentBuffer session regardless of path depth,
+// and its positions share the ordinary per-session byte cap.
+type pathSessionBuffer struct {
+	positions  map[int]*pathPositionBuffer
+	totalBytes int
+}
+
 // FragmentAppendResult describes whether a fragment became representable in the
 // cross-request session ledger.
 type FragmentAppendResult struct {
 	// CapacityExceeded means a new session could not be admitted without
 	// discarding another session's accumulated detection state.
 	CapacityExceeded bool
+	// PathDepthExceeded means a URL carried more than MaxPathPositions
+	// non-empty segments. The caller must not treat the request as fully
+	// inspected: untracked positions could otherwise carry split fragments.
+	PathDepthExceeded bool
 }
 
 // FragmentBuffer accumulates outbound payloads per session in rolling buffers.
@@ -41,23 +74,25 @@ type FragmentAppendResult struct {
 // DLP patterns synchronously. This guarantees pre-forward detection: a request
 // that completes a split secret is blocked before egress. Thread-safe.
 type FragmentBuffer struct {
-	mu          sync.Mutex
-	maxBytes    int // per-session byte cap
-	maxSessions int // global session count cap (new sessions are denied at capacity)
-	windowSecs  int // fragment retention window in seconds
-	sessions    map[string]*sessionBuffer
-	lastCleanup time.Time
+	mu           sync.Mutex
+	maxBytes     int // per-session byte cap
+	maxSessions  int // global session count cap (new sessions are denied at capacity)
+	windowSecs   int // fragment retention window in seconds
+	sessions     map[string]*sessionBuffer
+	pathSessions map[string]*pathSessionBuffer
+	lastCleanup  time.Time
 }
 
 // NewFragmentBuffer creates a fragment buffer with the given per-session byte cap,
 // global session cap, and fragment retention window.
 func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *FragmentBuffer {
 	fb := &FragmentBuffer{
-		maxBytes:    maxBytesPerSession,
-		maxSessions: maxSessions,
-		windowSecs:  windowSecs,
-		sessions:    make(map[string]*sessionBuffer),
-		lastCleanup: time.Now(),
+		maxBytes:     maxBytesPerSession,
+		maxSessions:  maxSessions,
+		windowSecs:   windowSecs,
+		sessions:     make(map[string]*sessionBuffer),
+		pathSessions: make(map[string]*pathSessionBuffer),
+		lastCleanup:  time.Now(),
 	}
 	return fb
 }
@@ -82,7 +117,7 @@ func (fb *FragmentBuffer) appendLocked(sessionKey string, payload []byte) Fragme
 		// Check global session cap before creating a new session. Do not evict
 		// another session: a later fragment could otherwise complete a secret
 		// in an empty bucket and pass uninspected.
-		if len(fb.sessions) >= fb.maxSessions {
+		if fb.sessionCountLocked() >= fb.maxSessions {
 			return FragmentAppendResult{CapacityExceeded: true}
 		}
 		sb = &sessionBuffer{}
@@ -115,6 +150,10 @@ func (fb *FragmentBuffer) appendLocked(sessionKey string, payload []byte) Fragme
 	return FragmentAppendResult{}
 }
 
+func (fb *FragmentBuffer) sessionCountLocked() int {
+	return len(fb.sessions) + len(fb.pathSessions)
+}
+
 // minFragmentsForMatch is the minimum number of in-window fragments a session
 // must hold to be a candidate cross-request secret. A single fragment is a
 // one-request secret handled by body DLP.
@@ -133,36 +172,143 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 	fb.mu.Lock()
 	fb.maybeCleanupLocked(time.Now())
 	sb, exists := fb.sessions[sessionKey]
-	if !exists || len(sb.fragments) == 0 {
+	if !exists {
 		fb.mu.Unlock()
 		return nil
 	}
+	fragments := fb.activeFragmentsLocked(sb.fragments)
+	fb.mu.Unlock()
+	return scanFragmentsForSecrets(ctx, sc, fragments)
+}
 
-	// Need at least 2 non-expired fragments for a cross-request match.
-	// A single fragment means the secret is in one request - body DLP handles it.
-	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
-	activeCount := 0
-	for _, f := range sb.fragments {
-		if !f.at.Before(cutoff) {
-			activeCount++
+// AppendPathSegments records a URL path as bounded, position-aware CEE state.
+// Static positions contribute their first value only. Once a position has ever
+// varied, every value at that position is appended in order, including exact
+// repeats. Therefore a suffix-first, prefix, suffix replay produces the stream
+// suffix-prefix-suffix and cannot prime away the completing suffix.
+//
+// Path state shares one logical buffer session and one byte cap across all
+// positions. A path depth cannot consume the global session cap one position at
+// a time.
+func (fb *FragmentBuffer) AppendPathSegments(sessionKey string, segments [][]byte) FragmentAppendResult {
+	if fb == nil || len(segments) == 0 {
+		return FragmentAppendResult{}
+	}
+	if len(segments) > MaxPathPositions {
+		return FragmentAppendResult{PathDepthExceeded: true}
+	}
+	hasSegment := false
+	for _, segment := range segments {
+		if len(segment) > 0 {
+			hasSegment = true
+			break
 		}
 	}
-	if activeCount < minFragmentsForMatch {
+	if !hasSegment {
+		return FragmentAppendResult{}
+	}
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.maybeCleanupLocked(time.Now())
+
+	ps, exists := fb.pathSessions[sessionKey]
+	if !exists {
+		if fb.sessionCountLocked() >= fb.maxSessions {
+			return FragmentAppendResult{CapacityExceeded: true}
+		}
+		ps = &pathSessionBuffer{positions: make(map[int]*pathPositionBuffer)}
+		fb.pathSessions[sessionKey] = ps
+	}
+
+	for position, segment := range segments {
+		if len(segment) == 0 {
+			continue
+		}
+		pb, exists := ps.positions[position]
+		if !exists {
+			copied := append([]byte(nil), segment...)
+			pb = &pathPositionBuffer{initial: copied}
+			ps.positions[position] = pb
+			fb.appendPathFragmentLocked(ps, pb, segment)
+			continue
+		}
+
+		if !pb.varied {
+			if bytes.Equal(pb.initial, segment) {
+				// This position has still never varied. Repeating its fixed route
+				// text carries no new cross-request ordering information.
+				continue
+			}
+			pb.varied = true
+		}
+		// Once varied, never suppress by value: a duplicate may be the final
+		// half of a split secret after an attacker primed it earlier.
+		fb.appendPathFragmentLocked(ps, pb, segment)
+	}
+	fb.enforcePathMaxBytesLocked(ps)
+	return FragmentAppendResult{}
+}
+
+func (fb *FragmentBuffer) appendPathFragmentLocked(ps *pathSessionBuffer, pb *pathPositionBuffer, payload []byte) {
+	copied := append([]byte(nil), payload...)
+	pb.fragments = append(pb.fragments, fragment{data: copied, at: time.Now()})
+	pb.totalBytes += len(copied)
+	ps.totalBytes += len(copied)
+}
+
+// ScanPathForSecrets scans every path position independently. Combining
+// different positions would reintroduce static route text and would falsely
+// make a single-request secret appear to span requests.
+func (fb *FragmentBuffer) ScanPathForSecrets(ctx context.Context, sessionKey string, sc *Scanner) []DLPMatch {
+	fb.mu.Lock()
+	fb.maybeCleanupLocked(time.Now())
+	ps, exists := fb.pathSessions[sessionKey]
+	if !exists {
 		fb.mu.Unlock()
 		return nil
 	}
 
-	// Concatenate all fragments under lock, then release lock for DLP scan.
-	buf := fb.concatenateFragments(sb)
-
-	// Collect each individual fragment's data for dedup scanning.
-	var individualFragments [][]byte
-	for _, f := range sb.fragments {
-		if !f.at.Before(cutoff) {
-			individualFragments = append(individualFragments, f.data)
+	streams := make([][]fragment, 0, len(ps.positions))
+	for _, pb := range ps.positions {
+		if fragments := fb.activeFragmentsLocked(pb.fragments); len(fragments) >= minFragmentsForMatch {
+			streams = append(streams, fragments)
 		}
 	}
 	fb.mu.Unlock()
+
+	var matches []DLPMatch
+	for _, fragments := range streams {
+		matches = append(matches, scanFragmentsForSecrets(ctx, sc, fragments)...)
+	}
+	return matches
+}
+
+func (fb *FragmentBuffer) activeFragmentsLocked(fragments []fragment) []fragment {
+	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
+	active := make([]fragment, 0, len(fragments))
+	for _, f := range fragments {
+		if !f.at.Before(cutoff) {
+			active = append(active, f)
+		}
+	}
+	return active
+}
+
+func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragment) []DLPMatch {
+	if len(fragments) < minFragmentsForMatch {
+		return nil
+	}
+
+	buf := make([]byte, 0)
+	for _, f := range fragments {
+		buf = append(buf, f.data...)
+	}
+
+	var individualFragments [][]byte
+	for _, f := range fragments {
+		individualFragments = append(individualFragments, f.data)
+	}
 
 	// Scan the concatenated buffer.
 	result := sc.ScanTextForDLP(ctx, string(buf))
@@ -215,6 +361,9 @@ func (fb *FragmentBuffer) TotalBufferBytes() int {
 	for _, sb := range fb.sessions {
 		total += sb.totalBytes
 	}
+	for _, ps := range fb.pathSessions {
+		total += ps.totalBytes
+	}
 	return total
 }
 
@@ -238,17 +387,65 @@ func (fb *FragmentBuffer) UpdateConfig(maxBytesPerSession, windowSecs int) {
 	now := time.Now()
 	fb.cleanupLocked(now)
 	for _, sb := range fb.sessions {
-		for sb.totalBytes > fb.maxBytes && len(sb.fragments) > 1 {
-			sb.totalBytes -= len(sb.fragments[0].data)
-			sb.fragments = sb.fragments[1:]
-		}
-		if sb.totalBytes > fb.maxBytes && len(sb.fragments) == 1 {
-			last := &sb.fragments[0]
-			last.data = last.data[len(last.data)-fb.maxBytes:]
-			sb.totalBytes = fb.maxBytes
-		}
+		fb.enforceMaxBytesLocked(sb)
+	}
+	for _, ps := range fb.pathSessions {
+		fb.enforcePathMaxBytesLocked(ps)
 	}
 	fb.lastCleanup = now
+}
+
+func (fb *FragmentBuffer) enforceMaxBytesLocked(sb *sessionBuffer) {
+	for sb.totalBytes > fb.maxBytes && len(sb.fragments) > 1 {
+		sb.totalBytes -= len(sb.fragments[0].data)
+		sb.fragments = sb.fragments[1:]
+	}
+	if sb.totalBytes > fb.maxBytes && len(sb.fragments) == 1 {
+		last := &sb.fragments[0]
+		last.data = last.data[len(last.data)-fb.maxBytes:]
+		sb.totalBytes = fb.maxBytes
+	}
+}
+
+// enforcePathMaxBytesLocked applies the ordinary logical-session cap across
+// every path position. It evicts the globally oldest retained position
+// fragment, rather than allowing each position to claim a separate 64 KiB
+// budget. MaxPathPositions keeps this bounded scan small.
+func (fb *FragmentBuffer) enforcePathMaxBytesLocked(ps *pathSessionBuffer) {
+	for ps.totalBytes > fb.maxBytes {
+		var oldestPosition int
+		var oldest *pathPositionBuffer
+		var oldestAt time.Time
+		found := false
+		for position, pb := range ps.positions {
+			if len(pb.fragments) == 0 {
+				continue
+			}
+			candidate := pb.fragments[0]
+			if !found || candidate.at.Before(oldestAt) || (candidate.at.Equal(oldestAt) && position < oldestPosition) {
+				oldestPosition, oldest, oldestAt, found = position, pb, candidate.at, true
+			}
+		}
+		if !found {
+			return
+		}
+
+		overage := ps.totalBytes - fb.maxBytes
+		first := &oldest.fragments[0]
+		if len(first.data) <= overage {
+			removed := len(first.data)
+			oldest.fragments = oldest.fragments[1:]
+			oldest.totalBytes -= removed
+			ps.totalBytes -= removed
+			if len(oldest.fragments) == 0 {
+				delete(ps.positions, oldestPosition)
+			}
+			continue
+		}
+		first.data = first.data[overage:]
+		oldest.totalBytes -= overage
+		ps.totalBytes -= overage
+	}
 }
 
 // Delete removes all fragment state for the given session key.
@@ -256,6 +453,7 @@ func (fb *FragmentBuffer) Delete(key string) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	delete(fb.sessions, key)
+	delete(fb.pathSessions, key)
 }
 
 // Close retires all buffered fragments. It is safe to call more than once.
@@ -266,6 +464,7 @@ func (fb *FragmentBuffer) Close() {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.sessions = make(map[string]*sessionBuffer)
+	fb.pathSessions = make(map[string]*pathSessionBuffer)
 }
 
 // concatenateFragments builds a single byte slice from non-expired session
@@ -327,58 +526,23 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 			delete(fb.sessions, key)
 		}
 	}
-}
 
-// AppendNovelSegments appends only those segments that are not already present
-// in the session's live (non-expired) buffer, concatenated with no separator.
-//
-// This exists for URL path data. Appending a whole path on every request would
-// interleave static route text between the halves of a split secret
-// ("getAKIA...getIOSF...") so no DLP pattern can match it, and would consume
-// the per-session byte cap on traffic that carries no data. Suppressing
-// already-seen segments keeps a repeated static route to a single appearance
-// while novel segments (the attacker's payload halves) stay contiguous.
-//
-// Novelty is decided under the same lock as the append, so two concurrent
-// requests on one session cannot both observe a segment as unseen.
-func (fb *FragmentBuffer) AppendNovelSegments(sessionKey string, segments [][]byte) FragmentAppendResult {
-	if fb == nil || len(segments) == 0 {
-		return FragmentAppendResult{}
-	}
-	fb.mu.Lock()
-	defer fb.mu.Unlock()
-	fb.maybeCleanupLocked(time.Now())
-
-	seen := make(map[string]struct{})
-	if sb, ok := fb.sessions[sessionKey]; ok {
-		cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
-		for _, f := range sb.fragments {
-			if f.at.Before(cutoff) {
-				continue
+	for key, ps := range fb.pathSessions {
+		for position, pb := range ps.positions {
+			for len(pb.fragments) > 0 && pb.fragments[0].at.Before(cutoff) {
+				removed := len(pb.fragments[0].data)
+				pb.fragments = pb.fragments[1:]
+				pb.totalBytes -= removed
+				ps.totalBytes -= removed
 			}
-			seen[string(f.data)] = struct{}{}
+			if len(pb.fragments) == 0 {
+				// Once a position has no retained evidence, discard its stability
+				// classification as well. A later request starts a fresh window.
+				delete(ps.positions, position)
+			}
+		}
+		if len(ps.positions) == 0 {
+			delete(fb.pathSessions, key)
 		}
 	}
-
-	var result FragmentAppendResult
-	for _, seg := range segments {
-		if len(seg) == 0 {
-			continue
-		}
-		// Exact-match suppression only. Substring suppression would be a
-		// bypass: an attacker could first send a harmless segment containing
-		// the second half of a secret, so the real second half is discarded
-		// as "already seen" and the halves never become contiguous.
-		if _, dup := seen[string(seg)]; dup {
-			continue
-		}
-		seen[string(seg)] = struct{}{}
-		// Each segment is its own fragment so exact-match suppression can be
-		// decided against fragment boundaries on later requests.
-		if r := fb.appendLocked(sessionKey, seg); r.CapacityExceeded {
-			result.CapacityExceeded = true
-			return result
-		}
-	}
-	return result
 }

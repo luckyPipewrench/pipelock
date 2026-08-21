@@ -1713,6 +1713,59 @@ func TestScanRequestBody_ProviderOpaqueProvenanceNeverDowngradesDLP(t *testing.T
 	}
 }
 
+func TestProviderOpaqueRequestDLPConfiguredActions(t *testing.T) {
+	tests := []struct {
+		name           string
+		patternName    string
+		defaultAction  string
+		patternActions map[string]string
+		wantAction     string
+		wantHardBlock  bool
+	}{
+		{
+			name:          "default warn remains visible but critical core blocks",
+			patternName:   "GitHub Token",
+			defaultAction: config.ActionWarn,
+			wantAction:    config.ActionWarn,
+			wantHardBlock: true,
+		},
+		{
+			name:           "core pattern override cannot weaken block",
+			patternName:    "GitHub Token",
+			defaultAction:  config.ActionBlock,
+			patternActions: map[string]string{"GitHub Token": config.ActionWarn},
+			wantAction:     config.ActionBlock,
+			wantHardBlock:  true,
+		},
+		{
+			name:           "configured non-core warning remains operator controlled",
+			patternName:    testBodyDLPPatternName,
+			defaultAction:  config.ActionBlock,
+			patternActions: map[string]string{testBodyDLPPatternName: config.ActionWarn},
+			wantAction:     config.ActionWarn,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.RequestBodyScanning.Action = tt.defaultAction
+			cfg.RequestBodyScanning.PatternActions = tt.patternActions
+			matches := []scanner.TextDLPMatch{{
+				PatternName:    tt.patternName,
+				Severity:       config.SeverityCritical,
+				ProviderOpaque: true,
+			}}
+			if got := requestBodyDLPAction(matches, tt.defaultAction, tt.patternActions); got != tt.wantAction {
+				t.Fatalf("requestBodyDLPAction = %q, want %q", got, tt.wantAction)
+			}
+			if got := shouldHardBlockRequestDLP(matches, cfg); got != tt.wantHardBlock {
+				t.Fatalf("shouldHardBlockRequestDLP = %v, want %v", got, tt.wantHardBlock)
+			}
+		})
+	}
+}
+
 func TestTrustedProviderPathMatch(t *testing.T) {
 	t.Parallel()
 

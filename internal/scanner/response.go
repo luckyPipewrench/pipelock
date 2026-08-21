@@ -190,8 +190,6 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, s.matchResponsePatternsPreFiltered(leeted)), ViewLeetspeak))
-			if len(matches) > 0 {
-			}
 		}
 	}
 
@@ -201,8 +199,6 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
 		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching))
-		if len(matches) > 0 {
-		}
 	}
 
 	// Quinary: vowel-folded matching. Catches confusable-vowel attacks where
@@ -213,8 +209,6 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 		folded := normalize.FoldVowels(content)
 		if folded != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
-			if len(matches) > 0 {
-			}
 		}
 	}
 
@@ -225,8 +219,6 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	if len(matches) == 0 && hasEncodedRun(content) {
 		decodedSet := s.matchDecodedResponse(content)
 		matches = filterSuppressed(decodedSet.matches)
-		if len(matches) > 0 {
-		}
 	}
 
 	// Post-scan context check: if context expired during scanning, fail closed.

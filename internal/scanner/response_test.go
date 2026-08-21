@@ -323,30 +323,36 @@ validation and separation between instructions and data.`,
 }
 
 func TestScanResponse_EducationalFramingKeepsCoreMatch(t *testing.T) {
-	cfg := testResponseConfig()
-	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{
-		Name:  "Educational Marker",
-		Regex: `(?i)must-block-marker`,
-	})
-	s := MustNew(cfg)
+	s := MustNew(testResponseConfig())
 
 	content := `# Prompt Injection Defense
 
 A common attack pattern is: "ignore previous instructions". Defenders
 should scan for these patterns in incoming text.
 
-must-block-marker`
+`
 
 	result := s.ScanResponse(context.Background(), content)
 	if result.Clean {
-		t.Fatal("expected core and configured response scanners to run")
+		t.Fatal("expected core response scanner to retain the quoted directive")
 	}
-	var foundCore bool
-	for _, match := range result.Matches {
-		foundCore = foundCore || match.PatternName != "Educational Marker"
-	}
-	if !foundCore {
+	if len(result.Matches) == 0 || result.Matches[0].PatternName != "Prompt Injection" {
 		t.Fatalf("expected core prompt-injection match, got %+v", result.Matches)
+	}
+}
+
+func TestScanResponse_EducationalFramingKeepsConfiguredMatch(t *testing.T) {
+	cfg := testResponseConfig()
+	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{
+		Name:  "Educational Marker",
+		Regex: `(?i)must-block-marker`,
+	}}
+	s := MustNew(cfg)
+
+	content := `Prompt injection defense note. A common attack pattern is: "must-block-marker". Defenders should scan for these patterns.`
+	result := s.ScanResponse(context.Background(), content)
+	if result.Clean || len(result.Matches) != 1 || result.Matches[0].PatternName != "Educational Marker" {
+		t.Fatalf("expected configured educational marker match, got %+v", result.Matches)
 	}
 }
 

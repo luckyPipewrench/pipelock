@@ -172,9 +172,19 @@ jobs:
       - name: Install and verify customer receipt verifiers
         run: scripts/release-verifier-install-gate.sh --tag "$GITHUB_REF_NAME"
 
-  release:
+  release-build:
     needs: [release-tests, release-verifier-install]
     runs-on: ubuntu-latest
+    outputs:
+      pipelock_index: ${{ steps.platform-digests.outputs.pipelock_index }}
+      pipelock_init_index: ${{ steps.platform-digests.outputs.pipelock_init_index }}
+      license_service_index: ${{ steps.platform-digests.outputs.license_service_index }}
+      pipelock_amd64: ${{ steps.platform-digests.outputs.pipelock_amd64 }}
+      pipelock_arm64: ${{ steps.platform-digests.outputs.pipelock_arm64 }}
+      pipelock_init_amd64: ${{ steps.platform-digests.outputs.pipelock_init_amd64 }}
+      pipelock_init_arm64: ${{ steps.platform-digests.outputs.pipelock_init_arm64 }}
+      license_service_amd64: ${{ steps.platform-digests.outputs.license_service_amd64 }}
+      license_service_arm64: ${{ steps.platform-digests.outputs.license_service_arm64 }}
     permissions:
       contents: write
       packages: write
@@ -369,7 +379,6 @@ jobs:
         run: goreleaser release --clean --draft
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           GOVERSION: ${{ env.GOVERSION }}
           LICENSE_PUBLIC_KEY: ${{ secrets.LICENSE_PUBLIC_KEY }}
           RULES_KEYRING_HEX: ${{ secrets.RULES_KEYRING_HEX }}
@@ -732,12 +741,8 @@ jobs:
         with:
           version: v3.21.3
 
-      # A retry after publishing the chart must not fail halfway through the
-      # release. Compare a pre-existing chart with this run's packaged chart and
-      # skip its immutable upload only when their contents are identical.
-      - name: Package and verify Helm chart version
+      - name: Package Helm chart
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -747,118 +752,7 @@ jobs:
             echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
             exit 1
           }
-          echo "CHART_VERSION=$chart_version" >> "$GITHUB_ENV"
           helm package charts/pipelock --app-version "$app_version" --destination dist-chart
-          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
-          trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
-          existing_dir="$RUNNER_TEMP/published-chart-${chart_version}"
-          candidate_dir="$RUNNER_TEMP/candidate-chart-${chart_version}"
-          mkdir -p "$existing_dir"
-          if chart_lookup_output="$(helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" --destination "$existing_dir" 2>&1)"; then
-            mkdir -p "$candidate_dir"
-            tar -xzf "dist-chart/pipelock-${chart_version}.tgz" -C "$candidate_dir"
-            tar -xzf "$existing_dir/pipelock-${chart_version}.tgz" -C "$existing_dir"
-            diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock" || {
-              echo "::error::published chart ${chart_version} differs from this release; refusing to overwrite it"
-              exit 1
-            }
-            echo "CHART_ALREADY_PUBLISHED=true" >> "$GITHUB_ENV"
-            echo "Chart ${chart_version} already matches this release; skipping its immutable upload"
-          elif ! printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
-            echo "::error::could not determine whether chart ${chart_version} already exists; refusing image promotion"
-            exit 1
-          else
-            echo "CHART_ALREADY_PUBLISHED=false" >> "$GITHUB_ENV"
-          fi
-
-      # GoReleaser writes only staging tags, so an attestation failure leaves
-      # no consumer version or latest image manifest. Promote the verified index
-      # by digest. Version tags never overwrite an existing different digest;
-      # latest advances only for a newer stable release, never for a prerelease
-      # or an older-line backport.
-      - name: Promote verified image manifests
-        env:
-          TAG: ${{ github.ref_name }}
-          PIPELOCK_INDEX_DIGEST: ${{ steps.platform-digests.outputs.pipelock_index }}
-          PIPELOCK_INIT_INDEX_DIGEST: ${{ steps.platform-digests.outputs.pipelock_init_index }}
-          LICENSE_SERVICE_INDEX_DIGEST: ${{ steps.platform-digests.outputs.license_service_index }}
-          PIPELOCK_AMD64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_amd64 }}
-          PIPELOCK_ARM64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_arm64 }}
-          PIPELOCK_INIT_AMD64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_init_amd64 }}
-          PIPELOCK_INIT_ARM64_DIGEST: ${{ steps.platform-digests.outputs.pipelock_init_arm64 }}
-          LICENSE_SERVICE_AMD64_DIGEST: ${{ steps.platform-digests.outputs.license_service_amd64 }}
-          LICENSE_SERVICE_ARM64_DIGEST: ${{ steps.platform-digests.outputs.license_service_arm64 }}
-        run: |
-          set -euo pipefail
-          promote_image() {
-            local repository="$1"
-            local index_digest="$2"
-            local version="${TAG#v}"
-            local tags existing latest_digest newest_stable
-
-            tags="$(crane ls "$repository")" || {
-              echo "::error::could not list tags for ${repository}; refusing image promotion"
-              exit 1
-            }
-            if grep -Fxq "$version" <<<"$tags"; then
-              existing="$(crane digest "${repository}:${version}")" || {
-                echo "::error::could not resolve existing ${repository}:${version}"
-                exit 1
-              }
-              test "$existing" = "$index_digest" || {
-                echo "::error::${repository}:${version} already resolves to a different digest"
-                exit 1
-              }
-            else
-              crane copy --no-clobber "${repository}@${index_digest}" "${repository}:${version}"
-            fi
-
-            if [[ "$version" != *-* ]]; then
-              newest_stable="$(printf '%s\n%s\n' "$tags" "$version" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
-              if [[ "$newest_stable" = "$version" ]]; then
-                latest_digest="$(crane digest "${repository}:latest" 2>/dev/null || true)"
-                if [[ "$latest_digest" != "$index_digest" ]]; then
-                  crane copy "${repository}@${index_digest}" "${repository}:latest"
-                fi
-                test "$(crane digest "${repository}:latest")" = "$index_digest"
-              else
-                echo "Not moving ${repository}:latest for non-newer or prerelease version ${version}"
-              fi
-            else
-              echo "Not moving ${repository}:latest for prerelease version ${version}"
-            fi
-
-            test "$(crane digest "${repository}:${version}")" = "$index_digest"
-          }
-
-          promote_platform_image() {
-            local repository="$1"
-            local digest="$2"
-            local arch="$3"
-            local version="${TAG#v}"
-            local target="${repository}:${version}-${arch}"
-            local existing
-
-            if existing="$(crane digest "$target" 2>/dev/null)"; then
-              test "$existing" = "$digest" || {
-                echo "::error::${target} already resolves to a different digest"
-                exit 1
-              }
-            else
-              crane copy --no-clobber "${repository}@${digest}" "$target"
-            fi
-            test "$(crane digest "$target")" = "$digest"
-          }
-
-          promote_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_INDEX_DIGEST"
-          promote_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_INDEX_DIGEST"
-          promote_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_INDEX_DIGEST"
-          promote_platform_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_AMD64_DIGEST" amd64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_ARM64_DIGEST" arm64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_AMD64_DIGEST" amd64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_ARM64_DIGEST" arm64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_AMD64_DIGEST" amd64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_ARM64_DIGEST" arm64
 
       # Build the operator-facing bundle only after every child image has its
       # own SBOM and provenance proof. The bundle contains index digests because
@@ -896,6 +790,229 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" dist/release-images.json --clobber
 
+      # upload-artifact's if-no-files-found only fires when NOTHING matches, so a
+      # bundle missing just the formula, or just the chart, uploads and passes.
+      # The promotion job would then fail partway through, with images already
+      # promoted. Assert each input separately here, in the job that produced it.
+      - name: Verify promotion inputs are complete
+        run: |
+          set -euo pipefail
+          test -s dist/release-images.json || {
+            echo "::error::dist/release-images.json was not generated"
+            exit 1
+          }
+          test -n "$(find dist-chart -maxdepth 1 -name 'pipelock-*.tgz' -print -quit)" || {
+            echo "::error::helm package produced no chart archive in dist-chart"
+            exit 1
+          }
+          test -s dist/homebrew/Formula/pipelock.rb || {
+            echo "::error::GoReleaser did not write dist/homebrew/Formula/pipelock.rb (found: $(find dist -name '*.rb' -print 2>/dev/null | tr '\n' ' '))"
+            exit 1
+          }
+
+      # overwrite so re-running the whole workflow works. Artifacts are immutable
+      # per run, and a re-run is a new attempt of the SAME run, so a second
+      # upload under this name is rejected without it: the rebuild would redo
+      # every image push and then fail on its last step.
+      - name: Save promotion inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-promotion-inputs
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+          path: |
+            dist/homebrew/Formula/pipelock.rb
+            dist-chart/pipelock-*.tgz
+            dist/release-images.json
+
+  release-promote:
+    needs: [release-build]
+    runs-on: ubuntu-latest
+    # Approval wait does not count against this; it bounds the promotion itself
+    # so a hung registry call cannot hold the release-publication concurrency
+    # group, and every later release with it, for the six-hour default.
+    timeout-minutes: 30
+    environment: release-promotion
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25.12'
+          check-latest: true
+
+      - name: Verify Go version
+        run: test "$(go env GOVERSION)" = "go1.25.12"
+
+      - name: Download promotion inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-promotion-inputs
+
+      - name: Install verified crane
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRANE_VERSION: v0.21.9
+          CRANE_LINUX_AMD64_SHA256: 5c16d8ddb971cb1d5e6ed8b1e743da8224414eeba2c2762d8f1a61b2f095699e
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/crane-${CRANE_VERSION}"
+          archive="go-containerregistry_Linux_x86_64.tar.gz"
+          mkdir -p "$tool_dir"
+          gh release download "$CRANE_VERSION" --repo google/go-containerregistry --pattern "$archive" --dir "$tool_dir"
+          printf '%s  %s\n' "$CRANE_LINUX_AMD64_SHA256" "$tool_dir/$archive" | sha256sum --check
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir" crane
+          test "$("$tool_dir/crane" version)" = "${CRANE_VERSION#v}"
+          echo "$tool_dir" >> "$GITHUB_PATH"
+
+      - name: Set up Helm
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.21.3
+
+      - name: Verify release manifest signature before promotion
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
+        run: |
+          set -euo pipefail
+          verify_dir="$RUNNER_TEMP/release-manifest-verify"
+          mkdir -p "$verify_dir"
+          if ! gh release download "$GITHUB_REF_NAME" --pattern release.json --pattern release.json.sig --dir "$verify_dir" --clobber; then
+            echo "::error::release.json.sig is not attached to ${GITHUB_REF_NAME}; refusing promotion"
+            exit 1
+          fi
+          go run ./cmd/pipelock-release-manifest --verify --manifest "$verify_dir/release.json"
+          # A good signature proves only that someone we trust signed SOME
+          # manifest. Signing is offline and manual, so the reachable mistake is
+          # uploading a correctly signed manifest belonging to a different
+          # release, which would publish the previous release's asset digests as
+          # this tag's self-update evidence. Bind the verified manifest to the
+          # tag and commit being promoted, exactly as the image bundle is bound
+          # below.
+          manifest_tag="$(jq -r .tag "$verify_dir/release.json")"
+          manifest_commit="$(jq -r .commit "$verify_dir/release.json")"
+          test "$manifest_tag" = "$GITHUB_REF_NAME" || {
+            echo "::error::signed release manifest is for ${manifest_tag}, not ${GITHUB_REF_NAME}"
+            exit 1
+          }
+          test "$manifest_commit" = "$(git rev-parse "${GITHUB_REF_NAME}^{}")" || {
+            echo "::error::signed release manifest names commit ${manifest_commit}, which is not the commit ${GITHUB_REF_NAME} points at"
+            exit 1
+          }
+
+      # Every promotion input is checked here, before the first consumer-facing
+      # write below. A presence check that lives in the step that consumes the
+      # file fails after images are already promoted, which leaves a release
+      # half-published and needing a re-run.
+      - name: Verify promotion image inputs
+        env:
+          PIPELOCK_INDEX_DIGEST: ${{ needs.release-build.outputs.pipelock_index }}
+          PIPELOCK_INIT_INDEX_DIGEST: ${{ needs.release-build.outputs.pipelock_init_index }}
+          LICENSE_SERVICE_INDEX_DIGEST: ${{ needs.release-build.outputs.license_service_index }}
+        run: |
+          set -euo pipefail
+          test -s dist/homebrew/Formula/pipelock.rb || {
+            echo "::error::promotion bundle has no Homebrew formula"
+            exit 1
+          }
+          test -n "$(find dist-chart -maxdepth 1 -name 'pipelock-*.tgz' -print -quit)" || {
+            echo "::error::promotion bundle has no Helm chart"
+            exit 1
+          }
+          test "$(jq -r .schema dist/release-images.json)" = "pipelock-release-images-v1"
+          test "$(jq -r .tag dist/release-images.json)" = "$GITHUB_REF_NAME"
+          test "$(jq -r .commit dist/release-images.json)" = "$(git rev-parse "${GITHUB_REF_NAME}^{}")"
+          test "$(jq -er '.images[] | select(.name == "pipelock") | .digest' dist/release-images.json)" = "$PIPELOCK_INDEX_DIGEST"
+          test "$(jq -er '.images[] | select(.name == "pipelock-init") | .digest' dist/release-images.json)" = "$PIPELOCK_INIT_INDEX_DIGEST"
+          test "$(jq -er '.images[] | select(.name == "pipelock-license-service") | .digest' dist/release-images.json)" = "$LICENSE_SERVICE_INDEX_DIGEST"
+          test "$(jq '.images | length' dist/release-images.json)" -eq 3
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+
+          manifest = json.loads(
+              pathlib.Path(os.environ["RUNNER_TEMP"], "release-manifest-verify", "release.json").read_text()
+          )
+          assets = {asset["name"]: asset["sha256"] for asset in manifest["assets"]}
+          formula = pathlib.Path("dist/homebrew/Formula/pipelock.rb").read_text()
+          pairs = re.findall(
+              r'/download/[^/]+/([^"/]+)"\s+sha256 "([0-9a-f]{64})"',
+              formula,
+          )
+          if len(pairs) != 4:
+              raise SystemExit(f"expected 4 Homebrew archive checksums, found {len(pairs)}")
+          for name, digest in pairs:
+              if assets.get(name) != digest:
+                  raise SystemExit(f"Homebrew checksum for {name} does not match signed release.json")
+          PY
+
+      - name: Promote verified image manifests
+        env:
+          TAG: ${{ github.ref_name }}
+          PIPELOCK_INDEX_DIGEST: ${{ needs.release-build.outputs.pipelock_index }}
+          PIPELOCK_INIT_INDEX_DIGEST: ${{ needs.release-build.outputs.pipelock_init_index }}
+          LICENSE_SERVICE_INDEX_DIGEST: ${{ needs.release-build.outputs.license_service_index }}
+          PIPELOCK_AMD64_DIGEST: ${{ needs.release-build.outputs.pipelock_amd64 }}
+          PIPELOCK_ARM64_DIGEST: ${{ needs.release-build.outputs.pipelock_arm64 }}
+          PIPELOCK_INIT_AMD64_DIGEST: ${{ needs.release-build.outputs.pipelock_init_amd64 }}
+          PIPELOCK_INIT_ARM64_DIGEST: ${{ needs.release-build.outputs.pipelock_init_arm64 }}
+          LICENSE_SERVICE_AMD64_DIGEST: ${{ needs.release-build.outputs.license_service_amd64 }}
+          LICENSE_SERVICE_ARM64_DIGEST: ${{ needs.release-build.outputs.license_service_arm64 }}
+        run: |
+          set -euo pipefail
+          remote_stable_tags="$(git ls-remote --tags --refs origin 'refs/tags/v*')"
+          newest_stable="$(printf '%s\n' "$remote_stable_tags" | awk '{sub("refs/tags/v", "", $2); print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          test -n "$newest_stable" || { echo "::error::could not determine newest stable release tag"; exit 1; }
+          promote_image() {
+            local repository="$1" index_digest="$2" version="${TAG#v}"
+            local tags existing latest_digest
+            tags="$(crane ls "$repository")" || { echo "::error::could not list tags for ${repository}"; exit 1; }
+            if grep -Fxq "$version" <<<"$tags"; then
+              existing="$(crane digest "${repository}:${version}")"
+              test "$existing" = "$index_digest" || { echo "::error::${repository}:${version} has a different digest"; exit 1; }
+            else
+              crane copy --no-clobber "${repository}@${index_digest}" "${repository}:${version}"
+            fi
+            if [[ "$version" != *-* ]]; then
+              if [[ "$newest_stable" = "$version" ]]; then
+                latest_digest="$(crane digest "${repository}:latest" 2>/dev/null || true)"
+                if [[ "$latest_digest" != "$index_digest" ]]; then
+                  crane copy "${repository}@${index_digest}" "${repository}:latest"
+                fi
+                test "$(crane digest "${repository}:latest")" = "$index_digest"
+              fi
+            fi
+            test "$(crane digest "${repository}:${version}")" = "$index_digest"
+          }
+          promote_platform_image() {
+            local repository="$1" digest="$2" arch="$3" version="${TAG#v}"
+            local target="${repository}:${version}-${arch}" existing
+            if existing="$(crane digest "$target" 2>/dev/null)"; then
+              test "$existing" = "$digest" || { echo "::error::${target} has a different digest"; exit 1; }
+            else
+              crane copy --no-clobber "${repository}@${digest}" "$target"
+            fi
+            test "$(crane digest "$target")" = "$digest"
+          }
+          promote_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_INDEX_DIGEST"
+          promote_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_INDEX_DIGEST"
+          promote_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_INDEX_DIGEST"
+          promote_platform_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_AMD64_DIGEST" amd64
+          promote_platform_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_ARM64_DIGEST" arm64
+          promote_platform_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_AMD64_DIGEST" amd64
+          promote_platform_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_ARM64_DIGEST" arm64
+          promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_AMD64_DIGEST" amd64
+          promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_ARM64_DIGEST" arm64
+
       # Deliberately placed after the attestation gate. The chart is the least
       # critical artifact in the release, and an earlier position would let a
       # registry hiccup on the chart abort the job with binaries and images
@@ -925,16 +1042,36 @@ jobs:
         run: |
           set -euo pipefail
           app_version="${TAG_NAME#v}"
-          chart_version="$CHART_VERSION"
-          test -n "$chart_version" || {
-            echo "::error::chart version was not established before publication"
+          chart_archive="$(find dist-chart -maxdepth 1 -name 'pipelock-*.tgz' -print -quit)"
+          test -n "$chart_archive" || {
+            echo "::error::promotion bundle has no Helm chart"
+            exit 1
+          }
+          chart_version="$(helm show chart "$chart_archive" | awk '$1 == "version:" { print $2 }')"
+          chart_app_version="$(helm show chart "$chart_archive" | awk '$1 == "appVersion:" { gsub(/\"/, "", $2); print $2 }')"
+          test -n "$chart_version"
+          test "$chart_archive" = "dist-chart/pipelock-${chart_version}.tgz"
+          test "$chart_app_version" = "$app_version" || {
+            echo "::error::chart appVersion ${chart_app_version} does not match ${app_version}"
             exit 1
           }
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
           trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
-
-          if [[ "$CHART_ALREADY_PUBLISHED" != true ]]; then
-            helm push "dist-chart/pipelock-${chart_version}.tgz" oci://ghcr.io/luckypipewrench/charts
+          existing_dir="$RUNNER_TEMP/published-chart-${chart_version}"
+          candidate_dir="$RUNNER_TEMP/candidate-chart-${chart_version}"
+          mkdir -p "$existing_dir" "$candidate_dir"
+          if chart_lookup_output="$(helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" --destination "$existing_dir" 2>&1)"; then
+            tar -xzf "$chart_archive" -C "$candidate_dir"
+            tar -xzf "$existing_dir/pipelock-${chart_version}.tgz" -C "$existing_dir"
+            diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock" || {
+              echo "::error::published chart ${chart_version} differs from the signed release input"
+              exit 1
+            }
+          elif printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
+            helm push "$chart_archive" oci://ghcr.io/luckypipewrench/charts
+          else
+            echo "::error::could not determine whether chart ${chart_version} exists"
+            exit 1
           fi
 
           # A brand-new GHCR package is private, and the install command in the
@@ -954,6 +1091,36 @@ jobs:
             echo "everyone until it is made public once under Package settings."
           } >>"$GITHUB_STEP_SUMMARY"
 
+      - name: Publish Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          formula="dist/homebrew/Formula/pipelock.rb"
+          test -s "$formula" || { echo "::error::promotion bundle has no Homebrew formula"; exit 1; }
+          path="Formula/pipelock.rb"
+          encoded="$(base64 -w0 "$formula")"
+          existing_json="$RUNNER_TEMP/homebrew-existing.json"
+          if gh api "repos/luckyPipewrench/homebrew-tap/contents/${path}?ref=main" >"$existing_json" 2>"$RUNNER_TEMP/homebrew-read.err"; then
+            existing_sha="$(jq -r .sha "$existing_json")"
+            jq -r .content "$existing_json" | tr -d '\n' | base64 -d >"$RUNNER_TEMP/homebrew-existing.rb"
+            if cmp -s "$formula" "$RUNNER_TEMP/homebrew-existing.rb"; then
+              echo "Homebrew formula already matches ${TAG_NAME}"
+              exit 0
+            fi
+            gh api --method PUT "repos/luckyPipewrench/homebrew-tap/contents/${path}" \
+              -f message="Update Pipelock to ${TAG_NAME}" -f branch=main \
+              -f content="$encoded" -f sha="$existing_sha" >/dev/null
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/homebrew-read.err"; then
+            gh api --method PUT "repos/luckyPipewrench/homebrew-tap/contents/${path}" \
+              -f message="Add Pipelock ${TAG_NAME}" -f branch=main -f content="$encoded" >/dev/null
+          else
+            cat "$RUNNER_TEMP/homebrew-read.err" >&2
+            echo "::error::could not read the existing Homebrew formula"
+            exit 1
+          fi
+
       # Promote only after the proof gate, Kubernetes digest bundle, and chart
       # have all succeeded. The draft kept GitHub Release assets private while
       # those checks ran. Container images and Homebrew remain separate
@@ -972,7 +1139,7 @@ jobs:
       # allows. It does not make the pair atomic, which GitHub does not offer, so
       # the digests that were verified are recorded in the job log as the record
       # of what the decision was made against.
-      - name: Verify the release manifest signature and publish
+      - name: Reverify the release manifest signature and publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
@@ -988,6 +1155,16 @@ jobs:
             exit 1
           fi
           go run ./cmd/pipelock-release-manifest --verify --manifest "$verify_dir/release.json"
+          manifest_tag="$(jq -r .tag "$verify_dir/release.json")"
+          manifest_commit="$(jq -r .commit "$verify_dir/release.json")"
+          test "$manifest_tag" = "$GITHUB_REF_NAME" || {
+            echo "::error::signed release manifest is for ${manifest_tag}, not ${GITHUB_REF_NAME}"
+            exit 1
+          }
+          test "$manifest_commit" = "$(git rev-parse "${GITHUB_REF_NAME}^{}")" || {
+            echo "::error::signed release manifest names commit ${manifest_commit}, which is not the commit ${GITHUB_REF_NAME} points at"
+            exit 1
+          }
           echo "verified asset digests:"
           sha256sum "$verify_dir/release.json" "$verify_dir/release.json.sig"
           gh release edit "$GITHUB_REF_NAME" --draft=false

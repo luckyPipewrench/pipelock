@@ -167,6 +167,10 @@ release:
 
 brews:
   - ids: [pipelock]
+    # Generate the exact formula into dist/homebrew/Formula/pipelock.rb, but do
+    # not publish it during the build job. The protected promotion job commits
+    # this file only after the offline release-manifest signature verifies.
+    skip_upload: true
     repository:
       owner: luckyPipewrench
       name: homebrew-tap

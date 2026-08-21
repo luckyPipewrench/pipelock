@@ -115,10 +115,39 @@ class TestReleaseArtifacts(unittest.TestCase):
             self.assertNotIn(f'name_template: "{repository}:{{{{ .Version }}}}"', self.goreleaser)
             self.assertNotIn(f'name_template: "{repository}:latest"', self.goreleaser)
 
+    def test_homebrew_formula_is_generated_without_build_time_publication(self) -> None:
+        config = yaml.safe_load(self.goreleaser)
+        brews = config.get("brews", [])
+        self.assertEqual(len(brews), 1)
+        self.assertIs(brews[0].get("skip_upload"), True)
+        self.assertEqual(brews[0].get("directory"), "Formula")
+
+    def test_tap_token_reaches_only_the_protected_publish_step(self) -> None:
+        """The tap credential is what makes "generates but does not publish" real.
+
+        `skip_upload` is a GoReleaser setting, so on its own it is a promise in a
+        config file. Withholding the tap token from the build job is the part
+        that cannot be undone by a config edit, and it is worth asserting
+        separately because a token quietly restored to the GoReleaser step would
+        make the separation cosmetic while every other check here still passed.
+        """
+        parsed = yaml.safe_load(WORKFLOW.read_text())
+        holders = []
+        for job_name, job in parsed["jobs"].items():
+            for step in job.get("steps", []):
+                blocks = (step.get("env") or {}, step.get("with") or {})
+                if any(
+                    "HOMEBREW_TAP_TOKEN" in str(value)
+                    for block in blocks
+                    for value in block.values()
+                ):
+                    holders.append((job_name, step.get("name", "")))
+        self.assertEqual(holders, [("release-promote", "Publish Homebrew formula")])
+
     def test_release_waits_for_customer_verifier_install_gate(self) -> None:
         gate = self.workflow.index("  release-verifier-install:")
-        release = self.workflow.index("\n  release:\n", gate)
-        gate_block = self.workflow[gate:release]
+        release_build = self.workflow.index("\n  release-build:\n", gate)
+        gate_block = self.workflow[gate:release_build]
 
         self.assertIn("needs: [release-tests]", gate_block)
         self.assertIn("fetch-depth: 0", gate_block)
@@ -126,7 +155,10 @@ class TestReleaseArtifacts(unittest.TestCase):
             'scripts/release-verifier-install-gate.sh --tag "$GITHUB_REF_NAME"',
             gate_block,
         )
-        self.assertIn("needs: [release-tests, release-verifier-install]", self.workflow[release:])
+        self.assertIn(
+            "needs: [release-tests, release-verifier-install]",
+            self.workflow[release_build:],
+        )
 
     def test_other_release_tools_are_exactly_pinned_and_verified(self) -> None:
         expected_tools = (
@@ -246,17 +278,16 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn(expected_condition, normalized_gate)
         self.assertNotIn("== 'failure'", normalized_gate)
 
-    def test_verified_staging_indexes_promote_after_the_proof_gate(self) -> None:
+    def test_verified_staging_indexes_promote_only_in_protected_job(self) -> None:
         resolution = self.workflow.index("- name: Resolve release image platform digests")
         proof_gate = self.workflow.index("- name: Verify attestation")
-        chart_preflight = self.workflow.index("- name: Package and verify Helm chart version")
-        promotion = self.workflow.index("- name: Promote verified image manifests")
+        chart_preflight = self.workflow.index("- name: Package Helm chart")
         bundle = self.workflow.index("- name: Build Kubernetes image digest bundle")
+        promotion = self.workflow.index("- name: Promote verified image manifests")
         self.assertLess(resolution, proof_gate)
         self.assertLess(proof_gate, chart_preflight)
-        self.assertLess(chart_preflight, promotion)
-        self.assertLess(proof_gate, promotion)
-        self.assertLess(promotion, bundle)
+        self.assertLess(chart_preflight, bundle)
+        self.assertLess(bundle, promotion)
         self.assertIn('crane copy --no-clobber "${repository}@${index_digest}"', self.workflow)
         self.assertIn('crane copy --no-clobber "${repository}@${digest}" "$target"', self.workflow)
         self.assertIn('"${repository}:latest"', self.workflow)
@@ -264,7 +295,10 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn("grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+$'", self.workflow)
         self.assertIn('if [[ "$newest_stable" = "$version" ]]; then', self.workflow)
         self.assertIn('if [[ "$latest_digest" != "$index_digest" ]]; then', self.workflow)
-        runs = self._release_job_runs()
+        runs = self._job_runs("release-promote")
+        image_promotion = dict(runs)["Promote verified image manifests"]
+        self.assertIn("git ls-remote --tags --refs origin 'refs/tags/v*'", image_promotion)
+        self.assertNotIn("printf '%s\\n%s\\n' \"$tags\" \"$version\"", image_promotion)
         floating_steps = [script for name, script in runs if name == "Update floating major tag for GitHub Action"]
         self.assertEqual(len(floating_steps), 1, "expected exactly one floating-tag step")
         floating_lines = self._executable_lines(floating_steps[0])
@@ -309,15 +343,15 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.workflow,
                 )
 
-    def _release_job_runs(self) -> list[tuple[str, str]]:
-        """Return (step name, run script) for every step of the release job.
+    def _job_runs(self, job_name: str) -> list[tuple[str, str]]:
+        """Return (step name, run script) for every step of one workflow job.
 
         Reading the parsed workflow rather than its text is the point. A string
         search is satisfied by a comment or an echo that merely mentions a
         command, and it cannot tell which step a command belongs to.
         """
         parsed = yaml.safe_load(WORKFLOW.read_text())
-        steps = parsed["jobs"]["release"]["steps"]
+        steps = parsed["jobs"][job_name]["steps"]
         return [
             (step.get("name", ""), step["run"])
             for step in steps
@@ -339,36 +373,113 @@ class TestReleaseArtifacts(unittest.TestCase):
             lines.append(line)
         return lines
 
-    def test_github_release_promotion_follows_proof_bundle_and_chart(self) -> None:
-        goreleaser = self.workflow.index("- name: Run GoReleaser")
-        proof_gate = self.workflow.index("- name: Verify attestation")
-        bundle = self.workflow.index("- name: Build Kubernetes image digest bundle")
-        bundle_attestation = self.workflow.index("- name: Attest Kubernetes image digest bundle")
-        bundle_gate = self.workflow.index("- name: Verify Kubernetes image digest bundle attestation")
-        upload = self.workflow.index("- name: Upload Kubernetes image digest bundle")
-        chart = self.workflow.index("- name: Publish Helm chart")
-        promotion = self.workflow.index("- name: Verify the release manifest signature and publish")
-        self.assertIn('gh release edit "$GITHUB_REF_NAME" --draft=false', self.workflow)
+    def test_promotion_is_separate_protected_and_signature_gated(self) -> None:
+        parsed = yaml.safe_load(WORKFLOW.read_text())
+        build = parsed["jobs"]["release-build"]
+        promote = parsed["jobs"]["release-promote"]
+        self.assertEqual(promote["needs"], ["release-build"])
+        self.assertEqual(promote["environment"], "release-promotion")
+        self.assertEqual(promote["permissions"], {"contents": "write", "packages": "write"})
 
-        # Release assets stay mutable while the release is a draft, and the job
-        # holds contents: write, so verifying and then promoting in one step
-        # NARROWS the window in which a verified manifest could be replaced. It
-        # does not close it. Preventing the substitution outright needs an
-        # immutable or pinned publication mechanism, which GitHub releases do not
-        # provide.
-        #
-        # Both commands must live inside the promotion step for even that
-        # narrowing to hold, so the ordering is asserted within the step's own
-        # text. Searching the whole workflow would pass while the two sat in
-        # different steps, which is the arrangement this is meant to rule out.
+        build_runs = self._job_runs("release-build")
+        promote_runs = self._job_runs("release-promote")
+        build_script = "\n".join(script for _, script in build_runs)
+        for forbidden in (
+            "helm push ",
+            "gh release edit ",
+            "git push origin ",
+            "repos/luckyPipewrench/homebrew-tap/contents/",
+            '"${repository}:${version}"',
+            '"${repository}:latest"',
+        ):
+            self.assertNotIn(forbidden, build_script)
+
+        names = [name for name, _ in promote_runs]
+        verify = names.index("Verify release manifest signature before promotion")
+        for public_write in (
+            "Promote verified image manifests",
+            "Publish Helm chart",
+            "Publish Homebrew formula",
+            "Reverify the release manifest signature and publish",
+            "Update floating major tag for GitHub Action",
+        ):
+            self.assertLess(verify, names.index(public_write))
+
+        self.assertIn("actions/upload-artifact@043fb46d", self.workflow)
+        self.assertIn("actions/download-artifact@3e5f45b", self.workflow)
+
+        # These two were positional (`build["steps"][-1]`, `promote["steps"][3]`).
+        # A positional index starts passing for the wrong reason the moment a
+        # step is inserted ahead of it, and it never expressed the property that
+        # matters. Look the steps up by name and assert the ordering instead.
+        build_step_names = [step.get("name", "") for step in build["steps"]]
+        save = build["steps"][build_step_names.index("Save promotion inputs")]
+        self.assertEqual(save["with"]["retention-days"], 7)
+        self.assertEqual(save["with"]["if-no-files-found"], "error")
+        self.assertIs(save["with"]["overwrite"], True)
+        self.assertEqual(
+            [line.strip() for line in save["with"]["path"].split("\n") if line.strip()],
+            [
+                "dist/homebrew/Formula/pipelock.rb",
+                "dist-chart/pipelock-*.tgz",
+                "dist/release-images.json",
+            ],
+        )
+        self.assertLess(
+            build_step_names.index("Verify promotion inputs are complete"),
+            build_step_names.index("Save promotion inputs"),
+        )
+        completeness = dict(build_runs)["Verify promotion inputs are complete"]
+        for required in (
+            "dist/release-images.json",
+            "dist-chart -maxdepth 1 -name 'pipelock-*.tgz'",
+            "dist/homebrew/Formula/pipelock.rb",
+        ):
+            self.assertIn(required, completeness)
+
+        promote_step_names = [step.get("name", "") for step in promote["steps"]]
+        download = promote_step_names.index("Download promotion inputs")
+        for consumer in (
+            "Verify release manifest signature before promotion",
+            "Verify promotion image inputs",
+            "Promote verified image manifests",
+            "Publish Helm chart",
+            "Publish Homebrew formula",
+        ):
+            self.assertLess(download, promote_step_names.index(consumer))
+
+        self.assertIn(
+            'test "$("$tool_dir/crane" version)" = "${CRANE_VERSION#v}"',
+            self.workflow,
+        )
+        input_checks = dict(promote_runs)["Verify promotion image inputs"]
+        self.assertIn("pipelock-release-images-v1", input_checks)
+        self.assertIn('git rev-parse "${GITHUB_REF_NAME}^{}"', input_checks)
+        self.assertIn("expected 4 Homebrew archive checksums", input_checks)
+        self.assertIn("does not match signed release.json", input_checks)
+
+        # Every promotion input is proven present before the first public write,
+        # not when the step that consumes it finally runs. A presence check that
+        # lives in the consuming step fails with images already promoted.
+        self.assertIn("dist/homebrew/Formula/pipelock.rb", input_checks)
+        self.assertIn("dist-chart -maxdepth 1 -name 'pipelock-*.tgz'", input_checks)
+        self.assertLess(
+            promote_step_names.index("Verify promotion image inputs"),
+            promote_step_names.index("Promote verified image manifests"),
+        )
+        for output in (
+            "pipelock_index",
+            "pipelock_init_index",
+            "license_service_index",
+        ):
+            self.assertIn(f"needs.release-build.outputs.{output}", self.workflow)
+
         undraft_cmd = 'gh release edit "$GITHUB_REF_NAME" --draft=false'
         verify_cmd = "go run ./cmd/pipelock-release-manifest --verify --manifest"
-
-        runs = self._release_job_runs()
         promotion_steps = [
             script
-            for name, script in runs
-            if name == "Verify the release manifest signature and publish"
+            for name, script in promote_runs
+            if name == "Reverify the release manifest signature and publish"
         ]
         self.assertEqual(len(promotion_steps), 1, "expected exactly one promotion step")
         promotion_lines = self._executable_lines(promotion_steps[0])
@@ -377,12 +488,12 @@ class TestReleaseArtifacts(unittest.TestCase):
         # else could publish before verification while a check scoped to this
         # step still passed.
         undrafting_steps = [
-            name for name, script in runs
+            name for name, script in promote_runs
             if any(undraft_cmd in line for line in self._executable_lines(script))
         ]
         self.assertEqual(
             undrafting_steps,
-            ["Verify the release manifest signature and publish"],
+            ["Reverify the release manifest signature and publish"],
             f"draft removal must happen only in the promotion step, found {undrafting_steps}",
         )
 
@@ -407,21 +518,58 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertLess(verify_at[0], undraft_at[0])
         self.assertNotIn("- name: Publish GitHub release", self.workflow)
 
-        self.assertLess(goreleaser, proof_gate)
-        self.assertLess(proof_gate, bundle)
-        self.assertLess(bundle, bundle_attestation)
-        self.assertLess(bundle_attestation, bundle_gate)
-        self.assertLess(bundle_gate, upload)
-        self.assertLess(upload, chart)
-        self.assertLess(chart, promotion)
+        # The same fail-closed treatment for the PRE-promotion gate. Only the
+        # publish step was checked this way, so `--verify ... || true` in the
+        # first gate would have passed every assertion in this file while
+        # letting an unverifiable manifest reach the image promotion below it.
+        prepromotion_steps = [
+            script
+            for name, script in promote_runs
+            if name == "Verify release manifest signature before promotion"
+        ]
+        self.assertEqual(len(prepromotion_steps), 1, "expected one pre-promotion gate")
+        prepromotion_lines = self._executable_lines(prepromotion_steps[0])
+        pre_verify_at = [
+            i for i, line in enumerate(prepromotion_lines) if canonical_verify in line
+        ]
+        self.assertEqual(
+            len(pre_verify_at), 1, "pre-promotion gate must run the verifier exactly once"
+        )
+        self.assertEqual(prepromotion_lines[pre_verify_at[0]], canonical_verify)
+
+        # A good signature over the WRONG release still verifies: the verifier
+        # checks the signature and the keyring, never which release the manifest
+        # describes. Signing is offline and manual, so both gates must bind the
+        # verified manifest to the tag and commit being promoted.
+        tag_bind = 'test "$manifest_tag" = "$GITHUB_REF_NAME" || {'
+        commit_bind = (
+            'test "$manifest_commit" = "$(git rev-parse "${GITHUB_REF_NAME}^{}")" || {'
+        )
+        for gate in (
+            "Verify release manifest signature before promotion",
+            "Reverify the release manifest signature and publish",
+        ):
+            lines = self._executable_lines(dict(promote_runs)[gate])
+            self.assertIn('manifest_tag="$(jq -r .tag "$verify_dir/release.json")"', lines)
+            self.assertIn(
+                'manifest_commit="$(jq -r .commit "$verify_dir/release.json")"', lines
+            )
+            self.assertIn(tag_bind, lines)
+            self.assertIn(commit_bind, lines)
+
+        # In the publish step the binding has to sit between the verification and
+        # the undraft, or the release goes public before anything checked that
+        # the signed manifest belongs to this tag.
+        tag_bind_at = [i for i, line in enumerate(promotion_lines) if line == tag_bind]
+        self.assertEqual(len(tag_bind_at), 1)
+        self.assertLess(verify_at[0], tag_bind_at[0])
+        self.assertLess(tag_bind_at[0], undraft_at[0])
 
         self.assertIn('release_commit="$(git rev-parse "${GITHUB_REF_NAME}^{}")"', self.workflow)
         self.assertNotIn('-commit "$GITHUB_SHA"', self.workflow)
         self.assertIn('steps.attest-release-images.outcome != \'success\'', self.workflow)
-        self.assertIn('if [[ "$CHART_ALREADY_PUBLISHED" != true ]]; then', self.workflow)
         self.assertIn('diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock"', self.workflow)
-        self.assertIn('echo "CHART_VERSION=$chart_version" >> "$GITHUB_ENV"', self.workflow)
-        self.assertIn('chart_version="$CHART_VERSION"', self.workflow)
+        self.assertIn('test "$chart_app_version" = "$app_version"', self.workflow)
         digest_vars = {
             "pipelock": "PIPELOCK_INDEX_DIGEST",
             "pipelock_init": "PIPELOCK_INIT_INDEX_DIGEST",

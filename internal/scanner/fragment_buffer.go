@@ -467,21 +467,6 @@ func (fb *FragmentBuffer) Close() {
 	fb.pathSessions = make(map[string]*pathSessionBuffer)
 }
 
-// concatenateFragments builds a single byte slice from non-expired session
-// fragments. Filters by windowSecs so scans never include stale data, even
-// if the 60-second cleanup ticker hasn't run yet. Must be called with fb.mu held.
-func (fb *FragmentBuffer) concatenateFragments(sb *sessionBuffer) []byte {
-	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
-	buf := make([]byte, 0, sb.totalBytes)
-	for _, f := range sb.fragments {
-		if f.at.Before(cutoff) {
-			continue
-		}
-		buf = append(buf, f.data...)
-	}
-	return buf
-}
-
 // cleanupInterval is derived from the configured window: at most 60s and at
 // least 1s, so short windows get prompt reclamation on the next operation.
 func (fb *FragmentBuffer) cleanupInterval() time.Duration {

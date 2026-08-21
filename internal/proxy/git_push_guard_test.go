@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"net/http"
 	"net/url"
 	"testing"
 
@@ -63,28 +64,28 @@ func TestEvaluateGitPushAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse blocked URL: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, blockedURL); !got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, blockedURL); !got.Block {
 		t.Fatalf("expected non-allowlisted push to block, got %+v", got)
 	}
 	allowedURL, err := url.Parse("https://github.com/acme/private.git/git-receive-pack")
 	if err != nil {
 		t.Fatalf("parse allowed URL: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, allowedURL); got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, allowedURL); got.Block {
 		t.Fatalf("expected allowlisted push to pass, got %+v", got)
 	}
 	hostWideURL, err := url.Parse("https://example.com/acme/project.git/git-receive-pack")
 	if err != nil {
 		t.Fatalf("parse host-wide URL: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, hostWideURL); got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, hostWideURL); got.Block {
 		t.Fatalf("expected host-wide allowlisted push to pass, got %+v", got)
 	}
 	nestedGroupURL, err := url.Parse("https://gitlab.com/group/subgroup/project.git/git-receive-pack")
 	if err != nil {
 		t.Fatalf("parse nested group URL: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, nestedGroupURL); !got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, nestedGroupURL); !got.Block {
 		t.Fatalf("owner-level allowlist must not match nested group path, got %+v", got)
 	}
 	// host/* must match on a path-segment boundary, never a host-prefix
@@ -94,12 +95,12 @@ func TestEvaluateGitPushAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse look-alike host URL: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, lookalikeHostURL); !got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, lookalikeHostURL); !got.Block {
 		t.Fatalf("host/* must not match a look-alike host prefix, got %+v", got)
 	}
 	disabled := cfg
 	disabled.Enabled = false
-	if got := evaluateGitPushAllowlist(disabled, blockedURL); got.Block {
+	if got := evaluateGitPushAllowlist(disabled, http.MethodPost, blockedURL); got.Block {
 		t.Fatalf("disabled git protection blocked: %+v", got)
 	}
 }
@@ -110,7 +111,7 @@ func TestEvaluateGitPushAllowlistBlocksEmptyAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse URL: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, u); !got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, u); !got.Block {
 		t.Fatalf("enabled git push protection with empty allowlist must block, got %+v", got)
 	}
 }
@@ -124,7 +125,7 @@ func TestEvaluateGitPushAllowlistDoesNotMatchHostlessRepoPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse URL: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, u); !got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, u); !got.Block {
 		t.Fatalf("hostless allowlist entry must not allow arbitrary host path, got %+v", got)
 	}
 }

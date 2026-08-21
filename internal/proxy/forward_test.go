@@ -2947,9 +2947,9 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 			wantFinalRequestHits: 1,
 		},
 		{
-			name:                 "303 non-push redirect remains method changing",
-			requestPath:          "/non-push-start",
-			redirectPath:         "/non-push-final",
+			name:                 "303 excluded push path becomes GET",
+			requestPath:          "/acme/private.git/git-receive-pack",
+			redirectPath:         "/acme/public.git/git-receive-pack",
 			redirectStatus:       http.StatusSeeOther,
 			wantStatus:           http.StatusOK,
 			wantFinalMethod:      http.MethodGet,
@@ -2964,7 +2964,7 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 			var finalMethod, finalBody string
 			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == tt.requestPath && r.URL.RawQuery == "" {
-					http.Redirect(w, r, "http://github.com"+tt.redirectPath, tt.redirectStatus)
+					http.Redirect(w, r, "http://git.vendor.example"+tt.redirectPath, tt.redirectStatus)
 					return
 				}
 				finalRequestHits.Add(1)
@@ -2980,12 +2980,12 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 
 			proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
 				cfg.GitProtection.Enabled = true
-				cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+				cfg.GitProtection.AllowedPushRepos = []string{"git.vendor.example/acme/private"}
 			})
 			defer cleanup()
 			p.client.Transport = &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					if addr == "github.com:80" {
+					if addr == "git.vendor.example:80" {
 						return (&net.Dialer{}).DialContext(ctx, network, backend.Listener.Addr().String())
 					}
 					return (&net.Dialer{}).DialContext(ctx, network, addr)
@@ -2998,7 +2998,7 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 				t.Fatalf("parse proxy URL: %v", err)
 			}
 			client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 2 * time.Second}
-			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://github.com"+tt.requestPath, strings.NewReader("0000"))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://git.vendor.example"+tt.requestPath, strings.NewReader("0000"))
 			if err != nil {
 				t.Fatalf("new request: %v", err)
 			}

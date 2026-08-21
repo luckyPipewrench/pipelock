@@ -1118,7 +1118,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if gitPush := evaluateGitPushAllowlist(cfg.GitProtection, r.URL); gitPush.Block {
+	if gitPush := evaluateGitPushAllowlist(cfg.GitProtection, r.Method, r.URL); gitPush.Block {
 		p.logger.LogBlocked(actx, "git_protection", gitPush.Reason)
 		emitForwardReceipt(receipt.EmitOpts{
 			ActionID:  actionID,

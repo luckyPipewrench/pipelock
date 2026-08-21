@@ -730,7 +730,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// git-receive-pack POST therefore remains a push on the redirected
 			// target, which must satisfy the same repository allowlist as the
 			// admitted request.
-			if gitPush := evaluateGitPushAllowlist(currentCfg.GitProtection, req.URL); gitPush.Block {
+			if gitPush := evaluateGitPushAllowlist(currentCfg.GitProtection, req.Method, req.URL); gitPush.Block {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				logger.LogBlocked(actx, "git_protection", "redirect from "+originalURL+" blocked: "+gitPush.Reason)
 				return newRedirectBlockedRequest("git_protection", gitPush.Reason)

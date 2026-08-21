@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"net/http"
 	"net/url"
 	"testing"
 
@@ -14,7 +15,7 @@ func TestEvaluateGitPushAllowlistNilAndUnparseable(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.GitProtection{Enabled: true, AllowedPushRepos: []string{"git.vendor.example/acme/private"}}
-	if got := evaluateGitPushAllowlist(cfg, nil); got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, nil); got.Block {
 		t.Fatalf("nil URL blocked: %+v", got)
 	}
 
@@ -22,7 +23,7 @@ func TestEvaluateGitPushAllowlistNilAndUnparseable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse empty host: %v", err)
 	}
-	if got := evaluateGitPushAllowlist(cfg, emptyHost); got.Block {
+	if got := evaluateGitPushAllowlist(cfg, http.MethodPost, emptyHost); got.Block {
 		t.Fatalf("empty host treated as a push: %+v", got)
 	}
 

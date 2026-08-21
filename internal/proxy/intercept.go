@@ -810,7 +810,7 @@ func newInterceptHandler(
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
 		}
 
-		if gitPush := evaluateGitPushAllowlist(ic.Config.GitProtection, r.URL); gitPush.Block {
+		if gitPush := evaluateGitPushAllowlist(ic.Config.GitProtection, r.Method, r.URL); gitPush.Block {
 			ic.Logger.LogBlocked(actx, "git_protection", gitPush.Reason)
 			ic.Metrics.RecordTLSRequestBlocked("git_protection")
 			_ = interceptEmitReceipt(ic, receipt.EmitOpts{

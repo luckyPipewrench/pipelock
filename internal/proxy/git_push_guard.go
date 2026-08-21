@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,10 @@ type gitPushDecision struct {
 	Reason string
 }
 
-func evaluateGitPushAllowlist(cfg config.GitProtection, u *url.URL) gitPushDecision {
+func evaluateGitPushAllowlist(cfg config.GitProtection, method string, u *url.URL) gitPushDecision {
+	if method != http.MethodPost {
+		return gitPushDecision{}
+	}
 	if !cfg.Enabled || u == nil {
 		return gitPushDecision{}
 	}

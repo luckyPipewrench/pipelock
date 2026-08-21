@@ -114,8 +114,10 @@ spend a full review,
 twenty minutes on a large diff, to reproduce what is already posted. Depth is
 part of that comparison, so `/review deep` still runs after `/review`. Only a
 review that covered the whole diff counts; a `partial` or `failed` one is worth
-retrying because it may have been short for a transient reason. To review an
-unchanged head anyway, run the workflow manually from Actions.
+retrying because it may have been short for a transient reason. There is no way
+to force a second review of an unchanged head in the same mode. The manual
+dispatch that once did that was removed, because a manual run chooses the branch
+that supplies the reviewer code. Run the other mode, or push a change.
 
 **You pushed a fix and want another look.** The head changed, so this is a
 different review. When the PR base is unchanged, the reviewer reads the new
@@ -143,13 +145,31 @@ branch. Comment `/review` on your own pull request and you exercise the old
 reviewer, not your change, and it reports success while proving nothing about
 what you wrote. That is how the trigger works, not a quirk to route around.
 
-**So test with the manual dispatch, which exists for exactly this.** From
-Actions, select **AI PR Review**, run the workflow from your branch, and give it
-a real pull request number and a mode. That runs your branch's caller against a
-real pull request. It is the only way to exercise a change before it merges, and
-it requires the same account the comment path requires.
+**There is deliberately no manual dispatch to test with.** A `workflow_dispatch`
+on this caller lets whoever starts the run pick the branch, and that branch then
+picks the workflow code that receives the review credential and the provider
+key. Closing that is the whole reason the trigger set is one event, so do not
+add a dispatch back to get a pre-merge test.
 
-**Run the tests locally first; they are fast and they gate the pull request.**
+Test a reviewer change these three ways instead, in this order.
+
+**Locally, with the unit tests below.** They parse both workflows and drive the
+action's state machine directly, so they are the only thing that exercises your
+version of the reviewer before it merges. That is why a change here is expected
+to arrive with tests rather than with a screenshot of a successful run.
+
+**In a scratch repository you own.** Copy the stub from "Reusing the reviewer in
+another repository" into a throwaway repository, set both pins to your branch's
+head commit, which is a full immutable SHA like any other, and give it a
+disposable provider key. Branch-selected code only matters where it can reach a
+credential worth stealing, so a repository holding nothing is a safe place to
+run one, and it exercises the real caller against a real pull request.
+
+**On the default branch, after it merges.** The first `/review` on the next pull
+request is the first run of your change in this repository. Treat it as a
+smoke test of something already reviewed, not as the test that finds the bug.
+
+The local suite is fast:
 
 ```bash
 pip install --require-hashes -r .github/actions/pr-review/requirements.txt
@@ -228,10 +248,9 @@ permission error when it tries to post.
 Personal-account repositories must map each named secret explicitly, because
 `secrets: inherit` is not available to them.
 
-Keep the manual dispatch. A comment-triggered workflow only ever executes the
-copy on the default branch, so a change to this file cannot run on the pull
-request that introduces it, and the dispatch is the only way to exercise a
-change here before it lands.
+Do not add `workflow_dispatch` to this caller. A manual run may select a branch,
+which would let that branch choose the workflow code that receives the review
+credential. Test caller changes after they merge to the default branch.
 
 ```yaml
 name: AI PR Review
@@ -239,18 +258,6 @@ name: AI PR Review
 on:
   issue_comment:
     types: [created]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request to review with the workflow on this branch.
-        required: true
-        type: string
-      review_mode:
-        description: default or deep.
-        required: true
-        default: default
-        type: choice
-        options: [default, deep]
 
 permissions:
   contents: read
@@ -262,23 +269,17 @@ jobs:
     if: >-
       github.actor == 'YOUR_GITHUB_LOGIN' &&
       github.triggering_actor == 'YOUR_GITHUB_LOGIN' &&
-      ((github.event_name == 'issue_comment' &&
-        github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
-        github.event.comment.author_association == 'OWNER' &&
-        github.event.issue.pull_request &&
-        (github.event.comment.body == '/review' ||
-         github.event.comment.body == '/review deep')) ||
-       github.event_name == 'workflow_dispatch')
+      github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
+      github.event.comment.author_association == 'OWNER' &&
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '/review' ||
+       github.event.comment.body == '/review deep')
     uses: luckyPipewrench/pipelock/.github/workflows/pr-review-reusable.yaml@PINNED_PIPELOCK_REVIEW_COMMIT_SHA
     with:
-      pr_number: >-
-        ${{ github.event_name == 'issue_comment' &&
-        github.event.issue.number || inputs.pr_number }}
+      pr_number: ${{ github.event.issue.number }}
       review_mode: >-
-        ${{ github.event_name == 'issue_comment' &&
-        (github.event.comment.body == '/review deep' && 'deep' ||
-         'default') ||
-        inputs.review_mode }}
+        ${{ github.event.comment.body == '/review deep' && 'deep' ||
+        'default' }}
       reviewer_sha: PINNED_PIPELOCK_REVIEW_COMMIT_SHA
     secrets:
       review_token: ${{ secrets.GITHUB_TOKEN }}

@@ -3,23 +3,6 @@ name: AI PR Review
 on:
   issue_comment:
     types: [created]
-  # This workflow is evaluated only from the default branch. It cannot test a
-  # workflow change before that change merges, but it makes the next change
-  # exercisable without relying on an issue comment.
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to review.
-        required: true
-        type: string
-      review_mode:
-        description: Review depth.
-        required: true
-        default: default
-        type: choice
-        options:
-          - default
-          - deep
 
 permissions:
   contents: read
@@ -39,23 +22,17 @@ jobs:
     if: >-
       github.actor == 'luckyPipewrench' &&
       github.triggering_actor == 'luckyPipewrench' &&
-      ((github.event_name == 'issue_comment' &&
-        github.event.comment.user.login == 'luckyPipewrench' &&
-        github.event.comment.author_association == 'OWNER' &&
-        github.event.issue.pull_request &&
-        (github.event.comment.body == '/review' ||
-         github.event.comment.body == '/review deep')) ||
-       github.event_name == 'workflow_dispatch')
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.author_association == 'OWNER' &&
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '/review' ||
+       github.event.comment.body == '/review deep')
     uses: ./.github/workflows/pr-review-reusable.yaml
     with:
-      pr_number: >-
-        ${{ github.event_name == 'issue_comment' &&
-            github.event.issue.number || inputs.pr_number }}
+      pr_number: ${{ github.event.issue.number }}
       review_mode: >-
-        ${{ github.event_name == 'issue_comment' &&
-            (github.event.comment.body == '/review deep' && 'deep' ||
-             'default') ||
-            inputs.review_mode }}
+        ${{ github.event.comment.body == '/review deep' && 'deep' ||
+            'default' }}
       # A same-repository reusable call resolves this workflow at github.sha.
       # External callers use an explicit full SHA in both positions instead.
       reviewer_sha: ${{ github.sha }}

@@ -2376,34 +2376,29 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
     # reproduce an answer already on the pull request. On a large diff that is
     # twenty minutes and a deep-model bill for no new information.
     #
-    # Skipped only for the comment path. A manual dispatch always reviews,
-    # which is the escape hatch when someone wants a fresh pass anyway, and it
-    # needs no new command to remember. GITHUB_EVENT_NAME is set by the runner.
-    #
     # The scan runs either way, because the notices it collects are what stops
     # a declined command from leaving another comment every time it is typed.
     markers, notices, complete = scan_status_comments(repo, pr_number, token, binding.correlation)
-    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
-        # An incomplete scan is not evidence, and here the cheap outcome is the
-        # one that skips. Uncertainty therefore reviews rather than skips.
-        if complete:
-            done = completed_identical_review(markers, binding.correlation, mode)
-            if done:
-                link = done.get("html_url") or "the existing review"
-                create_notice_once(
-                    repo,
-                    pr_number,
-                    token,
-                    "already-reviewed",
-                    binding,
-                    mode,
-                    f"This exact head was already reviewed in `{mode}` mode: {link}\n\n"
-                    "Nothing has changed since, so a new review would reach the same result. "
-                    "Push a change, or run the workflow manually to review it again anyway.",
-                    notices,
-                )
-                write_action_outputs(claimed="false")
-                return
+    # An incomplete scan is not evidence, and here the cheap outcome is the one
+    # that skips. Uncertainty therefore reviews rather than skips.
+    if complete:
+        done = completed_identical_review(markers, binding.correlation, mode)
+        if done:
+            link = done.get("html_url") or "the existing review"
+            create_notice_once(
+                repo,
+                pr_number,
+                token,
+                "already-reviewed",
+                binding,
+                mode,
+                f"This exact head was already reviewed in `{mode}` mode: {link}\n\n"
+                "Nothing has changed since, so a new review would reach the same result. "
+                "Push a change to request another review.",
+                notices,
+            )
+            write_action_outputs(claimed="false")
+            return
 
     active, scanned = find_running_comment(repo, pr_number, token, binding.correlation)
     if active or not scanned:

@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/release.yaml"
 GORELEASER = ROOT / ".goreleaser.yaml"
 CHART = ROOT / "charts/pipelock/Chart.yaml"
+MANUAL_CHART_WORKFLOW = ROOT / ".github/workflows/publish-chart.yaml"
+WORKFLOWS_DIR = ROOT / ".github/workflows"
 
 GORELEASER_VERSION = "v2.17.1"
 GORELEASER_LINUX_AMD64_SHA256 = "a99bbc7ae0d8d897b07c4c497a9b62f222558804715ef219d1af05a7e417bc80"
@@ -67,7 +69,80 @@ IMAGE_SBOM_ATTESTATION_IDS = (
 )
 
 
+def workflow_events(document: object) -> set[str]:
+    """Return a workflow's trigger names from any of the three accepted forms."""
+    triggers = document.get("on") if isinstance(document, dict) else None
+    if isinstance(triggers, dict):
+        return set(triggers)
+    if isinstance(triggers, list):
+        return {str(entry) for entry in triggers}
+    if isinstance(triggers, str):
+        return {triggers}
+    return set()
+
+
+def grants_package_write(block: object) -> bool:
+    """Report whether a permissions block hands the run registry write access."""
+    if isinstance(block, str):
+        return block == "write-all"
+    if isinstance(block, dict):
+        return block.get("packages") == "write"
+    return False
+
+
+def load_workflow(path: Path) -> object:
+    # BaseLoader for the same reason the reviewer tests use it, and it must stay
+    # BaseLoader. Every other loader reads GitHub's `on:` key as the YAML 1.1
+    # boolean true, so the trigger set this check exists to read would arrive
+    # under a key named True, every workflow would look trigger-less, and the
+    # check would pass on all of them while testing nothing.
+    #
+    # This is not the unsafe load. BaseLoader constructs only strings, lists and
+    # dicts, so it cannot instantiate arbitrary Python; it is strictly narrower
+    # than safe_load, which additionally resolves the bool that breaks this.
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
 class TestReleaseArtifacts(unittest.TestCase):
+    def test_chart_has_no_branch_selectable_manual_publisher(self) -> None:
+        self.assertFalse(
+            MANUAL_CHART_WORKFLOW.exists(),
+            "chart publication must stay in the tag release path; a manual workflow can run branch-selected code",
+        )
+
+    def test_no_workflow_pairs_a_manual_trigger_with_package_write(self) -> None:
+        """The class behind the deleted chart publisher, not just that one file.
+
+        A manual dispatch lets the person starting the run choose the branch,
+        and the branch then supplies the code that spends whatever authority the
+        run holds. Naming one file cannot say anything about the next workflow
+        that reaches for `packages: write`, so this reads the pairing itself.
+
+        It is deliberately narrow, and the filename check above is not redundant
+        with it: this sees only authority granted through GITHUB_TOKEN
+        permissions. A manual publisher authenticating with a stored registry
+        token declares no permissions at all and would pass here.
+        """
+        offenders = []
+        for path in sorted(WORKFLOWS_DIR.glob("*.y*ml")):
+            document = load_workflow(path)
+            if not isinstance(document, dict):
+                continue
+            if "workflow_dispatch" not in workflow_events(document):
+                continue
+            blocks = [document.get("permissions")]
+            jobs = document.get("jobs")
+            if isinstance(jobs, dict):
+                blocks.extend(job.get("permissions") for job in jobs.values() if isinstance(job, dict))
+            if any(grants_package_write(block) for block in blocks):
+                offenders.append(path.name)
+        self.assertEqual(
+            offenders,
+            [],
+            "a manually dispatched workflow must not hold packages: write; "
+            "publish from the tag release path instead",
+        )
+
     def test_chart_changes_version_is_scoped_to_annotation(self) -> None:
         chart = """description: Pipelock appVersion 9.9.9. Decoy.\nannotations:\n  artifacthub.io/changes: |\n    - kind: fixed\n      note: description: Pipelock appVersion 8.8.8. Nested decoy.\n      description: Pipelock appVersion 3.4.0. Real notes.\n  artifacthub.io/containsSecurityUpdates: \"true\"\n"""
         self.assertEqual(changes_appversion(chart), "3.4.0")

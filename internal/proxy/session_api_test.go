@@ -715,6 +715,7 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	et.Record(key, []byte("high-entropy-payload-for-testing"))
 	fb.Append(key, []byte("fragment-data"))
 	fb.Append(key+"|keys", []byte("keys-data"))
+	fb.Append(key+"|path", []byte("path-data"))
 
 	if et.CurrentUsage(key) == 0 {
 		t.Fatal("expected non-zero entropy before reset")
@@ -748,6 +749,12 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	// Entropy should be cleared.
 	if et.CurrentUsage(key) != 0 {
 		t.Error("entropy should be cleared after reset")
+	}
+
+	// Every fragment stream should be cleared, not just the base key: state
+	// left on any one of them survives an operator reset.
+	if got := fb.TotalBufferBytes(); got != 0 {
+		t.Errorf("fragment buffer holds %d bytes after reset, want every stream cleared", got)
 	}
 
 	var resp struct {

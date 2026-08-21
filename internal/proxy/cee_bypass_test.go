@@ -302,7 +302,7 @@ func TestCEEBoundary_ExemptDomainIsEntropyOnly(t *testing.T) {
 			},
 		}
 		res := ceeAdmit(context.Background(), testCEESessionKey,
-			[]byte("x7k9mQ2pR4wL8nJ5vB3cT6yH0"), nil, exemptURL, testCEEAgent,
+			[]byte("x7k9mQ2pR4wL8nJ5vB3cT6yH0"), nil, nil, exemptURL, testCEEAgent,
 			testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m)
 		if res.Blocked || res.EntropyHit {
 			t.Fatalf("entropy budget must be skipped for exempt domain (blocked=%v entropyHit=%v)", res.Blocked, res.EntropyHit)
@@ -331,13 +331,13 @@ func TestCEEBoundary_ExemptDomainIsEntropyOnly(t *testing.T) {
 		}
 		// Split a fake AWS key across two requests to the EXEMPT domain.
 		r1 := ceeAdmit(context.Background(), testCEESessionKey,
-			[]byte(testCEEAWSKeyPrefix), nil, exemptURL, testCEEAgent,
+			[]byte(testCEEAWSKeyPrefix), nil, nil, exemptURL, testCEEAgent,
 			testCEEClientIP, testCEERequestID, ceeCfg, et, fb, sc, logger, m)
 		if r1.Blocked {
 			t.Fatal("first fragment should not block")
 		}
 		r2 := ceeAdmit(context.Background(), testCEESessionKey,
-			[]byte(testCEEAWSKeySuffix), nil, exemptURL, testCEEAgent,
+			[]byte(testCEEAWSKeySuffix), nil, nil, exemptURL, testCEEAgent,
 			testCEEClientIP, "req-2", ceeCfg, et, fb, sc, logger, m)
 		if !r2.Blocked || !r2.FragmentHit {
 			t.Fatalf("BYPASS: fragment DLP must still fire on an entropy-exempt domain "+

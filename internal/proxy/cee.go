@@ -121,7 +121,8 @@ func captureSessionKeyOriginal(agent, clientIP string) string {
 
 // ResetCEEState clears entropy and fragment state for a session identity.
 // Entropy tracker: clears CeeSessionKey(agent, ip) (base key only).
-// Fragment buffer: clears both CeeSessionKey(agent, ip) and CeeSessionKey(agent, ip)+"|keys".
+// Fragment buffer: clears every stream for that identity, so an operator reset
+// leaves no accumulated fragment state behind on any of them.
 // Safe to call with nil trackers (CEE disabled).
 func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scanner.FragmentBuffer) {
 	key := CeeSessionKey(agent, clientIP)
@@ -130,9 +131,22 @@ func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scann
 	}
 	if fb != nil {
 		fb.Delete(key)
-		fb.Delete(key + "|keys")
+		for _, suffix := range ceeFragmentStreamSuffixes {
+			fb.Delete(key + suffix)
+		}
 	}
 }
+
+// CEE fragment streams are buffered separately so unrelated text cannot
+// interrupt a reassembled secret. Each stream is the base session key plus its
+// suffix. ceeFragmentStreamSuffixes lists every non-base stream so an operator
+// reset clears all of them; a new stream must be added here as well.
+const (
+	ceeStreamKeysSuffix = "|keys"
+	ceeStreamPathSuffix = "|path"
+)
+
+var ceeFragmentStreamSuffixes = []string{ceeStreamKeysSuffix, ceeStreamPathSuffix}
 
 // maxCEEBodyRead limits the body bytes read for CEE payload extraction.
 // Larger bodies are unlikely to be fragment-based exfiltration attempts.
@@ -231,14 +245,41 @@ func queryParamKeys(u *url.URL) []byte {
 }
 
 // urlPayload extracts query parameter values in wire order from a parsed URL.
-// Path components are intentionally excluded: repeated paths across requests
-// break DLP regex contiguity in the fragment buffer (e.g. "/get" inserted
-// between fragments makes "AKIA" + "IOSFODNN7EXAMPLE" become
-// "/getAKIA.../getIOSF..." which DLP cannot match). Path-based exfiltration
-// is already caught by per-request DLP (layer 3) and path entropy (layer 4).
+// Path components are excluded here and carried by pathSegments instead, on a
+// separate fragment stream: concatenating whole paths into this stream would
+// interleave static route text between the halves of a split secret and would
+// spend the per-session byte cap on requests that carry no data.
 // Used by the fetch handler where the request body is always empty (GET-only).
 func urlPayload(u *url.URL) []byte {
 	return queryParamPayload(u)
+}
+
+// pathSegments splits a URL path into decoded, non-empty segments in wire
+// order. These feed a dedicated CEE fragment stream (see
+// FragmentBuffer.AppendNovelSegments), which suppresses segments already seen
+// in the session so a repeated static route cannot break the contiguity of a
+// secret split across request paths, nor exhaust the session byte cap.
+func pathSegments(u *url.URL) [][]byte {
+	if u == nil {
+		return nil
+	}
+	// u.Path is already percent-decoded by net/url. Fall back to the raw
+	// form only when decoding produced nothing usable.
+	raw := u.Path
+	if raw == "" {
+		raw = u.RawPath
+	}
+	if raw == "" || raw == "/" {
+		return nil
+	}
+	var segs [][]byte
+	for _, part := range strings.Split(raw, "/") {
+		if part == "" {
+			continue
+		}
+		segs = append(segs, []byte(part))
+	}
+	return segs
 }
 
 // extractOutboundPayload extracts the outbound data visible to the proxy for
@@ -264,11 +305,10 @@ func ceeEntropyExempt(targetURL string, exemptDomains []string) bool {
 }
 
 // entropy measurement and fragment buffering. Includes query parameter values
-// in wire order and request body content. URL path is intentionally excluded:
-// repeated paths across requests break DLP regex contiguity in the fragment
-// buffer. Path-based exfiltration is already caught by per-request DLP (layer
-// 3) and path entropy (layer 4). Re-wraps r.Body after reading so downstream
-// handlers can still consume it.
+// in wire order and request body content. The URL path is excluded here and
+// carried separately by pathSegments, so static route text cannot interleave
+// with this stream. Re-wraps r.Body after reading so downstream handlers can
+// still consume it.
 func extractOutboundPayload(r *http.Request) []byte {
 	var parts []string
 
@@ -347,6 +387,7 @@ func ceeAdmit(
 	ctx context.Context,
 	sessionKey string,
 	outbound, keyPayload []byte,
+	pathPayload [][]byte,
 	targetURL, agent, clientIP, requestID string,
 	ceeCfg config.CrossRequestDetection,
 	et *scanner.EntropyTracker,
@@ -355,7 +396,7 @@ func ceeAdmit(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 ) ceeResult {
-	if len(outbound) == 0 && len(keyPayload) == 0 {
+	if len(outbound) == 0 && len(keyPayload) == 0 && len(pathPayload) == 0 {
 		return ceeResult{}
 	}
 
@@ -403,8 +444,24 @@ func ceeAdmit(
 		// Stream 2: query parameter keys (separate buffer, catches secrets
 		// split across param names like ?AKIA=1 then ?IOSFODNN7EXAMPLE=2).
 		if len(keyPayload) > 0 {
-			keySessionKey := sessionKey + "|keys"
+			keySessionKey := sessionKey + ceeStreamKeysSuffix
 			if res := ceeFragmentScan(ctx, keySessionKey, keyPayload, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
+				result.FragmentHit = true
+				if res.Blocked {
+					result.Blocked = true
+					result.Reason = res.Reason
+					return result
+				}
+			}
+		}
+
+		// Stream 3: URL path segments (separate buffer, catches secrets split
+		// across request paths like /upload/AKIA... then /upload/IOSF...).
+		// Novel-segment appends keep the repeated route text from breaking
+		// contiguity and from consuming the session byte cap.
+		if len(pathPayload) > 0 {
+			pathSessionKey := sessionKey + ceeStreamPathSuffix
+			if res := ceeFragmentScanSegments(ctx, pathSessionKey, pathPayload, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
 				result.FragmentHit = true
 				if res.Blocked {
 					result.Blocked = true
@@ -434,7 +491,46 @@ func ceeFragmentScan(
 	if len(data) == 0 {
 		return nil
 	}
-	if appendResult := fb.Append(bufferKey, data); appendResult.CapacityExceeded {
+	return ceeFragmentEvaluate(ctx, bufferKey, fb.Append(bufferKey, data),
+		targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m)
+}
+
+// ceeFragmentScanSegments is ceeFragmentScan for a segmented stream: only
+// segments the session has not already buffered are appended, so repeated
+// static text neither interrupts a reassembled secret nor fills the buffer.
+func ceeFragmentScanSegments(
+	ctx context.Context,
+	bufferKey string,
+	segments [][]byte,
+	targetURL, agent, clientIP, requestID string,
+	ceeCfg config.CrossRequestDetection,
+	fb *scanner.FragmentBuffer,
+	sc *scanner.Scanner,
+	logger *audit.Logger,
+	m *metrics.Metrics,
+) *ceeResult {
+	if len(segments) == 0 {
+		return nil
+	}
+	return ceeFragmentEvaluate(ctx, bufferKey, fb.AppendNovelSegments(bufferKey, segments),
+		targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m)
+}
+
+// ceeFragmentEvaluate turns an append outcome into a CEE result: it fails
+// closed on capacity exhaustion, then scans the reassembled stream for DLP
+// matches. Shared so every fragment stream reports identically.
+func ceeFragmentEvaluate(
+	ctx context.Context,
+	bufferKey string,
+	appendResult scanner.FragmentAppendResult,
+	targetURL, agent, clientIP, requestID string,
+	ceeCfg config.CrossRequestDetection,
+	fb *scanner.FragmentBuffer,
+	sc *scanner.Scanner,
+	logger *audit.Logger,
+	m *metrics.Metrics,
+) *ceeResult {
+	if appendResult.CapacityExceeded {
 		m.RecordCrossRequestFragmentCapacityExceeded()
 		detail := "fragment reassembly session capacity exhausted; request cannot be safely inspected"
 		actx := newHTTPAuditContext(logger, "CEE", targetURL, clientIP, requestID, agent)

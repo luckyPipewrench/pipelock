@@ -1696,7 +1696,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// URL path, query params, and request body as outbound data.
 	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
 		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), Outbound: extractOutboundPayload(r),
-		KeyPayload: queryParamKeys(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
+		KeyPayload: queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
 		RequestID: requestID, IncludeFragments: true,
 	})
 	if ceeAdmission.Active {

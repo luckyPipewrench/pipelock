@@ -70,7 +70,13 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) FragmentAppe
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
+	return fb.appendLocked(sessionKey, payload)
+}
 
+// appendLocked performs the buffer append. Must be called with fb.mu held and
+// after any due cleanup, so callers that must decide something about existing
+// buffer contents can do so atomically with the append itself.
+func (fb *FragmentBuffer) appendLocked(sessionKey string, payload []byte) FragmentAppendResult {
 	sb, exists := fb.sessions[sessionKey]
 	if !exists {
 		// Check global session cap before creating a new session. Do not evict
@@ -321,4 +327,58 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 			delete(fb.sessions, key)
 		}
 	}
+}
+
+// AppendNovelSegments appends only those segments that are not already present
+// in the session's live (non-expired) buffer, concatenated with no separator.
+//
+// This exists for URL path data. Appending a whole path on every request would
+// interleave static route text between the halves of a split secret
+// ("getAKIA...getIOSF...") so no DLP pattern can match it, and would consume
+// the per-session byte cap on traffic that carries no data. Suppressing
+// already-seen segments keeps a repeated static route to a single appearance
+// while novel segments (the attacker's payload halves) stay contiguous.
+//
+// Novelty is decided under the same lock as the append, so two concurrent
+// requests on one session cannot both observe a segment as unseen.
+func (fb *FragmentBuffer) AppendNovelSegments(sessionKey string, segments [][]byte) FragmentAppendResult {
+	if fb == nil || len(segments) == 0 {
+		return FragmentAppendResult{}
+	}
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.maybeCleanupLocked(time.Now())
+
+	seen := make(map[string]struct{})
+	if sb, ok := fb.sessions[sessionKey]; ok {
+		cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
+		for _, f := range sb.fragments {
+			if f.at.Before(cutoff) {
+				continue
+			}
+			seen[string(f.data)] = struct{}{}
+		}
+	}
+
+	var result FragmentAppendResult
+	for _, seg := range segments {
+		if len(seg) == 0 {
+			continue
+		}
+		// Exact-match suppression only. Substring suppression would be a
+		// bypass: an attacker could first send a harmless segment containing
+		// the second half of a secret, so the real second half is discarded
+		// as "already seen" and the halves never become contiguous.
+		if _, dup := seen[string(seg)]; dup {
+			continue
+		}
+		seen[string(seg)] = struct{}{}
+		// Each segment is its own fragment so exact-match suppression can be
+		// decided against fragment boundaries on later requests.
+		if r := fb.appendLocked(sessionKey, seg); r.CapacityExceeded {
+			result.CapacityExceeded = true
+			return result
+		}
+	}
+	return result
 }

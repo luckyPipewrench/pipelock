@@ -1347,10 +1347,11 @@ func newInterceptHandler(
 		sessionKey := ceeSessionKey(ic.Agent, ic.ClientIP, ic.ActorAuth)
 		outbound := extractOutboundPayload(r)
 		keys := queryParamKeys(r.URL)
+		paths := pathSegments(r.URL)
 		var admission ceeAdmission
 		if ic.Proxy != nil {
 			admission = ic.Proxy.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-				SessionKey: sessionKey, Outbound: outbound, KeyPayload: keys, TargetURL: r.URL.String(),
+				SessionKey: sessionKey, Outbound: outbound, KeyPayload: keys, PathPayload: paths, TargetURL: r.URL.String(),
 				Agent: ic.Agent, ClientIP: ic.ClientIP, RequestID: ic.RequestID, IncludeFragments: true,
 			})
 			// A missing live snapshot is security-relevant only when this
@@ -1368,7 +1369,7 @@ func newInterceptHandler(
 			ceeCfg := ceeEffectiveConfig(ic.Config.CrossRequestDetection, ic.Config.EnforceEnabled())
 			if ceeCfg.Enabled {
 				admission = ceeAdmission{
-					Result: ceeAdmit(r.Context(), sessionKey, outbound, keys, r.URL.String(), ic.Agent, ic.ClientIP, ic.RequestID,
+					Result: ceeAdmit(r.Context(), sessionKey, outbound, keys, paths, r.URL.String(), ic.Agent, ic.ClientIP, ic.RequestID,
 						ceeCfg, ic.EntropyTracker, ic.FragmentBuffer, ic.Scanner, ic.Logger, ic.Metrics),
 					Config:         ceeCfg,
 					AdaptiveConfig: ic.Config.AdaptiveEnforcement,

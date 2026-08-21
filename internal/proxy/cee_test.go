@@ -314,7 +314,7 @@ func TestCeeAdmit_EmptyOutbound(t *testing.T) {
 		EntropyBudget: config.CrossRequestEntropyBudget{Enabled: true},
 	}
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, nil, nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, nil, nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, nil, nil, nil, nil,
 	)
 	if result.Blocked || result.EntropyHit || result.FragmentHit {
@@ -323,7 +323,7 @@ func TestCeeAdmit_EmptyOutbound(t *testing.T) {
 
 	// Also test zero-length slice.
 	result = ceeAdmit(context.Background(),
-		testCEESessionKey, []byte{}, nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte{}, nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, nil, nil, nil, nil,
 	)
 	if result.Blocked || result.EntropyHit || result.FragmentHit {
@@ -349,7 +349,7 @@ func TestCeeAdmit_EntropyBudgetBlock(t *testing.T) {
 
 	payload := []byte("some outbound data with entropy")
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, payload, nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, payload, nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m,
 	)
 	if !result.Blocked {
@@ -381,7 +381,7 @@ func TestCeeAdmit_EntropyBudgetWarn(t *testing.T) {
 
 	payload := []byte("outbound data that exceeds budget")
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, payload, nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, payload, nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m,
 	)
 	if result.Blocked {
@@ -429,7 +429,7 @@ func TestCeeAdmit_EntropyBudgetActionWinsOverSectionAction(t *testing.T) {
 
 	payload := []byte("outbound data that exceeds budget")
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, payload, nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, payload, nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m,
 	)
 
@@ -467,7 +467,7 @@ func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 	part2 := "IOSF" + "ODNN7EXAMPLE"
 
 	result1 := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(part1), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(part1), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if result1.Blocked {
@@ -475,7 +475,7 @@ func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 	}
 
 	result2 := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(part2), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(part2), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if !result2.Blocked {
@@ -510,14 +510,14 @@ func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 	}
 
 	result := ceeAdmit(context.Background(),
-		"new-session", []byte("new fragment"), nil, "http://example.com", testCEEAgent,
+		"new-session", []byte("new fragment"), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if !result.Blocked || !strings.Contains(result.Reason, "session capacity exhausted") {
 		t.Fatalf("capacity result = %+v, want visible fail-closed capacity denial", result)
 	}
 	established := ceeAdmit(context.Background(),
-		"trusted-session", []byte("second fragment"), nil, "http://example.com", testCEEAgent,
+		"trusted-session", []byte("second fragment"), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if established.Blocked {
@@ -554,7 +554,7 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 
 	// First request - prefix only.
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(prefix), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(prefix), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if result.FragmentHit {
@@ -563,7 +563,7 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 
 	// Second request - suffix completes the secret across fragments.
 	result = ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(suffix), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(suffix), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, "req-2", ceeCfg, nil, fb, sc, logger, m,
 	)
 	if result.Blocked {
@@ -599,7 +599,7 @@ func TestCeeAdmit_SingleBodyNoFragmentHit(t *testing.T) {
 
 	fakeKey := "AKI" + "A" + "IOSF" + "ODNN7EXAMPLE"
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(fakeKey), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(fakeKey), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if result.FragmentHit {
@@ -641,7 +641,7 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 	// First request - prefix only. Entropy will fire on this one (tiny budget).
 	prefix := "AKI" + "A"
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(prefix), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(prefix), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, et, fb, sc, logger, m,
 	)
 	if !result.EntropyHit {
@@ -651,7 +651,7 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 	// Second request - suffix completes secret across fragments AND entropy.
 	suffix := "IOSF" + "ODNN7EXAMPLE"
 	result = ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(suffix), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(suffix), nil, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, "req-2", ceeCfg, et, fb, sc, logger, m,
 	)
 	if !result.FragmentHit {
@@ -853,7 +853,7 @@ func TestCeeAdmit_KeyFragmentDLPBlock(t *testing.T) {
 
 	// Request 1: first key fragment.
 	result1 := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte("1"), keyPart1, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte("1"), keyPart1, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if result1.Blocked {
@@ -862,7 +862,7 @@ func TestCeeAdmit_KeyFragmentDLPBlock(t *testing.T) {
 
 	// Request 2: second key fragment completes the secret.
 	result2 := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte("2"), keyPart2, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte("2"), keyPart2, nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if !result2.Blocked {
@@ -894,7 +894,7 @@ func TestCeeAdmit_KeyEntropyTracked(t *testing.T) {
 	// keyPayload carries all the entropy; outbound value is just "1".
 	keyPayload := []byte("x7k9mQ2pR4wL8nJ5vB3cT6yH0")
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte("1"), keyPayload, "http://example.com",
+		testCEESessionKey, []byte("1"), keyPayload, nil, "http://example.com",
 		testCEEAgent, testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m,
 	)
 	if !result.Blocked {
@@ -908,7 +908,7 @@ func TestCeeAdmit_KeyEntropyTracked(t *testing.T) {
 // --- urlPayload tests ---
 
 func TestUrlPayload_PathAndQuery(t *testing.T) {
-	// Path is excluded to prevent repeated paths from breaking DLP contiguity.
+	// Path is excluded from this stream; it is carried by pathSegments instead.
 	u := &url.URL{Path: "/api/v1/tokens", RawQuery: "key=value"}
 	got := string(urlPayload(u))
 	want := testCEEParamValue
@@ -945,7 +945,7 @@ func TestUrlPayload_QueryOnly(t *testing.T) {
 }
 
 func TestExtractOutboundPayload_ExcludesPath(t *testing.T) {
-	// Path is excluded to prevent repeated paths from breaking DLP contiguity.
+	// Path is excluded from this stream; it is carried by pathSegments instead.
 	r := &http.Request{
 		URL: &url.URL{
 			Path:     "/api/secret-data",
@@ -983,7 +983,7 @@ func TestCeeAdmit_PathContributesToEntropy(t *testing.T) {
 	// Simulate path data with high entropy (passed directly, not via urlPayload).
 	pathPayload := []byte("/api/tokens/x7k9mQ2pR4wL8nJ5")
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, pathPayload, nil, "http://example.com/api/tokens/x7k9mQ2pR4wL8nJ5",
+		testCEESessionKey, pathPayload, nil, nil, "http://example.com/api/tokens/x7k9mQ2pR4wL8nJ5",
 		testCEEAgent, testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m,
 	)
 	if !result.Blocked {
@@ -1022,7 +1022,7 @@ func TestCeeAdmit_PathQueryBoundarySecret(t *testing.T) {
 	// Passed directly to ceeAdmit (not via urlPayload which excludes paths).
 	payload1 := []byte("/check/" + "AKI" + "A" + "IOSF")
 	result1 := ceeAdmit(context.Background(),
-		testCEESessionKey, payload1, nil, "http://example.com/check", testCEEAgent,
+		testCEESessionKey, payload1, nil, nil, "http://example.com/check", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if result1.Blocked {
@@ -1032,7 +1032,7 @@ func TestCeeAdmit_PathQueryBoundarySecret(t *testing.T) {
 	// Second request: remaining secret suffix.
 	payload2 := []byte("ODNN7EXAMPLE1234")
 	result2 := ceeAdmit(context.Background(),
-		testCEESessionKey, payload2, nil, "http://example.com/data", testCEEAgent,
+		testCEESessionKey, payload2, nil, nil, "http://example.com/data", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
 	)
 	if !result2.Blocked {

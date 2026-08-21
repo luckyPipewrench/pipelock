@@ -2023,6 +2023,7 @@ type ceeAdmitRequest struct {
 	SessionKey       string
 	Outbound         []byte
 	KeyPayload       []byte
+	PathPayload      [][]byte
 	TargetURL        string
 	Agent            string
 	ClientIP         string
@@ -2055,7 +2056,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 		fb = nil
 	}
 	return ceeAdmission{
-		Result: ceeAdmit(ctx, req.SessionKey, req.Outbound, req.KeyPayload, req.TargetURL, req.Agent, req.ClientIP, req.RequestID,
+		Result: ceeAdmit(ctx, req.SessionKey, req.Outbound, req.KeyPayload, req.PathPayload, req.TargetURL, req.Agent, req.ClientIP, req.RequestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), fb, p.scannerPtr.Load(), p.logger, p.metrics),
 		Config:         ceeCfg,
 		AdaptiveConfig: cfg.AdaptiveEnforcement,
@@ -4483,7 +4484,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// GET-only so the outbound data is the target URL path and query values.
 	admission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
 		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), Outbound: urlPayload(parsed),
-		KeyPayload: queryParamKeys(parsed), TargetURL: displayURL, Agent: agent, ClientIP: clientIP,
+		KeyPayload: queryParamKeys(parsed), PathPayload: pathSegments(parsed), TargetURL: displayURL, Agent: agent, ClientIP: clientIP,
 		RequestID: requestID, IncludeFragments: true,
 	})
 	if admission.Active {

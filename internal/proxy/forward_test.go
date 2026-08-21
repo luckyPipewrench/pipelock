@@ -2960,11 +2960,13 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var initialRequestHits atomic.Int32
 			var finalRequestHits atomic.Int32
 			var finalMethod, finalBody string
 			finalCaptured := make(chan struct{}, 1)
 			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == tt.requestPath && r.URL.RawQuery == "" {
+					initialRequestHits.Add(1)
 					http.Redirect(w, r, "http://git.vendor.example"+tt.redirectPath, tt.redirectStatus)
 					return
 				}
@@ -3011,6 +3013,9 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if got := initialRequestHits.Load(); got != 1 {
+				t.Fatalf("initial request hits = %d, want 1", got)
 			}
 			if got := finalRequestHits.Load(); got != tt.wantFinalRequestHits {
 				t.Fatalf("final request hits = %d, want %d", got, tt.wantFinalRequestHits)

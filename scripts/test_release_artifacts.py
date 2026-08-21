@@ -477,17 +477,25 @@ class TestReleaseArtifacts(unittest.TestCase):
             promote_step_names.index("Verify promotion image inputs"),
             promote_step_names.index("Promote verified image manifests"),
         )
-        for output in (
-            "pipelock_index",
-            "pipelock_init_index",
-            "license_service_index",
-            "pipelock_amd64",
-            "pipelock_arm64",
-            "pipelock_init_amd64",
-            "pipelock_init_arm64",
-            "license_service_amd64",
-            "license_service_arm64",
-        ):
+        expected_outputs = {
+            "pipelock_index": "pipelock_index",
+            "pipelock_init_index": "pipelock_init_index",
+            "license_service_index": "license_service_index",
+            "pipelock_amd64": "pipelock_amd64",
+            "pipelock_arm64": "pipelock_arm64",
+            "pipelock_init_amd64": "pipelock_init_amd64",
+            "pipelock_init_arm64": "pipelock_init_arm64",
+            "license_service_amd64": "license_service_amd64",
+            "license_service_arm64": "license_service_arm64",
+        }
+        self.assertEqual(
+            build["outputs"],
+            {
+                output: f"${{{{ steps.platform-digests.outputs.{step_output} }}}}"
+                for output, step_output in expected_outputs.items()
+            },
+        )
+        for output in expected_outputs:
             self.assertIn(f"needs.release-build.outputs.{output}", self.workflow)
         for digest_name in (
             "PIPELOCK_AMD64_DIGEST",

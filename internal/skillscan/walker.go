@@ -6,7 +6,6 @@ package skillscan
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -488,20 +487,20 @@ func readScanFile(path string, want os.FileInfo) (data []byte, grew bool, refuse
 	// then the only thing standing between us and reading its target. Do not
 	// remove that comparison on the grounds that the open is no-follow.
 	f, err := securefile.OpenRegularNonblocking(filepath.Clean(path))
-	switch {
-	case errors.Is(err, securefile.ErrUnsupportedSecureOpen):
-		// Fatal, and the only fatal open failure. It applies to every file
-		// rather than one, so refusing would yield a scan reporting everything
-		// as uninspected, which is easy to mistake for a scan that ran.
-		return nil, false, "", err
-	case err != nil:
-		// Every other open failure is a refusal, not a broken scan. Lstat
-		// already said this was a regular file, so failing to open it means it
-		// changed underneath us or we cannot reach it: unreadable permissions,
-		// a path swapped to a symlink that O_NOFOLLOW then rejects, a device or
-		// FIFO, or the file being removed. Each is "this one dependency cannot
-		// be inspected", and aborting on any of them hands anyone who can write
-		// a skill directory a way to stop the scan of every OTHER skill.
+	if err != nil {
+		// Every open failure is a refusal rather than a broken scan. Lstat has
+		// already said this is a regular file, so failing to open it means it
+		// changed underneath us or cannot be reached: unreadable permissions, a
+		// path swapped to a symlink that O_NOFOLLOW then rejects, a device or
+		// FIFO, the file being removed, or a platform that provides no secure
+		// open at all. Each one is this single dependency cannot be inspected,
+		// and aborting on any of them hands anyone who can write a skill
+		// directory a way to stop the scan of every OTHER skill.
+		//
+		// Refusing does not make an unopenable file quiet. Each one becomes a
+		// high-severity uninspectable finding naming the path and the reason,
+		// so a platform that can open nothing fails loudly per file rather than
+		// silently, and no unread path presents as clean.
 		return nil, false, "could not be opened for inspection, so its content is unknown", nil
 	}
 	defer func() { _ = f.Close() }()

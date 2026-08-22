@@ -2056,8 +2056,13 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 		fb = nil
 	}
 	return ceeAdmission{
-		Result: ceeAdmit(ctx, req.SessionKey, req.Outbound, req.KeyPayload, req.PathPayload, req.TargetURL, req.Agent, req.ClientIP, req.RequestID,
-			ceeCfg, p.entropyTrackerPtr.Load(), fb, p.scannerPtr.Load(), p.logger, p.metrics),
+		Result: ceeAdmit(ctx, ceeAdmitOptions{
+			SessionKey: req.SessionKey, Outbound: req.Outbound, KeyPayload: req.KeyPayload,
+			PathPayload: req.PathPayload, TargetURL: req.TargetURL, Agent: req.Agent,
+			ClientIP: req.ClientIP, RequestID: req.RequestID, Config: ceeCfg,
+			Entropy: p.entropyTrackerPtr.Load(), Fragments: fb, Scanner: p.scannerPtr.Load(),
+			Logger: p.logger, Metrics: p.metrics,
+		}),
 		Config:         ceeCfg,
 		AdaptiveConfig: cfg.AdaptiveEnforcement,
 		Sessions:       p.sessionMgrPtr.Load(),

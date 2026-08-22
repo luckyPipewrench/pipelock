@@ -301,9 +301,7 @@ func TestCEEBoundary_ExemptDomainIsEntropyOnly(t *testing.T) {
 				ExemptDomains: []string{ceeExemptHost},
 			},
 		}
-		res := ceeAdmit(context.Background(), testCEESessionKey,
-			[]byte("x7k9mQ2pR4wL8nJ5vB3cT6yH0"), nil, nil, exemptURL, testCEEAgent,
-			testCEEClientIP, testCEERequestID, ceeCfg, et, nil, nil, logger, m)
+		res := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte("x7k9mQ2pR4wL8nJ5vB3cT6yH0"), TargetURL: exemptURL, Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
 		if res.Blocked || res.EntropyHit {
 			t.Fatalf("entropy budget must be skipped for exempt domain (blocked=%v entropyHit=%v)", res.Blocked, res.EntropyHit)
 		}
@@ -330,15 +328,11 @@ func TestCEEBoundary_ExemptDomainIsEntropyOnly(t *testing.T) {
 			},
 		}
 		// Split a fake AWS key across two requests to the EXEMPT domain.
-		r1 := ceeAdmit(context.Background(), testCEESessionKey,
-			[]byte(testCEEAWSKeyPrefix), nil, nil, exemptURL, testCEEAgent,
-			testCEEClientIP, testCEERequestID, ceeCfg, et, fb, sc, logger, m)
+		r1 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(testCEEAWSKeyPrefix), TargetURL: exemptURL, Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 		if r1.Blocked {
 			t.Fatal("first fragment should not block")
 		}
-		r2 := ceeAdmit(context.Background(), testCEESessionKey,
-			[]byte(testCEEAWSKeySuffix), nil, nil, exemptURL, testCEEAgent,
-			testCEEClientIP, "req-2", ceeCfg, et, fb, sc, logger, m)
+		r2 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(testCEEAWSKeySuffix), TargetURL: exemptURL, Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: "req-2", Config: ceeCfg, Entropy: et, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 		if !r2.Blocked || !r2.FragmentHit {
 			t.Fatalf("BYPASS: fragment DLP must still fire on an entropy-exempt domain "+
 				"(blocked=%v fragmentHit=%v): exemption widened to skip DLP", r2.Blocked, r2.FragmentHit)

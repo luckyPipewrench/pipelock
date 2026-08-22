@@ -176,3 +176,85 @@ func TestScanTextForDLP_CanaryDisabled(t *testing.T) {
 		}
 	}
 }
+
+// TestCanary_NestedEncodingIsDetected covers the recursive-decode gap. Ordinary
+// DLP walks the bounded recursive decode fixpoint, but the canary matcher used
+// the single-pass decoder, so one extra encoding layer hid the token entirely.
+// A canary exists precisely to prove an exfiltration path, so a single wrapper
+// defeating it is the worst place for this asymmetry.
+func TestCanary_NestedEncodingIsDetected(t *testing.T) {
+	s := testCanaryScanner()
+	defer s.Close()
+
+	canary := testCanaryValue()
+	once := base64.StdEncoding.EncodeToString([]byte(canary))
+	twice := base64.StdEncoding.EncodeToString([]byte(once))
+	thrice := base64.StdEncoding.EncodeToString([]byte(twice))
+
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "single_layer_control", text: once},
+		{name: "double_layer", text: twice},
+		{name: "triple_layer", text: thrice},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := s.scanCanaryText(tc.text)
+			if len(matches) == 0 {
+				t.Fatalf("no canary match for %s; a wrapped canary must still be detected", tc.name)
+			}
+		})
+	}
+}
+
+// TestCanary_NestedEncodingInQuerySegment covers the per-segment path. The
+// whole-text and segment loops are separate call sites, so fixing only the
+// first leaves a query-value bypass open.
+func TestCanary_NestedEncodingInQuerySegment(t *testing.T) {
+	s := testCanaryScanner()
+	defer s.Close()
+
+	once := base64.StdEncoding.EncodeToString([]byte(testCanaryValue()))
+	twice := base64.StdEncoding.EncodeToString([]byte(once))
+
+	matches := s.scanCanaryText("GET /upload?blob=" + twice + "&mode=sync")
+	if len(matches) == 0 {
+		t.Fatal("no canary match for a doubly-encoded query value")
+	}
+}
+
+// BenchmarkScanCanaryText_Clean measures the canary path on ordinary text with
+// canary tokens configured. benchConfig deliberately has none, so the existing
+// text-DLP benchmarks never enter this code.
+func BenchmarkScanCanaryText_Clean(b *testing.B) {
+	cfg := testConfig()
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{{Name: "bench_canary", Value: testCanaryValue()}}
+	s := MustNew(cfg)
+	b.Cleanup(s.Close)
+
+	const text = "GET /v1/models?stream=true HTTP/1.1 host api.vendor.example accept application/json"
+	b.ResetTimer()
+	for b.Loop() {
+		s.scanCanaryText(text)
+	}
+}
+
+// BenchmarkScanCanaryText_NestedEncoded measures the worst realistic case for
+// the recursive decode: a payload that genuinely decodes several layers deep.
+func BenchmarkScanCanaryText_NestedEncoded(b *testing.B) {
+	cfg := testConfig()
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{{Name: "bench_canary", Value: testCanaryValue()}}
+	s := MustNew(cfg)
+	b.Cleanup(s.Close)
+
+	text := base64.StdEncoding.EncodeToString([]byte(
+		base64.StdEncoding.EncodeToString([]byte(
+			base64.StdEncoding.EncodeToString([]byte(testCanaryValue()))))))
+	b.ResetTimer()
+	for b.Loop() {
+		s.scanCanaryText(text)
+	}
+}

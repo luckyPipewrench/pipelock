@@ -66,7 +66,14 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 		matches = append(matches, s.matchCanaryTokens(cleaned, "split", true, ViewDLPNormalized)...)
 	}
 
-	for _, d := range decodeEncodings(cleaned) {
+	// Walk the bounded recursive decode fixpoint, not a single pass. Ordinary
+	// text DLP and the core response scanner already use this decoder in the
+	// same shape; a canary matcher that stopped at one layer meant a single
+	// extra wrapper hid the one token whose whole purpose is to prove an
+	// exfiltration path. The fixpoint's candidate and byte bounds terminate it,
+	// and the candidates are already generated for DLP, so this adds substring
+	// checks rather than decode work.
+	for _, d := range decodeEncodingsRecursiveWithURL(cleaned) {
 		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized))...)
 	}
 
@@ -76,7 +83,10 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 			if len(seg) < 8 {
 				continue
 			}
-			for _, d := range decodeEncodings(seg) {
+			// Same recursion for the per-segment view: the whole-text and
+			// segment loops are separate call sites, so leaving this one
+			// single-pass would keep a query-value bypass open.
+			for _, d := range decodeEncodingsRecursiveWithURL(seg) {
 				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", view.viewLabel))...)
 			}
 			if collapsed := canonicalizeCanaryText(seg); collapsed != "" && collapsed != seg {

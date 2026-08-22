@@ -86,7 +86,7 @@ Exit codes: 0 = no gated findings; 1 = findings at/above --min-severity;
 	cmd.Flags().BoolVar(&baseline, "baseline", false, "write the current inventory to --lock-file, or ./pipelock-skill-lock.yaml when omitted")
 	cmd.Flags().BoolVar(&update, "update", false, "rewrite the lock file after operator review")
 	cmd.Flags().StringVar(&allowlistFile, "allowlist", "", "YAML file of exact combo fingerprints to suppress, each with a justification")
-	cmd.Flags().StringVar(&minSeverity, "min-severity", string(skillscan.SeverityHigh), "minimum severity that causes a non-zero exit (high|medium|low); high gates on provable drift, tamper, direct transfers, and unscanned oversize files")
+	cmd.Flags().StringVar(&minSeverity, "min-severity", string(skillscan.SeverityHigh), "minimum severity that causes a non-zero exit (high|medium|low); high gates on provable drift, tamper, direct transfers, and files left unscanned because they are oversize or not regular files")
 	cmd.Flags().BoolVar(&includeDeps, "include-deps", false, "include dependency install commands in the capability inventory")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit inventory and findings as JSON")
 	cmd.Flags().BoolVar(&inventoryOnly, "inventory-only", false, "emit M1 capability inventory only; skip all findings")

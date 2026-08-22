@@ -39,6 +39,7 @@ func Scan(opts Options) (Result, error) {
 
 	result := Result{LockFile: opts.LockFile}
 	var hiddenPaths, oversizePaths []string
+	var uninspectable []uninspectableRef
 	for _, input := range inputs {
 		skill := buildSkill(input, opts.IncludeDeps)
 		if !opts.InventoryOnly {
@@ -48,6 +49,7 @@ func Scan(opts Options) (Result, error) {
 		result.FilesScanned += len(input.scanFiles)
 		hiddenPaths = append(hiddenPaths, input.scanFiles...)
 		oversizePaths = append(oversizePaths, input.oversize...)
+		uninspectable = append(uninspectable, input.uninspectable...)
 	}
 	sort.Slice(result.Skills, func(i, j int) bool { return result.Skills[i].ID < result.Skills[j].ID })
 
@@ -84,6 +86,30 @@ func Scan(opts Options) (Result, error) {
 				Severity: SeverityHigh,
 				Message:  fmt.Sprintf("file exceeds the %d-byte scan limit and was not scanned", maxScanFileBytes),
 				Evidence: []Evidence{{Path: path}},
+			})
+		}
+		// A path the scanner did not read must not present as clean. The
+		// hidden-instruction pass returns Skipped alongside Findings, and
+		// dropping it meant a NUL byte in SKILL.md suppressed that scan with
+		// no finding and no skip line, which is exactly what the comment above
+		// forbids: baseline mode would then lock the unscanned file.
+		for _, skip := range hidden.Skipped {
+			uninspectable = append(uninspectable, uninspectableRef{
+				path:   skip.Path,
+				reason: skip.Reason,
+			})
+		}
+		seenUninspectable := make(map[string]struct{}, len(uninspectable))
+		for _, ref := range uninspectable {
+			if _, ok := seenUninspectable[ref.path]; ok {
+				continue
+			}
+			seenUninspectable[ref.path] = struct{}{}
+			result.Findings = append(result.Findings, Finding{
+				Kind:     FindingUninspectable,
+				Severity: SeverityHigh,
+				Message:  "path was not scanned and its content is therefore unknown: " + ref.reason,
+				Evidence: []Evidence{{Path: ref.path}},
 			})
 		}
 	}

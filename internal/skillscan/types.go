@@ -31,6 +31,20 @@ const (
 	FindingHidden      FindingKind = "hidden_instruction"
 	FindingAllowlist   FindingKind = "stale_allowlist"
 	FindingOversize    FindingKind = "oversize"
+	// FindingUninspectable reports a referenced path that exists but was
+	// deliberately not read, so a dependency the scanner refuses to inspect
+	// cannot be mistaken for one it inspected and found clean.
+	FindingUninspectable FindingKind = "uninspectable"
+)
+
+// uninspectableRef pairs a path the scanner did not read with why, so the
+// operator-facing finding names which control declined and for what reason.
+type uninspectableRef struct {
+	path   string
+	reason string
+}
+
+const (
 
 	// Direct combos are provable on a single command/expression: the source
 	// and sink match the same line, so the dangerous data flow or target is

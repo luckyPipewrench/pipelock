@@ -29,6 +29,18 @@ const (
 
 var referencedPathPattern = regexp.MustCompile("(?:^|[[:space:]\"'`])((?:\\.{1,2}/)?[A-Za-z0-9_./-]+\\.(?:sh|bash|zsh|py|js|ts|mjs|go|rb|pl|yaml|yml|json|toml))")
 
+// referencedRelativePattern catches a referenced file that carries no
+// recognized extension, such as a `./bootstrap` launcher. It requires an
+// explicit ./ or ../ marker so ordinary prose naming a bare word cannot
+// promote that word to a referenced file; the containment and existence
+// checks in loadReferencedFiles then bound it further.
+var referencedRelativePattern = regexp.MustCompile("(?:^|[[:space:]\"'`])(\\.{1,2}/[A-Za-z0-9_][A-Za-z0-9_./-]*)")
+
+// referenceTrailingPunctuation is trimmed from a matched relative path so a
+// reference at the end of a sentence resolves to the file rather than to the
+// filename plus the sentence's punctuation.
+const referenceTrailingPunctuation = ".,;:!?)]}'\""
+
 type fileContent struct {
 	path    string
 	relPath string
@@ -45,6 +57,11 @@ type skillInput struct {
 	refFiles  []ReferencedFile
 	scanFiles []string
 	oversize  []string
+
+	// uninspectable records paths that exist but were not read, so refusing or
+	// failing to inspect content cannot present as a clean skill. Oversize
+	// files already report this way; see FindingOversize.
+	uninspectable []uninspectableRef
 }
 
 func DefaultLockFile() string {
@@ -235,7 +252,25 @@ func (s *skillInput) loadReferencedFiles() error {
 		if err != nil {
 			continue
 		}
+		if info.IsDir() {
+			// A referenced directory is not an uninspected dependency: the
+			// scripts, bin and hooks directories are walked deliberately by
+			// referencedDirs, and prose pointing at a documentation directory
+			// must not gate a scan.
+			continue
+		}
 		if !info.Mode().IsRegular() {
+			// The path exists but is a symlink, device or socket. Following it
+			// would escape the skill root, so it stays unread - but a
+			// dependency we refuse to inspect must not present as clean, which
+			// is how oversize files already behave. A failed Lstat above is
+			// deliberately NOT recorded: a named path that does not exist is
+			// prose or a stale doc reference, not an uninspected dependency,
+			// and reporting it would flag ordinary writing.
+			s.uninspectable = append(s.uninspectable, uninspectableRef{
+				path:   filepath.Clean(path),
+				reason: "not a regular file; a symlink is not followed because its target can leave the skill directory",
+			})
 			continue
 		}
 		if info.Size() > maxScanFileBytes {
@@ -267,13 +302,19 @@ func (s *skillInput) loadReferencedFiles() error {
 
 func referencedFilesFromSkill(root, content string) map[string]struct{} {
 	refs := map[string]struct{}{}
-	for _, match := range referencedPathPattern.FindAllStringSubmatch(content, -1) {
-		if len(match) < 2 {
-			continue
-		}
-		rel, ok := containedRelativePath(root, match[1])
-		if ok {
-			refs[rel] = struct{}{}
+	for _, pattern := range []*regexp.Regexp{referencedPathPattern, referencedRelativePattern} {
+		for _, match := range pattern.FindAllStringSubmatch(content, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			candidate := strings.TrimRight(match[1], referenceTrailingPunctuation)
+			if candidate == "" {
+				continue
+			}
+			rel, ok := containedRelativePath(root, candidate)
+			if ok {
+				refs[rel] = struct{}{}
+			}
 		}
 	}
 	return refs

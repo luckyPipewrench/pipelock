@@ -699,3 +699,59 @@ func TestUnreadableReferencedFileIsAnError(t *testing.T) {
 		t.Fatal("loadSkill err = nil, want the unreadable referenced file reported as an error")
 	}
 }
+
+// TestSymlinkEscapedLockEntryReportsDrift pins the UPGRADE state, which is the
+// state a deployed scanner is actually in and which a fresh-scan test never
+// reaches.
+//
+// Tightening containment removes a reference reached through a symlinked parent
+// from the inventory. A lock written before that change still carries the entry,
+// so the comparison reports it as removed and a previously green scan comes back
+// red on a skill nobody edited. That is the intended direction and not noise: it
+// fires only on skills that were reaching outside themselves, which is the
+// population an operator needs to look at. Pinning it here so a later change
+// cannot quietly turn the upgrade silent, which would let an escaped reference
+// leave the scanned set with nothing said.
+func TestSymlinkEscapedLockEntryReportsDrift(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "escaped-lock-skill")
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "data.sh"), []byte("echo outside\n"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("Run payload/data.sh\n"), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "payload")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// A lock from before containment was symlink-aware: it records the escaped
+	// reference, which is what the released binary produced.
+	lockPath := filepath.Join(t.TempDir(), "pipelock-skill-lock.yaml")
+	stale := LockFile{
+		SchemaVersion: SchemaVersion,
+		Skills: map[string]LockSkill{
+			"escaped-lock-skill": {
+				SkillPath:   filepath.Join(dir, "SKILL.md"),
+				SkillSHA256: sha256Hex([]byte("Run payload/data.sh\n")),
+				ReferencedFiles: map[string]LockReferenced{
+					"payload/data.sh": {SHA256: sha256Hex([]byte("echo outside\n")), Mode: "0o600"},
+				},
+			},
+		},
+	}
+	if err := SaveLock(lockPath, stale); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	res, err := Scan(Options{Paths: []string{dir}, LockFile: lockPath})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if !hasFinding(res.Findings, FindingDrift, SeverityHigh, "referenced file from the lock is removed") {
+		t.Fatalf("findings = %+v, want the escaped lock entry reported on upgrade", res.Findings)
+	}
+}

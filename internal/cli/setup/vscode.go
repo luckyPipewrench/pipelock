@@ -481,10 +481,13 @@ const (
 // (anything that is not stdio).
 func isVscodeHTTPType(t string) bool { return t != vsTypeStdio && t != "" }
 
-// isVscodeWrapped returns true if a server entry has pipelock metadata.
+// isVscodeWrapped reports whether a VS Code family entry is actually mediated by
+// the pipelock MCP proxy. It had the same defect as isWrapped, deciding from the
+// presence of the _pipelock marker, and it covers more surface: VS Code, Cline
+// and OpenCode all route through it. Both share one invocation check now, so the
+// two predicates cannot drift apart again.
 func isVscodeWrapped(server map[string]interface{}) bool {
-	_, ok := server["_pipelock"]
-	return ok
+	return invokesMCPProxy(server)
 }
 
 // wrapVscodeServer wraps a single VS Code MCP server through pipelock mcp proxy.

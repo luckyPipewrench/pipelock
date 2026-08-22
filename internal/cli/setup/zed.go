@@ -340,6 +340,7 @@ func installZedPath(cmd *cobra.Command, targetPath, exe, configFile string, dryR
 			skipped++
 			continue
 		}
+		warnUnmediatedMarker(cmd.ErrOrStderr(), name, server)
 
 		newServer, meta, plan, wrapErr := wrapClineServer(server, exe, configFile, targetPath, name)
 		if wrapErr != nil {

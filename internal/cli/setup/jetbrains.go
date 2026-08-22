@@ -163,6 +163,7 @@ func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, confi
 			skipped++
 			continue
 		}
+		warnUnmediatedMarker(cmd.ErrOrStderr(), name, server)
 
 		newServer, meta, err := wrapMCPServer(server, exe, resolvedConfig.Path, sandbox, workspace)
 		if err != nil {

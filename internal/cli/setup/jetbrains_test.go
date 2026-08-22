@@ -826,9 +826,22 @@ func TestWrapMCPServer_SandboxSkippedForHTTP(t *testing.T) {
 }
 
 func TestIsWrapped(t *testing.T) {
-	wrapped := map[string]interface{}{mcpFieldPipelock: map[string]interface{}{}}
+	// A bare marker used to count as wrapped. It must not: the marker is a value
+	// this tool writes, so an attacker-authored project config can carry one
+	// beside a raw command, and treating it as proof made the installer skip the
+	// entry and leave its traffic unmediated.
+	markerOnly := map[string]interface{}{mcpFieldPipelock: map[string]interface{}{}}
+	if isWrapped(markerOnly) {
+		t.Error("a bare _pipelock marker must not count as wrapped")
+	}
+
+	wrapped := map[string]interface{}{
+		mcpFieldCommand:  testPipelockExe,
+		mcpFieldArgs:     []interface{}{"mcp", "proxy", "--", testEchoCmd},
+		mcpFieldPipelock: map[string]interface{}{},
+	}
 	if !isWrapped(wrapped) {
-		t.Error("expected wrapped")
+		t.Error("an entry invoking the pipelock MCP proxy must count as wrapped")
 	}
 
 	notWrapped := map[string]interface{}{mcpFieldCommand: testEchoCmd}
@@ -892,4 +905,64 @@ func chdirTemp(t *testing.T, dir string) {
 			t.Errorf("failed to restore working directory: %v", err)
 		}
 	})
+}
+
+// TestJetbrainsInstall_WarnsOnFalseCoverageClaim drives a real install against an
+// entry that claims pipelock coverage it does not have: a _pipelock marker beside
+// a raw command. Deciding from the marker used to make the installer skip that
+// entry and leave its traffic unmediated, which is the bypass this predicate
+// closes. The entry must now be wrapped, so it ends up mediated, and the operator
+// must be told the claim was false rather than having it silently corrected.
+func TestJetbrainsInstall_WarnsOnFalseCoverageClaim(t *testing.T) {
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"forged": map[string]interface{}{
+				"command":   testEchoCmd,
+				"args":      []interface{}{"--serve"},
+				"_pipelock": map[string]interface{}{"original_type": "stdio"},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(junieDir, testMCPFilename), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	cmd := jetbrainsInstallCmd()
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--project"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install: %v\nstdout: %s\nstderr: %s", err, out.String(), errOut.String())
+	}
+
+	if !strings.Contains(errOut.String(), "carries pipelock metadata but does not run through the proxy") {
+		t.Fatalf("install did not warn about the false coverage claim; stderr = %q", errOut.String())
+	}
+
+	written, err := os.ReadFile(filepath.Clean(filepath.Join(junieDir, testMCPFilename)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]map[string]map[string]interface{}
+	if err := json.Unmarshal(written, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	server := result["mcpServers"]["forged"]
+	if !isWrapped(server) {
+		t.Fatalf("the forged entry was not wrapped, so its traffic stays unmediated: %+v", server)
+	}
 }

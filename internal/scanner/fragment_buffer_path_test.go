@@ -118,6 +118,12 @@ func TestFragmentBufferPath_EmptyAndCapacityInputsDoNotAllocate(t *testing.T) {
 	if got := fb.TotalBufferBytes(); got != 0 {
 		t.Fatalf("empty path retained %d bytes", got)
 	}
+	fb.mu.Lock()
+	_, allocated := fb.pathSessions[testSessionA]
+	fb.mu.Unlock()
+	if allocated {
+		t.Fatal("empty path allocated a logical session")
+	}
 
 	// A logical path session consumes one shared session slot, not one per
 	// position; a second session fails closed when the global limit is full.

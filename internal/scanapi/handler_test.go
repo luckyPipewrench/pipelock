@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1809,4 +1810,105 @@ func deepScanAPIJSONObject(value string, depth int) string {
 		b.WriteByte('}')
 	}
 	return b.String()
+}
+
+// TestHandler_DeeplyEncodedEmbeddedURLDoesNotAllow covers the silent
+// decode-ceiling fail-open. The Scan API peels a bounded number of
+// percent/HTML passes looking for an embedded URL. The token-count cap already
+// sets truncated and therefore denies, but the decode-pass and view-count caps
+// were silent, so a URL wrapped past the ceiling produced no token, an empty
+// result set, truncated=false, and a clean allow.
+//
+// The boundary is the point: at the ceiling the metadata endpoint is denied as
+// an SSRF, and one layer beyond it the same payload was allowed with no
+// findings at all. Incomplete inspection must never present as clean.
+func TestHandler_DeeplyEncodedEmbeddedURLDoesNotAllow(t *testing.T) {
+	const metadataURL = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+
+	encode := func(layers int) string {
+		payload := metadataURL
+		for range layers {
+			payload = url.QueryEscape(payload)
+		}
+		return payload
+	}
+
+	for _, tc := range []struct {
+		name   string
+		layers int
+	}{
+		{name: "at_ceiling_control", layers: 6},
+		{name: "one_past_ceiling", layers: 7},
+		{name: "far_past_ceiling", layers: 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHandler(t)
+			body := `{"kind":"dlp","input":{"text":"fetch ` + encode(tc.layers) + `"}}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("code = %d, want 200; body = %s", w.Code, w.Body.String())
+			}
+			var resp Response
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if resp.Decision != DecisionDeny {
+				t.Fatalf("decision = %q, want deny; a URL the scanner never finished decoding must not read as clean (findings=%+v)",
+					resp.Decision, resp.Findings)
+			}
+			if len(resp.Findings) == 0 {
+				t.Fatal("deny carried no findings; the operator needs to know why")
+			}
+		})
+	}
+}
+
+// TestHandler_OrdinaryEncodedContentStillAllows is the availability guard for
+// the truncation change. Making incomplete inspection deny is only safe if
+// ordinary content converges well inside the bounds. A benign URL, a couple of
+// encoding layers, and HTML entities must all still allow, or an operator turns
+// the Scan API off.
+func TestHandler_OrdinaryEncodedContentStillAllows(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "plain_prose", text: "please summarize the quarterly report"},
+		{name: "plain_url", text: "see https://docs.vendor.example/guide for details"},
+		{name: "single_encoded_url", text: "see " + url.QueryEscape("https://docs.vendor.example/guide?a=1&b=2")},
+		{name: "double_encoded_url", text: "see " + url.QueryEscape(url.QueryEscape("https://docs.vendor.example/guide"))},
+		{name: "html_entities", text: "see https://docs.vendor.example/guide?a=1&amp;b=2&amp;c=3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHandler(t)
+			payload, err := json.Marshal(map[string]any{
+				"kind":  "dlp",
+				"input": map[string]string{"text": tc.text},
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(payload)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("code = %d, want 200; body = %s", w.Code, w.Body.String())
+			}
+			var resp Response
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if resp.Decision != DecisionAllow {
+				t.Fatalf("decision = %q, want allow for ordinary content; findings = %+v", resp.Decision, resp.Findings)
+			}
+		})
+	}
 }

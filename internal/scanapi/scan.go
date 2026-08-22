@@ -144,7 +144,8 @@ func scanEmbeddedTextURLs(ctx context.Context, sc *scanner.Scanner, text string)
 func embeddedHTTPURLTokens(text string, limit int) ([]string, bool) {
 	seen := make(map[string]struct{})
 	tokens := make([]string, 0, limit)
-	for _, view := range embeddedURLTextViews(text) {
+	views, viewsTruncated := embeddedURLTextViews(text)
+	for _, view := range views {
 		for _, raw := range embeddedHTTPURLTokenRe.FindAllString(view, -1) {
 			token := strings.TrimRight(raw, ".,;)]}")
 			if token == "" {
@@ -160,14 +161,24 @@ func embeddedHTTPURLTokens(text string, limit int) ([]string, bool) {
 			tokens = append(tokens, token)
 		}
 	}
-	return tokens, false
+	// A view-building bound that stopped early means the token list may be
+	// incomplete even when the token cap was never reached.
+	return tokens, viewsTruncated
 }
 
-func embeddedURLTextViews(text string) []string {
+// embeddedURLTextViews builds the decoded views the URL token matcher reads.
+// It returns truncated=true when either bound stopped it while more decoding
+// was still productive: the view cap, or the decode-pass budget. Both were
+// previously silent, so a URL wrapped past the ceiling yielded no token and the
+// caller reported a clean allow on content it had not finished inspecting. The
+// token-count cap already reported this way; these two now match it.
+func embeddedURLTextViews(text string) ([]string, bool) {
 	views := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
+	truncated := false
 	addView := func(view string) {
 		if len(views) >= maxEmbeddedURLTextViews {
+			truncated = true
 			return
 		}
 		if _, ok := seen[view]; ok {
@@ -185,6 +196,7 @@ func embeddedURLTextViews(text string) []string {
 	}
 	addView(text)
 
+	converged := false
 	for range maxEmbeddedURLDecodePasses {
 		startLen := len(views)
 		for _, view := range views[:startLen] {
@@ -202,10 +214,18 @@ func embeddedURLTextViews(text string) []string {
 			}
 		}
 		if len(views) == startLen {
+			// Nothing new decoded, so the payload is fully peeled. This is the
+			// normal exit and the only one that proves inspection completed.
+			converged = true
 			break
 		}
 	}
-	return views
+	if !converged {
+		// The pass budget ran out while the previous pass was still producing
+		// new views, so at least one more layer exists that was never read.
+		truncated = true
+	}
+	return views, truncated
 }
 
 func embeddedURLResultIsFinding(result scanner.Result) bool {

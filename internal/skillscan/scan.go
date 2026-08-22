@@ -68,10 +68,21 @@ func Scan(opts Options) (Result, error) {
 	}
 	// Unread paths bar a lock refresh regardless of reporting mode, so collect
 	// them outside the findings block.
+	// Consume BOTH buckets. filescan now separates a refusal, an agent-context
+	// file whose content could not be inspected, from an ordinary advisory skip.
+	// SKILL.md is an agent-context name, so reading only Skipped would move every
+	// unread skill file into a bucket nobody looks at and silently reopen the gap
+	// that reporting these closed.
 	for _, skip := range hidden.Skipped {
 		uninspectable = append(uninspectable, uninspectableRef{
 			path:   skip.Path,
 			reason: skip.Reason,
+		})
+	}
+	for _, refused := range hidden.Refused {
+		uninspectable = append(uninspectable, uninspectableRef{
+			path:   refused.Path,
+			reason: refused.Reason,
 		})
 	}
 

@@ -106,8 +106,19 @@ func TestScanCmd_MinSeverityGating(t *testing.T) {
 
 func TestScanCmd_SkipPolicy(t *testing.T) {
 	dir := t.TempDir()
+	// Genuinely binary content. The old fixture was "a\x00b", which counted as
+	// binary only under the previous rule that any NUL meant binary; that input is
+	// now correctly scanned as text, so the skip policy needs real binary data.
 	binary := filepath.Join(dir, "blob.bin")
-	if err := os.WriteFile(binary, []byte{'a', 0, 'b'}, 0o600); err != nil {
+	blob := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+	for i := range 256 {
+		if i%3 == 0 {
+			blob = append(blob, 0)
+			continue
+		}
+		blob = append(blob, byte(128+(i%127)))
+	}
+	if err := os.WriteFile(binary, blob, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

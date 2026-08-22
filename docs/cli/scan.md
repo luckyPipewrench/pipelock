@@ -1,8 +1,12 @@
 # `pipelock scan`
 
-`pipelock scan` inspects files for invisible-Unicode and bidi-control injection: zero-width, bidirectional-override, Unicode-tag, and control characters that hide instructions inside agent-context files (`CLAUDE.md`, `.cursorrules`, `AGENTS.md`, skill definitions) where a human reviewer cannot see them.
+`pipelock scan` recursively inspects readable regular text files for invisible-Unicode and bidi-control injection: zero-width, bidirectional-override, Unicode-tag, and control characters that hide instructions where a human reviewer cannot see them. The target is agent-context content such as `CLAUDE.md`, `AGENTS.md`, `.cursorrules` and skill definitions, but the scan does not decide which files are agent context: it reads every eligible text file, so a context file under a name nobody has heard of yet is still inspected.
 
-This is the local-file half of supply-chain prompt injection. The network proxy never sees files at rest, so this command surfaces that vector and exits non-zero so pre-commit hooks and CI can gate on it. Detection is free-tier and adds no dependencies; it reuses the same `normalize.InvisibleRanges` data the runtime scanner strips, so file detection never diverges from proxy detection.
+Content is classified before it is read as text. A file that is text carrying one or a few NUL bytes is scanned, because a single NUL is not evidence that a document is binary. Ordinary binary assets and UTF-16 text are not scanned and are reported as skips.
+
+The names matter in exactly one place. When a file the scanner cannot inspect carries a base name from the agent-context list, the result is a **refusal** rather than a skip, and the command exits 2 whether that file was named directly or found while walking a directory. The scanner will not report clean on the one file class this command exists to check. The built-in list is `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `.cursorrules`, `.clinerules` and `.windsurfrules`, matched case-insensitively on the base name; it is not exhaustive and operators can extend it. Because the list only decides refusal-versus-skip and never decides what gets scanned, a name missing from it costs coverage only for content that is also undecodable.
+
+This is the local-file half of supply-chain prompt injection. The network proxy never sees files at rest, so this command surfaces that vector and exits non-zero so pre-commit hooks and CI can gate on it. Detection is free-tier and adds no dependencies. It is seeded from the same `normalize.InvisibleRanges` data the runtime scanner strips, and then adds deceptive characters that set omits, so the file set is a superset of the proxy set rather than an exact copy of it.
 
 ```sh
 pipelock scan                          # scan the current directory

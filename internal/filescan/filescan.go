@@ -24,6 +24,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Category classifies an invisible-character finding by attack relevance.
@@ -74,9 +76,16 @@ type Skip struct {
 
 // Result aggregates a scan over one or more paths.
 type Result struct {
-	Findings     []Finding `json:"findings"`
-	Skipped      []Skip    `json:"skipped"`
-	FilesScanned int       `json:"files_scanned"`
+	Findings []Finding `json:"findings"`
+	Skipped  []Skip    `json:"skipped"`
+	// Refused are declared agent-context paths whose content could not be
+	// inspected. They are separate from Skipped because a skip is advisory,
+	// while an uninspected context file is a coverage failure: the scanner
+	// cannot say anything about the one class of file this command exists to
+	// check, so reporting clean would be a false statement rather than a
+	// tradeoff.
+	Refused      []Skip `json:"refused,omitempty"`
+	FilesScanned int    `json:"files_scanned"`
 }
 
 // Options tune a path scan. The zero value scans every readable text file under
@@ -92,6 +101,14 @@ type Options struct {
 	// (node_modules, vendor, .git, ...). Off by default for speed; on when a
 	// supply-chain audit must cover vendored context files.
 	IncludeDepDirs bool
+	// ExtraContextFiles are additional base names treated as agent context, in
+	// addition to the built-in set. The built-in list is a FALLBACK and not the
+	// definition of what gets scanned: every readable text file is scanned
+	// whatever it is called, so a newly named context file written in ordinary
+	// UTF-8 is still inspected. This list only decides whose UNINSPECTABLE
+	// content is a refusal rather than an advisory skip, which is why it can stay
+	// short without becoming a coverage gate that rots.
+	ExtraContextFiles []string
 }
 
 const defaultMaxFileBytes = 5 << 20 // 5 MiB
@@ -240,22 +257,182 @@ func readRegularFile(path string, maxBytes int64) (content string, skipReason st
 	if int64(len(data)) > maxBytes {
 		return "", fmt.Sprintf("exceeds %d-byte limit (grew during read)", maxBytes), nil
 	}
-	if looksBinary(data) {
-		return "", "binary (NUL byte)", nil
+	switch classifyContent(data) {
+	case classUTF16:
+		return "", "UTF-16 text (this scanner reads UTF-8)", nil
+	case classBinary:
+		return "", "binary content", nil
+	case classText:
 	}
 	return string(data), "", nil
 }
 
-// looksBinary reports whether b contains a NUL byte, the cheap heuristic for a
-// binary file we should not scan as text. Known limitations: (1) an attacker who
-// can write a NUL into an otherwise-text file suppresses scanning of that file -
-// this matches git's binary heuristic and an attacker planting NULs in tracked
-// text files is already past this control; (2) UTF-16 text is NUL-rich and is
-// therefore skipped (reported as a skip), since pipelock's context files are
-// UTF-8. Both are surfaced as skips, never silent.
-func looksBinary(b []byte) bool {
+// Byte-classification thresholds. A NUL byte alone used to mean "binary, do not
+// scan", which let one appended NUL suppress scanning of an otherwise ordinary
+// text file. Classification now asks whether the content is text that happens to
+// contain a NUL, which is scannable, or genuinely binary, which is not.
+const (
+	// maxSparseNULs and maxNULFraction bound how much NUL a file may contain and
+	// still count as text. Either bound satisfies it, so a short file with one or
+	// two stray NULs passes without needing a fraction, and a long file is judged
+	// on proportion.
+	maxSparseNULs   = 2
+	maxNULFraction  = 0.05
+	minPrintablePct = 0.95
+
+	// utf16SampleBytes bounds the BOM-less UTF-16 probe; a document's encoding is
+	// decided by its opening bytes, not by reading all of it.
+	utf16SampleBytes = 4096
+	// minUTF16NULs is the smallest number of parity-aligned NULs worth treating
+	// as UTF-16 rather than as noise.
+	minUTF16NULs = 2
+)
+
+// contentClass is how the scanner classified a file's bytes.
+type contentClass int
+
+const (
+	// classText is scannable as text, including text carrying a stray NUL.
+	classText contentClass = iota
+	// classUTF16 is text in an encoding this scanner does not decode.
+	classUTF16
+	// classBinary is not text at all.
+	classBinary
+)
+
+// classifyContent decides whether bytes are scannable text, undecodable UTF-16,
+// or binary. UTF-16 is tested BEFORE UTF-8 because ASCII UTF-16LE such as
+// "A\x00B\x00" is also valid UTF-8, so a UTF-8 check alone would accept it and a
+// NUL-count check alone would reject ordinary text.
+//
+// A NUL's position is deliberately not special beyond the UTF-16 parity probe.
+// Treating a trailing NUL differently would mean moving one byte changed the
+// verdict, which is a bypass rather than a heuristic.
+func classifyContent(b []byte) contentClass {
+	if len(b) == 0 {
+		return classText
+	}
+	if looksUTF16(b) {
+		return classUTF16
+	}
+	nulCount := 0
 	for _, c := range b {
 		if c == 0 {
+			nulCount++
+		}
+	}
+	if nulCount > maxSparseNULs && float64(nulCount)/float64(len(b)) > maxNULFraction {
+		return classBinary
+	}
+	if !utf8.Valid(b) {
+		return classBinary
+	}
+	if printableFraction(b) < minPrintablePct {
+		return classBinary
+	}
+	return classText
+}
+
+// looksUTF16 reports whether bytes look like UTF-16, by BOM or by NUL bytes
+// landing consistently on one parity within a bounded opening sample. Real
+// UTF-16 ASCII alternates value and NUL, so the NULs share a parity; binary data
+// and NUL-bearing UTF-8 do not.
+func looksUTF16(b []byte) bool {
+	if len(b) >= 2 {
+		if (b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF) {
+			return true
+		}
+	}
+	sample := b
+	if len(sample) > utf16SampleBytes {
+		sample = sample[:utf16SampleBytes]
+	}
+	if len(sample) < 4 || len(sample)%2 != 0 {
+		return false
+	}
+	var even, odd int
+	for i, c := range sample {
+		if c != 0 {
+			continue
+		}
+		if i%2 == 0 {
+			even++
+		} else {
+			odd++
+		}
+	}
+	total := even + odd
+	if total < minUTF16NULs {
+		return false
+	}
+	// All the NULs sit on one parity: the alternating shape of UTF-16 ASCII.
+	return even == 0 || odd == 0
+}
+
+// printableFraction is the share of decoded runes that are text-like: printable,
+// ordinary whitespace, a NUL, or one of the characters this scanner hunts.
+//
+// That last clause is load-bearing and was missing at first, which inverted the
+// whole control. Zero-width and bidi characters are Unicode format characters, so
+// unicode.IsPrint reports false for them. Counting them against text-ness meant a
+// file containing a planted zero-width space looked less like text, and a small
+// file containing one looked like binary and was refused. The scanner would have
+// declined to inspect precisely the files carrying the evidence it exists to find.
+//
+// NUL counts as acceptable because the bounds in classifyContent have already
+// judged how much of it there is; counting it twice would reject the sparse-NUL
+// text this classification exists to keep scanning.
+func printableFraction(b []byte) float64 {
+	var total, ok int
+	for _, r := range string(b) {
+		total++
+		switch {
+		case r == 0:
+			ok++
+		case r == '\n' || r == '\r' || r == '\t':
+			ok++
+		case unicode.IsPrint(r):
+			ok++
+		default:
+			// A character this scanner classifies as suspect is evidence, not a
+			// sign the file is binary.
+			if _, suspect := suspects[r]; suspect {
+				ok++
+			}
+		}
+	}
+	if total == 0 {
+		return 1
+	}
+	return float64(ok) / float64(total)
+}
+
+// defaultContextFiles are the base names this project documents as agent context.
+// Being on this list does not decide whether a file is scanned; it decides that
+// failing to inspect one is a refusal rather than a skip.
+var defaultContextFiles = map[string]struct{}{
+	"CLAUDE.md":      {},
+	"AGENTS.md":      {},
+	"GEMINI.md":      {},
+	"SKILL.md":       {},
+	".cursorrules":   {},
+	".clinerules":    {},
+	".windsurfrules": {},
+}
+
+// isContextFile reports whether a path's base name is treated as agent context.
+// Matching is on the base name so a context file anywhere in the tree counts,
+// and it is case-insensitive because these names are written inconsistently in
+// the wild and a case difference is not a reason to downgrade a refusal.
+func isContextFile(path string, extra []string) bool {
+	base := filepath.Base(path)
+	for name := range defaultContextFiles {
+		if strings.EqualFold(base, name) {
+			return true
+		}
+	}
+	for _, name := range extra {
+		if strings.EqualFold(base, name) {
 			return true
 		}
 	}
@@ -294,14 +471,27 @@ func ScanPaths(paths []string, opts Options) (Result, error) {
 	}
 
 	var res Result
+	// record routes an uninspected path. A declared agent-context file becomes a
+	// refusal, because the scanner cannot report on the one file class this
+	// command exists to check. Everything else stays an advisory skip, so an
+	// ordinary binary asset in a tree does not fail a scan.
+	record := func(p, reason string) {
+		entry := Skip{Path: p, Reason: reason}
+		if isContextFile(p, opts.ExtraContextFiles) {
+			res.Refused = append(res.Refused, entry)
+			return
+		}
+		res.Skipped = append(res.Skipped, entry)
+	}
+
 	scanOne := func(p string) {
 		findings, scanned, reason, err := ScanFile(p, opts.MaxFileBytes)
 		if err != nil {
-			res.Skipped = append(res.Skipped, Skip{Path: p, Reason: "read error: " + err.Error()})
+			record(p, "read error: "+err.Error())
 			return
 		}
 		if !scanned {
-			res.Skipped = append(res.Skipped, Skip{Path: p, Reason: reason})
+			record(p, reason)
 			return
 		}
 		res.FilesScanned++
@@ -368,11 +558,19 @@ func (r Result) WriteReport(w *bufio.Writer) {
 	if s := r.Summary(); s != "" {
 		_, _ = w.WriteString(s)
 	}
+	for _, rf := range r.Refused {
+		_, _ = fmt.Fprintf(w, "REFUSED %s: %s (agent-context file, content unknown)\n", rf.Path, rf.Reason)
+	}
 	for _, sk := range r.Skipped {
 		_, _ = fmt.Fprintf(w, "skipped %s: %s\n", sk.Path, sk.Reason)
 	}
-	_, _ = fmt.Fprintf(w, "scanned %d file(s), %d skipped, %d finding(s)\n",
-		r.FilesScanned, len(r.Skipped), len(r.Findings))
+	if len(r.Refused) > 0 {
+		_, _ = fmt.Fprintf(w, "scanned %d file(s), %d skipped, %d refused, %d finding(s)\n",
+			r.FilesScanned, len(r.Skipped), len(r.Refused), len(r.Findings))
+	} else {
+		_, _ = fmt.Fprintf(w, "scanned %d file(s), %d skipped, %d finding(s)\n",
+			r.FilesScanned, len(r.Skipped), len(r.Findings))
+	}
 	_ = w.Flush()
 }
 

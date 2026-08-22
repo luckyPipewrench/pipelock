@@ -303,10 +303,9 @@ func (s *skillInput) loadReferencedFiles() error {
 func referencedFilesFromSkill(root, content string) map[string]struct{} {
 	refs := map[string]struct{}{}
 	for _, pattern := range []*regexp.Regexp{referencedPathPattern, referencedRelativePattern} {
+		// Both patterns carry exactly one capture group, so every match has the
+		// full text at 0 and the path at 1.
 		for _, match := range pattern.FindAllStringSubmatch(content, -1) {
-			if len(match) < 2 {
-				continue
-			}
 			for _, candidate := range referenceCandidates(root, match[1]) {
 				refs[candidate] = struct{}{}
 			}

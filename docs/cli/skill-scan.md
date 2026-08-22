@@ -21,7 +21,7 @@ When no path is given, Pipelock scans existing local skill directories under `$X
 
 | Class | Severity | What it means |
 |---|---|---|
-| Provable | `high` | Lock drift (content hash change), referenced-file tamper, files left unscanned because they are oversize or are not regular files, and **direct** transfers where the command shows an obvious source-to-network transfer (e.g. `cat ~/.aws/credentials \| curl ...`). |
+| Provable | `high` | Lock drift (content hash change), referenced-file tamper, an `oversize` file past the size limit, an `uninspectable` path the scanner declined to read, and **direct** transfers where the command shows an obvious source-to-network transfer (e.g. `cat ~/.aws/credentials \| curl ...`). Both `oversize` and `uninspectable` also bar a lock refresh. |
 | Advisory co-occurrence | `medium` / `low` | A source and sink appear in the **same code region within a few lines** but no direct transfer is shown. Named `*-cooccurrence`. Worth a look, not an assertion of exfiltration. |
 | Inventory | none | Capability mentions (including in prose). Descriptive context, never a finding by itself. |
 
@@ -37,7 +37,7 @@ Scanned script files are those named by relative path in `SKILL.md` plus every f
 
 A relative path counts as a reference whether or not it carries a recognized extension, so a launcher named `./bootstrap` is scanned and locked exactly like `./bootstrap.sh`. An extensionless reference must carry an explicit `./` or `../` marker; a bare word in prose is not treated as a file even when a file of that name exists.
 
-Any scanned file the scanner did not read, whether a skill file or a referenced one, is reported as a high-severity `uninspectable` finding naming the reason, so unknown content is never counted as clean. The reasons are a referenced path that exists but is not a regular file, and any file the hidden-instruction pass declined to read, for example one containing a NUL byte or one that is oversize.
+Any scanned file the scanner did not read, whether a skill file or a referenced one, is reported so unknown content is never counted as clean. Two distinct high-severity kinds cover it. A file larger than the 2 MiB limit is `oversize`. A path the scanner declined to read for any other reason is `uninspectable`, naming the reason: a referenced path that exists but is not a regular file, a file the hidden-instruction pass skipped such as one containing a NUL byte, or a path that changed between validation and reading.
 
 A symlink is **not** followed, because its target can point outside the skill directory, so it is reported rather than read. A file skipped by the hidden-instruction pass is likewise reported rather than dropped; that skip previously produced no finding and no skip line at all.
 

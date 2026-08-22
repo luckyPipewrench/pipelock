@@ -279,20 +279,7 @@ func (s *skillInput) loadReferencedFiles() error {
 			// must not gate a scan.
 			continue
 		}
-		// Three ways of refusing converge on the one disposition below, and each
-		// is chosen against availability rather than for strictness.
-		//
-		// A permission failure is not fatal for the same reason an identity
-		// change is not: anyone who can write this directory can chmod a
-		// referenced file, so aborting would let them stop the scan of every
-		// OTHER skill. Any other read error is a broken scan and still
-		// aborts, including a platform that cannot provide a no-follow,
-		// nonblocking open. That one is deliberately loud rather than a
-		// refusal: it applies to every file rather than one, so refusing would
-		// yield a scan reporting everything as uninspected, which is easy to
-		// mistake for a scan that ran.
-		//
-		// Both ways of refusing to inspect a dependency converge on one
+		// Every way of refusing to inspect a dependency converges on one
 		// disposition below. The path exists but is not a regular file, or the
 		// bytes opened were not the file that was checked. A dependency we
 		// refuse to read must not present as clean, which is how oversize files
@@ -489,17 +476,33 @@ func parentChainContained(absRoot, absPath string) bool {
 // followed. Re-stat the OPEN DESCRIPTOR instead: that names the inode actually
 // being read and cannot be re-pointed underneath us.
 func readScanFile(path string, want os.FileInfo) (data []byte, grew bool, refused string, err error) {
-	// securefile owns the platform matrix for a nonblocking, no-follow open and
-	// is already exercised against a real FIFO. Reuse it rather than adding a
-	// second matrix here that drifts from that one. O_NOFOLLOW also narrows this
-	// window further than the descriptor check alone: a path swapped to a
-	// symlink now fails to open instead of opening the wrong file.
+	// securefile owns the platform matrix for a nonblocking open and is already
+	// exercised against a real FIFO. Reuse it rather than adding a second matrix
+	// here that drifts from that one.
+	//
+	// Its final-component behavior is NOT uniform, so the descriptor check below
+	// is what carries this guarantee rather than the open. On Unix the open also
+	// carries O_NOFOLLOW, which narrows the window further: a path swapped to a
+	// symlink fails to open rather than opening the wrong file. On Windows a
+	// final symlink inside the root is followed, and the identity comparison is
+	// then the only thing standing between us and reading its target. Do not
+	// remove that comparison on the grounds that the open is no-follow.
 	f, err := securefile.OpenRegularNonblocking(filepath.Clean(path))
 	switch {
-	case errors.Is(err, fs.ErrPermission):
-		return nil, false, "not readable by the scanner, so its content is unknown", nil
-	case err != nil:
+	case errors.Is(err, securefile.ErrUnsupportedSecureOpen):
+		// Fatal, and the only fatal open failure. It applies to every file
+		// rather than one, so refusing would yield a scan reporting everything
+		// as uninspected, which is easy to mistake for a scan that ran.
 		return nil, false, "", err
+	case err != nil:
+		// Every other open failure is a refusal, not a broken scan. Lstat
+		// already said this was a regular file, so failing to open it means it
+		// changed underneath us or we cannot reach it: unreadable permissions,
+		// a path swapped to a symlink that O_NOFOLLOW then rejects, a device or
+		// FIFO, or the file being removed. Each is "this one dependency cannot
+		// be inspected", and aborting on any of them hands anyone who can write
+		// a skill directory a way to stop the scan of every OTHER skill.
+		return nil, false, "could not be opened for inspection, so its content is unknown", nil
 	}
 	defer func() { _ = f.Close() }()
 	got, statErr := f.Stat()

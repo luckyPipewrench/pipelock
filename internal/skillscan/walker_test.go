@@ -6,6 +6,7 @@ package skillscan
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -150,8 +151,14 @@ func TestReadScanFileBounded(t *testing.T) {
 	if err != nil || !grew || data != nil || refused != "" {
 		t.Fatalf("readScanFile big = data len %d grew %v refused %q err %v, want grew", len(data), grew, refused, err)
 	}
-	if _, _, _, err = readScanFile(filepath.Join(dir, "missing.txt"), smallInfo); err == nil {
-		t.Fatal("readScanFile missing err = nil, want error")
+	// A path that cannot be opened is a refusal rather than an error, so one
+	// unreadable dependency cannot abort the scan of every other skill. Callers
+	// never reach here for a genuinely missing file: loadReferencedFiles skips
+	// a failed Lstat, because a named path that does not exist is prose rather
+	// than an uninspected dependency.
+	_, _, refusedMissing, missErr := readScanFile(filepath.Join(dir, "missing.txt"), smallInfo)
+	if missErr != nil || refusedMissing == "" {
+		t.Fatalf("readScanFile missing = refused %q err %v, want a refusal", refusedMissing, missErr)
 	}
 }
 
@@ -698,6 +705,9 @@ func TestParentChainContainedUnresolvablePaths(t *testing.T) {
 // the inventory and still records the dependency as uninspected, so nothing
 // unread presents as clean.
 func TestUnreadableReferencedFileIsRefusedNotFatal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix permission semantics, so chmod 000 does not deny the read")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses file permission checks")
 	}
@@ -800,8 +810,11 @@ func TestReadScanFileRefusesSymlinkPath(t *testing.T) {
 	}
 
 	data, grew, refused, err := readScanFile(link, want)
-	if err == nil && refused == "" {
-		t.Fatal("readScanFile through a symlink succeeded, want the no-follow open to refuse it")
+	if err != nil {
+		t.Fatalf("err = %v, want a refusal rather than a fatal error", err)
+	}
+	if refused == "" {
+		t.Fatal("readScanFile through a symlink succeeded, want it refused")
 	}
 	if data != nil || grew {
 		t.Fatalf("data = %q grew = %v, want no bytes read through the symlink", data, grew)
@@ -814,6 +827,9 @@ func TestReadScanFileRefusesSymlinkPath(t *testing.T) {
 // stop that skill rather than yield an entry that reads as an inspected skill
 // which happened to contain nothing.
 func TestUnreadableSkillFileIsAnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix permission semantics, so chmod 000 does not deny the read")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses file permission checks")
 	}

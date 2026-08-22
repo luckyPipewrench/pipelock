@@ -4,6 +4,7 @@
 package securefile
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -175,6 +176,9 @@ func TestOpenRegularNonblockingExported(t *testing.T) {
 	}
 
 	f, err := OpenRegularNonblocking(target)
+	if errors.Is(err, ErrUnsupportedSecureOpen) {
+		t.Skip("platform cannot provide a nonblocking, no-follow open")
+	}
 	if err != nil {
 		t.Fatalf("OpenRegularNonblocking: %v", err)
 	}

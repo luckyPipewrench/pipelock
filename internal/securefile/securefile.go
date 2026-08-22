@@ -45,18 +45,26 @@ type Options struct {
 	OwnedState bool
 }
 
-// OpenRegularNonblocking opens path without following a final symlink and
-// without blocking on a path that names a FIFO or device. It exists so callers
-// outside this package can reuse the platform matrix behind it rather than
-// hand-rolling a second one that drifts from this one.
+// OpenRegularNonblocking opens path without blocking on a FIFO or device, and
+// resists path traversal. It exists so callers outside this package can reuse
+// the platform matrix behind it rather than hand-rolling a second one that
+// drifts from this one.
 //
-// It performs NO stat, permission, or containment check. A caller that needs
-// the full contract should use Read. A caller doing its own validation must
-// still verify the returned descriptor, because opening is not validating.
+// The final-component guarantee is NOT uniform, and a caller must not depend on
+// it alone. On Unix the open carries O_NOFOLLOW, so a final symlink fails. On
+// Windows it goes through os.Root, which resists traversal but does follow a
+// final symlink whose target stays inside the root. A caller that must not read
+// through a link therefore still has to verify what it opened: stat the
+// returned descriptor and compare it against the file it validated. Read does
+// exactly that, and is the right entry point unless its bounded-read and
+// permission policy do not fit.
 //
-// It returns ErrUnsupportedSecureOpen where the platform cannot provide these
-// guarantees, so a caller fails closed rather than silently reading through a
-// symlink it believed it had refused.
+// It performs NO stat, permission, or containment check of its own. Opening is
+// not validating.
+//
+// It returns ErrUnsupportedSecureOpen where the platform provides neither
+// primitive, so a caller fails closed rather than silently reading through
+// something it believed it had refused.
 func OpenRegularNonblocking(path string) (*os.File, error) {
 	return openRegularNonblocking(path)
 }

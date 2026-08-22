@@ -86,6 +86,24 @@ func TestFetchEndpoint_CEEPathFragmentSplitSecret(t *testing.T) {
 	}
 }
 
+func TestFetchEndpoint_CEEPathFragmentMatchPersistsWithinWindow(t *testing.T) {
+	p, upstream := newPathFragmentProxy(t)
+	half1, half2 := pathSecretHalves()
+
+	if code := fetchPath(t, p, upstream.URL, "/upload/"+half1); code == http.StatusForbidden {
+		t.Fatalf("first half must not block on its own, got %d", code)
+	}
+	if code := fetchPath(t, p, upstream.URL, "/upload/"+half2); code != http.StatusForbidden {
+		t.Fatalf("completing half = %d, want 403", code)
+	}
+	// The same retained evidence must not disappear after one enforcement
+	// decision. ResetCEEState or the configured window is the operator escape
+	// hatch, rather than an uninspected request clearing the detection.
+	if code := fetchPath(t, p, upstream.URL, "/upload/ordinary"); code != http.StatusForbidden {
+		t.Fatalf("post-match request = %d, want retained CEE block", code)
+	}
+}
+
 // TestFetchEndpoint_CEEPathFragmentPoisonedSuppression covers the bypass that
 // substring-based novelty suppression would have opened: sending a harmless
 // segment that CONTAINS the second half first, so the real second half looks

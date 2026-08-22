@@ -63,7 +63,8 @@ an instruction file is high. Use --min-severity to control what causes a
 non-zero exit. The default gates on high severity and reports lower severities.
 
 Exit codes: 0 = no gated findings; 1 = findings at/above --min-severity;
-2 = scan/config error, an explicitly named file was skipped (binary, symlink,
+2 = scan/config error, an agent-context file could not be inspected so its
+content is unknown, an explicitly named file was skipped (binary, symlink,
 oversized), or --fail-on-skip and any file was skipped.
 
 Examples:

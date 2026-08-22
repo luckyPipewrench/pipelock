@@ -667,13 +667,13 @@ func TestScanReportsUninspectableReference(t *testing.T) {
 	}
 }
 
-// TestScanReportsSkippedSkillFile covers the dropped-skip fail-open. The
+// TestScanReportsUnreadableSkillFile covers the dropped-skip fail-open. The
 // hidden-instruction pass returns both Findings and Skipped; only Findings was
 // consumed, so a NUL byte in SKILL.md suppressed the hidden-Unicode scan for
 // that file and produced no finding, no skip line, and exit 0. That is the
 // exact outcome the comment above the hidden pass forbids, because baseline
 // mode would then lock the unscanned file.
-func TestScanReportsSkippedSkillFile(t *testing.T) {
+func TestScanReportsUnreadableSkillFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nul-skill")
 	// A zero-width space is a high hidden-instruction finding on its own; the
 	// trailing NUL is what routes the file to a skip before that scan runs.
@@ -858,30 +858,15 @@ func TestScanRefusalNamesTheLockItDeclined(t *testing.T) {
 	}
 }
 
-// TestScanReportsRefusedSkillFile is a blast-radius regression. filescan splits
-// an uninspectable agent-context path into a Refused bucket, separate from an
-// ordinary advisory Skip. SKILL.md is an agent-context name, so a consumer that
-// reads only Skipped loses every unread skill file into a bucket nobody checks,
-// which silently reopens the gap that reporting these closed. That regression was
-// introduced and caught here, so this test exists to stop it recurring.
+// TestScanReportsRefusedSkillFile is a blast-radius regression. filescan splits an
+// uninspectable agent-context path into a Refused bucket, separate from an ordinary
+// advisory Skip. SKILL.md is an agent-context name, so a consumer reading only
+// Skipped loses every unread skill file into a bucket nobody checks, which silently
+// reopens the gap that reporting these closed. That regression was introduced and
+// caught here, so this test exists to stop it recurring.
 func TestScanReportsRefusedSkillFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "unreadable-skill")
-	// Genuinely binary content, so filescan refuses rather than scanning it.
-	body := []byte("---\nname: demo\n---\n")
-	body = append(body, 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A)
-	for i := range 512 {
-		if i%3 == 0 {
-			body = append(body, 0)
-			continue
-		}
-		body = append(body, byte(128+(i%127)))
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), body, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	writeUnreadableSkill(t, filepath.Join(dir, "SKILL.md"))
 
 	res, err := Scan(Options{Paths: []string{dir}})
 	if err != nil {

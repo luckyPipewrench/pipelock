@@ -193,3 +193,47 @@ func mustWrite(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestScanCmd_RefusalBoundary pins the skip-versus-refusal boundary at the CLI
+// layer, which is where the original bypass showed up: a directory scan accepts
+// skips by default, so an uninspectable agent-context file exited 0 and reported
+// clean. The paired non-context case must still exit 0, or the change would just
+// be a stricter scan rather than a targeted one.
+func TestScanCmd_RefusalBoundary(t *testing.T) {
+	blob := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+	for i := range 256 {
+		if i%3 == 0 {
+			blob = append(blob, 0)
+			continue
+		}
+		blob = append(blob, byte(128+(i%127)))
+	}
+
+	t.Run("uninspectable context file exits 2 without fail-on-skip", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := run(t, dir)
+		if err == nil || errors.Is(err, filescan.ErrFindings) {
+			t.Fatalf("refused context file should be a scan error, got %v\n%s", err, out)
+		}
+		if code := cliutil.ExitCodeOf(err); code != exitError {
+			t.Errorf("exit code = %d, want %d", code, exitError)
+		}
+		if !strings.Contains(out, "REFUSED") {
+			t.Errorf("refusal should be visible in output: %q", out)
+		}
+	})
+
+	t.Run("same content under a non-context name still exits 0", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "blob.bin"), blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := run(t, dir)
+		if err != nil {
+			t.Fatalf("ordinary binary asset must not fail a scan, got %v\n%s", err, out)
+		}
+	})
+}

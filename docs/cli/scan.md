@@ -46,7 +46,7 @@ Not every invisible character is equally suspicious in a file, so findings carry
 |---|---|
 | 0 | No findings at or above `--min-severity`. |
 | 1 | One or more findings at or above `--min-severity`. |
-| 2 | Scan / config error, an explicitly named file was skipped (binary, symlink, oversized), or `--fail-on-skip` was set and any file was skipped. |
+| 2 | Scan / config error, an agent-context file could not be inspected so its content is unknown, an explicitly named file was skipped (binary, symlink, oversized), or `--fail-on-skip` was set and any file was skipped. |
 
 The distinct exit codes let a CI wrapper tell "found hidden characters" (1) apart from "the scan itself broke" (2).
 

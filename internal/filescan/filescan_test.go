@@ -534,3 +534,41 @@ func TestScanPaths_ContextMatchIsCaseInsensitiveAndExtensible(t *testing.T) {
 		})
 	}
 }
+
+// TestScanPaths_UnreadableContextFileIsRefused covers the operator case behind the
+// walk-error routing: a context file the scanner cannot read. Its content is just
+// as unknown as binary content, so it must be refused rather than reported as an
+// advisory skip that a directory scan accepts.
+//
+// Note on scope, so a later reader does not over-read this test. Permission
+// failures on a FILE surface through the read path rather than the directory walk,
+// because lstat still succeeds. Routing the walk callback through the same refusal
+// decision is defensive: a walk error that names a context file needs a filesystem
+// race or error this test cannot provoke deterministically, and leaving that branch
+// appending straight to skips would have been the one inconsistent path.
+func TestScanPaths_UnreadableContextFileIsRefused(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file, so the failure cannot be provoked")
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("ordinary guidance\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	res, err := ScanPaths([]string{root}, Options{})
+	if err != nil {
+		t.Fatalf("ScanPaths: %v", err)
+	}
+	if len(res.Refused) != 1 {
+		t.Fatalf("refused = %+v, want the unreadable context file; skipped = %+v",
+			res.Refused, res.Skipped)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("skipped = %+v, want the unreadable context file refused instead", res.Skipped)
+	}
+}

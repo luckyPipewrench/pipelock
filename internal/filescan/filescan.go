@@ -509,7 +509,11 @@ func ScanPaths(paths []string, opts Options) (Result, error) {
 		}
 		walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
-				res.Skipped = append(res.Skipped, Skip{Path: p, Reason: "walk error: " + err.Error()})
+				// Through record, not straight to Skipped: a stat or permission
+				// error on a context file leaves its content just as unknown as
+				// binary or UTF-16 content does, and appending here bypassed the
+				// refusal decision so the scan exited 0.
+				record(p, "walk error: "+err.Error())
 				return nil
 			}
 			if d.IsDir() {

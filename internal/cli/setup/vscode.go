@@ -310,6 +310,7 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 			skipped++
 			continue
 		}
+		warnForeignWrapper(cmd.ErrOrStderr(), name, server)
 
 		newServer, meta, plan, err := wrapVscodeServer(server, exe, configFile, targetPath, name)
 		if err != nil {

@@ -175,6 +175,7 @@ func runClineInstall(cmd *cobra.Command, override string, dryRun bool, configFil
 			skipped++
 			continue
 		}
+		warnForeignWrapper(cmd.ErrOrStderr(), name, server)
 
 		newServer, meta, plan, err := wrapClineServer(server, exe, configFile, targetPath, name)
 		if err != nil {

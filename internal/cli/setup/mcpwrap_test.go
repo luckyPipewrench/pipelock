@@ -6,6 +6,7 @@ package setup
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -304,5 +305,78 @@ func TestWarnUnrestorableWrapper_TellsOperatorWhyNothingHappened(t *testing.T) {
 	})
 	if buf.Len() != 0 {
 		t.Fatalf("warned about an entry that needs no warning: %s", buf.String())
+	}
+}
+
+// TestInstallersWarnOnForeignWrapper_AllSurfaces pins the warning to every
+// installer rather than to the shared helper. The helper being correct is not the
+// property that matters; every install path CALLING it is, and the original marker
+// bypass survived in five integrations at once precisely because each surface was
+// wired separately. A structural check is used because a behavioural test per
+// installer would still silently pass for a surface nobody thought to add.
+func TestInstallersWarnOnForeignWrapper_AllSurfaces(t *testing.T) {
+	// Every map-based installer skips with isWrappedBySelf and must warn.
+	for _, fn := range []string{"cline.go", "jetbrains.go", "opencode.go", "vscode.go", "zed.go"} {
+		src, err := os.ReadFile(filepath.Clean(fn))
+		if err != nil {
+			t.Fatalf("reading %s: %v", fn, err)
+		}
+		text := string(src)
+		if !strings.Contains(text, "isWrappedBySelf(server)") {
+			t.Fatalf("%s no longer gates install on isWrappedBySelf; this test needs updating", fn)
+		}
+		if !strings.Contains(text, "warnForeignWrapper(cmd.ErrOrStderr()") {
+			t.Fatalf("%s skips a foreign wrapper without warning, so a false mediation claim is invisible there", fn)
+		}
+		if !strings.Contains(text, "warnUnrestorableWrapper(cmd.ErrOrStderr()") {
+			t.Fatalf("%s removes without reporting an entry it cannot restore", fn)
+		}
+	}
+
+	// Codex builds a plan rather than writing directly, so it carries the note on
+	// the plan and prints it in the execution loop.
+	src, err := os.ReadFile(filepath.Clean("codex.go"))
+	if err != nil {
+		t.Fatalf("reading codex.go: %v", err)
+	}
+	if !strings.Contains(string(src), "foreignCodexWrapperReason(s)") {
+		t.Fatalf("codex install no longer records the foreign-wrapper note")
+	}
+}
+
+// TestForeignCodexWrapperReason covers the note itself in both directions: it
+// fires for a wrapper this binary cannot confirm and stays quiet otherwise, so it
+// does not become noise on every codex install.
+func TestForeignCodexWrapperReason(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	foreign := codexMCPServer{Transport: codexMCPTransport{
+		Type: "stdio", Command: "/other/bin/pipelock",
+		Args: []string{"mcp", "proxy", "--", "node", "x.js"},
+	}}
+	reason := foreignCodexWrapperReason(foreign)
+	if !strings.Contains(reason, "/other/bin/pipelock") || !strings.Contains(reason, "not this pipelock binary") {
+		t.Fatalf("note does not name the binary or the problem: %q", reason)
+	}
+
+	for _, quiet := range []struct {
+		name   string
+		server codexMCPServer
+	}{
+		{name: "mediated by this binary", server: codexMCPServer{Transport: codexMCPTransport{
+			Type: "stdio", Command: self, Args: []string{"mcp", "proxy", "--", "node", "x.js"},
+		}}},
+		{name: "an ordinary server", server: codexMCPServer{Transport: codexMCPTransport{
+			Type: "stdio", Command: "node", Args: []string{"x.js"},
+		}}},
+	} {
+		t.Run(quiet.name, func(t *testing.T) {
+			if got := foreignCodexWrapperReason(quiet.server); got != "" {
+				t.Fatalf("warned where nothing is wrong: %q", got)
+			}
+		})
 	}
 }

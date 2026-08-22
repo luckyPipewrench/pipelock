@@ -395,9 +395,10 @@ func unwrapCodexArgs(args []string) (origCmd string, origArgs []string, origURL 
 // codexInstallPlan is the precomputed action list for a server (preview-able
 // before any shell-out). One per input server.
 type codexInstallPlan struct {
-	Server   string
-	Action   string // codexActionWrapStdio, codexActionWrapURL, codexActionSkipWrapped, codexActionSkipUnsupported
-	Reason   string // human-readable detail; empty when not skipped
+	Server string
+	Action string // codexActionWrapStdio, codexActionWrapURL, codexActionSkipWrapped, codexActionSkipUnsupported
+	Reason string // human-readable detail; set when skipped, or when a wrap
+	// replaces a wrapper this binary cannot confirm
 	NewCmd   string
 	NewArgs  []string
 	Env      map[string]string
@@ -427,6 +428,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			plans = append(plans, codexInstallPlan{
 				Server:   s.Name,
 				Action:   codexActionWrapStdio,
+				Reason:   foreignCodexWrapperReason(s),
 				NewCmd:   pipelockBin,
 				NewArgs:  wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile),
 				Env:      copyStringMap(s.Transport.Env),
@@ -436,6 +438,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			plans = append(plans, codexInstallPlan{
 				Server:   s.Name,
 				Action:   codexActionWrapURL,
+				Reason:   foreignCodexWrapperReason(s),
 				NewCmd:   pipelockBin,
 				NewArgs:  wrapCodexURL(s.Transport.URL, configFile),
 				Original: s.Transport,
@@ -541,6 +544,9 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 	for _, p := range plans {
 		switch p.Action {
 		case codexActionWrapStdio, codexActionWrapURL:
+			if p.Reason != "" {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: server %q %s\n", p.Server, p.Reason)
+			}
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"would wrap %s (%s): codex mcp add %s%s -- %s %s\n",
@@ -766,4 +772,17 @@ func joinArgs(args []string) string {
 		out += strconv.Quote(a)
 	}
 	return out
+}
+
+// foreignCodexWrapperReason describes an entry that runs proxy arguments through a
+// binary this one cannot confirm. Wrapping proceeds, so the result IS mediated;
+// the note exists so a false mediation claim is visible rather than silently
+// corrected, matching the warning the map-based installers emit.
+func foreignCodexWrapperReason(server codexMCPServer) string {
+	if classifyCodexWrapper(server) != stateForeignWrapper {
+		return ""
+	}
+	return fmt.Sprintf(
+		"runs %q with proxy arguments but that is not this pipelock binary; wrapping it, and remove-then-install for a single clean wrap",
+		server.Transport.Command)
 }

@@ -6,6 +6,7 @@ package skillscan
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -212,7 +213,7 @@ func loadSkill(path string) (skillInput, error) {
 		}
 		return input, nil
 	}
-	data, grew, err := readScanFile(clean)
+	data, grew, err := readScanFile(clean, info)
 	if err != nil {
 		return skillInput{}, fmt.Errorf("read %s: %w", clean, err)
 	}
@@ -234,6 +235,17 @@ func loadSkill(path string) (skillInput, error) {
 		return skillInput{}, err
 	}
 	return input, nil
+}
+
+// markUninspectable records a referenced dependency the scanner refused to read.
+// Both refusals route here - a path that is not a regular file, and a path whose
+// identity changed under an open descriptor - so a dependency we decline to
+// inspect never presents as clean, which is how oversize files already behave.
+func (s *skillInput) markUninspectable(path, reason string) {
+	s.uninspectable = append(s.uninspectable, uninspectableRef{
+		path:   filepath.Clean(path),
+		reason: reason,
+	})
 }
 
 func (s *skillInput) loadReferencedFiles() error {
@@ -259,27 +271,38 @@ func (s *skillInput) loadReferencedFiles() error {
 			// must not gate a scan.
 			continue
 		}
+		// Both ways of refusing to inspect a dependency converge on one
+		// disposition below. The path exists but is not a regular file, or the
+		// bytes opened were not the file that was checked. A dependency we
+		// refuse to read must not present as clean, which is how oversize files
+		// already behave. A failed Lstat above is deliberately NOT recorded: a
+		// named path that does not exist is prose or a stale doc reference, not
+		// an uninspected dependency, and reporting it would flag ordinary
+		// writing.
+		refused := ""
 		if !info.Mode().IsRegular() {
-			// The path exists but is a symlink, device or socket. Following it
-			// would escape the skill root, so it stays unread - but a
-			// dependency we refuse to inspect must not present as clean, which
-			// is how oversize files already behave. A failed Lstat above is
-			// deliberately NOT recorded: a named path that does not exist is
-			// prose or a stale doc reference, not an uninspected dependency,
-			// and reporting it would flag ordinary writing.
-			s.uninspectable = append(s.uninspectable, uninspectableRef{
-				path:   filepath.Clean(path),
-				reason: "not a regular file; a symlink is not followed because its target can leave the skill directory",
-			})
-			continue
+			refused = "not a regular file; a symlink is not followed because its target can leave the skill directory"
 		}
-		if info.Size() > maxScanFileBytes {
-			s.oversize = append(s.oversize, filepath.Clean(path))
-			continue
+		var (
+			data []byte
+			grew bool
+		)
+		if refused == "" {
+			if info.Size() > maxScanFileBytes {
+				s.oversize = append(s.oversize, filepath.Clean(path))
+				continue
+			}
+			data, grew, err = readScanFile(filepath.Clean(path), info)
+			switch {
+			case errors.Is(err, errRefIdentityChanged):
+				refused = "changed identity between validation and read; the bytes opened were not the regular file that was checked"
+			case err != nil:
+				return fmt.Errorf("read referenced file %s: %w", path, err)
+			}
 		}
-		data, grew, err := readScanFile(filepath.Clean(path))
-		if err != nil {
-			return fmt.Errorf("read referenced file %s: %w", path, err)
+		if refused != "" {
+			s.markUninspectable(path, refused)
+			continue
 		}
 		if grew {
 			s.oversize = append(s.oversize, filepath.Clean(path))
@@ -397,15 +420,76 @@ func containedRelativePath(root, candidate string) (string, bool) {
 		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
+	if !parentChainContained(absRoot, absPath) {
+		return "", false
+	}
 	return filepath.ToSlash(rel), true
 }
 
-func readScanFile(path string) ([]byte, bool, error) {
+// parentChainContained re-checks containment after resolving symlinks in the
+// candidate PARENT chain.
+//
+// The comparison above is lexical: it treats a path as text and never asks
+// whether a component of it is a symlink. A skill referencing "payload/data.sh"
+// where "payload" links to a directory outside the skill passes that check and
+// is read, so containment is satisfied by a path that does not stay inside the
+// skill.
+//
+// Only the parent chain is resolved, deliberately. Resolving the FINAL
+// component too would reject a symlinked reference here, which reads as
+// stricter but is worse: that case is currently recorded as an uninspectable
+// dependency, and rejecting it at containment would delete the finding instead
+// of reporting it.
+//
+// An unresolvable root or parent keeps the lexical answer. That is not a hole:
+// a parent that cannot be resolved cannot be opened either, so no bytes are
+// read, and the read itself is now bound to the validated inode.
+func parentChainContained(absRoot, absPath string) bool {
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return true
+	}
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(absPath))
+	if err != nil {
+		return true
+	}
+	rel, err := filepath.Rel(realRoot, realParent)
+	if err != nil {
+		return false
+	}
+	// rel == "." is contained here: the parent IS the skill root.
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// errRefIdentityChanged reports that the file opened for reading is not the
+// file that was validated. Callers dispose of it as an uninspectable reference
+// rather than a scan failure: a swap is a legitimate-looking race, and failing
+// the whole scan on one would hand any writable skill directory a denial of
+// service.
+var errRefIdentityChanged = errors.New("referenced file changed identity between validation and read")
+
+// readScanFile reads path, refusing to return bytes from anything other than
+// the regular file described by want.
+//
+// Validating with Lstat and then reading with os.Open are two operations on a
+// PATH, and os.Open follows symlinks. A path replaced with a symlink in the
+// window between them is read through, so the scanner would inspect content
+// outside the skill directory while its own contract says a symlink is never
+// followed. Re-stat the OPEN DESCRIPTOR instead: that names the inode actually
+// being read and cannot be re-pointed underneath us.
+func readScanFile(path string, want os.FileInfo) ([]byte, bool, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
+	got, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !got.Mode().IsRegular() || !os.SameFile(want, got) {
+		return nil, false, errRefIdentityChanged
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxScanFileBytes+1))
 	if err != nil {
 		return nil, false, err

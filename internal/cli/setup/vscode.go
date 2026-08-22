@@ -306,7 +306,7 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 	skipped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if isVscodeWrapped(server) {
+		if isWrappedBySelf(server) {
 			skipped++
 			continue
 		}
@@ -414,7 +414,7 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 	unwrapped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if !isVscodeWrapped(server) {
+		if !isRestorableWrapper(server) {
 			continue
 		}
 
@@ -486,9 +486,6 @@ func isVscodeHTTPType(t string) bool { return t != vsTypeStdio && t != "" }
 // presence of the _pipelock marker, and it covers more surface: VS Code, Cline
 // and OpenCode all route through it. Both share one invocation check now, so the
 // two predicates cannot drift apart again.
-func isVscodeWrapped(server map[string]interface{}) bool {
-	return invokesMCPProxy(server)
-}
 
 // wrapVscodeServer wraps a single VS Code MCP server through pipelock mcp proxy.
 // wrapVscodeServer wraps a single MCP server entry through pipelock mcp proxy.

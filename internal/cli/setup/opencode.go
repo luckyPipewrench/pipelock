@@ -178,7 +178,7 @@ func runOpenCodeInstall(cmd *cobra.Command, override string, dryRun bool, config
 	skipped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if isVscodeWrapped(server) {
+		if isWrappedBySelf(server) {
 			skipped++
 			continue
 		}
@@ -265,7 +265,7 @@ func runOpenCodeRemove(cmd *cobra.Command, override string, dryRun bool) error {
 	unwrapped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if !isVscodeWrapped(server) {
+		if !isRestorableWrapper(server) {
 			continue
 		}
 

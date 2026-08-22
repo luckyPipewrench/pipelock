@@ -171,7 +171,7 @@ func runClineInstall(cmd *cobra.Command, override string, dryRun bool, configFil
 	skipped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if isVscodeWrapped(server) {
+		if isWrappedBySelf(server) {
 			skipped++
 			continue
 		}
@@ -267,7 +267,7 @@ func runClineRemove(cmd *cobra.Command, override string, dryRun bool) error {
 	unwrapped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if !isVscodeWrapped(server) {
+		if !isRestorableWrapper(server) {
 			continue
 		}
 

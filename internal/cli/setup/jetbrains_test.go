@@ -20,7 +20,6 @@ const (
 	testPipelockConf = "/etc/pipelock.yaml"
 	testSandboxFlag  = "--sandbox"
 	testEchoCmd      = "echo"
-	testWrappedJSON  = `{"mcpServers": {"srv": {"type": "stdio", "command": "pipelock", "args": ["mcp", "proxy", "--", "echo"], "_pipelock": {"original_type": "stdio", "original_command": "echo"}}}}`
 )
 
 func TestJetbrainsInstall_StdioServer(t *testing.T) {
@@ -173,8 +172,11 @@ func TestJetbrainsRemove_Unwrap(t *testing.T) {
 	}
 
 	for name, server := range mcpCfg.Servers {
-		if !isWrapped(server) {
-			t.Fatal("expected server to be wrapped")
+		// The remove path asks whether SOME pipelock wrapper is present, not
+		// whether this binary wrote it, so an entry from another install is still
+		// restorable.
+		if !isRestorableWrapper(server) {
+			t.Fatal("expected server to be a restorable wrapper")
 		}
 		restored, err := unwrapMCPServer(server)
 		if err != nil {
@@ -330,7 +332,7 @@ func TestRunJetbrainsRemove_DryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wrapped := testWrappedJSON
+	wrapped := wrappedByThisBinaryJSON(t)
 	cfgPath := filepath.Join(junieDir, testMCPFilename)
 	if err := os.WriteFile(cfgPath, []byte(wrapped), 0o600); err != nil {
 		t.Fatal(err)
@@ -428,7 +430,7 @@ func TestRunJetbrainsInstall_AlreadyWrapped(t *testing.T) {
 	}
 
 	// Pre-wrapped config.
-	wrapped := testWrappedJSON
+	wrapped := wrappedByThisBinaryJSON(t)
 	cfgPath := filepath.Join(junieDir, testMCPFilename)
 	if err := os.WriteFile(cfgPath, []byte(wrapped), 0o600); err != nil {
 		t.Fatal(err)
@@ -459,7 +461,7 @@ func TestRunJetbrainsRemove_WritesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wrapped := testWrappedJSON
+	wrapped := wrappedByThisBinaryJSON(t)
 	cfgPath := filepath.Join(junieDir, testMCPFilename)
 	if err := os.WriteFile(cfgPath, []byte(wrapped), 0o600); err != nil {
 		t.Fatal(err)
@@ -831,21 +833,28 @@ func TestIsWrapped(t *testing.T) {
 	// beside a raw command, and treating it as proof made the installer skip the
 	// entry and leave its traffic unmediated.
 	markerOnly := map[string]interface{}{mcpFieldPipelock: map[string]interface{}{}}
-	if isWrapped(markerOnly) {
+	if isWrappedBySelf(markerOnly) {
 		t.Error("a bare _pipelock marker must not count as wrapped")
 	}
 
+	// The binary that genuinely mediates is the one running this test, because
+	// that is what an install writes into the config. A path merely NAMED pipelock
+	// is a foreign wrapper and must not be skipped.
+	self, selfErr := os.Executable()
+	if selfErr != nil {
+		t.Fatalf("os.Executable: %v", selfErr)
+	}
 	wrapped := map[string]interface{}{
-		mcpFieldCommand:  testPipelockExe,
+		mcpFieldCommand:  self,
 		mcpFieldArgs:     []interface{}{"mcp", "proxy", "--", testEchoCmd},
 		mcpFieldPipelock: map[string]interface{}{},
 	}
-	if !isWrapped(wrapped) {
+	if !isWrappedBySelf(wrapped) {
 		t.Error("an entry invoking the pipelock MCP proxy must count as wrapped")
 	}
 
 	notWrapped := map[string]interface{}{mcpFieldCommand: testEchoCmd}
-	if isWrapped(notWrapped) {
+	if isWrappedBySelf(notWrapped) {
 		t.Error("expected not wrapped")
 	}
 }
@@ -962,7 +971,25 @@ func TestJetbrainsInstall_WarnsOnFalseCoverageClaim(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 	server := result["mcpServers"]["forged"]
-	if !isWrapped(server) {
+	if !isWrappedBySelf(server) {
 		t.Fatalf("the forged entry was not wrapped, so its traffic stays unmediated: %+v", server)
 	}
+}
+
+// wrappedByThisBinaryJSON is a config whose server is genuinely mediated by the
+// binary running the test, which is what an install writes. The previous fixture
+// hardcoded a bare "pipelock" command; that is a FOREIGN wrapper under identity
+// checking, so an installer wraps it rather than skipping it.
+func wrappedByThisBinaryJSON(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	encoded, err := json.Marshal(self)
+	if err != nil {
+		t.Fatalf("marshal exe path: %v", err)
+	}
+	return `{"mcpServers": {"srv": {"type": "stdio", "command": ` + string(encoded) +
+		`, "args": ["mcp", "proxy", "--", "echo"], "_pipelock": {"original_type": "stdio", "original_command": "echo"}}}}`
 }

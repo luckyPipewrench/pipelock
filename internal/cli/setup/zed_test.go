@@ -892,7 +892,7 @@ func TestZedInstall_DefaultScansBothPathsWhenBothExist(t *testing.T) {
 		}
 		wrapCount := 0
 		for _, server := range cfg.Servers {
-			if isWrapped(server) {
+			if isWrappedBySelf(server) {
 				wrapCount++
 			}
 		}
@@ -1035,7 +1035,7 @@ func TestZedInstall_DefaultWrapsZedPreviewChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !isWrapped(cfg.Servers["my-server"]) {
+	if !isWrappedBySelf(cfg.Servers["my-server"]) {
 		t.Error("Zed Preview channel settings.json should have been wrapped")
 	}
 }
@@ -1064,7 +1064,7 @@ func TestZedInstall_DefaultWrapsFlatpakStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !isWrapped(cfg.Servers["my-server"]) {
+	if !isWrappedBySelf(cfg.Servers["my-server"]) {
 		t.Error("Flatpak Zed stable settings.json should have been wrapped")
 	}
 }
@@ -1092,7 +1092,7 @@ func TestZedInstall_DefaultWrapsFlatpakPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !isWrapped(cfg.Servers["my-server"]) {
+	if !isWrappedBySelf(cfg.Servers["my-server"]) {
 		t.Error("Flatpak Zed Preview settings.json should have been wrapped")
 	}
 }
@@ -1200,7 +1200,7 @@ func TestZedInstall_DefaultUserOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !isWrapped(cfg.Servers["my-server"]) {
+	if !isWrappedBySelf(cfg.Servers["my-server"]) {
 		t.Error("user-level server should be wrapped")
 	}
 }
@@ -1225,7 +1225,7 @@ func TestZedInstall_DefaultProjectOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !isWrapped(cfg.Servers["my-server"]) {
+	if !isWrappedBySelf(cfg.Servers["my-server"]) {
 		t.Error("project-level server should be wrapped")
 	}
 }

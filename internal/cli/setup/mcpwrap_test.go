@@ -4,6 +4,9 @@
 package setup
 
 import (
+	"bytes"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -18,9 +21,13 @@ import (
 // isWrapped must answer is whether the invocation actually goes through the
 // pipelock proxy.
 func TestIsWrapped_ForgedMarkerIsNotTrusted(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
 	genuine, _, err := wrapMCPServer(map[string]interface{}{
 		mcpFieldCommand: testEchoCmd,
-	}, testPipelockExe, "", false, "")
+	}, self, "", false, "")
 	if err != nil {
 		t.Fatalf("wrapMCPServer: %v", err)
 	}
@@ -61,6 +68,14 @@ func TestIsWrapped_ForgedMarkerIsNotTrusted(t *testing.T) {
 			// the proxy subcommand in front of their OWN binary, so the
 			// invocation reads as mediated while nothing is mediated. This is
 			// why the command must be checked as well as the arguments.
+			name: "binary_merely_named_pipelock_is_not_mediated",
+			server: map[string]interface{}{
+				mcpFieldCommand: "/usr/local/bin/pipelock",
+				mcpFieldArgs:    []interface{}{"mcp", "proxy", "--", "echo"},
+			},
+			want: false,
+		},
+		{
 			name: "attacker_binary_with_proxy_args",
 			server: map[string]interface{}{
 				mcpFieldPipelock: map[string]interface{}{"original_type": "stdio"},
@@ -84,7 +99,7 @@ func TestIsWrapped_ForgedMarkerIsNotTrusted(t *testing.T) {
 			// rerun would wrap the wrapper.
 			name: "genuine_wrap_array_form",
 			server: map[string]interface{}{
-				mcpFieldCommand: []interface{}{testPipelockExe, "mcp", "proxy", "--", "echo"},
+				mcpFieldCommand: []interface{}{self, "mcp", "proxy", "--", "echo"},
 			},
 			want: true,
 		},
@@ -92,7 +107,7 @@ func TestIsWrapped_ForgedMarkerIsNotTrusted(t *testing.T) {
 			name: "marker_beside_unrelated_args",
 			server: map[string]interface{}{
 				mcpFieldPipelock: map[string]interface{}{"original_type": "stdio"},
-				mcpFieldCommand:  testPipelockExe,
+				mcpFieldCommand:  self,
 				mcpFieldArgs:     []interface{}{"serve", "--port", "9999"},
 			},
 			want: false,
@@ -116,7 +131,7 @@ func TestIsWrapped_ForgedMarkerIsNotTrusted(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isWrapped(tc.server); got != tc.want {
+			if got := isWrappedBySelf(tc.server); got != tc.want {
 				t.Fatalf("isWrapped = %v, want %v (server=%+v)", got, tc.want, tc.server)
 			}
 		})
@@ -127,67 +142,82 @@ func TestIsWrapped_ForgedMarkerIsNotTrusted(t *testing.T) {
 // A real wrap must keep reporting as wrapped so a rerun skips it instead of
 // wrapping the wrapper, which would nest one proxy inside another.
 func TestIsWrapped_GenuineWrapStaysIdempotent(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
 	for _, server := range []map[string]interface{}{
 		{mcpFieldCommand: testEchoCmd},
 		{mcpFieldType: "http", mcpFieldURL: "https://mcp.vendor.example/sse"},
 	} {
-		wrapped, meta, err := wrapMCPServer(server, testPipelockExe, "", false, "")
-		if err != nil {
-			t.Fatalf("wrapMCPServer(%+v): %v", server, err)
+		wrapped, meta, wrapErr := wrapMCPServer(server, self, "", false, "")
+		if wrapErr != nil {
+			t.Fatalf("wrapMCPServer(%+v): %v", server, wrapErr)
 		}
 		wrapped[mcpFieldPipelock] = map[string]interface{}{"original_type": meta.OriginalType}
-		if !isWrapped(wrapped) {
+		if !isWrappedBySelf(wrapped) {
 			t.Fatalf("genuine wrap reported unwrapped, a rerun would double-wrap it: %+v", wrapped)
 		}
 	}
 }
 
-// TestHasUnmediatedPipelockMarker covers the case the installer warns about: an
-// entry that claims pipelock coverage while its invocation does not go through
-// the proxy. It is wrapped rather than refused, so the server ends up mediated,
-// and the operator is told the claim was false instead of having it silently
+// TestWarnForeignWrapper covers what the installer tells the operator. Both cases
+// are wrapped regardless, so the traffic ends up mediated; the warning exists so a
+// claim of coverage this binary cannot confirm is visible rather than silently
 // corrected.
-func TestHasUnmediatedPipelockMarker(t *testing.T) {
+func TestWarnForeignWrapper(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
 	for _, tc := range []struct {
 		name   string
 		server map[string]interface{}
-		want   bool
+		want   string
 	}{
 		{
-			name: "false_claim",
+			name: "foreign binary running proxy arguments",
 			server: map[string]interface{}{
-				mcpFieldPipelock: map[string]interface{}{"original_type": "stdio"},
-				mcpFieldCommand:  "/usr/bin/attacker-server",
+				mcpFieldCommand: "/usr/bin/attacker-server",
+				mcpFieldArgs:    []interface{}{"mcp", "proxy", "--", testEchoCmd},
 			},
-			want: true,
+			want: "is not this pipelock binary",
 		},
 		{
-			name: "false_claim_with_proxy_args_on_other_binary",
+			name: "marker beside a command that does not run the proxy",
 			server: map[string]interface{}{
 				mcpFieldPipelock: map[string]interface{}{"original_type": "stdio"},
-				mcpFieldCommand:  "/usr/bin/attacker-server",
-				mcpFieldArgs:     []interface{}{"mcp", "proxy"},
+				mcpFieldCommand:  testEchoCmd,
 			},
-			want: true,
+			want: "carries pipelock metadata but does not run through the proxy",
 		},
 		{
-			name: "genuine_wrap_makes_no_false_claim",
+			name: "genuinely mediated entry says nothing",
 			server: map[string]interface{}{
-				mcpFieldPipelock: map[string]interface{}{"original_type": "stdio"},
-				mcpFieldCommand:  testPipelockExe,
-				mcpFieldArgs:     []interface{}{"mcp", "proxy", "--", testEchoCmd},
+				mcpFieldCommand: self,
+				mcpFieldArgs:    []interface{}{"mcp", "proxy", "--", testEchoCmd},
 			},
-			want: false,
+			want: "",
 		},
 		{
-			name:   "no_marker_makes_no_claim",
+			name:   "ordinary unwrapped entry says nothing",
 			server: map[string]interface{}{mcpFieldCommand: testEchoCmd},
-			want:   false,
+			want:   "",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hasUnmediatedPipelockMarker(tc.server); got != tc.want {
-				t.Fatalf("hasUnmediatedPipelockMarker = %v, want %v", got, tc.want)
+			var buf bytes.Buffer
+			warnForeignWrapper(&buf, "srv", tc.server)
+			got := buf.String()
+			if tc.want == "" {
+				if got != "" {
+					t.Fatalf("expected silence, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("warning = %q, want it to mention %q", got, tc.want)
 			}
 		})
 	}

@@ -207,41 +207,46 @@ func parseCodexMCPList(data []byte) ([]codexMCPServer, error) {
 	return servers, nil
 }
 
-// isCodexWrapped reports whether a server's transport is already wrapped by
-// pipelock. Detection keys on the args prefix ["mcp", "proxy"] AND a binary
-// basename of "pipelock" (with optional suffix like "pipelock-dev"). This
-// matches both the current pipelock binary and any prior pipelock binary at
-// a different path - important so a rebuild at a new location does not
-// double-wrap servers on the next install.
+// classifyCodexWrapper answers the same question for a Codex transport that
+// classifyWrapper answers for the map-shaped configs, using the same file-identity
+// test so the two cannot drift apart.
 //
-// The basename check guards against the unlikely case of a non-pipelock tool
-// that also uses `mcp proxy` as its leading args. Operators who want to point
-// the wrap at an alternate binary should `pipelock codex remove` first and
-// then `pipelock codex install` from the new binary.
-func isCodexWrapped(server codexMCPServer, _ string) bool {
+// The previous form keyed on the args prefix AND a binary BASENAME of "pipelock".
+// That basename check is a fail-open, and its own comment described it as guarding
+// only the "unlikely case of a non-pipelock tool" while the real case is
+// deliberate: a config naming an attacker binary "pipelock" with leading
+// "mcp proxy" arguments was treated as already wrapped and skipped, so that binary
+// ran with nothing in front of it.
+func classifyCodexWrapper(server codexMCPServer) wrapperState {
 	if server.Transport.Type != codexTransportStdio {
-		return false
+		return stateNotWrapper
 	}
-	if !looksLikePipelockBinary(server.Transport.Command) {
-		return false
+	if len(server.Transport.Args) < 2 ||
+		server.Transport.Args[0] != codexMCP || server.Transport.Args[1] != codexMCPProxy {
+		return stateNotWrapper
 	}
-	if len(server.Transport.Args) < 2 {
-		return false
+	if isThisExecutable(server.Transport.Command) {
+		return stateSelf
 	}
-	return server.Transport.Args[0] == codexMCP && server.Transport.Args[1] == codexMCPProxy
+	return stateForeignWrapper
+}
+
+// isCodexWrappedBySelf reports a transport already mediated by this binary, the
+// only state an installer may skip.
+func isCodexWrappedBySelf(server codexMCPServer) bool {
+	return classifyCodexWrapper(server) == stateSelf
+}
+
+// isCodexRestorableWrapper reports a transport remove should unwrap. It accepts a
+// wrapper written by a pipelock at another path, so upgrading the binary does not
+// strand entries as permanently un-removable.
+func isCodexRestorableWrapper(server codexMCPServer) bool {
+	return classifyCodexWrapper(server) != stateNotWrapper
 }
 
 // looksLikePipelockBinary reports whether the command path is plausibly a
 // pipelock binary. Matches "pipelock", "pipelock.exe", and dev variants like
 // "pipelock-dev". Path is matched on basename so it is location-independent.
-func looksLikePipelockBinary(command string) bool {
-	if command == "" {
-		return false
-	}
-	base := filepath.Base(command)
-	base = strings.TrimSuffix(base, ".exe")
-	return base == pipelockBinaryName || strings.HasPrefix(base, pipelockBinaryName+"-")
-}
 
 func serverEnabled(server codexMCPServer) bool {
 	return server.Enabled == nil || *server.Enabled
@@ -407,7 +412,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 	for _, s := range servers {
 		unsupportedReason := unsupportedCodexInstallReason(s)
 		switch {
-		case isCodexWrapped(s, pipelockBin):
+		case isCodexWrappedBySelf(s):
 			plans = append(plans, codexInstallPlan{
 				Server: s.Name,
 				Action: codexActionSkipWrapped,
@@ -463,7 +468,7 @@ type codexRemovePlan struct {
 func planCodexRemove(servers []codexMCPServer, pipelockBin string) ([]codexRemovePlan, error) {
 	plans := make([]codexRemovePlan, 0, len(servers))
 	for _, s := range servers {
-		if !isCodexWrapped(s, pipelockBin) {
+		if !isCodexRestorableWrapper(s) {
 			plans = append(plans, codexRemovePlan{
 				Server: s.Name,
 				Action: codexActionSkipNotWrapped,

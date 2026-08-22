@@ -4,7 +4,6 @@
 package skillscan
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,9 +133,9 @@ func TestReadScanFileBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lstat small: %v", err)
 	}
-	data, grew, err := readScanFile(small, smallInfo)
-	if err != nil || grew || string(data) != "ok" {
-		t.Fatalf("readScanFile small = data %q grew %v err %v", data, grew, err)
+	data, grew, refused, err := readScanFile(small, smallInfo)
+	if err != nil || grew || refused != "" || string(data) != "ok" {
+		t.Fatalf("readScanFile small = data %q grew %v refused %q err %v", data, grew, refused, err)
 	}
 
 	big := filepath.Join(dir, "big.txt")
@@ -147,11 +146,11 @@ func TestReadScanFileBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lstat big: %v", err)
 	}
-	data, grew, err = readScanFile(big, bigInfo)
-	if err != nil || !grew || data != nil {
-		t.Fatalf("readScanFile big = data len %d grew %v err %v, want grew", len(data), grew, err)
+	data, grew, refused, err = readScanFile(big, bigInfo)
+	if err != nil || !grew || data != nil || refused != "" {
+		t.Fatalf("readScanFile big = data len %d grew %v refused %q err %v, want grew", len(data), grew, refused, err)
 	}
-	if _, _, err = readScanFile(filepath.Join(dir, "missing.txt"), smallInfo); err == nil {
+	if _, _, _, err = readScanFile(filepath.Join(dir, "missing.txt"), smallInfo); err == nil {
 		t.Fatal("readScanFile missing err = nil, want error")
 	}
 }
@@ -568,6 +567,15 @@ func TestSymlinkedParentDirectoryIsNotContained(t *testing.T) {
 			t.Fatalf("scanned %s, want no content from outside the skill directory", f.path)
 		}
 	}
+	// Pin WHICH disposition, not merely that the file went unread. The escape is
+	// dropped at containment rather than recorded, which is the established
+	// behavior for a lexical escape. Contrast TestReferencedSymlinkIsReported,
+	// where a symlinked FINAL component IS reported as uninspectable. Without
+	// this assertion a later change that recorded the escape, and one that
+	// dropped it silently, both keep the test green.
+	if len(input.uninspectable) != 0 {
+		t.Fatalf("uninspectable = %+v, want the escaping reference dropped at containment", input.uninspectable)
+	}
 }
 
 // TestContainmentAllowsSymlinkedSkillRoot is the availability bound on the fix
@@ -623,9 +631,12 @@ func TestReadScanFileRejectsSwappedIdentity(t *testing.T) {
 		t.Fatalf("lstat: %v", err)
 	}
 
-	data, grew, err := readScanFile(swapped, want)
-	if !errors.Is(err, errRefIdentityChanged) {
-		t.Fatalf("err = %v, want errRefIdentityChanged", err)
+	data, grew, refused, err := readScanFile(swapped, want)
+	if err != nil {
+		t.Fatalf("err = %v, want a refusal rather than a hard error", err)
+	}
+	if !strings.Contains(refused, "changed identity") {
+		t.Fatalf("refused = %q, want the identity change reported", refused)
 	}
 	if data != nil || grew {
 		t.Fatalf("data = %q grew = %v, want no bytes returned from the swapped file", data, grew)
@@ -633,9 +644,9 @@ func TestReadScanFileRejectsSwappedIdentity(t *testing.T) {
 
 	// The same call against the file that WAS validated must still read, so the
 	// guard rejects a swap rather than every read.
-	data, grew, err = readScanFile(validated, want)
-	if err != nil || grew {
-		t.Fatalf("readScanFile(validated) = %v grew=%v, want a clean read", err, grew)
+	data, grew, refused, err = readScanFile(validated, want)
+	if err != nil || grew || refused != "" {
+		t.Fatalf("readScanFile(validated) = %v grew=%v refused=%q, want a clean read", err, grew, refused)
 	}
 	if string(data) != "echo validated\n" {
 		t.Fatalf("data = %q, want the validated file content", data)
@@ -677,12 +688,16 @@ func TestParentChainContainedUnresolvablePaths(t *testing.T) {
 	}
 }
 
-// TestUnreadableReferencedFileIsAnError covers the read-failure disposition,
-// which is distinct from a refusal. A referenced file that exists and is a
-// regular file but cannot be opened is not an uninspectable dependency to be
-// recorded and stepped over - it is a broken scan, and loadSkill must say so
-// rather than silently producing a partial inventory that reads as complete.
-func TestUnreadableReferencedFileIsAnError(t *testing.T) {
+// TestUnreadableReferencedFileIsRefusedNotFatal pins the availability direction
+// on a permission failure.
+//
+// Anyone who can write a skill directory can chmod a referenced file, so making
+// that fatal hands them a way to stop the scan of every OTHER skill too. It is
+// the same reasoning that makes an identity change non-fatal, and applying it to
+// one and not the other was the inconsistency here. Refusing keeps the rest of
+// the inventory and still records the dependency as uninspected, so nothing
+// unread presents as clean.
+func TestUnreadableReferencedFileIsRefusedNotFatal(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses file permission checks")
 	}
@@ -695,8 +710,17 @@ func TestUnreadableReferencedFileIsAnError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
 
-	if _, err := loadSkill(filepath.Join(dir, "SKILL.md")); err == nil {
-		t.Fatal("loadSkill err = nil, want the unreadable referenced file reported as an error")
+	input, err := loadSkill(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("loadSkill: %v, want the unreadable file refused rather than fatal", err)
+	}
+	if len(input.uninspectable) != 1 {
+		t.Fatalf("uninspectable = %+v, want the unreadable referenced file recorded", input.uninspectable)
+	}
+	for _, ref := range input.refFiles {
+		if strings.Contains(ref.Path, "locked.sh") {
+			t.Fatalf("refFiles = %+v, want the unreadable file absent from the inventory", input.refFiles)
+		}
 	}
 }
 
@@ -753,5 +777,55 @@ func TestSymlinkEscapedLockEntryReportsDrift(t *testing.T) {
 	}
 	if !hasFinding(res.Findings, FindingDrift, SeverityHigh, "referenced file from the lock is removed") {
 		t.Fatalf("findings = %+v, want the escaped lock entry reported on upgrade", res.Findings)
+	}
+}
+
+// TestReadScanFileRefusesSymlinkPath pins the second half of the read guard.
+// The open is no-follow, so a path that IS a symlink fails to open rather than
+// reading its target. That matters even though loadReferencedFiles rejects a
+// symlink before calling here: it means a path swapped to a symlink inside the
+// validation window fails closed at the open, not merely at the identity check
+// after it. Driven directly, because the swap itself is a race.
+func TestReadScanFileRefusesSymlinkPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.sh")
+	link := filepath.Join(dir, "link.sh")
+	writeFile(t, target, "echo target\n")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	want, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+
+	data, grew, refused, err := readScanFile(link, want)
+	if err == nil && refused == "" {
+		t.Fatal("readScanFile through a symlink succeeded, want the no-follow open to refuse it")
+	}
+	if data != nil || grew {
+		t.Fatalf("data = %q grew = %v, want no bytes read through the symlink", data, grew)
+	}
+}
+
+// TestUnreadableSkillFileIsAnError separates the skill file from its referenced
+// files. A referenced file that cannot be read is refused and the rest of the
+// inventory survives. The SKILL.md IS the inventory, so refusing to read it must
+// stop that skill rather than yield an entry that reads as an inspected skill
+// which happened to contain nothing.
+func TestUnreadableSkillFileIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permission checks")
+	}
+	dir := filepath.Join(t.TempDir(), "unreadable-body-skill")
+	skillPath := filepath.Join(dir, "SKILL.md")
+	writeSkill(t, skillPath, "Nothing to see.\n")
+	if err := os.Chmod(skillPath, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(skillPath, 0o600) })
+
+	if _, err := loadSkill(skillPath); err == nil {
+		t.Fatal("loadSkill err = nil, want an unreadable skill body to stop the skill")
 	}
 }

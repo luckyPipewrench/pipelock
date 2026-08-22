@@ -4,6 +4,7 @@
 package securefile
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -159,5 +160,40 @@ func TestReadOpenPermissionDenied(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "permissions") || strings.Contains(err.Error(), "max bytes") {
 		t.Fatalf("error = %v, want open failure not policy rejection", err)
+	}
+}
+
+// TestOpenRegularNonblockingExported covers the exported wrapper. It exists so
+// callers outside this package reuse the platform matrix rather than growing a
+// second one, so the export itself is the contract worth pinning: it opens a
+// regular file, and it does not follow a final symlink.
+func TestOpenRegularNonblockingExported(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	f, err := OpenRegularNonblocking(target)
+	if err != nil {
+		t.Fatalf("OpenRegularNonblocking: %v", err)
+	}
+	got, err := io.ReadAll(f)
+	_ = f.Close()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("content = %q, want payload", got)
+	}
+
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	linked, err := OpenRegularNonblocking(link)
+	if err == nil {
+		_ = linked.Close()
+		t.Fatal("OpenRegularNonblocking followed a symlink, want the no-follow open to refuse it")
 	}
 }

@@ -45,6 +45,22 @@ type Options struct {
 	OwnedState bool
 }
 
+// OpenRegularNonblocking opens path without following a final symlink and
+// without blocking on a path that names a FIFO or device. It exists so callers
+// outside this package can reuse the platform matrix behind it rather than
+// hand-rolling a second one that drifts from this one.
+//
+// It performs NO stat, permission, or containment check. A caller that needs
+// the full contract should use Read. A caller doing its own validation must
+// still verify the returned descriptor, because opening is not validating.
+//
+// It returns ErrUnsupportedSecureOpen where the platform cannot provide these
+// guarantees, so a caller fails closed rather than silently reading through a
+// symlink it believed it had refused.
+func OpenRegularNonblocking(path string) (*os.File, error) {
+	return openRegularNonblocking(path)
+}
+
 // Read opens a bounded regular file and verifies that the descriptor still
 // identifies the path that was validated. Kubernetes Secret-volume symlinks
 // are accepted only when their final target remains inside the symlink's

@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 const (
@@ -213,9 +215,15 @@ func loadSkill(path string) (skillInput, error) {
 		}
 		return input, nil
 	}
-	data, grew, err := readScanFile(clean, info)
+	data, grew, refusedSkill, err := readScanFile(clean, info)
 	if err != nil {
 		return skillInput{}, fmt.Errorf("read %s: %w", clean, err)
+	}
+	if refusedSkill != "" {
+		// The skill file itself IS the inventory. Refusing to read it is not a
+		// partial result to step over, so it stops this skill rather than
+		// yielding an entry that reads as an inspected skill with no content.
+		return skillInput{}, fmt.Errorf("read %s: %s", clean, refusedSkill)
 	}
 	if grew {
 		input.oversize = append(input.oversize, clean)
@@ -271,6 +279,17 @@ func (s *skillInput) loadReferencedFiles() error {
 			// must not gate a scan.
 			continue
 		}
+		// Three ways of refusing converge on the one disposition below, and each
+		// is chosen against availability rather than for strictness.
+		//
+		// A permission failure is not fatal for the same reason an identity
+		// change is not: anyone who can write this directory can chmod a
+		// referenced file, so aborting would let them stop the scan of every
+		// OTHER skill. A platform that cannot promise a no-follow, nonblocking
+		// open is refused rather than read, because reading anyway would
+		// silently reintroduce the symlink-follow this guards against. Any
+		// other read error is a broken scan and still aborts.
+		//
 		// Both ways of refusing to inspect a dependency converge on one
 		// disposition below. The path exists but is not a regular file, or the
 		// bytes opened were not the file that was checked. A dependency we
@@ -292,11 +311,8 @@ func (s *skillInput) loadReferencedFiles() error {
 				s.oversize = append(s.oversize, filepath.Clean(path))
 				continue
 			}
-			data, grew, err = readScanFile(filepath.Clean(path), info)
-			switch {
-			case errors.Is(err, errRefIdentityChanged):
-				refused = "changed identity between validation and read; the bytes opened were not the regular file that was checked"
-			case err != nil:
+			data, grew, refused, err = readScanFile(filepath.Clean(path), info)
+			if err != nil {
 				return fmt.Errorf("read referenced file %s: %w", path, err)
 			}
 		}
@@ -461,13 +477,6 @@ func parentChainContained(absRoot, absPath string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// errRefIdentityChanged reports that the file opened for reading is not the
-// file that was validated. Callers dispose of it as an uninspectable reference
-// rather than a scan failure: a swap is a legitimate-looking race, and failing
-// the whole scan on one would hand any writable skill directory a denial of
-// service.
-var errRefIdentityChanged = errors.New("referenced file changed identity between validation and read")
-
 // readScanFile reads path, refusing to return bytes from anything other than
 // the regular file described by want.
 //
@@ -477,27 +486,37 @@ var errRefIdentityChanged = errors.New("referenced file changed identity between
 // outside the skill directory while its own contract says a symlink is never
 // followed. Re-stat the OPEN DESCRIPTOR instead: that names the inode actually
 // being read and cannot be re-pointed underneath us.
-func readScanFile(path string, want os.FileInfo) ([]byte, bool, error) {
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return nil, false, err
+func readScanFile(path string, want os.FileInfo) (data []byte, grew bool, refused string, err error) {
+	// securefile owns the platform matrix for a nonblocking, no-follow open and
+	// is already exercised against a real FIFO. Reuse it rather than adding a
+	// second matrix here that drifts from that one. O_NOFOLLOW also narrows this
+	// window further than the descriptor check alone: a path swapped to a
+	// symlink now fails to open instead of opening the wrong file.
+	f, err := securefile.OpenRegularNonblocking(filepath.Clean(path))
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		return nil, false, "not readable by the scanner, so its content is unknown", nil
+	case errors.Is(err, securefile.ErrUnsupportedSecureOpen):
+		return nil, false, "platform cannot open it without following symlinks, so it is not inspected", nil
+	case err != nil:
+		return nil, false, "", err
 	}
 	defer func() { _ = f.Close() }()
-	got, err := f.Stat()
-	if err != nil {
-		return nil, false, err
+	got, statErr := f.Stat()
+	if statErr != nil {
+		return nil, false, "", statErr
 	}
 	if !got.Mode().IsRegular() || !os.SameFile(want, got) {
-		return nil, false, errRefIdentityChanged
+		return nil, false, "changed identity between validation and read; the bytes opened were not the regular file that was checked", nil
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxScanFileBytes+1))
-	if err != nil {
-		return nil, false, err
+	body, readErr := io.ReadAll(io.LimitReader(f, maxScanFileBytes+1))
+	if readErr != nil {
+		return nil, false, "", readErr
 	}
-	if len(data) > maxScanFileBytes {
-		return nil, true, nil
+	if len(body) > maxScanFileBytes {
+		return nil, true, "", nil
 	}
-	return data, false, nil
+	return body, false, "", nil
 }
 
 func splitLines(content string) []string {

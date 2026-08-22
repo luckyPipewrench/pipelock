@@ -28,7 +28,7 @@ When no path is given, the current directory is scanned recursively.
 | `--exclude` | none | Additional directory names to skip (repeatable / comma-separated). |
 | `--min-severity` | `high` | Minimum finding severity that causes a non-zero exit: `high`, `medium`, or `low`. Lower severities are still reported, just not gated. |
 | `--include-deps` | `false` | Also scan dependency / VCS directories (`node_modules`, `vendor`, `.git`, ...) that are skipped by default. |
-| `--fail-on-skip` | `false` | Exit 2 if any file was skipped (binary, symlink, or oversized). |
+| `--fail-on-skip` | `false` | Exit 2 if any file was skipped (binary, UTF-16, symlink, or oversized). |
 
 ## Severity
 
@@ -46,7 +46,7 @@ Not every invisible character is equally suspicious in a file, so findings carry
 |---|---|
 | 0 | No findings at or above `--min-severity`. |
 | 1 | One or more findings at or above `--min-severity`. |
-| 2 | Scan / config error, an agent-context file could not be inspected so its content is unknown, an explicitly named file was skipped (binary, symlink, oversized), or `--fail-on-skip` was set and any file was skipped. |
+| 2 | Scan / config error, an agent-context file could not be inspected so its content is unknown, an explicitly named file was skipped (binary, UTF-16, symlink, oversized), or `--fail-on-skip` was set and any file was skipped. |
 
 The distinct exit codes let a CI wrapper tell "found hidden characters" (1) apart from "the scan itself broke" (2).
 

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -547,6 +548,11 @@ func TestScanPaths_ContextMatchIsCaseInsensitiveAndExtensible(t *testing.T) {
 // race or error this test cannot provoke deterministically, and leaving that branch
 // appending straight to skips would have been the one inconsistent path.
 func TestScanPaths_UnreadableContextFileIsRefused(t *testing.T) {
+	// Windows does not enforce a Unix read-denial from chmod(0o000), so the
+	// unreadable state this test depends on cannot be created there.
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod read-denial is not enforced on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a 0000 file, so the failure cannot be provoked")
 	}

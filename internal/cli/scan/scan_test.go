@@ -106,18 +106,8 @@ func TestScanCmd_MinSeverityGating(t *testing.T) {
 
 func TestScanCmd_SkipPolicy(t *testing.T) {
 	dir := t.TempDir()
-	// Genuinely binary content. The old fixture was "a\x00b", which counted as
-	// binary only under the previous rule that any NUL meant binary; that input is
-	// now correctly scanned as text, so the skip policy needs real binary data.
 	binary := filepath.Join(dir, "blob.bin")
-	blob := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
-	for i := range 256 {
-		if i%3 == 0 {
-			blob = append(blob, 0)
-			continue
-		}
-		blob = append(blob, byte(128+(i%127)))
-	}
+	blob := binaryFixture()
 	if err := os.WriteFile(binary, blob, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -200,14 +190,7 @@ func mustWrite(t *testing.T, path, content string) {
 // clean. The paired non-context case must still exit 0, or the change would just
 // be a stricter scan rather than a targeted one.
 func TestScanCmd_RefusalBoundary(t *testing.T) {
-	blob := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
-	for i := range 256 {
-		if i%3 == 0 {
-			blob = append(blob, 0)
-			continue
-		}
-		blob = append(blob, byte(128+(i%127)))
-	}
+	blob := binaryFixture()
 
 	t.Run("uninspectable context file exits 2 without fail-on-skip", func(t *testing.T) {
 		dir := t.TempDir()
@@ -236,4 +219,23 @@ func TestScanCmd_RefusalBoundary(t *testing.T) {
 			t.Fatalf("ordinary binary asset must not fail a scan, got %v\n%s", err, out)
 		}
 	})
+}
+
+// binaryFixture builds content that classifies as binary under the current rule
+// rather than the old one. The previous fixture was "a\x00b", binary only while a
+// single NUL was treated as proof; that input is now correctly scanned as text.
+//
+// The skip-versus-refusal tests share this one fixture deliberately: the pair only
+// means anything if both sides differ by the FILE NAME alone, and two separately
+// maintained payloads could drift until the comparison proved nothing.
+func binaryFixture() []byte {
+	blob := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+	for i := range 256 {
+		if i%3 == 0 {
+			blob = append(blob, 0)
+			continue
+		}
+		blob = append(blob, byte(128+(i%127)))
+	}
+	return blob
 }

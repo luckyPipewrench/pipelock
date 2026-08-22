@@ -1982,13 +1982,10 @@ func TestEmbeddedURLTextViews_TruncationSignal(t *testing.T) {
 // decode pass branch, so the collected views reach the cap while decoding is
 // still productive.
 //
-// What this test does NOT establish, stated so a later reader does not assume
-// it: it does not isolate the cap's own truncation flag. Neutralising that flag
-// leaves this test passing, because a view the cap refuses is by construction
-// still decodable and unseen, so the further-work probe reports truncation too.
-// The flag is not redundant - it is the only reporter when the pass loop
-// CONVERGES after an earlier block, since the probe runs only when the budget
-// was exhausted - but that interleaving is not reproduced here.
+// This case does not isolate the cap's own flag: neutralising it leaves this
+// test passing, because the further-work probe also reports truncation here.
+// TestEmbeddedURLTextViews_CapRejectionAloneReportsTruncation is the case that
+// isolates it, so the flag is covered by that test rather than this one.
 func TestEmbeddedURLTextViews_ViewCapReportsTruncation(t *testing.T) {
 	payload := "http://169.254.169.254/latest/meta-data/"
 	for i := range 4 {
@@ -2020,5 +2017,39 @@ func TestEmbeddedURLTextViews_EntityDecodeCountsAsFurtherWork(t *testing.T) {
 	}
 	if _, truncated := embeddedURLTextViews(payload); !truncated {
 		t.Fatal("entity-encoded layers left unread were not reported as truncated")
+	}
+}
+
+// TestEmbeddedURLTextViews_CapRejectionAloneReportsTruncation isolates the view
+// cap from the further-work probe, which the sibling test above cannot do.
+//
+// Finding this input took a differential search, and the search overturned two
+// earlier conclusions of mine that the cap flag was unprovable. It is provable:
+// with the cap's assignment neutralised, this case reports truncated=false while
+// the intact code reports true, so the flag is the only thing that catches it.
+//
+// The shape that isolates it: the cap refuses a view whose slash-decoded form
+// also needs a slot, and the pass loop then converges, so the further-work probe
+// never runs. The probe would not have found it anyway, because it inspects
+// percent and entity decoding and not the escaped-slash rewrite.
+func TestEmbeddedURLTextViews_CapRejectionAloneReportsTruncation(t *testing.T) {
+	encoded := "http://169.254.169.254/latest/meta-data/"
+	for i := range 4 {
+		encoded = url.QueryEscape(encoded)
+		if i < 2 {
+			encoded = strings.Replace(encoded, "%", "&#37;", 1)
+		}
+	}
+	// The escaped slash rides in a trailing token so it does not disturb the
+	// URL's own decode chain; it is what makes an append need two slots.
+	text := encoded + ` note:a\/b`
+
+	views, truncated := embeddedURLTextViews(text)
+	if len(views) != maxEmbeddedURLTextViews {
+		t.Fatalf("views = %d, want the cap of %d so this exercises the rejection path",
+			len(views), maxEmbeddedURLTextViews)
+	}
+	if !truncated {
+		t.Fatal("the cap refused a view without reporting truncation, so a dropped view reads as complete inspection")
 	}
 }

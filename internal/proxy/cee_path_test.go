@@ -160,6 +160,7 @@ func TestPathSegments(t *testing.T) {
 		{"nil url", nil, nil},
 		{"empty", &url.URL{}, nil},
 		{"root only", &url.URL{Path: "/"}, nil},
+		{"empty segments only", &url.URL{Path: "///"}, nil},
 		{"single", &url.URL{Path: "/data"}, []string{"data"}},
 		{"multi", &url.URL{Path: "/api/v1/tokens"}, []string{"api", "v1", "tokens"}},
 		{"collapses empty segments", &url.URL{Path: "//api///v1/"}, []string{"api", "v1"}},

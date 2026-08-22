@@ -284,18 +284,46 @@ func isWrappedBySelf(server map[string]interface{}) bool {
 	return classifyWrapper(server) == stateSelf
 }
 
-// isRestorableWrapper reports whether an entry looks like a pipelock wrapper that
-// remove should unwrap. It deliberately accepts a FOREIGN wrapper as well as this
+// isRestorableWrapper reports whether an entry is a pipelock wrapper that remove
+// can actually put back. It deliberately accepts a FOREIGN wrapper as well as this
 // binary, because requiring identity here would strand every entry wrapped by an
 // earlier pipelock installed at a different path: an operator who upgrades could
 // never remove them.
 //
-// That looseness is safe for choosing WHICH entries to restore and is not safe for
-// everything the restore then does. In particular a metadata-supplied deletion
-// target must never be honoured; see the header-sidecar note in the VS Code
-// removal path.
+// It does REQUIRE the restoration metadata, because restoration is driven entirely
+// by that metadata. Accepting a proxy-shaped entry without it produced a false
+// success: unwrapMCPServer returns such an entry unchanged, so remove counted it,
+// rewrote the config and the backup, and reported an unwrap that never happened
+// while the server stayed routed through someone else's proxy. On a security tool
+// a wrong success report is worse than a refusal, so this refuses and the caller
+// says why.
+//
+// The looseness that remains is safe for choosing WHICH entries to restore and is
+// not safe for everything the restore then does. In particular a metadata-supplied
+// deletion target must never be honoured; see the header-sidecar note in the VS
+// Code removal path.
 func isRestorableWrapper(server map[string]interface{}) bool {
+	if _, ok := server[mcpFieldPipelock]; !ok {
+		return false
+	}
 	return classifyWrapper(server) != stateNotWrapper
+}
+
+// warnUnrestorableWrapper tells the operator about an entry that runs through a
+// proxy but carries no record of what it replaced. Remove skips it, and staying
+// silent would read as nothing having been wrapped, when the truth is that the
+// entry is wrapped and cannot be put back.
+func warnUnrestorableWrapper(w io.Writer, name string, server map[string]interface{}) {
+	if _, ok := server[mcpFieldPipelock]; ok {
+		return
+	}
+	if classifyWrapper(server) == stateNotWrapper {
+		return
+	}
+	binary, _ := serverInvocation(server)
+	_, _ = fmt.Fprintf(w,
+		"warning: server %q runs %q with proxy arguments but carries no pipelock metadata, so the original command is unknown; leaving it unchanged, restore it by hand\n",
+		name, binary)
 }
 
 // isThisExecutable reports whether a command names the binary running right now,
@@ -378,25 +406,3 @@ func commandArgStrings(v interface{}) []string {
 		return interfaceSliceToStrings(v)
 	}
 }
-
-// looksLikeWrapperBinary reports whether a command is a pipelock binary that
-// could be mediating this entry. It accepts the pipelock basename, matching
-// isCodexWrapped so a rebuild at a different path does not cause double
-// wrapping, and it also accepts the currently running executable by path.
-//
-// The second case matters because the wrapper writes os.Executable() into the
-// config, and that binary is not always named "pipelock": it is the test binary
-// under test, and it can be a renamed build in the field. An entry invoking THIS
-// executable with the proxy subcommand is mediated by definition, so accepting it
-// adds no trust that basename matching did not already grant.
-
-// warnUnmediatedMarker tells the operator that an entry claimed pipelock coverage
-// it does not have. The entry is still wrapped by the caller, so it ends up
-// mediated; the warning exists so a false claim is visible rather than silently
-// corrected. Shared by every installer so the wording cannot drift.
-
-// hasUnmediatedPipelockMarker reports an entry that claims to be wrapped but is
-// not: a _pipelock marker beside an invocation that does not go through the
-// proxy. The installer wraps such an entry rather than skipping it, so the
-// server ends up mediated, and warns so the operator sees that the claim was
-// false rather than having it silently corrected.

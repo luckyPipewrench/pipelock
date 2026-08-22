@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -154,7 +153,7 @@ func TestClassifyCodexWrapper(t *testing.T) {
 			want: stateNotWrapper,
 		},
 		{
-			name: "a path containing pipelock as a substring is not a wrapper",
+			name: "a path containing pipelock as a substring is a foreign wrapper",
 			server: codexMCPServer{Transport: codexMCPTransport{
 				Type: "stdio", Command: "/some/path/with-pipelock-in-name/run.sh",
 				Args: []string{"mcp", "proxy"},
@@ -576,7 +575,7 @@ func TestPlanCodexRemove(t *testing.T) {
 			},
 		},
 	}
-	plans, err := planCodexRemove(servers, pipelockBin)
+	plans, err := planCodexRemove(servers)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -617,7 +616,7 @@ func TestPlanCodexRemove_MalformedWrapErrors(t *testing.T) {
 			Args:    []string{"mcp", "proxy", "--config"}, // trailing flag
 		},
 	}}
-	_, err := planCodexRemove(servers, pipelockBin)
+	_, err := planCodexRemove(servers)
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -684,7 +683,7 @@ func TestPlanCodexRemove_UnsupportedCodexStateErrors(t *testing.T) {
 				StartupTimeoutSec: tt.startupRaw,
 				ToolTimeoutSec:    tt.toolRaw,
 			}}
-			_, err := planCodexRemove(servers, pipelockBin)
+			_, err := planCodexRemove(servers)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -708,7 +707,7 @@ func TestPlanCodexRemove_DisabledServerErrors(t *testing.T) {
 			Args:    []string{"mcp", "proxy", "--", "node", "x.js"},
 		},
 	}}
-	_, err := planCodexRemove(servers, pipelockBin)
+	_, err := planCodexRemove(servers)
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -911,7 +910,7 @@ func TestRunCodexInstall_AlreadyWrappedSkipped(t *testing.T) {
 		"enabled": true,
 		"transport": {
 			"type": "stdio",
-			"command": ` + strconv.Quote(testSelfExe(t)) + `,
+			"command": ` + selfCommandJSON(t) + `,
 			"args": ["mcp", "proxy", "--", "node", "x.js"]
 		}
 	}]`
@@ -1528,4 +1527,16 @@ func testSelfExe(t *testing.T) string {
 		t.Fatalf("os.Executable: %v", err)
 	}
 	return self
+}
+
+// selfCommandJSON encodes this test binary's path as a JSON string. Go's quoting
+// and JSON's diverge on non-ASCII and non-printable bytes, so a JSON fixture uses
+// the JSON encoder even where a temp path happens to be plain ASCII.
+func selfCommandJSON(t *testing.T) string {
+	t.Helper()
+	encoded, err := json.Marshal(testSelfExe(t))
+	if err != nil {
+		t.Fatalf("marshal exe path: %v", err)
+	}
+	return string(encoded)
 }

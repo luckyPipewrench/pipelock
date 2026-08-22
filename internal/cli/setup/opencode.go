@@ -266,6 +266,7 @@ func runOpenCodeRemove(cmd *cobra.Command, override string, dryRun bool) error {
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
 		if !isRestorableWrapper(server) {
+			warnUnrestorableWrapper(cmd.ErrOrStderr(), name, server)
 			continue
 		}
 

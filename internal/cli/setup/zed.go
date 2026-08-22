@@ -444,6 +444,7 @@ func removeZedPath(cmd *cobra.Command, targetPath string, dryRun bool) error {
 	var sidecarOps []sidecarOp
 	for name, server := range cfg.Servers {
 		if !isRestorableWrapper(server) {
+			warnUnrestorableWrapper(cmd.ErrOrStderr(), name, server)
 			continue
 		}
 

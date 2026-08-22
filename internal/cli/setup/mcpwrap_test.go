@@ -222,3 +222,87 @@ func TestWarnForeignWrapper(t *testing.T) {
 		})
 	}
 }
+
+// TestIsRestorableWrapper_RefusesEntryWithoutRestorationMetadata pins the pairing
+// between the predicate that SELECTS entries for removal and the function that
+// restores them. Restoration is driven entirely by the _pipelock metadata, so a
+// proxy-shaped entry without it cannot be put back.
+//
+// Selecting one anyway produced a false success rather than a visible failure:
+// unwrapMCPServer returns such an entry unchanged, so remove incremented its
+// count, rewrote the config and the backup, and told the operator it had
+// unwrapped a server that was still routed through someone else's proxy. The
+// assertion is on the PAIRING, not on either half, because each half is correct
+// alone and only the combination lies.
+func TestIsRestorableWrapper_RefusesEntryWithoutRestorationMetadata(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		command string
+	}{
+		{name: "wrapped by this binary", command: self},
+		{name: "wrapped by a pipelock at another path", command: "/other/bin/pipelock"},
+		{name: "wrapped by an attacker binary in the project", command: "./tools/pipelock"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := map[string]interface{}{
+				mcpFieldCommand: tc.command,
+				mcpFieldArgs:    []interface{}{"mcp", "proxy", "--", "node", "x.js"},
+			}
+			if classifyWrapper(server) == stateNotWrapper {
+				t.Fatalf("fixture is not proxy-shaped, so it does not exercise the case")
+			}
+			if isRestorableWrapper(server) {
+				t.Fatalf("selected for restore with no metadata to restore from")
+			}
+
+			// The other half of the pairing: had it been selected, the restore
+			// would have been a no-op reported as a success.
+			restored, err := unwrapMCPServer(server)
+			if err != nil {
+				t.Fatalf("unwrapMCPServer: %v", err)
+			}
+			if restored[mcpFieldCommand] != tc.command {
+				t.Fatalf("unwrapMCPServer restored something; this test no longer describes the code")
+			}
+		})
+	}
+}
+
+// TestWarnUnrestorableWrapper_TellsOperatorWhyNothingHappened covers the
+// availability direction of the refusal above. Refusing silently would read as
+// "nothing was wrapped" when the truth is "this is wrapped and I cannot put it
+// back", which leaves the operator with no way to act.
+func TestWarnUnrestorableWrapper_TellsOperatorWhyNothingHappened(t *testing.T) {
+	var buf bytes.Buffer
+	warnUnrestorableWrapper(&buf, "orphaned", map[string]interface{}{
+		mcpFieldCommand: "/other/bin/pipelock",
+		mcpFieldArgs:    []interface{}{"mcp", "proxy", "--", "node", "x.js"},
+	})
+	got := buf.String()
+	for _, want := range []string{"orphaned", "/other/bin/pipelock", "no pipelock metadata", "by hand"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("warning omitted %q: %s", want, got)
+		}
+	}
+
+	// A genuine wrapper and an ordinary server both stay silent, so the warning
+	// does not become noise on every remove.
+	buf.Reset()
+	warnUnrestorableWrapper(&buf, "genuine", map[string]interface{}{
+		mcpFieldCommand:  "/other/bin/pipelock",
+		mcpFieldArgs:     []interface{}{"mcp", "proxy", "--", "node", "x.js"},
+		mcpFieldPipelock: map[string]interface{}{"original_type": "stdio", "original_command": "node"},
+	})
+	warnUnrestorableWrapper(&buf, "ordinary", map[string]interface{}{
+		mcpFieldCommand: "node",
+		mcpFieldArgs:    []interface{}{"x.js"},
+	})
+	if buf.Len() != 0 {
+		t.Fatalf("warned about an entry that needs no warning: %s", buf.String())
+	}
+}

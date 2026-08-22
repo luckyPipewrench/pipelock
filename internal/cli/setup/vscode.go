@@ -415,6 +415,7 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
 		if !isRestorableWrapper(server) {
+			warnUnrestorableWrapper(cmd.ErrOrStderr(), name, server)
 			continue
 		}
 
@@ -481,14 +482,7 @@ const (
 // (anything that is not stdio).
 func isVscodeHTTPType(t string) bool { return t != vsTypeStdio && t != "" }
 
-// isVscodeWrapped reports whether a VS Code family entry is actually mediated by
-// the pipelock MCP proxy. It had the same defect as isWrapped, deciding from the
-// presence of the _pipelock marker, and it covers more surface: VS Code, Cline
-// and OpenCode all route through it. Both share one invocation check now, so the
-// two predicates cannot drift apart again.
-
-// wrapVscodeServer wraps a single VS Code MCP server through pipelock mcp proxy.
-// wrapVscodeServer wraps a single MCP server entry through pipelock mcp proxy.
+// wrapVscodeServer wraps a single VS Code family MCP server through pipelock mcp proxy.
 // targetConfigPath + serverName are used to derive the per-server 0o600 header
 // sidecar file when the entry carries an HTTP `headers` block; the wrapped
 // argv references it via --header-file so credential header values never

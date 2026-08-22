@@ -240,6 +240,7 @@ func runJetbrainsRemove(cmd *cobra.Command, global, project, dryRun bool) error 
 	unwrapped := 0
 	for name, server := range cfg.Servers {
 		if !isRestorableWrapper(server) {
+			warnUnrestorableWrapper(cmd.ErrOrStderr(), name, server)
 			continue
 		}
 

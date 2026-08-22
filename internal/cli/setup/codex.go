@@ -221,8 +221,7 @@ func classifyCodexWrapper(server codexMCPServer) wrapperState {
 	if server.Transport.Type != codexTransportStdio {
 		return stateNotWrapper
 	}
-	if len(server.Transport.Args) < 2 ||
-		server.Transport.Args[0] != codexMCP || server.Transport.Args[1] != codexMCPProxy {
+	if !argsBeginMCPProxy(server.Transport.Args) {
 		return stateNotWrapper
 	}
 	if isThisExecutable(server.Transport.Command) {
@@ -465,7 +464,7 @@ type codexRemovePlan struct {
 }
 
 // planCodexRemove computes the unwrap plan for each server. Pure function.
-func planCodexRemove(servers []codexMCPServer, pipelockBin string) ([]codexRemovePlan, error) {
+func planCodexRemove(servers []codexMCPServer) ([]codexRemovePlan, error) {
 	plans := make([]codexRemovePlan, 0, len(servers))
 	for _, s := range servers {
 		if !isCodexRestorableWrapper(s) {
@@ -579,16 +578,15 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 	if err != nil {
 		return err
 	}
-	pipelockBin, err := resolvePipelockBinary()
-	if err != nil {
-		return err
-	}
-
+	// Remove no longer resolves the pipelock binary. Identity now comes from
+	// os.Executable() inside the classifier, and requiring a PATH lookup here
+	// made remove fail for an operator whose pipelock had been moved, which is
+	// exactly when they most need to unwrap their editors.
 	servers, err := codexMCPList(cmd.Context(), codexBin)
 	if err != nil {
 		return err
 	}
-	plans, err := planCodexRemove(servers, pipelockBin)
+	plans, err := planCodexRemove(servers)
 	if err != nil {
 		return err
 	}

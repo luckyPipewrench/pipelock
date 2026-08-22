@@ -389,7 +389,12 @@ func containedRelativePath(root, candidate string) (string, bool) {
 		return "", false
 	}
 	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
+	// Reject traversal on a path COMPONENT boundary, not on a string prefix. A
+	// filename may legitimately begin with two dots, so "..bootstrap" is a
+	// contained file while ".." and "../x" are escapes. The prefix form treated
+	// the filename as traversal and dropped it from the scan and the lock.
+	if err != nil || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
 	return filepath.ToSlash(rel), true

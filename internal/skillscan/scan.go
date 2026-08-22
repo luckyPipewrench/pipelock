@@ -117,6 +117,17 @@ func Scan(opts Options) (Result, error) {
 	if useLock {
 		result.Findings = append(result.Findings, diffLock(lock, result.Skills)...)
 	}
+	// Refuse to refresh the lock when any path went uninspected. BuildLock
+	// records a skill's hashes and an EMPTY capability summary, so locking an
+	// unread SKILL.md freezes "this skill does nothing" as the approved
+	// baseline and every later scan compares clean against it. That is the
+	// silent blessing the hidden-instruction pass above exists to prevent, and
+	// it is worse than not baselining at all.
+	if refreshLock && lockBlockedByUninspectable(result.Findings) {
+		result.LockRefused = true
+		sortFindings(result.Findings)
+		return result, nil
+	}
 	if refreshLock {
 		lockPath := opts.LockFile
 		if lockPath == "" {
@@ -129,6 +140,18 @@ func Scan(opts Options) (Result, error) {
 	}
 	sortFindings(result.Findings)
 	return result, nil
+}
+
+// lockBlockedByUninspectable reports whether any finding says content was not
+// read. A lock built over unread content asserts a clean inventory the scanner
+// never established.
+func lockBlockedByUninspectable(findings []Finding) bool {
+	for _, f := range findings {
+		if f.Kind == FindingUninspectable || f.Kind == FindingOversize {
+			return true
+		}
+	}
+	return false
 }
 
 // comboFindings converts detected combos into findings, suppressing those
@@ -257,7 +280,12 @@ func (r Result) WriteReport(w io.Writer) {
 	}
 	_, _ = fmt.Fprintf(bw, "scanned %d file(s), %d skill(s), %d finding(s)\n",
 		r.FilesScanned, len(r.Skills), len(r.Findings))
-	if r.LockFile != "" {
+	switch {
+	case r.LockRefused:
+		_, _ = fmt.Fprintf(bw,
+			"lock NOT written to %s: content went unscanned, so a baseline would record an inventory that was never established\n",
+			r.LockFile)
+	case r.LockFile != "":
 		_, _ = fmt.Fprintf(bw, "lock file: %s\n", r.LockFile)
 	}
 }

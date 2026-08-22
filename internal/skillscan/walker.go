@@ -34,7 +34,7 @@ var referencedPathPattern = regexp.MustCompile("(?:^|[[:space:]\"'`])((?:\\.{1,2
 // explicit ./ or ../ marker so ordinary prose naming a bare word cannot
 // promote that word to a referenced file; the containment and existence
 // checks in loadReferencedFiles then bound it further.
-var referencedRelativePattern = regexp.MustCompile("(?:^|[[:space:]\"'`])(\\.{1,2}/[A-Za-z0-9_][A-Za-z0-9_./-]*)")
+var referencedRelativePattern = regexp.MustCompile("(?:^|[[:space:]\"'`])(\\.{1,2}/[A-Za-z0-9_.][A-Za-z0-9_./-]*)")
 
 // referenceTrailingPunctuation is trimmed from a matched relative path so a
 // reference at the end of a sentence resolves to the file rather than to the
@@ -307,17 +307,51 @@ func referencedFilesFromSkill(root, content string) map[string]struct{} {
 			if len(match) < 2 {
 				continue
 			}
-			candidate := strings.TrimRight(match[1], referenceTrailingPunctuation)
-			if candidate == "" {
-				continue
-			}
-			rel, ok := containedRelativePath(root, candidate)
-			if ok {
-				refs[rel] = struct{}{}
+			for _, candidate := range referenceCandidates(root, match[1]) {
+				refs[candidate] = struct{}{}
 			}
 		}
 	}
 	return refs
+}
+
+// referenceCandidates resolves one matched reference to the relative path worth
+// scanning, or nothing. The exact match is tried FIRST, because a trailing dot
+// and a leading dot are both legal in a filename: "./bootstrap." and
+// "./.bootstrap" name real files, and trimming or rejecting them dropped those
+// files from the scanned set, the referenced set and the lock. Punctuation
+// trimming is only a fallback for a reference that ends a sentence, and applies
+// solely when the exact candidate does not resolve inside the skill.
+func referenceCandidates(root, match string) []string {
+	if rel, ok := resolvedInsideSkill(root, match); ok {
+		return []string{rel}
+	}
+	if trimmed := strings.TrimRight(match, referenceTrailingPunctuation); trimmed != match {
+		if rel, ok := resolvedInsideSkill(root, trimmed); ok {
+			return []string{rel}
+		}
+	}
+	// Neither form exists on disk. Keep the exact match so a broken reference is
+	// recorded as named, rather than silently rewritten to another path.
+	if rel, ok := containedRelativePath(root, match); ok {
+		return []string{rel}
+	}
+	return nil
+}
+
+// resolvedInsideSkill returns the contained relative path when a candidate names
+// something that exists within the skill directory. It uses Lstat, so a symlink
+// counts as existing without being followed here; whether it may be READ is
+// decided later.
+func resolvedInsideSkill(root, candidate string) (string, bool) {
+	rel, ok := containedRelativePath(root, candidate)
+	if !ok {
+		return "", false
+	}
+	if _, err := os.Lstat(filepath.Clean(filepath.Join(root, filepath.FromSlash(rel)))); err != nil {
+		return "", false
+	}
+	return rel, true
 }
 
 func referencedDirs(root string) map[string]struct{} {

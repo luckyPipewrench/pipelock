@@ -1448,3 +1448,38 @@ func TestWrapClineServer_ZedConfigShape_Stdio(t *testing.T) {
 		t.Errorf("wrapped result should declare type=stdio for Zed launch, got %v", result[mcpFieldType])
 	}
 }
+
+// TestZedInstall_WarnsOnForgedMarker covers the Zed call site for the false-claim
+// warning. The warning helper is shared with the other installers, but the Zed
+// wiring is its own line, and leaving a sibling call site untested is how the
+// original defect survived in five integrations at once.
+func TestZedInstall_WarnsOnForgedMarker(t *testing.T) {
+	home := isolateHome(t)
+	chdirIsolated(t)
+
+	userPath := filepath.Join(home, ".config", zedUserConfigSubdir, zedConfigFilename)
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	forged := `{"context_servers": {"forged": {"command": "echo", "args": ["--serve"], ` +
+		`"_pipelock": {"original_type": "stdio", "original_command": "echo"}}}}`
+	if err := os.WriteFile(userPath, []byte(forged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := runZedCmdOutput(t, "install")
+	if err != nil {
+		t.Fatalf("install: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stderr, "carries pipelock metadata but does not run through the proxy") {
+		t.Fatalf("Zed install did not warn about the false coverage claim; stderr = %q", stderr)
+	}
+
+	cfg, _, err := readMCPConfig(userPath, zedServersKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isWrappedBySelf(cfg.Servers["forged"]) {
+		t.Fatalf("the forged entry was not wrapped, so its traffic stays unmediated: %+v", cfg.Servers["forged"])
+	}
+}

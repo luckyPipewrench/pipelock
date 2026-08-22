@@ -21,7 +21,7 @@ When no path is given, Pipelock scans existing local skill directories under `$X
 
 | Class | Severity | What it means |
 |---|---|---|
-| Provable | `high` | Lock drift (content hash change), referenced-file tamper, unscanned oversize files, and **direct** transfers where the command shows an obvious source-to-network transfer (e.g. `cat ~/.aws/credentials \| curl ...`). |
+| Provable | `high` | Lock drift (content hash change), referenced-file tamper, an `oversize` file past the size limit, an `uninspectable` path the scanner declined to read, and **direct** transfers where the command shows an obvious source-to-network transfer (e.g. `cat ~/.aws/credentials \| curl ...`). Both `oversize` and `uninspectable` also bar a lock refresh. |
 | Advisory co-occurrence | `medium` / `low` | A source and sink appear in the **same code region within a few lines** but no direct transfer is shown. Named `*-cooccurrence`. Worth a look, not an assertion of exfiltration. |
 | Inventory | none | Capability mentions (including in prose). Descriptive context, never a finding by itself. |
 
@@ -34,6 +34,14 @@ The default `--min-severity` is `high`, so a first run gates only on provable is
 Combination findings are generated only from **executable context**: fenced code blocks inside Markdown skill files and the full body of scanned script files. Prose, tables, headings, and blockquotes are never read as commands, so a Markdown table cell like `| CLAUDE.md |` or a blockquote `> note` is not mistaken for a guard-file target or a filesystem write. A source and sink must also co-occur in the **same region within 10 lines**; mentions farther apart, or in different code blocks, are not paired.
 
 Scanned script files are those named by relative path in `SKILL.md` plus every file under the skill's `scripts/`, `bin/`, and `hooks/` directories (so an unreferenced script dropped into one of those directories is still scanned). Line endings are normalized (`\r\n` and bare `\r` to `\n`) before scanning, and any single file larger than 2 MiB is skipped with a high-severity `oversize` finding rather than read into memory.
+
+A relative path counts as a reference whether or not it carries a recognized extension, so a launcher named `./bootstrap` is scanned and locked exactly like `./bootstrap.sh`. An extensionless reference must carry an explicit `./` or `../` marker; a bare word in prose is not treated as a file even when a file of that name exists.
+
+Any scanned file the scanner did not read, whether a skill file or a referenced one, is reported so unknown content is never counted as clean. Two distinct high-severity kinds cover it. A file larger than the 2 MiB limit is `oversize`. A path the scanner declined to read for any other reason is `uninspectable`, naming the reason: a referenced path that exists but is not a regular file, a file the hidden-instruction pass skipped such as one containing a NUL byte, or a path that changed between validation and reading.
+
+A symlink is **not** followed, because its target can point outside the skill directory, so it is reported rather than read. A file skipped by the hidden-instruction pass is likewise reported rather than dropped; that skip previously produced no finding and no skip line at all.
+
+`--baseline` and `--update` **refuse to write the lock** when any path went unread, and say so. A lock records a skill's hashes together with its capability summary, so baselining an unread file would freeze an empty capability set as the reviewed inventory and every later scan would compare clean against it. A path that does not resolve at all is not reported, since a name pointing at nothing is prose or a stale document reference rather than an uninspected dependency. The distinction matters: the scanner did not inspect that dependency and does not claim it is clean. A referenced path that does not exist at all is not reported, since a name that resolves to nothing is prose or a stale document reference rather than an uninspected dependency.
 
 Capability inventory still records mentions anywhere in the file (including prose) so the inventory stays complete.
 

@@ -31,6 +31,10 @@ const (
 	FindingHidden      FindingKind = "hidden_instruction"
 	FindingAllowlist   FindingKind = "stale_allowlist"
 	FindingOversize    FindingKind = "oversize"
+	// FindingUninspectable reports a referenced path that exists but was
+	// deliberately not read, so a dependency the scanner refuses to inspect
+	// cannot be mistaken for one it inspected and found clean.
+	FindingUninspectable FindingKind = "uninspectable"
 
 	// Direct combos are provable on a single command/expression: the source
 	// and sink match the same line, so the dangerous data flow or target is
@@ -51,6 +55,13 @@ const (
 	ComboCronCooccur       ComboKind = "scheduled-task-write-cooccurrence"
 	ComboClipboardCooccur  ComboKind = "clipboard-network-cooccurrence"
 )
+
+// uninspectableRef pairs a path the scanner did not read with why, so the
+// operator-facing finding names which control declined and for what reason.
+type uninspectableRef struct {
+	path   string
+	reason string
+}
 
 var ErrFindings = errors.New("skill-scan findings detected")
 
@@ -134,6 +145,11 @@ type Result struct {
 	Findings     []Finding `json:"findings" yaml:"findings"`
 	FilesScanned int       `json:"files_scanned" yaml:"files_scanned"`
 	LockFile     string    `json:"lock_file,omitempty" yaml:"lock_file,omitempty"`
+
+	// LockRefused is set when a baseline or update was requested and declined
+	// because content went unread. Without it the summary still names the lock
+	// file and reads as though the baseline was recorded.
+	LockRefused bool `json:"lock_refused,omitempty" yaml:"lock_refused,omitempty"`
 }
 
 func (r Result) GatedFindings(minSeverity Severity) []Finding {

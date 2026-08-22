@@ -39,6 +39,7 @@ func Scan(opts Options) (Result, error) {
 
 	result := Result{LockFile: opts.LockFile}
 	var hiddenPaths, oversizePaths []string
+	var uninspectable []uninspectableRef
 	for _, input := range inputs {
 		skill := buildSkill(input, opts.IncludeDeps)
 		if !opts.InventoryOnly {
@@ -48,8 +49,31 @@ func Scan(opts Options) (Result, error) {
 		result.FilesScanned += len(input.scanFiles)
 		hiddenPaths = append(hiddenPaths, input.scanFiles...)
 		oversizePaths = append(oversizePaths, input.oversize...)
+		uninspectable = append(uninspectable, input.uninspectable...)
 	}
 	sort.Slice(result.Skills, func(i, j int) bool { return result.Skills[i].ID < result.Skills[j].ID })
+
+	// The hidden-instruction pass runs whenever its RESULT is needed, which is
+	// wider than "are we emitting findings". Under --inventory-only it was
+	// skipped entirely, so a refresh had no way to know a file went unscanned
+	// and wrote a lock over it. A lock is a durable reviewed baseline; deciding
+	// it needs these facts even in a mode that reports nothing.
+	var hidden filescan.Result
+	if !opts.InventoryOnly || refreshLock {
+		scanned, err := filescan.ScanPaths(uniqueStrings(hiddenPaths), filescan.Options{IncludeDepDirs: opts.IncludeDeps})
+		if err != nil {
+			return Result{}, fmt.Errorf("hidden-instruction scan: %w", err)
+		}
+		hidden = scanned
+	}
+	// Unread paths bar a lock refresh regardless of reporting mode, so collect
+	// them outside the findings block.
+	for _, skip := range hidden.Skipped {
+		uninspectable = append(uninspectable, uninspectableRef{
+			path:   skip.Path,
+			reason: skip.Reason,
+		})
+	}
 
 	if !opts.InventoryOnly {
 		// Combination findings are suppressed by the baseline (already-reviewed
@@ -62,10 +86,6 @@ func Scan(opts Options) (Result, error) {
 			result.Findings = append(result.Findings, comboFindings(result.Skills, baselined, allowlist, now)...)
 		}
 
-		hidden, err := filescan.ScanPaths(uniqueStrings(hiddenPaths), filescan.Options{IncludeDepDirs: opts.IncludeDeps})
-		if err != nil {
-			return Result{}, fmt.Errorf("hidden-instruction scan: %w", err)
-		}
 		for _, finding := range hidden.Findings {
 			result.Findings = append(result.Findings, Finding{
 				Kind:     FindingHidden,
@@ -86,18 +106,48 @@ func Scan(opts Options) (Result, error) {
 				Evidence: []Evidence{{Path: path}},
 			})
 		}
+		// A path the scanner did not read must not present as clean; the skips
+		// were collected above so they bar a lock refresh in every mode.
+		seenUninspectable := make(map[string]struct{}, len(uninspectable))
+		for _, ref := range uninspectable {
+			if _, ok := seenUninspectable[ref.path]; ok {
+				continue
+			}
+			seenUninspectable[ref.path] = struct{}{}
+			result.Findings = append(result.Findings, Finding{
+				Kind:     FindingUninspectable,
+				Severity: SeverityHigh,
+				Message:  "path was not scanned and its content is therefore unknown: " + ref.reason,
+				Evidence: []Evidence{{Path: ref.path}},
+			})
+		}
 	}
 
 	if useLock {
 		result.Findings = append(result.Findings, diffLock(lock, result.Skills)...)
 	}
+	// Refuse to refresh the lock when any path went uninspected. BuildLock
+	// records a skill's hashes and an EMPTY capability summary, so locking an
+	// unread SKILL.md freezes "this skill does nothing" as the approved
+	// baseline and every later scan compares clean against it. That is the
+	// silent blessing the hidden-instruction pass above exists to prevent, and
+	// it is worse than not baselining at all.
 	if refreshLock {
-		lockPath := opts.LockFile
-		if lockPath == "" {
-			lockPath = DefaultLockFile()
-			result.LockFile = lockPath
+		if result.LockFile == "" {
+			// Resolve the default BEFORE deciding, so a refusal can name the
+			// file it declined to write instead of reporting an empty path.
+			result.LockFile = DefaultLockFile()
 		}
-		if err := SaveLock(lockPath, BuildLock(result.Skills, now)); err != nil {
+		// Decide from the unread paths themselves, not from result.Findings.
+		// Findings are only emitted when InventoryOnly is false, so a guard
+		// reading them was bypassed entirely by --inventory-only and wrote a
+		// lock over content nobody had read.
+		if len(oversizePaths) > 0 || len(uninspectable) > 0 {
+			result.LockRefused = true
+			sortFindings(result.Findings)
+			return result, nil
+		}
+		if err := SaveLock(result.LockFile, BuildLock(result.Skills, now)); err != nil {
 			return Result{}, err
 		}
 	}
@@ -231,7 +281,12 @@ func (r Result) WriteReport(w io.Writer) {
 	}
 	_, _ = fmt.Fprintf(bw, "scanned %d file(s), %d skill(s), %d finding(s)\n",
 		r.FilesScanned, len(r.Skills), len(r.Findings))
-	if r.LockFile != "" {
+	switch {
+	case r.LockRefused:
+		_, _ = fmt.Fprintf(bw,
+			"lock NOT written to %s: content went unscanned, so a baseline would record an inventory that was never established\n",
+			r.LockFile)
+	case r.LockFile != "":
 		_, _ = fmt.Fprintf(bw, "lock file: %s\n", r.LockFile)
 	}
 }

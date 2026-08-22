@@ -29,6 +29,18 @@ const (
 
 var referencedPathPattern = regexp.MustCompile("(?:^|[[:space:]\"'`])((?:\\.{1,2}/)?[A-Za-z0-9_./-]+\\.(?:sh|bash|zsh|py|js|ts|mjs|go|rb|pl|yaml|yml|json|toml))")
 
+// referencedRelativePattern catches a referenced file that carries no
+// recognized extension, such as a `./bootstrap` launcher. It requires an
+// explicit ./ or ../ marker so ordinary prose naming a bare word cannot
+// promote that word to a referenced file; the containment and existence
+// checks in loadReferencedFiles then bound it further.
+var referencedRelativePattern = regexp.MustCompile("(?:^|[[:space:]\"'`])(\\.{1,2}/[A-Za-z0-9_.][A-Za-z0-9_./-]*)")
+
+// referenceTrailingPunctuation is trimmed from a matched relative path so a
+// reference at the end of a sentence resolves to the file rather than to the
+// filename plus the sentence's punctuation.
+const referenceTrailingPunctuation = ".,;:!?)]}'\""
+
 type fileContent struct {
 	path    string
 	relPath string
@@ -45,6 +57,11 @@ type skillInput struct {
 	refFiles  []ReferencedFile
 	scanFiles []string
 	oversize  []string
+
+	// uninspectable records paths that exist but were not read, so refusing or
+	// failing to inspect content cannot present as a clean skill. Oversize
+	// files already report this way; see FindingOversize.
+	uninspectable []uninspectableRef
 }
 
 func DefaultLockFile() string {
@@ -235,7 +252,25 @@ func (s *skillInput) loadReferencedFiles() error {
 		if err != nil {
 			continue
 		}
+		if info.IsDir() {
+			// A referenced directory is not an uninspected dependency: the
+			// scripts, bin and hooks directories are walked deliberately by
+			// referencedDirs, and prose pointing at a documentation directory
+			// must not gate a scan.
+			continue
+		}
 		if !info.Mode().IsRegular() {
+			// The path exists but is a symlink, device or socket. Following it
+			// would escape the skill root, so it stays unread - but a
+			// dependency we refuse to inspect must not present as clean, which
+			// is how oversize files already behave. A failed Lstat above is
+			// deliberately NOT recorded: a named path that does not exist is
+			// prose or a stale doc reference, not an uninspected dependency,
+			// and reporting it would flag ordinary writing.
+			s.uninspectable = append(s.uninspectable, uninspectableRef{
+				path:   filepath.Clean(path),
+				reason: "not a regular file; a symlink is not followed because its target can leave the skill directory",
+			})
 			continue
 		}
 		if info.Size() > maxScanFileBytes {
@@ -267,16 +302,55 @@ func (s *skillInput) loadReferencedFiles() error {
 
 func referencedFilesFromSkill(root, content string) map[string]struct{} {
 	refs := map[string]struct{}{}
-	for _, match := range referencedPathPattern.FindAllStringSubmatch(content, -1) {
-		if len(match) < 2 {
-			continue
-		}
-		rel, ok := containedRelativePath(root, match[1])
-		if ok {
-			refs[rel] = struct{}{}
+	for _, pattern := range []*regexp.Regexp{referencedPathPattern, referencedRelativePattern} {
+		// Both patterns carry exactly one capture group, so every match has the
+		// full text at 0 and the path at 1.
+		for _, match := range pattern.FindAllStringSubmatch(content, -1) {
+			for _, candidate := range referenceCandidates(root, match[1]) {
+				refs[candidate] = struct{}{}
+			}
 		}
 	}
 	return refs
+}
+
+// referenceCandidates resolves one matched reference to the relative path worth
+// scanning, or nothing. The exact match is tried FIRST, because a trailing dot
+// and a leading dot are both legal in a filename: "./bootstrap." and
+// "./.bootstrap" name real files, and trimming or rejecting them dropped those
+// files from the scanned set, the referenced set and the lock. Punctuation
+// trimming is only a fallback for a reference that ends a sentence, and applies
+// solely when the exact candidate does not resolve inside the skill.
+func referenceCandidates(root, match string) []string {
+	if rel, ok := resolvedInsideSkill(root, match); ok {
+		return []string{rel}
+	}
+	if trimmed := strings.TrimRight(match, referenceTrailingPunctuation); trimmed != match {
+		if rel, ok := resolvedInsideSkill(root, trimmed); ok {
+			return []string{rel}
+		}
+	}
+	// Neither form exists on disk. Keep the exact match so a broken reference is
+	// recorded as named, rather than silently rewritten to another path.
+	if rel, ok := containedRelativePath(root, match); ok {
+		return []string{rel}
+	}
+	return nil
+}
+
+// resolvedInsideSkill returns the contained relative path when a candidate names
+// something that exists within the skill directory. It uses Lstat, so a symlink
+// counts as existing without being followed here; whether it may be READ is
+// decided later.
+func resolvedInsideSkill(root, candidate string) (string, bool) {
+	rel, ok := containedRelativePath(root, candidate)
+	if !ok {
+		return "", false
+	}
+	if _, err := os.Lstat(filepath.Clean(filepath.Join(root, filepath.FromSlash(rel)))); err != nil {
+		return "", false
+	}
+	return rel, true
 }
 
 func referencedDirs(root string) map[string]struct{} {
@@ -315,7 +389,12 @@ func containedRelativePath(root, candidate string) (string, bool) {
 		return "", false
 	}
 	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
+	// Reject traversal on a path COMPONENT boundary, not on a string prefix. A
+	// filename may legitimately begin with two dots, so "..bootstrap" is a
+	// contained file while ".." and "../x" are escapes. The prefix form treated
+	// the filename as traversal and dropped it from the scan and the lock.
+	if err != nil || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
 	return filepath.ToSlash(rel), true

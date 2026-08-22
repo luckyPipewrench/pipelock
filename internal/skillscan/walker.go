@@ -285,10 +285,12 @@ func (s *skillInput) loadReferencedFiles() error {
 		// A permission failure is not fatal for the same reason an identity
 		// change is not: anyone who can write this directory can chmod a
 		// referenced file, so aborting would let them stop the scan of every
-		// OTHER skill. A platform that cannot promise a no-follow, nonblocking
-		// open is refused rather than read, because reading anyway would
-		// silently reintroduce the symlink-follow this guards against. Any
-		// other read error is a broken scan and still aborts.
+		// OTHER skill. Any other read error is a broken scan and still
+		// aborts, including a platform that cannot provide a no-follow,
+		// nonblocking open. That one is deliberately loud rather than a
+		// refusal: it applies to every file rather than one, so refusing would
+		// yield a scan reporting everything as uninspected, which is easy to
+		// mistake for a scan that ran.
 		//
 		// Both ways of refusing to inspect a dependency converge on one
 		// disposition below. The path exists but is not a regular file, or the
@@ -496,8 +498,6 @@ func readScanFile(path string, want os.FileInfo) (data []byte, grew bool, refuse
 	switch {
 	case errors.Is(err, fs.ErrPermission):
 		return nil, false, "not readable by the scanner, so its content is unknown", nil
-	case errors.Is(err, securefile.ErrUnsupportedSecureOpen):
-		return nil, false, "platform cannot open it without following symlinks, so it is not inspected", nil
 	case err != nil:
 		return nil, false, "", err
 	}

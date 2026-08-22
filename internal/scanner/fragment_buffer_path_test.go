@@ -101,6 +101,32 @@ func TestFragmentBufferPath_DepthCapDoesNotAllocateOrConsumeGlobalSessions(t *te
 	}
 }
 
+func TestFragmentBufferPath_EmptyAndCapacityInputsDoNotAllocate(t *testing.T) {
+	var nilBuffer *FragmentBuffer
+	if result := nilBuffer.AppendPathSegments(testSessionA, pathSegmentsForTest("ignored")); result != (FragmentAppendResult{}) {
+		t.Fatalf("nil buffer result = %+v, want empty", result)
+	}
+
+	fb := NewFragmentBuffer(4096, 1, testWindowSecs)
+	defer fb.Close()
+	if result := fb.AppendPathSegments(testSessionA, nil); result != (FragmentAppendResult{}) {
+		t.Fatalf("nil path result = %+v, want empty", result)
+	}
+	if result := fb.AppendPathSegments(testSessionA, pathSegmentsForTest("", "")); result != (FragmentAppendResult{}) {
+		t.Fatalf("empty path result = %+v, want empty", result)
+	}
+	if got := fb.TotalBufferBytes(); got != 0 {
+		t.Fatalf("empty path retained %d bytes", got)
+	}
+
+	// A logical path session consumes one shared session slot, not one per
+	// position; a second session fails closed when the global limit is full.
+	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("route"))
+	if result := fb.AppendPathSegments(testSessionB, pathSegmentsForTest("route")); !result.CapacityExceeded {
+		t.Fatal("path session capacity exhaustion was accepted")
+	}
+}
+
 func TestFragmentBufferPath_UsesOneGlobalSessionRegardlessOfDepth(t *testing.T) {
 	fb := NewFragmentBuffer(4096, 2, testWindowSecs)
 	defer fb.Close()
@@ -148,5 +174,68 @@ func TestFragmentBufferPath_EvictionAndWindowDiscardPositionState(t *testing.T) 
 	fb.mu.Unlock()
 	if exists {
 		t.Fatal("expired path position state survived its retention window")
+	}
+}
+
+func TestFragmentBufferPath_ScanSkipsMissingSingleAndCleanStreams(t *testing.T) {
+	fb := NewFragmentBuffer(4096, 10, testWindowSecs)
+	defer fb.Close()
+	sc := testFragmentScanner()
+	defer sc.Close()
+
+	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) != 0 {
+		t.Fatalf("missing path state returned %d matches", len(matches))
+	}
+	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("fixed"))
+	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) != 0 {
+		t.Fatalf("one static fragment returned %d CEE matches", len(matches))
+	}
+	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("changed"))
+	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) != 0 {
+		t.Fatalf("clean dynamic path returned %d CEE matches", len(matches))
+	}
+}
+
+func TestFragmentBufferPath_ReloadAndCloseBoundPathState(t *testing.T) {
+	fb := NewFragmentBuffer(4096, 10, testWindowSecs)
+	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("static", "abcdef"))
+	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("static", "ghijkl"))
+
+	// Invalid reload values are clamped and immediately trim the shared path
+	// budget instead of leaving position buffers at their old size.
+	fb.UpdateConfig(0, 0)
+	if got := fb.TotalBufferBytes(); got > 1 {
+		t.Fatalf("reload retained %d path bytes, want at most 1", got)
+	}
+	fb.mu.Lock()
+	maxBytes, windowSecs := fb.maxBytes, fb.windowSecs
+	fb.mu.Unlock()
+	if maxBytes != 1 || windowSecs != 1 {
+		t.Fatalf("reload limits = %d bytes, %d seconds; want 1, 1", maxBytes, windowSecs)
+	}
+
+	fb.Close()
+	if got := fb.TotalBufferBytes(); got != 0 {
+		t.Fatalf("Close retained %d path bytes", got)
+	}
+	var nilBuffer *FragmentBuffer
+	nilBuffer.Close()
+}
+
+func TestFragmentBufferPath_EvictionDefensivelyHandlesEmptyPosition(t *testing.T) {
+	fb := NewFragmentBuffer(1, 10, testWindowSecs)
+	defer fb.Close()
+
+	// This cannot arise through AppendPathSegments, but the eviction guard must
+	// safely handle a partially-pruned position rather than loop forever.
+	ps := &pathSessionBuffer{
+		positions:  map[int]*pathPositionBuffer{0: {}},
+		totalBytes: 2,
+	}
+	fb.mu.Lock()
+	fb.enforcePathMaxBytesLocked(ps)
+	fb.mu.Unlock()
+	if ps.totalBytes != 2 {
+		t.Fatalf("empty position changed defensive total to %d", ps.totalBytes)
 	}
 }

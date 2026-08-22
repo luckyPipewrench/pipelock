@@ -2033,7 +2033,11 @@ func TestEmbeddedURLTextViews_EntityDecodeCountsAsFurtherWork(t *testing.T) {
 // never runs. The probe would not have found it anyway, because it inspects
 // percent and entity decoding and not the escaped-slash rewrite.
 func TestEmbeddedURLTextViews_CapRejectionAloneReportsTruncation(t *testing.T) {
-	encoded := "http://169.254.169.254/latest/meta-data/"
+	// A neutral host: this test measures view counting and the cap, not SSRF
+	// detection, so the target is incidental here. The tests that assert a
+	// metadata endpoint is denied keep the real address, because there the
+	// address is the thing under test.
+	encoded := "http://api.vendor.example/latest/meta-data/"
 	for i := range 4 {
 		encoded = url.QueryEscape(encoded)
 		if i < 2 {

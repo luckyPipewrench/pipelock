@@ -89,8 +89,8 @@ func TestFetchEndpoint_CEEPathFragmentSplitSecret(t *testing.T) {
 // TestFetchEndpoint_CEEPathFragmentPoisonedSuppression covers the bypass that
 // substring-based novelty suppression would have opened: sending a harmless
 // segment that CONTAINS the second half first, so the real second half looks
-// already-seen and is dropped. Suppression is exact-match, so the halves still
-// become contiguous.
+// already-seen and is dropped. Position-aware streams retain every later
+// value after a position varies, so the halves still become contiguous.
 func TestFetchEndpoint_CEEPathFragmentPoisonedSuppression(t *testing.T) {
 	p, upstream := newPathFragmentProxy(t)
 	half1, half2 := pathSecretHalves()

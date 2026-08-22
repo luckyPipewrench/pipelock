@@ -4098,7 +4098,7 @@ func TestWebSocketHandshake_CEEPathFragmentsBlockSecondUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first incomplete handshake failed: %v", err)
 	}
-	defer first.Close() //nolint:errcheck // test
+	defer func() { _ = first.Close() }()
 
 	if _, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half2); err == nil {
 		t.Fatal("second path fragment completed a WebSocket upgrade")
@@ -4130,7 +4130,7 @@ func TestWebSocketHandshake_CEEPathWarnEscalatesBlockAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first incomplete handshake failed: %v", err)
 	}
-	defer first.Close() //nolint:errcheck // test
+	defer func() { _ = first.Close() }()
 
 	if _, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half2); err == nil {
 		t.Fatal("warn-mode CEE match did not escalate the completing handshake to block_all")

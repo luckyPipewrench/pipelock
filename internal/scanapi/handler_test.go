@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1910,5 +1911,114 @@ func TestHandler_OrdinaryEncodedContentStillAllows(t *testing.T) {
 				t.Fatalf("decision = %q, want allow for ordinary content; findings = %+v", resp.Decision, resp.Findings)
 			}
 		})
+	}
+}
+
+// TestHandler_BenignURLAtEveryDepthWithinBudgetAllows is the boundary guard for
+// the truncation signal. Exhausting the decode-pass budget is not the same as
+// having a layer left to read: a payload can converge exactly on the final pass,
+// fully inspected. Before this was fixed, five layers allowed and six denied
+// with a truncation finding, so an ordinary URL was blocked at the boundary.
+func TestHandler_BenignURLAtEveryDepthWithinBudgetAllows(t *testing.T) {
+	for layers := 1; layers <= maxEmbeddedURLDecodePasses; layers++ {
+		t.Run(fmt.Sprintf("layers_%d", layers), func(t *testing.T) {
+			payload := "https://docs.vendor.example/guide"
+			for range layers {
+				payload = url.QueryEscape(payload)
+			}
+			h := newTestHandler(t)
+			body, err := json.Marshal(map[string]any{
+				"kind":  "dlp",
+				"input": map[string]string{"text": "see " + payload},
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("code = %d, want 200; body = %s", w.Code, w.Body.String())
+			}
+			var resp Response
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if resp.Decision != DecisionAllow {
+				t.Fatalf("decision = %q at %d layers, want allow for a fully decoded benign URL; findings = %+v",
+					resp.Decision, layers, resp.Findings)
+			}
+		})
+	}
+}
+
+// TestEmbeddedURLTextViews_TruncationSignal covers both bounds directly, since
+// the handler cannot easily be driven to the view cap. A payload that still has
+// an undecoded layer when the budget runs out must report truncated; one that
+// converges must not.
+func TestEmbeddedURLTextViews_TruncationSignal(t *testing.T) {
+	converging := "https://docs.vendor.example/guide"
+	for range maxEmbeddedURLDecodePasses {
+		converging = url.QueryEscape(converging)
+	}
+	if _, truncated := embeddedURLTextViews(converging); truncated {
+		t.Fatal("a payload that converges within the budget was reported truncated")
+	}
+
+	beyond := "http://169.254.169.254/latest/meta-data/"
+	for range maxEmbeddedURLDecodePasses + 4 {
+		beyond = url.QueryEscape(beyond)
+	}
+	if _, truncated := embeddedURLTextViews(beyond); !truncated {
+		t.Fatal("a payload with layers left unread was not reported truncated")
+	}
+}
+
+// TestEmbeddedURLTextViews_ViewCapReportsTruncation drives the view cap, the
+// other bound that must not drop a view silently. Entity injection makes each
+// decode pass branch, so the collected views reach the cap while decoding is
+// still productive.
+//
+// What this test does NOT establish, stated so a later reader does not assume
+// it: it does not isolate the cap's own truncation flag. Neutralising that flag
+// leaves this test passing, because a view the cap refuses is by construction
+// still decodable and unseen, so the further-work probe reports truncation too.
+// The flag is not redundant - it is the only reporter when the pass loop
+// CONVERGES after an earlier block, since the probe runs only when the budget
+// was exhausted - but that interleaving is not reproduced here.
+func TestEmbeddedURLTextViews_ViewCapReportsTruncation(t *testing.T) {
+	payload := "http://169.254.169.254/latest/meta-data/"
+	for i := range 4 {
+		payload = url.QueryEscape(payload)
+		if i%2 == 0 {
+			payload = strings.Replace(payload, "%", "&#37;", 1)
+		}
+	}
+
+	views, truncated := embeddedURLTextViews(payload)
+	if len(views) > maxEmbeddedURLTextViews {
+		t.Fatalf("views = %d, must never exceed the cap of %d", len(views), maxEmbeddedURLTextViews)
+	}
+	if len(views) != maxEmbeddedURLTextViews {
+		t.Fatalf("views = %d, want the cap of %d so this test exercises the bound", len(views), maxEmbeddedURLTextViews)
+	}
+	if !truncated {
+		t.Fatal("view cap was reached without reporting truncation, so a dropped view would read as complete inspection")
+	}
+}
+
+// TestEmbeddedURLTextViews_EntityDecodeCountsAsFurtherWork covers the HTML
+// entity half of the further-work probe. A payload whose remaining layers are
+// entity-encoded rather than percent-encoded must still count as unread.
+func TestEmbeddedURLTextViews_EntityDecodeCountsAsFurtherWork(t *testing.T) {
+	payload := "http://169.254.169.254/latest/meta-data/"
+	for range maxEmbeddedURLDecodePasses + 2 {
+		payload = strings.ReplaceAll(url.QueryEscape(payload), "%", "&#37;")
+	}
+	if _, truncated := embeddedURLTextViews(payload); !truncated {
+		t.Fatal("entity-encoded layers left unread were not reported as truncated")
 	}
 }

@@ -526,6 +526,15 @@ func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 	assertMetricsContain(t, m, "pipelock_cross_request_fragment_session_capacity_exceeded_total 1")
 }
 
+func TestCeeFragmentScanSegments_NilPayloadNoop(t *testing.T) {
+	result := ceeFragmentScanSegments(t.Context(), "session", nil,
+		"http://example.com", testCEEAgent, testCEEClientIP, testCEERequestID,
+		config.CrossRequestDetection{}, nil, nil, nil, nil)
+	if result != nil {
+		t.Fatalf("nil path payload = %+v, want no CEE result", result)
+	}
+}
+
 func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

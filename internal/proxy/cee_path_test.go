@@ -164,6 +164,7 @@ func TestPathSegments(t *testing.T) {
 		{"multi", &url.URL{Path: "/api/v1/tokens"}, []string{"api", "v1", "tokens"}},
 		{"collapses empty segments", &url.URL{Path: "//api///v1/"}, []string{"api", "v1"}},
 		{"decoded by net/url", &url.URL{Path: "/a b/c"}, []string{"a b", "c"}},
+		{"raw path fallback", &url.URL{RawPath: "/raw/path"}, []string{"raw", "path"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

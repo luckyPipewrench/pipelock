@@ -4108,6 +4108,38 @@ func TestWebSocketHandshake_CEEPathFragmentsBlockSecondUpgrade(t *testing.T) {
 	}
 }
 
+func TestWebSocketHandshake_CEEPathWarnEscalatesBlockAll(t *testing.T) {
+	backendAddr, handshakes, _, _ := websocketBoundaryBackend(t)
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = config.ActionWarn
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+		cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+		cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536
+		cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.MaxSessions = 100
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.AdaptiveEnforcement.EscalationThreshold = 3
+		cfg.AdaptiveEnforcement.Levels.Elevated.BlockAll = ptrBool(true)
+	})
+	defer proxyCleanup()
+
+	half1, half2 := pathSecretHalves()
+	first, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half1)
+	if err != nil {
+		t.Fatalf("first incomplete handshake failed: %v", err)
+	}
+	defer first.Close() //nolint:errcheck // test
+
+	if _, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half2); err == nil {
+		t.Fatal("warn-mode CEE match did not escalate the completing handshake to block_all")
+	}
+	if got := handshakes.Load(); got != 1 {
+		t.Fatalf("upstream handshakes = %d, want only the first incomplete handshake", got)
+	}
+}
+
 // TestWSProxyInjectionStrip verifies that the response scanning strip action
 // works through the WS proxy (websocket.go:766-778). The injection server
 // sends a payload that matches the primary regex pass, producing a non-empty

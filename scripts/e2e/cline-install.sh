@@ -91,6 +91,12 @@ trap cleanup EXIT
 
 CONFIG="$WORKDIR/cline_mcp_settings.json"
 SEED="$WORKDIR/cline_mcp_settings.seed.json"
+# Every invocation that writes or reads a header sidecar must resolve the same
+# HOME, because the sidecar directory is derived from it. Pinning HOME on
+# install but not on remove makes remove look in the operator's real home,
+# reject the recorded path as escaping the sidecar directory, and silently
+# leave the entry wrapped with its credential file still on disk.
+E2E_HOME="$WORKDIR/empty-home"
 
 if [[ -n "${PIPELOCK_BIN:-}" ]]; then
   PIPELOCK="$PIPELOCK_BIN"
@@ -102,7 +108,9 @@ fi
 
 PASS=0
 FAIL=0
+SKIP=0
 FAILED_TESTS=()
+SKIPPED_TESTS=()
 
 # assert <description> <command>: runs the command, records pass/fail.
 assert() {
@@ -117,6 +125,20 @@ assert() {
     echo "  FAIL  $desc"
   fi
 }
+
+# skip <description> <reason>: records an assertion this host cannot run. The
+# reason is printed and summarized so a skipped check never reads as coverage.
+skip() {
+  SKIP=$((SKIP + 1))
+  SKIPPED_TESTS+=("$1 ($2)")
+  echo "  SKIP  $1 ($2)"
+}
+
+# SYSTEM_CONFIG is the last candidate pipelock's config discovery consults, and
+# no environment variable can suppress it. A host that has one cannot exercise
+# the nothing-discoverable branch, so that single assertion is skipped there
+# rather than reported as a failure of the code under test.
+SYSTEM_CONFIG="/etc/pipelock/pipelock.yaml"
 
 json_value_equals() {
   local file="$1"
@@ -206,12 +228,17 @@ echo "[1] install"
 # Suppress pipelock config auto-discovery so this script remains hermetic and
 # does not pick up the operator's $HOME pipelock.yaml. Operators get
 # auto-discovery; the test asserts the no-discovery warning instead.
-PIPELOCK_CONFIG="" XDG_CONFIG_HOME="$WORKDIR/empty-xdg" HOME="$WORKDIR/empty-home" \
+PIPELOCK_CONFIG="" XDG_CONFIG_HOME="$WORKDIR/empty-xdg" HOME="$E2E_HOME" \
   "$PIPELOCK" cline install --path "$CONFIG" >"$WORKDIR/install.stdout" 2>"$WORKDIR/install.stderr"
 assert "install exit 0" test -s "$WORKDIR/install.stdout"
 assert "install stdout reports 2 wrapped" grep -q "Wrapped 2 server(s)" "$WORKDIR/install.stdout"
-assert "install stderr warns when no pipelock config is discoverable" \
-  grep -q "no pipelock config found" "$WORKDIR/install.stderr"
+if [[ -e "$SYSTEM_CONFIG" ]]; then
+  skip "install stderr warns when no pipelock config is discoverable" \
+    "$SYSTEM_CONFIG exists on this host"
+else
+  assert "install stderr warns when no pipelock config is discoverable" \
+    grep -q "no pipelock config found" "$WORKDIR/install.stderr"
+fi
 
 # Second install pass exercises the auto-discovery branch against a seeded
 # user config in a controlled HOME. The wrapped argv must carry --config.
@@ -322,7 +349,7 @@ assert "wrapped argv parses without cobra error" \
 echo ""
 echo "[4] remove and restore"
 
-"$PIPELOCK" cline remove --path "$CONFIG" >"$WORKDIR/remove.stdout" 2>"$WORKDIR/remove.stderr"
+HOME="$E2E_HOME" "$PIPELOCK" cline remove --path "$CONFIG" >"$WORKDIR/remove.stdout" 2>"$WORKDIR/remove.stderr"
 assert "remove exit 0" test -s "$WORKDIR/remove.stdout"
 assert "remove stdout reports 2 unwrapped" grep -q "Unwrapped 2 server(s)" "$WORKDIR/remove.stdout"
 
@@ -353,14 +380,23 @@ echo "[5] idempotence: re-run install on already-installed config (no double-wra
 
 # Re-run install on the (restored) config; should wrap both servers exactly
 # once. Then re-run on the wrapped config; should skip both.
-"$PIPELOCK" cline install --path "$CONFIG" >/dev/null 2>&1
-"$PIPELOCK" cline install --path "$CONFIG" >"$WORKDIR/install2.stdout" 2>&1
+HOME="$E2E_HOME" "$PIPELOCK" cline install --path "$CONFIG" >/dev/null 2>&1
+HOME="$E2E_HOME" "$PIPELOCK" cline install --path "$CONFIG" >"$WORKDIR/install2.stdout" 2>&1
 assert "second install skipped both servers" grep -q "Wrapped 0 server(s).*(2 already wrapped)" "$WORKDIR/install2.stdout"
 
 echo ""
 echo "=== Summary ==="
 echo "PASS: $PASS"
 echo "FAIL: $FAIL"
+echo "SKIP: $SKIP"
+
+if [[ $SKIP -gt 0 ]]; then
+  echo ""
+  echo "Skipped assertions (not covered on this host):"
+  for t in "${SKIPPED_TESTS[@]}"; do
+    echo "  - $t"
+  done
+fi
 
 if [[ $FAIL -gt 0 ]]; then
   echo ""

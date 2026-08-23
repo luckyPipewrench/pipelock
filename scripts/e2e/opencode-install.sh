@@ -90,7 +90,23 @@ fi
 
 PASS=0
 FAIL=0
+SKIP=0
 FAILED_TESTS=()
+SKIPPED_TESTS=()
+
+# skip <description> <reason>: records an assertion this host cannot run. The
+# reason is printed and summarized so a skipped check never reads as coverage.
+skip() {
+  SKIP=$((SKIP + 1))
+  SKIPPED_TESTS+=("$1 ($2)")
+  echo "  SKIP  $1 ($2)"
+}
+
+# SYSTEM_CONFIG is the last candidate pipelock's config discovery consults, and
+# no environment variable can suppress it. A host that has one cannot exercise
+# the nothing-discoverable branch, so that single assertion is skipped there
+# rather than reported as a failure of the code under test.
+SYSTEM_CONFIG="/etc/pipelock/pipelock.yaml"
 
 assert() {
   local desc="$1"
@@ -185,8 +201,13 @@ PIPELOCK_CONFIG="" XDG_CONFIG_HOME="$WORKDIR/empty-xdg" HOME="$E2E_HOME" \
   "$PIPELOCK" opencode install --path "$CONFIG" >"$WORKDIR/install.stdout" 2>"$WORKDIR/install.stderr"
 assert "install exit 0" test -s "$WORKDIR/install.stdout"
 assert "install stdout reports 2 wrapped" grep -q "Wrapped 2 server(s)" "$WORKDIR/install.stdout"
-assert "install stderr warns when no pipelock config is discoverable" \
-  grep -q "no pipelock config found" "$WORKDIR/install.stderr"
+if [[ -e "$SYSTEM_CONFIG" ]]; then
+  skip "install stderr warns when no pipelock config is discoverable" \
+    "$SYSTEM_CONFIG exists on this host"
+else
+  assert "install stderr warns when no pipelock config is discoverable" \
+    grep -q "no pipelock config found" "$WORKDIR/install.stderr"
+fi
 
 echo ""
 echo "[1b] install honors auto-discovery"
@@ -304,6 +325,15 @@ echo ""
 echo "=== Summary ==="
 echo "PASS: $PASS"
 echo "FAIL: $FAIL"
+echo "SKIP: $SKIP"
+
+if [[ $SKIP -gt 0 ]]; then
+  echo ""
+  echo "Skipped assertions (not covered on this host):"
+  for t in "${SKIPPED_TESTS[@]}"; do
+    echo "  - $t"
+  done
+fi
 
 if [[ $FAIL -gt 0 ]]; then
   echo ""

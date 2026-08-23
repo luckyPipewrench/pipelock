@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -156,55 +155,8 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 	}
 }
 
-type rawRecorderEntry struct {
-	Version          int             `json:"v"`
-	Sequence         uint64          `json:"seq"`
-	Timestamp        time.Time       `json:"ts"`
-	SessionID        string          `json:"session_id"`
-	ChainKind        string          `json:"chain_kind,omitempty"`
-	WriterInstanceID string          `json:"writer_instance_id,omitempty"`
-	TraceID          string          `json:"trace_id,omitempty"`
-	Type             string          `json:"type"`
-	EventKind        string          `json:"event_kind,omitempty"`
-	Transport        string          `json:"transport"`
-	Summary          string          `json:"summary"`
-	Detail           json.RawMessage `json:"detail"`
-	RawRef           string          `json:"raw_ref,omitempty"`
-	PrevHash         string          `json:"prev_hash"`
-	Hash             string          `json:"hash"`
-}
-
 func parseRecorderEntry(line []byte) (recorder.Entry, error) {
-	var raw rawRecorderEntry
-	if err := json.Unmarshal(line, &raw); err != nil {
-		return recorder.Entry{}, err
-	}
-	if err := recorder.ValidateEntryJSONSchema(line, raw.Version); err != nil {
-		return recorder.Entry{}, err
-	}
-
-	detail := json.RawMessage("null")
-	if raw.Detail != nil && string(raw.Detail) != "null" {
-		detail = append(json.RawMessage(nil), raw.Detail...)
-	}
-
-	return recorder.Entry{
-		Version:          raw.Version,
-		Sequence:         raw.Sequence,
-		Timestamp:        raw.Timestamp,
-		SessionID:        raw.SessionID,
-		ChainKind:        raw.ChainKind,
-		WriterInstanceID: raw.WriterInstanceID,
-		TraceID:          raw.TraceID,
-		Type:             raw.Type,
-		EventKind:        raw.EventKind,
-		Transport:        raw.Transport,
-		Summary:          raw.Summary,
-		Detail:           detail,
-		RawRef:           raw.RawRef,
-		PrevHash:         raw.PrevHash,
-		Hash:             raw.Hash,
-	}, nil
+	return recorder.ParseEntryLine(line)
 }
 
 func (s streamState) verifyRecorderEntry(rec recorder.Entry, lineNo int, previousHash string, seenEntry bool) error {
@@ -265,7 +217,7 @@ func typedEntry(rec recorder.Entry) (Entry, error) {
 	}
 
 	var summary capture.CaptureSummary
-	raw, err := asRawMessage(rec.Detail)
+	raw, err := recorderEntryDetailBytes(rec)
 	if err != nil {
 		return Entry{}, fmt.Errorf("marshal capture detail: %w", err)
 	}
@@ -282,6 +234,13 @@ func typedEntry(rec recorder.Entry) (Entry, error) {
 
 	entry.Capture = &summary
 	return entry, nil
+}
+
+func recorderEntryDetailBytes(rec recorder.Entry) (json.RawMessage, error) {
+	if len(rec.RawDetail) > 0 {
+		return append(json.RawMessage(nil), rec.RawDetail...), nil
+	}
+	return asRawMessage(rec.Detail)
 }
 
 func asRawMessage(detail any) (json.RawMessage, error) {

@@ -80,6 +80,33 @@ func TestParseRecorderEntryRejectsExplicitNullV3ProjectedField(t *testing.T) {
 	}
 }
 
+func TestParseRecorderEntrySharesRecorderDuplicateAndRawDetailRules(t *testing.T) {
+	rec := testEntry(t, recorder.EntryVersion, 0, recorder.GenesisHash, "checkpoint", map[string]any{"a": float64(1), "z": float64(2)})
+	rawDetail := json.RawMessage(`{"z":2,"a":1}`)
+	rec.RawDetail = rawDetail
+	rec.Hash = recorder.ComputeHash(rec)
+	wire, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(rec.Detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire = bytes.Replace(wire, canonical, rawDetail, 1)
+	parsed, err := parseRecorderEntry(wire)
+	if err != nil {
+		t.Fatalf("parse noncanonical detail: %v", err)
+	}
+	if !bytes.Equal(parsed.RawDetail, rawDetail) || recorder.ComputeHash(parsed) != rec.Hash {
+		t.Fatalf("parsed entry lost hash-bound detail bytes: raw=%s hash=%s", parsed.RawDetail, recorder.ComputeHash(parsed))
+	}
+	duplicate := bytes.Replace(wire, []byte(`"transport":"test"`), []byte(`"transport":"test","transport":"evil"`), 1)
+	if _, err := parseRecorderEntry(duplicate); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate-key entry error = %v", err)
+	}
+}
+
 func TestStreamExplicitNullDetailHashesAsNull(t *testing.T) {
 	rec := recorder.Entry{
 		Version:   recorder.EntryVersion,

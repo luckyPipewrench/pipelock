@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -407,33 +408,111 @@ type chainVerifier struct {
 	integrityOnly bool
 }
 
+// StreamingVerifier verifies a v1 receipt chain one receipt at a time.  It is
+// intended for offline maintenance that cannot retain an entire recorder in
+// memory.  It preserves the same lifecycle, rotation, and trusted-key rules as
+// VerifyChain; Finish returns the same ChainResult shape.
+type StreamingVerifier struct {
+	v         *chainVerifier
+	integrity *chainVerifier
+	count     uint64
+	first     *Receipt
+	last      *Receipt
+	fail      *ChainResult
+	lifecycle *ChainResult
+}
+
+// NewStreamingVerifier starts a chain anchored at expectedKeyHex.
+func NewStreamingVerifier(expectedKeyHex string) (*StreamingVerifier, error) {
+	keys, err := normalizeTrustedKeys([]string{expectedKeyHex})
+	if err != nil {
+		return nil, err
+	}
+	newVerifier := func(integrityOnly bool) *chainVerifier {
+		trusted := make(map[string]struct{}, len(keys))
+		for _, key := range keys {
+			trusted[key] = struct{}{}
+		}
+		return &chainVerifier{trusted: trusted, runNonces: make(map[string]string), closedRuns: make(map[string]bool), integrityOnly: integrityOnly}
+	}
+	return &StreamingVerifier{v: newVerifier(false), integrity: newVerifier(true)}, nil
+}
+
+// Add verifies one exact v1 receipt wire representation and advances the
+// chain.  Once an error occurs the verifier remains failed.
+func (s *StreamingVerifier) Add(raw []byte) error {
+	if s.fail != nil {
+		return errors.New(s.fail.Error)
+	}
+	r, err := Unmarshal(raw)
+	if err != nil {
+		return s.latch(ChainResult{Valid: false, Error: err.Error(), FailureKind: ChainFailureIntegrity})
+	}
+	// Unmarshal is strict (duplicate keys, unknown signed fields, trailing
+	// tokens). Each chain walk below verifies the canonical signing projection
+	// with its segment signer, then applies the trusted-key boundary. Do not
+	// pre-verify only against the genesis key here: that would misclassify a
+	// rotated signer as a signature failure instead of the batch verifier's
+	// explicit trust failure.
+	// Keep an integrity-only walk in lockstep. VerifyChain deliberately
+	// downgrades a missing session-open to a lifecycle result only after it
+	// proves the full chain is otherwise intact; a streaming verifier must not
+	// turn that established fallback into an earlier hard failure.
+	if res, ok := s.integrity.add(r, s.count); !ok {
+		return s.latch(res)
+	}
+	if s.lifecycle == nil {
+		if res, ok := s.v.add(r, s.count); !ok {
+			if res.FailureKind != ChainFailureLifecycleOpen {
+				return s.latch(res)
+			}
+			// Preserve the strict failure, but continue the independent
+			// integrity walk. Finish returns the same augmented result as the
+			// batch verifier if every remaining receipt is intact.
+			s.lifecycle = &res
+		}
+	}
+	if s.first == nil {
+		first := r
+		s.first = &first
+	}
+	last := r
+	s.last = &last
+	s.count++
+	return nil
+}
+
+func (s *StreamingVerifier) latch(res ChainResult) error { s.fail = &res; return errors.New(res.Error) }
+
+// Finish completes verification.  Empty chains are rejected because a caller
+// that wants to prove evidence must have observed at least one signed receipt.
+func (s *StreamingVerifier) Finish() ChainResult {
+	if s.fail != nil {
+		return *s.fail
+	}
+	if s.count == 0 || s.first == nil || s.last == nil {
+		return ChainResult{Valid: false, Error: "empty chain"}
+	}
+	s.integrity.closeSegment()
+	if s.lifecycle != nil {
+		res := *s.lifecycle
+		res.IntegrityVerified = true
+		res.ReceiptCount = s.count
+		res.FinalSeq = s.last.ActionRecord.ChainSeq
+		res.RootHash = s.integrity.prevHash
+		res.StartTime = s.first.ActionRecord.Timestamp
+		res.EndTime = s.last.ActionRecord.Timestamp
+		res.SignerKeys = s.integrity.signerKeys
+		res.Segments = s.integrity.segments
+		return res
+	}
+	s.v.closeSegment()
+	return ChainResult{Valid: true, IntegrityVerified: true, ReceiptCount: s.count, FinalSeq: s.last.ActionRecord.ChainSeq, RootHash: s.v.prevHash, StartTime: s.first.ActionRecord.Timestamp, EndTime: s.last.ActionRecord.Timestamp, SignerKeys: s.v.signerKeys, Segments: s.v.segments}
+}
+
 func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 	for i := range receipts {
-		v.index = i
-		r := receipts[i]
-		marker := r.ActionRecord.KeyTransition
-
-		if i == 0 {
-			if res, ok := v.startFirstSegment(r); !ok {
-				return res
-			}
-		} else if marker != nil {
-			if res, ok := v.startRotatedSegment(r, marker); !ok {
-				return res
-			}
-		} else if res, ok := v.checkContinuation(r); !ok {
-			return res
-		}
-
-		if res, ok := v.verifyReceiptIntegrity(r, uint64(i)); !ok {
-			return res
-		}
-		if !v.integrityOnly {
-			if res, ok := v.validateSessionControl(r); !ok {
-				return res
-			}
-		}
-		if res, ok := v.advanceReceiptHash(r); !ok {
+		if res, ok := v.add(receipts[i], uint64(i)); !ok {
 			return res
 		}
 	}
@@ -452,6 +531,34 @@ func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 		SignerKeys:        v.signerKeys,
 		Segments:          v.segments,
 	}
+}
+
+func (v *chainVerifier) add(r Receipt, index uint64) (ChainResult, bool) {
+	if index > uint64(math.MaxInt) {
+		return v.brokenAt(r, "receipt index exceeds verifier capacity"), false
+	}
+	v.index = int(index)
+	marker := r.ActionRecord.KeyTransition
+	if index == 0 {
+		if res, ok := v.startFirstSegment(r); !ok {
+			return res, false
+		}
+	} else if marker != nil {
+		if res, ok := v.startRotatedSegment(r, marker); !ok {
+			return res, false
+		}
+	} else if res, ok := v.checkContinuation(r); !ok {
+		return res, false
+	}
+	if res, ok := v.verifyReceiptIntegrity(r, index); !ok {
+		return res, false
+	}
+	if !v.integrityOnly {
+		if res, ok := v.validateSessionControl(r); !ok {
+			return res, false
+		}
+	}
+	return v.advanceReceiptHash(r)
 }
 
 // startFirstSegment establishes the anchor and key for the genesis segment.

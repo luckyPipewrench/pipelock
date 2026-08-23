@@ -1182,8 +1182,8 @@ func TestRecorder_ResumeAcceptsOverCapLegacyTailRead(t *testing.T) {
 			Summary:   strings.Repeat("x", 512<<10),
 			Detail:    map[string]string{"safe": "value"},
 			PrevHash:  recorder.GenesisHash,
-			Hash:      "non-empty-tail-hash",
 		}
+		entry.Hash = recorder.ComputeHash(entry)
 		line, err := json.Marshal(entry)
 		if err != nil {
 			t.Fatalf("Marshal entry: %v", err)
@@ -1218,6 +1218,30 @@ func TestRecorder_ResumeAcceptsOverCapLegacyTailRead(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Record after over-cap legacy shard: %v", err)
+	}
+}
+
+func TestRecordClearsCallerRawDetailBeforeHashing(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 100}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(recorder.Entry{SessionID: "raw-clear", Type: testType, Transport: testTransport, Summary: "fresh", Detail: map[string]string{"fresh": "value"}, RawDetail: json.RawMessage(`{"stale":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := recorder.ReadEntries(filepath.Join(dir, "evidence-raw-clear-0.jsonl"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("ReadEntries = %d, %v", len(entries), err)
+	}
+	if string(entries[0].RawDetail) != `{"fresh":"value"}` {
+		t.Fatalf("stored raw detail = %s, want fresh caller Detail", entries[0].RawDetail)
+	}
+	if err := recorder.VerifyChain(entries); err != nil {
+		t.Fatalf("VerifyChain: %v", err)
 	}
 }
 

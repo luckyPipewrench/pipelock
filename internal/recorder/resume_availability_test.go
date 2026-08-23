@@ -41,8 +41,8 @@ func writeResumeShard(t *testing.T, dir, session string, seqStart uint64, empty 
 		Summary:   "resume fixture",
 		Detail:    map[string]string{"safe": "value"},
 		PrevHash:  recorder.GenesisHash,
-		Hash:      fmt.Sprintf("tail-hash-%d", seqStart),
 	}
+	entry.Hash = recorder.ComputeHash(entry)
 	line, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatalf("Marshal entry: %v", err)
@@ -120,8 +120,8 @@ func TestRecorder_ResumeSucceedsFromLegacyShardAboveReadCap(t *testing.T) {
 			Summary:   "legacy oversized shard fixture",
 			Detail:    detail,
 			PrevHash:  fmt.Sprintf("prev-%d", seq),
-			Hash:      fmt.Sprintf("hash-%d", seq),
 		}
+		entry.Hash = recorder.ComputeHash(entry)
 		if err := encoder.Encode(entry); err != nil {
 			_ = file.Close()
 			t.Fatalf("Encode seq %d: %v", seq, err)

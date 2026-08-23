@@ -223,9 +223,9 @@ sudo pipelock evidence compact \
 sudo systemctl start pipelock.service
 ```
 
-The command refuses to run while a recorder holds the directory lock. It verifies the trusted signed receipt chain before and after compaction, copies each JSONL record line without changing its bytes, and keeps every replacement shard under the 8 MiB read limit. Linux installs the new active directory with one atomic exchange. The original directory moves to a timestamped sibling archive with SHA-256 digests and byte mappings.
+The command refuses to run while a recorder holds the directory lock. It accepts oversized legacy input and streams verification, recovery, and archive creation with bounded record memory. It verifies the trusted recorder hash chain, checkpoint signatures, and every signed v1 or v2 receipt chain before and after compaction, copies each JSONL record line without changing its bytes, and keeps every replacement shard at or below the 8 MiB read limit. Linux installs the new active directory with one atomic exchange; only then does the original directory become a timestamped sibling archive with SHA-256 digests and byte mappings.
 
-This first version accepts one session and no raw-escrow sidecars in the active directory. It refuses mixed directories instead of risking lost evidence. It also refuses malformed chains, duplicate shard starts, symlinks, changing files, more than 4,096 input shards, more than 256 MiB of input, and oversized input shards. A failed check leaves the original directory active.
+This first version accepts exactly one session, up to 4,096 input shards, and no raw-escrow sidecars in the active directory. It refuses mixed directories, malformed or unverifiable chains, unknown record types, duplicate shard starts, symlinks, and sources that change during the ceremony. A failed check leaves the original directory active.
 
 ### Completeness analysis
 

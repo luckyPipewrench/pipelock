@@ -4,6 +4,7 @@
 package recorder_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -224,18 +225,12 @@ func TestReadEntries_PreservesRawDetailAndBindsV2Hash(t *testing.T) {
 
 			got[0].RawDetail = json.RawMessage(`{"different":true}`)
 			afterHash := recorder.ComputeHash(got[0])
-			if version == 1 {
-				if afterHash != beforeHash {
-					t.Fatalf("v1 ComputeHash changed after RawDetail mutation: got %s want %s", afterHash, beforeHash)
-				}
-			} else if afterHash == beforeHash {
-				t.Fatalf("v2 ComputeHash did not bind RawDetail mutation: got %s", afterHash)
+			if afterHash == beforeHash {
+				t.Fatalf("v%d ComputeHash did not bind RawDetail mutation: got %s", version, afterHash)
 			}
-			if version != 1 {
-				got[0].RawDetail = json.RawMessage(`{"z":2,"a":{"b":1}}`)
-				if err := recorder.VerifyChain(got); err == nil {
-					t.Fatal("v2 VerifyChain accepted semantically equivalent but byte-different RawDetail")
-				}
+			got[0].RawDetail = json.RawMessage(`{"z":2,"a":{"b":1}}`)
+			if err := recorder.VerifyChain(got); err == nil {
+				t.Fatalf("v%d VerifyChain accepted semantically equivalent but byte-different RawDetail", version)
 			}
 			got[0].RawDetail = rawWire.Detail
 			if hashRestored := recorder.ComputeHash(got[0]); hashRestored != beforeHash {
@@ -255,6 +250,43 @@ func TestReadEntries_PreservesRawDetailAndBindsV2Hash(t *testing.T) {
 				t.Fatalf("RawDetail leaked into reread serialized entry: %s", rewire)
 			}
 		})
+	}
+}
+
+func TestReadEntries_V1HashUsesStoredNoncanonicalDetailBytes(t *testing.T) {
+	t.Parallel()
+	detail := map[string]any{"a": float64(1), "z": float64(2)}
+	rawDetail := json.RawMessage(`{"z":2,"a":1}`)
+	e := recorder.Entry{
+		Version: 1, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(),
+		SessionID: "legacy", Type: testType, Transport: testTransport,
+		Summary: "legacy raw bytes", Detail: detail, RawDetail: rawDetail,
+		PrevHash: recorder.GenesisHash,
+	}
+	const wantHash = "0b397097e21d632c4d2eeb21b2b6a9436e604bbda3ea27eddb65a948488fe8c8"
+	if got := recorder.ComputeHash(e); got != wantHash {
+		t.Fatalf("frozen v1 noncanonical hash = %s", got)
+	}
+	e.Hash = wantHash
+	wire, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalDetail, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire = bytes.Replace(wire, canonicalDetail, rawDetail, 1)
+	got, err := recorder.ReadEntriesFromReader(bytes.NewReader(append(wire, '\n')))
+	if err != nil {
+		t.Fatalf("read noncanonical v1 entry: %v", err)
+	}
+	if err := recorder.VerifyChain(got); err != nil {
+		t.Fatalf("VerifyChain(valid noncanonical v1): %v", err)
+	}
+	got[0].RawDetail = json.RawMessage(`{"a":1,"z":2}`)
+	if err := recorder.VerifyChain(got); err == nil {
+		t.Fatal("VerifyChain accepted v1 detail byte-order tampering")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -759,6 +760,86 @@ func TestLoadAndReplay(t *testing.T) {
 	}
 	if r.Result.CandidateAction != config.ActionBlock {
 		t.Fatalf("expected CandidateAction=%q, got %q", config.ActionBlock, r.Result.CandidateAction)
+	}
+}
+
+func TestLoadAndReplayDistinguishesUnsupportedAndMalformedCaptureEvidence(t *testing.T) {
+	writeEntry := func(t *testing.T, dir string, detail any) {
+		t.Helper()
+		sessionDir := filepath.Join(dir, loadReplaySessionID)
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: sessionDir, MaxEntriesPerFile: 100}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rec.Record(recorder.Entry{SessionID: loadReplaySessionID, Type: EntryTypeCapture, Summary: "fixture", Detail: detail}); err != nil {
+			t.Fatal(err)
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+
+	t.Run("unsupported schema is skipped", func(t *testing.T) {
+		dir := t.TempDir()
+		writeEntry(t, dir, CaptureSummary{CaptureSchemaVersion: CaptureSchemaV1 + 1, Surface: SurfaceURL, Request: CaptureRequest{URL: "https://safe.example.com"}})
+		records, _, skipped, _, err := LoadAndReplay(cfg, dir)
+		if err != nil {
+			t.Fatalf("LoadAndReplay: %v", err)
+		}
+		if len(records) != 0 || skipped != 1 {
+			t.Fatalf("records=%d skipped=%d, want 0 and 1", len(records), skipped)
+		}
+	})
+
+	t.Run("well formed envelope with malformed capture detail fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		writeEntry(t, dir, []string{"not a capture summary"})
+		_, _, _, _, err := LoadAndReplay(cfg, dir)
+		if err == nil || !strings.Contains(err.Error(), "parse capture evidence") {
+			t.Fatalf("LoadAndReplay error=%v, want parse failure", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		detail any
+	}{
+		{name: "null detail", detail: nil},
+		{name: "empty object", detail: map[string]any{}},
+		{name: "zero schema version", detail: CaptureSummary{Surface: SurfaceURL, Request: CaptureRequest{URL: "https://safe.example.com"}}},
+	} {
+		t.Run(tc.name+" fails closed", func(t *testing.T) {
+			dir := t.TempDir()
+			writeEntry(t, dir, tc.detail)
+			_, _, _, _, err := LoadAndReplay(cfg, dir)
+			if err == nil || !strings.Contains(err.Error(), "parse capture evidence") {
+				t.Fatalf("LoadAndReplay error=%v, want parse failure", err)
+			}
+			if errors.Is(err, ErrUnsupportedCaptureSchema) {
+				t.Fatalf("LoadAndReplay error=%v, must not classify missing or zero schema as unsupported", err)
+			}
+		})
+	}
+}
+
+func TestExtractCaptureSummaryUsesRawDetailAndFallbacksSafely(t *testing.T) {
+	valid := []byte(`{"capture_schema_version":1,"surface":"url","request":{"url":"https://raw.example"}}`)
+	summary, input, decrypted, err := extractCaptureSummaryWithOptions(recorder.Entry{Type: EntryTypeCapture, RawDetail: valid, Detail: []string{"would not decode as summary"}}, "", nil)
+	if err != nil {
+		t.Fatalf("raw detail extraction: %v", err)
+	}
+	if summary.Request.URL != "https://raw.example" || input != "https://raw.example" || decrypted {
+		t.Fatalf("raw extraction = %#v input=%q decrypted=%v", summary, input, decrypted)
+	}
+
+	if _, _, _, err := extractCaptureSummaryWithOptions(recorder.Entry{Type: EntryTypeCapture, Detail: math.Inf(1)}, "", nil); err == nil || !strings.Contains(err.Error(), "marshaling entry detail") {
+		t.Fatalf("unmarshalable fallback error=%v", err)
+	}
+	if _, _, _, err := extractCaptureSummaryWithOptions(recorder.Entry{Type: "decision"}, "", nil); err == nil || !strings.Contains(err.Error(), "skipping entry type") {
+		t.Fatalf("non-capture error=%v", err)
 	}
 }
 

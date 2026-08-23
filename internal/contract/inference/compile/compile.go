@@ -145,6 +145,13 @@ func Compile(in CompileInput, opts CompileOptions) (CompileResult, error) {
 	if fatal != nil {
 		return CompileResult{}, fmt.Errorf("%w: %w", ErrIngestFailed, fatal)
 	}
+	if len(ingErrors) != 0 {
+		// A signed contract must represent the complete supplied evidence
+		// stream. Treating malformed tails as merely diagnostic would sign a
+		// valid-looking prefix after silently dropping the evidence most likely
+		// to change the inferred policy.
+		return CompileResult{}, fmt.Errorf("%w: %w", ErrIngestFailed, ingErrors[0])
+	}
 
 	c, stats, err := inferContract(aggs, in.Config)
 	if err != nil {

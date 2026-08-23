@@ -214,6 +214,24 @@ func TestCompactSourceRefusesShardWithoutTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestCompactSourceRejectsInputBudgets(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), compactTestLine(t, 0), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-1.jsonl"), compactTestLine(t, 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	location := recorder.EvidenceLocation{Root: dir, Dir: dir}
+	if _, _, err := compactSourceWithLimits(location, "proxy", 1, maxCompactInputBytes); err == nil || !strings.Contains(err.Error(), "directory exceeds") {
+		t.Fatalf("shard budget err = %v", err)
+	}
+	if _, _, err := compactSourceWithLimits(location, "proxy", maxCompactInputShards, 1); err == nil || !strings.Contains(err.Error(), "input byte limit") {
+		t.Fatalf("byte budget err = %v", err)
+	}
+}
+
 func TestCompactSourceRefusesDuplicateStartSymlinkAndOversize(t *testing.T) {
 	t.Run("duplicate-start", func(t *testing.T) {
 		dir := t.TempDir()
@@ -224,7 +242,7 @@ func TestCompactSourceRefusesDuplicateStartSymlinkAndOversize(t *testing.T) {
 			}
 		}
 		_, _, err := compactSource(recorder.EvidenceLocation{Root: dir, Dir: dir}, "proxy")
-		if err == nil || !strings.Contains(err.Error(), "duplicate shard sequence start") {
+		if err == nil || !strings.Contains(err.Error(), "ambiguous evidence shard sequence start") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -391,23 +409,33 @@ func compactTestLineForSession(t *testing.T, session string, seq uint64) []byte 
 
 func TestCompactHelpersRejectInvalidData(t *testing.T) {
 	t.Parallel()
-	if err := verifyCompactReceipts(nil, make([]byte, ed25519.PublicKeySize)); err == nil {
-		t.Fatal("empty receipt chain verified")
-	}
-	if _, err := compactPack("proxy", nil); err == nil || !strings.Contains(err.Error(), "no compacted") {
-		t.Fatalf("empty compactPack err = %v", err)
-	}
-	if _, err := compactPack("proxy", []compactShard{{data: []byte("{bad}\n")}}); err == nil || !strings.Contains(err.Error(), "parse compacted") {
-		t.Fatalf("malformed compactPack err = %v", err)
-	}
-	wrong := compactTestLineForSession(t, "other", 0)
-	if _, err := compactPack("proxy", []compactShard{{data: wrong}}); err == nil || !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("wrong-session compactPack err = %v", err)
-	}
-	oversize := compactShard{name: "evidence-proxy-0.jsonl", data: make([]byte, recorder.MaxEvidenceReadFileBytes+1)}
-	if err := writeCompactStage(t.TempDir(), []compactShard{oversize}); err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("oversize write err = %v", err)
-	}
+	t.Run("empty-receipt-chain", func(t *testing.T) {
+		if err := verifyCompactReceipts(nil, make([]byte, ed25519.PublicKeySize)); err == nil {
+			t.Fatal("empty receipt chain verified")
+		}
+	})
+	t.Run("empty-pack", func(t *testing.T) {
+		if _, err := compactPack("proxy", nil); err == nil || !strings.Contains(err.Error(), "no compacted") {
+			t.Fatalf("empty compactPack err = %v", err)
+		}
+	})
+	t.Run("malformed-pack", func(t *testing.T) {
+		if _, err := compactPack("proxy", []compactShard{{data: []byte("{bad}\n")}}); err == nil || !strings.Contains(err.Error(), "parse compacted") {
+			t.Fatalf("malformed compactPack err = %v", err)
+		}
+	})
+	t.Run("wrong-session", func(t *testing.T) {
+		wrong := compactTestLineForSession(t, "other", 0)
+		if _, err := compactPack("proxy", []compactShard{{data: wrong}}); err == nil || !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("wrong-session compactPack err = %v", err)
+		}
+	})
+	t.Run("oversized-stage", func(t *testing.T) {
+		oversize := compactShard{name: "evidence-proxy-0.jsonl", data: make([]byte, recorder.MaxEvidenceReadFileBytes+1)}
+		if err := writeCompactStage(t.TempDir(), []compactShard{oversize}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("oversize write err = %v", err)
+		}
+	})
 }
 
 func TestCompactManifestMappingsAndReceiptEquality(t *testing.T) {
@@ -525,43 +553,63 @@ func TestCompactLinuxHelpers(t *testing.T) {
 	if !supportsCompactExchangeTest() {
 		t.Skip("linux helpers are unsupported")
 	}
-	active := t.TempDir()
-	stage := t.TempDir()
-	if err := prepareCompactStage(active, stage); err != nil {
-		t.Fatal(err)
-	}
-	if err := prepareCompactStage(filepath.Join(t.TempDir(), "missing"), stage); err == nil {
-		t.Fatal("prepareCompactStage accepted missing source")
-	}
-	source := filepath.Join(t.TempDir(), "source")
-	target := filepath.Join(t.TempDir(), "target")
-	if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := preserveCompactFileMetadata(source, target); err != nil {
-		t.Fatal(err)
-	}
-	if err := preserveCompactFileMetadata(filepath.Join(t.TempDir(), "missing"), target); err == nil {
-		t.Fatal("preserveCompactFileMetadata accepted missing source")
-	}
-	if err := syncCompactFile(target); err != nil {
-		t.Fatal(err)
-	}
-	if err := syncCompactFile(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("syncCompactFile accepted missing file")
-	}
-	if err := syncCompactDirectory(active); err != nil {
-		t.Fatal(err)
-	}
-	if err := syncCompactDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("syncCompactDirectory accepted missing directory")
-	}
-	if err := exchangeEvidenceDirectories(filepath.Join(active, "missing-a"), filepath.Join(active, "missing-b")); err == nil {
-		t.Fatal("exchangeEvidenceDirectories accepted missing directories")
-	}
+	t.Run("prepare-success", func(t *testing.T) {
+		if err := prepareCompactStage(t.TempDir(), t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("prepare-missing", func(t *testing.T) {
+		if err := prepareCompactStage(filepath.Join(t.TempDir(), "missing"), t.TempDir()); err == nil {
+			t.Fatal("prepareCompactStage accepted missing source")
+		}
+	})
+	t.Run("metadata-success", func(t *testing.T) {
+		source, target := filepath.Join(t.TempDir(), "source"), filepath.Join(t.TempDir(), "target")
+		if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := preserveCompactFileMetadata(source, target); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("metadata-missing", func(t *testing.T) {
+		if err := preserveCompactFileMetadata(filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "target")); err == nil {
+			t.Fatal("preserveCompactFileMetadata accepted missing source")
+		}
+	})
+	t.Run("sync-file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := syncCompactFile(path); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("sync-file-missing", func(t *testing.T) {
+		if err := syncCompactFile(filepath.Join(t.TempDir(), "missing")); err == nil {
+			t.Fatal("syncCompactFile accepted missing file")
+		}
+	})
+	t.Run("sync-directory", func(t *testing.T) {
+		if err := syncCompactDirectory(t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("sync-directory-missing", func(t *testing.T) {
+		if err := syncCompactDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
+			t.Fatal("syncCompactDirectory accepted missing directory")
+		}
+	})
+	t.Run("exchange-missing", func(t *testing.T) {
+		parent := t.TempDir()
+		if err := exchangeEvidenceDirectories(filepath.Join(parent, "missing-a"), filepath.Join(parent, "missing-b")); err == nil {
+			t.Fatal("exchangeEvidenceDirectories accepted missing directories")
+		}
+	})
 }
 
 func TestCompactPackRejectsOversizedLine(t *testing.T) {
@@ -604,6 +652,23 @@ func TestRunCompactFailClosedAtCeremonyBoundaries(t *testing.T) {
 		{name: "prepare-stage", inject: func() { compactPrepareStage = func(string, string) error { return errors.New("injected prepare") } }},
 		{name: "write-stage", inject: func() {
 			compactWriteShards = func(string, []compactShard) error { return errors.New("injected write") }
+		}},
+		{name: "corrupt-staged-recorder", inject: func() {
+			compactWriteShards = func(dir string, shards []compactShard) error {
+				if err := writeCompactStage(dir, shards); err != nil {
+					return err
+				}
+				var entry recorder.Entry
+				if err := json.Unmarshal(bytes.TrimSpace(shards[0].data), &entry); err != nil {
+					return err
+				}
+				entry.Summary = "changed without updating recorder hash"
+				data, err := json.Marshal(entry)
+				if err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, shards[0].name), append(data, '\n'), 0o600)
+			}
 		}},
 		{name: "sync-stage", inject: func() { compactSyncPath = func(string) error { return errors.New("injected sync") } }},
 		{name: "extract-stage", inject: func() {
@@ -665,10 +730,71 @@ func TestRunCompactFailClosedAtCeremonyBoundaries(t *testing.T) {
 			restoreCompactHooks(t)
 			opts := newCompactFixture(t)
 			tc.inject()
-			if err := runCompact(compactCmd(), opts); err == nil {
+			err := runCompact(compactCmd(), opts)
+			if err == nil {
 				t.Fatal("runCompact succeeded across injected ceremony failure")
 			}
+			if tc.name != "too-many-shards" && tc.name != "chain-mismatch" && tc.name != "corrupt-staged-recorder" {
+				if !strings.Contains(err.Error(), "injected") {
+					t.Fatalf("%s failed for the wrong reason: %v", tc.name, err)
+				}
+			}
+			if _, statErr := os.Stat(filepath.Join(opts.receiptDir, "evidence-proxy-0.jsonl")); statErr != nil {
+				t.Fatalf("original shard not restored after %s: %v (run error: %v)", tc.name, statErr, err)
+			}
+			parent := filepath.Dir(opts.receiptDir)
+			for _, pattern := range []string{".pipelock-evidence-compact-*", ".pipelock-evidence-archive-*"} {
+				leftover, globErr := filepath.Glob(filepath.Join(parent, pattern))
+				if globErr != nil {
+					t.Fatal(globErr)
+				}
+				if len(leftover) != 0 {
+					t.Fatalf("%s left ceremony directories %v (run error: %v)", tc.name, leftover, err)
+				}
+			}
+			restoreCompactHooks(t)
+			if retryErr := runCompact(compactCmd(), opts); retryErr != nil {
+				t.Fatalf("%s left ceremony non-retryable: %v (original error: %v)", tc.name, retryErr, err)
+			}
 		})
+	}
+}
+
+func TestSameCompactBytes(t *testing.T) {
+	t.Parallel()
+	a := []compactShard{{data: []byte("one\n")}, {data: []byte("two\n")}}
+	b := []compactShard{{data: []byte("one\ntwo\n")}}
+	if !sameCompactBytes(a, b) {
+		t.Fatal("same byte stream differs across shard boundaries")
+	}
+	b[0].data[0] = 'X'
+	if sameCompactBytes(a, b) {
+		t.Fatal("different byte streams compare equal")
+	}
+}
+
+func TestRunCompactDetectsSourceMutationBeforeExchange(t *testing.T) {
+	restoreCompactHooks(t)
+	opts := newCompactFixture(t)
+	calls := 0
+	compactAcquireLock = func(dir string) (*recorder.EvidenceCeremonyLock, error) {
+		lock, err := recorder.AcquireEvidenceCeremonyLock(dir)
+		if err != nil {
+			return nil, err
+		}
+		calls++
+		if calls == 2 {
+			path := filepath.Join(opts.receiptDir, "evidence-proxy-0.jsonl")
+			if writeErr := os.WriteFile(path, append(compactTestLine(t, 0), []byte("changed\n")...), 0o600); writeErr != nil {
+				_ = lock.Close()
+				return nil, writeErr
+			}
+		}
+		return lock, nil
+	}
+	err := runCompact(compactCmd(), opts)
+	if err == nil || !strings.Contains(err.Error(), "source changed before publication") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

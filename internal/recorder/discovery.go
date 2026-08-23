@@ -10,8 +10,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+)
+
+var (
+	compactStageDirPattern   = regexp.MustCompile(`^\.pipelock-evidence-compact-[[:alnum:]]{6,12}$`)
+	compactArchiveDirPattern = regexp.MustCompile(`^\.pipelock-evidence-archive-[0-9]{8}T[0-9]{6}\.[0-9]{9}Z$`)
 )
 
 // EvidenceLocation identifies an evidence-file directory below an
@@ -111,8 +117,7 @@ func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLoc
 }
 
 func isReservedEvidenceCeremonyDir(name string) bool {
-	return strings.HasPrefix(name, ".pipelock-evidence-compact-") ||
-		strings.HasPrefix(name, ".pipelock-evidence-archive-")
+	return compactStageDirPattern.MatchString(name) || compactArchiveDirPattern.MatchString(name)
 }
 
 // validateEvidenceRootComponents checks from the filesystem root down so a

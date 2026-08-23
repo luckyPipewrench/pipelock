@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	signing "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -52,8 +53,14 @@ type compactShard struct {
 	data       []byte
 	start      uint64
 	sourcePath string
+	sourceInfo os.FileInfo
 	mappings   []compactByteMapping
 }
+
+const (
+	maxCompactInputShards = 4096
+	maxCompactInputBytes  = 256 << 20
+)
 
 var (
 	compactAcquireLock   = recorder.AcquireEvidenceCeremonyLock
@@ -151,6 +158,13 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	if !compactSameChain(receipts, post) {
 		return errors.New("post-compaction receipt chain differs from original")
 	}
+	stagedSource, _, err := compactSource(recorder.EvidenceLocation{Root: stage, Dir: stage}, opts.sessionID)
+	if err != nil {
+		return fmt.Errorf("re-validate staged compacted evidence: %w", err)
+	}
+	if !sameCompactBytes(original, stagedSource) {
+		return errors.New("compaction changed original JSONL record bytes")
+	}
 	manifest := compactManifest{Version: 1, SessionID: opts.sessionID, CreatedAt: time.Now().UTC(), Original: manifestShards(original), Replacement: manifestShards(replacement), Mappings: compactMappings(replacement)}
 	archive := filepath.Join(parent, ".pipelock-evidence-archive-"+time.Now().UTC().Format("20060102T150405.000000000Z"))
 	stageLock, err := compactAcquireLock(stage)
@@ -158,6 +172,9 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 		return fmt.Errorf("lock staged evidence directory: %w", err)
 	}
 	defer func() { _ = stageLock.Close() }()
+	if err := verifyCompactSourceUnchanged(location, original); err != nil {
+		return fmt.Errorf("source changed before publication: %w", err)
+	}
 	if err := compactExchange(location.Dir, stage); err != nil {
 		return fmt.Errorf("atomically exchange active evidence directory: %w", err)
 	}
@@ -182,9 +199,16 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 }
 
 func compactSource(location recorder.EvidenceLocation, session string) ([]compactShard, []contractreceipt.EvidenceReceipt, error) {
-	entries, err := recorder.ReadEvidenceLocationEntries(location)
+	return compactSourceWithLimits(location, session, maxCompactInputShards, maxCompactInputBytes)
+}
+
+func compactSourceWithLimits(location recorder.EvidenceLocation, session string, maxShards int, maxBytes int64) ([]compactShard, []contractreceipt.EvidenceReceipt, error) {
+	entries, truncated, err := recorder.ReadEvidenceLocationEntriesBounded(location, maxShards)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list evidence directory: %w", err)
+	}
+	if truncated {
+		return nil, nil, fmt.Errorf("evidence directory exceeds compaction input limit %d", maxShards)
 	}
 	var names []string
 	for _, entry := range entries {
@@ -207,29 +231,42 @@ func compactSource(location recorder.EvidenceLocation, session string) ([]compac
 	if len(names) == 0 {
 		return nil, nil, fmt.Errorf("session %q has no evidence shards", session)
 	}
-	sort.Slice(names, func(i, j int) bool {
-		_, a, _ := recorder.ParseEvidenceFilename(names[i])
-		_, b, _ := recorder.ParseEvidenceFilename(names[j])
-		if a != b {
-			return a < b
-		}
-		return names[i] < names[j]
-	})
-	starts := map[uint64]struct{}{}
-	source := make([]compactShard, 0, len(names))
-	allEntries := make([]recorder.Entry, 0)
+	type namedStart struct {
+		name  string
+		start uint64
+	}
+	ordered := make([]namedStart, 0, len(names))
 	for _, name := range names {
 		_, start, _ := recorder.ParseEvidenceFilename(name)
-		if _, dup := starts[start]; dup {
-			return nil, nil, fmt.Errorf("duplicate shard sequence start %d", start)
+		ordered = append(ordered, namedStart{name: name, start: start})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].start != ordered[j].start {
+			return ordered[i].start < ordered[j].start
 		}
-		starts[start] = struct{}{}
+		return ordered[i].name < ordered[j].name
+	})
+	for i := range ordered {
+		names[i] = ordered[i].name
+	}
+	if err := evidencename.CheckNoDuplicateSeqStart(names); err != nil {
+		return nil, nil, err
+	}
+	source := make([]compactShard, 0, len(names))
+	allEntries := make([]recorder.Entry, 0)
+	var totalBytes int64
+	for _, name := range names {
+		_, start, _ := recorder.ParseEvidenceFilename(name)
 		data, readErr := recorder.ReadEvidenceLocationFileBounded(location, name, recorder.MaxEvidenceReadFileBytes)
 		if readErr != nil {
 			return nil, nil, fmt.Errorf("read %s: %w", name, readErr)
 		}
 		if len(data) == 0 || data[len(data)-1] != '\n' {
 			return nil, nil, fmt.Errorf("%s does not end in newline; refusing cross-file record concatenation", name)
+		}
+		totalBytes += int64(len(data))
+		if totalBytes > maxBytes {
+			return nil, nil, fmt.Errorf("session %q exceeds compaction input byte limit %d", session, maxBytes)
 		}
 		parsed, parseErr := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 		if parseErr != nil {
@@ -241,7 +278,12 @@ func compactSource(location recorder.EvidenceLocation, session string) ([]compac
 			}
 			allEntries = append(allEntries, entry)
 		}
-		source = append(source, compactShard{name: name, data: data, start: start, sourcePath: filepath.Join(location.Dir, name)})
+		sourcePath := filepath.Join(location.Dir, name)
+		info, statErr := os.Lstat(sourcePath)
+		if statErr != nil {
+			return nil, nil, fmt.Errorf("stat %s after read: %w", name, statErr)
+		}
+		source = append(source, compactShard{name: name, data: data, start: start, sourcePath: sourcePath, sourceInfo: info})
 	}
 	if err := recorder.VerifyChain(allEntries); err != nil {
 		return nil, nil, fmt.Errorf("verify recorder chain: %w", err)
@@ -259,6 +301,40 @@ func compactSource(location recorder.EvidenceLocation, session string) ([]compac
 		return nil, nil, errors.New("selected session contains no evidence receipts")
 	}
 	return source, receipts, nil
+}
+
+func verifyCompactSourceUnchanged(location recorder.EvidenceLocation, source []compactShard) error {
+	for _, shard := range source {
+		info, err := os.Lstat(shard.sourcePath)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", shard.name, err)
+		}
+		if shard.sourceInfo == nil || !os.SameFile(shard.sourceInfo, info) || shard.sourceInfo.Size() != info.Size() || !shard.sourceInfo.ModTime().Equal(info.ModTime()) || shard.sourceInfo.Mode() != info.Mode() {
+			return fmt.Errorf("%s identity or metadata changed", shard.name)
+		}
+		data, err := recorder.ReadEvidenceLocationFileBounded(location, shard.name, recorder.MaxEvidenceReadFileBytes)
+		if err != nil {
+			return fmt.Errorf("re-read %s: %w", shard.name, err)
+		}
+		if !bytes.Equal(data, shard.data) {
+			return fmt.Errorf("%s contents changed", shard.name)
+		}
+	}
+	return nil
+}
+
+func sameCompactBytes(a, b []compactShard) bool {
+	ah, bh := sha256.New(), sha256.New()
+	var aBytes, bBytes int64
+	for _, shard := range a {
+		_, _ = ah.Write(shard.data)
+		aBytes += int64(len(shard.data))
+	}
+	for _, shard := range b {
+		_, _ = bh.Write(shard.data)
+		bBytes += int64(len(shard.data))
+	}
+	return aBytes == bBytes && bytes.Equal(ah.Sum(nil), bh.Sum(nil))
 }
 
 func verifyCompactReceipts(receipts []contractreceipt.EvidenceReceipt, key []byte) error {

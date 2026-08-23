@@ -448,7 +448,7 @@ func removeZedPath(cmd *cobra.Command, targetPath string, dryRun bool) error {
 			continue
 		}
 
-		restored, plan, unwrapErr := unwrapVscodeServer(server)
+		restored, plan, unwrapErr := unwrapVscodeServer(server, targetPath, name)
 		if unwrapErr != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not unwrap %q in %s: %v\n", name, targetPath, unwrapErr)
 			continue

@@ -273,7 +273,7 @@ func runClineRemove(cmd *cobra.Command, override string, dryRun bool) error {
 			continue
 		}
 
-		restored, plan, err := unwrapVscodeServer(server)
+		restored, plan, err := unwrapVscodeServer(server, targetPath, name)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not unwrap %q: %v\n", name, err)
 			continue

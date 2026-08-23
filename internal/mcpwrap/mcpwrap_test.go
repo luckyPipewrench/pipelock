@@ -228,7 +228,7 @@ func TestUnwrapServer_RoundTrips(t *testing.T) {
 			if !IsWrapped(wrapped) {
 				t.Fatal("wrapped entry not detected as wrapped")
 			}
-			restored, _, err := UnwrapServer(wrapped)
+			restored, _, err := UnwrapServer(wrapped, "/cfg.yaml", "remote")
 			if err != nil {
 				t.Fatalf("UnwrapServer: %v", err)
 			}
@@ -243,7 +243,7 @@ func TestUnwrapServer_NotWrapped(t *testing.T) {
 	t.Parallel()
 
 	in := map[string]interface{}{FieldCommand: "x"}
-	out, op, err := UnwrapServer(in)
+	out, op, err := UnwrapServer(in, "/cfg.yaml", "remote")
 	if err != nil || op != nil {
 		t.Fatalf("unexpected err=%v op=%v", err, op)
 	}
@@ -268,7 +268,7 @@ func TestUnwrapServer_InvalidMeta(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := UnwrapServer(map[string]interface{}{FieldPipelock: tc.meta})
+			_, _, err := UnwrapServer(map[string]interface{}{FieldPipelock: tc.meta}, "/cfg.yaml", "remote")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want containing %q", err, tc.want)
 			}

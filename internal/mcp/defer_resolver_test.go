@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -216,6 +217,66 @@ func TestForwardScannedInput_DeferResolverAllowsAndMinimizesManifest(t *testing.
 	}
 }
 
+func TestForwardScannedInput_DeferResolverRechecksAuthorityBeforeUpstream(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, receiptRecorder, receiptDir, _ := newReceiptTestHarness(t)
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{},"_meta":{"com.pipelock/authority":"grant"}}}` + "\n"
+
+	inputR, inputW := io.Pipe()
+	defer func() { _ = inputW.Close() }()
+	var serverBuf, logBuf syncBuffer
+	blockedCh := make(chan BlockedRequest, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForwardScannedInput(
+			transport.NewStdioReader(inputR),
+			transport.NewStdioWriter(&serverBuf),
+			&logBuf,
+			config.ActionWarn,
+			config.ActionBlock,
+			blockedCh,
+			nil,
+			nil,
+			MCPProxyOpts{
+				Scanner:        sc,
+				Transport:      deferred.SurfaceMCPStdio,
+				PolicyCfg:      deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
+				DeferManager:   manager,
+				ReceiptEmitter: emitter,
+				AuthorityVerifier: authorityVerifierFunc(func(context.Context, authority.Request) authority.Result {
+					return authority.Result{Decision: authority.DecisionDeny, Reason: authority.ReasonActionMismatch}
+				}),
+				AuthorityActor:       "agent-a",
+				AuthorityDestination: "server-a",
+			},
+		)
+	}()
+	if _, err := inputW.Write([]byte(msg)); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool {
+		select {
+		case blocked := <-blockedCh:
+			return blocked.ErrorCode == -32008
+		default:
+			return false
+		}
+	}, "deferred stdio authority denial; log=%s", &logBuf)
+	if serverBuf.String() != "" {
+		t.Fatalf("authority-denied deferred call reached upstream: %s", serverBuf.String())
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	<-done
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	assertSingleDeferredAuthorityBlockReceipt(t, receiptsByVerdict(readActionReceipts(t, receiptDir), config.ActionBlock))
+}
+
 func TestRunHTTPProxy_DeferResolverAllowsBridge(t *testing.T) {
 	sc := testInputScanner(t)
 	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
@@ -274,7 +335,7 @@ func TestRunHTTPProxy_DeferResolverRechecksAuthorityBeforeUpstream(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			sc := testInputScanner(t)
 			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
-			emitter, _, _, _ := newReceiptTestHarness(t)
+			emitter, receiptRecorder, receiptDir, _ := newReceiptTestHarness(t)
 			var upstreamCalls, verifierCalls atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				upstreamCalls.Add(1)
@@ -325,6 +386,12 @@ func TestRunHTTPProxy_DeferResolverRechecksAuthorityBeforeUpstream(t *testing.T)
 			cancel()
 			if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
 				t.Fatalf("RunHTTPProxy returned error: %v", err)
+			}
+			if err := receiptRecorder.Close(); err != nil {
+				t.Fatalf("recorder.Close: %v", err)
+			}
+			if !tc.allow {
+				assertSingleDeferredAuthorityBlockReceipt(t, receiptsByVerdict(readActionReceipts(t, receiptDir), config.ActionBlock))
 			}
 		})
 	}
@@ -603,5 +670,20 @@ func TestForwardScannedInput_DeferResolverShutdownDoesNotPanic(t *testing.T) {
 		}
 		for range blockedCh {
 		}
+	}
+}
+
+func assertSingleDeferredAuthorityBlockReceipt(t *testing.T, receipts []receipt.Receipt) {
+	t.Helper()
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want exactly one deferred authority denial", len(receipts))
+	}
+	record := receipts[0].ActionRecord
+	assertAuthorityBlockReceiptRecord(t, record)
+	if record.ResolutionSource != deferred.SourceAuthority {
+		t.Fatalf("resolution_source = %q, want %q", record.ResolutionSource, deferred.SourceAuthority)
+	}
+	if record.DecisionPhase != receipt.DecisionPhaseResolution {
+		t.Fatalf("decision_phase = %q, want %q", record.DecisionPhase, receipt.DecisionPhaseResolution)
 	}
 }

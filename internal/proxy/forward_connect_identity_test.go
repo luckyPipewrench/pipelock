@@ -57,6 +57,12 @@ func installConnectDialRecorder(t *testing.T, p *Proxy) (*atomic.Int32, <-chan s
 // harness data-race rather than exercising CONNECT behavior.
 func setupConnectIdentityProxy(t *testing.T, cfgMod func(*config.Config), opts ...Option) (string, *atomic.Int32, <-chan string, func()) {
 	t.Helper()
+	addr, _, dialCalls, dialTargets, cleanup := setupConnectIdentityProxyWithInstance(t, cfgMod, opts...)
+	return addr, dialCalls, dialTargets, cleanup
+}
+
+func setupConnectIdentityProxyWithInstance(t *testing.T, cfgMod func(*config.Config), opts ...Option) (string, *Proxy, *atomic.Int32, <-chan string, func()) {
+	t.Helper()
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -99,7 +105,7 @@ func setupConnectIdentityProxy(t *testing.T, cfgMod func(*config.Config), opts .
 	}
 	go func() { _ = srv.Serve(ln) }()
 
-	return ln.Addr().String(), dialCalls, dialTargets, func() {
+	return ln.Addr().String(), p, dialCalls, dialTargets, func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)

@@ -297,9 +297,11 @@ func ForwardScannedInput(
 		}
 		lineNum++
 
-		// Strip any inbound com.pipelock/mediation from _meta before
-		// scanning. Prevents spoofed mediation metadata from an agent
-		// or upstream from passing through to the MCP server.
+		// Consume both Pipelock-owned _meta members before scanning:
+		// com.pipelock/mediation cannot be spoofed through to the server,
+		// while com.pipelock/authority is removed and validated. The carrier
+		// error is load-bearing: authorizeMCP fails this message closed when a
+		// verifier is configured and the authority reference is unsafe.
 		line, authorityRef, authorityCarrierErr := extractInboundMCPAuthority(line)
 
 		// Parse the inbound frame once per message. Every gate below
@@ -916,6 +918,14 @@ func ForwardScannedInput(
 				continue
 			}
 			if err := authorizeMCP(stdioInputCtx, authorityRef, authorityCarrierErr, frame, opts); err != nil {
+				if actionID == "" {
+					actionID = receipt.NewActionID()
+				}
+				if receiptTarget == "" {
+					receiptTarget = verdict.Method
+				}
+				receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = authorityReceiptAttribution()
+				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				blockedCh <- *authorityBlockedRequest(frame)
 				continue
 			}
@@ -1311,6 +1321,8 @@ func ForwardScannedInput(
 					if res.FinalDecision == config.ActionAllow {
 						if authErr := authorizeMCP(stdioInputCtx, heldAuthorityRef, heldAuthorityCarrierErr, heldAuthorityFrame, opts); authErr != nil {
 							res.FinalDecision = config.ActionBlock
+							res.ResolutionSource = deferred.SourceAuthority
+							res.Reason = "authority verification failed"
 							authorityDenied = true
 						}
 					}
@@ -1455,6 +1467,14 @@ func ForwardScannedInput(
 			}
 			contractGateForReceipt = &contractGate
 			if err := authorizeMCP(stdioInputCtx, authorityRef, authorityCarrierErr, frame, opts); err != nil {
+				if actionID == "" {
+					actionID = receipt.NewActionID()
+				}
+				if receiptTarget == "" {
+					receiptTarget = verdict.Method
+				}
+				receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = authorityReceiptAttribution()
+				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				blockedCh <- *authorityBlockedRequest(frame)
 				continue
 			}

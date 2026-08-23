@@ -39,6 +39,7 @@ const (
 	SourceDuplicateDeferID        = "duplicate_defer_id"
 	SourcePolicyReload            = "policy_reload"
 	SourceApproval                = "approval"
+	SourceAuthority               = "authority"
 	SourceOperator                = "operator"
 	SourceToolInventory           = "tool_inventory"
 	LinkageSessionPendingAncestor = "session_pending_ancestor"

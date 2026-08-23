@@ -245,8 +245,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Blocked = authorityBlockedRequest(frame)
 			result.Deferred = nil
 			result.Outcome = TrackedRequestOutcome{}
-			receiptVerdict = ""
-			actionID = ""
+			receiptVerdict = config.ActionBlock
+			receiptLayer, receiptPattern, receiptSeverity = authorityReceiptAttribution()
+			if actionID == "" {
+				actionID = receipt.NewActionID()
+			}
+			if toolName == "" {
+				toolName = mcpMethod
+			}
 		}
 	}()
 

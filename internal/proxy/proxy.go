@@ -4707,6 +4707,28 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Action:      string(receipt.ActionRead),
 		Destination: targetURL,
 	}, actx, TransportFetch); err != nil {
+		const reason = "authority verification failed"
+		p.recordDecision(config.ActionBlock, blockLayerAuthority, reason, TransportFetch, requestID)
+		emitFetchReceipt(receipt.EmitOpts{
+			ActionID:            actionID,
+			Verdict:             config.ActionBlock,
+			Layer:               blockLayerAuthority,
+			Pattern:             reason,
+			Transport:           TransportFetch,
+			Method:              http.MethodGet,
+			Target:              displayURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+			SessionContaminated: fetchTaint.Risk.Contaminated,
+			RecentTaintSources:  fetchTaint.Risk.Sources,
+			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       fetchTaint.Authority.String(),
+			TaintDecision:       fetchTaint.Result.Decision.String(),
+			TaintDecisionReason: fetchTaint.Result.Reason,
+			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+		})
 		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerAuthority, time.Since(start), agentLabel)
 		writeBlockedJSON(w,
 			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),

@@ -769,6 +769,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Action:      string(receipt.ActionDelegate),
 		Destination: targetURL,
 	}, actx, TransportWS); err != nil {
+		emitWebSocketReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerAuthority,
+			Pattern:   "authority verification failed",
+			Transport: TransportWS,
+			Method:    "WS",
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		p.metrics.RecordWSBlocked()
 		if clientConn != nil {
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,

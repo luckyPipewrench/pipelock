@@ -38,6 +38,10 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	// Unconditional so capacity denials (no cascade context) still record the
 	// policy bounds; Cascade stays nil and marshals away via omitempty.
 	resolutionPolicy := deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
+	layer := mcpReceiptLayerPolicy
+	if res.ResolutionSource == deferred.SourceAuthority {
+		layer = mcpReceiptLayerAuthority
+	}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		Emitter:           opts.receiptEmitter(),
 		V2Emitter:         opts.v2ReceiptEmitter(),
@@ -49,7 +53,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		MCPMethod:         res.Method,
 		ToolName:          res.Target,
 		Verdict:           final,
-		Layer:             mcpReceiptLayerPolicy,
+		Layer:             layer,
 		Pattern:           res.Reason,
 		Severity:          config.SeverityHigh,
 		Decision:          taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},

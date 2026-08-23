@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 type proxyAuthorityVerifierFunc func(context.Context, authority.Request) authority.Result
@@ -88,6 +89,8 @@ func TestFetchAndForwardAuthorityFailuresBeforeUpstream(t *testing.T) {
 					p, unusedBackend := setupTestProxy(t)
 					defer unusedBackend.Close()
 					defer p.Close()
+					receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
+					p.receiptEmitterPtr.Store(receiptHelper.emitter)
 					p.authorityVerifier = proxyAuthorityVerifierFunc(func(context.Context, authority.Request) authority.Result {
 						verifierCalls.Add(1)
 						return authority.Result{Decision: tc.decision, Reason: authority.ReasonActionMismatch}
@@ -119,6 +122,14 @@ func TestFetchAndForwardAuthorityFailuresBeforeUpstream(t *testing.T) {
 					}
 					if verifierCalls.Load() != tc.wantVerifierCalls || upstreamCalls.Load() != 0 {
 						t.Fatalf("verifier calls=%d upstream calls=%d, want %d/0", verifierCalls.Load(), upstreamCalls.Load(), tc.wantVerifierCalls)
+					}
+					receipts := receiptHelper.findReceipts(t)
+					if len(receipts) != 1 {
+						t.Fatalf("receipt count = %d, want exactly one authority denial", len(receipts))
+					}
+					record := receipts[0].ActionRecord
+					if record.Verdict != config.ActionBlock || record.Layer != blockLayerAuthority {
+						t.Fatalf("receipt verdict/layer = %q/%q, want %q/%q", record.Verdict, record.Layer, config.ActionBlock, blockLayerAuthority)
 					}
 				})
 			}
@@ -175,8 +186,10 @@ func TestFetchAndForwardAuthorityHeaderConsumedOnAllow(t *testing.T) {
 func TestConnectAuthorityDenyMakesNoDial(t *testing.T) {
 	t.Parallel()
 	var verifierCalls atomic.Int32
-	proxyAddr, dialCalls, _, cleanup := setupConnectIdentityProxy(t, nil, WithAuthorityVerifier(denyProxyAuthorityVerifier(&verifierCalls)))
+	proxyAddr, p, dialCalls, _, cleanup := setupConnectIdentityProxyWithInstance(t, nil, WithAuthorityVerifier(denyProxyAuthorityVerifier(&verifierCalls)))
 	defer cleanup()
+	receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(receiptHelper.emitter)
 
 	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", proxyAddr)
 	if err != nil {
@@ -194,6 +207,7 @@ func TestConnectAuthorityDenyMakesNoDial(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden || dialCalls.Load() != 0 || verifierCalls.Load() != 1 {
 		t.Fatalf("status=%d dial calls=%d verifier calls=%d, want 403/0/1", resp.StatusCode, dialCalls.Load(), verifierCalls.Load())
 	}
+	assertSingleProxyAuthorityBlockReceipt(t, receiptHelper.findReceipts(t))
 }
 
 func TestConnectAuthorityAllowReachesDialWithoutForwardingRequestHeaders(t *testing.T) {
@@ -247,6 +261,8 @@ func TestWebSocketAuthorityDenyMakesNoUpstreamHandshake(t *testing.T) {
 
 	proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, nil)
 	defer cleanup()
+	receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(receiptHelper.emitter)
 	var verifierCalls atomic.Int32
 	p.authorityVerifier = denyProxyAuthorityVerifier(&verifierCalls)
 	conn, err := dialWSConnWithHeader(proxyAddr, backend.Addr().String(), http.Header{authority.HTTPHeader: {"grant"}})
@@ -269,6 +285,7 @@ func TestWebSocketAuthorityDenyMakesNoUpstreamHandshake(t *testing.T) {
 		t.Fatal("authority-denied WebSocket reached upstream listener")
 	case <-time.After(100 * time.Millisecond):
 	}
+	assertSingleProxyAuthorityBlockReceipt(t, receiptHelper.findReceipts(t))
 }
 
 func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
@@ -291,6 +308,8 @@ func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
 		cfg.FlightRecorder.RequireReceipts = true
 	})
 	defer cleanup()
+	receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(receiptHelper.emitter)
 	var verifierCalls atomic.Int32
 	p.authorityVerifier = denyProxyAuthorityVerifier(&verifierCalls)
 	resp := requestWSHandshake(t, proxyAddr, backend.Addr().String(), http.Header{authority.HTTPHeader: {"grant"}})
@@ -308,6 +327,18 @@ func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
 	case <-accepted:
 		t.Fatal("authority-denied WebSocket reached upstream listener")
 	case <-time.After(100 * time.Millisecond):
+	}
+	assertSingleProxyAuthorityBlockReceipt(t, receiptHelper.findReceipts(t))
+}
+
+func assertSingleProxyAuthorityBlockReceipt(t *testing.T, receipts []receipt.Receipt) {
+	t.Helper()
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want exactly one authority denial", len(receipts))
+	}
+	record := receipts[0].ActionRecord
+	if record.Verdict != config.ActionBlock || record.Layer != blockLayerAuthority {
+		t.Fatalf("receipt verdict/layer = %q/%q, want %q/%q", record.Verdict, record.Layer, config.ActionBlock, blockLayerAuthority)
 	}
 }
 

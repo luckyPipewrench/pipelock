@@ -601,6 +601,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Action:      string(receipt.ActionRead),
 		Destination: target,
 	}, targetCtx, TransportConnect); err != nil {
+		emitConnectReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerAuthority,
+			Pattern:   "authority verification failed",
+			Transport: TransportConnect,
+			Method:    http.MethodConnect,
+			Target:    connectReceiptTarget,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w,
 			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),
@@ -1871,6 +1882,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		Action:      string(receipt.ClassifyHTTP(r.Method)),
 		Destination: targetURL,
 	}, actx, TransportForward); err != nil {
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID:  actionID,
+			RequestID: requestID,
+			Agent:     agent,
+			Method:    r.Method,
+			Target:    targetURL,
+			Layer:     blockLayerAuthority,
+			Pattern:   "authority verification failed",
+			Taint:     forwardTaint,
+		})))
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerAuthority, time.Since(start), agentLabel)
 		writeBlockedError(w,
 			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),

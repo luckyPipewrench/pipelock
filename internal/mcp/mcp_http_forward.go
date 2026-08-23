@@ -295,6 +295,8 @@ func RunHTTPProxy(
 					if res.FinalDecision == config.ActionAllow {
 						if authErr := authorizeMCP(ctx, deferredReq.authorityRef, deferredReq.authorityCarrierErr, deferredReq.authorityFrame, fwdOpts); authErr != nil {
 							res.FinalDecision = config.ActionBlock
+							res.ResolutionSource = deferred.SourceAuthority
+							res.Reason = "authority verification failed"
 							authorityDenied = true
 						}
 					}

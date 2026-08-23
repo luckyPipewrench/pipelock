@@ -10,8 +10,18 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
+
+const (
+	mcpReceiptLayerAuthority   = "authority"
+	mcpReceiptPatternAuthority = "authority verification failed"
+)
+
+func authorityReceiptAttribution() (layer, pattern, severity string) {
+	return mcpReceiptLayerAuthority, mcpReceiptPatternAuthority, config.SeverityHigh
+}
 
 func (o MCPProxyOpts) authorityActor() string {
 	for _, actor := range []string{o.AuthorityActor, o.addressProtectionAgent(), o.ContractAgent, o.Profile} {

@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 type authorityVerifierFunc func(context.Context, authority.Request) authority.Result
@@ -214,10 +215,12 @@ func TestAuthorizeMCPAuditAndNilVerifierPaths(t *testing.T) {
 
 func TestScanHTTPInputDecisionAuthorityGate(t *testing.T) {
 	t.Parallel()
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
 	var captured authority.Request
 	opts := MCPProxyOpts{
 		Scanner:              testScannerForHTTP(t),
 		Transport:            transportMCPHTTP,
+		ReceiptEmitter:       emitter,
 		AuthorityVerifier:    allowAuthorityVerifier(&captured),
 		AuthorityActor:       "principal:alice",
 		AuthorityDestination: "https://mcp.example/rpc",
@@ -238,16 +241,22 @@ func TestScanHTTPInputDecisionAuthorityGate(t *testing.T) {
 	if got := scanHTTPInputDecision(missing, &bytes.Buffer{}, "session", "audit", opts); got.Blocked == nil {
 		t.Fatal("missing grant forwarded with verifier enabled")
 	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	assertSingleAuthorityBlockReceipt(t, readActionReceipts(t, dir))
 }
 
 func TestForwardScannedInputAuthorityDenialMakesNoWrite(t *testing.T) {
 	t.Parallel()
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
 	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"com.pipelock/authority":"grant"}}}` + "\n"
 	var upstream, log bytes.Buffer
 	blocked := make(chan BlockedRequest, 1)
 	opts := MCPProxyOpts{
-		Scanner:   testInputScanner(t),
-		Transport: transportMCPStdio,
+		Scanner:        testInputScanner(t),
+		Transport:      transportMCPStdio,
+		ReceiptEmitter: emitter,
 		AuthorityVerifier: authorityVerifierFunc(func(context.Context, authority.Request) authority.Result {
 			return authority.Result{Decision: authority.DecisionDeny, Reason: authority.ReasonActionMismatch}
 		}),
@@ -271,6 +280,73 @@ func TestForwardScannedInputAuthorityDenialMakesNoWrite(t *testing.T) {
 	got, ok := <-blocked
 	if !ok || got.ErrorCode != -32008 {
 		t.Fatalf("blocked request = %+v, ok=%v", got, ok)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	assertSingleAuthorityBlockReceipt(t, readActionReceipts(t, dir))
+}
+
+func TestForwardScannedInputWarnAuthorityDenialMakesNoWrite(t *testing.T) {
+	t.Parallel()
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{"token":%q},"_meta":{"com.pipelock/authority":"grant"}}}`+"\n", secret)
+	var upstream, log bytes.Buffer
+	blocked := make(chan BlockedRequest, 1)
+	opts := MCPProxyOpts{
+		Scanner:        testInputScanner(t),
+		Transport:      transportMCPStdio,
+		ReceiptEmitter: emitter,
+		InputCfg:       &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
+		AuthorityVerifier: authorityVerifierFunc(func(context.Context, authority.Request) authority.Result {
+			return authority.Result{Decision: authority.DecisionDeny, Reason: authority.ReasonActionMismatch}
+		}),
+		AuthorityActor:       "agent-a",
+		AuthorityDestination: "server-a",
+	}
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&upstream),
+		&log,
+		config.ActionWarn,
+		config.ActionBlock,
+		blocked,
+		nil,
+		NewRequestTracker(),
+		opts,
+	)
+	if upstream.Len() != 0 {
+		t.Fatalf("denied request reached upstream: %s", upstream.Bytes())
+	}
+	got, ok := <-blocked
+	if !ok || got.ErrorCode != -32008 {
+		t.Fatalf("blocked request = %+v, ok=%v", got, ok)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	assertSingleAuthorityBlockReceipt(t, readActionReceipts(t, dir))
+}
+
+func assertSingleAuthorityBlockReceipt(t *testing.T, receipts []receipt.Receipt) {
+	t.Helper()
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want exactly one authority denial", len(receipts))
+	}
+	assertAuthorityBlockReceiptRecord(t, receipts[0].ActionRecord)
+}
+
+func assertAuthorityBlockReceiptRecord(t *testing.T, record receipt.ActionRecord) {
+	t.Helper()
+	if record.Verdict != config.ActionBlock || record.Layer != mcpReceiptLayerAuthority {
+		t.Fatalf("receipt verdict/layer = %q/%q, want %q/%s", record.Verdict, record.Layer, config.ActionBlock, mcpReceiptLayerAuthority)
+	}
+	if record.Pattern != mcpReceiptPatternAuthority {
+		t.Fatalf("receipt pattern = %q, want %q", record.Pattern, mcpReceiptPatternAuthority)
+	}
+	if record.Severity != config.SeverityHigh {
+		t.Fatalf("receipt severity = %q, want %q", record.Severity, config.SeverityHigh)
 	}
 }
 

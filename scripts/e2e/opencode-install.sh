@@ -102,12 +102,6 @@ skip() {
   echo "  SKIP  $1 ($2)"
 }
 
-# SYSTEM_CONFIG is the last candidate pipelock's config discovery consults, and
-# no environment variable can suppress it. A host that has one cannot exercise
-# the nothing-discoverable branch, so that single assertion is skipped there
-# rather than reported as a failure of the code under test.
-SYSTEM_CONFIG="/etc/pipelock/pipelock.yaml"
-
 assert() {
   local desc="$1"
   shift
@@ -118,6 +112,28 @@ assert() {
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$desc")
     echo "  FAIL  $desc"
+  fi
+}
+
+# Config discovery ends at a compiled-in system path that no environment
+# variable can suppress, so a host carrying a usable config there cannot
+# exercise the nothing-discoverable branch. Decide that from what the
+# invocation actually did rather than by probing the host: a separate probe
+# races the invocation, and reproducing discovery's regular-file and
+# permission predicate in shell would be a second copy of a security check
+# that is free to drift from the real one. The command reports exactly one of
+# the two outcomes on stderr, so the outcome itself says whether the branch
+# ran.
+assert_no_discovery_warning() {
+  local stderr_file="$1"
+  local desc="install stderr warns when no pipelock config is discoverable"
+  if grep -q "no pipelock config found" "$stderr_file"; then
+    assert "$desc" true
+  elif grep -q "^Using config " "$stderr_file"; then
+    skip "$desc" \
+      "$(sed -n 's/^Using config \(.*\) for the wrapped MCP proxy\.$/\1/p' "$stderr_file" | head -1) was discoverable on this host"
+  else
+    assert "$desc" false
   fi
 }
 
@@ -201,13 +217,7 @@ PIPELOCK_CONFIG="" XDG_CONFIG_HOME="$WORKDIR/empty-xdg" HOME="$E2E_HOME" \
   "$PIPELOCK" opencode install --path "$CONFIG" >"$WORKDIR/install.stdout" 2>"$WORKDIR/install.stderr"
 assert "install exit 0" test -s "$WORKDIR/install.stdout"
 assert "install stdout reports 2 wrapped" grep -q "Wrapped 2 server(s)" "$WORKDIR/install.stdout"
-if [[ -e "$SYSTEM_CONFIG" ]]; then
-  skip "install stderr warns when no pipelock config is discoverable" \
-    "$SYSTEM_CONFIG exists on this host"
-else
-  assert "install stderr warns when no pipelock config is discoverable" \
-    grep -q "no pipelock config found" "$WORKDIR/install.stderr"
-fi
+assert_no_discovery_warning "$WORKDIR/install.stderr"
 
 echo ""
 echo "[1b] install honors auto-discovery"

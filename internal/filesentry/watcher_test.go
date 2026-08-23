@@ -30,6 +30,45 @@ const (
 	filesentrySubdirectoryRetryTick = 200 * time.Millisecond
 )
 
+func TestReadyBackendErrorPrefersQueuedFailure(t *testing.T) {
+	wantErr := errors.New("inotify queue overflow")
+	errorsCh := make(chan error, 1)
+	errorsCh <- wantErr
+
+	if got := readyBackendError(errorsCh); !errors.Is(got, wantErr) {
+		t.Fatalf("readyBackendError() = %v, want %v", got, wantErr)
+	}
+
+	if got := readyBackendError(errorsCh); got != nil {
+		t.Fatalf("readyBackendError() after drain = %v, want nil", got)
+	}
+
+	close(errorsCh)
+	if got := readyBackendError(errorsCh); got != nil {
+		t.Fatalf("readyBackendError() on closed channel = %v, want nil", got)
+	}
+}
+
+func TestStartPrefersQueuedBackendFailureOverCancellation(t *testing.T) {
+	backend, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("fsnotify.NewWatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+
+	wantErr := errors.New("inotify queue overflow")
+	backend.Errors = make(chan error, 1)
+	backend.Errors <- wantErr
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	watcher := &fsWatcher{watcher: backend}
+	if got := watcher.Start(ctx); !errors.Is(got, wantErr) {
+		t.Fatalf("Start() = %v, want queued backend failure %v", got, wantErr)
+	}
+}
+
 // armAndStart arms the watcher synchronously, then starts the event loop
 // in a goroutine. Returns after watches are installed.
 // Start errors are captured via channel and checked in t.Cleanup to avoid

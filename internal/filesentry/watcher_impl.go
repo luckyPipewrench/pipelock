@@ -302,6 +302,12 @@ func (w *fsWatcher) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// Cancellation and a backend failure can become ready together.
+			// Prefer the queued failure so lost coverage cannot be reported as
+			// a clean shutdown merely because select chose ctx first.
+			if err := readyBackendError(w.watcher.Errors); err != nil {
+				return fmt.Errorf("fsnotify backend error: %w", err)
+			}
 			return nil
 		case ev, ok := <-w.watcher.Events:
 			if !ok {
@@ -319,6 +325,17 @@ func (w *fsWatcher) Start(ctx context.Context) error {
 			return fmt.Errorf("fsnotify backend error: %w", err)
 		}
 	}
+}
+
+func readyBackendError(errors <-chan error) error {
+	select {
+	case err, ok := <-errors:
+		if ok {
+			return err
+		}
+	default:
+	}
+	return nil
 }
 
 // Findings returns the channel that receives DLP findings.

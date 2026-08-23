@@ -2914,7 +2914,7 @@ func TestFilterAllowedRuleBundleCoverageWarningsKeepsLocalResponseWeakening(t *t
 }
 
 // TestServer_StartupPartialStandardBundleKeepsResponseFallback proves the
-// per-surface fix (AF-81 / CodeRabbit): a standard bundle that provides ONLY
+// per-surface fix from review: a standard bundle that provides ONLY
 // DLP patterns must NOT empty the response-scanning surface. Before the fix a
 // single "standard bundle loaded" flag stripped the compiled response fallback
 // and left response scanning empty (a fail-open detection loss).

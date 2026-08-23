@@ -546,7 +546,7 @@ func TestTwoDotFilenameIsDiscovered(t *testing.T) {
 	}
 }
 
-// TestSymlinkedParentDirectoryIsNotContained is the AF-381 reproduction.
+// TestSymlinkedParentDirectoryIsNotContained is the symlinked-parent reproduction.
 // Containment compared paths as text and never asked whether a component was a
 // symlink, so a skill referencing "payload/data.sh" - where "payload" links to
 // a directory outside the skill - passed containment and was read. The
@@ -620,7 +620,7 @@ func TestContainmentAllowsSymlinkedSkillRoot(t *testing.T) {
 	}
 }
 
-// TestReadScanFileRejectsSwappedIdentity is the AF-380 reproduction, driven
+// TestReadScanFileRejectsSwappedIdentity is the swapped-identity reproduction, driven
 // directly rather than through a race. readScanFile validated a path and then
 // opened it, and os.Open follows symlinks, so a path replaced between those two
 // operations was read through. Passing a FileInfo for a DIFFERENT file is the

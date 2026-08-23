@@ -327,7 +327,7 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
-# AF-37 receipt-chain mode: the known non-receipt operational entry types that
+# Receipt-chain mode: the known non-receipt operational entry types that
 # extraction legitimately skips. Any entry whose type is outside the union of
 # the receipt types and this set is REJECTED (fail-closed) rather than silently
 # skipped, so a file mixing a valid chain with an unknown record type cannot be
@@ -455,7 +455,7 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
             raise ReceiptError(f"line {index}: recorder entry must be an object")
         entry_type = entry.get("type")
         if entry_type not in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}:
-            # AF-37: skip only the known operational entry types; a type outside
+            # Skip only the known operational entry types; a type outside
             # the recorder taxonomy fails closed rather than being silently
             # dropped from a "valid receipt subsequence".
             if entry_type in _SKIPPABLE_ENTRY_TYPES:

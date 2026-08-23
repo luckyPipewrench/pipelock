@@ -328,7 +328,7 @@ var guardSecretAbsolutePaths = []struct {
 //
 // POSIX-only, matching guardIsHomeRoot: the function hardcodes "/" as the
 // separator and knows the /home, /var/home, /Users, /root, and /app layouts. Windows path
-// handling is an open product decision tracked in ops (AF-264).
+// handling is an open product decision.
 // Home-root DETECTION is case-insensitive for the same reason the shape
 // comparison is: on a case-insensitive volume /users/operator reaches the very
 // same directory as /Users/operator. Detection has to fold too, not just the
@@ -552,7 +552,7 @@ func guardForbiddenSuffix(resolved string) (suffix, reason string, secretBearing
 // POSIX-only: the function hardcodes "/" as the separator and delegates home
 // layouts to guardHomeRootOf. On Windows, resolved paths use "\" and neither
 // root applies, so the check silently passes. Windows path handling is an
-// open product decision tracked in ops (AF-264).
+// open product decision.
 func guardIsHomeRoot(resolved string) bool {
 	return resolved == "/" || guardHomeRootOf(resolved) == resolved
 }

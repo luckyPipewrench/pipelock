@@ -28,7 +28,7 @@ func victimSidecar(t *testing.T) (string, []byte) {
 }
 
 // TestVscodeRemove_HostileMetadataCannotDeleteAnotherServersSidecar is the
-// AF-383 regression. A project-local config controls its own _pipelock marker,
+// hostile-metadata regression. A project-local config controls its own _pipelock marker,
 // and remove used to honour that marker's header_sidecar_path as a DELETE
 // target. Containment to the sidecar directory is not enough: every other
 // server's credential file lives in that same directory, so a config for

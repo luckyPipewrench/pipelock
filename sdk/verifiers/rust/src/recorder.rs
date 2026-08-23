@@ -9,7 +9,7 @@ use std::path::Path;
 const ACTION_RECEIPT_TYPE: &str = "action_receipt";
 const EVIDENCE_RECEIPT_TYPE: &str = "evidence_receipt";
 
-// AF-37 receipt-chain mode: the known non-receipt operational entry types that
+// Receipt-chain mode: the known non-receipt operational entry types that
 // extraction legitimately skips. Any entry whose type is outside the union of
 // the receipt types and this set is REJECTED (fail-closed) rather than silently
 // skipped, so a file mixing a valid chain with an unknown record type cannot be

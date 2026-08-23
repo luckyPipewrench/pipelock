@@ -161,7 +161,7 @@ func TestUnmarshal_RejectsTrailingTokens(t *testing.T) {
 	}
 }
 
-// TestExtractReceiptsBytes_RejectsUnexpectedRecorderType proves AF-37: a
+// TestExtractReceiptsBytes_RejectsUnexpectedRecorderType proves the recorder-type rejection: a
 // recorder file mixing a valid receipt with an entry whose type is outside the
 // taxonomy fails closed rather than certifying a "valid receipt subsequence".
 func TestExtractReceiptsBytes_RejectsUnexpectedRecorderType(t *testing.T) {
@@ -248,7 +248,7 @@ func TestExtractReceiptsFromSessionDir_RejectsUnexpectedRecorderType(t *testing.
 	}
 }
 
-// TestExtractAndVerifyWholeRecorderBytes proves AF-37 whole-recorder mode:
+// TestExtractAndVerifyWholeRecorderBytes proves whole-recorder mode:
 // verifies the recorder hash chain over every entry, extracts the receipt
 // subsequence, and rejects an entry whose type is outside the taxonomy.
 func TestExtractAndVerifyWholeRecorderBytes(t *testing.T) {

@@ -1404,6 +1404,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	if opts.ContractServer == "" {
 		opts.ContractServer = mcpContractServerFromCommand(command)
 	}
+	if opts.AuthorityDestination == "" {
+		opts.AuthorityDestination = opts.ContractServer
+	}
 
 	// Per-invocation adaptive enforcement recorder. Nil when Store is nil
 	// (adaptive enforcement disabled), so all downstream callers are nil-safe.

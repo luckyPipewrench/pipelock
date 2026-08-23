@@ -110,40 +110,41 @@ const EventAdaptiveRecovery = "adaptive_recovery"
 // Event type constants used as keys in EventSeverity. Pulled into named
 // constants so the test suite and OTLP emitter can reference them by name.
 const (
-	EventStartup             = "startup"
-	EventShutdown            = "shutdown"
-	EventAgentListener       = "agent_listener"
-	EventAllowed             = "allowed"
-	EventKillSwitchDeny      = "kill_switch_deny"
-	EventBlocked             = "blocked"
-	EventDLPWarn             = "dlp_warn"
-	EventAddressProtection   = "address_protection"
-	EventBodyDLP             = "body_dlp"
-	EventBodyPromptInjection = "body_prompt_injection"
-	EventHeaderDLP           = "header_dlp"
-	EventSNIMismatch         = "sni_mismatch"
-	EventTaintDecision       = "taint_decision"
-	EventAirlockEnter        = "airlock_enter"
-	EventAirlockDeny         = "airlock_deny"
-	EventSessionAnomaly      = "session_anomaly"
-	EventMCPUnknownTool      = "mcp_unknown_tool"
-	EventResponseScan        = "response_scan"
-	EventError               = "error"
-	EventResponseScanExempt  = "response_scan_exempt"
-	EventTunnelClose         = "tunnel_close"
-	EventConfigReload        = "config_reload"
-	EventRedirect            = "redirect"
-	EventForwardHTTP         = "forward_http"
-	EventToolRedirect        = "tool_redirect"
-	EventWSBlocked           = "ws_blocked"
-	EventWSScan              = "ws_scan"
-	EventTunnelOpen          = "tunnel_open"
-	EventWSOpen              = "ws_open"
-	EventWSClose             = "ws_close"
-	EventAirlockDeescalate   = "airlock_deescalate"
-	EventSessionAdmin        = "session_admin"
-	EventShieldRewrite       = "shield_rewrite"
-	EventRuleBundleDegraded  = "rule_bundle_degraded"
+	EventStartup               = "startup"
+	EventShutdown              = "shutdown"
+	EventAgentListener         = "agent_listener"
+	EventAllowed               = "allowed"
+	EventKillSwitchDeny        = "kill_switch_deny"
+	EventBlocked               = "blocked"
+	EventDLPWarn               = "dlp_warn"
+	EventAddressProtection     = "address_protection"
+	EventBodyDLP               = "body_dlp"
+	EventBodyPromptInjection   = "body_prompt_injection"
+	EventHeaderDLP             = "header_dlp"
+	EventSNIMismatch           = "sni_mismatch"
+	EventTaintDecision         = "taint_decision"
+	EventAirlockEnter          = "airlock_enter"
+	EventAirlockDeny           = "airlock_deny"
+	EventSessionAnomaly        = "session_anomaly"
+	EventMCPUnknownTool        = "mcp_unknown_tool"
+	EventResponseScan          = "response_scan"
+	EventError                 = "error"
+	EventResponseScanExempt    = "response_scan_exempt"
+	EventTunnelClose           = "tunnel_close"
+	EventConfigReload          = "config_reload"
+	EventRedirect              = "redirect"
+	EventForwardHTTP           = "forward_http"
+	EventToolRedirect          = "tool_redirect"
+	EventWSBlocked             = "ws_blocked"
+	EventWSScan                = "ws_scan"
+	EventTunnelOpen            = "tunnel_open"
+	EventWSOpen                = "ws_open"
+	EventWSClose               = "ws_close"
+	EventAirlockDeescalate     = "airlock_deescalate"
+	EventSessionAdmin          = "session_admin"
+	EventShieldRewrite         = "shield_rewrite"
+	EventRuleBundleDegraded    = "rule_bundle_degraded"
+	EventAuthorityVerification = "authority_verification"
 )
 
 // instanceIDFallback is the default instance identifier when hostname lookup fails.
@@ -192,22 +193,23 @@ var EventSeverity = map[string]Severity{
 	EventRuleBundleDegraded: SeverityWarn, // overridden by caller for startup/reload rejection
 
 	// Info: normal operations
-	EventStartup:           SeverityInfo,
-	EventShutdown:          SeverityInfo,
-	EventAllowed:           SeverityInfo,
-	EventTunnelOpen:        SeverityInfo,
-	EventTunnelClose:       SeverityInfo,
-	EventWSOpen:            SeverityInfo,
-	EventWSClose:           SeverityInfo,
-	EventAgentListener:     SeverityInfo,
-	EventAdaptiveRecovery:  SeverityInfo,
-	EventAirlockDeescalate: SeverityInfo,
-	EventSessionAdmin:      SeverityInfo,
-	EventShieldRewrite:     SeverityInfo,
-	EventConfigReload:      SeverityInfo,
-	EventRedirect:          SeverityInfo,
-	EventForwardHTTP:       SeverityInfo,
-	EventToolRedirect:      SeverityInfo,
+	EventStartup:               SeverityInfo,
+	EventShutdown:              SeverityInfo,
+	EventAllowed:               SeverityInfo,
+	EventTunnelOpen:            SeverityInfo,
+	EventTunnelClose:           SeverityInfo,
+	EventWSOpen:                SeverityInfo,
+	EventWSClose:               SeverityInfo,
+	EventAgentListener:         SeverityInfo,
+	EventAdaptiveRecovery:      SeverityInfo,
+	EventAirlockDeescalate:     SeverityInfo,
+	EventSessionAdmin:          SeverityInfo,
+	EventAuthorityVerification: SeverityInfo,
+	EventShieldRewrite:         SeverityInfo,
+	EventConfigReload:          SeverityInfo,
+	EventRedirect:              SeverityInfo,
+	EventForwardHTTP:           SeverityInfo,
+	EventToolRedirect:          SeverityInfo,
 }
 
 // ChainDetectionSeverity returns the severity for a chain detection event

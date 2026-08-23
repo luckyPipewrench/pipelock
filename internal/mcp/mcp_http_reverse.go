@@ -197,6 +197,9 @@ func RunHTTPListenerProxy(
 	if opts.ContractServer == "" {
 		opts.ContractServer = mcpContractServerFromUpstream(upstreamURL)
 	}
+	if opts.AuthorityDestination == "" {
+		opts.AuthorityDestination = upstreamURL
+	}
 	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
 		return fmt.Errorf("contract upstream evaluation: %w", gateErr)
 	} else if gate.Verdict == config.ActionBlock {
@@ -239,6 +242,9 @@ func RunHTTPListenerProxy(
 		Baseline:                  opts.Baseline,
 		BaselineFn:                opts.BaselineFn,
 		AuditLogger:               opts.AuditLogger,
+		AuthorityVerifier:         opts.AuthorityVerifier,
+		AuthorityActor:            opts.AuthorityActor,
+		AuthorityDestination:      opts.AuthorityDestination,
 		CEE:                       opts.cee(),
 		CEEFn:                     opts.CEEFn,
 		Metrics:                   opts.Metrics,
@@ -1447,6 +1453,9 @@ func RunHTTPListenerProxy(
 		}
 		scanOpts.DoWSubjectKey = trustedDoWSubjectKeyFor(dowSubjectKey, dowSubjectTrust, opts)
 		scanOpts.DoWAttribution = DoWAttribution{SubjectKey: dowSubjectKey, Trust: dowSubjectTrust.String()}
+		if listenerPrincipal.actor != "" {
+			scanOpts.AuthorityActor = listenerPrincipal.actor
+		}
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
 		if blocked := decision.Blocked; blocked != nil {
 			w.Header().Set("Content-Type", "application/json")

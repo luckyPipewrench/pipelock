@@ -61,6 +61,7 @@ type mcpListenerPrincipal struct {
 	billingKey   string
 	exclusiveSet string
 	trust        config.DoWSubjectTrust
+	actor        string
 }
 
 // mcpListenerClientStates partitions listener state by either a verified
@@ -152,6 +153,12 @@ func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	return states
 }
 
+// mcpListenerAuthorityActor keeps resolver-controlled identity components
+// distinct even when either contains delimiters. Lengths are UTF-8 byte counts.
+func mcpListenerAuthorityActor(provider, subject string) string {
+	return fmt.Sprintf("principal-v1:%d:%s%d:%s", len(provider), provider, len(subject), subject)
+}
+
 func (s *mcpListenerClientStates) principal(provider, subject string, epoch uint64) (mcpListenerPrincipal, error) {
 	if err := s.ensurePrincipalSecret(); err != nil {
 		return mcpListenerPrincipal{}, fmt.Errorf("initialize listener principal key: %w", err)
@@ -173,6 +180,7 @@ func (s *mcpListenerClientStates) principal(provider, subject string, epoch uint
 		key:        fmt.Sprintf("mcp-http-listener-principal:%x", mac.Sum(nil)),
 		billingKey: fmt.Sprintf("mcp-http-listener-billing:%x", billingMAC.Sum(nil)),
 		trust:      config.DoWTrustPrincipal,
+		actor:      mcpListenerAuthorityActor(provider, subject),
 	}, nil
 }
 

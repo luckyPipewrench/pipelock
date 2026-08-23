@@ -250,6 +250,8 @@ func eventTypeAction(eventType string) string {
 		EventConfigReload,
 		EventMediaExposure:
 		return conventionActionAllow
+	case EventAuthorityVerification:
+		return conventionActionAllow
 	default:
 		return ""
 	}

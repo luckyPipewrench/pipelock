@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -299,7 +300,7 @@ func ForwardScannedInput(
 		// Strip any inbound com.pipelock/mediation from _meta before
 		// scanning. Prevents spoofed mediation metadata from an agent
 		// or upstream from passing through to the MCP server.
-		line = stripInboundMCPMeta(line)
+		line, authorityRef, authorityCarrierErr := extractInboundMCPAuthority(line)
 
 		// Parse the inbound frame once per message. Every gate below
 		// reads ID / Method / tool fields from this frame instead of
@@ -914,6 +915,10 @@ func ForwardScannedInput(
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				continue
 			}
+			if err := authorizeMCP(stdioInputCtx, authorityRef, authorityCarrierErr, frame, opts); err != nil {
+				blockedCh <- *authorityBlockedRequest(frame)
+				continue
+			}
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
 				buildOpts := envelope.BuildOpts{
@@ -1281,6 +1286,9 @@ func ForwardScannedInput(
 			heldNotification := isNotification
 			heldToolName := toolCallName
 			heldBaselineIdentity := baselineIdentity
+			heldAuthorityRef := authorityRef
+			heldAuthorityCarrierErr := authorityCarrierErr
+			heldAuthorityFrame := frame
 			_, deferToolArgs := extractToolCallFields(line)
 			argDigest := argsDigest(deferToolArgs)
 			holdErr := manager.Hold(deferred.HeldAction{
@@ -1299,6 +1307,13 @@ func ForwardScannedInput(
 					SessionIDOriginal: receiptSessionIDOriginal,
 				},
 				Resolve: func(res deferred.Resolution) {
+					authorityDenied := false
+					if res.FinalDecision == config.ActionAllow {
+						if authErr := authorizeMCP(stdioInputCtx, heldAuthorityRef, heldAuthorityCarrierErr, heldAuthorityFrame, opts); authErr != nil {
+							res.FinalDecision = config.ActionBlock
+							authorityDenied = true
+						}
+					}
 					if emitErr := emitDeferredResolutionReceipt(opts, logW, res); emitErr != nil {
 						if !heldNotification {
 							blockedCh <- BlockedRequest{
@@ -1321,6 +1336,10 @@ func ForwardScannedInput(
 						commitMCPToolCall(baselineMetricsRecorder(opts, rec), heldBaselineIdentity)
 					default:
 						if !heldNotification {
+							if authorityDenied {
+								blockedCh <- *authorityBlockedRequest(heldAuthorityFrame)
+								return
+							}
 							blockedCh <- BlockedRequest{
 								ID:           heldID,
 								ErrorCode:    -32002,
@@ -1435,6 +1454,10 @@ func ForwardScannedInput(
 				continue
 			}
 			contractGateForReceipt = &contractGate
+			if err := authorizeMCP(stdioInputCtx, authorityRef, authorityCarrierErr, frame, opts); err != nil {
+				blockedCh <- *authorityBlockedRequest(frame)
+				continue
+			}
 			// Inject envelope for warn-mode tool calls before forwarding.
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
@@ -1743,66 +1766,87 @@ func marshalMCPWithMeta(original []byte, rpc, params map[string]json.RawMessage,
 // mediation metadata from passing through unmodified.
 // Returns the modified message or the original if parsing fails.
 func stripInboundMCPMeta(msg []byte) []byte {
+	out, _, _ := extractInboundMCPAuthority(msg)
+	return out
+}
+
+// extractInboundMCPAuthority consumes both Pipelock-owned _meta members while
+// preserving every unrelated extension member. Duplicate keys are returned as
+// an error before encoding/json can collapse them.
+func extractInboundMCPAuthority(msg []byte) ([]byte, string, error) {
 	trimmed := bytes.TrimSpace(msg)
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		// Do not unmarshal/remarshal duplicate-key payloads. The parser
 		// and scanner paths intentionally fail closed on duplicate keys;
 		// remarshal would collapse them before those checks can run.
-		return msg
+		return msg, "", err
 	}
 
 	var rpc map[string]json.RawMessage
 	if err := json.Unmarshal(msg, &rpc); err != nil {
-		return msg
+		return msg, "", err
 	}
 
 	paramsRaw, ok := rpc["params"]
 	if !ok {
-		return msg
+		return msg, "", authority.ErrMissingReference
 	}
 
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return msg
+		return msg, "", err
 	}
 	if params == nil {
-		return msg
+		return msg, "", authority.ErrMissingReference
 	}
 
 	metaRaw, ok := params["_meta"]
 	if !ok {
-		return msg
+		return msg, "", authority.ErrMissingReference
 	}
 
 	var meta map[string]json.RawMessage
 	if err := json.Unmarshal(metaRaw, &meta); err != nil {
-		return msg
+		return msg, "", err
 	}
 
 	if meta == nil {
-		return msg
+		return msg, "", authority.ErrMissingReference
 	}
-	if _, exists := meta[envelope.MCPMetaKey]; !exists {
-		return msg
+	_, hasMediation := meta[envelope.MCPMetaKey]
+	authorityRaw, hasAuthority := meta[authority.MCPMetaKey]
+	if !hasMediation && !hasAuthority {
+		return msg, "", authority.ErrMissingReference
 	}
 
 	delete(meta, envelope.MCPMetaKey)
+	delete(meta, authority.MCPMetaKey)
 
 	metaBytes, err := marshalMCPMessage(meta)
 	if err != nil {
-		return msg
+		return msg, "", err
 	}
 	params["_meta"] = metaBytes
 
 	paramsBytes, err := marshalMCPMessage(params)
 	if err != nil {
-		return msg
+		return msg, "", err
 	}
 	rpc["params"] = paramsBytes
 
 	out, err := marshalMCPMessage(rpc)
 	if err != nil {
-		return msg
+		return msg, "", err
 	}
-	return out
+	if !hasAuthority {
+		return out, "", authority.ErrMissingReference
+	}
+	var ref string
+	if err := json.Unmarshal(authorityRaw, &ref); err != nil {
+		return out, "", authority.ErrMalformedReference
+	}
+	if strings.TrimSpace(ref) == "" || len(ref) > authority.MaxReferenceBytes {
+		return out, "", authority.ErrMalformedReference
+	}
+	return out, ref, nil
 }

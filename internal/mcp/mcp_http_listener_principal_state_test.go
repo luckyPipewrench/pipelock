@@ -675,6 +675,25 @@ func TestMCPListenerPrincipalState_DoWTrustMatchesIdentityStrength(t *testing.T)
 	}
 }
 
+func TestMCPListenerAuthorityActorIsUnambiguous(t *testing.T) {
+	t.Parallel()
+	states := newMCPListenerClientStates(nil)
+	left, err := states.principal("a:b", "c", 0)
+	if err != nil {
+		t.Fatalf("left principal: %v", err)
+	}
+	right, err := states.principal("a", "b:c", 0)
+	if err != nil {
+		t.Fatalf("right principal: %v", err)
+	}
+	if left.actor == right.actor {
+		t.Fatalf("distinct principals collapsed to authority actor %q", left.actor)
+	}
+	if left.actor != "principal-v1:3:a:b1:c" || right.actor != "principal-v1:1:a3:b:c" {
+		t.Fatalf("authority actors = (%q, %q), want canonical length-delimited encoding", left.actor, right.actor)
+	}
+}
+
 func TestMCPListenerPrincipalState_StaleAuthenticatedBearerCannotUndoRotation(t *testing.T) {
 	states := newMCPListenerClientStates(nil)
 	oldPrincipal, err := states.bearerPrincipal("old-secret")

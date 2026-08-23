@@ -62,6 +62,9 @@ func TestRuntimeContractVars_CoversAllSurfaces(t *testing.T) {
 	if m["NODE_USE_ENV_PROXY"] != "1" {
 		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", m["NODE_USE_ENV_PROXY"])
 	}
+	if m["npm_config_ignore_scripts"] != "1" {
+		t.Errorf("npm_config_ignore_scripts = %q, want 1", m["npm_config_ignore_scripts"])
+	}
 }
 
 func TestRuntimeContractVars_UppercaseNoProxyPrecedesLowercase(t *testing.T) {
@@ -130,6 +133,7 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 		`"$TARGET" "$@"`,
 		"NODE_OPTIONS='--require " + env.undiciShimPath + "'",
 		"NODE_USE_ENV_PROXY=1",
+		"npm_config_ignore_scripts=1",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("launch exec env missing %q", want)
@@ -195,6 +199,7 @@ func TestRenderProfileScript_ParsesUnderBashAndExports(t *testing.T) {
 		"export NO_PROXY=",
 		"export NODE_OPTIONS=",
 		"export NODE_USE_ENV_PROXY=",
+		"export npm_config_ignore_scripts=",
 		"export PATH",
 	} {
 		if !strings.Contains(body, want) {
@@ -215,11 +220,11 @@ func TestRenderProfileScript_DoesNotAffectNonAgentLoginShell(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	tmp := filepath.Join(t.TempDir(), "pipelock-contain.sh")
 	writeScriptFixture(t, tmp, renderProfileScript(env))
-	res := execRealCommand(t, "/bin/bash", "-c", "unset HTTPS_PROXY NODE_OPTIONS NODE_USE_ENV_PROXY; source "+shellQuote(tmp)+"; printf '%s|%s|%s' \"${HTTPS_PROXY:-}\" \"${NODE_OPTIONS:-}\" \"${NODE_USE_ENV_PROXY:-}\"")
+	res := execRealCommand(t, "/bin/bash", "-c", "unset HTTPS_PROXY NODE_OPTIONS NODE_USE_ENV_PROXY npm_config_ignore_scripts; source "+shellQuote(tmp)+"; printf '%s|%s|%s|%s' \"${HTTPS_PROXY:-}\" \"${NODE_OPTIONS:-}\" \"${NODE_USE_ENV_PROXY:-}\" \"${npm_config_ignore_scripts:-}\"")
 	if res.exit != 0 {
 		t.Fatalf("source profile script: %s", res.output)
 	}
-	if got := strings.TrimSpace(res.output); got != "||" {
+	if got := strings.TrimSpace(res.output); got != "|||" {
 		t.Fatalf("non-agent shell inherited contract: %q", got)
 	}
 }
@@ -234,13 +239,13 @@ func TestRenderProfileScript_AppliesToAgentLoginShell(t *testing.T) {
 	tmp := filepath.Join(dir, "pipelock-contain.sh")
 	writeScriptFixture(t, tmp, renderProfileScript(env))
 
-	script := "PATH=" + shellQuote(dir+":/usr/bin:/bin") + "; unset HTTPS_PROXY NODE_OPTIONS NODE_USE_ENV_PROXY; source " + shellQuote(tmp) + "; printf '%s|%s|%s|%s' \"$HTTPS_PROXY\" \"$NODE_OPTIONS\" \"$NODE_USE_ENV_PROXY\" \"$PATH\""
+	script := "PATH=" + shellQuote(dir+":/usr/bin:/bin") + "; unset HTTPS_PROXY NODE_OPTIONS NODE_USE_ENV_PROXY npm_config_ignore_scripts; source " + shellQuote(tmp) + "; printf '%s|%s|%s|%s|%s' \"$HTTPS_PROXY\" \"$NODE_OPTIONS\" \"$NODE_USE_ENV_PROXY\" \"$npm_config_ignore_scripts\" \"$PATH\""
 	res := execRealCommand(t, "/bin/bash", "-c", script)
 	if res.exit != 0 {
 		t.Fatalf("source profile script: %s", res.output)
 	}
 	out := strings.TrimSpace(res.output)
-	if !strings.Contains(out, "http://127.0.0.1:8888|--require "+env.undiciShimPath+"|1|"+agentExecPath(env.agentUserName)) {
+	if !strings.Contains(out, "http://127.0.0.1:8888|--require "+env.undiciShimPath+"|1|1|"+agentExecPath(env.agentUserName)) {
 		t.Fatalf("agent shell did not inherit expected contract: %q", out)
 	}
 }
@@ -334,6 +339,21 @@ func TestRenderAgentToolConfigs_HaveProxyAndCA(t *testing.T) {
 		if !strings.Contains(c.body, c.caHint) {
 			t.Errorf("%s missing CA %q:\n%s", c.name, c.caHint, c.body)
 		}
+	}
+}
+
+func TestRenderAgentNpmrc_DisablesLifecycleScripts(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	want := strings.Join([]string{
+		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
+		"proxy=http://127.0.0.1:8888",
+		"https-proxy=http://127.0.0.1:8888",
+		"cafile=" + env.caBundlePath,
+		"ignore-scripts=true",
+		"",
+	}, "\n")
+	if got := renderAgentNpmrc(env); got != want {
+		t.Fatalf("generated npmrc =\n%s\nwant:\n%s", got, want)
 	}
 }
 

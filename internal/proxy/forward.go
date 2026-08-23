@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -153,6 +154,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Strip inbound mediation envelope headers after optional trust
 	// verification so forged mediation metadata cannot survive to upstreams.
 	envelope.StripInbound(r.Header)
+	authorityRef, authorityCarrierErr := consumeAuthorityHeader(r)
 
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
@@ -594,6 +596,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if err := p.authorizeForward(r.Context(), authorityRef, authorityCarrierErr, authority.Request{
+		Actor:       agent,
+		Action:      string(receipt.ActionRead),
+		Destination: target,
+	}, targetCtx, TransportConnect); err != nil {
+		p.metrics.RecordTunnelBlocked(agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),
+			"CONNECT blocked: authority verification failed", http.StatusForbidden)
+		return
+	}
 
 	allowReceipt := receipt.EmitOpts{
 		ActionID:  actionID,
@@ -890,6 +903,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Strip inbound mediation envelope headers after optional trust
 	// verification so forged mediation metadata cannot survive to upstreams.
 	envelope.StripInbound(r.Header)
+	authorityRef, authorityCarrierErr := consumeAuthorityHeader(r)
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
@@ -1850,6 +1864,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		})))
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerContract, time.Since(start), agentLabel)
 		writeGateBlockedError(w, gate, "blocked: "+reason)
+		return
+	}
+	if err := p.authorizeForward(r.Context(), authorityRef, authorityCarrierErr, authority.Request{
+		Actor:       agent,
+		Action:      string(receipt.ClassifyHTTP(r.Method)),
+		Destination: targetURL,
+	}, actx, TransportForward); err != nil {
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerAuthority, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),
+			"blocked: authority verification failed", http.StatusForbidden)
 		return
 	}
 

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -174,6 +175,13 @@ type MCPProxyOpts struct {
 	// Observability
 	AuditLogger *audit.Logger
 	Metrics     *metrics.Metrics
+
+	// AuthorityVerifier validates external grants immediately before an MCP
+	// request is forwarded. AuthorityActor and AuthorityDestination are
+	// resolved by the trusted transport/runtime, never from client metadata.
+	AuthorityVerifier    authority.Verifier
+	AuthorityActor       string
+	AuthorityDestination string
 
 	// Redirect handler runtime config (nil-safe).
 	RedirectRT   *RedirectRuntime

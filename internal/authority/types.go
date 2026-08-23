@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package authority defines the provider-neutral boundary for verifying an
-// externally issued action authorization. It does not participate in the live
-// allow path yet.
+// externally issued action authorization at Pipelock's forwarding gates.
 package authority
 
 import (
@@ -90,8 +89,8 @@ const (
 )
 
 // Request contains the already-normalized action description and the opaque
-// reference to verify. Constructing or normalizing these fields is deliberately
-// outside this first, unwired slice.
+// reference to verify. Trusted transport code constructs and normalizes these
+// fields immediately before a request reaches its forwarding point.
 type Request struct {
 	Actor        string `json:"actor"`
 	Action       string `json:"action"`
@@ -114,7 +113,8 @@ type Result struct {
 //
 // A verifier is one conjunctive gate. An allow result must never override any
 // scanner, policy, contract, taint, kill-switch, or operator decision, and must
-// not raise Pipelock's internal authority level.
+// not raise Pipelock's internal authority level. Implementations must be safe
+// for concurrent calls from independent proxy requests.
 type Verifier interface {
 	Verify(context.Context, Request) Result
 }

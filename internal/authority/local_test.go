@@ -222,7 +222,7 @@ func TestParseLocalReferenceRejectsMalformedInputs(t *testing.T) {
 		reference string
 	}{
 		{name: "empty", reference: ""},
-		{name: "over size limit", reference: strings.Repeat("x", maxReferenceBytes+1)},
+		{name: "over size limit", reference: strings.Repeat("x", MaxReferenceBytes+1)},
 		{name: "wrong prefix", reference: "other." + validParts[1] + "." + validParts[2]},
 		{name: "missing segment", reference: "plauth1.payload"},
 		{name: "empty payload", reference: "plauth1.." + validParts[2]},

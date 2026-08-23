@@ -52,6 +52,9 @@ type DeferredRequest struct {
 	ResolverProfileName string
 	ArgDigest           string
 	Arguments           string
+	authorityRef        string
+	authorityCarrierErr error
+	authorityFrame      MCPFrame
 }
 
 // scanHTTPInput checks a single input message for DLP/injection/policy/CEE.
@@ -72,7 +75,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// scrub on the stdio path at internal/mcp/input.go:213. The stdio
 	// strip runs unconditionally on every inbound line; the HTTP listener
 	// now matches.
-	msg = stripInboundMCPMeta(msg)
+	msg, authorityRef, authorityCarrierErr := extractInboundMCPAuthority(msg)
 
 	sc := opts.scanner()
 	inputCfg := opts.inputCfg()
@@ -223,6 +226,27 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, *receiptContractGate)
 			}
 			result.Outcome = TrackedRequestOutcome{Receipt: outcomeReceipt}
+		}
+	}()
+	// Registered after the receipt finalizer so it runs first. A failed
+	// authority check clears pending allow evidence and replaces the forward
+	// result before the caller can perform any upstream write.
+	defer func() {
+		if opts.AuthorityVerifier == nil || result.Blocked != nil {
+			return
+		}
+		if result.Deferred != nil {
+			result.Deferred.authorityRef = authorityRef
+			result.Deferred.authorityCarrierErr = authorityCarrierErr
+			result.Deferred.authorityFrame = frame
+			return
+		}
+		if err := authorizeMCP(opts.warnContext(), authorityRef, authorityCarrierErr, frame, opts); err != nil {
+			result.Blocked = authorityBlockedRequest(frame)
+			result.Deferred = nil
+			result.Outcome = TrackedRequestOutcome{}
+			receiptVerdict = ""
+			actionID = ""
 		}
 	}()
 

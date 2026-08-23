@@ -400,6 +400,7 @@ const (
 	EventRuleBundleDegraded     EventType = "rule_bundle_degraded"
 	EventCommitmentKeyLifecycle EventType = "commitment_key_lifecycle"
 	EventContainmentMetricsDeny EventType = "containment_metrics_access_denied"
+	EventAuthorityVerification  EventType = "authority_verification"
 )
 
 const responseScanExemptFullTrustEffect = "response_scanning.exempt_domains is a full-trust valve: injection scanning is disabled for ALL responses from this host, including oversized over-cap responses that stream unscanned"

@@ -31,6 +31,7 @@ import (
 
 	readability "github.com/go-shiori/go-readability"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
@@ -355,6 +356,7 @@ type Proxy struct {
 	redactMatcherPtr     atomic.Pointer[redact.Matcher]         // nil when redaction disabled
 	reqPolicyPtr         atomic.Pointer[reqpolicy.Matcher]      // nil when request_policy disabled
 	contractLoaderPtr    atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
+	authorityVerifier    authority.Verifier                     // nil preserves pre-authority forwarding behavior
 	logger               *audit.Logger
 	metrics              *metrics.Metrics
 	ks                   *killswitch.Controller
@@ -449,6 +451,13 @@ func WithReceiptKeyPath(path string) Option {
 // a real loader without routing through YAML config.
 func WithContractLoader(loader *contractruntime.Loader) Option {
 	return func(p *Proxy) { p.contractLoaderPtr.Store(loader) }
+}
+
+// WithAuthorityVerifier installs the external-grant verifier used by every
+// forwarding surface. A nil verifier preserves existing behavior while still
+// consuming the reserved carrier so grants never leak upstream.
+func WithAuthorityVerifier(verifier authority.Verifier) Option {
+	return func(p *Proxy) { p.authorityVerifier = verifier }
 }
 
 // WithEnvelopeEmitter sets the mediation envelope emitter. When non-nil, the
@@ -3994,6 +4003,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Strip inbound mediation envelope headers after optional trust
 	// verification so forged mediation metadata cannot survive to upstreams.
 	envelope.StripInbound(r.Header)
+	authorityRef, authorityCarrierErr := consumeAuthorityHeader(r)
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
@@ -4690,6 +4700,22 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Blocked:     true,
 			BlockReason: reason,
 		})
+		return
+	}
+	if err := p.authorizeForward(r.Context(), authorityRef, authorityCarrierErr, authority.Request{
+		Actor:       agent,
+		Action:      string(receipt.ActionRead),
+		Destination: targetURL,
+	}, actx, TransportFetch); err != nil {
+		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerAuthority, time.Since(start), agentLabel)
+		writeBlockedJSON(w,
+			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),
+			http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: "authority verification failed",
+			})
 		return
 	}
 

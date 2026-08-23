@@ -5156,6 +5156,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
 			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 			if blocked {
+				p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 				outcomeStatus = strconv.Itoa(http.StatusForbidden)
 				outcomeBytes = int64(len(body))
 				outcomeReason = "response_scan"

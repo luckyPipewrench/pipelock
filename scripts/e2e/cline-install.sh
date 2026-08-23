@@ -150,7 +150,7 @@ assert_no_discovery_warning() {
   # Anchored whole-line matches against the two documented outcomes. A
   # substring match would accept the phrase inside unrelated output, and
   # matching only a line prefix would accept a truncated or malformed line.
-  warned=$(grep -c '^warning: no pipelock config found at PIPELOCK_CONFIG, ' "$stderr_file" || true)
+  warned=$(grep -c '^warning: no pipelock config found at PIPELOCK_CONFIG, .*to enable scanning\.$' "$stderr_file" || true)
   discovered=$(grep -c '^Using config .* for the wrapped MCP proxy\.$' "$stderr_file" || true)
   # Exactly one outcome is the only readable result. Both means the run
   # contradicted itself and neither means the command said something we do not

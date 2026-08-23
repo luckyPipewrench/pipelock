@@ -376,7 +376,7 @@ func (c *hermesConfig) enabledPlugins(plugins map[string]interface{}) ([]string,
 func (c *hermesConfig) wrappedMCPServerCount() int {
 	n := 0
 	for _, raw := range c.mcpServers() {
-		if s, ok := raw.(map[string]interface{}); ok && mcpwrap.IsWrapped(s) {
+		if s, ok := raw.(map[string]interface{}); ok && mcpwrap.IsWrappedBySelf(s) {
 			n++
 		}
 	}

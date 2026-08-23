@@ -5,6 +5,7 @@ package discover
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -155,12 +156,16 @@ func TestConfigPathsVSCodeUsesServersKey(t *testing.T) {
 
 func TestDiscoverWithTestFixtures(t *testing.T) {
 	home := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
 
 	// Create a Claude Code config with one wrapped and one bare server
-	content := `{"mcpServers":{
-		"brain":{"command":"pipelock","args":["mcp","proxy","--","node","brain.js"]},
+	content := fmt.Sprintf(`{"mcpServers":{
+		"brain":{"command":%q,"args":["mcp","proxy","--","node","brain.js"]},
 		"raw":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}
-	}}`
+	}}`, self)
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -295,12 +300,15 @@ func TestDiscoverFindsZedAllChannels(t *testing.T) {
 // TestDiscoverZedWrappedShowsProtected covers the case where Zed's
 // settings.json carries a pipelock-wrapped context_server entry: discover
 // must classify it as ProtectedPipelock, matching what it does for other
-// IDEs that share the same wrap shape (command=pipelock, args contain mcp
-// and proxy).
+// IDEs that share the same wrap shape and current-executable identity check.
 func TestDiscoverZedWrappedShowsProtected(t *testing.T) {
 	home := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
 
-	wrapped := `{"context_servers":{"filesystem":{"type":"stdio","command":"pipelock","args":["mcp","proxy","--config","/etc/pipelock/pipelock.yaml","--","npx","-y","@modelcontextprotocol/server-filesystem","/tmp"]}}}`
+	wrapped := fmt.Sprintf(`{"context_servers":{"filesystem":{"type":"stdio","command":%q,"args":["mcp","proxy","--config","/etc/pipelock/pipelock.yaml","--","npx","-y","@modelcontextprotocol/server-filesystem","/tmp"]}}}`, self)
 	zedPath := filepath.Join(home, ".config", clientZed, "settings.json")
 	if err := os.MkdirAll(filepath.Dir(zedPath), 0o750); err != nil {
 		t.Fatal(err)
@@ -606,13 +614,17 @@ func TestBuildSummaryAllStates(t *testing.T) {
 
 func TestDiscoverSortRiskThenName(t *testing.T) {
 	home := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
 
-	content := `{"mcpServers":{
+	content := fmt.Sprintf(`{"mcpServers":{
 		"memory":{"command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},
 		"zz-database":{"command":"npx","args":["-y","@modelcontextprotocol/server-postgres"]},
 		"aa-filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem"]},
-		"wrapped":{"command":"pipelock","args":["mcp","proxy","--","node","s.js"]}
-	}}`
+		"wrapped":{"command":%q,"args":["mcp","proxy","--","node","s.js"]}
+	}}`, self)
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

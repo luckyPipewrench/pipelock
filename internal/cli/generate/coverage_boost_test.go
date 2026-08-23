@@ -6,6 +6,7 @@ package generate
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,15 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 )
+
+func TestExecutableOrName(t *testing.T) {
+	if got := executableOrName("/opt/pipelock", nil); got != "/opt/pipelock" {
+		t.Fatalf("executableOrName success = %q", got)
+	}
+	if got := executableOrName("", errors.New("unsupported")); got != mcporterBinaryName {
+		t.Fatalf("executableOrName fallback = %q, want %q", got, mcporterBinaryName)
+	}
+}
 
 // ---------- generateConfigCmd error paths ----------
 
@@ -180,16 +190,16 @@ func TestIsAlreadyWrapped(t *testing.T) {
 		want    bool
 	}{
 		{
-			name:    "wrapped stdio",
-			command: "pipelock",
+			name:    "wrapped by current executable",
+			command: currentPipelockExecutable(),
 			args:    []string{"mcp", "proxy", "--config", "p.yaml", "--", "node", "server.js"},
 			want:    true,
 		},
 		{
-			name:    "wrapped with path",
+			name:    "foreign binary merely named pipelock",
 			command: "/usr/bin/pipelock",
 			args:    []string{"mcp", "proxy", "--upstream", "http://example.com"},
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "not wrapped",
@@ -215,10 +225,16 @@ func TestIsAlreadyWrapped(t *testing.T) {
 			args:    []string{"proxy", "mcp"},
 			want:    false,
 		},
+		{
+			name:    "mcp and proxy later in arguments",
+			command: currentPipelockExecutable(),
+			args:    []string{"--config", "x", "mcp", "proxy", "--", "server"},
+			want:    false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isAlreadyWrapped(tc.command, tc.args)
+			got := isAlreadyWrapped(tc.command, tc.args, currentPipelockExecutable())
 			if got != tc.want {
 				t.Errorf("isAlreadyWrapped(%q, %v) = %v, want %v", tc.command, tc.args, got, tc.want)
 			}
@@ -325,7 +341,7 @@ func TestAtomicWriteFile(t *testing.T) {
 func TestWrapServerEntry_URLBased(t *testing.T) {
 	raw := json.RawMessage(`{"url": "http://localhost:8090/sse"}`)
 
-	entry, err := wrapServerEntry(raw, "pipelock", "pipelock.yaml")
+	entry, err := wrapServerEntry(raw, currentPipelockExecutable(), "pipelock.yaml")
 	if err != nil {
 		t.Fatalf("wrapServerEntry: %v", err)
 	}
@@ -334,7 +350,7 @@ func TestWrapServerEntry_URLBased(t *testing.T) {
 	}
 
 	m := entry.value.(map[string]interface{})
-	if m["command"] != mcporterBinaryName {
+	if m["command"] != currentPipelockExecutable() {
 		t.Errorf("command = %v, want pipelock", m["command"])
 	}
 	args := m["args"].([]string)
@@ -458,7 +474,7 @@ func TestGenerateMcporterCmd_InPlace(t *testing.T) {
 	}
 	servers := result["mcpServers"].(map[string]interface{})
 	test := servers["test"].(map[string]interface{})
-	if test["command"] != mcporterBinaryName {
+	if test["command"] != currentPipelockExecutable() {
 		t.Error("in-place modification should wrap the server")
 	}
 }

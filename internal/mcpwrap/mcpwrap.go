@@ -39,9 +39,80 @@ package mcpwrap
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
+
+// WrapperState describes whether an MCP server invocation actually runs this
+// executable's proxy. Only WrapperSelf proves that this process mediates the
+// server's traffic.
+type WrapperState int
+
+const (
+	WrapperNone WrapperState = iota
+	WrapperSelf
+	WrapperForeign
+)
+
+// ClassifyInvocation classifies a command by proxy shape and file identity.
+// Names and metadata are not proof: both can be supplied by the config being
+// inspected.
+func ClassifyInvocation(command string, args []string) WrapperState {
+	if command == "" || len(args) < 2 || args[0] != "mcp" || args[1] != "proxy" {
+		return WrapperNone
+	}
+	self, err := os.Executable()
+	return classifyExecutable(command, self, err)
+}
+
+// ClassifyInvocationAgainst classifies a proxy invocation against an explicit
+// executable selected by the caller. This is for generators that intentionally
+// target a different installed Pipelock path than the binary generating the
+// config.
+func ClassifyInvocationAgainst(command string, args []string, expected string) WrapperState {
+	if command == "" || expected == "" || len(args) < 2 || args[0] != "mcp" || args[1] != "proxy" {
+		return WrapperNone
+	}
+	return classifyExecutable(command, expected, nil)
+}
+
+func classifyExecutable(command, self string, executableErr error) WrapperState {
+	if executableErr != nil {
+		return WrapperForeign
+	}
+	selfInfo, err := os.Stat(self)
+	if err != nil {
+		return WrapperForeign
+	}
+	commandInfo, err := os.Stat(command)
+	if err != nil || !os.SameFile(selfInfo, commandInfo) {
+		return WrapperForeign
+	}
+	return WrapperSelf
+}
+
+// ClassifyServer applies ClassifyInvocation to either the conventional
+// command-plus-args shape or OpenCode's single command-array shape.
+func ClassifyServer(server map[string]interface{}) WrapperState {
+	if command, ok := server[FieldCommand].(string); ok {
+		args, err := stringArgs(server[FieldArgs])
+		if err != nil {
+			return WrapperNone
+		}
+		return ClassifyInvocation(command, args)
+	}
+	command, err := stringArgs(server[FieldCommand])
+	if err != nil || len(command) == 0 {
+		return WrapperNone
+	}
+	return ClassifyInvocation(command[0], command[1:])
+}
+
+// IsWrappedBySelf reports whether the current executable mediates this entry.
+func IsWrappedBySelf(server map[string]interface{}) bool {
+	return ClassifyServer(server) == WrapperSelf
+}
 
 // MCP server entry field keys, shared across wrap/unwrap operations.
 const (

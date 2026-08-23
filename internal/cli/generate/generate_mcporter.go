@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 	"github.com/spf13/cobra"
 )
 
@@ -118,7 +119,7 @@ Examples:
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "modify input file in-place (atomic write)")
 	cmd.Flags().BoolVar(&backup, "backup", false, "create .bak before in-place modification")
-	cmd.Flags().StringVar(&pipelockBin, "pipelock-bin", "pipelock", "path to pipelock binary in output")
+	cmd.Flags().StringVar(&pipelockBin, "pipelock-bin", currentPipelockExecutable(), "path to pipelock binary in output")
 	cmd.Flags().StringVarP(&configPath, "config", "c", "pipelock.yaml", "path to pipelock config in output")
 	return cmd
 }
@@ -148,7 +149,7 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 			if argsErr != nil {
 				return wrappedEntry{}, fmt.Errorf("url server args: %w", argsErr)
 			}
-			if isAlreadyWrapped(cmdStr, args) {
+			if isAlreadyWrapped(cmdStr, args, pipelockBin) {
 				return wrappedEntry{value: entry, skipped: true}, nil
 			}
 		}
@@ -174,7 +175,7 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 		return wrappedEntry{}, fmt.Errorf("args: %w", argsErr)
 	}
 
-	if isAlreadyWrapped(cmdStr, args) {
+	if isAlreadyWrapped(cmdStr, args, pipelockBin) {
 		return wrappedEntry{value: entry, skipped: true}, nil
 	}
 
@@ -266,30 +267,22 @@ func copyExtraFields(dst, src map[string]interface{}, managed ...string) {
 	}
 }
 
-const (
-	mcporterBinaryName = "pipelock"
-	mcporterSubMCP     = "mcp"
-	mcporterSubProxy   = "proxy"
-)
+const mcporterBinaryName = "pipelock"
 
-func isAlreadyWrapped(command string, args []string) bool {
-	if filepath.Base(command) != mcporterBinaryName {
-		return false
+func currentPipelockExecutable() string {
+	self, err := os.Executable()
+	return executableOrName(self, err)
+}
+
+func executableOrName(self string, err error) string {
+	if err != nil {
+		return mcporterBinaryName
 	}
-	foundMCP := false
-	for _, a := range args {
-		if a == "--" {
-			break
-		}
-		if !foundMCP && a == mcporterSubMCP {
-			foundMCP = true
-			continue
-		}
-		if foundMCP && a == mcporterSubProxy {
-			return true
-		}
-	}
-	return false
+	return self
+}
+
+func isAlreadyWrapped(command string, args []string, pipelockBin string) bool {
+	return mcpwrap.ClassifyInvocationAgainst(command, args, pipelockBin) == mcpwrap.WrapperSelf
 }
 
 func toStringSlice(raw []interface{}) ([]string, error) {

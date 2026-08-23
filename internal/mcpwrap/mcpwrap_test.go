@@ -5,12 +5,129 @@ package mcpwrap
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
 
 const fakeExe = "/usr/bin/pipelock"
+
+func TestClassifyInvocationRequiresCurrentExecutableIdentity(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		command string
+		args    []string
+		want    WrapperState
+	}{
+		{"current executable", self, []string{"mcp", "proxy", "--", "server"}, WrapperSelf},
+		{"foreign name", "/tmp/attacker/pipelock", []string{"mcp", "proxy", "--", "server"}, WrapperForeign},
+		{"bare name", "pipelock", []string{"mcp", "proxy", "--", "server"}, WrapperForeign},
+		{"arguments out of order", self, []string{"--config", "x", "mcp", "proxy"}, WrapperNone},
+		{"not proxy", self, []string{"mcp", "scan"}, WrapperNone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyInvocation(tc.command, tc.args); got != tc.want {
+				t.Fatalf("ClassifyInvocation() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyServerCurrentExecutableArrayForm(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	server := map[string]interface{}{
+		FieldCommand: []interface{}{self, "mcp", "proxy", "--", "server"},
+	}
+	if got := ClassifyServer(server); got != WrapperSelf {
+		t.Fatalf("ClassifyServer() = %v, want WrapperSelf", got)
+	}
+}
+
+func TestClassifyExecutableErrorsFailClosed(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	foreign := filepath.Join(t.TempDir(), "pipelock")
+	if err := os.WriteFile(foreign, []byte("not this executable"), 0o600); err != nil {
+		t.Fatalf("write foreign executable: %v", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		command    string
+		self       string
+		executable error
+	}{
+		{"executable lookup error", self, self, errors.New("lookup failed")},
+		{"current executable stat error", self, filepath.Join(t.TempDir(), "missing"), nil},
+		{"command stat error", filepath.Join(t.TempDir(), "missing"), self, nil},
+		{"different existing file", foreign, self, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyExecutable(tc.command, tc.self, tc.executable); got != WrapperForeign {
+				t.Fatalf("classifyExecutable() = %v, want WrapperForeign", got)
+			}
+		})
+	}
+}
+
+func TestClassifyServerConventionalAndEmptyShapes(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	if got := ClassifyServer(map[string]interface{}{
+		FieldCommand: self,
+		FieldArgs:    []string{"mcp", "proxy"},
+	}); got != WrapperSelf {
+		t.Fatalf("conventional ClassifyServer() = %v, want WrapperSelf", got)
+	}
+	if got := ClassifyServer(map[string]interface{}{}); got != WrapperNone {
+		t.Fatalf("empty ClassifyServer() = %v, want WrapperNone", got)
+	}
+	if IsWrappedBySelf(map[string]interface{}{FieldCommand: "server"}) {
+		t.Fatal("non-proxy server reported wrapped by self")
+	}
+	if got := ClassifyServer(map[string]interface{}{
+		FieldCommand: self,
+		FieldArgs:    []interface{}{"mcp", 1, "proxy"},
+	}); got != WrapperNone {
+		t.Fatalf("non-string args ClassifyServer() = %v, want WrapperNone", got)
+	}
+	if got := ClassifyServer(map[string]interface{}{
+		FieldCommand: []interface{}{self, "mcp", 1, "proxy"},
+	}); got != WrapperNone {
+		t.Fatalf("non-string array command ClassifyServer() = %v, want WrapperNone", got)
+	}
+}
+
+func TestClassifyInvocationAgainstExplicitTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "pipelock")
+	if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	args := []string{"mcp", "proxy", "--", "server"}
+	if got := ClassifyInvocationAgainst(target, args, target); got != WrapperSelf {
+		t.Fatalf("matching target = %v, want WrapperSelf", got)
+	}
+	if got := ClassifyInvocationAgainst(target, args, ""); got != WrapperNone {
+		t.Fatalf("empty target = %v, want WrapperNone", got)
+	}
+	if got := ClassifyInvocationAgainst(target, []string{"mcp", "scan"}, target); got != WrapperNone {
+		t.Fatalf("wrong args = %v, want WrapperNone", got)
+	}
+}
 
 // argsOf returns the wrapped server's args as []string. WrapServer builds args
 // as a []string, so a direct assertion is sufficient in unit tests (no YAML/JSON

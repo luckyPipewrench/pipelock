@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 )
 
 // MCP server JSON field keys used across wrap/unwrap operations.
@@ -238,19 +240,19 @@ func unwrapMCPServer(server map[string]interface{}) (map[string]interface{}, err
 // will mediate the traffic, and remove asks whether some pipelock wrapper can be
 // migrated away. Answering both with one predicate is what allowed a forged entry
 // to be skipped, or would strand an older wrapper permanently.
-type wrapperState int
+type wrapperState = mcpwrap.WrapperState
 
 const (
 	// stateNotWrapper is an entry that does not invoke the MCP proxy at all.
-	stateNotWrapper wrapperState = iota
+	stateNotWrapper = mcpwrap.WrapperNone
 	// stateSelf invokes the proxy with the binary running right now, so its
 	// traffic is mediated by this executable. Only this state may be skipped.
-	stateSelf
+	stateSelf = mcpwrap.WrapperSelf
 	// stateForeignWrapper is shaped like a proxy invocation run by some other
 	// binary. That may be a pipelock built at a different path, or an
 	// attacker-authored config naming its own binary "pipelock". The installer
 	// cannot tell those apart and must not skip either.
-	stateForeignWrapper
+	stateForeignWrapper = mcpwrap.WrapperForeign
 )
 
 // classifyWrapper decides which state an entry is in from its own invocation.
@@ -262,14 +264,7 @@ const (
 // it. Reproduced before this changed, for both a relative ./tools/pipelock and a
 // bare PATH-resolved pipelock.
 func classifyWrapper(server map[string]interface{}) wrapperState {
-	binary, args := serverInvocation(server)
-	if binary == "" || !argsBeginMCPProxy(args) {
-		return stateNotWrapper
-	}
-	if isThisExecutable(binary) {
-		return stateSelf
-	}
-	return stateForeignWrapper
+	return mcpwrap.ClassifyServer(server)
 }
 
 // isWrappedBySelf reports whether an entry is already mediated by this binary. It
@@ -349,22 +344,7 @@ func warnUnrestorableWrapper(w io.Writer, name string, server map[string]interfa
 // provenance or contents, and it cannot prevent the file changing between this
 // check and the editor's launch.
 func isThisExecutable(command string) bool {
-	if command == "" {
-		return false
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return false
-	}
-	selfInfo, err := os.Stat(self)
-	if err != nil {
-		return false
-	}
-	commandInfo, err := os.Stat(command)
-	if err != nil {
-		return false
-	}
-	return os.SameFile(selfInfo, commandInfo)
+	return mcpwrap.ClassifyInvocation(command, []string{mcpSubcommand, proxySubcommand}) == mcpwrap.WrapperSelf
 }
 
 // serverInvocation reads the binary and its arguments out of either config shape:

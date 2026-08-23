@@ -243,10 +243,6 @@ func isCodexRestorableWrapper(server codexMCPServer) bool {
 	return classifyCodexWrapper(server) != stateNotWrapper
 }
 
-// looksLikePipelockBinary reports whether the command path is plausibly a
-// pipelock binary. Matches "pipelock", "pipelock.exe", and dev variants like
-// "pipelock-dev". Path is matched on basename so it is location-independent.
-
 func serverEnabled(server codexMCPServer) bool {
 	return server.Enabled == nil || *server.Enabled
 }

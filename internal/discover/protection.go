@@ -3,10 +3,7 @@
 
 package discover
 
-import (
-	"path/filepath"
-	"strings"
-)
+import "github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 
 // classifyProtection determines if a server is wrapped by a security proxy.
 func classifyProtection(s MCPServer) ProtectionStatus {
@@ -23,53 +20,26 @@ func classifyProtection(s MCPServer) ProtectionStatus {
 	return Unprotected
 }
 
-// isPipelockWrapped checks if the server command is pipelock with mcp proxy args.
-// Handles Windows paths (pipelock.exe) and avoids false positives on names
-// like "pipelock-helper" by stripping the extension and comparing exactly.
+// isPipelockWrapped checks that the server invokes this executable with the
+// exact MCP proxy subcommand prefix. A basename or config-authored marker is not
+// evidence that Pipelock will mediate the traffic.
 func isPipelockWrapped(s MCPServer) bool {
-	base := commandBase(s.Command)
-	name := strings.TrimSuffix(base, filepath.Ext(base))
-	if !strings.EqualFold(name, wrapperCommand) {
-		return false
-	}
-
-	hasMCP := false
-	hasProxy := false
-	for _, arg := range s.Args {
-		switch arg {
-		case wrapperArgMCP:
-			hasMCP = true
-		case wrapperArgProxy:
-			hasProxy = true
-		}
-	}
-	return hasMCP && hasProxy
-}
-
-// commandBase extracts the final path component from a command string,
-// handling both forward slashes and backslashes. This is needed because
-// JSON configs may contain Windows paths (e.g., C:\Program Files\pipelock.exe)
-// that are read on Linux where filepath.Base only splits on forward slashes.
-func commandBase(cmd string) string {
-	// Use filepath.Base for the native separator, then also check for
-	// the non-native separator in case the path uses the other convention.
-	base := filepath.Base(cmd)
-	if i := strings.LastIndexByte(base, '\\'); i >= 0 {
-		base = base[i+1:]
-	}
-	return base
+	return mcpwrap.ClassifyInvocation(s.Command, s.Args) == mcpwrap.WrapperSelf
 }
 
 // protectionEvidence returns a human-readable explanation for a protection classification.
 func protectionEvidence(s MCPServer) string {
 	switch s.Protection {
 	case ProtectedPipelock:
-		return "command=pipelock, args contain mcp+proxy"
+		return "command is this pipelock executable and args begin mcp proxy"
 	case ProtectedOther:
 		return "wrapped by recognized security proxy"
 	case Unknown:
 		return "no command or url configured"
 	default:
+		if mcpwrap.ClassifyInvocation(s.Command, s.Args) == mcpwrap.WrapperForeign {
+			return "mcp proxy wrapper found, but its executable identity is unconfirmed"
+		}
 		return evidenceNoProxy
 	}
 }

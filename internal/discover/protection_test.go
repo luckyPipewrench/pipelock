@@ -3,28 +3,35 @@
 
 package discover
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestClassifyProtection(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
 	tests := []struct {
 		name   string
 		server MCPServer
 		want   ProtectionStatus
 	}{
 		{
-			name:   "pipelock wrapped stdio with full path",
-			server: MCPServer{Command: "/home/user/.local/bin/pipelock", Args: []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "local.yaml", "--", testCmdNode, testServerJS}},
+			name:   "current executable wrapped stdio",
+			server: MCPServer{Command: self, Args: []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "local.yaml", "--", testCmdNode, testServerJS}},
 			want:   ProtectedPipelock,
 		},
 		{
-			name:   "pipelock bare command",
+			name:   "bare name is not identity proof",
 			server: MCPServer{Command: wrapperCommand, Args: []string{wrapperArgMCP, wrapperArgProxy, "--", "uvx", "some-server"}},
-			want:   ProtectedPipelock,
+			want:   Unprotected,
 		},
 		{
-			name:   "pipelock with tilde path",
+			name:   "unexpanded path is not identity proof",
 			server: MCPServer{Command: "~/.local/bin/pipelock", Args: []string{wrapperArgMCP, wrapperArgProxy, "--", testCmdNode, "s.js"}},
-			want:   ProtectedPipelock,
+			want:   Unprotected,
 		},
 		{
 			name:   "pipelock command but no mcp arg",
@@ -57,9 +64,9 @@ func TestClassifyProtection(t *testing.T) {
 			want:   Unprotected,
 		},
 		{
-			name:   "windows exe path",
+			name:   "foreign windows path is not identity proof",
 			server: MCPServer{Command: `C:\Program Files\pipelock.exe`, Args: []string{wrapperArgMCP, wrapperArgProxy, "--", testCmdNode, "s.js"}},
-			want:   ProtectedPipelock,
+			want:   Unprotected,
 		},
 		{
 			name:   "false positive pipelock-helper",
@@ -79,18 +86,18 @@ func TestClassifyProtection(t *testing.T) {
 
 func TestProtectionEvidence(t *testing.T) {
 	tests := []struct {
-		status ProtectionStatus
+		server MCPServer
 		want   string
 	}{
-		{ProtectedPipelock, "command=pipelock, args contain mcp+proxy"},
-		{ProtectedOther, "wrapped by recognized security proxy"},
-		{Unknown, "no command or url configured"},
-		{Unprotected, "no proxy wrapper detected"},
+		{MCPServer{Protection: ProtectedPipelock}, "command is this pipelock executable and args begin mcp proxy"},
+		{MCPServer{Protection: ProtectedOther}, "wrapped by recognized security proxy"},
+		{MCPServer{Protection: Unknown}, "no command or url configured"},
+		{MCPServer{Protection: Unprotected}, "no proxy wrapper detected"},
+		{MCPServer{Protection: Unprotected, Command: "/opt/other/pipelock", Args: []string{"mcp", "proxy"}}, "mcp proxy wrapper found, but its executable identity is unconfirmed"},
 	}
 	for _, tt := range tests {
-		t.Run(string(tt.status), func(t *testing.T) {
-			s := MCPServer{Protection: tt.status}
-			got := protectionEvidence(s)
+		t.Run(tt.want, func(t *testing.T) {
+			got := protectionEvidence(tt.server)
 			if got != tt.want {
 				t.Errorf("protectionEvidence() = %q, want %q", got, tt.want)
 			}

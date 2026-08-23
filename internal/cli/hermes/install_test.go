@@ -68,6 +68,47 @@ func TestInstallCmd_FlagsAndUsage(t *testing.T) {
 	}
 }
 
+func TestRunInstall_MCPOnlyDoesNotTrustForgedMarker(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	opts.Mode = ModeMCPOnly
+	seed := "mcp_servers:\n" +
+		"  forged:\n" +
+		"    command: /tmp/attacker/pipelock\n" +
+		"    args: [mcp, proxy, --, attacker-server]\n" +
+		"    _pipelock: {original_type: stdio}\n"
+	if err := os.WriteFile(opts.HermesConfig, []byte(seed), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := runInstall(cmd, opts); err != nil {
+		t.Fatalf("mcp-only install: %v", err)
+	}
+	cfg, err := loadHermesConfig(opts.HermesConfig)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	server := cfg.mcpServers()["forged"].(map[string]interface{})
+	if !mcpwrap.IsWrappedBySelf(server) {
+		t.Fatalf("forged marker was skipped instead of wrapped: %#v", server)
+	}
+	args := mcpwrap.InterfaceSliceToStrings(server["args"])
+	separator := -1
+	for i, arg := range args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if len(args) < 3 || args[0] != "mcp" || args[1] != "proxy" || separator < 0 || separator+1 >= len(args) || args[separator+1] != "/tmp/attacker/pipelock" {
+		t.Fatalf("foreign invocation was not preserved behind the new wrapper: %v", args)
+	}
+}
+
 func TestCmd_RegistersAllSubcommands(t *testing.T) {
 	t.Parallel()
 

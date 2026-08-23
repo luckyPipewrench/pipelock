@@ -5,13 +5,22 @@ package discover
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
 
 // GenerateWrapper returns a human-readable wrapper suggestion for an unprotected server.
 func GenerateWrapper(s MCPServer) string {
+	self, _ := os.Executable()
+	return generateWrapper(s, self)
+}
+
+func generateWrapper(s MCPServer, pipelockBin string) string {
 	var b strings.Builder
+	if pipelockBin == "" {
+		return "  (cannot suggest a verified wrapper because the current pipelock executable path is unavailable)"
+	}
 
 	if s.Transport == TransportStdio && s.Command != "" {
 		_, _ = fmt.Fprintf(&b, "  Replace in your %s config:\n\n", s.Client)
@@ -23,7 +32,7 @@ func GenerateWrapper(s MCPServer) string {
 
 		// After: include --env flags for each env var so they are passed through
 		_, _ = fmt.Fprintf(&b, "  After:\n")
-		_, _ = fmt.Fprintf(&b, "    \"command\": \"pipelock\",\n")
+		_, _ = fmt.Fprintf(&b, "    \"command\": %q,\n", pipelockBin)
 
 		afterArgs := []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "~/.config/pipelock/local.yaml"}
 		for _, k := range sortedEnvKeys(s.Env) {
@@ -43,7 +52,7 @@ func GenerateWrapper(s MCPServer) string {
 		_, _ = fmt.Fprintf(&b, "    \"url\": %q\n\n", s.URL)
 
 		_, _ = fmt.Fprintf(&b, "  After:\n")
-		_, _ = fmt.Fprintf(&b, "    \"command\": \"pipelock\",\n")
+		_, _ = fmt.Fprintf(&b, "    \"command\": %q,\n", pipelockBin)
 		_, _ = fmt.Fprintf(&b, "    \"args\": [\"mcp\", \"proxy\", \"--config\", \"~/.config/pipelock/local.yaml\", \"--upstream\", %q]\n", s.URL)
 
 		return b.String()

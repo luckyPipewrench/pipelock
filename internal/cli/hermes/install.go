@@ -225,7 +225,7 @@ func installMCPOnly(cmd *cobra.Command, opts *installOptions) error {
 			failed++
 			continue
 		}
-		if mcpwrap.IsWrapped(server) {
+		if mcpwrap.IsWrappedBySelf(server) {
 			skipped++
 			continue
 		}

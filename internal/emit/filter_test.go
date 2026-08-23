@@ -49,6 +49,8 @@ func TestFilterAllows(t *testing.T) {
 		{name: "SNI mismatch infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventSNIMismatch, Fields: map[string]any{"category": "mismatch"}}, want: true},
 		{name: "blocked boolean infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventMediaExposure, Fields: map[string]any{"blocked": true}}, want: true},
 		{name: "deny decision normalizes to block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventTaintDecision, Fields: map[string]any{"decision": "deny"}}, want: true},
+		{name: "authority denial exports as block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventAuthorityVerification, Fields: map[string]any{"action": "block", "decision": "deny"}}, want: true},
+		{name: "authority allow does not enter block stream", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventAuthorityVerification, Fields: map[string]any{"action": "allow", "decision": "allow"}}, want: false},
 		{name: "adaptive escalation to block infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventAdaptiveEscalation, Fields: map[string]any{"to": "block"}}, want: true},
 		{name: "blocked redirect result infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventToolRedirect, Fields: map[string]any{"result": "blocked"}}, want: true},
 		{name: "redirected result normalizes to redirect", filter: Filter{Actions: []string{"redirect"}}, event: Event{Type: EventToolRedirect, Fields: map[string]any{"result": "redirected"}}, want: true},

@@ -61,6 +61,7 @@ type mcpListenerPrincipal struct {
 	billingKey   string
 	exclusiveSet string
 	trust        config.DoWSubjectTrust
+	actor        string
 }
 
 // mcpListenerClientStates partitions listener state by either a verified
@@ -173,6 +174,7 @@ func (s *mcpListenerClientStates) principal(provider, subject string, epoch uint
 		key:        fmt.Sprintf("mcp-http-listener-principal:%x", mac.Sum(nil)),
 		billingKey: fmt.Sprintf("mcp-http-listener-billing:%x", billingMAC.Sum(nil)),
 		trust:      config.DoWTrustPrincipal,
+		actor:      provider + ":" + subject,
 	}, nil
 }
 

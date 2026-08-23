@@ -131,6 +131,9 @@ func RunHTTPProxy(
 	if opts.ContractServer == "" {
 		opts.ContractServer = mcpContractServerFromUpstream(upstreamURL)
 	}
+	if opts.AuthorityDestination == "" {
+		opts.AuthorityDestination = upstreamURL
+	}
 	opts.TaintExternalSource = true
 
 	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
@@ -288,6 +291,13 @@ func RunHTTPProxy(
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
 				},
 				Resolve: func(res deferred.Resolution) {
+					authorityDenied := false
+					if res.FinalDecision == config.ActionAllow {
+						if authErr := authorizeMCP(ctx, deferredReq.authorityRef, deferredReq.authorityCarrierErr, deferredReq.authorityFrame, fwdOpts); authErr != nil {
+							res.FinalDecision = config.ActionBlock
+							authorityDenied = true
+						}
+					}
 					if emitErr := emitDeferredResolutionReceipt(fwdOpts, safeLogW, res); emitErr != nil {
 						if !deferredReq.IsNotification {
 							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
@@ -335,6 +345,10 @@ func RunHTTPProxy(
 						}
 					default:
 						if !deferredReq.IsNotification {
+							if authorityDenied {
+								_ = safeClientOut.WriteMessage(blockRequestResponse(*authorityBlockedRequest(deferredReq.authorityFrame)))
+								return
+							}
 							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
 								ID:           deferredReq.ID,
 								ErrorCode:    -32002,

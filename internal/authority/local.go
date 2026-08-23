@@ -20,7 +20,9 @@ import (
 const (
 	localReferencePrefix = "plauth1"
 	localSchemaVersion   = 1
-	maxReferenceBytes    = 16 << 10
+	// MaxReferenceBytes bounds authority references accepted from every
+	// transport and by the local verifier.
+	MaxReferenceBytes = 16 << 10
 )
 
 var errMalformedReference = errors.New("malformed local authority reference")
@@ -35,8 +37,7 @@ type LocalConfig struct {
 }
 
 // LocalVerifier verifies compact Ed25519 references with RFC 8785 canonical
-// payloads against an in-memory key set. It performs no I/O and is not wired
-// into a production request path.
+// payloads against an in-memory key set. It performs no I/O.
 type LocalVerifier struct {
 	trustedIssuers    map[string]ed25519.PublicKey
 	revokedReferences map[string]struct{}
@@ -157,7 +158,7 @@ type parsedReference struct {
 }
 
 func parseLocalReference(reference string) (parsedReference, error) {
-	if len(reference) == 0 || len(reference) > maxReferenceBytes {
+	if len(reference) == 0 || len(reference) > MaxReferenceBytes {
 		return parsedReference{}, errMalformedReference
 	}
 	parts := strings.Split(reference, ".")

@@ -25,6 +25,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -195,6 +196,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Strip inbound mediation envelope headers after optional trust
 	// verification so forged mediation metadata cannot survive to upstreams.
 	envelope.StripInbound(r.Header)
+	authorityRef, authorityCarrierErr := consumeAuthorityHeader(r)
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
 	if !scOK {
@@ -761,6 +763,22 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+	}
+	if err := p.authorizeForward(r.Context(), authorityRef, authorityCarrierErr, authority.Request{
+		Actor:       agent,
+		Action:      string(receipt.ActionDelegate),
+		Destination: targetURL,
+	}, actx, TransportWS); err != nil {
+		p.metrics.RecordWSBlocked()
+		if clientConn != nil {
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
+				blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority).CloseFramePayload())
+		} else {
+			writeBlockedError(w,
+				blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),
+				"WebSocket blocked: authority verification failed", http.StatusForbidden)
+		}
+		return
 	}
 
 	// Inject mediation envelope after all admission checks but before the

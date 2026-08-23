@@ -273,7 +273,7 @@ func TestFullRoundTrip_WrapApplyUnwrapDelete(t *testing.T) {
 	}
 
 	wrapped[FieldPipelock] = roundTripMeta(t, meta)
-	_, deleteOp, err := UnwrapServer(wrapped)
+	_, deleteOp, err := UnwrapServer(wrapped, "/cfg.yaml", "remote")
 	if err != nil {
 		t.Fatalf("UnwrapServer: %v", err)
 	}

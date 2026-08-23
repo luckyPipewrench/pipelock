@@ -271,7 +271,7 @@ func runOpenCodeRemove(cmd *cobra.Command, override string, dryRun bool) error {
 			continue
 		}
 
-		restored, plan, err := unwrapOpenCodeServer(server)
+		restored, plan, err := unwrapOpenCodeServer(server, targetPath, name)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not unwrap %q: %v\n", name, err)
 			continue
@@ -434,7 +434,14 @@ func wrapOpenCodeServer(server map[string]interface{}, exe, configFile, targetCo
 	}
 }
 
-func unwrapOpenCodeServer(server map[string]interface{}) (map[string]interface{}, *sidecarOp, error) {
+// unwrapOpenCodeServer restores a server from its pipelock metadata. The
+// delete target is DERIVED from targetConfigPath and serverName rather than
+// read from the metadata: the marker lives in an operator-editable config, and
+// every server's sidecar shares one directory, so a metadata-supplied path
+// would let one server's config nominate another server's credential file for
+// deletion. The metadata path is still shape-checked so a tampered marker
+// fails closed, but it never selects the file removed.
+func unwrapOpenCodeServer(server map[string]interface{}, targetConfigPath, serverName string) (map[string]interface{}, *sidecarOp, error) {
 	metaRaw, ok := server[mcpFieldPipelock]
 	if !ok {
 		return server, nil, nil
@@ -451,7 +458,10 @@ func unwrapOpenCodeServer(server map[string]interface{}) (map[string]interface{}
 
 	var plan *sidecarOp
 	if meta.HeaderSidecarPath != "" {
-		path, err := validatedHeaderSidecarDeletePath(meta.HeaderSidecarPath)
+		if _, err := validatedHeaderSidecarDeletePath(meta.HeaderSidecarPath); err != nil {
+			return nil, nil, err
+		}
+		path, err := headerSidecarPath(targetConfigPath, serverName)
 		if err != nil {
 			return nil, nil, err
 		}

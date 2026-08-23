@@ -85,7 +85,7 @@ func TestUnwrapServer_MetaParseError(t *testing.T) {
 	t.Parallel()
 
 	// Non-object metadata propagates the ParseMeta error out of UnwrapServer.
-	if _, _, err := UnwrapServer(map[string]interface{}{FieldPipelock: "garbage"}); err == nil {
+	if _, _, err := UnwrapServer(map[string]interface{}{FieldPipelock: "garbage"}, "/cfg.yaml", "remote"); err == nil {
 		t.Fatal("expected UnwrapServer to surface a metadata parse error")
 	}
 }
@@ -101,7 +101,7 @@ func TestUnwrapServer_BadSidecarPath(t *testing.T) {
 			"original_url":        "https://u/mcp",
 			"header_sidecar_path": "relative/x.headers",
 		},
-	})
+	}, "/cfg.yaml", "remote")
 	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
 		t.Fatalf("err = %v, want containing 'must be absolute'", err)
 	}

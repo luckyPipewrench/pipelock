@@ -161,7 +161,7 @@ func unwrapHermesMCPServers(cmd *cobra.Command, cfg *hermesConfig) (int, []mcpwr
 		if !ok || !mcpwrap.IsWrapped(server) {
 			continue
 		}
-		restored, op, err := mcpwrap.UnwrapServer(server)
+		restored, op, err := mcpwrap.UnwrapServer(server, cfg.path, name)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not unwrap mcp server %q: %v\n", name, err)
 			continue

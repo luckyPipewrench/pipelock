@@ -34,9 +34,35 @@ import (
 
 var newFileSentryWatcher = filesentry.NewWatcher
 
-func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel context.CancelFunc) (func(), error) {
+// fileSentryRuntimeFailure preserves the first asynchronous watcher failure
+// until its owner has completed graceful shutdown. A file sentry backend error
+// is a fail-closed runtime failure; cancellation is only the mechanism used to
+// drain listeners and child processes safely.
+type fileSentryRuntimeFailure struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (f *fileSentryRuntimeFailure) set(err error) {
+	if err == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err == nil {
+		f.err = err
+	}
+}
+
+func (f *fileSentryRuntimeFailure) get() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
+}
+
+func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel context.CancelFunc) (func() error, error) {
 	if cfg == nil || !cfg.FileSentry.Enabled {
-		return func() {}, nil
+		return func() error { return nil }, nil
 	}
 
 	onErr := func(err error) {
@@ -58,7 +84,7 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		_ = watcher.Close()
 		if cfg.FileSentry.BestEffort && !fileSentryArmErrorMustFailClosed(err) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", err)
-			return func() {}, nil
+			return func() error { return nil }, nil
 		}
 		return nil, fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", err)
 	}
@@ -75,9 +101,13 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		Cancel:    cancel,
 	})
 
+	var failure fileSentryRuntimeFailure
+	watcherDone := make(chan struct{})
 	go func() {
+		defer close(watcherDone)
 		if err := watcher.Start(ctx); err != nil {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry fatal: %v — cancelling runtime\n", err)
+			failure.set(err)
 			cancel()
 		}
 	}()
@@ -87,9 +117,18 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 	// roots would invent an inaccurate count.
 	reportFileSentryCoverage(s.opts.Stderr, len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action, watcher.DegradedPathCount())
 
-	return func() {
-		_ = watcher.Close()
-		waitConsumer()
+	var stopOnce sync.Once
+	var stopErr error
+	return func() error {
+		stopOnce.Do(func() {
+			_ = watcher.Close()
+			<-watcherDone
+			waitConsumer()
+			if err := failure.get(); err != nil {
+				stopErr = fmt.Errorf("file sentry runtime failed: %w", err)
+			}
+		})
+		return stopErr
 	}, nil
 }
 
@@ -387,7 +426,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if fsErr != nil {
 		return fsErr
 	}
-	defer stopFileSentry()
+	defer func() { _ = stopFileSentry() }()
 
 	// Pre-bind the fetch listener so the startup summary reports the real
 	// OS-chosen address when the configured port is ephemeral (":0"), instead
@@ -1208,6 +1247,10 @@ func (s *Server) Start(ctx context.Context) error {
 		if rpErr := <-reverseProxyErr; rpErr != nil {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: reverse proxy listener error: %v\n", rpErr)
 		}
+	}
+
+	if err := stopFileSentry(); err != nil {
+		return err
 	}
 
 	if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {

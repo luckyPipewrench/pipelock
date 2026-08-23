@@ -139,6 +139,111 @@ func TestMcpProxyCmd_FileSentryBestEffortRejectsInitializationFailure(t *testing
 	}
 }
 
+func TestMcpProxyCmd_ReturnsFileSentryRuntimeFailure(t *testing.T) {
+	wantErr := errors.New("watch backend failed")
+	watcher := newGatedFileSentryWatcher(wantErr)
+	installGatedFileSentryWatcher(t, watcher)
+	configPath := writeMCPFileSentryConfig(t, false, t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	defer func() { _ = inputR.Close() }()
+	defer func() { _ = inputW.Close() }()
+	cmd := McpCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetContext(ctx)
+	cmd.SetIn(inputR)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"proxy",
+		"--config", configPath,
+		"--env", "PIPELOCK_TEST_MCP_HELPER=1",
+		"--",
+		os.Args[0],
+		"-test.run=TestMCPRuntimeHelperProcess$",
+	})
+	done := make(chan error, 1)
+	go func() { done <- cmd.Execute() }()
+
+	select {
+	case <-watcher.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("file sentry watcher did not start after MCP child launch")
+	}
+	close(watcher.release)
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close MCP input: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("mcp proxy error = %v, want file sentry runtime failure wrapping %v\nstderr:\n%s", err, wantErr, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mcp proxy did not return after file sentry runtime failure")
+	}
+}
+
+func TestMcpProxyCmd_KeepsCleanCancellationNilWithFileSentry(t *testing.T) {
+	watcher := newGatedFileSentryWatcher(errors.New("must not be returned after clean cancellation"))
+	installGatedFileSentryWatcher(t, watcher)
+	configPath := writeMCPFileSentryConfig(t, false, t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	inputR, inputW := io.Pipe()
+	defer func() { _ = inputR.Close() }()
+	defer func() { _ = inputW.Close() }()
+	cmd := McpCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetContext(ctx)
+	cmd.SetIn(inputR)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"proxy",
+		"--config", configPath,
+		"--env", "PIPELOCK_TEST_MCP_HELPER=1",
+		"--",
+		os.Args[0],
+		"-test.run=TestMCPRuntimeHelperProcess$",
+	})
+	done := make(chan error, 1)
+	go func() { done <- cmd.Execute() }()
+
+	select {
+	case <-watcher.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("file sentry watcher did not start after MCP child launch")
+	}
+	cancel()
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close MCP input: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("mcp proxy error after clean cancellation = %v, want nil\nstderr:\n%s", err, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mcp proxy did not return after clean cancellation")
+	}
+}
+
+func TestMcpProxyCmd_KeepsNaturalChildExitNilWithFileSentry(t *testing.T) {
+	watcher := newGatedFileSentryWatcher(errors.New("must not be returned after natural child exit"))
+	installGatedFileSentryWatcher(t, watcher)
+	configPath := writeMCPFileSentryConfig(t, false, t.TempDir())
+
+	_, stderr, err := runMCPProxyCommand(t, configPath)
+	if err != nil {
+		t.Fatalf("mcp proxy error after natural child exit = %v, want nil\nstderr:\n%s", err, stderr)
+	}
+}
+
 func TestMcpProxyCmd_FileSentryKeepsRunningWhenOnePathArms(t *testing.T) {
 	watchDir := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "nonexistent-mixed-coverage")

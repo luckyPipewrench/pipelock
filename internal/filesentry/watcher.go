@@ -31,7 +31,9 @@ type Watcher interface {
 	// continues with accessible paths but reports every skipped subtree;
 	// strict mode, required paths, and zero armed paths return an error.
 	Arm() error
-	// Start processes filesystem events. Blocks until ctx is cancelled.
+	// Start processes filesystem events. Blocks until ctx is cancelled or Close
+	// stops the backend. A backend failure already queued when cancellation is
+	// observed is returned instead of being hidden by clean-shutdown handling.
 	// Call Arm() first to install watches.
 	Start(ctx context.Context) error
 	// Findings returns a channel that receives DLP findings as they are detected.

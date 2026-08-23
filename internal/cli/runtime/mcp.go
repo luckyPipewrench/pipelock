@@ -1706,6 +1706,7 @@ Key-free evidence capture:
 			// to prevent early writes from being missed.
 			var lin filesentry.Lineage
 			var onChildReady func()
+			stopFileSentry := func() error { return nil }
 			if cfg.FileSentry.Enabled {
 				lin = filesentry.NewLineage()
 				// Error handler for non-fatal runtime errors (e.g. failing to watch new dirs).
@@ -1746,24 +1747,40 @@ Key-free evidence capture:
 						OnFinding: findingHook,
 						Cancel:    cancel,
 					})
-					// Single defer: close watcher (flushes + closes channel),
-					// then wait for consumer to finish processing.
-					defer func() {
-						_ = watcher.Close()
-						waitConsumer()
-					}()
+					var failure fileSentryRuntimeFailure
+					var watcherWG sync.WaitGroup
+					var watcherStartOnce sync.Once
+					var stopOnce sync.Once
+					var stopErr error
+					stopFileSentry = func() error {
+						stopOnce.Do(func() {
+							_ = watcher.Close()
+							watcherWG.Wait()
+							waitConsumer()
+							if err := failure.get(); err != nil {
+								stopErr = fmt.Errorf("file sentry runtime failed: %w", err)
+							}
+						})
+						return stopErr
+					}
+					defer func() { _ = stopFileSentry() }()
 					reportFileSentryCoverage(logW, len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action, watcher.DegradedPathCount())
 
 					// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
 					// Starts the file sentry event loop AFTER the child PID is registered,
 					// so attribution is ready before classifying any writes.
 					onChildReady = func() {
-						go func() {
-							if startErr := watcher.Start(ctx); startErr != nil {
-								_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
-								cancel()
-							}
-						}()
+						watcherStartOnce.Do(func() {
+							watcherWG.Add(1)
+							go func() {
+								defer watcherWG.Done()
+								if startErr := watcher.Start(ctx); startErr != nil {
+									_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
+									failure.set(startErr)
+									cancel()
+								}
+							}()
+						})
 					}
 				} // watcher != nil
 			}
@@ -1807,10 +1824,23 @@ Key-free evidence capture:
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 				serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
+				if fileSentryErr := stopFileSentry(); fileSentryErr != nil {
+					return fileSentryErr
+				}
 				if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 					return heartbeatErr
 				}
+				// signal.NotifyContext terminates the wrapped child during an
+				// ordinary parent cancellation. That resulting process status is
+				// teardown noise, not a proxy failure. File-sentry and required
+				// heartbeat failures are checked above so they still fail closed.
+				if ctx.Err() != nil {
+					return nil
+				}
 				return handleProxyError(err, logW, sentryClient)
+			}
+			if fileSentryErr := stopFileSentry(); fileSentryErr != nil {
+				return fileSentryErr
 			}
 			if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 				return heartbeatErr

@@ -2058,7 +2058,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Pattern:             blockedErr.reason,
 				Transport:           "forward",
 				Method:              r.Method,
-				Target:              targetURL,
+				Target:              redirectReceiptTarget(blockedErr, targetURL),
 				RequestID:           requestID,
 				Agent:               agent,
 				SessionTaintLevel:   forwardTaint.Risk.Level.String(),

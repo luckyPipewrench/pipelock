@@ -122,6 +122,13 @@ func TestProxy_OptionAndBlockedErrorBranches(t *testing.T) {
 	if redirect.layer != "redirect" {
 		t.Fatalf("empty redirect layer = %q, want redirect", redirect.layer)
 	}
+	redirect.target = "https://redirected.example"
+	if got := redirectReceiptTarget(redirect, "https://fallback.example"); got != redirect.target {
+		t.Fatalf("redirect target = %q, want %q", got, redirect.target)
+	}
+	if got := redirectReceiptTarget(nil, "https://fallback.example"); got != "https://fallback.example" {
+		t.Fatalf("redirect fallback = %q, want fallback", got)
+	}
 }
 
 func TestSessionManager_SessionExists(t *testing.T) {

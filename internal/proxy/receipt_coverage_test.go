@@ -42,11 +42,12 @@ const (
 	testReceiptLayerDLP      = audit.ScannerDLP
 	testRedactionProfileCode = "code"
 
-	coverageTestPrincipal  = "test-principal"
-	coverageTestActor      = "test-actor"
-	coverageTestConfigHash = "coverage-test-hash"
-	coverageTestTarget     = "https://example.com/coverage"
-	coverageTestAgent      = "coverage-agent"
+	coverageTestPrincipal    = "test-principal"
+	coverageTestActor        = "test-actor"
+	coverageTestConfigHash   = "coverage-test-hash"
+	coverageTestTarget       = "https://example.com/coverage"
+	coverageTestAgent        = "coverage-agent"
+	redirectDeniedTestTarget = "https://pastebin.com/raw/redirect-denied"
 )
 
 // extractReceiptsFromDir reads all JSONL files from dir and returns parsed receipts.
@@ -994,6 +995,10 @@ func newReceiptProxyHelper(t *testing.T) *receiptProxyHelper {
 }
 
 func newReceiptProxyHelperWithMetrics(t *testing.T, m *metrics.Metrics) *receiptProxyHelper {
+	return newReceiptProxyHelperWithRedactor(t, m, nil)
+}
+
+func newReceiptProxyHelperWithRedactor(t *testing.T, m *metrics.Metrics, redactor recorder.RedactFunc) *receiptProxyHelper {
 	t.Helper()
 	dir := t.TempDir()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -1006,7 +1011,8 @@ func newReceiptProxyHelperWithMetrics(t *testing.T, m *metrics.Metrics) *receipt
 		Enabled:            true,
 		Dir:                dir,
 		CheckpointInterval: 1000,
-	}, nil, priv)
+		Redact:             redactor != nil,
+	}, redactor, priv)
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
@@ -1533,6 +1539,117 @@ func TestReceiptCoverage_FetchAllowlistBlock_EmitsReceiptBeforeEgress(t *testing
 	}
 	if r.ActionRecord.Target != target {
 		t.Errorf("target = %q, want %q", r.ActionRecord.Target, target)
+	}
+	if r.ActionRecord.Verdict != config.ActionBlock {
+		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
+	}
+}
+
+func TestReceiptCoverage_FetchRedirectDenyRecordsRefusedDestination(t *testing.T) {
+	t.Parallel()
+
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectDeniedTestTarget, http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+
+	rph := newReceiptProxyHelper(t)
+	handler := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(true)
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(origin.URL), nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body: %s", w.Code, w.Body.String())
+	}
+
+	r := rph.requireReceipt(t, "blocklist")
+	if r.ActionRecord.Transport != TransportFetch {
+		t.Errorf("transport = %q, want %q", r.ActionRecord.Transport, TransportFetch)
+	}
+	if r.ActionRecord.Target != redirectDeniedTestTarget {
+		t.Errorf("target = %q, want refused redirect destination %q", r.ActionRecord.Target, redirectDeniedTestTarget)
+	}
+	if r.ActionRecord.Verdict != config.ActionBlock {
+		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
+	}
+}
+
+func TestReceiptCoverage_FetchRedirectDenySanitizesRefusedDestination(t *testing.T) {
+	t.Parallel()
+
+	secret := fakeAPIKey()
+	redirectTarget := redirectDeniedTestTarget + "?token=" + secret
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget, http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+
+	redactor := func(_ context.Context, text string) scanner.TextDLPResult {
+		return scanner.TextDLPResult{Clean: !strings.Contains(text, secret)}
+	}
+	rph := newReceiptProxyHelperWithRedactor(t, nil, redactor)
+	handler := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(true)
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(origin.URL), nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body: %s", w.Code, w.Body.String())
+	}
+
+	r := rph.requireReceipt(t, "blocklist")
+	want := redirectDeniedTestTarget + "?token=[redacted-value]"
+	if r.ActionRecord.Target != want {
+		t.Fatalf("target = %q, want sanitized refused destination %q", r.ActionRecord.Target, want)
+	}
+}
+
+func TestReceiptCoverage_ForwardRedirectDenyRecordsRefusedDestination(t *testing.T) {
+	t.Parallel()
+
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectDeniedTestTarget, http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+
+	rph := newReceiptProxyHelper(t)
+	proxyAddr, cleanup := setupForwardProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(true)
+	})
+	t.Cleanup(cleanup)
+
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   5 * time.Second,
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, origin.URL, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET through proxy: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+
+	r := rph.requireReceipt(t, "blocklist")
+	if r.ActionRecord.Transport != TransportForward {
+		t.Errorf("transport = %q, want %q", r.ActionRecord.Transport, TransportForward)
+	}
+	if r.ActionRecord.Target != redirectDeniedTestTarget {
+		t.Errorf("target = %q, want refused redirect destination %q", r.ActionRecord.Target, redirectDeniedTestTarget)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)

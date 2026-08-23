@@ -178,6 +178,7 @@ type blockedRequestError struct {
 	layer  string
 	reason string
 	detail string
+	target string
 }
 
 func (e *blockedRequestError) Error() string {
@@ -265,6 +266,19 @@ func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
 		layer = blockedErr.layer
 	}
 	return blockInfoFor(blockreason.RedirectScanDenied, layer)
+}
+
+// redirectReceiptTarget keeps redirect-denial receipts tied to the URL that
+// was actually refused. The admitted request remains available through the
+// request ID and prior audit events; recording it as the blocked target would
+// make a redirected denial look like a denial of the original destination.
+// The fallback preserves a useful target for legacy typed errors that did not
+// originate in CheckRedirect.
+func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) string {
+	if blockedErr != nil && blockedErr.target != "" {
+		return blockedErr.target
+	}
+	return fallback
 }
 
 // Regex patterns for extracting content from HTML hiding spots that
@@ -673,12 +687,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.client = &http.Client{
 		Transport: transport,
 		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		CheckRedirect: func(req *http.Request, via []*http.Request) (retErr error) {
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects (max 5)")
 			}
 			originalURL := via[0].URL.String()
 			redirectURL := req.URL.String()
+			defer func() {
+				if blockedErr, ok := blockedRequestErrorFrom(retErr); ok && blockedErr.target == "" {
+					blockedErr.target = redirectURL
+				}
+			}()
 			clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
 			requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
 			agentName, _ := req.Context().Value(ctxKeyAgent).(string)
@@ -4935,7 +4954,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Pattern:   blockedErr.reason,
 				Transport: "fetch",
 				Method:    http.MethodGet,
-				Target:    displayURL,
+				Target:    redirectReceiptTarget(blockedErr, displayURL),
 				RequestID: requestID,
 				Agent:     agent,
 			})

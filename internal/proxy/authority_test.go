@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -266,7 +267,7 @@ func TestWebSocketAuthorityDenyMakesNoUpstreamHandshake(t *testing.T) {
 	select {
 	case <-accepted:
 		t.Fatal("authority-denied WebSocket reached upstream listener")
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -306,7 +307,7 @@ func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
 	select {
 	case <-accepted:
 		t.Fatal("authority-denied WebSocket reached upstream listener")
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

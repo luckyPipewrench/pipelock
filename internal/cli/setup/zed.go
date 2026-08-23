@@ -336,10 +336,11 @@ func installZedPath(cmd *cobra.Command, targetPath, exe, configFile string, dryR
 	skipped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range cfg.Servers {
-		if isWrapped(server) {
+		if isWrappedBySelf(server) {
 			skipped++
 			continue
 		}
+		warnForeignWrapper(cmd.ErrOrStderr(), name, server)
 
 		newServer, meta, plan, wrapErr := wrapClineServer(server, exe, configFile, targetPath, name)
 		if wrapErr != nil {
@@ -442,7 +443,8 @@ func removeZedPath(cmd *cobra.Command, targetPath string, dryRun bool) error {
 	unwrapped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range cfg.Servers {
-		if !isWrapped(server) {
+		if !isRestorableWrapper(server) {
+			warnUnrestorableWrapper(cmd.ErrOrStderr(), name, server)
 			continue
 		}
 

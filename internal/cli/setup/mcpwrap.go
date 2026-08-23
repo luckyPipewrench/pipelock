@@ -6,6 +6,7 @@ package setup
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -14,6 +15,8 @@ import (
 const (
 	mcpFieldCommand  = "command"
 	mcpFieldArgs     = "args"
+	mcpSubcommand    = "mcp"
+	proxySubcommand  = "proxy"
 	mcpFieldURL      = "url"
 	mcpFieldHeaders  = "headers"
 	mcpFieldType     = "type"
@@ -230,8 +233,190 @@ func unwrapMCPServer(server map[string]interface{}) (map[string]interface{}, err
 	return result, nil
 }
 
-// isWrapped returns true if a server entry has pipelock metadata.
-func isWrapped(server map[string]interface{}) bool {
-	_, ok := server[mcpFieldPipelock]
-	return ok
+// wrapperState is how an MCP server entry relates to this pipelock binary. A
+// single boolean cannot serve both callers: install asks whether THIS executable
+// will mediate the traffic, and remove asks whether some pipelock wrapper can be
+// migrated away. Answering both with one predicate is what allowed a forged entry
+// to be skipped, or would strand an older wrapper permanently.
+type wrapperState int
+
+const (
+	// stateNotWrapper is an entry that does not invoke the MCP proxy at all.
+	stateNotWrapper wrapperState = iota
+	// stateSelf invokes the proxy with the binary running right now, so its
+	// traffic is mediated by this executable. Only this state may be skipped.
+	stateSelf
+	// stateForeignWrapper is shaped like a proxy invocation run by some other
+	// binary. That may be a pipelock built at a different path, or an
+	// attacker-authored config naming its own binary "pipelock". The installer
+	// cannot tell those apart and must not skip either.
+	stateForeignWrapper
+)
+
+// classifyWrapper decides which state an entry is in from its own invocation.
+//
+// The binary is compared by FILE IDENTITY, not by name. A basename check was the
+// original form and is a fail-open: any project config can name an
+// attacker-controlled binary "pipelock", add leading "mcp proxy" arguments, and be
+// skipped by the installer, leaving that binary running with nothing in front of
+// it. Reproduced before this changed, for both a relative ./tools/pipelock and a
+// bare PATH-resolved pipelock.
+func classifyWrapper(server map[string]interface{}) wrapperState {
+	binary, args := serverInvocation(server)
+	if binary == "" || !argsBeginMCPProxy(args) {
+		return stateNotWrapper
+	}
+	if isThisExecutable(binary) {
+		return stateSelf
+	}
+	return stateForeignWrapper
+}
+
+// isWrappedBySelf reports whether an entry is already mediated by this binary. It
+// is the ONLY condition under which an installer may skip an entry, because it is
+// the only one that establishes the traffic is actually mediated.
+//
+// The _pipelock marker is deliberately not consulted. It is a value this tool
+// writes, so treating its presence as proof let a forged config be skipped. The
+// marker is also not REQUIRED: an entry already invoking this binary through the
+// proxy stays skipped with its marker removed, rather than being wrapped twice.
+func isWrappedBySelf(server map[string]interface{}) bool {
+	return classifyWrapper(server) == stateSelf
+}
+
+// isRestorableWrapper reports whether an entry is a pipelock wrapper that remove
+// can actually put back. It deliberately accepts a FOREIGN wrapper as well as this
+// binary, because requiring identity here would strand every entry wrapped by an
+// earlier pipelock installed at a different path: an operator who upgrades could
+// never remove them.
+//
+// It does REQUIRE the restoration metadata, because restoration is driven entirely
+// by that metadata. Accepting a proxy-shaped entry without it produced a false
+// success: unwrapMCPServer returns such an entry unchanged, so remove counted it,
+// rewrote the config and the backup, and reported an unwrap that never happened
+// while the server stayed routed through someone else's proxy. On a security tool
+// a wrong success report is worse than a refusal, so this refuses and the caller
+// says why.
+//
+// The looseness that remains is safe for choosing WHICH entries to restore and is
+// not safe for everything the restore then does. In particular a metadata-supplied
+// deletion target must never be honoured; see the header-sidecar note in the VS
+// Code removal path.
+func isRestorableWrapper(server map[string]interface{}) bool {
+	if _, ok := server[mcpFieldPipelock]; !ok {
+		return false
+	}
+	return classifyWrapper(server) != stateNotWrapper
+}
+
+// warnUnrestorableWrapper explains why remove is leaving an entry alone. There
+// are two distinct causes and both were silent, which reads to the operator as
+// nothing having been wrapped:
+//
+//   - proxy-shaped with no metadata: the entry IS mediated but nothing records
+//     what it replaced, so it cannot be put back automatically.
+//   - metadata on an entry that is not proxy-shaped: the marker is false. The
+//     entry is not mediated, so remove has nothing to undo, and the operator
+//     should learn the claim was bogus rather than trusting it.
+//
+// The second case is the same forged-marker shape this change stopped trusting on
+// the install path. Suppressing its warning here reintroduced a silent wrong
+// answer on the removal path, which is why the causes are separated rather than
+// sharing one condition.
+func warnUnrestorableWrapper(w io.Writer, name string, server map[string]interface{}) {
+	_, marked := server[mcpFieldPipelock]
+	proxyShaped := classifyWrapper(server) != stateNotWrapper
+	binary, _ := serverInvocation(server)
+
+	switch {
+	case proxyShaped && !marked:
+		_, _ = fmt.Fprintf(w,
+			"warning: server %q runs %q with proxy arguments but carries no pipelock metadata, so the original command is unknown; leaving it unchanged, restore it by hand\n",
+			name, binary)
+	case marked && !proxyShaped:
+		_, _ = fmt.Fprintf(w,
+			"warning: server %q carries pipelock metadata but runs %q without the proxy, so the metadata is not describing a real wrap; leaving it unchanged, and nothing needs removing\n",
+			name, binary)
+	}
+}
+
+// isThisExecutable reports whether a command names the binary running right now,
+// compared by file identity rather than by name. A bare command that does not
+// resolve to a file is refused, which is correct: the installer cannot prove what
+// a PATH lookup will find when the editor launches.
+//
+// This establishes filesystem identity and nothing more. It does not prove binary
+// provenance or contents, and it cannot prevent the file changing between this
+// check and the editor's launch.
+func isThisExecutable(command string) bool {
+	if command == "" {
+		return false
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	selfInfo, err := os.Stat(self)
+	if err != nil {
+		return false
+	}
+	commandInfo, err := os.Stat(command)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(selfInfo, commandInfo)
+}
+
+// serverInvocation reads the binary and its arguments out of either config shape:
+// a command string with a separate args array, or OpenCode's single command array
+// where the binary is element zero.
+func serverInvocation(server map[string]interface{}) (binary string, args []string) {
+	if command, ok := server[mcpFieldCommand].(string); ok {
+		return command, commandArgStrings(server[mcpFieldArgs])
+	}
+	if command := commandArgStrings(server[mcpFieldCommand]); len(command) > 0 {
+		return command[0], command[1:]
+	}
+	return "", nil
+}
+
+// argsBeginMCPProxy reports whether an argument list starts the MCP proxy
+// subcommand.
+func argsBeginMCPProxy(args []string) bool {
+	return len(args) >= 2 && args[0] == mcpSubcommand && args[1] == proxySubcommand
+}
+
+// warnForeignWrapper tells the operator that an entry claimed mediation this
+// binary cannot confirm. The caller wraps it regardless, so the result IS
+// mediated; the warning exists so a false claim is visible rather than silently
+// corrected, and so an operator who upgraded pipelock knows why an entry is being
+// wrapped again.
+func warnForeignWrapper(w io.Writer, name string, server map[string]interface{}) {
+	switch classifyWrapper(server) {
+	case stateForeignWrapper:
+		binary, _ := serverInvocation(server)
+		_, _ = fmt.Fprintf(w,
+			"warning: server %q runs %q with proxy arguments but that is not this pipelock binary; wrapping it, and remove-then-install for a single clean wrap\n",
+			name, binary)
+	case stateNotWrapper:
+		if _, marked := server[mcpFieldPipelock]; marked {
+			_, _ = fmt.Fprintf(w,
+				"warning: server %q carries pipelock metadata but does not run through the proxy; wrapping it\n", name)
+		}
+	case stateSelf:
+	}
+}
+
+// commandArgStrings reads an argument list that may be either shape. A config
+// decoded from JSON yields []interface{}, while an entry produced in-process by
+// wrapMCPServer holds []string. Reading only the first shape made a freshly
+// wrapped entry look unwrapped to any in-process caller, which would double-wrap
+// it on the next pass.
+func commandArgStrings(v interface{}) []string {
+	switch typed := v.(type) {
+	case []string:
+		return typed
+	default:
+		return interfaceSliceToStrings(v)
+	}
 }

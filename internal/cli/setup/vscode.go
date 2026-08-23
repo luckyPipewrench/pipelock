@@ -306,10 +306,11 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 	skipped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if isVscodeWrapped(server) {
+		if isWrappedBySelf(server) {
 			skipped++
 			continue
 		}
+		warnForeignWrapper(cmd.ErrOrStderr(), name, server)
 
 		newServer, meta, plan, err := wrapVscodeServer(server, exe, configFile, targetPath, name)
 		if err != nil {
@@ -414,7 +415,8 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 	unwrapped := 0
 	var sidecarOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
-		if !isVscodeWrapped(server) {
+		if !isRestorableWrapper(server) {
+			warnUnrestorableWrapper(cmd.ErrOrStderr(), name, server)
 			continue
 		}
 
@@ -481,14 +483,7 @@ const (
 // (anything that is not stdio).
 func isVscodeHTTPType(t string) bool { return t != vsTypeStdio && t != "" }
 
-// isVscodeWrapped returns true if a server entry has pipelock metadata.
-func isVscodeWrapped(server map[string]interface{}) bool {
-	_, ok := server["_pipelock"]
-	return ok
-}
-
-// wrapVscodeServer wraps a single VS Code MCP server through pipelock mcp proxy.
-// wrapVscodeServer wraps a single MCP server entry through pipelock mcp proxy.
+// wrapVscodeServer wraps a single VS Code family MCP server through pipelock mcp proxy.
 // targetConfigPath + serverName are used to derive the per-server 0o600 header
 // sidecar file when the entry carries an HTTP `headers` block; the wrapped
 // argv references it via --header-file so credential header values never

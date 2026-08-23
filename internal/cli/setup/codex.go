@@ -207,41 +207,45 @@ func parseCodexMCPList(data []byte) ([]codexMCPServer, error) {
 	return servers, nil
 }
 
-// isCodexWrapped reports whether a server's transport is already wrapped by
-// pipelock. Detection keys on the args prefix ["mcp", "proxy"] AND a binary
-// basename of "pipelock" (with optional suffix like "pipelock-dev"). This
-// matches both the current pipelock binary and any prior pipelock binary at
-// a different path - important so a rebuild at a new location does not
-// double-wrap servers on the next install.
+// classifyCodexWrapper answers the same question for a Codex transport that
+// classifyWrapper answers for the map-shaped configs, using the same file-identity
+// test so the two cannot drift apart.
 //
-// The basename check guards against the unlikely case of a non-pipelock tool
-// that also uses `mcp proxy` as its leading args. Operators who want to point
-// the wrap at an alternate binary should `pipelock codex remove` first and
-// then `pipelock codex install` from the new binary.
-func isCodexWrapped(server codexMCPServer, _ string) bool {
+// The previous form keyed on the args prefix AND a binary BASENAME of "pipelock".
+// That basename check is a fail-open, and its own comment described it as guarding
+// only the "unlikely case of a non-pipelock tool" while the real case is
+// deliberate: a config naming an attacker binary "pipelock" with leading
+// "mcp proxy" arguments was treated as already wrapped and skipped, so that binary
+// ran with nothing in front of it.
+func classifyCodexWrapper(server codexMCPServer) wrapperState {
 	if server.Transport.Type != codexTransportStdio {
-		return false
+		return stateNotWrapper
 	}
-	if !looksLikePipelockBinary(server.Transport.Command) {
-		return false
+	if !argsBeginMCPProxy(server.Transport.Args) {
+		return stateNotWrapper
 	}
-	if len(server.Transport.Args) < 2 {
-		return false
+	if isThisExecutable(server.Transport.Command) {
+		return stateSelf
 	}
-	return server.Transport.Args[0] == codexMCP && server.Transport.Args[1] == codexMCPProxy
+	return stateForeignWrapper
+}
+
+// isCodexWrappedBySelf reports a transport already mediated by this binary, the
+// only state an installer may skip.
+func isCodexWrappedBySelf(server codexMCPServer) bool {
+	return classifyCodexWrapper(server) == stateSelf
+}
+
+// isCodexRestorableWrapper reports a transport remove should unwrap. It accepts a
+// wrapper written by a pipelock at another path, so upgrading the binary does not
+// strand entries as permanently un-removable.
+func isCodexRestorableWrapper(server codexMCPServer) bool {
+	return classifyCodexWrapper(server) != stateNotWrapper
 }
 
 // looksLikePipelockBinary reports whether the command path is plausibly a
 // pipelock binary. Matches "pipelock", "pipelock.exe", and dev variants like
 // "pipelock-dev". Path is matched on basename so it is location-independent.
-func looksLikePipelockBinary(command string) bool {
-	if command == "" {
-		return false
-	}
-	base := filepath.Base(command)
-	base = strings.TrimSuffix(base, ".exe")
-	return base == pipelockBinaryName || strings.HasPrefix(base, pipelockBinaryName+"-")
-}
 
 func serverEnabled(server codexMCPServer) bool {
 	return server.Enabled == nil || *server.Enabled
@@ -391,9 +395,10 @@ func unwrapCodexArgs(args []string) (origCmd string, origArgs []string, origURL 
 // codexInstallPlan is the precomputed action list for a server (preview-able
 // before any shell-out). One per input server.
 type codexInstallPlan struct {
-	Server   string
-	Action   string // codexActionWrapStdio, codexActionWrapURL, codexActionSkipWrapped, codexActionSkipUnsupported
-	Reason   string // human-readable detail; empty when not skipped
+	Server string
+	Action string // codexActionWrapStdio, codexActionWrapURL, codexActionSkipWrapped, codexActionSkipUnsupported
+	Reason string // human-readable detail; set when skipped, or when a wrap
+	// replaces a wrapper this binary cannot confirm
 	NewCmd   string
 	NewArgs  []string
 	Env      map[string]string
@@ -407,7 +412,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 	for _, s := range servers {
 		unsupportedReason := unsupportedCodexInstallReason(s)
 		switch {
-		case isCodexWrapped(s, pipelockBin):
+		case isCodexWrappedBySelf(s):
 			plans = append(plans, codexInstallPlan{
 				Server: s.Name,
 				Action: codexActionSkipWrapped,
@@ -423,6 +428,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			plans = append(plans, codexInstallPlan{
 				Server:   s.Name,
 				Action:   codexActionWrapStdio,
+				Reason:   foreignCodexWrapperReason(s),
 				NewCmd:   pipelockBin,
 				NewArgs:  wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile),
 				Env:      copyStringMap(s.Transport.Env),
@@ -432,6 +438,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			plans = append(plans, codexInstallPlan{
 				Server:   s.Name,
 				Action:   codexActionWrapURL,
+				Reason:   foreignCodexWrapperReason(s),
 				NewCmd:   pipelockBin,
 				NewArgs:  wrapCodexURL(s.Transport.URL, configFile),
 				Original: s.Transport,
@@ -460,10 +467,10 @@ type codexRemovePlan struct {
 }
 
 // planCodexRemove computes the unwrap plan for each server. Pure function.
-func planCodexRemove(servers []codexMCPServer, pipelockBin string) ([]codexRemovePlan, error) {
+func planCodexRemove(servers []codexMCPServer) ([]codexRemovePlan, error) {
 	plans := make([]codexRemovePlan, 0, len(servers))
 	for _, s := range servers {
-		if !isCodexWrapped(s, pipelockBin) {
+		if !isCodexRestorableWrapper(s) {
 			plans = append(plans, codexRemovePlan{
 				Server: s.Name,
 				Action: codexActionSkipNotWrapped,
@@ -537,6 +544,9 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 	for _, p := range plans {
 		switch p.Action {
 		case codexActionWrapStdio, codexActionWrapURL:
+			if p.Reason != "" {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: server %q %s\n", p.Server, p.Reason)
+			}
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"would wrap %s (%s): codex mcp add %s%s -- %s %s\n",
@@ -574,16 +584,15 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 	if err != nil {
 		return err
 	}
-	pipelockBin, err := resolvePipelockBinary()
-	if err != nil {
-		return err
-	}
-
+	// Remove no longer resolves the pipelock binary. Identity now comes from
+	// os.Executable() inside the classifier, and requiring a PATH lookup here
+	// made remove fail for an operator whose pipelock had been moved, which is
+	// exactly when they most need to unwrap their editors.
 	servers, err := codexMCPList(cmd.Context(), codexBin)
 	if err != nil {
 		return err
 	}
-	plans, err := planCodexRemove(servers, pipelockBin)
+	plans, err := planCodexRemove(servers)
 	if err != nil {
 		return err
 	}
@@ -763,4 +772,17 @@ func joinArgs(args []string) string {
 		out += strconv.Quote(a)
 	}
 	return out
+}
+
+// foreignCodexWrapperReason describes an entry that runs proxy arguments through a
+// binary this one cannot confirm. Wrapping proceeds, so the result IS mediated;
+// the note exists so a false mediation claim is visible rather than silently
+// corrected, matching the warning the map-based installers emit.
+func foreignCodexWrapperReason(server codexMCPServer) string {
+	if classifyCodexWrapper(server) != stateForeignWrapper {
+		return ""
+	}
+	return fmt.Sprintf(
+		"runs %q with proxy arguments but that is not this pipelock binary; wrapping it, and remove-then-install for a single clean wrap",
+		server.Transport.Command)
 }

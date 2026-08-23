@@ -159,10 +159,11 @@ func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, confi
 	wrapped := 0
 	skipped := 0
 	for name, server := range cfg.Servers {
-		if isWrapped(server) {
+		if isWrappedBySelf(server) {
 			skipped++
 			continue
 		}
+		warnForeignWrapper(cmd.ErrOrStderr(), name, server)
 
 		newServer, meta, err := wrapMCPServer(server, exe, resolvedConfig.Path, sandbox, workspace)
 		if err != nil {
@@ -238,7 +239,8 @@ func runJetbrainsRemove(cmd *cobra.Command, global, project, dryRun bool) error 
 
 	unwrapped := 0
 	for name, server := range cfg.Servers {
-		if !isWrapped(server) {
+		if !isRestorableWrapper(server) {
+			warnUnrestorableWrapper(cmd.ErrOrStderr(), name, server)
 			continue
 		}
 

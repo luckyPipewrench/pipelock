@@ -71,6 +71,7 @@ Use a narrow `code` profile for developer traffic and add broader `business` pro
 - Non-JSON HTTP bodies and complete non-JSON WebSocket messages are blocked unless the destination host is on `allowlist_unparseable` or the request matches `allowlist_unparseable_routes`.
 - Outbound WebSocket fragments are blocked while redaction is enabled because partial JSON messages cannot be rewritten safely.
 - Malformed JSON, numeric scalars containing secrets, key-collision rewrites, or redaction limits being exceeded all block the request instead of forwarding partially transformed data.
+- An MCP `tools/call` whose `params.arguments` is a string, array, number, or boolean is blocked. The redactor walks object members, so it cannot mask a secret carried directly in that value. Absent and `null` arguments are forwarded unchanged, because they carry no content to rewrite.
 
 `allowlist_unparseable` accepts bare lowercase hostnames only. Do not include schemes, paths, or ports. Use it sparingly for trusted endpoints that legitimately require non-JSON request formats.
 

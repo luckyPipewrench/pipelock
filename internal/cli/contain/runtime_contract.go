@@ -118,6 +118,7 @@ func profileScriptPathOrDefault(env *installEnv) string {
 //   - git via GIT_SSL_CAINFO
 //   - cargo via CARGO_HTTP_CAINFO / CARGO_HTTP_PROXY
 //   - pip via PIP_CERT
+//   - npm lifecycle-script suppression via npm_config_ignore_scripts
 //   - node http/https modules via *_PROXY + NODE_EXTRA_CA_CERTS, and node's
 //     built-in fetch()/undici via NODE_USE_ENV_PROXY on node versions that
 //     support it, plus the NODE_OPTIONS require shim fallback.
@@ -144,6 +145,9 @@ func runtimeContractVars(env *installEnv) []contractVar {
 		{"GIT_SSL_CAINFO", caBundle},
 		{"CARGO_HTTP_CAINFO", caBundle},
 		{"PIP_CERT", caBundle},
+		// Environment config outranks an untrusted project .npmrc. A deliberate
+		// command-line --ignore-scripts=false still provides the operator escape hatch.
+		{"npm_config_ignore_scripts", "1"},
 		// node trusts an APPENDED CA file (not a replacement bundle).
 		{"NODE_EXTRA_CA_CERTS", nodeCA},
 		// Older node fetch()/undici ignores *_PROXY unless a global dispatcher
@@ -396,6 +400,7 @@ func renderAgentNpmrc(env *installEnv) string {
 		"proxy=" + proxy,
 		"https-proxy=" + proxy,
 		"cafile=" + env.caBundlePath,
+		"ignore-scripts=true",
 		"",
 	}, "\n")
 }

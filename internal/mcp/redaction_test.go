@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -215,41 +216,140 @@ func TestApplyMCPToolCallRedaction_NoArgumentsBypasses(t *testing.T) {
 	}
 }
 
-func TestApplyMCPToolCallRedaction_InvalidArgumentsBypass(t *testing.T) {
+// TestApplyMCPToolCallRedaction_NullArgumentsBypasses keeps the one non-object
+// shape that is a legitimate no-op. Absent or null arguments carry no content,
+// so there is nothing to mask and passing the line through unchanged forwards no
+// secret. This is the availability half of the fail-closed rule below: refusing
+// it would break every tool that takes no arguments.
+func TestApplyMCPToolCallRedaction_NullArgumentsBypasses(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":null}}`)
+
+	rewritten, report, err := applyMCPToolCallRedaction(line, MCPProxyOpts{
+		RedactMatcher: testRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+	})
+	if err != nil {
+		t.Fatalf("applyMCPToolCallRedaction: %v", err)
+	}
+	if !bytes.Equal(rewritten, line) {
+		t.Fatalf("null arguments should pass through unchanged\ngot:  %s\nwant: %s", rewritten, line)
+	}
+	if report != nil {
+		t.Fatalf("report should be nil for null arguments, got %+v", report)
+	}
+}
+
+// TestApplyMCPToolCallRedaction_NonObjectArgumentsFailClosed pins the direction
+// for arguments that carry content the redaction engine cannot walk. The engine
+// masks object members, so a credential placed directly in a string or an array
+// was previously forwarded verbatim while the call reported success: enabling
+// redaction masked an object-shaped secret and silently passed the same secret
+// one shape over. A2A params at the sibling call site already failed closed here.
+func TestApplyMCPToolCallRedaction_NonObjectArgumentsFailClosed(t *testing.T) {
+	secret := mcpRedactionSecret()
 	tests := []struct {
 		name string
 		line []byte
 	}{
 		{
-			name: "null",
-			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":null}}`),
+			name: "string carrying a credential",
+			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":"` + secret + `"}}`),
 		},
 		{
-			name: "string",
-			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":"oops"}}`),
+			name: "array carrying a credential",
+			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":["` + secret + `"]}}`),
 		},
 		{
-			name: "array",
+			name: "empty array",
 			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":[]}}`),
+		},
+		{
+			name: "number",
+			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":7}}`),
+		},
+		{
+			name: "boolean",
+			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":true}}`),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rewritten, report, err := applyMCPToolCallRedaction(tt.line, MCPProxyOpts{
+			rewritten, _, err := applyMCPToolCallRedaction(tt.line, MCPProxyOpts{
 				RedactMatcher: testRedactionMatcher(),
 				RedactLimits:  redact.DefaultLimits().ToLimits(),
 			})
-			if err != nil {
-				t.Fatalf("applyMCPToolCallRedaction: %v", err)
+			if err == nil {
+				t.Fatalf("non-object arguments should block, got %s", rewritten)
 			}
-			if !bytes.Equal(rewritten, tt.line) {
-				t.Fatalf("invalid arguments should pass through unchanged\ngot:  %s\nwant: %s", rewritten, tt.line)
+			var blockErr *redact.BlockError
+			if !errors.As(err, &blockErr) {
+				t.Fatalf("expected BlockError, got %T: %v", err, err)
 			}
-			if report != nil {
-				t.Fatalf("report should be nil for invalid arguments, got %+v", report)
+			if blockErr.Reason != redact.ReasonBodyUnparseable {
+				t.Fatalf("reason = %q, want %q", blockErr.Reason, redact.ReasonBodyUnparseable)
+			}
+			if bytes.Contains(rewritten, []byte(secret)) {
+				t.Fatalf("blocked call still returned the secret: %s", rewritten)
 			}
 		})
+	}
+}
+
+// TestApplyMCPToolCallRedaction_OversizeArgumentsFailClosed covers the engine's
+// own refusal reaching the caller. An operator can lower max_body_bytes, and
+// arguments above that bound cannot be walked, so the call must block rather
+// than forward the bytes the engine declined to inspect.
+func TestApplyMCPToolCallRedaction_OversizeArgumentsFailClosed(t *testing.T) {
+	secret := mcpRedactionSecret()
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"note":"` + secret + `"}}}`)
+
+	limits := redact.DefaultLimits()
+	// Below the arguments object, so the engine refuses to walk it.
+	limits.MaxBodyBytes = 8
+
+	rewritten, _, err := applyMCPToolCallRedaction(line, MCPProxyOpts{
+		RedactMatcher: testRedactionMatcher(),
+		RedactLimits:  limits.ToLimits(),
+	})
+	if err == nil {
+		t.Fatalf("oversize arguments should block, got %s", rewritten)
+	}
+	var blockErr *redact.BlockError
+	if !errors.As(err, &blockErr) {
+		t.Fatalf("expected BlockError, got %T: %v", err, err)
+	}
+	if blockErr.Reason != redact.ReasonBodyTooLarge {
+		t.Fatalf("reason = %q, want %q", blockErr.Reason, redact.ReasonBodyTooLarge)
+	}
+	if bytes.Contains(rewritten, []byte(secret)) {
+		t.Fatalf("blocked call still returned the secret: %s", rewritten)
+	}
+}
+
+// TestRewriteRedactableJSON_DuplicateKeysFailClosed exercises the helper
+// directly, because the duplicate-key guard inside it is defence in depth that
+// the current callers cannot reach: applyMCPToolCallRedaction already screens
+// the whole envelope, and that walk recurses, so a duplicate nested inside
+// params or arguments is caught before the helper runs. The guard is kept for
+// the next call site, which may not screen its input first, and this test is
+// what keeps it honest rather than dead.
+func TestRewriteRedactableJSON_DuplicateKeysFailClosed(t *testing.T) {
+	cfg := MCPRedactionConfig{
+		Matcher: testRedactionMatcher(),
+		Limits:  redact.DefaultLimits().ToLimits(),
+	}
+	raw := json.RawMessage(`{"note":"safe","note":"` + mcpRedactionSecret() + `"}`)
+
+	rewritten, _, err := rewriteRedactableJSON(raw, cfg, "tools/call arguments")
+	if err == nil {
+		t.Fatalf("duplicate keys should block, got %s", rewritten)
+	}
+	if !redact.IsDuplicateKeyBlock(err) {
+		t.Fatalf("expected duplicate-key block, got %T: %v", err, err)
+	}
+	if rewritten != nil {
+		t.Fatalf("blocked call should return no bytes, got %s", rewritten)
 	}
 }
 

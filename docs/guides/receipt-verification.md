@@ -657,6 +657,25 @@ pipelock verify-receipt receipt.json --key /etc/pipelock/keys/flight-recorder-si
 The exported file is public key material only. Do not hand verifiers the private
 file named by `flight_recorder.signing_key_path`.
 
+## Offline compaction of legacy evidence
+
+Online evidence views deliberately stop at their documented per-shard read
+limit. If `pipelock evidence doctor` reports an oversized legacy shard, do not
+raise that online limit or manually rewrite the JSONL. Run the stopped-recorder
+offline ceremony instead:
+
+```bash
+pipelock evidence compact --receipt-dir /var/lib/pipelock/recorder --session proxy --key /etc/pipelock/keys/flight-recorder-signing.key.pub
+```
+
+The ceremony is the sanctioned recovery path. It streams input with bounded
+record memory, verifies the recorder hash chain, checkpoint signatures, and
+every signed v1 or v2 receipt chain, then emits normal-sized shards without
+changing any JSONL record bytes. It refuses unknown record types, sidecars, a
+source that changes during the ceremony, and an unverifiable receipt family.
+The original directory is retained as a digest-listed archive only after the
+atomic exchange succeeds.
+
 ## See also
 
 - [Flight recorder guide](flight-recorder.md) for configuring evidence logging

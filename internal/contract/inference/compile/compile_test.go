@@ -102,6 +102,18 @@ func TestCompile_FatalIngestError(t *testing.T) {
 	}
 }
 
+func TestCompileRefusesMalformedTailInsteadOfSigningPrefix(t *testing.T) {
+	t.Parallel()
+	input := fixtureJSONL(t) + "{not-json}\n"
+	_, err := Compile(CompileInput{
+		Stream: strings.NewReader(input),
+		Config: testConfig(),
+	}, CompileOptions{Deterministic: true, Signer: newTestSigner()})
+	if !errors.Is(err, ErrIngestFailed) {
+		t.Fatalf("Compile error = %v, want ErrIngestFailed", err)
+	}
+}
+
 func TestCompile_ObservationWindowRootMarshalError(t *testing.T) {
 	oldMarshal := observationWindowMarshal
 	t.Cleanup(func() { observationWindowMarshal = oldMarshal })

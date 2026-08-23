@@ -245,8 +245,9 @@ func TestResume_LegacyOversizedShardUsesBoundedHeadAndTail(t *testing.T) {
 			Summary:   padding,
 			Detail:    map[string]string{"safe": "value"},
 			PrevHash:  "legacy-prev",
-			Hash:      "legacy-hash",
+			Hash:      "",
 		}
+		entry.Hash = recorder.ComputeHash(entry)
 		if err := encoder.Encode(entry); err != nil {
 			_ = file.Close()
 			t.Fatalf("Encode padding: %v", err)
@@ -284,8 +285,9 @@ func TestResume_LegacyOversizedShardUsesBoundedHeadAndTail(t *testing.T) {
 			Summary:   padding,
 			Detail:    map[string]string{"safe": "value"},
 			PrevHash:  "legacy-prev",
-			Hash:      "legacy-hash",
+			Hash:      "",
 		}
+		entry.Hash = recorder.ComputeHash(entry)
 		if err := encoder.Encode(entry); err != nil {
 			_ = file.Close()
 			t.Fatalf("Encode trailing non-receipt: %v", err)

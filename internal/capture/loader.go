@@ -25,6 +25,11 @@ import (
 // sidecars but a sidecar cannot be safely read, decrypted, or verified.
 var ErrSidecarDecrypt = errors.New("capture replay: sidecar decrypt failed")
 
+// ErrUnsupportedCaptureSchema marks a well-formed capture record from a
+// schema this replay binary intentionally does not implement. It is counted as
+// skipped; malformed records are not this error and fail closed.
+var ErrUnsupportedCaptureSchema = errors.New("capture replay: unsupported capture schema")
+
 // ReplayOptions controls optional full-fidelity replay behavior.
 type ReplayOptions struct {
 	// EscrowPrivateKey is the X25519 private key used to decrypt payload
@@ -161,6 +166,14 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 						sc.Close()
 						return nil, 0, 0, "", err
 					}
+					if errors.Is(err, ErrUnsupportedCaptureSchema) {
+						totalSkipped++
+						continue
+					}
+					if entry.Type == EntryTypeCapture {
+						sc.Close()
+						return nil, 0, 0, "", fmt.Errorf("parse capture evidence for session %s/%s: %w", sessionName, sessionID, err)
+					}
 					totalSkipped++
 					continue
 				}
@@ -201,9 +214,13 @@ func extractCaptureSummaryWithOptions(entry recorder.Entry, sessionDir string, e
 		return CaptureSummary{}, "", false, fmt.Errorf("skipping entry type %q", entry.Type)
 	}
 
-	detailJSON, err := json.Marshal(entry.Detail)
-	if err != nil {
-		return CaptureSummary{}, "", false, fmt.Errorf("marshaling entry detail: %w", err)
+	detailJSON := entry.RawDetail
+	if len(detailJSON) == 0 {
+		var err error
+		detailJSON, err = json.Marshal(entry.Detail)
+		if err != nil {
+			return CaptureSummary{}, "", false, fmt.Errorf("marshaling entry detail: %w", err)
+		}
 	}
 
 	var summary CaptureSummary
@@ -213,7 +230,7 @@ func extractCaptureSummaryWithOptions(entry recorder.Entry, sessionDir string, e
 
 	if summary.CaptureSchemaVersion != CaptureSchemaV1 {
 		return CaptureSummary{}, "", false,
-			fmt.Errorf("unsupported capture schema version %d (expected %d)",
+			fmt.Errorf("%w: version %d (expected %d)", ErrUnsupportedCaptureSchema,
 				summary.CaptureSchemaVersion, CaptureSchemaV1)
 	}
 

@@ -492,6 +492,10 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 	}
 
 	e.Version = CurrentWriteEntryVersion
+	// RawDetail is parser provenance for an entry read from disk. A caller must
+	// never be able to smuggle stale or unredacted provenance bytes into a new
+	// write: escrow, redaction, and hashing below all derive from Detail.
+	e.RawDetail = nil
 	// Namespace fields are authenticated only by the v3 projection. Strip any
 	// caller-supplied values while this binary emits v2 so unhashed metadata
 	// cannot leak into the evidence file or an enterprise audit envelope.
@@ -953,18 +957,12 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		// older sequence and fork the chain.
 		last := entries[0]
 
-		// NOTE: We do NOT recompute and verify the tail hash here because
-		// ComputeHash is not round-trip stable for entries whose Detail was
-		// stored as json.RawMessage (e.g., receipt entries). ReadEntries
-		// deserializes Detail into map[string]interface{}, which re-marshals
-		// with alphabetically sorted keys, producing a different hash than
-		// the original struct-ordered JSON. Full chain verification (which
-		// has the same limitation) is done by verify-receipt / VerifyChain.
-		// The chain linkage (prevHash threading) is still enforced on each
-		// new Record call.
 		if last.Hash == "" {
 			return fmt.Errorf("evidence file %s: tail entry seq %d has empty hash",
 				candidate.base, last.Sequence)
+		}
+		if computed := ComputeHash(last); computed != last.Hash {
+			return fmt.Errorf("evidence file %s: tail entry seq %d hash mismatch: computed %s, stored %s", candidate.base, last.Sequence, computed, last.Hash)
 		}
 
 		// Filtering candidates by parsed filename settles which shard to read,

@@ -134,6 +134,76 @@ func TestVerifyChain_SingleReceipt(t *testing.T) {
 	}
 }
 
+// TestStreamingVerifierMatchesBatch guards the maintenance-only streaming
+// verifier against drifting from the established batch verifier. In
+// particular, lifecycle_missing_open is deliberately a report-only result
+// after the integrity-only fallback succeeds; turning it into an early hard
+// error would change the meaning of historical evidence during compaction.
+func TestStreamingVerifierMatchesBatch(t *testing.T) {
+	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	pub, priv := generateTestKey(t)
+	missingOpen := signRunReceipt(t, priv, 0, GenesisHash, sessionOpenTestRunA, base)
+	_, rotatedPriv := generateTestKey(t)
+
+	for _, tc := range []struct {
+		name         string
+		chain        []Receipt
+		wantAddError bool
+	}{
+		{name: "ordinary", chain: buildChain(t, priv, 3)},
+		{name: "lifecycle-open-integrity-fallback", chain: []Receipt{missingOpen}},
+		{name: "key-transition-trust-rejection", chain: buildRotatedChain(t, priv, rotatedPriv, 2, 1), wantAddError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := VerifyChain(tc.chain, hex.EncodeToString(pub))
+			stream, err := NewStreamingVerifier(hex.EncodeToString(pub))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var addErr error
+			for _, receipt := range tc.chain {
+				raw, marshalErr := Marshal(receipt)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				if addErr = stream.Add(raw); addErr != nil {
+					break
+				}
+			}
+			if (addErr != nil) != tc.wantAddError {
+				t.Fatalf("Add() error = %v, want error=%v", addErr, tc.wantAddError)
+			}
+			got := stream.Finish()
+			if got.Valid != want.Valid || got.FailureKind != want.FailureKind || got.IntegrityVerified != want.IntegrityVerified || got.ReceiptCount != want.ReceiptCount || got.FinalSeq != want.FinalSeq || got.RootHash != want.RootHash {
+				t.Fatalf("stream result = %+v, batch result = %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestStreamingVerifierRejectsInvalidKeyEmptyAndMalformedInput(t *testing.T) {
+	if _, err := NewStreamingVerifier(""); err == nil {
+		t.Fatal("invalid trusted key accepted")
+	}
+	pub, _ := generateTestKey(t)
+	stream, err := NewStreamingVerifier(hex.EncodeToString(pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.Finish(); got.Valid || got.Error != "empty chain" {
+		t.Fatalf("empty Finish=%+v", got)
+	}
+	if err := stream.Add([]byte("{")); err == nil {
+		t.Fatal("malformed receipt accepted")
+	}
+	if err := stream.Add([]byte("{}")); err == nil {
+		t.Fatal("latched receipt verifier accepted input")
+	}
+	if stream.Finish().Valid {
+		t.Fatal("latched receipt verifier finished valid")
+	}
+}
+
 func TestVerifyChain_TenReceipts(t *testing.T) {
 	t.Parallel()
 

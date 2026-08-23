@@ -124,6 +124,48 @@ func ReadEvidenceLocationFileBounded(location EvidenceLocation, name string, max
 	return raw, nil
 }
 
+// ReadEvidenceLocationFileForOfflineCompaction reads one immutable source
+// shard for a stopped, operator-invoked compaction ceremony. Callers must pass
+// their remaining aggregate budget. Online query, view, serve, and doctor
+// paths must continue to use ReadEvidenceLocationFileBounded with their normal
+// 8 MiB ceiling.
+func ReadEvidenceLocationFileForOfflineCompaction(location EvidenceLocation, name string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, errors.New("offline compaction byte limit must be positive")
+	}
+	return ReadEvidenceLocationFileBounded(location, name, maxBytes)
+}
+
+// StreamEvidenceLocationFileForOfflineCompaction streams one immutable source
+// shard for an explicitly offline compaction ceremony.  It deliberately does
+// not impose the online whole-file ceiling: callers must process the stream
+// with their own bounded buffers.  The callback is invoked while the no-follow
+// descriptor is open and the file is re-statted afterwards, so a replacement,
+// resize, or timestamp change fails the ceremony rather than producing a
+// partially trusted rewrite.  Do not use this API for query, view, serve, or
+// doctor paths.
+func StreamEvidenceLocationFileForOfflineCompaction(location EvidenceLocation, name string, consume func(io.Reader, os.FileInfo) error) error {
+	if consume == nil {
+		return errors.New("offline compaction stream consumer is required")
+	}
+	file, before, err := openEvidenceLocationFile(location, name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	if err := consume(file, before); err != nil {
+		return err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() || before.ModTime() != after.ModTime() || before.Mode() != after.Mode() {
+		return errors.New("evidence file changed during offline compaction read")
+	}
+	return nil
+}
+
 // ReadEvidenceLocationFileTail reads at most maxBytes from the end of one
 // regular evidence file. The boolean reports that older bytes were omitted.
 func ReadEvidenceLocationFileTail(location EvidenceLocation, name string, maxBytes int64) ([]byte, bool, error) {

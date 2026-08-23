@@ -48,9 +48,17 @@ func ClassifyCrossAgentObservation(current SessionRisk, boundary CrossAgentBound
 	if level < TaintExternalUntrusted {
 		level = TaintExternalUntrusted
 	}
+	url := current.SecurityOriginURL()
+	if url == "" {
+		// Ambiguous and URL-less origins cannot name one source, but the
+		// cross-agent ref must not erase the latest external audit context.
+		// updateTaintOrigin never adopts a synthesized cross-agent ref, so this
+		// fallback cannot rename the security origin.
+		url = current.LastExternalURL
+	}
 	return RiskObservation{
 		Source: TaintSourceRef{
-			URL:         current.LastExternalURL,
+			URL:         url,
 			Kind:        TaintSourceKindCrossAgent,
 			Level:       level,
 			MatchReason: crossAgentMatchReason(boundary),

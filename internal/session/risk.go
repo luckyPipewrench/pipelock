@@ -89,10 +89,20 @@ type SessionRisk struct {
 	LastExternalAt   time.Time        `json:"last_external_at,omitempty"`
 	LastExternalURL  string           `json:"last_external_url,omitempty"`
 	LastExternalKind string           `json:"last_external_kind,omitempty"`
+	TaintOriginAt    time.Time        `json:"taint_origin_at,omitempty"`
+	TaintOriginURL   string           `json:"taint_origin_url,omitempty"`
+	TaintOriginKind  string           `json:"taint_origin_kind,omitempty"`
 	PromptHit        bool             `json:"prompt_hit"`
 	MediaSeen        bool             `json:"media_seen"`
 	ApprovedUntil    time.Time        `json:"approved_until,omitempty"`
 	Sources          []TaintSourceRef `json:"sources,omitempty"`
+
+	// TaintOriginAmbiguous records that more than one distinct source is
+	// responsible for the session's escalating taint, so no single source may
+	// be named as the origin. It is a security marker rather than a display
+	// field: it is what keeps a cleared origin identity from reading as "no
+	// origin was ever resolved" and falling back to the latest source.
+	TaintOriginAmbiguous bool `json:"taint_origin_ambiguous,omitempty"`
 }
 
 // Snapshot returns a copy that is safe to hand to callers.
@@ -121,6 +131,24 @@ func (sr *SessionRisk) Observe(observation RiskObservation) {
 		}
 	}
 
+	previousLevel := sr.Level
+	if !sr.hasTaintOrigin() && previousLevel >= TaintAllowlistedReference {
+		// Snapshot written before taint origins were tracked separately: the
+		// level-establishing source survives only in LastExternal*, which the
+		// update below is about to overwrite with this (possibly lower-risk)
+		// source. Recover it before that happens.
+		sr.TaintOriginAt = sr.LastExternalAt
+		sr.TaintOriginURL = sr.LastExternalURL
+		sr.TaintOriginKind = sr.LastExternalKind
+		if !sr.hasTaintOrigin() {
+			// Nothing recoverable. Record the origin as resolved but
+			// unnameable, which is the same thing an ambiguous origin means to
+			// every consumer: SecurityOrigin* report nothing, no source-scoped
+			// override can match, and a repeat of this recovery on a later
+			// call cannot adopt a benign later source instead.
+			sr.markOriginAmbiguous()
+		}
+	}
 	sr.Level = maxTaintLevel(sr.Level, source.Level)
 	sr.PromptHit = sr.PromptHit || observation.PromptHit
 	sr.MediaSeen = sr.MediaSeen || observation.MediaSeen
@@ -138,6 +166,7 @@ func (sr *SessionRisk) Observe(observation RiskObservation) {
 		sr.LastExternalURL = source.URL
 		sr.LastExternalKind = source.Kind
 	}
+	sr.updateTaintOrigin(source, previousLevel)
 
 	if source.URL != "" || source.Kind != "" || source.Level != TaintTrusted {
 		limit := observation.MaxSources
@@ -146,6 +175,136 @@ func (sr *SessionRisk) Observe(observation RiskObservation) {
 		}
 		sr.Sources = appendBoundedSource(sr.Sources, source, limit)
 	}
+}
+
+// updateTaintOrigin maintains the sticky source attribution consumed by trust
+// decisions. The origin names the source responsible for the session's current
+// taint, and it is deliberately not the latest source: that stickiness is what
+// stops a later benign source from standing in for the one that actually
+// tainted the session.
+//
+// Relative severity does not decide the origin once the escalation floor is in
+// play. A source at or above that floor justifies escalation on its own for the
+// rest of the session, so it is never retired by a later source - not by a more
+// severe one, not by an equal one, and not by a weaker one. All three orderings
+// fail open if severity is allowed to decide:
+//
+//   - Higher wins: a trusted docs page whose security prose trips the injection
+//     patterns escalates the session from untrusted to hostile. If it takes the
+//     origin, a source-scoped override naming that docs page clears an action
+//     the earlier untrusted page still justifies blocking - and does so at a
+//     strictly higher risk level, turning a block into an allow.
+//   - Equal wins: there is no safe winner. First-to-arrive fails open when the
+//     operator-trusted source arrives first; newest fails open in the other
+//     order.
+//   - Weaker loses: an untrusted page fetched after a hostile one still
+//     contaminates independently, so leaving the hostile origin named lets an
+//     override for it clear an action the untrusted page justifies blocking.
+//
+// So any second, distinct source at or above the floor marks the origin
+// ambiguous: SecurityOrigin* then report nothing, no single-source override can
+// match, and the full source list still carries every ref as evidence. A
+// distinct source below the floor cannot escalate anything by itself, so it
+// neither displaces an escalating origin nor creates ambiguity with one.
+func (sr *SessionRisk) updateTaintOrigin(source TaintSourceRef, previousLevel TaintLevel) {
+	if source.Level < TaintAllowlistedReference {
+		return
+	}
+	if source.Kind == TaintSourceKindCrossAgent {
+		// Synthesized from the current origin rather than ingested, so it is
+		// never a second source and never names or unnames one. It must still
+		// leave an origin resolved if it raised the level, or the legacy
+		// recovery in Observe would adopt a later benign source on the next
+		// observation. Unreachable from the only production caller, which
+		// propagates an already contaminated session's own level.
+		if source.Level > previousLevel {
+			sr.markOriginAmbiguous()
+		}
+		return
+	}
+	if !sr.TaintOriginAmbiguous && source.URL == sr.TaintOriginURL && source.Kind == sr.TaintOriginKind {
+		// The same source again, possibly at a higher level than before. Not a
+		// second source, so the identity stands.
+		if source.Level > previousLevel {
+			sr.TaintOriginAt = source.Timestamp.UTC()
+		}
+		return
+	}
+	// Distinct from the recorded origin from here on.
+	if taintLevelEscalates(previousLevel) {
+		// The established origin escalates on its own and cannot be retired. A
+		// second escalating source makes attribution ambiguous; a weaker one
+		// changes nothing.
+		if taintLevelEscalates(source.Level) {
+			sr.markOriginAmbiguous()
+		}
+		return
+	}
+	if source.Level > previousLevel {
+		sr.TaintOriginAt = source.Timestamp.UTC()
+		sr.TaintOriginURL = source.URL
+		sr.TaintOriginKind = source.Kind
+		// Any earlier ambiguity was between sources below the escalation floor,
+		// none of which an override needs to cover. Clearing it here is what
+		// keeps two harmless reference fetches from making the session
+		// permanently override-proof.
+		sr.TaintOriginAmbiguous = false
+		return
+	}
+	sr.markOriginAmbiguous()
+}
+
+// markOriginAmbiguous records that no single source may be named as the origin.
+//
+// Clearing the identity fields alone is not sufficient. hasTaintOrigin also
+// consults TaintOriginAt, and an origin recovered from a legacy snapshot can
+// carry an empty LastExternalAt alongside a URL. Clearing URL and Kind against
+// a zero timestamp would make hasTaintOrigin report "no origin at all", and
+// SecurityOrigin* would fall back to LastExternal* - which Observe has just
+// overwritten with the newest source. The explicit flag is what keeps the
+// ambiguous state from silently becoming unambiguous again.
+func (sr *SessionRisk) markOriginAmbiguous() {
+	sr.TaintOriginAmbiguous = true
+	sr.TaintOriginURL = ""
+	sr.TaintOriginKind = ""
+}
+
+// taintLevelEscalates reports whether a level can, on its own, drive a policy
+// escalation. Shared by the policy matrix and the taint-origin ambiguity rule
+// so the level at which an origin becomes irreplaceable cannot drift away from
+// the level at which the matrix starts escalating.
+func taintLevelEscalates(level TaintLevel) bool {
+	return level >= TaintExternalUntrusted
+}
+
+// hasTaintOrigin reports whether a taint origin has been resolved for the
+// current sticky level. Any one field is sufficient, and all of them must be
+// consulted. An MCP tool result taints with a Kind and no URL, so keying on
+// TaintOriginURL alone would treat a real origin as absent and fall back to the
+// latest source - reintroducing exactly the substitution the origin exists to
+// prevent. An ambiguous origin has no URL and no Kind by construction, so it
+// depends on the flag for the same reason.
+func (sr SessionRisk) hasTaintOrigin() bool {
+	return sr.TaintOriginAmbiguous || !sr.TaintOriginAt.IsZero() ||
+		sr.TaintOriginURL != "" || sr.TaintOriginKind != ""
+}
+
+// SecurityOriginURL returns the source that established the current taint
+// level. The fallback preserves snapshots written before taint origins were
+// tracked separately, and applies only when no origin was resolved at all.
+func (sr SessionRisk) SecurityOriginURL() string {
+	if sr.hasTaintOrigin() {
+		return sr.TaintOriginURL
+	}
+	return sr.LastExternalURL
+}
+
+// SecurityOriginKind returns the kind paired with SecurityOriginURL.
+func (sr SessionRisk) SecurityOriginKind() string {
+	if sr.hasTaintOrigin() {
+		return sr.TaintOriginKind
+	}
+	return sr.LastExternalKind
 }
 
 // RiskObservation describes a single taint observation flowing into a session.
@@ -308,7 +467,7 @@ func (pm PolicyMatrix) EvaluateWithOptions(
 		return PolicyDecisionResult{Decision: PolicyAllow, Reason: "taint_safe_read_only_action"}
 	}
 
-	if taint < TaintExternalUntrusted {
+	if !taintLevelEscalates(taint) {
 		return PolicyDecisionResult{Decision: PolicyAllow, Reason: "trusted_or_allowlisted_context"}
 	}
 

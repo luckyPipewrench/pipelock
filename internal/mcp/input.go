@@ -659,8 +659,8 @@ func ForwardScannedInput(
 					Authority:   decision.Authority.String(),
 					Decision:    decision.Result.Decision.String(),
 					Reason:      decision.Result.Reason,
-					SourceURL:   decision.Risk.LastExternalURL,
-					SourceKind:  decision.Risk.LastExternalKind,
+					SourceURL:   decision.Risk.SecurityOriginURL(),
+					SourceKind:  decision.Risk.SecurityOriginKind(),
 				},
 			)
 		}

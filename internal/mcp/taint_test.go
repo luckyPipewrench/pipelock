@@ -275,6 +275,13 @@ func TestScanHTTPInput_TaintProtectedWriteRequiresApproval(t *testing.T) {
 			Level: session.TaintExternalUntrusted,
 		},
 	})
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://docs.vendor.example/copilot",
+			Kind:  "http_response",
+			Level: session.TaintAllowlistedReference,
+		},
+	})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"/repo/auth/middleware.go","content":"x"}}}`)
 
 	blocked := scanHTTPInput(msg, &bytes.Buffer{}, "sess", "sess", MCPProxyOpts{
@@ -419,6 +426,12 @@ func TestScanHTTPInputDecision_ApprovedTaintAskEmitsAudit(t *testing.T) {
 		}
 		if ev.Fields["authority_kind"] != session.AuthorityUserBroad.String() {
 			t.Fatalf("authority_kind = %v, want %q", ev.Fields["authority_kind"], session.AuthorityUserBroad.String())
+		}
+		if ev.Fields["source_url"] != "https://evil.example/issue/123" {
+			t.Fatalf("source_url = %v, want sticky taint origin", ev.Fields["source_url"])
+		}
+		if ev.Fields["source_kind"] != "http_response" {
+			t.Fatalf("source_kind = %v, want http_response", ev.Fields["source_kind"])
 		}
 		return
 	}
@@ -608,7 +621,12 @@ func TestMCPReportedActionRef(t *testing.T) {
 	}
 }
 
-func TestEvaluateMCPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
+// A benign allowlisted source observed AFTER a hostile one must not be able to
+// satisfy a source-scoped trust override: the session's sticky taint still comes
+// from the hostile source. The benign observation has to come last, or the test
+// passes on unpatched code too - a latest-source-wins origin and a
+// highest-source-wins origin agree whenever the hostile source is the latest.
+func TestEvaluateMCPTaint_TrustOverrideUsesStickyTaintOrigin(t *testing.T) {
 	t.Parallel()
 
 	sc := testScannerWithAction(t, config.ActionWarn)
@@ -616,10 +634,143 @@ func TestEvaluateMCPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
 	rec := &taintRecorder{}
 	rec.ObserveRisk(session.RiskObservation{
 		Source: session.TaintSourceRef{
-			URL:   "https://docs.github.com/copilot",
+			URL:   "https://evil.example/issue/123",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+	})
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://docs.vendor.example/copilot",
 			Kind:  "http_response",
 			Level: session.TaintAllowlistedReference,
 		},
+	})
+	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
+		Scope:       "source",
+		SourceMatch: "https://docs.vendor.example/*",
+		ExpiresAt:   nowPlusHour(t),
+	}}
+
+	decision := evaluateMCPTaint(MCPProxyOpts{
+		Scanner:  sc,
+		Rec:      rec,
+		TaintCfg: &cfg.Taint,
+	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAsk {
+		t.Fatalf("decision = %v, want ask when only a later benign source matches", decision.Result.Decision)
+	}
+}
+
+// The MCP ingest path taints with a Kind and no URL
+// (ClassifyMCPResponseObservation sets no URL), so an origin can legitimately
+// have an empty URL. A later benign HTTP fetch in the same session then supplies
+// the only non-empty LastExternalURL. Keying "was an origin recorded" on the
+// origin URL alone treats that origin as absent and falls back to the benign
+// URL, which a source-scoped override matches - the exact substitution the
+// sticky origin exists to prevent, on the most common mixed MCP+proxy session.
+func TestEvaluateMCPTaint_TrustOverrideIgnoresURLLessOrigin(t *testing.T) {
+	t.Parallel()
+
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	rec.ObserveRisk(session.ClassifyMCPResponseObservation(mcpTaintSourceKind, true, false))
+	if got := rec.RiskSnapshot().Level; got != session.TaintExternalUntrusted {
+		t.Fatalf("setup: level = %v, want untrusted", got)
+	}
+	if got := rec.RiskSnapshot().SecurityOriginURL(); got != "" {
+		t.Fatalf("setup: security origin URL = %q, want empty for URL-less MCP origin", got)
+	}
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://docs.vendor.example/copilot",
+			Kind:  "http_response",
+			Level: session.TaintAllowlistedReference,
+		},
+	})
+	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
+		Scope:       "source",
+		SourceMatch: "https://docs.vendor.example/*",
+		ExpiresAt:   nowPlusHour(t),
+	}}
+
+	decision := evaluateMCPTaint(MCPProxyOpts{
+		Scanner:  sc,
+		Rec:      rec,
+		TaintCfg: &cfg.Taint,
+	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAsk {
+		t.Fatalf("decision = %v, want ask when the origin is the URL-less MCP source", decision.Result.Decision)
+	}
+}
+
+// Being more severe does not make a source the origin. A docs page an operator
+// trusts enough to have written a source-scoped override for can still be
+// escalated to hostile by the documented false-positive class - security prose
+// that trips the injection patterns. If that escalation hands it the origin,
+// the override matches and clears a protected write that the earlier untrusted
+// page still justifies blocking. Worse, the decision gets more permissive as
+// the session gets strictly more dangerous: without the override the hostile
+// level is a block, not an ask, so the laundering converts a block into an
+// allow.
+func TestEvaluateMCPTaint_TrustOverrideIgnoresMoreSevereBenignSource(t *testing.T) {
+	t.Parallel()
+
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://evil.example/issue/123",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+	})
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://docs.vendor.example/copilot",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+		PromptHit: true,
+	})
+	if got := rec.RiskSnapshot().Level; got != session.TaintExternalHostile {
+		t.Fatalf("setup: level = %v, want hostile", got)
+	}
+	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
+		Scope:       "source",
+		SourceMatch: "https://docs.vendor.example/*",
+		ExpiresAt:   nowPlusHour(t),
+	}}
+
+	decision := evaluateMCPTaint(MCPProxyOpts{
+		Scanner:  sc,
+		Rec:      rec,
+		TaintCfg: &cfg.Taint,
+	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyBlock {
+		t.Fatalf("decision = %v, want block when a second source still contaminates", decision.Result.Decision)
+	}
+}
+
+// The reverse ordering of the same laundering: the untrusted page arrives after
+// the hostile one, so it is strictly less severe than the recorded origin. It
+// still contaminates independently, so an override naming the hostile origin
+// must not clear the action either.
+func TestEvaluateMCPTaint_TrustOverrideIgnoresOriginOutrankingALaterSource(t *testing.T) {
+	t.Parallel()
+
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://docs.vendor.example/copilot",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+		PromptHit: true,
 	})
 	rec.ObserveRisk(session.RiskObservation{
 		Source: session.TaintSourceRef{
@@ -630,7 +781,7 @@ func TestEvaluateMCPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
 	})
 	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
 		Scope:       "source",
-		SourceMatch: "https://docs.github.com/*",
+		SourceMatch: "https://docs.vendor.example/*",
 		ExpiresAt:   nowPlusHour(t),
 	}}
 
@@ -639,8 +790,40 @@ func TestEvaluateMCPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
 		Rec:      rec,
 		TaintCfg: &cfg.Taint,
 	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
-	if decision.Result.Decision != session.PolicyAsk {
-		t.Fatalf("decision = %v, want ask when only a historical source matches", decision.Result.Decision)
+	if decision.Result.Decision != session.PolicyBlock {
+		t.Fatalf("decision = %v, want block when a later source still contaminates", decision.Result.Decision)
+	}
+}
+
+// A single hostile source must stay nameable. This is the availability half of
+// the ambiguity rule: if escalation alone erased attribution, the operator's
+// narrowest remedy would never work and the override knob would be dead.
+func TestEvaluateMCPTaint_TrustOverrideStillMatchesSingleEscalatingSource(t *testing.T) {
+	t.Parallel()
+
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	source := session.TaintSourceRef{
+		URL:   "https://docs.vendor.example/copilot",
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+	rec.ObserveRisk(session.RiskObservation{Source: source})
+	rec.ObserveRisk(session.RiskObservation{Source: source, PromptHit: true})
+	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
+		Scope:       "source",
+		SourceMatch: "https://docs.vendor.example/*",
+		ExpiresAt:   nowPlusHour(t),
+	}}
+
+	decision := evaluateMCPTaint(MCPProxyOpts{
+		Scanner:  sc,
+		Rec:      rec,
+		TaintCfg: &cfg.Taint,
+	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("decision = %v, want allow for the one source the override names", decision.Result.Decision)
 	}
 }
 

@@ -428,8 +428,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				Authority:   decision.Authority.String(),
 				Decision:    decision.Result.Decision.String(),
 				Reason:      decision.Result.Reason,
-				SourceURL:   decision.Risk.LastExternalURL,
-				SourceKind:  decision.Risk.LastExternalKind,
+				SourceURL:   decision.Risk.SecurityOriginURL(),
+				SourceKind:  decision.Risk.SecurityOriginKind(),
 			},
 		)
 	}

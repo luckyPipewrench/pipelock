@@ -1526,8 +1526,8 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// instead of counting bytes during the read.
 			limited := io.LimitReader(resp.Body, maxRead+1)
 			body, err := io.ReadAll(limited)
-			_ = resp.Body.Close()
 			if err != nil {
+				_ = resp.Body.Close()
 				// Mirror the block-event surface of every other
 				// media-policy deny path: structured audit log,
 				// reverse-proxy-specific scan-blocked metric, and
@@ -1546,13 +1546,13 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// If oversized, synthesize a block verdict with an
 			// explicit exposure payload so the exposure event still
 			// fires for oversize images.
-			if oversize {
+			if oversize && isMediaType(verdict.MediaType) {
 				verdict = MediaPolicyVerdict{
 					Blocked:     true,
 					BlockReason: fmt.Sprintf("media_policy: image size %d exceeds limit %d", len(body), maxRead),
-					MediaType:   canonCT,
+					MediaType:   verdict.MediaType,
 					Exposure: &MediaExposureFields{
-						ContentType: canonCT,
+						ContentType: verdict.MediaType,
 						SizeBytes:   len(body),
 						Blocked:     true,
 						BlockReason: fmt.Sprintf("media_policy: image size %d exceeds limit %d", len(body), maxRead),
@@ -1561,6 +1561,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
 			if verdict.Blocked {
+				_ = resp.Body.Close()
 				rp.logger.LogBlocked(actx, "media_policy", verdict.BlockReason)
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "media_policy")
@@ -1568,6 +1569,37 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				recordReverseOutcome(http.StatusForbidden, int64(len(body)), "media_policy")
 				return nil
 			}
+			if !isMediaType(verdict.MediaType) {
+				// A generic declaration can sniff as ordinary text. The media
+				// policy deliberately leaves that content alone, so preserve the
+				// bytes already read and continue into response scanning below.
+				// Returning here would forward instruction-bearing text without
+				// applying the operator's response policy.
+				if oversize {
+					resp.Body = readCloserWithClose{
+						Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
+						Closer: resp.Body,
+					}
+				} else {
+					_ = resp.Body.Close()
+					resp.Body = io.NopCloser(bytes.NewReader(body))
+					resp.ContentLength = int64(len(body))
+				}
+				if !cfg.ResponseScanning.Enabled {
+					// Nothing downstream reads these bytes: with response
+					// scanning off the fall-through path returns at the
+					// short-circuit below, which labels the outcome
+					// "complete". Record the boundary-limited label here
+					// instead, so a body no scanner ever read is never
+					// reported as complete coverage.
+					rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+						strconv.Itoa(resp.StatusCode))
+					recordReverseOutcome(resp.StatusCode, resp.ContentLength, outcomeReason)
+					return nil
+				}
+				goto responseScanning
+			}
+			_ = resp.Body.Close()
 			if verdict.StripResult != nil && verdict.StripResult.Changed() {
 				body = verdict.Body
 				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -1606,6 +1638,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 	}
 
+responseScanning:
 	// Stream declared media (image/audio/video) without text-injection
 	// scanning. isBinaryMIME matches only image/audio/video, so every response
 	// reaching here is media: declared audio/video that passed media policy

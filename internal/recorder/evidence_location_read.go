@@ -67,6 +67,12 @@ func ReadEvidenceLocationEntries(location EvidenceLocation) ([]os.DirEntry, erro
 	return entries, err
 }
 
+// ReadEvidenceLocationEntriesBounded lists at most maxEntries and reports
+// whether another entry exists without retaining an unbounded directory.
+func ReadEvidenceLocationEntriesBounded(location EvidenceLocation, maxEntries int) ([]os.DirEntry, bool, error) {
+	return readEvidenceLocationDirectoryEntries(location, maxEntries)
+}
+
 func readEntriesAtEvidenceLocation(location EvidenceLocation, name string, limits entryReadLimits) ([]Entry, bool, int64, error) {
 	file, before, err := openEvidenceLocationFile(location, name)
 	if err != nil {

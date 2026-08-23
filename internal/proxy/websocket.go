@@ -1207,11 +1207,41 @@ func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders
 		Extensions: nil, // disable permessage-deflate; relay does not handle compressed frames
 	}
 
-	conn, _, _, err := dialer.Dial(dialCtx, targetURL)
+	conn, reader, _, err := dialer.Dial(dialCtx, targetURL)
 	if err != nil {
 		return nil, err
 	}
+	if reader != nil {
+		buffered := reader.Buffered()
+		if buffered > 0 {
+			prefix, peekErr := reader.Peek(buffered)
+			if peekErr != nil {
+				ws.PutReader(reader)
+				_ = conn.Close()
+				return nil, fmt.Errorf("preserve post-handshake WebSocket bytes: %w", peekErr)
+			}
+			preserved := bytes.Clone(prefix)
+			ws.PutReader(reader)
+			return &wsDialPrefixedConn{Conn: conn, prefix: bytes.NewReader(preserved)}, nil
+		}
+		ws.PutReader(reader)
+	}
 	return conn, nil
+}
+
+// wsDialPrefixedConn drains bytes received alongside the upstream HTTP upgrade
+// response before reading the socket. Copying the prefix lets wsDialUpstream
+// return gobwas's pooled reader while it still has exclusive ownership.
+type wsDialPrefixedConn struct {
+	net.Conn
+	prefix *bytes.Reader
+}
+
+func (c *wsDialPrefixedConn) Read(p []byte) (int, error) {
+	if c.prefix.Len() > 0 {
+		return c.prefix.Read(p)
+	}
+	return c.Conn.Read(p)
 }
 
 // run starts bidirectional frame relay. Returns stats when both directions complete.

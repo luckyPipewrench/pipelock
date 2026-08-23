@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -70,21 +72,47 @@ func wsControlSendServer(t *testing.T, opcode ws.OpCode, payload []byte) string 
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
-			if upgradeErr != nil {
+	accepted := make(chan net.Conn, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		accepted <- conn
+		defer func() { _ = conn.Close() }()
+		var response bytes.Buffer
+		upgradeIO := struct {
+			io.Reader
+			io.Writer
+		}{Reader: conn, Writer: &response}
+		if _, upgradeErr := ws.Upgrade(upgradeIO); upgradeErr != nil {
+			return
+		}
+		_ = ws.WriteHeader(&response, ws.Header{Fin: true, OpCode: opcode, Length: int64(len(payload))})
+		_, _ = response.Write(payload)
+		_, _ = io.Copy(conn, &response)
+		_ = conn.SetReadDeadline(time.Now().Add(wsControlTestDeadline))
+		for {
+			if _, readErr := ws.ReadFrame(conn); readErr != nil {
 				return
 			}
-			defer func() { _ = conn.Close() }()
-			_ = wsutil.WriteServerMessage(conn, opcode, payload)
-			_ = conn.SetReadDeadline(time.Now().Add(wsControlTestDeadline))
-			_, _ = ws.ReadFrame(conn)
-		}),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("control server did not stop")
+		}
+	})
 	return ln.Addr().String()
 }
 

@@ -2340,6 +2340,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 // enforceUpstreamTextPayload applies response injection policy to any textual
 // WebSocket payload, including Ping and Pong application data.
 func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Logger, msg []byte, allowTransform bool) ([]byte, bool) {
+	const responseScanLayer = "response_scan"
+
 	if len(msg) == 0 || !r.scanText || !r.scanner.ResponseScanningEnabled() {
 		return msg, false
 	}
@@ -2372,15 +2374,15 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	}
 	if wsAction != originalWSAction {
 		sessionKey := sessionKeyFor(r.agent, r.clientIP)
-		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalWSAction, ToAction: wsAction, Scanner: "response_scan", ClientIP: r.clientIP, RequestID: r.requestID})
+		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalWSAction, ToAction: wsAction, Scanner: responseScanLayer, ClientIP: r.clientIP, RequestID: r.requestID})
 	}
 
 	switch wsAction {
 	case config.ActionBlock:
 		reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
-		log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
+		log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, responseScanLayer, reason, r.clientIP, r.requestID)
 		_ = r.emitReceipt(receipt.EmitOpts{
-			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "response_scan", Pattern: reason,
+			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
@@ -2392,9 +2394,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		}
 		if !allowTransform || scanResult.TransformedContent == "" {
 			reason := fmt.Sprintf("injection detected (strip failed): %s", strings.Join(patternNames, ", "))
-			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
+			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, responseScanLayer, reason, r.clientIP, r.requestID)
 			_ = r.emitReceipt(receipt.EmitOpts{
-				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "response_scan", Pattern: reason,
+				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 				Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
@@ -2407,7 +2409,11 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: config.ActionWarn, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	case config.ActionAsk:
 		reason := fmt.Sprintf("injection detected (ask not supported for WS): %s", strings.Join(patternNames, ", "))
-		log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
+		log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, responseScanLayer, reason, r.clientIP, r.requestID)
+		_ = r.emitReceipt(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
+			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
+		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 		return nil, true

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,7 +166,7 @@ func TestDiscoverCmd_HumanAndGenerateRedactSensitiveValues(t *testing.T) {
 
 func TestDiscoverCmd_HumanOutput(t *testing.T) {
 	home := t.TempDir()
-	content := `{"mcpServers":{"brain":{"command":"pipelock","args":["mcp","proxy","--","node","brain.js"]}}}`
+	content := protectedDiscoveryConfig(t)
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +191,7 @@ func TestDiscoverCmd_HumanOutput(t *testing.T) {
 
 func TestDiscoverCmd_ExitCodeZeroAllProtected(t *testing.T) {
 	home := t.TempDir()
-	content := `{"mcpServers":{"brain":{"command":"pipelock","args":["mcp","proxy","--","node","brain.js"]}}}`
+	content := protectedDiscoveryConfig(t)
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +205,15 @@ func TestDiscoverCmd_ExitCodeZeroAllProtected(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil error (exit 0), got %v", err)
 	}
+}
+
+func protectedDiscoveryConfig(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve current executable: %v", err)
+	}
+	return fmt.Sprintf(`{"mcpServers":{"brain":{"command":%q,"args":["mcp","proxy","--","node","brain.js"]}}}`, self)
 }
 
 func TestDiscoverCmd_ExitCodeOneUnprotected(t *testing.T) {

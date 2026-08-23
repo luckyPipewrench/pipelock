@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -235,6 +236,73 @@ func VerifyChain(receipts []EvidenceReceipt, opts ChainVerifyOptions) ChainResul
 	}
 }
 
+// StreamingVerifier verifies the pinned-key compaction profile without
+// retaining all receipts. It intentionally accepts no optional expectation
+// bindings: a maintenance caller must not mistake this narrow API for a full
+// ChainVerifyOptions implementation.
+type StreamingVerifier struct {
+	key      ed25519.PublicKey
+	count    uint64
+	signerID string
+	prevHash string
+	lastSeq  uint64
+	fail     *ChainResult
+}
+
+func NewPinnedStreamingVerifier(key ed25519.PublicKey) (*StreamingVerifier, error) {
+	if len(key) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("pinned streaming verifier requires Ed25519 public key")
+	}
+	return &StreamingVerifier{key: key, prevHash: GenesisHash}, nil
+}
+
+// AddRaw verifies exact v2 wire bytes before advancing the receipt chain.
+func (v *StreamingVerifier) AddRaw(raw []byte) error {
+	if v.fail != nil {
+		return fmt.Errorf("%s", v.fail.Error)
+	}
+	var r EvidenceReceipt
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return v.latch(brokenChain(v.count, "receipt %d duplicate keys: %v", v.count, err))
+	}
+	if err := contract.DecodeStrictJSON(raw, &r); err != nil {
+		return v.latch(brokenChain(v.count, "receipt %d decode: %v", v.count, err))
+	}
+	seq := v.count
+	if err := VerifyWithKey(r, v.key, r.Signature.SignerKeyID); err != nil {
+		return v.latch(brokenChain(seq, "receipt %d signature: %v", seq, err))
+	}
+	if v.count == 0 {
+		v.signerID = r.Signature.SignerKeyID
+	} else if r.Signature.SignerKeyID != v.signerID {
+		return v.latch(brokenChain(seq, "receipt %d signer_key_id %q breaks chain signer %q", seq, r.Signature.SignerKeyID, v.signerID))
+	}
+	if r.ChainSeq != seq || r.ChainPrevHash != v.prevHash {
+		return v.latch(brokenChain(seq, "receipt %d chain sequence or previous hash mismatch", seq))
+	}
+	h, err := ReceiptHash(r)
+	if err != nil {
+		return v.latch(brokenChain(seq, "receipt %d hash: %v", seq, err))
+	}
+	v.prevHash, v.lastSeq, v.count = h, r.ChainSeq, v.count+1
+	return nil
+}
+
+func (v *StreamingVerifier) latch(res ChainResult) error {
+	v.fail = &res
+	return fmt.Errorf("%s", res.Error)
+}
+
+func (v *StreamingVerifier) Finish() ChainResult {
+	if v.fail != nil {
+		return *v.fail
+	}
+	if v.count == 0 {
+		return ChainResult{Valid: false, Error: "empty chain"}
+	}
+	return ChainResult{Valid: true, ReceiptCount: v.count, FinalSeq: v.lastSeq, RootHash: v.prevHash, SignaturesVerified: true, SignerKeyID: v.signerID}
+}
+
 // recorderLine is the minimal recorder Entry shape needed to recover an
 // embedded v2 receipt. Non-evidence entries carry other Detail shapes and
 // are skipped by type.
@@ -342,6 +410,36 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLoc
 	return out, nil
 }
 
+// ExtractEvidenceReceiptsFromEntries extracts signed receipts from recorder
+// entries that have already passed recorder parsing. It uses RawDetail when
+// present so receipt verification consumes the immutable wire bytes rather
+// than a re-marshaled approximation.
+func ExtractEvidenceReceiptsFromEntries(entries []recorder.Entry) ([]EvidenceReceipt, error) {
+	out := make([]EvidenceReceipt, 0)
+	for i, entry := range entries {
+		if entry.Type != EvidenceEntryType {
+			if knownRecorderEntryType(entry.Type) {
+				continue
+			}
+			return nil, fmt.Errorf("parsed recorder entry %d: unexpected recorder entry type %q", i+1, entry.Type)
+		}
+		detail := entry.RawDetail
+		if len(detail) == 0 {
+			var err error
+			detail, err = json.Marshal(entry.Detail)
+			if err != nil {
+				return nil, fmt.Errorf("parsed recorder entry %d: marshal evidence detail: %w", i+1, err)
+			}
+		}
+		receipt, err := decodeEvidenceReceiptDetail(detail)
+		if err != nil {
+			return nil, fmt.Errorf("parsed recorder entry %d: %w", i+1, err)
+		}
+		out = append(out, receipt)
+	}
+	return out, nil
+}
+
 func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceReceipt, error) {
 	var out []EvidenceReceipt
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -366,15 +464,9 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 			}
 			return nil, fmt.Errorf("%s line %d: unexpected recorder entry type %q", label, line, entry.Type)
 		}
-		// json.RawMessage("null") is non-nil and 4 bytes long, so a length
-		// check alone would let a null detail unmarshal to a zero receipt
-		// silently. Reject both empty and literal null.
-		if len(entry.Detail) == 0 || string(bytes.TrimSpace(entry.Detail)) == "null" {
-			return nil, fmt.Errorf("%s line %d: evidence entry has empty detail", label, line)
-		}
-		var r EvidenceReceipt
-		if err := contract.DecodeStrictJSON(entry.Detail, &r); err != nil {
-			return nil, fmt.Errorf("%s line %d: decode evidence receipt: %w", label, line, err)
+		r, err := decodeEvidenceReceiptDetail(entry.Detail)
+		if err != nil {
+			return nil, fmt.Errorf("%s line %d: %w", label, line, err)
 		}
 		out = append(out, r)
 	}
@@ -382,6 +474,20 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 		return nil, fmt.Errorf("scan evidence file %s: %w", label, err)
 	}
 	return out, nil
+}
+
+// decodeEvidenceReceiptDetail decodes the hash-bound detail value used by
+// both raw JSONL and recorder-parsed extraction. json.RawMessage("null") is
+// non-empty, so explicitly reject it rather than accepting a zero receipt.
+func decodeEvidenceReceiptDetail(detail []byte) (EvidenceReceipt, error) {
+	if len(detail) == 0 || string(bytes.TrimSpace(detail)) == "null" {
+		return EvidenceReceipt{}, errors.New("evidence entry has empty detail")
+	}
+	var receipt EvidenceReceipt
+	if err := contract.DecodeStrictJSON(detail, &receipt); err != nil {
+		return EvidenceReceipt{}, fmt.Errorf("decode evidence receipt: %w", err)
+	}
+	return receipt, nil
 }
 
 // parseEvidenceName splits an evidence shard filename into its session ID and

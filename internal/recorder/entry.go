@@ -242,10 +242,11 @@ func ComputeHash(e Entry) string {
 // Field order: v, seq, ts, session_id, trace_id, type, transport, summary,
 // detail_json, raw_ref, prev_hash. Null byte separators between fields.
 func computeHashV1(e Entry) string {
-	detailJSON, err := json.Marshal(e.Detail)
-	if err != nil {
-		detailJSON = []byte("null")
-	}
+	// A parsed legacy entry must hash the exact detail bytes that its writer
+	// committed. Re-marshaling an object changes key order and can make a valid
+	// v1 chain look corrupt. Fresh in-memory v1 entries have no RawDetail, so
+	// detailJSONForHash retains the original marshal behavior for writers.
+	detailJSON := detailJSONForHash(e)
 
 	h := sha256.New()
 	fields := []string{
@@ -529,71 +530,83 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 			return entries, true, bytesRead, nil
 		}
 
-		// Reject duplicate object keys before json.Unmarshal collapses them
-		// last-wins (a parser-differential smuggling vector); shared with the
-		// receipt verify path via internal/jsonscan.
-		if err := jsonscan.RejectDuplicateKeys([]byte(trimmed)); err != nil {
-			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
+		entry, parseErr := ParseEntryLine([]byte(trimmed))
+		if parseErr != nil {
+			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, parseErr)
 		}
-
-		var raw struct {
-			Version          int             `json:"v"`
-			Sequence         uint64          `json:"seq"`
-			Timestamp        time.Time       `json:"ts"`
-			SessionID        string          `json:"session_id"`
-			ChainKind        string          `json:"chain_kind,omitempty"`
-			WriterInstanceID string          `json:"writer_instance_id,omitempty"`
-			TraceID          string          `json:"trace_id,omitempty"`
-			Type             string          `json:"type"`
-			EventKind        string          `json:"event_kind,omitempty"`
-			Transport        string          `json:"transport"`
-			Summary          string          `json:"summary"`
-			Detail           json.RawMessage `json:"detail"`
-			RawRef           string          `json:"raw_ref,omitempty"`
-			PrevHash         string          `json:"prev_hash"`
-			Hash             string          `json:"hash"`
+		if !acceptedEntryVersions[entry.Version] {
+			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, entry.Version)
 		}
-		if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
-			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
-		}
-		if err := ValidateEntryJSONSchema([]byte(trimmed), raw.Version); err != nil {
+		if err := ValidateEntrySchema(entry); err != nil {
 			return nil, false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
 		}
-		e := Entry{
-			Version:          raw.Version,
-			Sequence:         raw.Sequence,
-			Timestamp:        raw.Timestamp,
-			SessionID:        raw.SessionID,
-			ChainKind:        raw.ChainKind,
-			WriterInstanceID: raw.WriterInstanceID,
-			TraceID:          raw.TraceID,
-			Type:             raw.Type,
-			EventKind:        raw.EventKind,
-			Transport:        raw.Transport,
-			Summary:          raw.Summary,
-			RawRef:           raw.RawRef,
-			PrevHash:         raw.PrevHash,
-			Hash:             raw.Hash,
-		}
-		if raw.Detail != nil {
-			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
-			var detail any
-			if err := json.Unmarshal(raw.Detail, &detail); err != nil {
-				return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry detail: %w", lineNum, err)
-			}
-			e.Detail = detail
-		}
-		if !acceptedEntryVersions[e.Version] {
-			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, e.Version)
-		}
-		if err := ValidateEntrySchema(e); err != nil {
-			return nil, false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
-		}
-		entries = append(entries, e)
+		entries = append(entries, entry)
 		if errors.Is(err, io.EOF) {
 			return entries, false, bytesRead, nil
 		}
 	}
+}
+
+// ParseEntryLine parses exactly one JSON recorder entry. It preserves the
+// exact detail bytes for hash verification and rejects duplicate JSON keys
+// before decoding could collapse them. Streaming consumers use this same
+// parser so they cannot disagree with recorder verification.
+func ParseEntryLine(line []byte) (Entry, error) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 {
+		return Entry{}, errors.New("empty recorder entry")
+	}
+	if err := jsonscan.RejectDuplicateKeys(trimmed); err != nil {
+		return Entry{}, err
+	}
+	var raw struct {
+		Version          int             `json:"v"`
+		Sequence         uint64          `json:"seq"`
+		Timestamp        time.Time       `json:"ts"`
+		SessionID        string          `json:"session_id"`
+		ChainKind        string          `json:"chain_kind,omitempty"`
+		WriterInstanceID string          `json:"writer_instance_id,omitempty"`
+		TraceID          string          `json:"trace_id,omitempty"`
+		Type             string          `json:"type"`
+		EventKind        string          `json:"event_kind,omitempty"`
+		Transport        string          `json:"transport"`
+		Summary          string          `json:"summary"`
+		Detail           json.RawMessage `json:"detail"`
+		RawRef           string          `json:"raw_ref,omitempty"`
+		PrevHash         string          `json:"prev_hash"`
+		Hash             string          `json:"hash"`
+	}
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return Entry{}, err
+	}
+	if err := ValidateEntryJSONSchema(trimmed, raw.Version); err != nil {
+		return Entry{}, err
+	}
+	e := Entry{
+		Version:          raw.Version,
+		Sequence:         raw.Sequence,
+		Timestamp:        raw.Timestamp,
+		SessionID:        raw.SessionID,
+		ChainKind:        raw.ChainKind,
+		WriterInstanceID: raw.WriterInstanceID,
+		TraceID:          raw.TraceID,
+		Type:             raw.Type,
+		EventKind:        raw.EventKind,
+		Transport:        raw.Transport,
+		Summary:          raw.Summary,
+		RawRef:           raw.RawRef,
+		PrevHash:         raw.PrevHash,
+		Hash:             raw.Hash,
+	}
+	if raw.Detail != nil {
+		e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
+		var detail any
+		if err := json.Unmarshal(raw.Detail, &detail); err != nil {
+			return Entry{}, fmt.Errorf("parsing entry detail: %w", err)
+		}
+		e.Detail = detail
+	}
+	return e, nil
 }
 
 func readLimitExceededError(path string, limits entryReadLimits, bytesRead int64) error {

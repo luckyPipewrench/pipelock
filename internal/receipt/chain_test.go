@@ -134,6 +134,108 @@ func TestVerifyChain_SingleReceipt(t *testing.T) {
 	}
 }
 
+// TestStreamingVerifierMatchesBatch guards the maintenance-only streaming
+// verifier against drifting from the established batch verifier. In
+// particular, lifecycle_missing_open is deliberately a report-only result
+// after the integrity-only fallback succeeds; turning it into an early hard
+// error would change the meaning of historical evidence during compaction.
+func TestStreamingVerifierMatchesBatch(t *testing.T) {
+	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	pub, priv := generateTestKey(t)
+	missingOpen := signRunReceipt(t, priv, 0, GenesisHash, sessionOpenTestRunA, base)
+	later := signRunReceipt(t, priv, 1, mustHash(t, missingOpen), sessionOpenTestRunA, base.Add(time.Second))
+	later.ActionRecord.Target = "https://api.vendor.example/forged-after-missing-open"
+	_, rotatedPriv := generateTestKey(t)
+
+	for _, tc := range []struct {
+		name         string
+		chain        []Receipt
+		wantAddError bool
+	}{
+		{name: "ordinary", chain: buildChain(t, priv, 3)},
+		{name: "lifecycle-open-integrity-fallback", chain: []Receipt{missingOpen}},
+		{name: "missing-open-then-later-integrity-failure", chain: []Receipt{missingOpen, later}, wantAddError: true},
+		{name: "key-transition-trust-rejection", chain: buildRotatedChain(t, priv, rotatedPriv, 2, 1), wantAddError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := VerifyChain(tc.chain, hex.EncodeToString(pub))
+			stream, err := NewStreamingVerifier(hex.EncodeToString(pub))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var addErr error
+			for _, receipt := range tc.chain {
+				raw, marshalErr := Marshal(receipt)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				if addErr = stream.Add(raw); addErr != nil {
+					break
+				}
+			}
+			if (addErr != nil) != tc.wantAddError {
+				t.Fatalf("Add() error = %v, want error=%v", addErr, tc.wantAddError)
+			}
+			got := stream.Finish()
+			if got.Valid != want.Valid || got.FailureKind != want.FailureKind || got.IntegrityVerified != want.IntegrityVerified || got.ReceiptCount != want.ReceiptCount || got.FinalSeq != want.FinalSeq || got.RootHash != want.RootHash || got.BrokenAtSeq != want.BrokenAtSeq || got.BrokenAtIndex != want.BrokenAtIndex {
+				t.Fatalf("stream result = %+v, batch result = %+v", got, want)
+			}
+			if tc.name == "missing-open-then-later-integrity-failure" && (got.FailureKind != ChainFailureIntegrity || got.BrokenAtSeq != 1 || got.BrokenAtIndex != 1 || got.IntegrityVerified) {
+				t.Fatalf("later integrity failure = %+v, want integrity failure at receipt 1", got)
+			}
+		})
+	}
+}
+
+func TestStreamingVerifierRejectsInvalidKeyEmptyAndMalformedInput(t *testing.T) {
+	pub, _ := generateTestKey(t)
+	for _, tc := range []struct {
+		name          string
+		key           string
+		raw           []byte
+		wantCtorError bool
+		wantEmpty     bool
+		wantAddError  bool
+		checkLatch    bool
+	}{
+		{name: "invalid-key", key: "", wantCtorError: true},
+		{name: "empty", key: hex.EncodeToString(pub), wantEmpty: true},
+		{name: "malformed", key: hex.EncodeToString(pub), raw: []byte("{"), wantAddError: true},
+		{name: "latched", key: hex.EncodeToString(pub), raw: []byte("{"), wantAddError: true, checkLatch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := NewStreamingVerifier(tc.key)
+			if tc.wantCtorError {
+				if err == nil {
+					t.Fatal("invalid trusted key accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantEmpty {
+				if got := stream.Finish(); got.Valid || got.Error != "empty chain" {
+					t.Fatalf("empty Finish=%+v", got)
+				}
+				return
+			}
+			firstErr := stream.Add(tc.raw)
+			if (firstErr != nil) != tc.wantAddError {
+				t.Fatalf("first Add() error = %v, want error=%t", firstErr, tc.wantAddError)
+			}
+			if tc.checkLatch {
+				if err := stream.Add([]byte("{}")); err == nil || err.Error() != firstErr.Error() {
+					t.Fatalf("latched Add() error = %v, want original %v", err, firstErr)
+				}
+			}
+			if got := stream.Finish(); got.Valid || got.Error != firstErr.Error() {
+				t.Fatalf("failed Finish=%+v, want error %q", got, firstErr)
+			}
+		})
+	}
+}
+
 func TestVerifyChain_TenReceipts(t *testing.T) {
 	t.Parallel()
 

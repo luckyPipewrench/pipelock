@@ -210,6 +210,23 @@ match their recorded hash. Those symptoms narrow the cause but do not by
 themselves establish it: a fork and a crafted edit can present the same
 structure.
 
+### Compacting an over-cap recorder directory
+
+Evidence readers refuse a session with more than 256 JSONL shards. Use the offline compaction ceremony only after `pipelock evidence doctor` confirms that the recorder and receipt chains are intact.
+
+```bash
+sudo systemctl stop pipelock.service
+sudo pipelock evidence compact \
+  --receipt-dir /var/lib/pipelock/recorder \
+  --session proxy \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub
+sudo systemctl start pipelock.service
+```
+
+The command refuses to run while a recorder holds the directory lock. It verifies the trusted signed receipt chain before and after compaction, copies each JSONL record line without changing its bytes, and keeps every replacement shard under the 8 MiB read limit. Linux installs the new active directory with one atomic exchange. The original directory moves to a timestamped sibling archive with SHA-256 digests and byte mappings.
+
+This first version accepts one session and no raw-escrow sidecars in the active directory. It refuses mixed directories instead of risking lost evidence. It also refuses malformed chains, duplicate shard starts, symlinks, changing files, and oversized input shards. A failed check leaves the original directory active.
+
 ### Completeness analysis
 
 `pipelock-verifier completeness` analyzes the signed session lifecycle evidence

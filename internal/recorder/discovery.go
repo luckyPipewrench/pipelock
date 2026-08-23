@@ -71,6 +71,9 @@ func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLoc
 		if walkErr != nil {
 			return fmt.Errorf("read evidence path %q: %w", relPath, walkErr)
 		}
+		if entry.IsDir() && relPath != "." && isReservedEvidenceCeremonyDir(entry.Name()) {
+			return fs.SkipDir
+		}
 		entryInfo, infoErr := entry.Info()
 		if infoErr != nil {
 			return fmt.Errorf("stat evidence path %q: %w", relPath, infoErr)
@@ -105,6 +108,11 @@ func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLoc
 	}
 	sort.Slice(locations, func(i, j int) bool { return locations[i].ID < locations[j].ID })
 	return locations, nil
+}
+
+func isReservedEvidenceCeremonyDir(name string) bool {
+	return strings.HasPrefix(name, ".pipelock-evidence-compact-") ||
+		strings.HasPrefix(name, ".pipelock-evidence-archive-")
 }
 
 // validateEvidenceRootComponents checks from the filesystem root down so a

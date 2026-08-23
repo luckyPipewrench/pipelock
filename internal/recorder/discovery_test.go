@@ -37,6 +37,16 @@ func TestDiscoverEvidenceLocations(t *testing.T) {
 			wantIDs: []string{"recorder-a/run-a", "recorder-b/run-b"},
 		},
 		{
+			name: "offline compaction stage and archive are not active locations",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				writeDiscoveryShard(t, filepath.Join(root, "active"))
+				writeDiscoveryShard(t, filepath.Join(root, ".pipelock-evidence-compact-test"))
+				writeDiscoveryShard(t, filepath.Join(root, ".pipelock-evidence-archive-test"))
+			},
+			wantIDs: []string{"active"},
+		},
+		{
 			name: "unexpected deeply nested location is found",
 			setup: func(t *testing.T, root string) {
 				t.Helper()

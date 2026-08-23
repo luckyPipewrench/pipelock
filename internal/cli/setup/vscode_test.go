@@ -911,7 +911,7 @@ func TestUnwrapVscodeServer_NoMeta(t *testing.T) {
 		"type":    testTypeStdio,
 		"command": testNodeCmd,
 	}
-	result, _, err := unwrapVscodeServer(server)
+	result, _, err := unwrapVscodeServer(server, "mcp.json", "remote")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +935,7 @@ func TestUnwrapVscodeServer_HTTPWithHeaders(t *testing.T) {
 		},
 	}
 
-	result, _, err := unwrapVscodeServer(server)
+	result, _, err := unwrapVscodeServer(server, "mcp.json", "remote")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -977,7 +977,7 @@ func TestUnwrapVscodeServer_HeaderSidecarDeletePathValidated(t *testing.T) {
 		},
 	}
 
-	_, plan, err := unwrapVscodeServer(server)
+	_, plan, err := unwrapVscodeServer(server, filepath.Join(home, ".vscode", "mcp.json"), "remote")
 	if err != nil {
 		t.Fatalf("unwrapVscodeServer: %v", err)
 	}
@@ -1005,7 +1005,7 @@ func TestUnwrapVscodeServer_RejectsEscapingHeaderSidecarPath(t *testing.T) {
 		},
 	}
 
-	_, _, err := unwrapVscodeServer(server)
+	_, _, err := unwrapVscodeServer(server, "mcp.json", "remote")
 	if err == nil {
 		t.Fatal("expected escaping header sidecar path to be rejected")
 	}
@@ -1045,7 +1045,7 @@ func TestUnwrapVscodeServer_RejectsSymlinkEscapingHeaderSidecarPath(t *testing.T
 		},
 	}
 
-	_, _, err = unwrapVscodeServer(server)
+	_, _, err = unwrapVscodeServer(server, "mcp.json", "remote")
 	if err == nil {
 		t.Fatal("expected symlink-escaping header sidecar path to be rejected")
 	}
@@ -1066,7 +1066,7 @@ func TestUnwrapVscodeServer_StdioNoArgs(t *testing.T) {
 		},
 	}
 
-	result, _, err := unwrapVscodeServer(server)
+	result, _, err := unwrapVscodeServer(server, "mcp.json", "remote")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1314,7 +1314,7 @@ func TestUnwrapVscodeServer_InvalidMeta_MissingCommand(t *testing.T) {
 			// Missing original_command.
 		},
 	}
-	_, _, err := unwrapVscodeServer(server)
+	_, _, err := unwrapVscodeServer(server, "mcp.json", "remote")
 	if err == nil {
 		t.Error("expected error for missing original_command")
 	}
@@ -1327,7 +1327,7 @@ func TestUnwrapVscodeServer_InvalidMeta_MissingURL(t *testing.T) {
 			// Missing original_url.
 		},
 	}
-	_, _, err := unwrapVscodeServer(server)
+	_, _, err := unwrapVscodeServer(server, "mcp.json", "remote")
 	if err == nil {
 		t.Error("expected error for missing original_url")
 	}
@@ -1339,7 +1339,7 @@ func TestUnwrapVscodeServer_InvalidMeta_MissingType(t *testing.T) {
 			// Missing original_type entirely.
 		},
 	}
-	_, _, err := unwrapVscodeServer(server)
+	_, _, err := unwrapVscodeServer(server, "mcp.json", "remote")
 	if err == nil {
 		t.Error("expected error for missing original_type")
 	}

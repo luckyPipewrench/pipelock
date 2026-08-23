@@ -269,7 +269,14 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 // wrapped config on disk while the credential carrier it references is gone.
 //
 // A server with no pipelock metadata is returned unchanged with a nil op.
-func UnwrapServer(server map[string]interface{}) (map[string]interface{}, *SidecarOp, error) {
+//
+// The delete target is DERIVED from targetConfigPath and serverName, matching
+// what WrapServer would have written, and is never taken from the metadata.
+// The marker lives in an operator-editable config and every server's sidecar
+// shares one directory, so honouring a metadata-supplied path would let one
+// server's entry nominate another server's credential file for deletion. The
+// metadata path is still shape-checked so a tampered marker fails closed.
+func UnwrapServer(server map[string]interface{}, targetConfigPath, serverName string) (map[string]interface{}, *SidecarOp, error) {
 	meta, ok, err := ParseMeta(server)
 	if err != nil {
 		return nil, nil, err
@@ -280,7 +287,10 @@ func UnwrapServer(server map[string]interface{}) (map[string]interface{}, *Sidec
 
 	var plan *SidecarOp
 	if meta.HeaderSidecarPath != "" {
-		path, err := validatedHeaderSidecarDeletePath(meta.HeaderSidecarPath)
+		if _, err := validatedHeaderSidecarDeletePath(meta.HeaderSidecarPath); err != nil {
+			return nil, nil, err
+		}
+		path, err := headerSidecarPath(targetConfigPath, serverName)
 		if err != nil {
 			return nil, nil, err
 		}

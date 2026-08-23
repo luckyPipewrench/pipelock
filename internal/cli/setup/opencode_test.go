@@ -1104,7 +1104,7 @@ func TestUnwrapOpenCodeServer_InvalidMetadata(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := map[string]interface{}{mcpFieldPipelock: tt.meta}
-			if _, _, err := unwrapOpenCodeServer(server); err == nil {
+			if _, _, err := unwrapOpenCodeServer(server, "opencode.json", "remote"); err == nil {
 				t.Error("unwrap should reject invalid metadata")
 			}
 		})
@@ -1114,7 +1114,7 @@ func TestUnwrapOpenCodeServer_InvalidMetadata(t *testing.T) {
 func TestUnwrapOpenCodeServer_NoMeta(t *testing.T) {
 	server := map[string]interface{}{"name": "plain"}
 
-	result, plan, err := unwrapOpenCodeServer(server)
+	result, plan, err := unwrapOpenCodeServer(server, "opencode.json", "remote")
 	if err != nil {
 		t.Fatalf("unwrap no meta: %v", err)
 	}
@@ -1144,7 +1144,7 @@ func TestUnwrapOpenCodeServer_MetadataDecodeErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := map[string]interface{}{mcpFieldPipelock: tt.meta}
-			if _, _, err := unwrapOpenCodeServer(server); err == nil {
+			if _, _, err := unwrapOpenCodeServer(server, "opencode.json", "remote"); err == nil {
 				t.Error("expected unwrap to fail")
 			}
 		})

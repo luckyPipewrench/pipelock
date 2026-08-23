@@ -420,7 +420,7 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 			continue
 		}
 
-		restored, plan, err := unwrapVscodeServer(server)
+		restored, plan, err := unwrapVscodeServer(server, targetPath, name)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not unwrap %q: %v\n", name, err)
 			continue
@@ -608,7 +608,15 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile, targetConf
 // disk; otherwise a marshal / atomic-write failure later in the remove path
 // would leave the still-wrapped config on disk while the credential carrier
 // it references is gone.
-func unwrapVscodeServer(server map[string]interface{}) (map[string]interface{}, *sidecarOp, error) {
+//
+// The delete target is DERIVED from targetConfigPath and serverName, never
+// taken from the metadata. A project-local config controls its own _pipelock
+// marker, so a metadata-supplied path is attacker-controlled input: since
+// every server's sidecar shares one directory, containment checks alone still
+// let a config for one server nominate an unrelated server's credential file
+// for deletion. The metadata path is still shape-checked so obviously tampered
+// markers fail closed and stay visible, but it never selects the file removed.
+func unwrapVscodeServer(server map[string]interface{}, targetConfigPath, serverName string) (map[string]interface{}, *sidecarOp, error) {
 	metaRaw, ok := server["_pipelock"]
 	if !ok {
 		return server, nil, nil
@@ -626,7 +634,10 @@ func unwrapVscodeServer(server map[string]interface{}) (map[string]interface{}, 
 
 	var plan *sidecarOp
 	if meta.HeaderSidecarPath != "" {
-		path, err := validatedHeaderSidecarDeletePath(meta.HeaderSidecarPath)
+		if _, err := validatedHeaderSidecarDeletePath(meta.HeaderSidecarPath); err != nil {
+			return nil, nil, err
+		}
+		path, err := headerSidecarPath(targetConfigPath, serverName)
 		if err != nil {
 			return nil, nil, err
 		}

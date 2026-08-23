@@ -2229,7 +2229,7 @@ func TestScanRequestBody_MultipartText(t *testing.T) {
 	}
 }
 
-func TestScanRequestBody_MultipartBinarySkipped(t *testing.T) {
+func TestScanRequestBody_MultipartBinaryBodyScanned(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
@@ -2238,22 +2238,28 @@ func TestScanRequestBody_MultipartBinarySkipped(t *testing.T) {
 	body := "--" + boundary + "\r\n" +
 		"Content-Disposition: form-data; name=\"file\"; filename=\"image.png\"\r\n" +
 		"Content-Type: image/png\r\n\r\n" +
-		"\x89PNG\r\n\x1a\n" + "\r\n" +
+		string(buildMinimalValidPNG()) + fakeAPIKey() + "\r\n" +
 		"--" + boundary + "--\r\n"
 
-	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+	req := BodyScanRequest{
 		Body:        strings.NewReader(body),
 		ContentType: "multipart/form-data; boundary=" + boundary,
 		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
 		Scanner:     sc,
-	})
-	if !result.Clean {
-		t.Fatal("binary multipart part should be skipped")
+		Action:      cfg.RequestBodyScanning.Action,
+	}
+	applyContentEntropyConfig(&req, cfg)
+	_, result := scanRequestBody(context.Background(), req)
+	if result.Clean {
+		t.Fatal("expected DLP match in binary multipart body")
+	}
+	if !hasDLPMatchName(result.DLPMatches, "AWS Access ID") {
+		t.Fatalf("DLPMatches = %v, want AWS Access ID", dlpMatchNames(result.DLPMatches))
 	}
 }
 
 // TestScanRequestBody_MultipartBinaryMetadataExfil verifies that secrets in
-// binary part metadata (filename) are detected even when the binary body is skipped.
+// binary part metadata (filename) are detected independently of body scanning.
 func TestScanRequestBody_MultipartBinaryMetadataExfil(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)

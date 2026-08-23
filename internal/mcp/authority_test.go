@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -154,24 +155,60 @@ func TestAuthorizeMCPAuditAndNilVerifierPaths(t *testing.T) {
 	if err := authorizeMCP(t.Context(), "", authority.ErrMissingReference, MCPFrame{}, MCPProxyOpts{}); err != nil {
 		t.Fatalf("nil verifier changed behavior: %v", err)
 	}
-	logger := audit.NewNop()
+	var auditBuf bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &auditBuf)
+	if err != nil {
+		t.Fatalf("new audit logger: %v", err)
+	}
+	t.Cleanup(logger.Close)
 	opts := MCPProxyOpts{
 		AuthorityVerifier: authorityVerifierFunc(func(context.Context, authority.Request) authority.Result {
-			return authority.Result{Decision: authority.Decision(99)}
+			return authority.Result{Decision: authority.DecisionDeny, Reason: authority.ReasonActionMismatch}
 		}),
 		AuthorityActor:       "agent-a",
 		AuthorityDestination: "server-a",
 		AuditLogger:          logger,
 		Transport:            transportMCPHTTP,
 	}
-	for _, frame := range []MCPFrame{
-		{Method: "tools/call", ToolCallName: "echo"},
-		{Method: "tools/list"},
-		{},
+	for _, tc := range []struct {
+		frame    MCPFrame
+		resource string
+	}{
+		{frame: MCPFrame{Method: "tools/call", ToolCallName: "echo"}, resource: "echo"},
+		{frame: MCPFrame{Method: "tools/list"}, resource: "tools/list"},
+		{frame: MCPFrame{}, resource: "mcp-request"},
 	} {
-		if err := authorizeMCP(t.Context(), "grant", nil, frame, opts); err == nil {
-			t.Fatalf("invalid verifier result allowed frame %+v", frame)
+		if err := authorizeMCP(t.Context(), "grant", nil, tc.frame, opts); err == nil {
+			t.Fatalf("denying verifier allowed frame %+v", tc.frame)
 		}
+		var entry map[string]any
+		line, _, _ := bytes.Cut(auditBuf.Bytes(), []byte("\n"))
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("decode authority audit: %v", err)
+		}
+		auditBuf.Next(len(line) + 1)
+		for key, want := range map[string]string{
+			"transport": transportMCPHTTP,
+			"decision":  "deny",
+			"reason":    string(authority.ReasonActionMismatch),
+			"resource":  tc.resource,
+		} {
+			if got := entry[key]; got != want {
+				t.Errorf("%s = %v, want %q for frame %+v", key, got, want, tc.frame)
+			}
+		}
+	}
+
+	opts.AuthorityVerifier = allowAuthorityVerifier(nil)
+	if err := authorizeMCP(t.Context(), "grant", nil, MCPFrame{Method: "tools/list"}, opts); err != nil {
+		t.Fatalf("allowing verifier blocked: %v", err)
+	}
+	var allowed map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &allowed); err != nil {
+		t.Fatalf("decode allowed authority audit: %v", err)
+	}
+	if allowed["decision"] != "allow" || allowed["issuer"] != "issuer" || allowed["reference"] != "ref-1" {
+		t.Fatalf("allowed authority audit = %+v", allowed)
 	}
 }
 
@@ -396,14 +433,17 @@ func TestHTTPListenerAuthorityDenialsMakeNoUpstreamRequest(t *testing.T) {
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 
 	for _, tc := range []struct {
-		name   string
-		body   string
-		header bool
+		name     string
+		body     string
+		header   bool
+		wantCode int
 	}{
-		{name: "missing", body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`},
-		{name: "HTTP header is not an MCP carrier", body: `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header: true},
-		{name: "duplicate metadata key", body: `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{"_meta":{"com.pipelock/authority":"one","com.pipelock/authority":"two"}}}`},
-		{name: "malformed metadata member", body: `{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{"_meta":{"com.pipelock/authority":42}}}`},
+		{name: "missing", body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`, wantCode: -32008},
+		{name: "HTTP header is not an MCP carrier", body: `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header: true, wantCode: -32008},
+		// Duplicate JSON keys are rejected by the existing parser before the
+		// authority gate; preserve that ordering and assert its exact code.
+		{name: "duplicate metadata key", body: `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{"_meta":{"com.pipelock/authority":"one","com.pipelock/authority":"two"}}}`, wantCode: -32600},
+		{name: "malformed metadata member", body: `{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{"_meta":{"com.pipelock/authority":42}}}`, wantCode: -32008},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/", strings.NewReader(tc.body))
@@ -423,8 +463,9 @@ func TestHTTPListenerAuthorityDenialsMakeNoUpstreamRequest(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("read response: %v", readErr)
 			}
-			if !bytes.Contains(body, []byte(`"error"`)) {
-				t.Fatalf("response = %s, want local block", body)
+			wantCode := fmt.Sprintf(`"code":%d`, tc.wantCode)
+			if !bytes.Contains(body, []byte(wantCode)) {
+				t.Fatalf("response = %s, want code %d", body, tc.wantCode)
 			}
 		})
 	}

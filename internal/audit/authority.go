@@ -20,6 +20,22 @@ type AuthorityVerification struct {
 	Reference string
 }
 
+// NewAuthorityVerification constructs the shared audit representation of an
+// external authority result. When a verifier or transport fails without a
+// machine-readable reason, the error remains available as audit evidence.
+func NewAuthorityVerification(transport, decision, reason, issuer, reference string, err error) AuthorityVerification {
+	if err != nil && reason == "" {
+		reason = err.Error()
+	}
+	return AuthorityVerification{
+		Transport: transport,
+		Decision:  decision,
+		Reason:    reason,
+		Issuer:    issuer,
+		Reference: reference,
+	}
+}
+
 // LogAuthorityVerification records each enabled authority check independently
 // from ordinary allow/block receipts. Authority checks are audit-only on
 // success and do not alter receipt or mediation-envelope schemas.

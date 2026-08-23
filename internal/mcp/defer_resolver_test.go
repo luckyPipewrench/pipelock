@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -258,6 +260,73 @@ func TestRunHTTPProxy_DeferResolverAllowsBridge(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("RunHTTPProxy returned error: %v", err)
+	}
+}
+
+func TestRunHTTPProxy_DeferResolverRechecksAuthorityBeforeUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		allow bool
+	}{
+		{name: "allow", allow: true},
+		{name: "deny", allow: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := testInputScanner(t)
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+			emitter, _, _, _ := newReceiptTestHarness(t)
+			var upstreamCalls, verifierCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			}))
+			defer upstream.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			inputR, inputW := io.Pipe()
+			var stdout, stderr syncBuffer
+			done := make(chan error, 1)
+			go func() {
+				done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
+					Scanner:              sc,
+					PolicyCfg:            deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
+					DeferManager:         manager,
+					ReceiptEmitter:       emitter,
+					AuthorityActor:       "agent-a",
+					AuthorityDestination: upstream.URL,
+					AuthorityVerifier: authorityVerifierFunc(func(context.Context, authority.Request) authority.Result {
+						verifierCalls.Add(1)
+						if tc.allow {
+							return authority.Result{Decision: authority.DecisionAllow, Reason: authority.ReasonMatched}
+						}
+						return authority.Result{Decision: authority.DecisionDeny, Reason: authority.ReasonActionMismatch}
+					}),
+				})
+			}()
+			msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{},"_meta":{"com.pipelock/authority":"grant"}}}` + "\n"
+			if _, err := inputW.Write([]byte(msg)); err != nil {
+				t.Fatalf("write input: %v", err)
+			}
+			if tc.allow {
+				testwait.For(t, time.Second, func() bool { return upstreamCalls.Load() == 1 }, "deferred allowed call to reach upstream; stderr=%s stdout=%s", &stderr, &stdout)
+			} else {
+				testwait.For(t, time.Second, func() bool { return strings.Contains(stdout.String(), `"code":-32008`) }, "authority denial response; stderr=%s stdout=%s", &stderr, &stdout)
+				if upstreamCalls.Load() != 0 {
+					t.Fatalf("authority-denied deferred call reached upstream %d times", upstreamCalls.Load())
+				}
+			}
+			if verifierCalls.Load() != 1 {
+				t.Fatalf("verifier calls = %d, want 1", verifierCalls.Load())
+			}
+			if err := inputW.Close(); err != nil {
+				t.Fatalf("close input: %v", err)
+			}
+			cancel()
+			if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
+				t.Fatalf("RunHTTPProxy returned error: %v", err)
+			}
+		})
 	}
 }
 

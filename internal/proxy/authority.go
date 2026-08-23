@@ -33,19 +33,15 @@ func (p *Proxy) authorizeForward(
 	}
 	request.AuthorityRef = ref
 	result, err := authority.Evaluate(ctx, p.authorityVerifier, request, carrierErr)
-	decision := result.Decision.String()
-	reason := string(result.Reason)
-	if err != nil && reason == "" {
-		reason = err.Error()
-	}
 	if p.logger != nil {
-		p.logger.LogAuthorityVerification(auditCtx, audit.AuthorityVerification{
-			Transport: transport,
-			Decision:  decision,
-			Reason:    reason,
-			Issuer:    result.Issuer,
-			Reference: result.Reference,
-		})
+		p.logger.LogAuthorityVerification(auditCtx, audit.NewAuthorityVerification(
+			transport,
+			result.Decision.String(),
+			string(result.Reason),
+			result.Issuer,
+			result.Reference,
+			err,
+		))
 	}
 	return err
 }

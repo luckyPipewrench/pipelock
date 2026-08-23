@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 type proxyAuthorityVerifierFunc func(context.Context, authority.Request) authority.Result
@@ -258,6 +259,46 @@ func TestWebSocketAuthorityDenyMakesNoUpstreamHandshake(t *testing.T) {
 	}
 	if err == nil && (op != ws.OpClose || !strings.Contains(string(frame), string(blockreason.AuthorityMismatch))) {
 		t.Fatalf("close opcode=%v payload=%q", op, frame)
+	}
+	if verifierCalls.Load() != 1 {
+		t.Fatalf("verifier calls = %d, want 1", verifierCalls.Load())
+	}
+	select {
+	case <-accepted:
+		t.Fatal("authority-denied WebSocket reached upstream listener")
+	default:
+	}
+}
+
+func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
+	t.Parallel()
+	backend, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	defer func() { _ = backend.Close() }()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := backend.Accept()
+		if acceptErr == nil {
+			accepted <- struct{}{}
+			_ = conn.Close()
+		}
+	}()
+
+	proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer cleanup()
+	var verifierCalls atomic.Int32
+	p.authorityVerifier = denyProxyAuthorityVerifier(&verifierCalls)
+	resp := requestWSHandshake(t, proxyAddr, backend.Addr().String(), http.Header{authority.HTTPHeader: {"grant"}})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.AuthorityMismatch) {
+		t.Fatalf("block reason = %q, want %q", got, blockreason.AuthorityMismatch)
 	}
 	if verifierCalls.Load() != 1 {
 		t.Fatalf("verifier calls = %d, want 1", verifierCalls.Load())

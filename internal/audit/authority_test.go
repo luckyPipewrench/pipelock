@@ -6,11 +6,24 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 )
+
+func TestNewAuthorityVerificationReasonFallback(t *testing.T) {
+	t.Parallel()
+	verification := NewAuthorityVerification("mcp_http", "invalid", "", "issuer", "reference", errors.New("invalid verifier result"))
+	if verification.Transport != "mcp_http" || verification.Decision != "invalid" || verification.Reason != "invalid verifier result" || verification.Issuer != "issuer" || verification.Reference != "reference" {
+		t.Fatalf("verification = %+v", verification)
+	}
+	preserved := NewAuthorityVerification("fetch", "deny", "action_mismatch", "", "", errors.New("ignored fallback"))
+	if preserved.Reason != "action_mismatch" {
+		t.Fatalf("reason = %q, want verifier reason", preserved.Reason)
+	}
+}
 
 func TestLogAuthorityVerificationUsesValidatedIdentifierOnly(t *testing.T) {
 	t.Parallel()

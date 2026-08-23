@@ -43,10 +43,6 @@ func authorizeMCP(ctx context.Context, ref string, carrierErr error, frame MCPFr
 		AuthorityRef: ref,
 	}, carrierErr)
 	if opts.AuditLogger != nil {
-		reason := string(result.Reason)
-		if err != nil && reason == "" {
-			reason = err.Error()
-		}
 		resource := frame.ToolCallName
 		if resource == "" {
 			resource = frame.Method
@@ -56,13 +52,14 @@ func authorizeMCP(ctx context.Context, ref string, carrierErr error, frame MCPFr
 		}
 		opts.AuditLogger.LogAuthorityVerification(
 			mustMCPAuditContext(opts.AuditLogger, frame.Method, resource),
-			audit.AuthorityVerification{
-				Transport: opts.Transport,
-				Decision:  result.Decision.String(),
-				Reason:    reason,
-				Issuer:    result.Issuer,
-				Reference: result.Reference,
-			},
+			audit.NewAuthorityVerification(
+				opts.Transport,
+				result.Decision.String(),
+				string(result.Reason),
+				result.Issuer,
+				result.Reference,
+				err,
+			),
 		)
 	}
 	return err

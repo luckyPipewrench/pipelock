@@ -284,7 +284,7 @@ func killSwitchAPITokenConfigured(cfg *config.Config) bool {
 // proxy. Start blocks until ctx is cancelled or the proxy returns an
 // error, then drains listener error channels, closes owned resources, and
 // returns.
-func (s *Server) Start(ctx context.Context) error {
+func (s *Server) Start(ctx context.Context) (startErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancelMu.Lock()
 	s.internalCancel = cancel
@@ -426,7 +426,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if fsErr != nil {
 		return fsErr
 	}
-	defer func() { _ = stopFileSentry() }()
+	defer func() {
+		startErr = preferFileSentryRuntimeError(startErr, stopFileSentry())
+	}()
 
 	// Pre-bind the fetch listener so the startup summary reports the real
 	// OS-chosen address when the configured port is ephemeral (":0"), instead
@@ -1260,6 +1262,13 @@ func (s *Server) Start(ctx context.Context) error {
 	s.logger.LogShutdown("signal received")
 	_, _ = fmt.Fprintln(s.opts.Stderr, "\nPipelock stopped.")
 	return nil
+}
+
+func preferFileSentryRuntimeError(startErr, fileSentryErr error) error {
+	if fileSentryErr != nil && (startErr == nil || errors.Is(startErr, context.Canceled)) {
+		return fileSentryErr
+	}
+	return startErr
 }
 
 // mcpAirlockConfigFor returns the live airlock configuration the MCP listener

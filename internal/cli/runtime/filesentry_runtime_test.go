@@ -5,6 +5,8 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,31 @@ import (
 // ends Start in microseconds on a healthy run; this ceiling is generous so
 // heavy -race load never trips it.
 const fileSentryCloseBackstop = 10 * time.Second
+
+func TestPreferFileSentryRuntimeError(t *testing.T) {
+	startupErr := errors.New("bind failed")
+	fileSentryErr := errors.New("watch backend failed")
+
+	tests := []struct {
+		name     string
+		startErr error
+		wantErr  error
+	}{
+		{name: "nil early return", wantErr: fileSentryErr},
+		{name: "direct cancellation", startErr: context.Canceled, wantErr: fileSentryErr},
+		{name: "wrapped cancellation", startErr: fmt.Errorf("listener startup: %w", context.Canceled), wantErr: fileSentryErr},
+		{name: "unrelated startup failure", startErr: startupErr, wantErr: startupErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := preferFileSentryRuntimeError(tt.startErr, fileSentryErr)
+			if !errors.Is(got, tt.wantErr) {
+				t.Fatalf("preferFileSentryRuntimeError() = %v, want %v", got, tt.wantErr)
+			}
+		})
+	}
+}
 
 // TestFileSentryWatcherCloseUnblocksStartWithLiveContext pins the one
 // production assumption the gated fake below encodes but cannot validate: that

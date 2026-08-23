@@ -131,7 +131,7 @@ func principalStateOpts(t *testing.T, bearer string) MCPProxyOpts {
 }
 
 // TestHTTPListener_PrincipalState_CurrentSpecSharedBearerRejectsSpoofedPartitions
-// is the core AF-326 customer path. A successfully verified listener bearer is
+// is the core customer path. A successfully verified listener bearer is
 // one intentionally shared principal. Current-spec requests do not initialize
 // an MCP session and never replay Pipelock's private extension token, so they
 // must still retain state across a read -> exec chain. Client-supplied headers

@@ -63,6 +63,7 @@ services:
       - pipelock-external    # Reachable by pipelock, NOT by agent.
     volumes:
       - ./inject-page.html:/srv/index.html:ro,z
+      - ./healthz:/srv/healthz:ro,z
     command: ["python", "-m", "http.server", "9999", "--directory", "/srv"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9999/"]

@@ -41,7 +41,7 @@ Exit code 0 means all passed. Use this in CI to gate deployments.
 
 **Edit the allowlist.** `pipelock.yaml` controls which domains agents can reach, DLP patterns, response scanning rules, and MCP tool policies. See the [configuration reference](../../docs/configuration.md).
 
-**Restore SSRF protection.** The quickstart disables SSRF checks (`internal: []`) because Docker containers use private IPs. For production, copy the CIDR list from [configs/balanced.yaml](../../configs/balanced.yaml) and add your Docker network subnets.
+**Review internal-service trust.** The verification profile keeps default SSRF protection and exempts only its Compose-local `attacker` fixture by hostname. Remove that `trusted_domains` entry when you adapt this config, then add only the internal services your deployment must reach.
 
 **Docker version.** Docker >= 25.0.5 recommended. Older versions have a DNS leak on internal networks ([CVE-2024-29018](https://github.com/moby/moby/security/advisories/GHSA-mq39-4gv4-mvpx)).
 

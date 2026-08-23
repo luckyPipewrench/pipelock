@@ -1,11 +1,9 @@
 # Pipelock quickstart config
 # Based on the balanced preset with two overrides for Docker Compose:
 #   1. listen on 0.0.0.0 (container networking requires binding all interfaces)
-#   2. SSRF checks disabled (Docker containers use private IPs that the
-#      default CIDR list would block; see "internal" at bottom of this file)
+#   2. trust only the named test service through the private-IP SSRF check
 #
-# For production, restore the internal CIDR list from configs/balanced.yaml
-# and add your Docker network subnets to a custom allowlist.
+# Remove the test-service trust entry when adapting this config to production.
 
 version: 1
 mode: balanced
@@ -21,6 +19,11 @@ api_allowlist:
   - "*.github.com"
   - "*.githubusercontent.com"
   - "registry.npmjs.org"
+
+# The verification service reaches this one Compose-local fixture through
+# /fetch. This hostname exemption does not bypass DLP or response scanning.
+trusted_domains:
+  - "attacker"
 
 fetch_proxy:
   listen: "0.0.0.0:8888"
@@ -260,20 +263,3 @@ logging:
   output: stdout
   include_allowed: true
   include_blocked: true
-
-# SSRF / private IP protection.
-# Empty list disables SSRF checks. Required for Docker Compose because containers
-# resolve to private IPs (172.x.x.x) that the default CIDR list would block.
-#
-# For production, restore the private CIDR ranges from configs/balanced.yaml:
-#   internal:
-#     - "10.0.0.0/8"
-#     - "172.16.0.0/12"
-#     - "192.168.0.0/16"
-#     ... (see configs/balanced.yaml for the full list)
-internal: []
-
-# Narrowest SSRF exception: allow one trusted internal IP, not the whole range.
-# ssrf:
-#   ip_allowlist:
-#     - "10.0.0.42/32"

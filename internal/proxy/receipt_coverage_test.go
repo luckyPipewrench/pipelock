@@ -47,7 +47,7 @@ const (
 	coverageTestConfigHash   = "coverage-test-hash"
 	coverageTestTarget       = "https://example.com/coverage"
 	coverageTestAgent        = "coverage-agent"
-	redirectDeniedTestTarget = "https://pastebin.com/raw/redirect-denied"
+	redirectDeniedTestTarget = "https://blocked.vendor.example/raw/redirect-denied"
 )
 
 // extractReceiptsFromDir reads all JSONL files from dir and returns parsed receipts.
@@ -1556,6 +1556,7 @@ func TestReceiptCoverage_FetchRedirectDenyRecordsRefusedDestination(t *testing.T
 	rph := newReceiptProxyHelper(t)
 	handler := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
 		cfg.Enforce = ptrBool(true)
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
 	})
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(origin.URL), nil)
@@ -1593,6 +1594,7 @@ func TestReceiptCoverage_FetchRedirectDenySanitizesRefusedDestination(t *testing
 	rph := newReceiptProxyHelperWithRedactor(t, nil, redactor)
 	handler := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
 		cfg.Enforce = ptrBool(true)
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
 	})
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(origin.URL), nil)
@@ -1620,6 +1622,7 @@ func TestReceiptCoverage_ForwardRedirectDenyRecordsRefusedDestination(t *testing
 	rph := newReceiptProxyHelper(t)
 	proxyAddr, cleanup := setupForwardProxyWithReceipts(t, rph, func(cfg *config.Config) {
 		cfg.Enforce = ptrBool(true)
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
 	})
 	t.Cleanup(cleanup)
 

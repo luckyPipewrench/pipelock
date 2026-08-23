@@ -32,6 +32,8 @@ import threading
 import time
 from pathlib import Path
 
+from hermetic import pipelock_environment
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -101,11 +103,17 @@ flight_recorder:
     return p
 
 
-def run_install(pipelock: Path, cfg_path: Path, pipelock_cfg: Path) -> None:
+def run_install(
+    pipelock: Path,
+    cfg_path: Path,
+    pipelock_cfg: Path,
+    env: dict[str, str],
+) -> None:
     result = subprocess.run(
         [str(pipelock), "cline", "install", "--path", str(cfg_path), "-c", str(pipelock_cfg)],
         capture_output=True,
         text=True,
+        env=env,
     )
     if result.returncode != 0:
         sys.exit(f"install failed: {result.stderr}")
@@ -215,12 +223,13 @@ def main():
     # Opt-in gate. This E2E fetches an upstream npm package at runtime, which
     # is a supply-chain surface even with a pinned version. The default is to
     # skip; operators who want the live-upstream test set PIPELOCK_E2E_LIVE_UPSTREAM=1.
-    if not os.environ.get("PIPELOCK_E2E_LIVE_UPSTREAM"):
-        print(
-            "Skipping runtime MCP E2E. Set PIPELOCK_E2E_LIVE_UPSTREAM=1 to run "
-            "the test, which fetches @modelcontextprotocol/server-everything "
-            f"({EVERYTHING_PACKAGE}) from npm."
-        )
+    if os.environ.get("PIPELOCK_E2E_LIVE_UPSTREAM") != "1":
+        reason = "PIPELOCK_E2E_LIVE_UPSTREAM is not 1; the networked upstream was not requested"
+        print(f"SKIP: runtime MCP E2E ({reason})")
+        print("\n=== Summary ===")
+        print("PASS: 0")
+        print("FAIL: 0")
+        print("SKIP: 1")
         return
 
     workdir = Path(tempfile.mkdtemp(prefix="pipelock-cline-runtime-"))
@@ -231,9 +240,10 @@ def main():
         pipelock = build_pipelock(workdir)
         cfg_path = seed_config(workdir)
         pipelock_cfg = seed_pipelock_config(workdir)
+        runtime_env = pipelock_environment(workdir, pipelock_cfg)
 
         print("\n[1] install")
-        run_install(pipelock, cfg_path, pipelock_cfg)
+        run_install(pipelock, cfg_path, pipelock_cfg, runtime_env)
         cmd, args = extract_wrapped_argv(cfg_path)
         print(f"  wrapped command: {cmd}")
         print(f"  wrapped args head: {' '.join(args[:6])} ...")
@@ -245,6 +255,7 @@ def main():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            env=runtime_env,
         )
         stdout_lines, stdout_thread = start_stdout_reader(proc.stdout)
         stderr_tail = StreamTail()
@@ -307,7 +318,9 @@ def main():
         print("\n[3] remove and verify canonical-JSON restoration")
         remove = subprocess.run(
             [str(pipelock), "cline", "remove", "--path", str(cfg_path)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
+            env=runtime_env,
         )
         if remove.returncode != 0:
             sys.exit(f"remove failed: {remove.stderr}")

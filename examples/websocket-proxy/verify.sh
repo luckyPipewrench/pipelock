@@ -18,6 +18,8 @@ PIPELOCK="${PIPELOCK_BIN:-$REPO_ROOT/pipelock}"
 SOURCE_CONFIG="$EXAMPLE_DIR/pipelock.yaml"
 WORK="$(mktemp -d)"
 CONFIG="$WORK/pipelock.yaml"
+. "$REPO_ROOT/scripts/e2e/hermetic-env.sh"
+pipelock_hermetic_env "$WORK/hermetic"
 ECHO_LOG="$WORK/ws-echo.log"
 PROXY_LOG="$WORK/pipelock.log"
 ECHO_PID=""
@@ -121,12 +123,12 @@ write_config "$PROXY_PORT"
 # Warm Go module cache so ws_echo startup prints only the listen address.
 (
   cd "$REPO_ROOT"
-  go build -o /dev/null "$EXAMPLE_DIR/ws_echo.go" "$EXAMPLE_DIR/ws_probe.go" >/dev/null 2>&1
+  pipelock_host_tool go build -o /dev/null "$EXAMPLE_DIR/ws_echo.go" "$EXAMPLE_DIR/ws_probe.go" >/dev/null 2>&1
 ) || true
 
 (
   cd "$REPO_ROOT"
-  go run "$EXAMPLE_DIR/ws_echo.go"
+  pipelock_host_tool go run "$EXAMPLE_DIR/ws_echo.go"
 ) >"$ECHO_LOG" 2>&1 &
 ECHO_PID=$!
 
@@ -166,7 +168,7 @@ fi
 step "Test 3: clean WebSocket text frame echoes through proxy"
 if (
   cd "$REPO_ROOT"
-  go run "$EXAMPLE_DIR/ws_probe.go" \
+  pipelock_host_tool go run "$EXAMPLE_DIR/ws_probe.go" \
     -proxy "127.0.0.1:${PROXY_PORT}" \
     -backend "$ECHO_ADDR" \
     -message "hello-from-verify" \
@@ -186,7 +188,7 @@ PY
 )"
 if (
   cd "$REPO_ROOT"
-  go run "$EXAMPLE_DIR/ws_probe.go" \
+  pipelock_host_tool go run "$EXAMPLE_DIR/ws_probe.go" \
     -proxy "127.0.0.1:${PROXY_PORT}" \
     -backend "$ECHO_ADDR" \
     -message "$SECRET_MSG" \
@@ -201,7 +203,7 @@ fi
 step "Test 5: binary WebSocket frames are rejected"
 if (
   cd "$REPO_ROOT"
-  go run "$EXAMPLE_DIR/ws_probe.go" \
+  pipelock_host_tool go run "$EXAMPLE_DIR/ws_probe.go" \
     -proxy "127.0.0.1:${PROXY_PORT}" \
     -backend "$ECHO_ADDR" \
     -frame binary \

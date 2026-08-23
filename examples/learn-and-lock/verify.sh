@@ -19,6 +19,8 @@ SOURCE_CONFIG="$EXAMPLE_DIR/pipelock.yaml"
 SERVER="$EXAMPLE_DIR/baseline_decoy_server.py"
 WORK="$(mktemp -d)"
 CONFIG="$WORK/pipelock.yaml"
+. "$REPO_ROOT/scripts/e2e/hermetic-env.sh"
+pipelock_hermetic_env "$WORK/hermetic"
 PROFILE_DIR="$WORK/profiles"
 
 PASS=0

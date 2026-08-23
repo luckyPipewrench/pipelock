@@ -30,6 +30,8 @@ import threading
 import time
 from pathlib import Path
 
+from hermetic import pipelock_environment
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -42,7 +44,13 @@ EXPECTED_TOOLS = {"echo", "get-sum"}
 COMMAND_TIMEOUT_SECONDS = 300
 
 
-def run_or_exit(args: list[str], description: str, cwd: Path | None = None, capture_output: bool = False):
+def run_or_exit(
+    args: list[str],
+    description: str,
+    cwd: Path | None = None,
+    capture_output: bool = False,
+    env: dict[str, str] | None = None,
+):
     """Run a bounded subprocess and exit with context on timeout."""
     try:
         return subprocess.run(
@@ -51,6 +59,7 @@ def run_or_exit(args: list[str], description: str, cwd: Path | None = None, capt
             capture_output=capture_output,
             text=capture_output,
             timeout=COMMAND_TIMEOUT_SECONDS,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         sys.exit(f"{description} timed out after {COMMAND_TIMEOUT_SECONDS}s")
@@ -108,11 +117,17 @@ flight_recorder:
     return p
 
 
-def run_install(pipelock: Path, cfg_path: Path, pipelock_cfg: Path) -> None:
+def run_install(
+    pipelock: Path,
+    cfg_path: Path,
+    pipelock_cfg: Path,
+    env: dict[str, str],
+) -> None:
     result = run_or_exit(
         [str(pipelock), "opencode", "install", "--path", str(cfg_path), "-c", str(pipelock_cfg)],
         "opencode install",
         capture_output=True,
+        env=env,
     )
     if result.returncode != 0:
         sys.exit(f"install failed: {result.stderr}")
@@ -219,11 +234,12 @@ def read_response(proc, stdout_lines, stderr_tail: StreamTail, expected_id, time
 def main():
     # Opt-in gate. This E2E fetches an upstream npm package at runtime.
     if os.environ.get("PIPELOCK_E2E_LIVE_UPSTREAM") != "1":
-        print(
-            "Skipping runtime MCP E2E. Set PIPELOCK_E2E_LIVE_UPSTREAM=1 to run "
-            "the test, which fetches @modelcontextprotocol/server-everything "
-            f"({EVERYTHING_PACKAGE}) from npm."
-        )
+        reason = "PIPELOCK_E2E_LIVE_UPSTREAM is not 1; the networked upstream was not requested"
+        print(f"SKIP: runtime MCP E2E ({reason})")
+        print("\n=== Summary ===")
+        print("PASS: 0")
+        print("FAIL: 0")
+        print("SKIP: 1")
         return
 
     workdir = Path(tempfile.mkdtemp(prefix="pipelock-opencode-runtime-"))
@@ -234,9 +250,10 @@ def main():
         pipelock = build_pipelock(workdir)
         cfg_path = seed_config(workdir)
         pipelock_cfg = seed_pipelock_config(workdir)
+        runtime_env = pipelock_environment(workdir, pipelock_cfg)
 
         print("\n[1] install")
-        run_install(pipelock, cfg_path, pipelock_cfg)
+        run_install(pipelock, cfg_path, pipelock_cfg, runtime_env)
         argv = extract_wrapped_argv(cfg_path)
         print(f"  wrapped command head: {' '.join(argv[:6])} ...")
 
@@ -247,6 +264,7 @@ def main():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            env=runtime_env,
         )
         stdout_lines, stdout_thread = start_stdout_reader(proc.stdout)
         stderr_tail = StreamTail()
@@ -311,6 +329,7 @@ def main():
             [str(pipelock), "opencode", "remove", "--path", str(cfg_path)],
             "opencode remove",
             capture_output=True,
+            env=runtime_env,
         )
         if remove.returncode != 0:
             sys.exit(f"remove failed: {remove.stderr}")

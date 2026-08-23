@@ -19,6 +19,8 @@ PIPELOCK="${PIPELOCK_BIN:-$REPO_ROOT/pipelock}"
 SOURCE_CONFIG="$EXAMPLE_DIR/pipelock.yaml"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+. "$REPO_ROOT/scripts/e2e/hermetic-env.sh"
+pipelock_hermetic_env "$WORK/hermetic"
 
 CONFIG="$WORK/opencode.json"
 SEED="$WORK/opencode.seed.json"

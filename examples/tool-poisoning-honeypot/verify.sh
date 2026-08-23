@@ -17,6 +17,9 @@ REPO_ROOT="$(cd "$EXAMPLE_DIR/../.." && pwd)"
 PIPELOCK="${PIPELOCK_BIN:-$REPO_ROOT/pipelock}"
 CONFIG="$EXAMPLE_DIR/pipelock.yaml"
 SERVER="$EXAMPLE_DIR/decoy_mcp_server.py"
+WORK="$(mktemp -d)"
+. "$REPO_ROOT/scripts/e2e/hermetic-env.sh"
+pipelock_hermetic_env "$WORK/hermetic"
 
 PASS=0
 FAIL=0
@@ -61,7 +64,7 @@ cleanup_proxy() {
 
 # Remove temp artifacts on any exit path. RESP_FILE/PROXY_ERR/PROXY_PIPE are
 # reassigned per round-trip, so read them at exit time.
-trap 'cleanup_proxy; rm -f "${RESP_FILE:-}" "${PROXY_ERR:-}" "${PROXY_PIPE:-}" 2>/dev/null || true' EXIT
+trap 'cleanup_proxy; rm -f "${RESP_FILE:-}" "${PROXY_ERR:-}" "${PROXY_PIPE:-}" 2>/dev/null || true; rm -rf "$WORK" 2>/dev/null || true' EXIT
 
 start_proxy() {
   # Tear down any prior proxy first so a leaked process never blocks the

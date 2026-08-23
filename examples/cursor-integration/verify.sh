@@ -19,6 +19,8 @@ SOURCE_CONFIG="$EXAMPLE_DIR/pipelock.yaml"
 FIXTURES="$EXAMPLE_DIR/fixtures"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+. "$REPO_ROOT/scripts/e2e/hermetic-env.sh"
+pipelock_hermetic_env "$WORK/hermetic"
 CONFIG="$WORK/pipelock.yaml"
 install -m 600 "$SOURCE_CONFIG" "$CONFIG"
 

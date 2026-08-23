@@ -4,7 +4,10 @@
 
 """Structural tests for report-only example and installation verification."""
 
+import os
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -81,6 +84,24 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
             body = path.read_text(encoding="utf-8")
             self.assertIn('SKIP: ', body, path)
 
+    def test_missing_npx_is_an_explicit_runtime_skip(self):
+        env = os.environ.copy()
+        env["PATH"] = ""
+        env["PIPELOCK_E2E_LIVE_UPSTREAM"] = "1"
+        for path in sorted((ROOT / "scripts" / "e2e").glob("*-mcp-runtime.py")):
+            result = subprocess.run(
+                [sys.executable, str(path)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, (path, result.stderr))
+            self.assertIn("SKIP: runtime MCP E2E (npx is not available)", result.stdout)
+            self.assertRegex(result.stdout, r"(?m)^PASS: 0$")
+            self.assertRegex(result.stdout, r"(?m)^FAIL: 0$")
+            self.assertRegex(result.stdout, r"(?m)^SKIP: 1$")
+
     def test_quickstart_runs_the_binary_built_from_this_tree(self):
         self.assertIn('local go_binary="${PIPELOCK_VERIFY_GO:-go}"', self.runner)
         self.assertIn('CGO_ENABLED=0 "$go_binary" build -trimpath', self.runner)
@@ -99,6 +120,10 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
             self.workflow.count("persist-credentials: false"),
             self.workflow.count("uses: actions/checkout@"),
         )
+
+    def test_docker_preflight_does_not_bypass_verifier_skip_reporting(self):
+        self.assertNotIn("command -v docker", self.workflow)
+        self.assertNotIn("docker compose version", self.workflow)
 
 
 if __name__ == "__main__":

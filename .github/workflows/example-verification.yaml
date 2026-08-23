@@ -66,8 +66,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          command -v docker
-          docker compose version
           command -v jq
           command -v npx
           command -v python3

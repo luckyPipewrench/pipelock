@@ -22,10 +22,16 @@ export PIPELOCK_PROXY_PORT
 
 PASS=0
 FAIL=0
+SKIP=0
 
 pass() { PASS=$((PASS + 1)); printf '\033[32m  [PASS]\033[0m %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '\033[31m  [FAIL]\033[0m %s\n' "$1"; }
+skip() { SKIP=$((SKIP + 1)); printf '\033[33m  [SKIP]\033[0m %s (%s)\n' "$1" "$2"; }
 step() { printf '\n\033[1m--- %s ---\033[0m\n' "$1"; }
+summary() {
+  printf '\n\033[1m=== Results: %s passed, %s failed, %s skipped ===\033[0m\n' "$PASS" "$FAIL" "$SKIP"
+  printf 'SKIP: %s\n\n' "$SKIP"
+}
 
 cleanup() {
   (cd "$EXAMPLE_DIR" && docker compose down -v >/dev/null 2>&1) || true
@@ -49,18 +55,18 @@ step "Test 0: docker compose is available"
 if docker compose version >/dev/null 2>&1; then
   pass "docker compose available"
 else
-  fail "docker compose not available"
-  printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
-  exit 1
+  skip "docker compose verification" "docker compose is not available"
+  summary
+  exit 0
 fi
 
 step "Test 0b: Docker daemon is running"
 if docker info >/dev/null 2>&1; then
   pass "docker daemon available"
 else
-  fail "docker daemon not running (start Docker Desktop / Engine)"
-  printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
-  exit 1
+  skip "docker compose verification" "the Docker daemon is not available"
+  summary
+  exit 0
 fi
 
 # -- Test 1: build and start ---------------------------------------------------
@@ -74,7 +80,7 @@ if (
 else
   fail "compose failed to start"
   (cd "$EXAMPLE_DIR" && docker compose logs --no-color) >&2 || true
-  printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
+  summary
   exit 1
 fi
 
@@ -83,7 +89,7 @@ if wait_for_health; then
 else
   fail "pipelock did not become healthy"
   (cd "$EXAMPLE_DIR" && docker compose logs --no-color pipelock) >&2 || true
-  printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
+  summary
   exit 1
 fi
 
@@ -97,7 +103,7 @@ if [ "$OUT" = "hello-from-upstream" ]; then
 else
   fail "unexpected upstream response via proxy"
   printf '%s\n' "$OUT" >&2
-  printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
+  summary
   exit 1
 fi
 
@@ -126,7 +132,7 @@ else
 fi
 
 # -- Summary -------------------------------------------------------------------
-printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
+summary
 if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi

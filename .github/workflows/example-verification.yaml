@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Example verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/example-verification.yaml'
+      - 'Dockerfile'
+      - 'Makefile'
+      - 'cmd/pipelock/**'
+      - 'examples/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'internal/**'
+      - 'scripts/e2e/**'
+      - 'scripts/test_e2e_hermetic.py'
+      - 'scripts/test_example_verification_workflow.py'
+      - 'scripts/verify-examples.sh'
+  pull_request:
+    paths:
+      - '.github/workflows/example-verification.yaml'
+      - 'Dockerfile'
+      - 'Makefile'
+      - 'cmd/pipelock/**'
+      - 'examples/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'internal/**'
+      - 'scripts/e2e/**'
+      - 'scripts/test_e2e_hermetic.py'
+      - 'scripts/test_example_verification_workflow.py'
+      - 'scripts/verify-examples.sh'
+
+concurrency:
+  group: example-verification-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Report-only examples and installation E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Check runner dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v docker
+          docker compose version
+          command -v jq
+          command -v npx
+          command -v python3
+
+      - name: Run shipped verification scripts
+        id: verification
+        continue-on-error: true
+        env:
+          PIPELOCK_E2E_LIVE_UPSTREAM: '1'
+        run: make verify-examples
+
+      - name: Report verification result
+        if: ${{ always() }}
+        shell: bash
+        env:
+          VERIFICATION_OUTCOME: ${{ steps.verification.outcome }}
+        run: |
+          if [[ "$VERIFICATION_OUTCOME" == "success" ]]; then
+            printf 'Example verification completed without failures.\n'
+          else
+            printf '::warning::Example verification reported failures. This workflow is report-only and must not be a required check yet.\n'
+            exit 1
+          fi

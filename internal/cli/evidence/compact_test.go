@@ -631,6 +631,9 @@ func TestWriteCompactManifestRejectsMissingDirectory(t *testing.T) {
 }
 
 func TestRunCompactFailClosedAtCeremonyBoundaries(t *testing.T) {
+	if !supportsCompactExchangeTest() {
+		t.Skip("atomic evidence compaction requires Linux rename exchange")
+	}
 	tests := []struct {
 		name   string
 		inject func()
@@ -774,6 +777,9 @@ func TestSameCompactBytes(t *testing.T) {
 }
 
 func TestRunCompactDetectsSourceMutationBeforeExchange(t *testing.T) {
+	if !supportsCompactExchangeTest() {
+		t.Skip("atomic evidence compaction requires Linux rename exchange")
+	}
 	restoreCompactHooks(t)
 	opts := newCompactFixture(t)
 	calls := 0

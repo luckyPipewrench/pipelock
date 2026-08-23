@@ -284,8 +284,19 @@ const (
 	// decided by its opening bytes, not by reading all of it.
 	utf16SampleBytes = 4096
 	// minUTF16NULs is the smallest number of parity-aligned NULs worth treating
-	// as UTF-16 rather than as noise.
+	// as UTF-16 rather than as noise. It is a floor for tiny samples only; the
+	// ratio below is what actually decides.
 	minUTF16NULs = 2
+	// minUTF16NULFraction is the share of sampled bytes that must be NUL. UTF-16
+	// in the ASCII range carries one NUL per code unit, so almost exactly half the
+	// bytes, and this sits just below that.
+	//
+	// A quarter was tried first and was still too weak: an eight-byte sample with
+	// two NULs is 25% NUL, so the very fixture this bound exists to reject slipped
+	// through. The lesson is that a ratio over a short sample is barely different
+	// from a count, so the bound has to sit near the real value rather than at some
+	// comfortable distance below it.
+	minUTF16NULFraction = 0.4
 )
 
 // contentClass is how the scanner classified a file's bytes.
@@ -366,7 +377,21 @@ func looksUTF16(b []byte) bool {
 		return false
 	}
 	// All the NULs sit on one parity: the alternating shape of UTF-16 ASCII.
-	return even == 0 || odd == 0
+	if even != 0 && odd != 0 {
+		return false
+	}
+	// Parity alone is far too weak. Two NULs that happen to share a parity occur
+	// readily in ordinary UTF-8 prose, and treating that as UTF-16 refused text
+	// this classifier explicitly keeps scannable: it contradicted maxSparseNULs
+	// directly, since a file carrying exactly the tolerated number of NULs could
+	// be rejected before the tolerance was ever consulted.
+	//
+	// UTF-16 in this range is about half NUL bytes, one per ASCII code unit, so
+	// require a real share of the sample rather than a count. UTF-16 that is
+	// mostly non-ASCII carries few NULs and is not recognised here; it still fails
+	// the UTF-8 validity check in classifyContent and is skipped as binary, so it
+	// stays uninspectable either way and only the reported reason differs.
+	return float64(total) >= float64(len(sample))*minUTF16NULFraction
 }
 
 // printableFraction is the share of decoded runes that are text-like: printable,
@@ -513,6 +538,21 @@ func ScanPaths(paths []string, opts Options) (Result, error) {
 				// error on a context file leaves its content just as unknown as
 				// binary or UTF-16 content does, and appending here bypassed the
 				// refusal decision so the scan exited 0.
+				//
+				// WalkDir supplies no entry alongside an error, so the base name
+				// was the only signal and a DIRECTORY named CLAUDE.md was reported
+				// as a refused context file. Ask the filesystem first: refusal is
+				// for content that should have been readable text, and a directory
+				// has none. When the stat also fails the type is genuinely unknown,
+				// and then the base name is all there is, so refusing stays as the
+				// fail-closed answer.
+				if info, statErr := os.Lstat(p); statErr == nil && info.IsDir() {
+					res.Skipped = append(res.Skipped, Skip{
+						Path:   p,
+						Reason: "directory not traversable: " + err.Error(),
+					})
+					return nil
+				}
 				record(p, "walk error: "+err.Error())
 				return nil
 			}

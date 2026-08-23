@@ -339,23 +339,28 @@ func TestScanPaths_ReadErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWrite(t, filepath.Join(sub, "x.md"), "data")
-		if err := os.Chmod(sub, 0o000); err != nil {
-			t.Fatal(err)
-		}
-		// dir needs the exec bit restored so TempDir's RemoveAll can clean up.
-		t.Cleanup(func() { _ = os.Chmod(sub, 0o750) }) //nolint:gosec // test cleanup, dir requires exec bit
+		blockDirAccess(t, sub)
 		res, err := ScanPaths([]string{dir}, Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Assert on the PATH, not on the wording. A directory reports "directory
+		// not traversable" rather than the generic walk-error text now, and a test
+		// pinned to prose fails on a message change while proving nothing about
+		// whether the directory was reported at all.
 		var saw bool
 		for _, sk := range res.Skipped {
-			if strings.Contains(sk.Reason, "walk error") {
+			if sk.Path == sub {
 				saw = true
 			}
 		}
 		if !saw {
-			t.Errorf("unreadable subdir not reported as walk-error skip: %+v", res.Skipped)
+			t.Errorf("unreadable subdir not reported as a skip: %+v", res.Skipped)
+		}
+		for _, r := range res.Refused {
+			if r.Path == sub {
+				t.Errorf("a directory was refused as an uninspectable context file: %+v", r)
+			}
 		}
 	})
 }
@@ -577,4 +582,146 @@ func TestScanPaths_UnreadableContextFileIsRefused(t *testing.T) {
 	if len(res.Skipped) != 0 {
 		t.Fatalf("skipped = %+v, want the unreadable context file refused instead", res.Skipped)
 	}
+}
+
+// TestClassifyContent_SparseNULsAreNotUTF16 pins the two NUL rules against each
+// other. maxSparseNULs keeps a file with a couple of NULs scannable, and the
+// UTF-16 probe used to override that: it needed only two parity-aligned NULs, a
+// shape ordinary prose produces by chance, so a file carrying exactly the
+// tolerated number of NULs was refused before the tolerance was consulted.
+//
+// The direction is what makes this worth a test. The scanner refused a file it
+// could have read, which on a context file means a real finding inside it is
+// reported as unknown content instead of being found.
+func TestClassifyContent_SparseNULsAreNotUTF16(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content []byte
+	}{
+		{name: "two NULs both on even offsets", content: []byte{'a', 'b', 0, 'c', 'd', 'e', 0, 'f'}},
+		{name: "two NULs both on odd offsets", content: []byte{'a', 0, 'b', 'c', 'd', 0, 'e', 'f'}},
+		{
+			name:    "a NUL in longer prose",
+			content: []byte("read the instructions in this file\x00 and then continue as normal.."),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyContent(tc.content); got != classText {
+				t.Fatalf("classifyContent = %v, want classText; a readable context file is refused", got)
+			}
+		})
+	}
+}
+
+// TestLooksUTF16_StillDetectsRealUTF16 is the other direction of the same change.
+// Tightening the NUL requirement must not stop recognising the encoding, or the
+// scanner would try to read UTF-16 as UTF-8 and report noise.
+func TestLooksUTF16_StillDetectsRealUTF16(t *testing.T) {
+	// UTF-16LE "hello world", no BOM: one NUL per ASCII code unit.
+	var noBOM []byte
+	for _, c := range []byte("hello world") {
+		noBOM = append(noBOM, c, 0)
+	}
+	if !looksUTF16(noBOM) {
+		t.Fatalf("BOM-less UTF-16LE ASCII no longer detected")
+	}
+	if got := classifyContent(noBOM); got != classUTF16 {
+		t.Fatalf("classifyContent = %v, want classUTF16", got)
+	}
+
+	for _, bom := range [][]byte{{0xFF, 0xFE}, {0xFE, 0xFF}} {
+		withBOM := append(append([]byte{}, bom...), noBOM...)
+		if !looksUTF16(withBOM) {
+			t.Fatalf("UTF-16 with BOM %x no longer detected", bom)
+		}
+	}
+}
+
+// TestScanPaths_UnreadableDirectoryIsNotARefusedContextFile covers the walk-error
+// path, where WalkDir supplies no entry and the base name was the only signal. A
+// DIRECTORY named CLAUDE.md was reported as a refused context FILE, so an exit
+// code meaning "an agent-context file could not be inspected" fired for something
+// that has no content to inspect.
+func TestScanPaths_UnreadableDirectoryIsNotARefusedContextFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod traversal-denial is not enforced on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses regardless of mode")
+	}
+
+	root := t.TempDir()
+	blocked := filepath.Join(root, "CLAUDE.md")
+	if err := os.Mkdir(blocked, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	blockDirAccess(t, blocked)
+
+	res, err := ScanPaths([]string{root}, Options{})
+	if err != nil {
+		t.Fatalf("ScanPaths: %v", err)
+	}
+	for _, r := range res.Refused {
+		if r.Path == blocked {
+			t.Fatalf("an unreadable directory was refused as a context file: %+v", r)
+		}
+	}
+	var found bool
+	for _, sk := range res.Skipped {
+		if sk.Path == blocked {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the unreadable directory was not reported at all; skipped=%+v refused=%+v", res.Skipped, res.Refused)
+	}
+}
+
+// TestScanPaths_UnreadableContextFileStillRefusedAfterDirectoryFix guards the
+// fail-closed half: narrowing the walk-error branch must not stop an actual
+// unreadable context FILE from being refused.
+func TestScanPaths_UnreadableContextFileStillRefusedAfterDirectoryFix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod read-denial is not enforced on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads regardless of mode")
+	}
+
+	root := t.TempDir()
+	target := filepath.Join(root, "AGENTS.md")
+	if err := os.WriteFile(target, []byte("be helpful"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(target, 0o600) })
+
+	res, err := ScanPaths([]string{root}, Options{})
+	if err != nil {
+		t.Fatalf("ScanPaths: %v", err)
+	}
+	for _, r := range res.Refused {
+		if r.Path == target {
+			return
+		}
+	}
+	t.Fatalf("an unreadable context file was not refused; skipped=%+v refused=%+v", res.Skipped, res.Refused)
+}
+
+// blockDirAccess makes a directory untraversable and restores the exec bit at
+// cleanup, since TempDir's RemoveAll cannot descend into a 0o000 directory.
+//
+// The restore is the only reason a permission suppression is needed at all, so it
+// lives here once rather than being repeated at every test that blocks a
+// directory.
+func blockDirAccess(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o750) //nolint:gosec // cleanup only: RemoveAll needs the exec bit back
+	})
 }

@@ -228,6 +228,11 @@ func extractCaptureSummaryWithOptions(entry recorder.Entry, sessionDir string, e
 		return CaptureSummary{}, "", false, fmt.Errorf("parsing capture summary: %w", err)
 	}
 
+	if summary.CaptureSchemaVersion <= 0 {
+		return CaptureSummary{}, "", false,
+			fmt.Errorf("capture schema version must be positive, got %d", summary.CaptureSchemaVersion)
+	}
+
 	if summary.CaptureSchemaVersion != CaptureSchemaV1 {
 		return CaptureSummary{}, "", false,
 			fmt.Errorf("%w: version %d (expected %d)", ErrUnsupportedCaptureSchema,

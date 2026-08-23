@@ -226,8 +226,8 @@ func TestStreamCompactFilesVerifiesSignedOuterCheckpoint(t *testing.T) {
 	if err := os.WriteFile(path, rewritten.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := streamCompactFiles(location, names, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil }); err == nil || !strings.Contains(err.Error(), "checkpoint") {
-		t.Fatalf("tampered signed checkpoint error = %v, want checkpoint verification failure", err)
+	if _, err := streamCompactFiles(location, names, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil }); err == nil || err.Error() != "entry seq 1: checkpoint signature verification failed" {
+		t.Fatalf("tampered signed checkpoint error = %v, want exact checkpoint signature verification failure", err)
 	}
 }
 
@@ -246,13 +246,13 @@ func TestRunCompactSupportsOversizeLegacyShardAndResumeAppend(t *testing.T) {
 	}
 	var source bytes.Buffer
 	prevOuter, prevReceipt := recorder.GenesisHash, contractreceipt.GenesisHash
-	for i := range 3 {
+	for i := range 12 {
 		r := compactSignedReceipt(t, priv, uint64(i), prevReceipt)
 		prevReceipt, err = contractreceipt.ReceiptHash(r)
 		if err != nil {
 			t.Fatal(err)
 		}
-		e := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i), Timestamp: time.Unix(int64(i+1), 0).UTC(), SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Summary: strings.Repeat("x", 800<<10), Detail: r, PrevHash: prevOuter}
+		e := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i), Timestamp: time.Unix(int64(i+1), 0).UTC(), SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Summary: strings.Repeat("x", 700<<10), Detail: r, PrevHash: prevOuter}
 		e.Hash = recorder.ComputeHash(e)
 		prevOuter = e.Hash
 		line, marshalErr := json.Marshal(e)
@@ -262,14 +262,41 @@ func TestRunCompactSupportsOversizeLegacyShardAndResumeAppend(t *testing.T) {
 		source.Write(line)
 		source.WriteByte('\n')
 	}
-	if source.Len() <= 1<<20 || source.Len() >= int(recorder.MaxEvidenceReadFileBytes) {
-		t.Fatalf("fixture size = %d, want between 1MiB and 8MiB", source.Len())
+	if source.Len() <= int(recorder.MaxEvidenceReadFileBytes) {
+		t.Fatalf("fixture size = %d, want more than normal evidence shard limit %d", source.Len(), recorder.MaxEvidenceReadFileBytes)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), source.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := runCompact(compactCmd(), compactOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub)}); err != nil {
 		t.Fatalf("compact oversize shard: %v", err)
+	}
+	active, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	var compacted bytes.Buffer
+	for _, shard := range active {
+		info, statErr := shard.Info()
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.Size() > recorder.MaxEvidenceReadFileBytes {
+			t.Fatalf("compacted shard %q is %d bytes, exceeds %d", shard.Name(), info.Size(), recorder.MaxEvidenceReadFileBytes)
+		}
+		data, readErr := root.ReadFile(shard.Name())
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		compacted.Write(data)
+	}
+	if !bytes.Equal(compacted.Bytes(), source.Bytes()) {
+		t.Fatal("compaction changed bytes from oversized legacy shard")
 	}
 	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
 	if err != nil {
@@ -427,7 +454,7 @@ func TestCompactStreamWriterPreservesMappingsAndFailsClosed(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses mixed source modes at a new shard", func(t *testing.T) {
+	t.Run("refuses mixed source modes without rotation", func(t *testing.T) {
 		other := filepath.Join(t.TempDir(), "evidence-proxy-1.jsonl")
 		if err := os.WriteFile(other, []byte("other\n"), 0o400); err != nil {
 			t.Fatal(err)
@@ -439,9 +466,37 @@ func TestCompactStreamWriterPreservesMappingsAndFailsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		w := &compactStreamWriter{dir: t.TempDir(), session: "proxy", files: []compactStreamFile{{info: info}}, sourceOffsets: make(map[string]int64)}
+		w := &compactStreamWriter{dir: t.TempDir(), session: "proxy", sourceOffsets: make(map[string]int64)}
+		if err := w.add(source, []byte("first\n"), recorder.Entry{}); err != nil {
+			t.Fatal(err)
+		}
 		if err := w.add(compactStreamFile{name: filepath.Base(other), path: other, info: otherInfo}, []byte("line\n"), recorder.Entry{}); err == nil || !strings.Contains(err.Error(), "mode differs") {
 			t.Fatalf("add error=%v", err)
+		}
+	})
+
+	t.Run("rejects output shard overflow during rotation", func(t *testing.T) {
+		stage := t.TempDir()
+		f, err := os.CreateTemp(stage, "evidence-proxy-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("full\n"); err != nil {
+			t.Fatal(err)
+		}
+		files := make([]compactStreamFile, recorder.MaxEvidenceReadDirectoryEntries-1)
+		for i := range files {
+			files[i].info = info
+		}
+		w := &compactStreamWriter{
+			dir: stage, session: "proxy", current: f, currentName: filepath.Base(f.Name()),
+			currentBytes: recorder.MaxEvidenceReadFileBytes, currentSource: source,
+			files: files, sourceOffsets: make(map[string]int64),
+		}
+		err = w.add(source, []byte("next\n"), recorder.Entry{Sequence: 1})
+		want := fmt.Sprintf("compaction produced %d shards, exceeds %d", recorder.MaxEvidenceReadDirectoryEntries+1, recorder.MaxEvidenceReadDirectoryEntries)
+		if err == nil || err.Error() != want {
+			t.Fatalf("rotation overflow error=%v, want %q", err, want)
 		}
 	})
 

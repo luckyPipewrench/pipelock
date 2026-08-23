@@ -802,6 +802,27 @@ func TestLoadAndReplayDistinguishesUnsupportedAndMalformedCaptureEvidence(t *tes
 			t.Fatalf("LoadAndReplay error=%v, want parse failure", err)
 		}
 	})
+
+	for _, tc := range []struct {
+		name   string
+		detail any
+	}{
+		{name: "null detail", detail: nil},
+		{name: "empty object", detail: map[string]any{}},
+		{name: "zero schema version", detail: CaptureSummary{Surface: SurfaceURL, Request: CaptureRequest{URL: "https://safe.example.com"}}},
+	} {
+		t.Run(tc.name+" fails closed", func(t *testing.T) {
+			dir := t.TempDir()
+			writeEntry(t, dir, tc.detail)
+			_, _, _, _, err := LoadAndReplay(cfg, dir)
+			if err == nil || !strings.Contains(err.Error(), "parse capture evidence") {
+				t.Fatalf("LoadAndReplay error=%v, want parse failure", err)
+			}
+			if errors.Is(err, ErrUnsupportedCaptureSchema) {
+				t.Fatalf("LoadAndReplay error=%v, must not classify missing or zero schema as unsupported", err)
+			}
+		})
+	}
 }
 
 func TestExtractCaptureSummaryUsesRawDetailAndFallbacksSafely(t *testing.T) {

@@ -110,12 +110,21 @@ func (w *compactStreamWriter) add(source compactStreamFile, line []byte, entry r
 	if int64(len(line)) > recorder.MaxEvidenceReadFileBytes {
 		return fmt.Errorf("single JSONL line exceeds evidence shard limit")
 	}
+	// Every output shard inherits the metadata of the source that opened it.
+	// Reject a mode change before appending to that shard, even when the line
+	// still fits and therefore would not trigger rotation.
+	if w.current != nil && source.info.Mode().Perm() != w.currentSource.info.Mode().Perm() {
+		return fmt.Errorf("source shard mode differs; compaction cannot preserve per-output provenance")
+	}
 	if w.current == nil || w.currentBytes+int64(len(line)) > recorder.MaxEvidenceReadFileBytes {
 		if err := w.close(); err != nil {
 			return err
 		}
 		if len(w.files) > 0 && source.info.Mode().Perm() != w.files[0].info.Mode().Perm() {
 			return fmt.Errorf("source shard mode differs; compaction cannot preserve per-output provenance")
+		}
+		if len(w.files) >= recorder.MaxEvidenceReadDirectoryEntries {
+			return fmt.Errorf("compaction produced %d shards, exceeds %d", len(w.files)+1, recorder.MaxEvidenceReadDirectoryEntries)
 		}
 		w.currentStart = entry.Sequence
 		w.currentName = fmt.Sprintf("evidence-%s-%d.jsonl", filepath.Base(w.session), entry.Sequence)

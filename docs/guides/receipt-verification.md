@@ -223,9 +223,9 @@ sudo pipelock evidence compact \
 sudo systemctl start pipelock.service
 ```
 
-The command refuses to run while a recorder holds the directory lock. It verifies the trusted signed receipt chain before and after compaction, copies each JSONL record line without changing its bytes, and keeps every replacement shard under the 8 MiB read limit. Linux installs the new active directory with one atomic exchange. The original directory moves to a timestamped sibling archive with SHA-256 digests and byte mappings.
+The command refuses to run while a recorder holds the directory lock. It accepts oversized legacy input and streams verification, recovery, and archive creation with bounded record memory. It verifies the trusted recorder hash chain, checkpoint signatures, and every signed v1 or v2 receipt chain before and after compaction, copies each JSONL record line without changing its bytes, and keeps every replacement shard at or below the 8 MiB read limit. Linux installs the new active directory with one atomic exchange; only then does the original directory become a timestamped sibling archive with SHA-256 digests and byte mappings.
 
-This first version accepts one session and no raw-escrow sidecars in the active directory. It refuses mixed directories instead of risking lost evidence. It also refuses malformed chains, duplicate shard starts, symlinks, changing files, more than 4,096 input shards, more than 256 MiB of input, and oversized input shards. A failed check leaves the original directory active.
+This first version accepts exactly one session, up to 4,096 input shards, and no raw-escrow sidecars in the active directory. It refuses mixed directories, malformed or unverifiable chains, unknown record types, duplicate shard starts, symlinks, and sources that change during the ceremony. A failed check leaves the original directory active.
 
 ### Completeness analysis
 
@@ -656,25 +656,6 @@ pipelock verify-receipt receipt.json --key /etc/pipelock/keys/flight-recorder-si
 
 The exported file is public key material only. Do not hand verifiers the private
 file named by `flight_recorder.signing_key_path`.
-
-## Offline compaction of legacy evidence
-
-Online evidence views deliberately stop at their documented per-shard read
-limit. If `pipelock evidence doctor` reports an oversized legacy shard, do not
-raise that online limit or manually rewrite the JSONL. Run the stopped-recorder
-offline ceremony instead:
-
-```bash
-pipelock evidence compact --receipt-dir /var/lib/pipelock/recorder --session proxy --key /etc/pipelock/keys/flight-recorder-signing.key.pub
-```
-
-The ceremony is the sanctioned recovery path. It streams input with bounded
-record memory, verifies the recorder hash chain, checkpoint signatures, and
-every signed v1 or v2 receipt chain, then emits normal-sized shards without
-changing any JSONL record bytes. It refuses unknown record types, sidecars, a
-source that changes during the ceremony, and an unverifiable receipt family.
-The original directory is retained as a digest-listed archive only after the
-atomic exchange succeeds.
 
 ## See also
 

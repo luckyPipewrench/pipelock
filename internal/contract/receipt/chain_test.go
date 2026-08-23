@@ -103,9 +103,6 @@ func buildChain(t *testing.T, priv ed25519.PrivateKey, n int) []receipt.Evidence
 }
 
 func TestPinnedStreamingVerifierFailsClosedAndLatches(t *testing.T) {
-	if _, err := receipt.NewPinnedStreamingVerifier(ed25519.PublicKey{1}); err == nil {
-		t.Fatal("short pinned key accepted")
-	}
 	priv, pub := testKey(t, 9)
 	marshal := func(t *testing.T, r receipt.EvidenceReceipt) []byte {
 		t.Helper()
@@ -115,6 +112,22 @@ func TestPinnedStreamingVerifierFailsClosedAndLatches(t *testing.T) {
 		}
 		return data
 	}
+	t.Run("constructor rejects invalid keys", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			key  ed25519.PublicKey
+		}{
+			{name: "empty"},
+			{name: "short", key: ed25519.PublicKey{1}},
+			{name: "long", key: make(ed25519.PublicKey, ed25519.PublicKeySize+1)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := receipt.NewPinnedStreamingVerifier(tc.key); err == nil {
+					t.Fatal("invalid pinned key accepted")
+				}
+			})
+		}
+	})
 	t.Run("valid chain reaches a signed head", func(t *testing.T) {
 		v, err := receipt.NewPinnedStreamingVerifier(pub)
 		if err != nil {
@@ -131,19 +144,36 @@ func TestPinnedStreamingVerifierFailsClosedAndLatches(t *testing.T) {
 			t.Fatalf("result=%+v", result)
 		}
 	})
-	t.Run("decode failure latches", func(t *testing.T) {
-		v, err := receipt.NewPinnedStreamingVerifier(pub)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := v.AddRaw([]byte("[]")); err == nil {
-			t.Fatal("malformed receipt accepted")
-		}
-		if err := v.AddRaw([]byte("{}")); err == nil {
-			t.Fatal("latched verifier accepted another receipt")
-		}
-		if v.Finish().Valid {
-			t.Fatal("latched verifier finished valid")
+	t.Run("invalid input latches independently", func(t *testing.T) {
+		badSignature := unsignedReceipt(t, testSignerID, 0, receipt.GenesisHash)
+		badSignature = signReceipt(t, badSignature, priv)
+		badSignature.Actor = "tampered"
+		valid := buildChain(t, priv, 1)[0]
+		for _, tc := range []struct {
+			name string
+			raw  []byte
+			want string
+		}{
+			{name: "empty", raw: []byte{}, want: "decode"},
+			{name: "malformed", raw: []byte("[]"), want: "decode"},
+			{name: "signature", raw: marshal(t, badSignature), want: "signature"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				v, err := receipt.NewPinnedStreamingVerifier(pub)
+				if err != nil {
+					t.Fatal(err)
+				}
+				firstErr := v.AddRaw(tc.raw)
+				if firstErr == nil || !strings.Contains(firstErr.Error(), tc.want) {
+					t.Fatalf("first AddRaw error = %v, want %q", firstErr, tc.want)
+				}
+				if err := v.AddRaw(marshal(t, valid)); err == nil || err.Error() != firstErr.Error() {
+					t.Fatalf("latched AddRaw error = %v, want original %v", err, firstErr)
+				}
+				if got := v.Finish(); got.Valid || got.Error != firstErr.Error() {
+					t.Fatalf("latched Finish = %+v, want error %q", got, firstErr)
+				}
+			})
 		}
 	})
 	t.Run("empty verifier is not proof", func(t *testing.T) {
@@ -211,6 +241,33 @@ func TestExtractEvidenceReceiptsFromEntriesUsesWireDetailAndRejectsUnknown(t *te
 	}
 	if _, err := receipt.ExtractEvidenceReceiptsFromEntries([]recorder.Entry{{Type: receipt.EvidenceEntryType, RawDetail: []byte("[]")}}); err == nil || !strings.Contains(err.Error(), "decode evidence receipt") {
 		t.Fatalf("decode detail error=%v", err)
+	}
+}
+
+func TestEvidenceDetailFailuresPreserveExtractorContext(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		detail     string
+		wantDetail string
+	}{
+		{name: "empty", detail: "null", wantDetail: "evidence entry has empty detail"},
+		{name: "malformed", detail: "[]", wantDetail: "decode evidence receipt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := recorder.Entry{Type: receipt.EvidenceEntryType, RawDetail: []byte(tc.detail)}
+			if _, err := receipt.ExtractEvidenceReceiptsFromEntries([]recorder.Entry{entry}); err == nil || !strings.Contains(err.Error(), "parsed recorder entry 1: "+tc.wantDetail) {
+				t.Fatalf("parsed extraction error = %v", err)
+			}
+
+			path := filepath.Join(t.TempDir(), "evidence.jsonl")
+			line := `{"type":"evidence_receipt","detail":` + tc.detail + "}\n"
+			if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+				t.Fatalf("write evidence file: %v", err)
+			}
+			if _, err := receipt.ExtractEvidenceReceipts(path); err == nil || !strings.Contains(err.Error(), path+" line 1: "+tc.wantDetail) {
+				t.Fatalf("raw extraction error = %v", err)
+			}
+		})
 	}
 }
 

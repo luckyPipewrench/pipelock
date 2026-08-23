@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -269,27 +270,19 @@ func (v *StreamingVerifier) AddRaw(raw []byte) error {
 	}
 	seq := v.count
 	if err := VerifyWithKey(r, v.key, r.Signature.SignerKeyID); err != nil {
-		res := brokenChain(seq, "receipt %d signature: %v", seq, err)
-		v.fail = &res
-		return fmt.Errorf("%s", res.Error)
+		return v.latch(brokenChain(seq, "receipt %d signature: %v", seq, err))
 	}
 	if v.count == 0 {
 		v.signerID = r.Signature.SignerKeyID
 	} else if r.Signature.SignerKeyID != v.signerID {
-		res := brokenChain(seq, "receipt %d signer_key_id %q breaks chain signer %q", seq, r.Signature.SignerKeyID, v.signerID)
-		v.fail = &res
-		return fmt.Errorf("%s", res.Error)
+		return v.latch(brokenChain(seq, "receipt %d signer_key_id %q breaks chain signer %q", seq, r.Signature.SignerKeyID, v.signerID))
 	}
 	if r.ChainSeq != seq || r.ChainPrevHash != v.prevHash {
-		res := brokenChain(seq, "receipt %d chain sequence or previous hash mismatch", seq)
-		v.fail = &res
-		return fmt.Errorf("%s", res.Error)
+		return v.latch(brokenChain(seq, "receipt %d chain sequence or previous hash mismatch", seq))
 	}
 	h, err := ReceiptHash(r)
 	if err != nil {
-		res := brokenChain(seq, "receipt %d hash: %v", seq, err)
-		v.fail = &res
-		return fmt.Errorf("%s", res.Error)
+		return v.latch(brokenChain(seq, "receipt %d hash: %v", seq, err))
 	}
 	v.prevHash, v.lastSeq, v.count = h, r.ChainSeq, v.count+1
 	return nil
@@ -438,12 +431,9 @@ func ExtractEvidenceReceiptsFromEntries(entries []recorder.Entry) ([]EvidenceRec
 				return nil, fmt.Errorf("parsed recorder entry %d: marshal evidence detail: %w", i+1, err)
 			}
 		}
-		if len(detail) == 0 || string(bytes.TrimSpace(detail)) == "null" {
-			return nil, fmt.Errorf("parsed recorder entry %d: evidence entry has empty detail", i+1)
-		}
-		var receipt EvidenceReceipt
-		if err := contract.DecodeStrictJSON(detail, &receipt); err != nil {
-			return nil, fmt.Errorf("parsed recorder entry %d: decode evidence receipt: %w", i+1, err)
+		receipt, err := decodeEvidenceReceiptDetail(detail)
+		if err != nil {
+			return nil, fmt.Errorf("parsed recorder entry %d: %w", i+1, err)
 		}
 		out = append(out, receipt)
 	}
@@ -474,15 +464,9 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 			}
 			return nil, fmt.Errorf("%s line %d: unexpected recorder entry type %q", label, line, entry.Type)
 		}
-		// json.RawMessage("null") is non-nil and 4 bytes long, so a length
-		// check alone would let a null detail unmarshal to a zero receipt
-		// silently. Reject both empty and literal null.
-		if len(entry.Detail) == 0 || string(bytes.TrimSpace(entry.Detail)) == "null" {
-			return nil, fmt.Errorf("%s line %d: evidence entry has empty detail", label, line)
-		}
-		var r EvidenceReceipt
-		if err := contract.DecodeStrictJSON(entry.Detail, &r); err != nil {
-			return nil, fmt.Errorf("%s line %d: decode evidence receipt: %w", label, line, err)
+		r, err := decodeEvidenceReceiptDetail(entry.Detail)
+		if err != nil {
+			return nil, fmt.Errorf("%s line %d: %w", label, line, err)
 		}
 		out = append(out, r)
 	}
@@ -490,6 +474,20 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 		return nil, fmt.Errorf("scan evidence file %s: %w", label, err)
 	}
 	return out, nil
+}
+
+// decodeEvidenceReceiptDetail decodes the hash-bound detail value used by
+// both raw JSONL and recorder-parsed extraction. json.RawMessage("null") is
+// non-empty, so explicitly reject it rather than accepting a zero receipt.
+func decodeEvidenceReceiptDetail(detail []byte) (EvidenceReceipt, error) {
+	if len(detail) == 0 || string(bytes.TrimSpace(detail)) == "null" {
+		return EvidenceReceipt{}, errors.New("evidence entry has empty detail")
+	}
+	var receipt EvidenceReceipt
+	if err := contract.DecodeStrictJSON(detail, &receipt); err != nil {
+		return EvidenceReceipt{}, fmt.Errorf("decode evidence receipt: %w", err)
+	}
+	return receipt, nil
 }
 
 // parseEvidenceName splits an evidence shard filename into its session ID and

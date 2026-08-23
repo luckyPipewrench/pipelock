@@ -291,6 +291,24 @@ func TestWarnUnrestorableWrapper_TellsOperatorWhyNothingHappened(t *testing.T) {
 		}
 	}
 
+	// A forged marker on a command that never reaches the proxy is the OTHER
+	// unrestorable cause, and it was silent: it shares "cannot restore" with the
+	// case above but for the opposite reason, so one condition could not cover
+	// both. Staying quiet here reintroduced on the removal path exactly the
+	// forged-marker trust this change removed from the install path.
+	buf.Reset()
+	warnUnrestorableWrapper(&buf, "forged", map[string]interface{}{
+		mcpFieldCommand:  "node",
+		mcpFieldArgs:     []interface{}{"x.js"},
+		mcpFieldPipelock: map[string]interface{}{"original_type": "stdio", "original_command": "node"},
+	})
+	got = buf.String()
+	for _, want := range []string{"forged", "without the proxy", "nothing needs removing"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("forged-marker warning omitted %q: %s", want, got)
+		}
+	}
+
 	// A genuine wrapper and an ordinary server both stay silent, so the warning
 	// does not become noise on every remove.
 	buf.Reset()

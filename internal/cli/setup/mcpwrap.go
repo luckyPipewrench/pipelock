@@ -309,21 +309,35 @@ func isRestorableWrapper(server map[string]interface{}) bool {
 	return classifyWrapper(server) != stateNotWrapper
 }
 
-// warnUnrestorableWrapper tells the operator about an entry that runs through a
-// proxy but carries no record of what it replaced. Remove skips it, and staying
-// silent would read as nothing having been wrapped, when the truth is that the
-// entry is wrapped and cannot be put back.
+// warnUnrestorableWrapper explains why remove is leaving an entry alone. There
+// are two distinct causes and both were silent, which reads to the operator as
+// nothing having been wrapped:
+//
+//   - proxy-shaped with no metadata: the entry IS mediated but nothing records
+//     what it replaced, so it cannot be put back automatically.
+//   - metadata on an entry that is not proxy-shaped: the marker is false. The
+//     entry is not mediated, so remove has nothing to undo, and the operator
+//     should learn the claim was bogus rather than trusting it.
+//
+// The second case is the same forged-marker shape this change stopped trusting on
+// the install path. Suppressing its warning here reintroduced a silent wrong
+// answer on the removal path, which is why the causes are separated rather than
+// sharing one condition.
 func warnUnrestorableWrapper(w io.Writer, name string, server map[string]interface{}) {
-	if _, ok := server[mcpFieldPipelock]; ok {
-		return
-	}
-	if classifyWrapper(server) == stateNotWrapper {
-		return
-	}
+	_, marked := server[mcpFieldPipelock]
+	proxyShaped := classifyWrapper(server) != stateNotWrapper
 	binary, _ := serverInvocation(server)
-	_, _ = fmt.Fprintf(w,
-		"warning: server %q runs %q with proxy arguments but carries no pipelock metadata, so the original command is unknown; leaving it unchanged, restore it by hand\n",
-		name, binary)
+
+	switch {
+	case proxyShaped && !marked:
+		_, _ = fmt.Fprintf(w,
+			"warning: server %q runs %q with proxy arguments but carries no pipelock metadata, so the original command is unknown; leaving it unchanged, restore it by hand\n",
+			name, binary)
+	case marked && !proxyShaped:
+		_, _ = fmt.Fprintf(w,
+			"warning: server %q carries pipelock metadata but runs %q without the proxy, so the metadata is not describing a real wrap; leaving it unchanged, and nothing needs removing\n",
+			name, binary)
+	}
 }
 
 // isThisExecutable reports whether a command names the binary running right now,

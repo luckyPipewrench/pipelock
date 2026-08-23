@@ -321,7 +321,7 @@ func isRestorableWrapper(server map[string]interface{}) bool {
 func warnUnrestorableWrapper(w io.Writer, name string, server map[string]interface{}) {
 	_, marked := server[mcpFieldPipelock]
 	proxyShaped := classifyWrapper(server) != stateNotWrapper
-	binary, _ := serverInvocation(server)
+	binary := serverCommand(server)
 
 	switch {
 	case proxyShaped && !marked:
@@ -347,17 +347,16 @@ func isThisExecutable(command string) bool {
 	return mcpwrap.ClassifyInvocation(command, []string{mcpSubcommand, proxySubcommand}) == mcpwrap.WrapperSelf
 }
 
-// serverInvocation reads the binary and its arguments out of either config shape:
-// a command string with a separate args array, or OpenCode's single command array
-// where the binary is element zero.
-func serverInvocation(server map[string]interface{}) (binary string, args []string) {
+// serverCommand reads the binary out of either config shape: a command string,
+// or OpenCode's single command array where the binary is element zero.
+func serverCommand(server map[string]interface{}) string {
 	if command, ok := server[mcpFieldCommand].(string); ok {
-		return command, commandArgStrings(server[mcpFieldArgs])
+		return command
 	}
 	if command := commandArgStrings(server[mcpFieldCommand]); len(command) > 0 {
-		return command[0], command[1:]
+		return command[0]
 	}
-	return "", nil
+	return ""
 }
 
 // argsBeginMCPProxy reports whether an argument list starts the MCP proxy
@@ -374,7 +373,7 @@ func argsBeginMCPProxy(args []string) bool {
 func warnForeignWrapper(w io.Writer, name string, server map[string]interface{}) {
 	switch classifyWrapper(server) {
 	case stateForeignWrapper:
-		binary, _ := serverInvocation(server)
+		binary := serverCommand(server)
 		_, _ = fmt.Fprintf(w,
 			"warning: server %q runs %q with proxy arguments but that is not this pipelock binary; wrapping it, and remove-then-install for a single clean wrap\n",
 			name, binary)

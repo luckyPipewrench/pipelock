@@ -17,8 +17,13 @@ import (
 )
 
 func generateMcporterCmd() *cobra.Command {
+	return generateMcporterCmdWithExecutable(os.Executable)
+}
+
+func generateMcporterCmdWithExecutable(executable func() (string, error)) *cobra.Command {
 	var inputFile, outputFile, pipelockBin, configPath string
 	var inPlace, backup bool
+	defaultPipelockBin, executableErr := executable()
 
 	cmd := &cobra.Command{
 		Use:   "mcporter",
@@ -41,6 +46,9 @@ Examples:
   pipelock generate mcporter -i servers.json --in-place --backup`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if executableErr != nil && !cmd.Flags().Changed("pipelock-bin") {
+				return fmt.Errorf("resolving current pipelock executable: %w", executableErr)
+			}
 			if inPlace && outputFile != "" {
 				return fmt.Errorf("--in-place and --output are mutually exclusive")
 			}
@@ -119,7 +127,7 @@ Examples:
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "modify input file in-place (atomic write)")
 	cmd.Flags().BoolVar(&backup, "backup", false, "create .bak before in-place modification")
-	cmd.Flags().StringVar(&pipelockBin, "pipelock-bin", currentPipelockExecutable(), "path to pipelock binary in output")
+	cmd.Flags().StringVar(&pipelockBin, "pipelock-bin", defaultPipelockBin, "path to pipelock binary in output")
 	cmd.Flags().StringVarP(&configPath, "config", "c", "pipelock.yaml", "path to pipelock config in output")
 	return cmd
 }
@@ -267,17 +275,8 @@ func copyExtraFields(dst, src map[string]interface{}, managed ...string) {
 	}
 }
 
-const mcporterBinaryName = "pipelock"
-
 func currentPipelockExecutable() string {
-	self, err := os.Executable()
-	return executableOrName(self, err)
-}
-
-func executableOrName(self string, err error) string {
-	if err != nil {
-		return mcporterBinaryName
-	}
+	self, _ := os.Executable()
 	return self
 }
 

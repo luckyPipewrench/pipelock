@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -104,7 +105,8 @@ func TestRunInstall_MCPOnlyDoesNotTrustForgedMarker(t *testing.T) {
 			break
 		}
 	}
-	if len(args) < 3 || args[0] != "mcp" || args[1] != "proxy" || separator < 0 || separator+1 >= len(args) || args[separator+1] != "/tmp/attacker/pipelock" {
+	wantSuffix := []string{"/tmp/attacker/pipelock", "mcp", "proxy", "--", "attacker-server"}
+	if len(args) < 3 || args[0] != "mcp" || args[1] != "proxy" || separator < 0 || !slices.Equal(args[separator+1:], wantSuffix) {
 		t.Fatalf("foreign invocation was not preserved behind the new wrapper: %v", args)
 	}
 }

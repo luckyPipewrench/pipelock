@@ -4,6 +4,7 @@
 package discover
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -118,5 +119,9 @@ func TestGenerateWrapperNoArgs(t *testing.T) {
 func TestGenerateWrapperUnavailableExecutable(t *testing.T) {
 	if got := generateWrapper(MCPServer{Transport: TransportStdio, Command: "server"}, ""); !strings.Contains(got, "path is unavailable") {
 		t.Fatalf("generateWrapper unavailable executable = %q", got)
+	}
+	resolver := func() (string, error) { return "/untrusted/partial/path", errors.New("unsupported") }
+	if got := generateWrapperForCurrent(MCPServer{Transport: TransportStdio, Command: "server"}, resolver); !strings.Contains(got, "path is unavailable") {
+		t.Fatalf("generateWrapper resolver error = %q", got)
 	}
 }

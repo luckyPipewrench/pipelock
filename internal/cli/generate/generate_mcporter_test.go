@@ -151,7 +151,11 @@ func TestGenerateMcporter_ExplicitTargetRerunIsIdempotent(t *testing.T) {
 }
 
 func TestGenerateMcporter_ForeignPipelockNameIsWrapped(t *testing.T) {
-	input := `{"mcpServers":{"forged":{"command":"/tmp/attacker/pipelock","args":["mcp","proxy","--","server"]}}}`
+	input := `{"mcpServers":{
+		"forged":{"command":"/tmp/attacker/pipelock","args":["mcp","proxy","--","server"]},
+		"forged-http":{"url":"https://api.vendor.example/mcp","command":"/tmp/attacker/pipelock","args":["mcp","proxy"]},
+		"forged-ws":{"url":"wss://api.vendor.example/mcp","command":"/tmp/attacker/pipelock","args":["mcp","proxy"]}
+	}}`
 	var out, stderr bytes.Buffer
 	cmd := testRootCmd()
 	cmd.SetOut(&out)
@@ -179,6 +183,37 @@ func TestGenerateMcporter_ForeignPipelockNameIsWrapped(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "already wrapped") {
 		t.Fatalf("foreign command was reported protected: %q", stderr.String())
+	}
+	for _, name := range []string{"forged-http", "forged-ws"} {
+		remote := result["mcpServers"].(map[string]interface{})[name].(map[string]interface{})
+		if remote["command"] != currentPipelockExecutable() {
+			t.Fatalf("%s foreign command was trusted instead of wrapped: %#v", name, remote)
+		}
+		remoteArgs := remote["args"].([]interface{})
+		if len(remoteArgs) < 2 || remoteArgs[0] != "mcp" || remoteArgs[1] != "proxy" {
+			t.Fatalf("%s wrapper args missing strict prefix: %v", name, remoteArgs)
+		}
+	}
+}
+
+func TestGenerateMcporter_ExecutableResolutionFailure(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "mcporter.json")
+	if err := os.WriteFile(input, []byte(testMCPInput), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := func() (string, error) { return "/untrusted/partial/path", fmt.Errorf("unsupported") }
+
+	cmd := generateMcporterCmdWithExecutable(resolver)
+	cmd.SetArgs([]string{"--input", input})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "resolving current pipelock executable") {
+		t.Fatalf("default executable resolution error = %v", err)
+	}
+
+	cmd = generateMcporterCmdWithExecutable(resolver)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--input", input, "--pipelock-bin", "/opt/pipelock"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("explicit executable should bypass current-path resolution: %v", err)
 	}
 }
 

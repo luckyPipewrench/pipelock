@@ -6,7 +6,6 @@ package generate
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,15 +15,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 )
-
-func TestExecutableOrName(t *testing.T) {
-	if got := executableOrName("/opt/pipelock", nil); got != "/opt/pipelock" {
-		t.Fatalf("executableOrName success = %q", got)
-	}
-	if got := executableOrName("", errors.New("unsupported")); got != mcporterBinaryName {
-		t.Fatalf("executableOrName fallback = %q, want %q", got, mcporterBinaryName)
-	}
-}
 
 // ---------- generateConfigCmd error paths ----------
 

@@ -12,7 +12,14 @@ import (
 
 // GenerateWrapper returns a human-readable wrapper suggestion for an unprotected server.
 func GenerateWrapper(s MCPServer) string {
-	self, _ := os.Executable()
+	return generateWrapperForCurrent(s, os.Executable)
+}
+
+func generateWrapperForCurrent(s MCPServer, executable func() (string, error)) string {
+	self, err := executable()
+	if err != nil {
+		self = ""
+	}
 	return generateWrapper(s, self)
 }
 

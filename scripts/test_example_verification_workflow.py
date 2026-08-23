@@ -2,7 +2,7 @@
 # Copyright 2026 Pipelock contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Structural tests for report-only example and installation verification."""
+"""Structural tests for the advisory example and installation verification."""
 
 import os
 import re
@@ -64,13 +64,22 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
         self.assertIn("scripts/test_example_verification_workflow.py", push_paths)
         self.assertNotIn("docs/**", push_paths)
 
-    def test_verification_is_report_only(self):
+    def test_verification_failure_is_visible_and_job_does_not_claim_otherwise(self):
+        # The job fails on purpose so failures are visible. Assert the durable
+        # intent rather than the exact warning prose: the failure must surface,
+        # and the job must not describe itself as something that cannot fail,
+        # because a name promising one thing while the step does another is how
+        # a check ends up in branch protection by mistake.
         verify_job = self.workflow[self.workflow.index("  verify:\n") :]
         self.assertEqual(verify_job.count("continue-on-error: true"), 1)
         self.assertIn("id: verification", verify_job)
         self.assertIn("VERIFICATION_OUTCOME: ${{ steps.verification.outcome }}", verify_job)
-        self.assertIn("This workflow is report-only and must not be a required check yet", verify_job)
+        self.assertIn("must not be added to branch protection", verify_job)
         self.assertIn("exit 1", verify_job)
+        job_name = next(
+            line for line in verify_job.splitlines() if line.strip().startswith("name:")
+        )
+        self.assertNotIn("report-only", job_name.lower())
 
     def test_skips_are_counted_separately_from_passes(self):
         self.assertIn("/^SKIP: [0-9]+$/", self.runner)

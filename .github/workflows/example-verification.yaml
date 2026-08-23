@@ -43,7 +43,7 @@ permissions:
 
 jobs:
   verify:
-    name: Report-only examples and installation E2E
+    name: Examples and installation E2E (advisory, not required)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -86,6 +86,6 @@ jobs:
           if [[ "$VERIFICATION_OUTCOME" == "success" ]]; then
             printf 'Example verification completed without failures.\n'
           else
-            printf '::warning::Example verification reported failures. This workflow is report-only and must not be a required check yet.\n'
+            printf '::warning::Example verification reported failures. This check fails on purpose so the failures are visible, and it must not be added to branch protection until the preconditions in this file are met.\n'
             exit 1
           fi

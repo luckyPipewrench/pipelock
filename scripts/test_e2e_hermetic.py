@@ -88,6 +88,45 @@ printf 'after=%s\n' "$HOME"
             self.assertEqual(lines[2], f"after={isolation_root / 'home'}")
             self.assertFalse(Path(runtime_paths[-1]).exists())
 
+    def test_shell_helper_does_not_leak_the_host_home_into_the_child_environment(self):
+        # The isolation exists to keep host state out of reach of the code under
+        # test. Exporting the saved host home would hand that path straight back
+        # to every child process, so a child's environment must not carry it
+        # anywhere, under any variable name.
+        host_home = "/host/home/marker-value"
+        with tempfile.TemporaryDirectory() as tmp:
+            isolation_root = Path(tmp) / "isolation"
+            # Print only the names of variables carrying the marker, never the
+            # environment itself: unittest echoes stdout on failure, and a full
+            # env dump would put the CI runner's environment into a public log.
+            script = r'''
+source "$SHELL_HELPER"
+pipelock_hermetic_env "$ISOLATION_ROOT"
+env | grep -F "$HOST_HOME_MARKER" | cut -d= -f1 || true
+'''
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SHELL_HELPER": str(SHELL_HELPER),
+                    "ISOLATION_ROOT": str(isolation_root),
+                    "HOME": host_home,
+                    "HOST_HOME_MARKER": host_home,
+                }
+            )
+            result = subprocess.run(
+                ["bash", "-ceu", script],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            leaking = [
+                name
+                for name in result.stdout.split()
+                if name not in ("HOME", "HOST_HOME_MARKER")
+            ]
+            self.assertEqual(leaking, [], f"host home path reachable via {leaking}")
+
     def test_shell_helper_rejects_relative_root(self):
         result = subprocess.run(
             ["bash", "-ceu", 'source "$1"; pipelock_hermetic_env relative/root', "bash", str(SHELL_HELPER)],

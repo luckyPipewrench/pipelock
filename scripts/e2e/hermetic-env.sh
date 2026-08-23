@@ -19,7 +19,10 @@ pipelock_hermetic_env() {
     PIPELOCK_VERIFY_ORIGINAL_HOME=""
     PIPELOCK_VERIFY_ORIGINAL_HOME_SET=0
   fi
-  export PIPELOCK_VERIFY_ORIGINAL_HOME PIPELOCK_VERIFY_ORIGINAL_HOME_SET
+  # Deliberately NOT exported. Exporting the host home path would hand it to
+  # every command run under isolation, including the code under test, which
+  # could then reach the very state this function exists to hide. Shell
+  # variables still reach pipelock_host_tool, its only consumer.
 
   umask 077
   mkdir -p \

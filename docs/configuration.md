@@ -633,7 +633,7 @@ websocket_proxy:
 | `enabled` | `false` | **Yes** | Enable /ws endpoint |
 | `max_message_bytes` | `1048576` | No | Max assembled message size |
 | `max_concurrent_connections` | `128` | No | Connection limit |
-| `scan_text_frames` | `true` | No | DLP + injection on text frames |
+| `scan_text_frames` | `true` | No | Scan text and Ping/Pong payloads for outbound DLP and inbound prompt injection |
 | `allow_binary_frames` | `false` | No | Allow binary frames (not scanned) |
 | `strip_compression` | `true` | No | Accepted for compatibility; the relay always disables permessage-deflate and rejects compressed (RSV1) frames regardless of this value, so frames are always scanned uncompressed |
 | `max_connection_seconds` | `3600` | No | Upstream WebSocket setup/dial deadline |

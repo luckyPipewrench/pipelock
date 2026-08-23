@@ -146,12 +146,24 @@ skip() {
 assert_no_discovery_warning() {
   local stderr_file="$1"
   local desc="install stderr warns when no pipelock config is discoverable"
-  if grep -q "no pipelock config found" "$stderr_file"; then
+  local warned discovered config
+  # Anchored whole-line matches against the two documented outcomes. A
+  # substring match would accept the phrase inside unrelated output, and
+  # matching only a line prefix would accept a truncated or malformed line.
+  warned=$(grep -c '^warning: no pipelock config found at PIPELOCK_CONFIG, ' "$stderr_file" || true)
+  discovered=$(grep -c '^Using config .* for the wrapped MCP proxy\.$' "$stderr_file" || true)
+  # Exactly one outcome is the only readable result. Both means the run
+  # contradicted itself and neither means the command said something we do not
+  # recognise; either way the outcome is unknown, and an unknown outcome fails
+  # rather than skipping, because a skip would record it as deliberately
+  # uncovered when in fact it was not understood.
+  if [ "$warned" -eq 1 ] && [ "$discovered" -eq 0 ]; then
     assert "$desc" true
-  elif grep -q "^Using config " "$stderr_file"; then
-    skip "$desc" \
-      "$(sed -n 's/^Using config \(.*\) for the wrapped MCP proxy\.$/\1/p' "$stderr_file" | head -1) was discoverable on this host"
+  elif [ "$discovered" -eq 1 ] && [ "$warned" -eq 0 ]; then
+    config=$(sed -n 's/^Using config \(.*\) for the wrapped MCP proxy\.$/\1/p' "$stderr_file")
+    skip "$desc" "$config was discoverable on this host"
   else
+    echo "    unreadable discovery outcome: warned=$warned discovered=$discovered" >&2
     assert "$desc" false
   fi
 }

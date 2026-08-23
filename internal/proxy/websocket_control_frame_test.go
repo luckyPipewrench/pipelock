@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +27,8 @@ type capturedWSFrame struct {
 	opcode  ws.OpCode
 	payload []byte
 }
+
+const wsControlTestDeadline = 10 * time.Second
 
 func wsFrameCaptureServer(t *testing.T) (string, <-chan capturedWSFrame) {
 	t.Helper()
@@ -75,7 +78,7 @@ func wsControlSendServer(t *testing.T, opcode ws.OpCode, payload []byte) string 
 			}
 			defer func() { _ = conn.Close() }()
 			_ = wsutil.WriteServerMessage(conn, opcode, payload)
-			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			_ = conn.SetReadDeadline(time.Now().Add(wsControlTestDeadline))
 			_, _ = ws.ReadFrame(conn)
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -93,6 +96,21 @@ func awaitCapturedWSFrame(t *testing.T, frames <-chan capturedWSFrame) capturedW
 	case <-time.After(3 * time.Second):
 		t.Fatal("upstream did not receive a frame")
 		return capturedWSFrame{}
+	}
+}
+
+func assertWSControlBoundaryClose(t *testing.T, conn net.Conn) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(wsControlTestDeadline))
+	frame, err := ws.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("read close frame: %v", err)
+	}
+	if frame.Header.OpCode != ws.OpClose || len(frame.Payload) < 2 {
+		t.Fatalf("close frame = (%v, %x), want policy-violation close", frame.Header.OpCode, frame.Payload)
+	}
+	if got := ws.StatusCode(binary.BigEndian.Uint16(frame.Payload[:2])); got != ws.StatusPolicyViolation {
+		t.Fatalf("close code = %d, want %d", got, ws.StatusPolicyViolation)
 	}
 }
 
@@ -207,8 +225,6 @@ func TestWSProxyClientControlDLPSplitAcrossFramesBlocks(t *testing.T) {
 		secondPart string
 	}{
 		{name: "ping-pong", firstOp: ws.OpPing, secondOp: ws.OpPong, firstPart: "AKIAIOS", secondPart: "FODNN7" + testWSExample},
-		{name: "text-ping", firstOp: ws.OpText, secondOp: ws.OpPing, firstPart: "AKIAIOS", secondPart: "FODNN7" + testWSExample},
-		{name: "pong-text", firstOp: ws.OpPong, secondOp: ws.OpText, firstPart: "AKIAIOS", secondPart: "FODNN7" + testWSExample},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,6 +248,63 @@ func TestWSProxyClientControlDLPSplitAcrossFramesBlocks(t *testing.T) {
 			second := awaitCapturedWSFrame(t, frames)
 			if second.opcode != ws.OpClose {
 				t.Fatalf("second upstream opcode = %v, want close", second.opcode)
+			}
+		})
+	}
+}
+
+func TestWSProxyClientControlPayloadDoesNotPoisonTextTail(t *testing.T) {
+	backendAddr, frames := wsFrameCaptureServer(t)
+	proxyAddr, stopProxy := setupWSProxy(t, nil)
+	defer stopProxy()
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	for _, frame := range []capturedWSFrame{
+		{opcode: ws.OpText, payload: []byte("AKIAIOS")},
+		{opcode: ws.OpPing, payload: []byte("junk")},
+	} {
+		if err := wsutil.WriteClientMessage(conn, frame.opcode, frame.payload); err != nil {
+			t.Fatalf("write %v frame: %v", frame.opcode, err)
+		}
+		got := awaitCapturedWSFrame(t, frames)
+		if got.opcode != frame.opcode || string(got.payload) != string(frame.payload) {
+			t.Fatalf("upstream frame = (%v, %q), want (%v, %q)", got.opcode, got.payload, frame.opcode, frame.payload)
+		}
+	}
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("FODNN7"+testWSExample)); err != nil {
+		t.Fatalf("write second text frame: %v", err)
+	}
+	assertWebSocketBoundaryClose(t, conn, ws.StatusPolicyViolation)
+	if got := awaitCapturedWSFrame(t, frames); got.opcode != ws.OpClose {
+		t.Fatalf("upstream opcode = %v, want close", got.opcode)
+	}
+}
+
+func TestWSProxyClientControlPayloadDoesNotConsumeCEEEntropyBudget(t *testing.T) {
+	payload := []byte{0x00, 0x81, 0xfe, 0x7f}
+	for _, opcode := range []ws.OpCode{ws.OpPing, ws.OpPong} {
+		t.Run(opCodeLabel(opcode), func(t *testing.T) {
+			backendAddr, frames := wsFrameCaptureServer(t)
+			proxyAddr, stopProxy := setupWSProxy(t, func(cfg *config.Config) {
+				cfg.CrossRequestDetection.Enabled = true
+				cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+				cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+				cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+			})
+			defer stopProxy()
+			conn := dialWS(t, proxyAddr, backendAddr)
+			defer func() { _ = conn.Close() }()
+
+			for range 3 {
+				if err := wsutil.WriteClientMessage(conn, opcode, payload); err != nil {
+					t.Fatalf("write control frame: %v", err)
+				}
+				got := awaitCapturedWSFrame(t, frames)
+				if got.opcode != opcode || string(got.payload) != string(payload) {
+					t.Fatalf("upstream frame = (%v, %x), want (%v, %x)", got.opcode, got.payload, opcode, payload)
+				}
 			}
 		})
 	}
@@ -325,7 +398,7 @@ func TestWSProxyUpstreamControlResponseScanningBlocks(t *testing.T) {
 			conn := dialWS(t, proxyAddr, backendAddr)
 			defer func() { _ = conn.Close() }()
 
-			assertWebSocketBoundaryClose(t, conn, ws.StatusPolicyViolation)
+			assertWSControlBoundaryClose(t, conn)
 		})
 	}
 }
@@ -343,7 +416,7 @@ func TestWSProxyUpstreamControlResponseStripFailsClosed(t *testing.T) {
 			conn := dialWS(t, proxyAddr, backendAddr)
 			defer func() { _ = conn.Close() }()
 
-			assertWebSocketBoundaryClose(t, conn, ws.StatusPolicyViolation)
+			assertWSControlBoundaryClose(t, conn)
 		})
 	}
 }
@@ -365,7 +438,7 @@ func TestWSProxyUpstreamControlPayloadAllowControls(t *testing.T) {
 				conn := dialWS(t, proxyAddr, backendAddr)
 				defer func() { _ = conn.Close() }()
 
-				_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+				_ = conn.SetReadDeadline(time.Now().Add(wsControlTestDeadline))
 				frame, err := ws.ReadFrame(conn)
 				if err != nil {
 					t.Fatalf("read server control frame: %v", err)

@@ -1324,19 +1324,19 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 // enforceClientControlPayload scans Ping and Pong application data without
 // transforming it. Control payloads are opaque keepalive bytes with a strict
 // 125-byte limit, so redaction or stripping would break protocol semantics.
-func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Logger, payload []byte, tail *[]byte) bool {
+func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Logger, payload []byte, controlTail *[]byte) bool {
 	if len(payload) == 0 || !r.scanText {
 		return false
 	}
 
-	prevTail := *tail
+	prevTail := *controlTail
 	scanInput := payload
 	if len(prevTail) > 0 {
 		scanInput = make([]byte, 0, len(prevTail)+len(payload))
 		scanInput = append(scanInput, prevTail...)
 		scanInput = append(scanInput, payload...)
 	}
-	*tail = updateWSCrossMessageTail(prevTail, payload)
+	*controlTail = updateWSCrossMessageTail(prevTail, payload)
 
 	if r.scanClientText(ctx, log, scanInput) {
 		return true
@@ -1995,7 +1995,8 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
-	var crossMsgTail []byte // rolling tail for cross-message DLP scanning
+	var crossMsgTail []byte   // rolling tail for text-message DLP scanning
+	var controlMsgTail []byte // separate tail for Ping/Pong payload DLP scanning
 	log := r.proxy.logger.With("agent", r.agent)
 	redactionEnabled := r.redaction != nil && r.redaction.required
 
@@ -2137,11 +2138,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
 				return
 			}
-			if r.enforceClientControlPayload(ctx, log, payload, &crossMsgTail) {
-				blocked = true
-				return
-			}
-			if r.enforceClientCEE(ctx, log, payload, false) {
+			if r.enforceClientControlPayload(ctx, log, payload, &controlMsgTail) {
 				blocked = true
 				return
 			}

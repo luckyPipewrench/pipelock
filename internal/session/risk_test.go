@@ -4,6 +4,7 @@
 package session_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -76,6 +77,421 @@ func TestSessionRiskSnapshotCopiesSources(t *testing.T) {
 
 	if risk.Sources[0].URL != "https://example.com" {
 		t.Fatal("snapshot should deep-copy sources")
+	}
+}
+
+func TestSessionRiskTrustedSourceDoesNotEstablishOrigin(t *testing.T) {
+	var risk session.SessionRisk
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL: "https://trusted.example/page", Kind: "http_response", Level: session.TaintTrusted,
+	}})
+
+	if risk.Level != session.TaintTrusted {
+		t.Fatalf("level = %v, want trusted", risk.Level)
+	}
+	if got := risk.SecurityOriginURL(); got != "" {
+		t.Fatalf("security origin URL = %q, want empty", got)
+	}
+}
+
+func TestSessionRiskHigherCrossAgentLevelStaysUnnameable(t *testing.T) {
+	var risk session.SessionRisk
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		Kind: session.TaintSourceKindCrossAgent, Level: session.TaintExternalHostile,
+	}})
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL: testGitHubCopilotDocs, Kind: "http_response", Level: session.TaintAllowlistedReference,
+	}})
+
+	if !risk.TaintOriginAmbiguous {
+		t.Fatal("higher cross-agent level must leave the origin unnameable")
+	}
+	if got := risk.SecurityOriginURL(); got != "" {
+		t.Fatalf("security origin URL = %q, want empty after later benign source", got)
+	}
+}
+
+func TestSessionRiskCrossAgentKeepsLatestURLForAmbiguousOrigin(t *testing.T) {
+	risk := session.SessionRisk{
+		Level:                session.TaintExternalUntrusted,
+		Contaminated:         true,
+		LastExternalURL:      testGitHubCopilotDocs,
+		TaintOriginAmbiguous: true,
+	}
+	risk.Observe(session.ClassifyCrossAgentObservation(
+		risk.Snapshot(), session.CrossAgentBoundaryA2ARequest,
+	))
+
+	if risk.LastExternalURL != testGitHubCopilotDocs {
+		t.Fatalf("last external URL = %q, want latest audit context preserved", risk.LastExternalURL)
+	}
+	if got := risk.SecurityOriginURL(); got != "" {
+		t.Fatalf("security origin URL = %q, want ambiguous origin to stay empty", got)
+	}
+}
+
+func TestSessionRiskAmbiguityMarkerSurvivesJSONRoundTrip(t *testing.T) {
+	risk := session.SessionRisk{
+		Level:                session.TaintExternalUntrusted,
+		Contaminated:         true,
+		LastExternalURL:      testGitHubCopilotDocs,
+		LastExternalKind:     "http_response",
+		TaintOriginAmbiguous: true,
+	}
+	raw, err := json.Marshal(risk)
+	if err != nil {
+		t.Fatalf("marshal risk: %v", err)
+	}
+	var decoded session.SessionRisk
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal risk: %v", err)
+	}
+	if got := decoded.SecurityOriginURL(); got != "" {
+		t.Fatalf("security origin URL after round trip = %q, want empty", got)
+	}
+}
+
+func TestSessionRiskLegacyKindFallback(t *testing.T) {
+	risk := session.SessionRisk{LastExternalKind: "legacy_response"}
+	if got := risk.SecurityOriginKind(); got != "legacy_response" {
+		t.Fatalf("security origin kind = %q, want legacy_response", got)
+	}
+}
+
+func TestSessionRiskTaintOriginSurvivesLaterSources(t *testing.T) {
+	var risk session.SessionRisk
+	hostileAt := time.Date(2026, time.August, 23, 1, 0, 0, 0, time.UTC)
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:       "https://evil.example/issue/123",
+		Kind:      "http_response",
+		Level:     session.TaintExternalUntrusted,
+		Timestamp: hostileAt,
+	}})
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:       testGitHubCopilotDocs,
+		Kind:      "http_response",
+		Level:     session.TaintAllowlistedReference,
+		Timestamp: hostileAt.Add(time.Minute),
+	}})
+
+	if risk.LastExternalURL != testGitHubCopilotDocs {
+		t.Fatalf("last external URL = %q, want latest source", risk.LastExternalURL)
+	}
+	if got := risk.SecurityOriginURL(); got != "https://evil.example/issue/123" {
+		t.Fatalf("security origin URL = %q, want hostile source", got)
+	}
+	if got := risk.SecurityOriginKind(); got != "http_response" {
+		t.Fatalf("security origin kind = %q, want http_response", got)
+	}
+	if !risk.TaintOriginAt.Equal(hostileAt) {
+		t.Fatalf("taint origin time = %v, want %v", risk.TaintOriginAt, hostileAt)
+	}
+}
+
+func TestSessionRiskTaintOriginMigratesLegacySnapshot(t *testing.T) {
+	legacyAt := time.Date(2026, time.August, 23, 1, 0, 0, 0, time.UTC)
+	risk := session.SessionRisk{
+		Level:            session.TaintExternalUntrusted,
+		Contaminated:     true,
+		LastExternalAt:   legacyAt,
+		LastExternalURL:  "https://evil.example/legacy",
+		LastExternalKind: "http_response",
+	}
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:       testGitHubCopilotDocs,
+		Kind:      "http_response",
+		Level:     session.TaintAllowlistedReference,
+		Timestamp: legacyAt.Add(time.Minute),
+	}})
+
+	if got := risk.SecurityOriginURL(); got != "https://evil.example/legacy" {
+		t.Fatalf("migrated security origin URL = %q, want legacy source", got)
+	}
+	if risk.LastExternalURL != testGitHubCopilotDocs {
+		t.Fatalf("last external URL = %q, want latest source", risk.LastExternalURL)
+	}
+}
+
+// The MCP ingest path records a Kind and no URL, so an origin with an empty URL
+// is a resolved origin, not a missing one. Falling back to LastExternalURL here
+// hands a source-scoped trust override the later benign URL to match.
+func TestSessionRiskURLLessOriginDoesNotFallBackToLatest(t *testing.T) {
+	var risk session.SessionRisk
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		Kind:  "mcp_response",
+		Level: session.TaintExternalUntrusted,
+	}})
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:   testGitHubCopilotDocs,
+		Kind:  "http_response",
+		Level: session.TaintAllowlistedReference,
+	}})
+
+	if got := risk.SecurityOriginURL(); got != "" {
+		t.Fatalf("security origin URL = %q, want empty for the URL-less MCP origin", got)
+	}
+	if got := risk.SecurityOriginKind(); got != "mcp_response" {
+		t.Fatalf("security origin kind = %q, want mcp_response", got)
+	}
+	if risk.LastExternalURL != testGitHubCopilotDocs {
+		t.Fatalf("last external URL = %q, want latest source", risk.LastExternalURL)
+	}
+}
+
+// Two distinct sources at the session maximum make the origin ambiguous, so no
+// single-source trust override may match. Naming a winner fails open in one
+// ordering or the other: first-wins clears the action when the operator-trusted
+// source arrives first, newest-wins clears it when the trusted source arrives
+// last. Both orderings are asserted here.
+func TestSessionRiskDistinctEqualLevelSourcesClearOriginIdentity(t *testing.T) {
+	trustedURL := session.TaintSourceRef{
+		URL:   "https://internal.corp.example/wiki",
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+	hostileURL := session.TaintSourceRef{
+		URL:   "https://evil.example/inject",
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+	sameURLDifferentKind := trustedURL
+	sameURLDifferentKind.Kind = "mcp_tool_result"
+
+	for _, tc := range []struct {
+		name  string
+		first session.TaintSourceRef
+		last  session.TaintSourceRef
+	}{
+		{"trusted source first", trustedURL, hostileURL},
+		{"trusted source last", hostileURL, trustedURL},
+		{"same URL different kind first", trustedURL, sameURLDifferentKind},
+		{"same URL different kind last", sameURLDifferentKind, trustedURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var risk session.SessionRisk
+			risk.Observe(session.RiskObservation{Source: tc.first})
+			risk.Observe(session.RiskObservation{Source: tc.last})
+
+			if got := risk.SecurityOriginURL(); got != "" {
+				t.Fatalf("security origin URL = %q, want empty once two sources share the maximum", got)
+			}
+			if got := risk.SecurityOriginKind(); got != "" {
+				t.Fatalf("security origin kind = %q, want empty once two sources share the maximum", got)
+			}
+			if risk.Level != session.TaintExternalUntrusted {
+				t.Fatalf("level = %v, want untrusted preserved", risk.Level)
+			}
+		})
+	}
+}
+
+// Re-observing the same source at the maximum is not a second source and must
+// leave the origin intact, or a chatty poll of one hostile page would erase its
+// own attribution.
+func TestSessionRiskRepeatedSameSourceKeepsOrigin(t *testing.T) {
+	source := session.TaintSourceRef{
+		URL:   "https://evil.example/inject",
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+	var risk session.SessionRisk
+	risk.Observe(session.RiskObservation{Source: source})
+	risk.Observe(session.RiskObservation{Source: source})
+
+	if got := risk.SecurityOriginURL(); got != source.URL {
+		t.Fatalf("security origin URL = %q, want %q", got, source.URL)
+	}
+}
+
+// A cross-agent ref is synthesized from the current origin and re-asserts the
+// existing level. Adopting it as the origin would overwrite the real origin's
+// attribution with a self-reference.
+func TestSessionRiskCrossAgentRefDoesNotReplaceOrigin(t *testing.T) {
+	origin := "https://attacker.example/inject"
+	var risk session.SessionRisk
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:   origin,
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}})
+	risk.Observe(session.ClassifyCrossAgentObservation(risk.Snapshot(), session.CrossAgentBoundaryA2ARequest))
+
+	if got := risk.SecurityOriginURL(); got != origin {
+		t.Fatalf("security origin URL = %q, want %q", got, origin)
+	}
+	if got := risk.SecurityOriginKind(); got != "http_response" {
+		t.Fatalf("security origin kind = %q, want the ingest kind, not cross_agent", got)
+	}
+}
+
+// A legacy snapshot carrying a level but no recoverable LastExternal* must not
+// let a later, lower-risk source become the origin on a subsequent observation.
+func TestSessionRiskUnrecoverableLegacyOriginStaysEmpty(t *testing.T) {
+	risk := session.SessionRisk{Level: session.TaintExternalUntrusted, Contaminated: true}
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:   testGitHubCopilotDocs,
+		Kind:  "http_response",
+		Level: session.TaintAllowlistedReference,
+	}})
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:   "https://another.example/page",
+		Kind:  "http_response",
+		Level: session.TaintAllowlistedReference,
+	}})
+
+	if got := risk.SecurityOriginURL(); got != "" {
+		t.Fatalf("security origin URL = %q, want empty for an unrecoverable legacy origin", got)
+	}
+}
+
+// Relative severity must not decide the origin once a source has reached the
+// escalation floor. All three orderings are asserted because each one fails
+// open on its own if severity is allowed to pick a winner, and each reaches a
+// different branch. The escalating source here is a page an operator would
+// plausibly trust, escalated to hostile because its security prose trips the
+// injection patterns - the documented false-positive class, not a contrivance.
+func TestSessionRiskEscalatingOriginIsNeverRetiredByASecondSource(t *testing.T) {
+	untrusted := session.TaintSourceRef{
+		URL:   "https://evil.example/inject",
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+	docs := session.TaintSourceRef{
+		URL:   testGitHubCopilotDocs,
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+
+	for _, tc := range []struct {
+		name             string
+		first, second    session.RiskObservation
+		wantLevel        session.TaintLevel
+		wantOriginBefore string
+	}{
+		{
+			name:             "more severe source arrives second",
+			first:            session.RiskObservation{Source: untrusted},
+			second:           session.RiskObservation{Source: docs, PromptHit: true},
+			wantLevel:        session.TaintExternalHostile,
+			wantOriginBefore: untrusted.URL,
+		},
+		{
+			name:             "less severe source arrives second",
+			first:            session.RiskObservation{Source: docs, PromptHit: true},
+			second:           session.RiskObservation{Source: untrusted},
+			wantLevel:        session.TaintExternalHostile,
+			wantOriginBefore: docs.URL,
+		},
+		{
+			name:             "equally severe source arrives second",
+			first:            session.RiskObservation{Source: untrusted},
+			second:           session.RiskObservation{Source: docs},
+			wantLevel:        session.TaintExternalUntrusted,
+			wantOriginBefore: untrusted.URL,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var risk session.SessionRisk
+			risk.Observe(tc.first)
+			if got := risk.SecurityOriginURL(); got != tc.wantOriginBefore {
+				t.Fatalf("setup: security origin URL = %q, want %q", got, tc.wantOriginBefore)
+			}
+
+			risk.Observe(tc.second)
+
+			if risk.Level != tc.wantLevel {
+				t.Fatalf("level = %v, want %v", risk.Level, tc.wantLevel)
+			}
+			if got := risk.SecurityOriginURL(); got != "" {
+				t.Fatalf("security origin URL = %q, want empty once a second escalating source is present", got)
+			}
+			if got := risk.SecurityOriginKind(); got != "" {
+				t.Fatalf("security origin kind = %q, want empty once a second escalating source is present", got)
+			}
+		})
+	}
+}
+
+// The same source escalating itself is not a second source. Losing the origin
+// here would be an availability bug: the single page an operator needs to
+// exempt would stop being nameable the moment its own content tripped a
+// pattern.
+func TestSessionRiskSameSourceEscalatingKeepsOrigin(t *testing.T) {
+	source := session.TaintSourceRef{
+		URL:   "https://evil.example/inject",
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+	var risk session.SessionRisk
+	risk.Observe(session.RiskObservation{Source: source})
+	risk.Observe(session.RiskObservation{Source: source, PromptHit: true})
+
+	if risk.Level != session.TaintExternalHostile {
+		t.Fatalf("level = %v, want hostile", risk.Level)
+	}
+	if got := risk.SecurityOriginURL(); got != source.URL {
+		t.Fatalf("security origin URL = %q, want %q", got, source.URL)
+	}
+	if got := risk.SecurityOriginKind(); got != source.Kind {
+		t.Fatalf("security origin kind = %q, want %q", got, source.Kind)
+	}
+}
+
+// Sources below the escalation floor cannot escalate anything by themselves, so
+// they must not make the session permanently unnameable. Two distinct reference
+// fetches followed by the first real untrusted source must still name that
+// source, or ordinary browsing would disable source-scoped overrides for the
+// rest of the session.
+func TestSessionRiskSubEscalationSourcesDoNotBlockOriginNaming(t *testing.T) {
+	var risk session.SessionRisk
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL: testGitHubCopilotDocs, Kind: "http_response", Level: session.TaintAllowlistedReference,
+	}})
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL: "https://docs.vendor.example/guide", Kind: "http_response", Level: session.TaintAllowlistedReference,
+	}})
+	if risk.Level != session.TaintAllowlistedReference {
+		t.Fatalf("setup: level = %v, want allowlisted reference", risk.Level)
+	}
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL: "https://evil.example/inject", Kind: "http_response", Level: session.TaintExternalUntrusted,
+	}})
+
+	if got := risk.SecurityOriginURL(); got != "https://evil.example/inject" {
+		t.Fatalf("security origin URL = %q, want the first escalating source", got)
+	}
+	if got := risk.SecurityOriginKind(); got != "http_response" {
+		t.Fatalf("security origin kind = %q, want http_response", got)
+	}
+}
+
+// An ambiguous origin must stay ambiguous. A legacy snapshot can carry a
+// LastExternalURL with a zero LastExternalAt, so recovery resolves an origin
+// whose only non-zero field is the URL. Clearing that URL for ambiguity leaves
+// every other origin field zero, and if "was an origin resolved" is inferred
+// from those fields alone it now reads as "no origin at all" - falling back to
+// LastExternal*, which Observe has just overwritten with the newest source.
+func TestSessionRiskAmbiguousOriginNeverFallsBackToLatestSource(t *testing.T) {
+	risk := session.SessionRisk{
+		Level:            session.TaintExternalUntrusted,
+		Contaminated:     true,
+		LastExternalURL:  "https://evil.example/legacy",
+		LastExternalKind: "http_response",
+	}
+	risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{
+		URL:   testGitHubCopilotDocs,
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}})
+
+	if got := risk.SecurityOriginURL(); got != "" {
+		t.Fatalf("security origin URL = %q, want empty once the origin is ambiguous", got)
+	}
+	if got := risk.SecurityOriginKind(); got != "" {
+		t.Fatalf("security origin kind = %q, want empty once the origin is ambiguous", got)
+	}
+	if risk.LastExternalURL != testGitHubCopilotDocs {
+		t.Fatalf("last external URL = %q, want latest source", risk.LastExternalURL)
 	}
 }
 

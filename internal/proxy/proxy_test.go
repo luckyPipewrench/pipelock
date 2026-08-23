@@ -4259,7 +4259,8 @@ func TestFetchEndpoint_ResponseScan_RawHTML(t *testing.T) {
 
 			logger := audit.NewNop()
 			sc := scanner.MustNew(cfg)
-			p, err := New(cfg, logger, sc, metrics.New())
+			m := metrics.New()
+			p, err := New(cfg, logger, sc, m)
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
 			}
@@ -4281,6 +4282,30 @@ func TestFetchEndpoint_ResponseScan_RawHTML(t *testing.T) {
 			}
 			if !resp.Blocked {
 				t.Errorf("expected blocked=true for %s", tt.name)
+			}
+
+			statsRecorder := httptest.NewRecorder()
+			m.StatsHandler().ServeHTTP(
+				statsRecorder,
+				httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil),
+			)
+			var stats struct {
+				Requests struct {
+					Blocked int `json:"blocked"`
+				} `json:"requests"`
+				TopScanners []struct {
+					Name  string `json:"name"`
+					Count int    `json:"count"`
+				} `json:"top_scanners"`
+			}
+			if err := json.Unmarshal(statsRecorder.Body.Bytes(), &stats); err != nil {
+				t.Fatalf("stats JSON parse: %v", err)
+			}
+			if stats.Requests.Blocked != 1 {
+				t.Errorf("blocked request count = %d, want 1", stats.Requests.Blocked)
+			}
+			if len(stats.TopScanners) != 1 || stats.TopScanners[0].Name != "response_scan" || stats.TopScanners[0].Count != 1 {
+				t.Errorf("top scanners = %+v, want one response_scan block", stats.TopScanners)
 			}
 		})
 	}

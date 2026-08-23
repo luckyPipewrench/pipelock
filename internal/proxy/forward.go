@@ -1162,8 +1162,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Authority:   forwardTaint.Authority.String(),
 				Decision:    forwardTaint.Result.Decision.String(),
 				Reason:      forwardTaint.Result.Reason,
-				SourceURL:   forwardTaint.Risk.LastExternalURL,
-				SourceKind:  forwardTaint.Risk.LastExternalKind,
+				SourceURL:   forwardTaint.Risk.SecurityOriginURL(),
+				SourceKind:  forwardTaint.Risk.SecurityOriginKind(),
 			},
 		)
 	}

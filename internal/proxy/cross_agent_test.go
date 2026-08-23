@@ -114,8 +114,8 @@ func TestCrossAgentContaminationSurvivesReset(t *testing.T) {
 }
 
 // Cross-agent evidence resets LastExternalKind to "cross_agent" but preserves
-// LastExternalURL. Source-scoped trust overrides match on URL only, so the
-// boundary ref must not break an operator's source-match override.
+// LastExternalURL. The sticky security origin remains the original source, so
+// the synthesized boundary ref cannot replace it in source-scoped trust checks.
 func TestCrossAgentContaminationPreservesSourceTrustOverride(t *testing.T) {
 	sess := &SessionState{}
 	contaminateSession(sess, session.TaintExternalUntrusted, false)

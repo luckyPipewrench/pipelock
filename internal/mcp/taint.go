@@ -275,7 +275,7 @@ func allTaintActionRefsMatch(actionRefs []string, pattern string) bool {
 }
 
 func taintRiskSourceMatches(risk session.SessionRisk, pattern string) bool {
-	return taintWildcardMatch(risk.LastExternalURL, pattern)
+	return taintWildcardMatch(risk.SecurityOriginURL(), pattern)
 }
 
 func taintWildcardMatch(value, pattern string) bool {

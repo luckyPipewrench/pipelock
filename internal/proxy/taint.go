@@ -167,7 +167,7 @@ func runtimeTrustOverrideApplies(overrides []session.TrustOverride, task session
 }
 
 func riskSourceMatches(risk session.SessionRisk, pattern string) bool {
-	return wildcardMatch(risk.LastExternalURL, pattern)
+	return wildcardMatch(risk.SecurityOriginURL(), pattern)
 }
 
 func wildcardMatch(value, pattern string) bool {

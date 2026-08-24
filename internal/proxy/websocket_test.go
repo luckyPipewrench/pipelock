@@ -1785,6 +1785,43 @@ func TestWSRelayResponseTaint_ReResolvesEvictedSession(t *testing.T) {
 	}
 }
 
+func TestWSRelayResponseTaint_DeduplicatesBySourceAndPromptState(t *testing.T) {
+	_, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.SessionProfiling.Enabled = true
+		cfg.Taint.RecentSources = 10
+	})
+	defer cleanup()
+
+	const key = "websocket-response-dedup"
+	relay := &wsRelay{
+		proxy:           p,
+		cfg:             p.CurrentConfig(),
+		targetURL:       "wss://first.vendor.example/events",
+		taintSessionKey: key,
+	}
+	relay.observeUpstreamResponseTaint(false)
+	relay.observeUpstreamResponseTaint(false)
+	relay.observeUpstreamResponseTaint(true)
+	relay.observeUpstreamResponseTaint(true)
+
+	relay.targetURL = "wss://second.vendor.example/events"
+	relay.observeUpstreamResponseTaint(true)
+	relay.observeUpstreamResponseTaint(true)
+
+	risk := p.sessionMgrPtr.Load().GetOrCreate(key).RiskSnapshot()
+	if len(risk.Sources) != 3 {
+		t.Fatalf("response sources = %+v, want one clean and two prompt observations", risk.Sources)
+	}
+	if risk.Sources[0].URL != "wss://first.vendor.example/events" || risk.Sources[0].MatchReason != "" {
+		t.Fatalf("first source = %+v, want clean observation", risk.Sources[0])
+	}
+	for i, source := range risk.Sources[1:] {
+		if source.MatchReason != "prompt_injection_pattern" {
+			t.Fatalf("prompt source %d = %+v, want prompt match reason", i, source)
+		}
+	}
+}
+
 func TestWSProxyInjection_ExemptDomain(t *testing.T) {
 	backendAddr, backendCleanup := wsInjectionServer(t)
 	defer backendCleanup()

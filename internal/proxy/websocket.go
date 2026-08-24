@@ -2440,14 +2440,12 @@ func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) {
 	}
 	rec := sm.GetOrCreate(r.taintSessionKey)
 	risk := rec.RiskSnapshot()
-	if promptHit && risk.PromptHit {
-		return
-	}
-	if !promptHit {
-		for _, source := range risk.Sources {
-			if source.URL == r.targetURL && source.Kind == "websocket_response" {
-				return
-			}
+	for _, source := range risk.Sources {
+		if source.URL != r.targetURL || source.Kind != "websocket_response" {
+			continue
+		}
+		if !promptHit || source.MatchReason == "prompt_injection_pattern" {
+			return
 		}
 	}
 	observeHTTPResponseTaint(rec, r.cfg, r.targetURL, "application/websocket", "websocket_response", promptHit)

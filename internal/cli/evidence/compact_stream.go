@@ -232,6 +232,8 @@ func sameCompactProof(a, b compactStreamProof) bool {
 		}
 	}
 	for i := range a.v1Epochs {
+		// StartFile and EndFile are provenance, not identity: compaction can
+		// legitimately coalesce source shards and rename both boundaries.
 		if a.v1Epochs[i].Epoch != b.v1Epochs[i].Epoch || a.v1Epochs[i].Version != b.v1Epochs[i].Version || a.v1Epochs[i].StartSeq != b.v1Epochs[i].StartSeq || a.v1Epochs[i].EndSeq != b.v1Epochs[i].EndSeq || a.v1Epochs[i].EntryCount != b.v1Epochs[i].EntryCount || a.v1Epochs[i].StartHash != b.v1Epochs[i].StartHash || a.v1Epochs[i].EndHash != b.v1Epochs[i].EndHash || a.v1Epochs[i].V1Count != b.v1Epochs[i].V1Count || a.v1Epochs[i].V1Head != b.v1Epochs[i].V1Head || a.v1Epochs[i].V1Degraded != b.v1Epochs[i].V1Degraded || a.v1Epochs[i].V1FirstGap != b.v1Epochs[i].V1FirstGap || a.v1Epochs[i].V1TailGap != b.v1Epochs[i].V1TailGap || len(a.v1Epochs[i].Degradations) != len(b.v1Epochs[i].Degradations) || len(a.v1Epochs[i].V1Suffixes) != len(b.v1Epochs[i].V1Suffixes) {
 			return false
 		}

@@ -301,6 +301,78 @@ func TestInspectEpochsReportsDegradedEpochsAndSyncFailure(t *testing.T) {
 	}
 }
 
+func TestInspectEpochsRejectsRenamedOutputParent(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "recorder")
+	outputParent := filepath.Join(root, "output")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outputParent, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInspectEpochFixture(t, dir, priv)
+	originalSync := inspectSyncDirectory
+	t.Cleanup(func() { inspectSyncDirectory = originalSync })
+	movedParent := filepath.Join(root, "moved-output")
+	inspectSyncDirectory = func(output *inspectOutput) error {
+		if err := output.syncParent(); err != nil {
+			return err
+		}
+		if err := os.Rename(outputParent, movedParent); err != nil {
+			return err
+		}
+		return os.Mkdir(outputParent, 0o750)
+	}
+	out := filepath.Join(outputParent, "pin.json")
+	err = runInspectEpochs(inspectEpochsOutputCommand(&bytes.Buffer{}), inspectEpochsOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), outFile: out})
+	if err == nil || !strings.Contains(err.Error(), "--out parent changed") {
+		t.Fatalf("renamed parent error = %v", err)
+	}
+	for _, path := range []string{out, filepath.Join(movedParent, "pin.json")} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("renamed parent retained output %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestInspectEpochsRejectsDisappearedOutputParent(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "recorder")
+	outputParent := filepath.Join(root, "output")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outputParent, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInspectEpochFixture(t, dir, priv)
+	originalSync := inspectSyncDirectory
+	t.Cleanup(func() { inspectSyncDirectory = originalSync })
+	movedParent := filepath.Join(root, "moved-output")
+	inspectSyncDirectory = func(output *inspectOutput) error {
+		if err := output.syncParent(); err != nil {
+			return err
+		}
+		return os.Rename(outputParent, movedParent)
+	}
+	err = runInspectEpochs(inspectEpochsOutputCommand(&bytes.Buffer{}), inspectEpochsOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), outFile: filepath.Join(outputParent, "pin.json")})
+	if err == nil || !strings.Contains(err.Error(), "verify --out parent identity") {
+		t.Fatalf("disappeared parent error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedParent, "pin.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("disappeared parent retained output: %v", statErr)
+	}
+}
+
 func TestInspectEpochSourceNamesRejectsUnsafeAndEmptyLocations(t *testing.T) {
 	t.Run("missing directory", func(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "missing")

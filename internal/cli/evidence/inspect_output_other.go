@@ -17,5 +17,8 @@ func prepareInspectOutput(string, string, string) (*inspectOutput, error) {
 }
 
 func (*inspectOutput) syncParent() error { return errors.New("unsupported") }
-func (*inspectOutput) remove() error     { return nil }
-func (o *inspectOutput) close() error    { return o.file.Close() }
+func (*inspectOutput) parentMatches(string) (bool, error) {
+	return false, errors.New("unsupported")
+}
+func (*inspectOutput) remove() error  { return nil }
+func (o *inspectOutput) close() error { return o.file.Close() }

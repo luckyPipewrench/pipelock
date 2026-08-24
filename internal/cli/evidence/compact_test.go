@@ -1091,33 +1091,38 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 		clone.v1Epochs = append([]compactEpochProof(nil), epochProof.v1Epochs...)
 		return clone
 	}
-	mutations := []func(*compactStreamProof){
-		func(p *compactStreamProof) { p.v1Epochs[0].Epoch++ },
-		func(p *compactStreamProof) { p.v1Epochs[0].Version++ },
-		func(p *compactStreamProof) { p.v1Epochs[0].StartSeq++ },
-		func(p *compactStreamProof) { p.v1Epochs[0].EndSeq++ },
-		func(p *compactStreamProof) { p.v1Epochs[0].EntryCount++ },
-		func(p *compactStreamProof) { p.v1Epochs[0].StartHash = "other" },
-		func(p *compactStreamProof) { p.v1Epochs[0].EndHash = "other" },
-		func(p *compactStreamProof) { p.v1Epochs[0].V1Count++ },
-		func(p *compactStreamProof) { p.v1Epochs[0].V1Head = "other" },
-		func(p *compactStreamProof) { p.v1Epochs[0].V1Degraded = true },
-		func(p *compactStreamProof) { p.v1Epochs[0].V1FirstGap = true },
-		func(p *compactStreamProof) { p.v1Epochs[0].V1TailGap = true },
-		func(p *compactStreamProof) { p.v1Epochs[0].Degradations = nil },
-		func(p *compactStreamProof) {
+	mutations := []struct {
+		name   string
+		mutate func(*compactStreamProof)
+	}{
+		{name: "epoch", mutate: func(p *compactStreamProof) { p.v1Epochs[0].Epoch++ }},
+		{name: "version", mutate: func(p *compactStreamProof) { p.v1Epochs[0].Version++ }},
+		{name: "start sequence", mutate: func(p *compactStreamProof) { p.v1Epochs[0].StartSeq++ }},
+		{name: "end sequence", mutate: func(p *compactStreamProof) { p.v1Epochs[0].EndSeq++ }},
+		{name: "entry count", mutate: func(p *compactStreamProof) { p.v1Epochs[0].EntryCount++ }},
+		{name: "start hash", mutate: func(p *compactStreamProof) { p.v1Epochs[0].StartHash = "other" }},
+		{name: "end hash", mutate: func(p *compactStreamProof) { p.v1Epochs[0].EndHash = "other" }},
+		{name: "v1 count", mutate: func(p *compactStreamProof) { p.v1Epochs[0].V1Count++ }},
+		{name: "v1 head", mutate: func(p *compactStreamProof) { p.v1Epochs[0].V1Head = "other" }},
+		{name: "v1 degraded", mutate: func(p *compactStreamProof) { p.v1Epochs[0].V1Degraded = true }},
+		{name: "v1 first gap", mutate: func(p *compactStreamProof) { p.v1Epochs[0].V1FirstGap = true }},
+		{name: "v1 tail gap", mutate: func(p *compactStreamProof) { p.v1Epochs[0].V1TailGap = true }},
+		{name: "no degradations", mutate: func(p *compactStreamProof) { p.v1Epochs[0].Degradations = nil }},
+		{name: "different degradation", mutate: func(p *compactStreamProof) {
 			p.v1Epochs[0].Degradations = []compactReceiptDegradation{{RecorderSeq: 8}}
-		},
-		func(p *compactStreamProof) { p.v1Epochs[0].V1Suffixes = nil },
-		func(p *compactStreamProof) { p.v1Epochs[0].V1Suffixes = []compactReceiptSuffix{{OriginSeq: 9}} },
-		func(p *compactStreamProof) { p.v1Epochs = append(p.v1Epochs, compactEpochProof{Epoch: 1}) },
+		}},
+		{name: "no v1 suffixes", mutate: func(p *compactStreamProof) { p.v1Epochs[0].V1Suffixes = nil }},
+		{name: "different v1 suffix", mutate: func(p *compactStreamProof) { p.v1Epochs[0].V1Suffixes = []compactReceiptSuffix{{OriginSeq: 9}} }},
+		{name: "additional epoch", mutate: func(p *compactStreamProof) { p.v1Epochs = append(p.v1Epochs, compactEpochProof{Epoch: 1}) }},
 	}
-	for _, mutate := range mutations {
-		candidate := cloneEpochProof()
-		mutate(&candidate)
-		if sameCompactProof(epochProof, candidate) {
-			t.Fatalf("different epoch proof compared equal: %+v", candidate.v1Epochs)
-		}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			candidate := cloneEpochProof()
+			mutation.mutate(&candidate)
+			if sameCompactProof(epochProof, candidate) {
+				t.Fatalf("different epoch proof compared equal: %+v", candidate.v1Epochs)
+			}
+		})
 	}
 	if sameCompactNameSet([]string{"a"}, []string{"a", "b"}) || sameCompactNameSet([]string{"a"}, []string{"b"}) || !sameCompactNameSet([]string{"a", "b"}, []string{"a", "b"}) {
 		t.Fatal("unexpected compact name-set comparison")

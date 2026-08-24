@@ -78,6 +78,22 @@ func inspectParentOutsideEvidence(parentFD int, evidenceRoot string) error {
 
 func (o *inspectOutput) syncParent() error { return unix.Fsync(o.parentFD) }
 
+func (o *inspectOutput) parentMatches(path string) (bool, error) {
+	currentFD, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = unix.Close(currentFD) }()
+	var held, current unix.Stat_t
+	if err := unix.Fstat(o.parentFD, &held); err != nil {
+		return false, err
+	}
+	if err := unix.Fstat(currentFD, &current); err != nil {
+		return false, err
+	}
+	return held.Dev == current.Dev && held.Ino == current.Ino, nil
+}
+
 func (o *inspectOutput) remove() error { return unix.Unlinkat(o.parentFD, o.name, 0) }
 
 func (o *inspectOutput) close() error { return errors.Join(o.file.Close(), unix.Close(o.parentFD)) }

@@ -81,14 +81,10 @@ func runInspectEpochs(cmd *cobra.Command, opts inspectEpochsOptions) error {
 		return fmt.Errorf("resolve --out parent: %w", err)
 	}
 	out = filepath.Join(resolvedParent, filepath.Base(out))
-	resolvedRoot, err := filepath.EvalSymlinks(location.Root)
-	if err != nil {
-		return fmt.Errorf("resolve evidence root: %w", err)
-	}
-	if rel, relErr := filepath.Rel(resolvedRoot, out); relErr != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+	if rel, relErr := filepath.Rel(location.Root, out); relErr != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
 		return errors.New("--out must be outside the evidence directory")
 	}
-	output, err := prepareInspectOutput(resolvedParent, filepath.Base(out), resolvedRoot)
+	output, err := prepareInspectOutput(resolvedParent, filepath.Base(out), location.Root)
 	if err != nil {
 		return fmt.Errorf("create --out: %w", err)
 	}
@@ -143,6 +139,13 @@ func runInspectEpochs(cmd *cobra.Command, opts inspectEpochsOptions) error {
 	}
 	if err := inspectSyncDirectory(output); err != nil {
 		return fmt.Errorf("sync --out parent: %w", err)
+	}
+	matches, err := output.parentMatches(resolvedParent)
+	if err != nil {
+		return fmt.Errorf("verify --out parent identity: %w", err)
+	}
+	if !matches {
+		return errors.New("--out parent changed during inspection")
 	}
 	published = true
 	digest := sha256.Sum256(data)

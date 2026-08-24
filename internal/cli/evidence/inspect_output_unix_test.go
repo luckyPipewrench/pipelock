@@ -36,6 +36,9 @@ func TestPrepareInspectOutputBindsParentDirectory(t *testing.T) {
 	if _, err := output.file.Write([]byte("bound\n")); err != nil {
 		t.Fatal(err)
 	}
+	if matches, err := output.parentMatches(parent); err != nil || matches {
+		t.Fatalf("replacement parent match = %t, %v", matches, err)
+	}
 	if _, err := os.Stat(filepath.Join(parent, "pin.json")); !os.IsNotExist(err) {
 		t.Fatalf("replacement parent received output: %v", err)
 	}

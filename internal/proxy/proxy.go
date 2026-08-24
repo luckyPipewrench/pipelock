@@ -789,22 +789,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			case session.PolicyBlock:
 				return newRedirectTaintBlockedRequest(redirectTaint, redirectTaint.Result.Reason)
 			case session.PolicyAsk:
-				blockReason := redirectTaint.Result.Reason
-				decision := hitl.DecisionBlock
-				switch {
-				case p.approver == nil:
-					blockReason += " (no HITL approver)"
-				case !p.approver.IsTerminal():
-					blockReason += " (HITL stdin is not a terminal)"
-				default:
-					decision = p.approver.Ask(&hitl.Request{
-						Agent:   agentName,
-						URL:     redirectURL,
-						Reason:  redirectTaint.Result.Reason,
-						Preview: fmt.Sprintf("%s %s", req.Method, redirectURL),
-					})
-				}
-				if decision != hitl.DecisionAllow {
+				approved, blockReason := p.resolveTaintAsk(agentName, redirectURL, req.Method, redirectTaint.Result.Reason)
+				if !approved {
 					return newRedirectTaintBlockedRequest(redirectTaint, blockReason)
 				}
 			}
@@ -4986,6 +4972,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			redirectTaint := fetchTaint
+			if blockedErr.taint != nil {
+				redirectTaint = *blockedErr.taint
+			}
 			resp := FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -5002,15 +4992,24 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				resp.Hint = "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks."
 			}
 			emitFetchReceipt(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionBlock,
-				Layer:     blockedErr.layer,
-				Pattern:   blockedErr.reason,
-				Transport: "fetch",
-				Method:    http.MethodGet,
-				Target:    redirectReceiptTarget(blockedErr, displayURL),
-				RequestID: requestID,
-				Agent:     agent,
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               blockedErr.layer,
+				Pattern:             blockedErr.reason,
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              redirectReceiptTarget(blockedErr, displayURL),
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   redirectTaint.Risk.Level.String(),
+				SessionContaminated: redirectTaint.Risk.Contaminated,
+				RecentTaintSources:  redirectTaint.Risk.Sources,
+				SessionTaskID:       redirectTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    redirectTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       redirectTaint.Authority.String(),
+				TaintDecision:       redirectTaint.Result.Decision.String(),
+				TaintDecisionReason: redirectTaint.Result.Reason,
+				TaskOverrideApplied: redirectTaint.TaskOverrideApplied,
 			})
 			writeBlockedJSON(w,
 				redirectBlockedInfo(blockedErr),

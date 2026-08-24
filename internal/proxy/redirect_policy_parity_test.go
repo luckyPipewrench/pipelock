@@ -198,11 +198,12 @@ func TestCheckRedirect_SessionPoliciesAllowHarmlessRedirect(t *testing.T) {
 func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T) {
 	tests := []struct {
 		name  string
-		setup func(*Proxy)
+		setup func(*testing.T, *Proxy)
 	}{
 		{
 			name: "taint reauthorization",
-			setup: func(p *Proxy) {
+			setup: func(t *testing.T, p *Proxy) {
+				t.Helper()
 				cfg := p.CurrentConfig()
 				sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
 				observeHTTPResponseTaint(sess, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", false)
@@ -210,7 +211,8 @@ func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T
 		},
 		{
 			name: "scoped airlock",
-			setup: func(p *Proxy) {
+			setup: func(t *testing.T, p *Proxy) {
+				t.Helper()
 				sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
 				if changed, _, _ := sess.AirlockForScope(adaptiveScopeForHost("api.vendor.example")).ForceSetTier(config.AirlockTierDrain); !changed {
 					t.Fatal("target scope did not enter drain tier")
@@ -241,7 +243,7 @@ func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T
 				}}
 			})
 			defer cleanup()
-			tt.setup(p)
+			tt.setup(t, p)
 			p.client.Transport = &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 					switch addr {

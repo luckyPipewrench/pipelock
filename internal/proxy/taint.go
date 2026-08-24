@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -29,6 +30,22 @@ type taintDecision struct {
 	Result              session.PolicyDecisionResult
 	ActionRef           string
 	TaskOverrideApplied bool
+}
+
+func (p *Proxy) resolveTaintAsk(agent, target, method, reason string) (bool, string) {
+	switch {
+	case p.approver == nil:
+		return false, reason + " (no HITL approver)"
+	case !p.approver.IsTerminal():
+		return false, reason + " (HITL stdin is not a terminal)"
+	}
+	decision := p.approver.Ask(&hitl.Request{
+		Agent:   agent,
+		URL:     target,
+		Reason:  reason,
+		Preview: fmt.Sprintf("%s %s", method, target),
+	})
+	return decision == hitl.DecisionAllow, reason
 }
 
 func observeHTTPResponseTaint(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string, promptHit bool) {

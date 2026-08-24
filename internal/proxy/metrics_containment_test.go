@@ -465,6 +465,57 @@ func TestHostnameMetricsListenerRefreshReresolvesSameListen(t *testing.T) {
 	}
 }
 
+func TestMetricsDialTargetRefreshClearsEmptyListen(t *testing.T) {
+	var nilProxy *Proxy
+	nilProxy.refreshMetricsDialTarget("localhost:9091")
+
+	p := &Proxy{}
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p.lookupMetricsHost = func(context.Context, string) ([]string, error) {
+		return []string{"192.0.2.10"}, nil
+	}
+	p.ConfigPtr().Store(cfg)
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10")))
+	p.refreshMetricsDialTarget("")
+	if cached := p.metricsTargetPtr.Load(); cached != nil {
+		t.Fatal("empty listen left a cached metrics target")
+	}
+}
+
+func TestMalformedMetricsListenAllowsDial(t *testing.T) {
+	t.Run("unparseable address", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.MetricsListen = "not-a-host-port"
+		p := &Proxy{}
+		p.ConfigPtr().Store(cfg)
+		if err := p.blockIfConfiguredMetricsTarget(t.Context(), "127.0.0.1", "9091", net.ParseIP("127.0.0.1")); err != nil {
+			t.Fatalf("unparseable MetricsListen blocked: %v", err)
+		}
+	})
+	t.Run("unparseable port", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.MetricsListen = "localhost:notaport"
+		p := &Proxy{}
+		p.ConfigPtr().Store(cfg)
+		if err := p.blockIfConfiguredMetricsTarget(t.Context(), "127.0.0.1", "9091", net.ParseIP("127.0.0.1")); err != nil {
+			t.Fatalf("unparseable metrics port blocked: %v", err)
+		}
+	})
+}
+
+func TestHostnameMetricsListenerSkipsUnparseableLookupRecords(t *testing.T) {
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			return []string{"not-an-ip", "192.0.2.10"}, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p.ConfigPtr().Store(cfg)
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10")))
+}
+
 func TestLiteralMetricsListenerDoesNotLookupHost(t *testing.T) {
 	var lookups atomic.Int64
 	p := &Proxy{

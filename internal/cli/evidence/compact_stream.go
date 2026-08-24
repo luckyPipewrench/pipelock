@@ -191,7 +191,7 @@ func (w *compactStreamWriter) close() error {
 }
 
 func sameCompactProof(a, b compactStreamProof) bool {
-	if a.bytes != b.bytes || a.sum != b.sum || a.v1Count != b.v1Count || a.v1Head != b.v1Head || a.v1Degraded != b.v1Degraded || a.v1FirstGap != b.v1FirstGap || a.v1TailGap != b.v1TailGap || a.v2Count != b.v2Count || a.v2Head != b.v2Head || len(a.degradations) != len(b.degradations) || len(a.v1Suffixes) != len(b.v1Suffixes) {
+	if a.bytes != b.bytes || a.sum != b.sum || a.v1Count != b.v1Count || a.v1Head != b.v1Head || a.v1Degraded != b.v1Degraded || a.v1FirstGap != b.v1FirstGap || a.v1TailGap != b.v1TailGap || a.v2Count != b.v2Count || a.v2Head != b.v2Head || len(a.degradations) != len(b.degradations) || len(a.v1Suffixes) != len(b.v1Suffixes) || len(a.unsignedCheckpoints) != len(b.unsignedCheckpoints) {
 		return false
 	}
 	for i := range a.degradations {
@@ -207,6 +207,13 @@ func sameCompactProof(a, b compactStreamProof) bool {
 	}
 	for i := range a.v1Suffixes {
 		if a.v1Suffixes[i] != b.v1Suffixes[i] {
+			return false
+		}
+	}
+	for i := range a.unsignedCheckpoints {
+		aCheckpoint, bCheckpoint := a.unsignedCheckpoints[i], b.unsignedCheckpoints[i]
+		aCheckpoint.File, bCheckpoint.File = "", ""
+		if aCheckpoint != bCheckpoint {
 			return false
 		}
 	}
@@ -258,18 +265,29 @@ var compactKnownRecorderTypes = map[string]struct{}{
 }
 
 type compactStreamProof struct {
-	files        []compactStreamFile
-	bytes        int64
-	sum          string
-	v1Count      uint64
-	v1Head       string
-	v1Degraded   bool
-	v1FirstGap   bool
-	v1TailGap    bool
-	degradations []compactReceiptDegradation
-	v1Suffixes   []compactReceiptSuffix
-	v2Count      uint64
-	v2Head       string
+	files               []compactStreamFile
+	bytes               int64
+	sum                 string
+	v1Count             uint64
+	v1Head              string
+	v1Degraded          bool
+	v1FirstGap          bool
+	v1TailGap           bool
+	degradations        []compactReceiptDegradation
+	v1Suffixes          []compactReceiptSuffix
+	v2Count             uint64
+	v2Head              string
+	unsignedCheckpoints []compactUnsignedCheckpoint
+}
+
+type compactUnsignedCheckpoint struct {
+	File                 string `json:"file"`
+	RecorderSeq          uint64 `json:"recorder_seq"`
+	EntryCount           uint64 `json:"entry_count"`
+	FirstSeq             uint64 `json:"first_seq"`
+	LastSeq              uint64 `json:"last_seq"`
+	LaterSignedCovered   bool   `json:"later_signed_checkpoint_covered"`
+	CoveredByRecorderSeq uint64 `json:"covered_by_recorder_seq,omitempty"`
 }
 
 type compactReceiptSuffix struct {
@@ -321,17 +339,22 @@ func decodeCompactLegacyReceiptTombstone(raw []byte) (int64, bool) {
 // compatibility hash covers historical v1 detail bytes rather than a decoded
 // map re-marshaled in a different order.
 type compactOuterVerifier struct {
-	key       ed25519.PublicKey
-	seen      bool
-	previous  string
-	nextSeq   uint64
-	v3Seen    bool
-	v3Session string
-	v3Kind    string
-	v3Writer  string
+	key                 ed25519.PublicKey
+	seen                bool
+	previous            string
+	nextSeq             uint64
+	v3Seen              bool
+	v3Session           string
+	v3Kind              string
+	v3Writer            string
+	unsignedCheckpoints []compactUnsignedCheckpoint
 }
 
-func (v *compactOuterVerifier) add(e recorder.Entry, session string) error {
+func (v *compactOuterVerifier) add(e recorder.Entry, session string, files ...string) error {
+	file := ""
+	if len(files) > 0 {
+		file = files[0]
+	}
 	if e.SessionID != session {
 		return fmt.Errorf("entry seq %d belongs to %q, not %q", e.Sequence, e.SessionID, session)
 	}
@@ -361,9 +384,26 @@ func (v *compactOuterVerifier) add(e recorder.Entry, session string) error {
 	} else if e.Sequence != v.nextSeq || e.PrevHash != v.previous {
 		return fmt.Errorf("entry seq %d: recorder sequence or hash chain break", e.Sequence)
 	}
-	if e.Type == "checkpoint" && len(v.key) != 0 {
-		if err := recorder.VerifyCheckpoints([]recorder.Entry{e}, v.key); err != nil {
-			return err
+	if e.Type == "checkpoint" {
+		var detail recorder.CheckpointDetail
+		if err := json.Unmarshal(e.RawDetail, &detail); err != nil {
+			return fmt.Errorf("entry seq %d: unmarshaling checkpoint detail: %w", e.Sequence, err)
+		}
+		if detail.Signature == "" {
+			v.unsignedCheckpoints = append(v.unsignedCheckpoints, compactUnsignedCheckpoint{File: file, RecorderSeq: e.Sequence, EntryCount: detail.EntryCount, FirstSeq: detail.FirstSeq, LastSeq: detail.LastSeq})
+		} else {
+			if len(v.key) != ed25519.PublicKeySize {
+				return fmt.Errorf("entry seq %d: trusted checkpoint public key is required", e.Sequence)
+			}
+			if err := recorder.VerifyCheckpoints([]recorder.Entry{e}, v.key); err != nil {
+				return err
+			}
+			for i := range v.unsignedCheckpoints {
+				v.unsignedCheckpoints[i].LaterSignedCovered = true
+				if v.unsignedCheckpoints[i].CoveredByRecorderSeq == 0 {
+					v.unsignedCheckpoints[i].CoveredByRecorderSeq = e.Sequence
+				}
+			}
 		}
 	}
 	v.previous, v.nextSeq = e.Hash, e.Sequence+1
@@ -420,7 +460,7 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 				if parseErr != nil {
 					return fmt.Errorf("parse %s: %w", name, parseErr)
 				}
-				if err := outer.add(entry, session); err != nil {
+				if err := outer.add(entry, session, name); err != nil {
 					return err
 				}
 				if _, ok := compactKnownRecorderTypes[entry.Type]; !ok {
@@ -539,6 +579,7 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 	if !outer.seen {
 		return compactStreamProof{}, fmt.Errorf("session %q contains no entries", session)
 	}
+	proof.unsignedCheckpoints = append(proof.unsignedCheckpoints, outer.unsignedCheckpoints...)
 	if proof.v1Count == 0 && proof.v2Count == 0 {
 		return compactStreamProof{}, fmt.Errorf("session %q contains no signed evidence receipts", session)
 	}

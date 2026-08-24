@@ -22,17 +22,24 @@ type (
 	compactOptions struct {
 		receiptDir, locationID, sessionID, publicKey string
 		allowDegradedReceipts                        int
+		allowUnsignedCheckpoints                     int
 	}
 	compactManifest struct {
-		Version             int                                `json:"version"`
-		SessionID           string                             `json:"session_id"`
-		CreatedAt           time.Time                          `json:"created_at"`
-		ReceiptVerification compactManifestReceiptVerification `json:"receipt_verification"`
-		Original            []compactManifestFile              `json:"original"`
-		Replacement         []compactManifestFile              `json:"replacement"`
-		Mappings            []compactByteMapping               `json:"mappings"`
+		Version                int                                   `json:"version"`
+		SessionID              string                                `json:"session_id"`
+		CreatedAt              time.Time                             `json:"created_at"`
+		ReceiptVerification    compactManifestReceiptVerification    `json:"receipt_verification"`
+		CheckpointVerification compactManifestCheckpointVerification `json:"checkpoint_verification"`
+		Original               []compactManifestFile                 `json:"original"`
+		Replacement            []compactManifestFile                 `json:"replacement"`
+		Mappings               []compactByteMapping                  `json:"mappings"`
 	}
 )
+
+type compactManifestCheckpointVerification struct {
+	Status   string                      `json:"status"`
+	Unsigned []compactUnsignedCheckpoint `json:"unsigned,omitempty"`
+}
 
 type compactManifestReceiptVerification struct {
 	Status       string                      `json:"status"`
@@ -77,6 +84,7 @@ func compactCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.sessionID, "session", "", "session ID to compact")
 	cmd.Flags().StringVar(&opts.publicKey, "key", "", "trusted receipt signing public key (inline or file)")
 	cmd.Flags().IntVar(&opts.allowDegradedReceipts, "allow-degraded-receipts", 0, "acknowledge exactly N recognized irrecoverable receipt gaps")
+	cmd.Flags().IntVar(&opts.allowUnsignedCheckpoints, "allow-unsigned-checkpoints", 0, "acknowledge exactly N historical unsigned checkpoints sealed by a later signed checkpoint")
 	_ = cmd.MarkFlagRequired("receipt-dir")
 	_ = cmd.MarkFlagRequired("session")
 	_ = cmd.MarkFlagRequired("key")
@@ -132,6 +140,14 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	if original.v1Degraded && opts.allowDegradedReceipts != len(original.degradations) {
 		return fmt.Errorf("receipt proof is DEGRADED by %d recognized whole-receipt tombstone(s); inspect the source and rerun with --allow-degraded-receipts=%d to acknowledge exactly these gaps", len(original.degradations), len(original.degradations))
 	}
+	for _, checkpoint := range original.unsignedCheckpoints {
+		if !checkpoint.LaterSignedCovered {
+			return fmt.Errorf("unsigned checkpoint at recorder seq %d is not sealed by a later signed checkpoint; refusing compaction", checkpoint.RecorderSeq)
+		}
+	}
+	if opts.allowUnsignedCheckpoints != len(original.unsignedCheckpoints) {
+		return fmt.Errorf("checkpoint proof contains %d historical unsigned checkpoint(s) sealed by a later signed checkpoint; inspect the source and rerun with --allow-unsigned-checkpoints=%d to acknowledge exactly these records", len(original.unsignedCheckpoints), len(original.unsignedCheckpoints))
+	}
 	if len(writer.files) > recorder.MaxEvidenceReadDirectoryEntries {
 		return fmt.Errorf("compaction produced %d shards, exceeds %d", len(writer.files), recorder.MaxEvidenceReadDirectoryEntries)
 	}
@@ -153,7 +169,7 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	if !sameCompactProof(original, post) {
 		return errors.New("compaction changed original JSONL bytes or signed receipt proof")
 	}
-	manifest := compactManifest{Version: 2, SessionID: opts.sessionID, CreatedAt: time.Now().UTC(), ReceiptVerification: manifestReceiptVerification(original), Original: manifestStreamFiles(original.files), Replacement: manifestStreamFiles(writer.files), Mappings: writer.mappings}
+	manifest := compactManifest{Version: 2, SessionID: opts.sessionID, CreatedAt: time.Now().UTC(), ReceiptVerification: manifestReceiptVerification(original), CheckpointVerification: manifestCheckpointVerification(original), Original: manifestStreamFiles(original.files), Replacement: manifestStreamFiles(writer.files), Mappings: writer.mappings}
 	archive := filepath.Join(parent, ".pipelock-evidence-archive-"+time.Now().UTC().Format("20060102T150405.000000000Z"))
 	stageLock, err := compactAcquireLock(stage)
 	if err != nil {
@@ -199,7 +215,20 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	} else {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "receipt proof: VERIFIED")
 	}
+	if len(original.unsignedCheckpoints) > 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "checkpoint proof: DEGRADED; preserved %d acknowledged historical unsigned checkpoint(s), each sealed by a later signed checkpoint; see archive manifest\n", len(original.unsignedCheckpoints))
+	} else {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "checkpoint proof: VERIFIED")
+	}
 	return nil
+}
+
+func manifestCheckpointVerification(proof compactStreamProof) compactManifestCheckpointVerification {
+	status := "verified"
+	if len(proof.unsignedCheckpoints) > 0 {
+		status = "degraded"
+	}
+	return compactManifestCheckpointVerification{Status: status, Unsigned: append([]compactUnsignedCheckpoint(nil), proof.unsignedCheckpoints...)}
 }
 
 func manifestReceiptVerification(proof compactStreamProof) compactManifestReceiptVerification {

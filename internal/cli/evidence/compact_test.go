@@ -231,6 +231,172 @@ func TestStreamCompactFilesVerifiesSignedOuterCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRunCompactAcknowledgesUnsignedCheckpointSealedBySignedCheckpoint(t *testing.T) {
+	if !supportsCompactExchangeTest() {
+		t.Skip("atomic evidence directory exchange is unsupported")
+	}
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "recorder")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := compactSignedReceipt(t, priv, 0, contractreceipt.GenesisHash)
+	items := []struct {
+		typ    string
+		detail any
+	}{
+		{contractreceipt.EvidenceEntryType, receipt},
+		{"checkpoint", recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 0, LastSeq: 0}},
+		{"checkpoint", recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 1, LastSeq: 1}},
+	}
+	var source bytes.Buffer
+	previous := recorder.GenesisHash
+	for i, item := range items {
+		if item.typ == "checkpoint" && i == 2 {
+			detail := item.detail.(recorder.CheckpointDetail)
+			detail.Signature = hex.EncodeToString(ed25519.Sign(priv, []byte(previous)))
+			item.detail = detail
+		}
+		entry := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i), Timestamp: time.Unix(int64(i+1), 0).UTC(), SessionID: "proxy", Type: item.typ, EventKind: "proxy_decision", Transport: "fetch", Summary: item.typ, Detail: item.detail, PrevHash: previous}
+		entry.Hash = recorder.ComputeHash(entry)
+		previous = entry.Hash
+		line, marshalErr := json.Marshal(entry)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		source.Write(line)
+		source.WriteByte('\n')
+	}
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, source.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := compactOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub)}
+	if err := runCompact(compactCmd(), opts); err == nil || !strings.Contains(err.Error(), "--allow-unsigned-checkpoints=1") {
+		t.Fatalf("missing acknowledgement error = %v", err)
+	}
+	if active, readErr := os.ReadFile(filepath.Clean(path)); readErr != nil || !bytes.Equal(active, source.Bytes()) {
+		t.Fatalf("refusal changed source: err=%v", readErr)
+	}
+	opts.allowUnsignedCheckpoints = 2
+	if err := runCompact(compactCmd(), opts); err == nil || !strings.Contains(err.Error(), "contains 1 historical unsigned") {
+		t.Fatalf("wrong acknowledgement error = %v", err)
+	}
+	opts.allowUnsignedCheckpoints = 1
+	cmd := compactCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runCompact(cmd, opts); err != nil {
+		t.Fatalf("compact acknowledged history: %v", err)
+	}
+	if !strings.Contains(out.String(), "checkpoint proof: DEGRADED") {
+		t.Fatalf("output = %q", out.String())
+	}
+	archives, err := filepath.Glob(filepath.Join(parent, ".pipelock-evidence-archive-*"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("archives=%v err=%v", archives, err)
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(archives[0], "compaction-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest compactManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CheckpointVerification.Status != "degraded" || len(manifest.CheckpointVerification.Unsigned) != 1 || !manifest.CheckpointVerification.Unsigned[0].LaterSignedCovered || manifest.CheckpointVerification.Unsigned[0].CoveredByRecorderSeq != 2 {
+		t.Fatalf("checkpoint manifest = %+v", manifest.CheckpointVerification)
+	}
+	active, err := os.ReadFile(filepath.Clean(path))
+	if err != nil || !bytes.Equal(active, source.Bytes()) {
+		t.Fatalf("compaction changed source bytes: err=%v", err)
+	}
+	if err := runCompact(compactCmd(), opts); err != nil {
+		t.Fatalf("rerun acknowledged compaction: %v", err)
+	}
+}
+
+func TestRunCompactRefusesUnsignedCheckpointAtTail(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := compactSignedReceipt(t, priv, 0, contractreceipt.GenesisHash)
+	first := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Detail: receipt, PrevHash: recorder.GenesisHash}
+	first.Hash = recorder.ComputeHash(first)
+	tail := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: 1, Timestamp: time.Unix(2, 0).UTC(), SessionID: "proxy", Type: "checkpoint", EventKind: "checkpoint", Detail: recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 0, LastSeq: 0}, PrevHash: first.Hash}
+	tail.Hash = recorder.ComputeHash(tail)
+	var source bytes.Buffer
+	for _, entry := range []recorder.Entry{first, tail} {
+		line, marshalErr := json.Marshal(entry)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		source.Write(line)
+		source.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), source.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = runCompact(compactCmd(), compactOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), allowUnsignedCheckpoints: 1})
+	if err == nil || !strings.Contains(err.Error(), "not sealed by a later signed checkpoint") {
+		t.Fatalf("tail unsigned checkpoint error = %v", err)
+	}
+}
+
+func TestStreamCompactFilesAcceptsRealRecorderUnsignedToSignedResume(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstReceipt := compactSignedReceipt(t, priv, 0, contractreceipt.GenesisHash)
+	firstHead, err := contractreceipt.ReceiptHash(firstReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unsigned.Record(recorder.Entry{SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Detail: firstReceipt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unsigned.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1, SignCheckpoints: true}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReceipt := compactSignedReceipt(t, priv, 1, firstHead)
+	if err := signed.Record(recorder.Entry{SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Detail: secondReceipt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := signed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	location := recorder.EvidenceLocation{Root: dir, Dir: dir}
+	names, err := compactStreamNames(location, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := streamCompactFiles(location, names, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil })
+	if err != nil {
+		t.Fatalf("real recorder unsigned-to-signed history: %v", err)
+	}
+	if len(proof.unsignedCheckpoints) != 1 || proof.unsignedCheckpoints[0].RecorderSeq != 1 || proof.unsignedCheckpoints[0].CoveredByRecorderSeq != 3 {
+		t.Fatalf("unsigned checkpoint proof = %+v", proof.unsignedCheckpoints)
+	}
+}
+
 func TestStreamCompactFilesReportsCheckpointCoverageAfterGap(t *testing.T) {
 	dir := t.TempDir()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -643,7 +809,7 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 	if !sameCompactProof(base, base) {
 		t.Fatal("same proof did not compare equal")
 	}
-	for _, changed := range []compactStreamProof{{bytes: 2}, {sum: "other"}, {v1Count: 4}, {v1Head: "other"}, {v1Degraded: true}, {v1FirstGap: true}, {v1TailGap: true}, {degradations: []compactReceiptDegradation{{RecorderSeq: 9}}}, {v1Suffixes: []compactReceiptSuffix{{OriginSeq: 9}}}, {v2Count: 4}, {v2Head: "other"}} {
+	for _, changed := range []compactStreamProof{{bytes: 2}, {sum: "other"}, {v1Count: 4}, {v1Head: "other"}, {v1Degraded: true}, {v1FirstGap: true}, {v1TailGap: true}, {degradations: []compactReceiptDegradation{{RecorderSeq: 9}}}, {v1Suffixes: []compactReceiptSuffix{{OriginSeq: 9}}}, {v2Count: 4}, {v2Head: "other"}, {unsignedCheckpoints: []compactUnsignedCheckpoint{{RecorderSeq: 9}}}} {
 		candidate := base
 		if changed.bytes != 0 {
 			candidate.bytes = changed.bytes
@@ -678,6 +844,9 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 		if changed.v2Head != "" {
 			candidate.v2Head = changed.v2Head
 		}
+		if changed.unsignedCheckpoints != nil {
+			candidate.unsignedCheckpoints = changed.unsignedCheckpoints
+		}
 		if sameCompactProof(base, candidate) {
 			t.Fatalf("different proof compared equal: %#v", candidate)
 		}
@@ -685,6 +854,7 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 	withDetails := base
 	withDetails.degradations = []compactReceiptDegradation{{RecorderSeq: 1}}
 	withDetails.v1Suffixes = []compactReceiptSuffix{{OriginSeq: 2}}
+	withDetails.unsignedCheckpoints = []compactUnsignedCheckpoint{{RecorderSeq: 3, CoveredByRecorderSeq: 4}}
 	differentDegradation := withDetails
 	differentDegradation.degradations = []compactReceiptDegradation{{RecorderSeq: 9}}
 	if sameCompactProof(withDetails, differentDegradation) {
@@ -694,6 +864,11 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 	differentSuffix.v1Suffixes = []compactReceiptSuffix{{OriginSeq: 7}}
 	if sameCompactProof(withDetails, differentSuffix) {
 		t.Fatal("different suffix content compared equal")
+	}
+	differentCheckpoint := withDetails
+	differentCheckpoint.unsignedCheckpoints = []compactUnsignedCheckpoint{{RecorderSeq: 3, CoveredByRecorderSeq: 5}}
+	if sameCompactProof(withDetails, differentCheckpoint) {
+		t.Fatal("different unsigned checkpoint content compared equal")
 	}
 	if sameCompactNameSet([]string{"a"}, []string{"a", "b"}) || sameCompactNameSet([]string{"a"}, []string{"b"}) || !sameCompactNameSet([]string{"a", "b"}, []string{"a", "b"}) {
 		t.Fatal("unexpected compact name-set comparison")

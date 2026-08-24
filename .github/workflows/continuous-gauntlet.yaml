@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: Pipelock Gauntlet Candidate
+name: Pipelock Gauntlet
 
 on:
   workflow_dispatch:

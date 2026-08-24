@@ -426,6 +426,163 @@ func TestStreamCompactFilesAcceptsRealRecorderUnsignedToSignedResume(t *testing.
 	}
 }
 
+func TestRunCompactRefusesHistoricalV1Epochs(t *testing.T) {
+	if !supportsCompactExchangeTest() {
+		t.Skip("atomic evidence directory exchange is unsupported")
+	}
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "recorder")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source bytes.Buffer
+	for epoch := range 15 {
+		receipt := receiptForCompactV1(t, priv, 0, legacyreceipt.GenesisHash, fmt.Sprintf("epoch-%d", epoch))
+		entry := recorder.Entry{Version: 1, Sequence: 0, Timestamp: time.Unix(int64(epoch+1), 0).UTC(), SessionID: "proxy", Type: "action_receipt", EventKind: "proxy_decision", Transport: "fetch", Summary: "legacy epoch", Detail: receipt, PrevHash: recorder.GenesisHash}
+		entry.Hash = recorder.ComputeHash(entry)
+		line, marshalErr := json.Marshal(entry)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		source.Write(line)
+		source.WriteByte('\n')
+	}
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, source.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := compactOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub)}
+	err = runCompact(compactCmd(), opts)
+	if err == nil || !strings.Contains(err.Error(), "ordinary compaction cannot publish unlinked epochs") || !strings.Contains(err.Error(), "inspect-epochs") {
+		t.Fatalf("legacy epoch refusal error = %v", err)
+	}
+	archives, err := filepath.Glob(filepath.Join(parent, ".pipelock-evidence-archive-*"))
+	if err != nil || len(archives) != 0 {
+		t.Fatalf("archives=%v err=%v", archives, err)
+	}
+	// #nosec G304 -- path is the test's own temporary evidence fixture.
+	active, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(active, source.Bytes()) {
+		t.Fatalf("refusal changed historical epoch bytes: err=%v", err)
+	}
+}
+
+func TestCompactOuterVerifierRefusesV2RestartAndUncoveredEpochCheckpoint(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstReceipt := compactSignedReceipt(t, priv, 0, contractreceipt.GenesisHash)
+	first := recorder.Entry{Version: 2, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Summary: "v2", Detail: firstReceipt, PrevHash: recorder.GenesisHash}
+	first.Hash = recorder.ComputeHash(first)
+	second := first
+	second.Timestamp = time.Unix(2, 0).UTC()
+	second.Detail = compactSignedReceipt(t, priv, 1, contractreceipt.GenesisHash)
+	second.Hash = recorder.ComputeHash(second)
+	v := compactOuterVerifier{key: pub}
+	if err := v.add(first, "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.add(second, "proxy"); err == nil || !strings.Contains(err.Error(), "sequence or hash chain break") {
+		t.Fatalf("v2 restart error = %v", err)
+	}
+
+	legacy := recorder.Entry{Version: 1, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: "decision", EventKind: "proxy_decision", Transport: "fetch", Summary: "legacy", Detail: map[string]string{"verdict": "block"}, PrevHash: recorder.GenesisHash}
+	legacy.Hash = recorder.ComputeHash(legacy)
+	checkpointDetail := recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 0, LastSeq: 0}
+	rawCheckpoint, err := json.Marshal(checkpointDetail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := recorder.Entry{Version: 1, Sequence: 1, Timestamp: time.Unix(2, 0).UTC(), SessionID: "proxy", Type: "checkpoint", EventKind: "checkpoint", Detail: checkpointDetail, RawDetail: rawCheckpoint, PrevHash: legacy.Hash}
+	checkpoint.Hash = recorder.ComputeHash(checkpoint)
+	restart := legacy
+	restart.Timestamp = time.Unix(3, 0).UTC()
+	restart.Hash = recorder.ComputeHash(restart)
+	v = compactOuterVerifier{key: pub}
+	if err := v.add(legacy, "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.add(checkpoint, "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.add(restart, "proxy"); err == nil || !strings.Contains(err.Error(), "is not sealed before recorder restart") {
+		t.Fatalf("cross-epoch unsigned checkpoint error = %v", err)
+	}
+}
+
+func TestCompactOuterVerifierBoundsLegacyEpochCompatibility(t *testing.T) {
+	makeEntry := func(version int, ts int64) recorder.Entry {
+		e := recorder.Entry{Version: version, Sequence: 0, Timestamp: time.Unix(ts, 0).UTC(), SessionID: "proxy", Type: "decision", EventKind: "proxy_decision", Transport: "fetch", Summary: "epoch", Detail: map[string]string{"verdict": "block"}, PrevHash: recorder.GenesisHash}
+		e.Hash = recorder.ComputeHash(e)
+		return e
+	}
+	t.Run("timestamp must advance", func(t *testing.T) {
+		v := compactOuterVerifier{}
+		if err := v.add(makeEntry(1, 2), "proxy"); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.add(makeEntry(1, 2), "proxy"); err == nil || !strings.Contains(err.Error(), "timestamp does not advance") {
+			t.Fatalf("timestamp error = %v", err)
+		}
+	})
+	t.Run("modern epoch cannot restart as legacy", func(t *testing.T) {
+		v := compactOuterVerifier{}
+		if err := v.add(makeEntry(2, 1), "proxy"); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.add(makeEntry(1, 2), "proxy"); err == nil || !strings.Contains(err.Error(), "v1-only epochs") {
+			t.Fatalf("mixed-version error = %v", err)
+		}
+	})
+	t.Run("epoch count is bounded", func(t *testing.T) {
+		v := compactOuterVerifier{epoch: maxCompactLegacyEpochs - 1}
+		if err := v.add(makeEntry(1, 1), "proxy"); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.add(makeEntry(1, 2), "proxy"); err == nil || !strings.Contains(err.Error(), "epoch count exceeds") {
+			t.Fatalf("epoch limit error = %v", err)
+		}
+	})
+}
+
+func TestCompactOuterVerifierDoesNotSealPriorEpochCheckpoint(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis := recorder.Entry{Version: 1, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: "decision", EventKind: "proxy_decision", Transport: "fetch", Summary: "epoch", Detail: map[string]string{"verdict": "block"}, PrevHash: recorder.GenesisHash}
+	genesis.Hash = recorder.ComputeHash(genesis)
+	restart := genesis
+	restart.Timestamp = time.Unix(2, 0).UTC()
+	restart.Hash = recorder.ComputeHash(restart)
+	v := compactOuterVerifier{key: pub}
+	if err := v.add(genesis, "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.add(restart, "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	v.unsignedCheckpoints = append(v.unsignedCheckpoints, compactUnsignedCheckpoint{Epoch: 0, RecorderSeq: 7})
+	detail := recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 0, LastSeq: 0, Signature: hex.EncodeToString(ed25519.Sign(priv, []byte(restart.Hash)))}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := recorder.Entry{Version: 1, Sequence: 1, Timestamp: time.Unix(3, 0).UTC(), SessionID: "proxy", Type: "checkpoint", EventKind: "checkpoint", Detail: detail, RawDetail: raw, PrevHash: restart.Hash}
+	checkpoint.Hash = recorder.ComputeHash(checkpoint)
+	if err := v.add(checkpoint, "proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if v.unsignedCheckpoints[0].LaterSignedCovered {
+		t.Fatal("signed checkpoint crossed a recorder epoch boundary")
+	}
+}
+
 func TestStreamCompactFilesReportsCheckpointCoverageAfterGap(t *testing.T) {
 	dir := t.TempDir()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -668,6 +825,24 @@ func TestCompactStreamWriterPreservesMappingsAndFailsClosed(t *testing.T) {
 		}
 	})
 
+	t.Run("avoids repeated seq-zero epoch output-name collisions", func(t *testing.T) {
+		stage := t.TempDir()
+		w := &compactStreamWriter{dir: stage, session: "proxy", sourceOffsets: make(map[string]int64)}
+		if err := w.add(source, []byte("epoch-a\n"), recorder.Entry{Sequence: 0}); err != nil {
+			t.Fatal(err)
+		}
+		w.currentBytes = recorder.MaxEvidenceReadFileBytes
+		if err := w.add(source, []byte("epoch-b\n"), recorder.Entry{Sequence: 0}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.close(); err != nil {
+			t.Fatal(err)
+		}
+		if len(w.files) != 2 || w.files[0].name == w.files[1].name {
+			t.Fatalf("output files = %#v, want two unique names", w.files)
+		}
+	})
+
 	t.Run("rejects oversized line before writing", func(t *testing.T) {
 		w := &compactStreamWriter{dir: t.TempDir(), session: "proxy", sourceOffsets: make(map[string]int64)}
 		if err := w.add(source, make([]byte, recorder.MaxEvidenceReadFileBytes+1), recorder.Entry{}); err == nil || !strings.Contains(err.Error(), "single JSONL line") {
@@ -769,6 +944,13 @@ func TestCompactStreamWriterPreservesMappingsAndFailsClosed(t *testing.T) {
 		w := &compactStreamWriter{dir: stage, session: "proxy", current: f, currentName: filepath.Base(f.Name()), currentBytes: recorder.MaxEvidenceReadFileBytes, currentSource: source, sourceOffsets: make(map[string]int64)}
 		if err := w.add(source, []byte("next\n"), recorder.Entry{Sequence: 1}); err == nil || !strings.Contains(err.Error(), "rotate sync") {
 			t.Fatalf("rotate error=%v", err)
+		}
+	})
+
+	t.Run("rejects staging filename sequence overflow", func(t *testing.T) {
+		w := &compactStreamWriter{dir: t.TempDir(), session: "proxy", lastStart: ^uint64(0), hasLastStart: true, sourceOffsets: make(map[string]int64)}
+		if err := w.add(source, []byte("line\n"), recorder.Entry{Sequence: 0}); err == nil || !strings.Contains(err.Error(), "sequence overflows") {
+			t.Fatalf("overflow error = %v", err)
 		}
 	})
 
@@ -898,6 +1080,35 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 	differentCheckpoint.unsignedCheckpoints = []compactUnsignedCheckpoint{{RecorderSeq: 3, CoveredByRecorderSeq: 5}}
 	if sameCompactProof(withDetails, differentCheckpoint) {
 		t.Fatal("different unsigned checkpoint content compared equal")
+	}
+	epochProof := base
+	epochProof.v1Epochs = []compactEpochProof{{Epoch: 0, Version: 1, StartHash: "start", EndHash: "end", V1Count: 1, Degradations: []compactReceiptDegradation{{RecorderSeq: 4}}, V1Suffixes: []compactReceiptSuffix{{OriginSeq: 5}}}}
+	cloneEpochProof := func() compactStreamProof {
+		clone := epochProof
+		clone.v1Epochs = append([]compactEpochProof(nil), epochProof.v1Epochs...)
+		return clone
+	}
+	for _, candidate := range []compactStreamProof{
+		base,
+		func() compactStreamProof {
+			changed := cloneEpochProof()
+			changed.v1Epochs[0].EndHash = "other"
+			return changed
+		}(),
+		func() compactStreamProof {
+			changed := cloneEpochProof()
+			changed.v1Epochs[0].Degradations = []compactReceiptDegradation{{RecorderSeq: 8}}
+			return changed
+		}(),
+		func() compactStreamProof {
+			changed := cloneEpochProof()
+			changed.v1Epochs[0].V1Suffixes = []compactReceiptSuffix{{OriginSeq: 9}}
+			return changed
+		}(),
+	} {
+		if sameCompactProof(epochProof, candidate) {
+			t.Fatalf("different epoch proof compared equal: %+v", candidate.v1Epochs)
+		}
 	}
 	if sameCompactNameSet([]string{"a"}, []string{"a", "b"}) || sameCompactNameSet([]string{"a"}, []string{"b"}) || !sameCompactNameSet([]string{"a", "b"}, []string{"a", "b"}) {
 		t.Fatal("unexpected compact name-set comparison")

@@ -140,6 +140,9 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	if original.v1Degraded && opts.allowDegradedReceipts != len(original.degradations) {
 		return fmt.Errorf("receipt proof is DEGRADED by %d recognized whole-receipt tombstone(s); inspect the source and rerun with --allow-degraded-receipts=%d to acknowledge exactly these gaps", len(original.degradations), len(original.degradations))
 	}
+	if len(original.v1Epochs) > 1 {
+		return fmt.Errorf("recorder proof contains %d independent historical epochs; ordinary compaction cannot publish unlinked epochs as resumable live evidence; run evidence inspect-epochs and retire the session instead", len(original.v1Epochs))
+	}
 	for _, checkpoint := range original.unsignedCheckpoints {
 		if !checkpoint.LaterSignedCovered {
 			return fmt.Errorf("unsigned checkpoint at recorder seq %d is not sealed by a later signed checkpoint; refusing compaction", checkpoint.RecorderSeq)

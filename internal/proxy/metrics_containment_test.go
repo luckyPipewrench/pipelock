@@ -243,3 +243,91 @@ func TestConfiguredWildcardMetricsListenerBlocksLocalAddressesOnNumericPort(t *t
 		}
 	})
 }
+
+func localhostIPv4(t *testing.T) net.IP {
+	t.Helper()
+	resolved, err := net.DefaultResolver.LookupHost(t.Context(), "localhost")
+	if err != nil {
+		t.Fatalf("lookup localhost: %v", err)
+	}
+	for _, addr := range resolved {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			continue
+		}
+		if v4 := ip.To4(); v4 != nil && v4.IsLoopback() {
+			return v4
+		}
+	}
+	t.Fatal("localhost did not resolve to an IPv4 loopback address")
+	return nil
+}
+
+func assertConfiguredMetricsDenied(t *testing.T, err error) {
+	t.Helper()
+	var blocked *ssrfDialBlockError
+	if !errors.As(err, &blocked) || !strings.Contains(blocked.detail, "configured metrics listener") {
+		t.Fatalf("error = %T %v, want configured-metrics denial", err, err)
+	}
+}
+
+// TestHostnameConfiguredMetricsListenerBlocksResolvedAddress is the
+// reproduction for the hostname fail-open: MetricsListen is a hostname
+// (localhost), the dial target is the IP that hostname resolves to, and
+// the generic SSRF IP allowlist would otherwise permit the hop. Before
+// the fix, net.ParseIP("localhost") is nil and the guard returns nil
+// (ALLOW). After the fix, the same dial is denied.
+func TestHostnameConfiguredMetricsListenerBlocksResolvedAddress(t *testing.T) {
+	loopback := localhostIPv4(t)
+	const metricsPort = "9091"
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("localhost", metricsPort)
+	p := &Proxy{}
+	p.ConfigPtr().Store(cfg)
+
+	err := p.blockIfConfiguredMetricsTarget(t.Context(), loopback.String(), metricsPort, loopback)
+	assertConfiguredMetricsDenied(t, err)
+}
+
+func TestHostnameConfiguredMetricsListenerBlocksDialThroughAllowlist(t *testing.T) {
+	metricsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer metricsServer.Close()
+
+	metricsAddr := strings.TrimPrefix(metricsServer.URL, "http://")
+	metricsHost, metricsPort, err := net.SplitHostPort(metricsAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsIP := net.ParseIP(metricsHost)
+	if metricsIP == nil || !metricsIP.Equal(localhostIPv4(t)) {
+		t.Fatalf("test listener %s is not the IPv4 localhost address this reproduction dials", metricsAddr)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = config.Defaults().Internal
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	cfg.MetricsListen = net.JoinHostPort("localhost", metricsPort)
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{})
+	if err != nil {
+		t.Fatalf("scanner.NewWithOptions: %v", err)
+	}
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		sc.Close()
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	conn, dialErr := p.ssrfSafeDialContext(ctx, "tcp", metricsAddr)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if dialErr == nil {
+		t.Fatalf("dial to %s succeeded; hostname-configured metrics guard failed open", metricsAddr)
+	}
+	assertConfiguredMetricsDenied(t, dialErr)
+}

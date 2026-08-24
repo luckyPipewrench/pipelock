@@ -521,6 +521,75 @@ func TestCompositeAuditKeyResolverDoesNotFallBackAfterRemoval(t *testing.T) {
 	}
 }
 
+// TestRemovedFollowerCanReEnroll pins the availability direction of the
+// decommission tombstone. RemoveEnrolledFollower retains an inactive record so
+// audit ingest cannot be re-authorized by a static key, but that record must
+// never become a permanent bar to re-enrolling the same identity: a follower
+// rebuilt on the same host has to be able to come back. The enrollment guard
+// admits an inactive record by design; this test keeps it that way.
+func TestRemovedFollowerCanReEnroll(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	pub, _ := testAuditSigner(t)
+
+	enroll := func(tokenID, keyID string) error {
+		issued, issueErr := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+			TokenID:  tokenID,
+			Identity: identity,
+			Expires:  testNow.Add(time.Hour),
+			Now:      testNow,
+		})
+		if issueErr != nil {
+			return issueErr
+		}
+		_, consumeErr := store.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+			Token:      issued.Token,
+			AuditKeyID: keyID,
+			AuditKey: conductor.SignatureKey{
+				PublicKey:  pub,
+				KeyPurpose: signing.PurposeAuditBatchSigning,
+			},
+			Now: testNow,
+		})
+		return consumeErr
+	}
+
+	if err := enroll("tok-reenroll-1", "audit-key-1"); err != nil {
+		t.Fatalf("first enrollment error = %v", err)
+	}
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{
+		Identity: identity,
+		Now:      testNow,
+	}); err != nil {
+		t.Fatalf("RemoveEnrolledFollower() error = %v", err)
+	}
+
+	// The tombstone must not block a fresh enrollment of the same identity.
+	if err := enroll("tok-reenroll-2", "audit-key-2"); err != nil {
+		t.Fatalf("re-enrollment after removal error = %v, want success", err)
+	}
+
+	// The re-enrolled follower resolves on its NEW key and not the retired one.
+	if _, err := store.ResolveEnrolledAuditKey(identity, "audit-key-2"); err != nil {
+		t.Fatalf("ResolveEnrolledAuditKey(new key) error = %v, want success", err)
+	}
+	if _, err := store.ResolveEnrolledAuditKey(identity, "audit-key-1"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("ResolveEnrolledAuditKey(retired key) error = %v, want ErrSignatureVerification", err)
+	}
+
+	// A re-enrolled follower is active again, so it reappears on the roster.
+	summaries, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: identity.OrgID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers() error = %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("roster entries = %d, want 1 after re-enrollment", len(summaries))
+	}
+}
+
 func TestHandlerEnrollmentEndpointErrors(t *testing.T) {
 	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
 	if err != nil {

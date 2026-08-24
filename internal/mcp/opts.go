@@ -199,6 +199,10 @@ type MCPProxyOpts struct {
 	// and drift keys on MCP transports that have an upstream URL. Empty
 	// is valid for stdio; origin-scoped signature checks then fail closed.
 	A2ACardURL string
+	// A2ACardAuthFingerprint partitions Agent Card drift baselines by the
+	// effective upstream Authorization credential. It is a truncated digest,
+	// never the credential itself.
+	A2ACardAuthFingerprint string
 
 	// MediaPolicy enforces response-side media handling for base64 tool
 	// result content blocks (image/audio/video) before generic text scanning.
@@ -602,7 +606,10 @@ func (o MCPProxyOpts) a2aResponseOpts(scanOpts ResponseScanOptions) *A2AResponse
 	return &A2AResponseOpts{
 		Cfg:      o.a2aCfg(),
 		Baseline: o.CardBaseline,
-		CardKey:  CardCacheKeyFromRequest(o.A2ACardURL, ""),
+		CardKey: cardCacheKey{
+			cardURL:         o.A2ACardURL,
+			authFingerprint: o.A2ACardAuthFingerprint,
+		},
 		ScanOpts: scanOpts,
 	}
 }

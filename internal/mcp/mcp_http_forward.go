@@ -137,6 +137,9 @@ func RunHTTPProxy(
 	if opts.A2ACardURL == "" {
 		opts.A2ACardURL = upstreamURL
 	}
+	if opts.A2ACardAuthFingerprint == "" {
+		opts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", extraHeaders.Get("Authorization")).authFingerprint
+	}
 	opts.TaintExternalSource = true
 
 	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {

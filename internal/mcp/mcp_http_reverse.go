@@ -293,6 +293,7 @@ func RunHTTPListenerProxy(
 		A2ACfgFn:                  opts.A2ACfgFn,
 		CardBaseline:              opts.CardBaseline,
 		A2ACardURL:                opts.A2ACardURL,
+		A2ACardAuthFingerprint:    opts.A2ACardAuthFingerprint,
 		MediaPolicy:               opts.mediaPolicy(),
 		MediaPolicyFn:             opts.MediaPolicyFn,
 		ServerName:                opts.ServerName,
@@ -964,6 +965,7 @@ func RunHTTPListenerProxy(
 			baselineOpts.BaselineRec = baselineRec
 			defer recordMCPBaselineSample(baselineOpts, nil)
 			reqOpts := requestBaseOpts
+			reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
 			reqOpts.Rec = reqRec
 			reqOpts.BaselineRec = baselineRec
 			reqOpts.AdaptiveCfg = adaptiveCfg
@@ -1614,6 +1616,7 @@ func RunHTTPListenerProxy(
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
 		reqOpts := requestBaseOpts
+		reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
 		reqOpts.Rec = reqRec
 		reqOpts.BaselineRec = baselineRec
 		reqOpts.AdaptiveCfg = adaptiveCfg

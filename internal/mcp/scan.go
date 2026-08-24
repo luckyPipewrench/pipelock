@@ -636,17 +636,54 @@ func ScanResponseA2A(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts)
 		return a2aFallbackScan(line, sc, a2aOpts)
 	}
 
-	// Route by tracked method name when available (most precise).
-	if a2aOpts.Method != "" && IsA2AMethod(a2aOpts.Method) {
-		return scanA2AResponseDispatch(line, sc, a2aOpts)
+	// Route by tracked method name when available (most precise). Without
+	// request correlation, only a complete Agent Card shape is specific enough
+	// to use A2A scanning: ordinary MCP responses can also carry task-like
+	// status and history fields, and must retain their response policy.
+	isA2A := a2aOpts.Method != "" && IsA2AMethod(a2aOpts.Method)
+	if !isA2A {
+		isA2A = isAgentCardResultShape(line)
 	}
-
-	// Fallback: detect A2A response shape from result structure.
-	if isA2AResponseShape(line) {
+	if isA2A {
+		if verdict, batch := validateA2AResponseEnvelope(line); batch {
+			return a2aFallbackScan(line, sc, a2aOpts)
+		} else if !verdict.Clean {
+			return verdict
+		}
 		return scanA2AResponseDispatch(line, sc, a2aOpts)
 	}
 
 	return a2aFallbackScan(line, sc, a2aOpts)
+}
+
+// validateA2AResponseEnvelope preserves the JSON-RPC gate shared by generic
+// MCP response scanning before a field-aware A2A scanner handles the result.
+// It reports a batch separately because ScanResponseOpts owns element-wise
+// batch validation and routing.
+func validateA2AResponseEnvelope(line []byte) (jsonrpc.ScanVerdict, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return jsonrpc.ScanVerdict{}, true
+	}
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
+		return jsonrpc.ScanVerdict{
+			ID:    recoverTopLevelJSONRPCID(trimmed),
+			Clean: false,
+			Error: fmt.Sprintf("duplicate JSON object key: %v", err),
+		}, false
+	}
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(trimmed, &rpc); err != nil {
+		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}, false
+	}
+	if rpc.JSONRPC != jsonrpc.Version {
+		return jsonrpc.ScanVerdict{
+			ID:    rpc.ID,
+			Clean: false,
+			Error: fmt.Sprintf("not a JSON-RPC 2.0 response: jsonrpc=%q", rpc.JSONRPC),
+		}, false
+	}
+	return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}, false
 }
 
 func a2aFallbackScan(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts) jsonrpc.ScanVerdict {

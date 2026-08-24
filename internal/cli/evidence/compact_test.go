@@ -231,6 +231,35 @@ func TestStreamCompactFilesVerifiesSignedOuterCheckpoint(t *testing.T) {
 	}
 }
 
+func TestCompactOuterVerifierBoundsUnsignedCheckpointMetadata(t *testing.T) {
+	detail := recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 0, LastSeq: 0}
+	rawDetail, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := recorder.Entry{
+		Version: recorder.CurrentWriteEntryVersion, Sequence: 0,
+		Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy",
+		Type: "checkpoint", EventKind: "checkpoint", Detail: detail,
+		RawDetail: rawDetail, PrevHash: recorder.GenesisHash,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+
+	allowed := compactOuterVerifier{unsignedCheckpoints: make([]compactUnsignedCheckpoint, maxCompactUnsignedCheckpoints-1)}
+	if err := allowed.add(entry, "proxy", "evidence-proxy-0.jsonl"); err != nil {
+		t.Fatalf("checkpoint at metadata limit: %v", err)
+	}
+	if got := len(allowed.unsignedCheckpoints); got != maxCompactUnsignedCheckpoints {
+		t.Fatalf("unsigned checkpoint count = %d, want %d", got, maxCompactUnsignedCheckpoints)
+	}
+
+	refused := compactOuterVerifier{unsignedCheckpoints: make([]compactUnsignedCheckpoint, maxCompactUnsignedCheckpoints)}
+	err = refused.add(entry, "proxy", "evidence-proxy-0.jsonl")
+	if err == nil || !strings.Contains(err.Error(), "unsigned checkpoint count exceeds compaction limit 10000") {
+		t.Fatalf("over-limit unsigned checkpoint error = %v", err)
+	}
+}
+
 func TestRunCompactAcknowledgesUnsignedCheckpointSealedBySignedCheckpoint(t *testing.T) {
 	if !supportsCompactExchangeTest() {
 		t.Skip("atomic evidence directory exchange is unsupported")

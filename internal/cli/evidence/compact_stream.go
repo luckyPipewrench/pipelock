@@ -258,7 +258,10 @@ type compactStreamFile struct {
 	bytes int64
 }
 
-const maxCompactInputShards = 4096
+const (
+	maxCompactInputShards         = 4096
+	maxCompactUnsignedCheckpoints = 10_000
+)
 
 var compactKnownRecorderTypes = map[string]struct{}{
 	"action_receipt": {}, "evidence_receipt": {}, "checkpoint": {}, "transcript_root": {}, "decision": {}, "capture": {}, "capture_drop": {},
@@ -390,6 +393,9 @@ func (v *compactOuterVerifier) add(e recorder.Entry, session string, files ...st
 			return fmt.Errorf("entry seq %d: unmarshaling checkpoint detail: %w", e.Sequence, err)
 		}
 		if detail.Signature == "" {
+			if len(v.unsignedCheckpoints) >= maxCompactUnsignedCheckpoints {
+				return fmt.Errorf("entry seq %d: unsigned checkpoint count exceeds compaction limit %d", e.Sequence, maxCompactUnsignedCheckpoints)
+			}
 			v.unsignedCheckpoints = append(v.unsignedCheckpoints, compactUnsignedCheckpoint{File: file, RecorderSeq: e.Sequence, EntryCount: detail.EntryCount, FirstSeq: detail.FirstSeq, LastSeq: detail.LastSeq})
 		} else {
 			if len(v.key) != ed25519.PublicKeySize {

@@ -705,12 +705,18 @@ func TestAdvanceCompactSuffixOriginRejectsOverflow(t *testing.T) {
 		t.Fatalf("advance suffix origin = %d, %v; want 43", got, err)
 	}
 	for _, tc := range []struct {
+		name    string
 		current uint64
 		delta   uint64
-	}{{current: ^uint64(0), delta: 1}, {current: ^uint64(0) - 1, delta: 2}} {
-		if _, err := advanceCompactSuffixOrigin(tc.current, tc.delta); err == nil || !strings.Contains(err.Error(), "overflows") {
-			t.Fatalf("advance suffix origin (%d, %d) error = %v", tc.current, tc.delta, err)
-		}
+	}{
+		{name: "max plus one", current: ^uint64(0), delta: 1},
+		{name: "max minus one plus two", current: ^uint64(0) - 1, delta: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := advanceCompactSuffixOrigin(tc.current, tc.delta); err == nil || !strings.Contains(err.Error(), "overflows") {
+				t.Fatalf("advance suffix origin (%d, %d) error = %v", tc.current, tc.delta, err)
+			}
+		})
 	}
 }
 

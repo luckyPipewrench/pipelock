@@ -470,6 +470,57 @@ func TestCompositeAuditKeyResolverFallsBack(t *testing.T) {
 	}
 }
 
+func TestCompositeAuditKeyResolverDoesNotFallBackAfterRemoval(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	pub, _ := testAuditSigner(t)
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "tok-composite-remove",
+		Identity: identity,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-1",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken() error = %v", err)
+	}
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{
+		Identity: identity,
+		Now:      testNow,
+	}); err != nil {
+		t.Fatalf("RemoveEnrolledFollower() error = %v", err)
+	}
+
+	fallbackHits := 0
+	fallback := func(FollowerIdentity, string) (conductor.SignatureKey, error) {
+		fallbackHits++
+		return conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		}, nil
+	}
+	resolver := CompositeAuditKeyResolver(store, fallback)
+	if _, err := resolver(identity, "audit-key-1"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("resolver(removed) error = %v, want ErrSignatureVerification", err)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("static fallback hits = %d, want 0 after follower removal", fallbackHits)
+	}
+}
+
 func TestHandlerEnrollmentEndpointErrors(t *testing.T) {
 	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
 	if err != nil {

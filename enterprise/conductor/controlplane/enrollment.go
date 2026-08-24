@@ -59,6 +59,12 @@ var (
 	// already done its one job and re-revoking it must fail loud rather than
 	// pretend to undo an enrollment.
 	ErrEnrollmentTokenNotPending = errors.New("conductor enrollment token is not pending")
+
+	// errFollowerDecommissioned is returned by ResolveEnrolledAuditKey when
+	// the identity was enrolled and then removed. CompositeAuditKeyResolver
+	// must not fall back to a static audit key for that identity: removal is
+	// a revocation of audit ingest, not a miss that bootstrap keys can fill.
+	errFollowerDecommissioned = errors.New("conductor follower decommissioned")
 )
 
 type EnrollmentStore interface {
@@ -413,7 +419,13 @@ func (s *FileEnrollmentStore) ResolveEnrolledAuditKey(identity FollowerIdentity,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	follower, ok := s.data.Followers[followerEnrollmentKey(identity)]
-	if !ok || !follower.Active || follower.AuditKeyID != signerKeyID {
+	if !ok {
+		return conductor.SignatureKey{}, conductor.ErrSignatureVerification
+	}
+	if !follower.Active {
+		return conductor.SignatureKey{}, fmt.Errorf("%w: %w", conductor.ErrSignatureVerification, errFollowerDecommissioned)
+	}
+	if follower.AuditKeyID != signerKeyID {
 		return conductor.SignatureKey{}, conductor.ErrSignatureVerification
 	}
 	return follower.AuditKey, nil
@@ -436,6 +448,9 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 	defer s.mu.Unlock()
 	out := make(followerSummaryMaxHeap, 0, limit)
 	for _, follower := range s.data.Followers {
+		if !follower.Active {
+			continue
+		}
 		if q.OrgID != "" && follower.Identity.OrgID != q.OrgID {
 			continue
 		}
@@ -469,10 +484,11 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 	return []FollowerSummary(out), nil
 }
 
-// RemoveEnrolledFollower deletes one active follower enrollment from the
-// Conductor trust store. After the delete, ResolveEnrolledAuditKey no longer
-// returns that follower's audit key, so future audit evidence from the removed
-// follower fails closed. Unknown or already-removed followers return
+// RemoveEnrolledFollower decommissions one active follower enrollment. The
+// identity is retained as an inactive tombstone so later audit ingest cannot
+// be re-authorized by a static trusted key that still matches.
+// ResolveEnrolledAuditKey fails closed, and CompositeAuditKeyResolver must
+// not fall back. Unknown or already-removed followers return
 // ErrFollowerNotFound; the command is idempotent in side effect but never
 // silently treats a missing follower as success.
 func (s *FileEnrollmentStore) RemoveEnrolledFollower(_ context.Context, req RemoveEnrolledFollowerRequest) (FollowerSummary, error) {
@@ -490,9 +506,12 @@ func (s *FileEnrollmentStore) RemoveEnrolledFollower(_ context.Context, req Remo
 	if !ok || !follower.Active {
 		return FollowerSummary{}, ErrFollowerNotFound
 	}
-	delete(s.data.Followers, key)
+	decommissioned := follower
+	decommissioned.Active = false
+	decommissioned.AuditKey = conductor.SignatureKey{}
 	previousStatus, hadStatus := s.data.RuntimeStatus[key]
 	delete(s.data.RuntimeStatus, key)
+	s.data.Followers[key] = decommissioned
 	if err := s.saveLocked(); err != nil {
 		s.data.Followers[key] = follower
 		if hadStatus {
@@ -645,6 +664,9 @@ func (s *FileEnrollmentStore) ListEnrolledFollowersForPreflight(_ context.Contex
 	defer s.mu.Unlock()
 	out := make([]FollowerSummary, 0)
 	for _, follower := range s.data.Followers {
+		if !follower.Active {
+			continue
+		}
 		if q.OrgID != "" && follower.Identity.OrgID != q.OrgID {
 			continue
 		}
@@ -853,6 +875,9 @@ func CompositeAuditKeyResolver(primary EnrollmentStore, fallback AuditKeyResolve
 			key, err := primary.ResolveEnrolledAuditKey(identity, signerKeyID)
 			if err == nil {
 				return key, nil
+			}
+			if errors.Is(err, errFollowerDecommissioned) {
+				return conductor.SignatureKey{}, conductor.ErrSignatureVerification
 			}
 		}
 		if fallback != nil {

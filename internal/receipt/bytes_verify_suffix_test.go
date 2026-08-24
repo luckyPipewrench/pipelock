@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -144,6 +145,14 @@ func TestVerifyV1SuffixBytesWithKeyRejectsMalformedLegacyFallbacks(t *testing.T)
 	})
 	if err := verifyV1SuffixBytesWithKey(tampered, keyHex); err == nil || !strings.Contains(err.Error(), "signature verification failed") {
 		t.Fatalf("legacy tamper error=%v", err)
+	}
+	duplicate := bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":1,"version":1`), 1)
+	if err := verifyV1SuffixBytesWithKey(duplicate, keyHex); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("legacy duplicate-key error=%v", err)
+	}
+	alternateWhitespace := append([]byte(" "), raw...)
+	if err := verifyV1SuffixBytesWithKey(alternateWhitespace, keyHex); err == nil || !strings.Contains(err.Error(), "historical emitted JSON shape") {
+		t.Fatalf("legacy alternate-byte-shape error=%v", err)
 	}
 }
 

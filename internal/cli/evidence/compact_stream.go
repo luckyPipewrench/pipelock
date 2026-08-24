@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -194,7 +195,13 @@ func sameCompactProof(a, b compactStreamProof) bool {
 		return false
 	}
 	for i := range a.degradations {
-		if a.degradations[i] != b.degradations[i] {
+		// Compaction can coalesce several source shards into one output shard,
+		// so the same recorder entry can legitimately acquire a different file
+		// name. The signed recorder sequence and tombstone metadata identify the
+		// degradation; File remains provenance for the corresponding manifest.
+		aGap, bGap := a.degradations[i], b.degradations[i]
+		aGap.File, bGap.File = "", ""
+		if aGap != bGap {
 			return false
 		}
 	}
@@ -204,6 +211,13 @@ func sameCompactProof(a, b compactStreamProof) bool {
 		}
 	}
 	return true
+}
+
+func advanceCompactSuffixOrigin(current, delta uint64) (uint64, error) {
+	if current > math.MaxUint64-delta {
+		return 0, fmt.Errorf("v1 receipt suffix origin overflows after chain_seq %d", current)
+	}
+	return current + delta, nil
 }
 
 func sameCompactNameSet(a, b []string) bool {
@@ -428,10 +442,11 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 					if tombstone {
 						if !proof.v1Degraded && proof.v1Count > 0 {
 							result := v1.Finish()
-							if !result.Valid {
-								return fmt.Errorf("verify v1 receipt prefix before redaction tombstone: %s", result.Error)
+							proof.v1Suffixes = append(proof.v1Suffixes, compactReceiptSuffix{Count: result.ReceiptCount, OriginSeq: 0, OriginPrevHash: legacyreceipt.GenesisHash, FinalSeq: result.FinalSeq, Head: result.RootHash})
+							next, nextErr := advanceCompactSuffixOrigin(result.FinalSeq, 2)
+							if nextErr != nil {
+								return nextErr
 							}
-							next := result.FinalSeq + 2
 							expectedSuffixOrigin = &next
 						} else if suffixCount > 0 {
 							result, finishErr := suffix.Finish()
@@ -441,10 +456,17 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 							if err := finishSuffix(); err != nil {
 								return fmt.Errorf("record v1 suffix before redaction tombstone: %w", err)
 							}
-							next := result.FinalSeq + 2
+							next, nextErr := advanceCompactSuffixOrigin(result.FinalSeq, 2)
+							if nextErr != nil {
+								return nextErr
+							}
 							expectedSuffixOrigin = &next
 						} else if expectedSuffixOrigin != nil {
-							*expectedSuffixOrigin = *expectedSuffixOrigin + 1
+							next, nextErr := advanceCompactSuffixOrigin(*expectedSuffixOrigin, 1)
+							if nextErr != nil {
+								return nextErr
+							}
+							*expectedSuffixOrigin = next
 						} else {
 							next := uint64(1)
 							expectedSuffixOrigin = &next

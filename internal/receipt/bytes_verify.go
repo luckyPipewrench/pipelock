@@ -109,6 +109,9 @@ func verifyV1SuffixBytesWithKey(raw []byte, expectedKeyHex string) error {
 	if strictErr == nil {
 		return nil
 	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return fmt.Errorf("decode legacy v1 suffix envelope: %w", err)
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return fmt.Errorf("decode legacy v1 suffix envelope: %w", err)
@@ -119,6 +122,12 @@ func verifyV1SuffixBytesWithKey(raw []byte, expectedKeyHex string) error {
 	}
 	if _, ok := action["detected_patterns"]; !ok {
 		return strictErr
+	}
+	canonicalAction, _ := json.Marshal(action) // RawMessage values were validated by json.Unmarshal above.
+	top["action_record"] = canonicalAction
+	canonicalRaw, _ := json.Marshal(top) // RawMessage values were validated by json.Unmarshal above.
+	if !bytes.Equal(raw, canonicalRaw) {
+		return fmt.Errorf("legacy v1 suffix bytes do not match the historical emitted JSON shape")
 	}
 	receipt, err := Unmarshal(raw)
 	if err != nil {

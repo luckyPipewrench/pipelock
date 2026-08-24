@@ -700,6 +700,20 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 	}
 }
 
+func TestAdvanceCompactSuffixOriginRejectsOverflow(t *testing.T) {
+	if got, err := advanceCompactSuffixOrigin(41, 2); err != nil || got != 43 {
+		t.Fatalf("advance suffix origin = %d, %v; want 43", got, err)
+	}
+	for _, tc := range []struct {
+		current uint64
+		delta   uint64
+	}{{current: ^uint64(0), delta: 1}, {current: ^uint64(0) - 1, delta: 2}} {
+		if _, err := advanceCompactSuffixOrigin(tc.current, tc.delta); err == nil || !strings.Contains(err.Error(), "overflows") {
+			t.Fatalf("advance suffix origin (%d, %d) error = %v", tc.current, tc.delta, err)
+		}
+	}
+}
+
 func TestStreamCompactToStageClosesOnFailureAndPublishesOnSuccess(t *testing.T) {
 	opts := newCompactFixture(t)
 	pub, err := hex.DecodeString(opts.publicKey)
@@ -956,6 +970,8 @@ func TestCompactLegacyReceiptTombstoneClassifierFailsClosed(t *testing.T) {
 		{name: "empty patterns", raw: `{"redacted":true,"detected_patterns":[],"original_size":1}`},
 		{name: "bad marker", raw: `{"redacted":true,"detected_patterns":["secret"],"original_size":1}`},
 		{name: "fractional size", raw: `{"redacted":true,"detected_patterns":["[REDACTED:x]"],"original_size":1.5}`},
+		{name: "zero size", raw: `{"redacted":true,"detected_patterns":["[REDACTED:x]"],"original_size":0}`},
+		{name: "negative size", raw: `{"redacted":true,"detected_patterns":["[REDACTED:x]"],"original_size":-1}`},
 		{name: "duplicate key", raw: `{"redacted":true,"redacted":true,"detected_patterns":["[REDACTED:x]"],"original_size":1}`},
 		{name: "marshal error tombstone", raw: `{"redacted":true,"reason":"marshal error"}`},
 	} {
@@ -964,6 +980,17 @@ func TestCompactLegacyReceiptTombstoneClassifierFailsClosed(t *testing.T) {
 				t.Fatal("malformed tombstone accepted")
 			}
 		})
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := json.Marshal(receiptForCompactV1(t, priv, 0, legacyreceipt.GenesisHash, "not-a-tombstone"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decodeCompactLegacyReceiptTombstone(signed); ok {
+		t.Fatal("complete signed v1 receipt was classified as a tombstone")
 	}
 }
 
@@ -1015,7 +1042,7 @@ func TestStreamCompactFilesPreservesKnownReceiptDegradation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream degraded legacy receipts: %v", err)
 	}
-	if !proof.v1Degraded || proof.v1Count != 3 || proof.v1Head != "" || len(proof.degradations) != 1 || len(proof.v1Suffixes) != 1 || proof.v1Suffixes[0].Count != 2 || proof.v1Suffixes[0].Head == "" {
+	if !proof.v1Degraded || proof.v1Count != 3 || proof.v1Head != "" || len(proof.degradations) != 1 || len(proof.v1Suffixes) != 2 || proof.v1Suffixes[0].Count != 1 || proof.v1Suffixes[0].OriginSeq != 0 || proof.v1Suffixes[0].OriginPrevHash != legacyreceipt.GenesisHash || proof.v1Suffixes[1].Count != 2 || proof.v1Suffixes[1].Head == "" {
 		t.Fatalf("degraded proof = %+v", proof)
 	}
 	want := compactReceiptDegradation{File: "evidence-proxy-0.jsonl", RecorderSeq: 1, OriginalSize: 777, Reason: compactLegacyRedactionReason}
@@ -1026,7 +1053,7 @@ func TestStreamCompactFilesPreservesKnownReceiptDegradation(t *testing.T) {
 		t.Fatal("gap without a later checkpoint reported checkpoint coverage")
 	}
 	manifest := manifestReceiptVerification(proof)
-	if manifest.Status != "degraded" || manifest.V1ChainHead != "" || len(manifest.Degradations) != 1 || len(manifest.V1Suffixes) != 1 {
+	if manifest.Status != "degraded" || manifest.V1ChainHead != "" || len(manifest.Degradations) != 1 || len(manifest.V1Suffixes) != 2 {
 		t.Fatalf("manifest receipt proof = %+v", manifest)
 	}
 
@@ -1060,8 +1087,8 @@ func TestStreamCompactFilesHandlesLeadingConsecutiveAndMultipleGaps(t *testing.T
 		wantSuffixSeq []uint64
 	}{
 		{name: "leading gap", details: []any{tombstone, makeReceipt(1, "unknown-gap-head", "leading-origin")}, wantGaps: 1, wantSuffixes: 1, wantSuffixSeq: []uint64{1}},
-		{name: "consecutive gaps", details: []any{makeReceipt(0, legacyreceipt.GenesisHash, "prefix"), tombstone, tombstone, makeReceipt(3, "unknown-two-gap-head", "consecutive-origin")}, wantGaps: 2, wantSuffixes: 1, wantSuffixSeq: []uint64{3}},
-		{name: "separated gaps", details: []any{makeReceipt(0, legacyreceipt.GenesisHash, "prefix"), tombstone, makeReceipt(2, "unknown-first-gap-head", "first-origin"), tombstone, makeReceipt(4, "unknown-second-gap-head", "second-origin")}, wantGaps: 2, wantSuffixes: 2, wantSuffixSeq: []uint64{2, 4}},
+		{name: "consecutive gaps", details: []any{makeReceipt(0, legacyreceipt.GenesisHash, "prefix"), tombstone, tombstone, makeReceipt(3, "unknown-two-gap-head", "consecutive-origin")}, wantGaps: 2, wantSuffixes: 2, wantSuffixSeq: []uint64{0, 3}},
+		{name: "separated gaps", details: []any{makeReceipt(0, legacyreceipt.GenesisHash, "prefix"), tombstone, makeReceipt(2, "unknown-first-gap-head", "first-origin"), tombstone, makeReceipt(4, "unknown-second-gap-head", "second-origin")}, wantGaps: 2, wantSuffixes: 3, wantSuffixSeq: []uint64{0, 2, 4}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -1131,7 +1158,14 @@ func TestRunCompactPublishesDegradedReceiptProof(t *testing.T) {
 		source.Write(line)
 		source.WriteByte('\n')
 	}
-	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), source.Bytes(), 0o600); err != nil {
+	split := bytes.IndexByte(source.Bytes(), '\n') + 1
+	if split <= 0 {
+		t.Fatal("source has no first JSONL record")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), source.Bytes()[:split], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-1.jsonl"), source.Bytes()[split:], 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1142,16 +1176,22 @@ func TestRunCompactPublishesDegradedReceiptProof(t *testing.T) {
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--allow-degraded-receipts") {
 		t.Fatalf("compact without degraded acknowledgement error = %v", err)
 	}
-	if active, readErr := os.ReadFile(filepath.Clean(filepath.Join(dir, "evidence-proxy-0.jsonl"))); readErr != nil || !bytes.Equal(active, source.Bytes()) {
-		t.Fatalf("refused compaction changed source: err=%v", readErr)
+	if first, readErr := os.ReadFile(filepath.Clean(filepath.Join(dir, "evidence-proxy-0.jsonl"))); readErr != nil || !bytes.Equal(first, source.Bytes()[:split]) {
+		t.Fatalf("refused compaction changed first source shard: err=%v", readErr)
+	}
+	if second, readErr := os.ReadFile(filepath.Clean(filepath.Join(dir, "evidence-proxy-1.jsonl"))); readErr != nil || !bytes.Equal(second, source.Bytes()[split:]) {
+		t.Fatalf("refused compaction changed second source shard: err=%v", readErr)
 	}
 	cmd = compactCmd()
+	var wrongCountOut bytes.Buffer
+	cmd.SetOut(&wrongCountOut)
 	cmd.SetArgs([]string{"--receipt-dir", dir, "--session", "proxy", "--key", hex.EncodeToString(pub), "--allow-degraded-receipts=2"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "DEGRADED by 1") {
 		t.Fatalf("compact with wrong degraded count error = %v", err)
 	}
 
 	cmd = compactCmd()
+	out.Reset()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--receipt-dir", dir, "--session", "proxy", "--key", hex.EncodeToString(pub), "--allow-degraded-receipts=1"})
 	if err := cmd.Execute(); err != nil {

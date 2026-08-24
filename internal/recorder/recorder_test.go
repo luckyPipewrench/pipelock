@@ -4,6 +4,7 @@
 package recorder_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -2619,6 +2620,10 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			originalDetail, marshalErr := json.Marshal(tt.detail)
+			if marshalErr != nil && !tt.wantRecordError {
+				t.Fatalf("marshal original detail: %v", marshalErr)
+			}
 			subDir := t.TempDir()
 			subCfg := recorder.Config{
 				Enabled:            true,
@@ -2677,6 +2682,9 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 
 			detailJSON, _ := json.Marshal(entries[0].Detail)
 			detailStr := string(detailJSON)
+			if !tt.wantFullRedact && (tt.entryType == "action_receipt" || tt.entryType == "evidence_receipt") && !bytes.Equal(detailJSON, originalDetail) {
+				t.Fatalf("clean signed receipt detail changed after recording:\n got: %s\nwant: %s", detailJSON, originalDetail)
+			}
 
 			if tt.wantFullRedact {
 				// Non-receipt: entire detail replaced with redaction wrapper

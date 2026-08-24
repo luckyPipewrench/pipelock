@@ -36,7 +36,7 @@ type inspectEpochsDocument struct {
 	CheckpointVerification compactManifestCheckpointVerification `json:"checkpoint_verification"`
 }
 
-var inspectSyncDirectory = syncCompactDirectory
+var inspectSyncDirectory = func(output *inspectOutput) error { return output.syncParent() }
 
 func inspectEpochsCmd() *cobra.Command {
 	opts := inspectEpochsOptions{}
@@ -81,9 +81,24 @@ func runInspectEpochs(cmd *cobra.Command, opts inspectEpochsOptions) error {
 		return fmt.Errorf("resolve --out parent: %w", err)
 	}
 	out = filepath.Join(resolvedParent, filepath.Base(out))
-	if rel, relErr := filepath.Rel(location.Root, out); relErr != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+	resolvedRoot, err := filepath.EvalSymlinks(location.Root)
+	if err != nil {
+		return fmt.Errorf("resolve evidence root: %w", err)
+	}
+	if rel, relErr := filepath.Rel(resolvedRoot, out); relErr != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
 		return errors.New("--out must be outside the evidence directory")
 	}
+	output, err := prepareInspectOutput(resolvedParent, filepath.Base(out), resolvedRoot)
+	if err != nil {
+		return fmt.Errorf("create --out: %w", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = output.remove()
+		}
+		_ = output.close()
+	}()
 	lock, err := compactAcquireLock(location.Dir)
 	if err != nil {
 		return fmt.Errorf("lock stopped evidence directory: %w", err)
@@ -117,27 +132,19 @@ func runInspectEpochs(cmd *cobra.Command, opts inspectEpochsOptions) error {
 		return fmt.Errorf("encode epoch boundaries: %w", err)
 	}
 	data = append(data, '\n')
-	// #nosec G304 -- out is an operator-selected new file whose canonical
-	// parent was resolved and proven outside the evidence root above.
-	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("create --out: %w", err)
-	}
 	writeErr := func() error {
-		if _, err := f.Write(data); err != nil {
+		if _, err := output.file.Write(data); err != nil {
 			return err
 		}
-		return f.Sync()
+		return output.file.Sync()
 	}()
-	closeErr := f.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
-		_ = os.Remove(out)
-		return fmt.Errorf("write --out: %w", err)
+	if writeErr != nil {
+		return fmt.Errorf("write --out: %w", writeErr)
 	}
-	if err := inspectSyncDirectory(filepath.Dir(out)); err != nil {
-		_ = os.Remove(out)
+	if err := inspectSyncDirectory(output); err != nil {
 		return fmt.Errorf("sync --out parent: %w", err)
 	}
+	published = true
 	digest := sha256.Sum256(data)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s  %s\n", hex.EncodeToString(digest[:]), out)
 	return nil

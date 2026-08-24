@@ -554,11 +554,12 @@ type compactV1EpochState struct {
 	head                 string
 }
 
-func newCompactV1EpochState(keyHex string) *compactV1EpochState {
-	// streamCompactFiles receives an Ed25519 key and hex-encodes it locally,
-	// so this constructor cannot receive malformed key text.
-	v1, _ := legacyreceipt.NewStreamingVerifier(keyHex)
-	return &compactV1EpochState{v1: v1}
+func newCompactV1EpochState(keyHex string) (*compactV1EpochState, error) {
+	v1, err := legacyreceipt.NewStreamingVerifier(keyHex)
+	if err != nil {
+		return nil, fmt.Errorf("initialize v1 receipt verifier: %w", err)
+	}
+	return &compactV1EpochState{v1: v1}, nil
 }
 
 // streamCompactFiles processes every source shard with a bounded scanner and
@@ -569,7 +570,10 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 	h := sha256.New()
 	outer := compactOuterVerifier{key: key}
 	keyHex := hex.EncodeToString(key)
-	state := newCompactV1EpochState(keyHex)
+	state, err := newCompactV1EpochState(keyHex)
+	if err != nil {
+		return compactStreamProof{}, err
+	}
 	v2, err := contractreceipt.NewPinnedStreamingVerifier(key)
 	if err != nil {
 		return compactStreamProof{}, fmt.Errorf("initialize v2 receipt verifier: %w", err)
@@ -637,7 +641,10 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 					if err := finishV1Epoch(); err != nil {
 						return err
 					}
-					state = newCompactV1EpochState(keyHex)
+					state, err = newCompactV1EpochState(keyHex)
+					if err != nil {
+						return err
+					}
 				}
 				if err := outer.add(entry, session, name); err != nil {
 					return err
@@ -694,10 +701,11 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 						state.degradations = append(state.degradations, compactReceiptDegradation{File: name, RecorderSeq: entry.Sequence, OriginalSize: originalSize, Reason: compactLegacyRedactionReason})
 					} else if state.degraded {
 						if state.suffix == nil {
-							state.suffix, err = legacyreceipt.NewUnanchoredSuffixVerifier(keyHex)
-							if err != nil {
-								return fmt.Errorf("initialize v1 suffix verifier: %w", err)
+							suffix, suffixErr := legacyreceipt.NewUnanchoredSuffixVerifier(keyHex)
+							if suffixErr != nil {
+								return fmt.Errorf("initialize v1 suffix verifier: %w", suffixErr)
 							}
+							state.suffix = suffix
 						}
 						if err := state.suffix.Add(entry.RawDetail); err != nil {
 							return fmt.Errorf("verify v1 action_receipt after degraded chain at recorder seq %d: %w", entry.Sequence, err)

@@ -476,43 +476,46 @@ func TestCompactOuterVerifierRefusesV2RestartAndUncoveredEpochCheckpoint(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstReceipt := compactSignedReceipt(t, priv, 0, contractreceipt.GenesisHash)
-	first := recorder.Entry{Version: 2, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Summary: "v2", Detail: firstReceipt, PrevHash: recorder.GenesisHash}
-	first.Hash = recorder.ComputeHash(first)
-	second := first
-	second.Timestamp = time.Unix(2, 0).UTC()
-	second.Detail = compactSignedReceipt(t, priv, 1, contractreceipt.GenesisHash)
-	second.Hash = recorder.ComputeHash(second)
-	v := compactOuterVerifier{key: pub}
-	if err := v.add(first, "proxy"); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.add(second, "proxy"); err == nil || !strings.Contains(err.Error(), "sequence or hash chain break") {
-		t.Fatalf("v2 restart error = %v", err)
-	}
-
-	legacy := recorder.Entry{Version: 1, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: "decision", EventKind: "proxy_decision", Transport: "fetch", Summary: "legacy", Detail: map[string]string{"verdict": "block"}, PrevHash: recorder.GenesisHash}
-	legacy.Hash = recorder.ComputeHash(legacy)
-	checkpointDetail := recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 0, LastSeq: 0}
-	rawCheckpoint, err := json.Marshal(checkpointDetail)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoint := recorder.Entry{Version: 1, Sequence: 1, Timestamp: time.Unix(2, 0).UTC(), SessionID: "proxy", Type: "checkpoint", EventKind: "checkpoint", Detail: checkpointDetail, RawDetail: rawCheckpoint, PrevHash: legacy.Hash}
-	checkpoint.Hash = recorder.ComputeHash(checkpoint)
-	restart := legacy
-	restart.Timestamp = time.Unix(3, 0).UTC()
-	restart.Hash = recorder.ComputeHash(restart)
-	v = compactOuterVerifier{key: pub}
-	if err := v.add(legacy, "proxy"); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.add(checkpoint, "proxy"); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.add(restart, "proxy"); err == nil || !strings.Contains(err.Error(), "is not sealed before recorder restart") {
-		t.Fatalf("cross-epoch unsigned checkpoint error = %v", err)
-	}
+	t.Run("v2 restart", func(t *testing.T) {
+		firstReceipt := compactSignedReceipt(t, priv, 0, contractreceipt.GenesisHash)
+		first := recorder.Entry{Version: 2, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: contractreceipt.EvidenceEntryType, EventKind: "proxy_decision", Transport: "fetch", Summary: "v2", Detail: firstReceipt, PrevHash: recorder.GenesisHash}
+		first.Hash = recorder.ComputeHash(first)
+		second := first
+		second.Timestamp = time.Unix(2, 0).UTC()
+		second.Detail = compactSignedReceipt(t, priv, 1, contractreceipt.GenesisHash)
+		second.Hash = recorder.ComputeHash(second)
+		v := compactOuterVerifier{key: pub}
+		if err := v.add(first, "proxy"); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.add(second, "proxy"); err == nil || !strings.Contains(err.Error(), "sequence or hash chain break") {
+			t.Fatalf("v2 restart error = %v", err)
+		}
+	})
+	t.Run("uncovered epoch checkpoint", func(t *testing.T) {
+		legacy := recorder.Entry{Version: 1, Sequence: 0, Timestamp: time.Unix(1, 0).UTC(), SessionID: "proxy", Type: "decision", EventKind: "proxy_decision", Transport: "fetch", Summary: "legacy", Detail: map[string]string{"verdict": "block"}, PrevHash: recorder.GenesisHash}
+		legacy.Hash = recorder.ComputeHash(legacy)
+		checkpointDetail := recorder.CheckpointDetail{EntryCount: 1, FirstSeq: 0, LastSeq: 0}
+		rawCheckpoint, marshalErr := json.Marshal(checkpointDetail)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		checkpoint := recorder.Entry{Version: 1, Sequence: 1, Timestamp: time.Unix(2, 0).UTC(), SessionID: "proxy", Type: "checkpoint", EventKind: "checkpoint", Detail: checkpointDetail, RawDetail: rawCheckpoint, PrevHash: legacy.Hash}
+		checkpoint.Hash = recorder.ComputeHash(checkpoint)
+		restart := legacy
+		restart.Timestamp = time.Unix(3, 0).UTC()
+		restart.Hash = recorder.ComputeHash(restart)
+		v := compactOuterVerifier{key: pub}
+		if err := v.add(legacy, "proxy"); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.add(checkpoint, "proxy"); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.add(restart, "proxy"); err == nil || !strings.Contains(err.Error(), "is not sealed before recorder restart") {
+			t.Fatalf("cross-epoch unsigned checkpoint error = %v", err)
+		}
+	})
 }
 
 func TestCompactOuterVerifierBoundsLegacyEpochCompatibility(t *testing.T) {
@@ -1088,30 +1091,45 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 		clone.v1Epochs = append([]compactEpochProof(nil), epochProof.v1Epochs...)
 		return clone
 	}
-	for _, candidate := range []compactStreamProof{
-		base,
-		func() compactStreamProof {
-			changed := cloneEpochProof()
-			changed.v1Epochs[0].EndHash = "other"
-			return changed
-		}(),
-		func() compactStreamProof {
-			changed := cloneEpochProof()
-			changed.v1Epochs[0].Degradations = []compactReceiptDegradation{{RecorderSeq: 8}}
-			return changed
-		}(),
-		func() compactStreamProof {
-			changed := cloneEpochProof()
-			changed.v1Epochs[0].V1Suffixes = []compactReceiptSuffix{{OriginSeq: 9}}
-			return changed
-		}(),
-	} {
+	mutations := []func(*compactStreamProof){
+		func(p *compactStreamProof) { p.v1Epochs[0].Epoch++ },
+		func(p *compactStreamProof) { p.v1Epochs[0].Version++ },
+		func(p *compactStreamProof) { p.v1Epochs[0].StartSeq++ },
+		func(p *compactStreamProof) { p.v1Epochs[0].EndSeq++ },
+		func(p *compactStreamProof) { p.v1Epochs[0].EntryCount++ },
+		func(p *compactStreamProof) { p.v1Epochs[0].StartHash = "other" },
+		func(p *compactStreamProof) { p.v1Epochs[0].EndHash = "other" },
+		func(p *compactStreamProof) { p.v1Epochs[0].V1Count++ },
+		func(p *compactStreamProof) { p.v1Epochs[0].V1Head = "other" },
+		func(p *compactStreamProof) { p.v1Epochs[0].V1Degraded = true },
+		func(p *compactStreamProof) { p.v1Epochs[0].V1FirstGap = true },
+		func(p *compactStreamProof) { p.v1Epochs[0].V1TailGap = true },
+		func(p *compactStreamProof) { p.v1Epochs[0].Degradations = nil },
+		func(p *compactStreamProof) {
+			p.v1Epochs[0].Degradations = []compactReceiptDegradation{{RecorderSeq: 8}}
+		},
+		func(p *compactStreamProof) { p.v1Epochs[0].V1Suffixes = nil },
+		func(p *compactStreamProof) { p.v1Epochs[0].V1Suffixes = []compactReceiptSuffix{{OriginSeq: 9}} },
+		func(p *compactStreamProof) { p.v1Epochs = append(p.v1Epochs, compactEpochProof{Epoch: 1}) },
+	}
+	for _, mutate := range mutations {
+		candidate := cloneEpochProof()
+		mutate(&candidate)
 		if sameCompactProof(epochProof, candidate) {
 			t.Fatalf("different epoch proof compared equal: %+v", candidate.v1Epochs)
 		}
 	}
 	if sameCompactNameSet([]string{"a"}, []string{"a", "b"}) || sameCompactNameSet([]string{"a"}, []string{"b"}) || !sameCompactNameSet([]string{"a", "b"}, []string{"a", "b"}) {
 		t.Fatal("unexpected compact name-set comparison")
+	}
+}
+
+func TestNewCompactV1EpochStateRejectsMalformedKey(t *testing.T) {
+	if _, err := newCompactV1EpochState(""); err == nil || !strings.Contains(err.Error(), "initialize v1 receipt verifier") {
+		t.Fatalf("malformed key error = %v", err)
+	}
+	if _, err := streamCompactFiles(recorder.EvidenceLocation{}, nil, "proxy", nil, func(compactStreamFile, []byte, recorder.Entry) error { return nil }); err == nil || !strings.Contains(err.Error(), "initialize v1 receipt verifier") {
+		t.Fatalf("stream malformed key error = %v", err)
 	}
 }
 

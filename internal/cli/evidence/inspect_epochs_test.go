@@ -212,6 +212,10 @@ func TestInspectEpochsRejectsInvalidOperatorInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeInspectEpochFixture(t, dir, priv)
+	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	valid := inspectEpochsOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), outFile: filepath.Join(parent, "pin.json")}
 	tests := []struct {
 		name string
@@ -223,6 +227,7 @@ func TestInspectEpochsRejectsInvalidOperatorInputs(t *testing.T) {
 		{name: "missing receipt directory", edit: func(o *inspectEpochsOptions) { o.receiptDir = filepath.Join(parent, "missing") }, want: "no such file or directory"},
 		{name: "missing location", edit: func(o *inspectEpochsOptions) { o.locationID = "missing" }, want: "resolve evidence location"},
 		{name: "invalid public key", edit: func(o *inspectEpochsOptions) { o.publicKey = "bad" }, want: "load --key"},
+		{name: "untrusted public key", edit: func(o *inspectEpochsOptions) { o.publicKey = hex.EncodeToString(otherPub) }, want: "verify epoch boundaries"},
 		{name: "missing output parent", edit: func(o *inspectEpochsOptions) { o.outFile = filepath.Join(parent, "missing-parent", "pin.json") }, want: "resolve --out parent"},
 	}
 	for _, tc := range tests {
@@ -232,6 +237,9 @@ func TestInspectEpochsRejectsInvalidOperatorInputs(t *testing.T) {
 			err := runInspectEpochs(inspectEpochsOutputCommand(&bytes.Buffer{}), opts)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if _, statErr := os.Stat(valid.outFile); !os.IsNotExist(statErr) {
+				t.Fatalf("refused input published output: %v", statErr)
 			}
 		})
 	}
@@ -265,7 +273,7 @@ func TestInspectEpochsReportsDegradedEpochsAndSyncFailure(t *testing.T) {
 	compactVerifyStream = func(recorder.EvidenceLocation, []string, string, ed25519.PublicKey, func(compactStreamFile, []byte, recorder.Entry) error) (compactStreamProof, error) {
 		return compactStreamProof{v1Degraded: true, v1Epochs: []compactEpochProof{{Epoch: 0, V1Degraded: true}, {Epoch: 1}}}, nil
 	}
-	inspectSyncDirectory = func(string) error { return errors.New("injected directory sync") }
+	inspectSyncDirectory = func(*inspectOutput) error { return errors.New("injected directory sync") }
 	out := filepath.Join(parent, "pin.json")
 	err = runInspectEpochs(inspectEpochsOutputCommand(&bytes.Buffer{}), inspectEpochsOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), outFile: out})
 	if err == nil || !strings.Contains(err.Error(), "sync --out parent") {
@@ -273,6 +281,23 @@ func TestInspectEpochsReportsDegradedEpochsAndSyncFailure(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
 		t.Fatalf("sync failure retained output: %v", statErr)
+	}
+
+	inspectSyncDirectory = originalSync
+	degradedOut := filepath.Join(parent, "degraded.json")
+	if err := runInspectEpochs(inspectEpochsOutputCommand(&bytes.Buffer{}), inspectEpochsOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), outFile: degradedOut}); err != nil {
+		t.Fatalf("degraded inspection: %v", err)
+	}
+	raw, err := os.ReadFile(degradedOut) // #nosec G304 -- test-owned temporary output
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document inspectEpochsDocument
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.ReceiptVerification.Status != "degraded_per_epoch" {
+		t.Fatalf("status = %q, want degraded_per_epoch", document.ReceiptVerification.Status)
 	}
 }
 
@@ -299,6 +324,30 @@ func TestInspectEpochSourceNamesRejectsUnsafeAndEmptyLocations(t *testing.T) {
 		_, err := inspectEpochSourceNames(recorder.EvidenceLocation{Root: dir, Dir: dir}, "proxy")
 		if err == nil || !strings.Contains(err.Error(), "has no evidence shards") {
 			t.Fatalf("empty session error = %v", err)
+		}
+	})
+	t.Run("directory entry overflow", func(t *testing.T) {
+		dir := t.TempDir()
+		for i := range maxCompactInputShards + 1 {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("evidence-proxy-%d.jsonl", i)), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := inspectEpochSourceNames(recorder.EvidenceLocation{Root: dir, Dir: dir}, "proxy")
+		if err == nil || !strings.Contains(err.Error(), "inspection input limit") {
+			t.Fatalf("overflow error = %v", err)
+		}
+	})
+	t.Run("duplicate shard start", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, name := range []string{"evidence-proxy-0.jsonl", "evidence-proxy-00.jsonl"} {
+			if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := inspectEpochSourceNames(recorder.EvidenceLocation{Root: dir, Dir: dir}, "proxy")
+		if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("duplicate start error = %v", err)
 		}
 	})
 }

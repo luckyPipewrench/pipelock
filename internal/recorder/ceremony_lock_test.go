@@ -191,7 +191,7 @@ func TestEvidenceCeremonyLockErrorAndEmptyLifecyclePaths(t *testing.T) {
 	}
 }
 
-func TestEvidenceWriterCeremonyLockReleasesAfterPanic(t *testing.T) {
+func TestEvidenceWriterCeremonyLockReleasesAfterCallbackFailure(t *testing.T) {
 	if !supportsEvidenceCeremonyLock() {
 		t.Skip("platform does not provide cross-process ceremony locking")
 	}
@@ -210,6 +210,17 @@ func TestEvidenceWriterCeremonyLockReleasesAfterPanic(t *testing.T) {
 	}
 	if err := lock.Close(); err != nil {
 		t.Fatalf("close ceremony lock: %v", err)
+	}
+	sentinel := errors.New("injected callback failure")
+	if err := WithEvidenceWriterCeremonyLock(dir, func() error { return sentinel }); !errors.Is(err, sentinel) {
+		t.Fatalf("writer callback error = %v, want sentinel", err)
+	}
+	lock, err = AcquireEvidenceCeremonyLock(dir)
+	if err != nil {
+		t.Fatalf("ceremony lock remained held after callback error: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("close ceremony lock after callback error: %v", err)
 	}
 }
 

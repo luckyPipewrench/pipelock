@@ -3610,7 +3610,7 @@ var errMetricsHostnameNoIPs = errors.New("hostname resolved to no IP addresses")
 // would stop blocking the bound address if DNS later moved.
 type metricsDialTarget struct {
 	listen      string
-	port        uint64
+	port        uint16
 	unspecified bool
 	ips         []net.IP
 	resolveErr  error
@@ -3642,6 +3642,38 @@ func (p *Proxy) refreshMetricsDialTarget(listen string) {
 	p.metricsTargetPtr.Store(p.buildMetricsDialTarget(listen))
 }
 
+// UpdateMetricsDialTargetFromBoundAddr replaces a hostname-derived metrics
+// target with the numeric address the metrics listener actually bound. The
+// listener resolves a hostname independently from config load, so retaining
+// the earlier lookup could leave the dial guard comparing against a stale IP.
+func (p *Proxy) UpdateMetricsDialTargetFromBoundAddr(addr string) {
+	if p == nil {
+		return
+	}
+	cfg := p.CurrentConfig()
+	if cfg == nil || cfg.MetricsListen == "" {
+		p.metricsTargetPtr.Store(nil)
+		return
+	}
+	target := p.buildMetricsDialTarget(addr)
+	if target == nil {
+		_, configuredPort, configuredErr := net.SplitHostPort(cfg.MetricsListen)
+		port, portErr := strconv.Atoi(configuredPort)
+		if configuredErr == nil && portErr == nil && port > 0 && port <= 65535 {
+			p.metricsTargetPtr.Store(&metricsDialTarget{
+				listen:     cfg.MetricsListen,
+				port:       uint16(port),
+				resolveErr: fmt.Errorf("parse bound metrics listener %q", addr),
+			})
+			return
+		}
+		p.metricsTargetPtr.Store(nil)
+		return
+	}
+	target.listen = cfg.MetricsListen
+	p.metricsTargetPtr.Store(target)
+}
+
 func (p *Proxy) cachedMetricsDialTarget(listen string) *metricsDialTarget {
 	if cached := p.metricsTargetPtr.Load(); cached != nil && cached.listen == listen {
 		return cached
@@ -3656,12 +3688,12 @@ func (p *Proxy) buildMetricsDialTarget(listen string) *metricsDialTarget {
 	if err != nil {
 		return nil
 	}
-	wantPort, wantErr := strconv.ParseUint(metricsPort, 10, 16)
-	target := &metricsDialTarget{listen: listen, port: wantPort}
-	if wantErr != nil {
-		target.port = 0
+	wantPort, wantErr := strconv.Atoi(metricsPort)
+	target := &metricsDialTarget{listen: listen}
+	if wantErr != nil || wantPort < 1 || wantPort > 65535 {
 		return target
 	}
+	target.port = uint16(wantPort)
 	metricsIP := net.ParseIP(metricsHost)
 	if strings.TrimSpace(metricsHost) == "" || (metricsIP != nil && metricsIP.IsUnspecified()) {
 		target.unspecified = true
@@ -3711,7 +3743,7 @@ func (p *Proxy) blockIfConfiguredMetricsTarget(ctx context.Context, host, port s
 		return nil
 	}
 	gotPort, gotErr := strconv.ParseUint(port, 10, 16)
-	if gotErr != nil || target.port == 0 || target.port != gotPort || ip == nil {
+	if gotErr != nil || target.port == 0 || target.port != uint16(gotPort) || ip == nil {
 		return nil
 	}
 	if target.unspecified {

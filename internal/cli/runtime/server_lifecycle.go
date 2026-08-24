@@ -739,6 +739,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			}
 			return err
 		}
+		s.proxy.UpdateMetricsDialTargetFromBoundAddr(metricsLn.Addr().String())
 		metricsSrv := newHTTPServer(metricsMux)
 		lifecycleWG.Add(1)
 		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period

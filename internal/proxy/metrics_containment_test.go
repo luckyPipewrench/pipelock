@@ -465,6 +465,58 @@ func TestHostnameMetricsListenerRefreshReresolvesSameListen(t *testing.T) {
 	}
 }
 
+func TestBoundMetricsListenerAddressOverridesHostnameResolution(t *testing.T) {
+	boundListener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = boundListener.Close() })
+	boundHost, boundPort, err := net.SplitHostPort(boundListener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundIP := net.ParseIP(boundHost)
+	if boundIP == nil {
+		t.Fatalf("bound listener host %q is not an IP address", boundHost)
+	}
+
+	var lookups atomic.Int64
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			lookups.Add(1)
+			return []string{"192.0.2.10"}, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", boundPort)
+	p.ConfigPtr().Store(cfg)
+	p.refreshMetricsDialTarget(cfg.MetricsListen)
+
+	if err := p.blockIfConfiguredMetricsTarget(t.Context(), boundIP.String(), boundPort, boundIP); err != nil {
+		t.Fatalf("precondition: stale hostname resolution blocked bound address: %v", err)
+	}
+
+	p.UpdateMetricsDialTargetFromBoundAddr(boundListener.Addr().String())
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), boundIP.String(), boundPort, boundIP))
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("lookups = %d, want 1; the bound numeric address must not be resolved", got)
+	}
+}
+
+func TestMalformedBoundMetricsListenerAddressFailsClosed(t *testing.T) {
+	p := &Proxy{}
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p.ConfigPtr().Store(cfg)
+	p.UpdateMetricsDialTargetFromBoundAddr("not-a-host-port")
+
+	err := p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10"))
+	var blocked *ssrfDialBlockError
+	if !errors.As(err, &blocked) || !strings.Contains(blocked.detail, "cannot verify") {
+		t.Fatalf("error = %T %v, want cannot-verify denial", err, err)
+	}
+}
+
 func TestMetricsDialTargetRefreshClearsEmptyListen(t *testing.T) {
 	var nilProxy *Proxy
 	nilProxy.refreshMetricsDialTarget("localhost:9091")
@@ -502,6 +554,21 @@ func TestMalformedMetricsListenAllowsDial(t *testing.T) {
 			t.Fatalf("unparseable metrics port blocked: %v", err)
 		}
 	})
+}
+
+func TestHostnameMetricsListenerWithSignedPortFromLoadBlocks(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("metrics_listen: metrics.internal:+9091\n"))
+	if err != nil {
+		t.Fatalf("config.LoadBytes: %v", err)
+	}
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			return []string{"192.0.2.10"}, nil
+		},
+	}
+	p.ConfigPtr().Store(cfg)
+
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10")))
 }
 
 func TestHostnameMetricsListenerSkipsUnparseableLookupRecords(t *testing.T) {

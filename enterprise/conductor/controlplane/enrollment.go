@@ -420,7 +420,11 @@ func (s *FileEnrollmentStore) ResolveEnrolledAuditKey(identity FollowerIdentity,
 	defer s.mu.Unlock()
 	follower, ok := s.data.Followers[followerEnrollmentKey(identity)]
 	if !ok {
-		return conductor.SignatureKey{}, conductor.ErrSignatureVerification
+		// The static resolver is a bootstrap path only for an identity that
+		// has never been enrolled. Preserve that distinction for the composite
+		// resolver without exposing it at the HTTP boundary, which still maps
+		// every verification failure to the same denial.
+		return conductor.SignatureKey{}, fmt.Errorf("%w: %w", conductor.ErrSignatureVerification, ErrFollowerNotFound)
 	}
 	if !follower.Active {
 		return conductor.SignatureKey{}, fmt.Errorf("%w: %w", conductor.ErrSignatureVerification, errFollowerDecommissioned)
@@ -513,9 +517,16 @@ func (s *FileEnrollmentStore) RemoveEnrolledFollower(_ context.Context, req Remo
 	delete(s.data.RuntimeStatus, key)
 	s.data.Followers[key] = decommissioned
 	if err := s.saveLocked(); err != nil {
-		s.data.Followers[key] = follower
-		if hadStatus {
-			s.data.RuntimeStatus[key] = previousStatus
+		// Once rename has completed, the on-disk record may already be the
+		// tombstone even when the directory fsync reports an error. Keep the
+		// in-memory state decommissioned in that uncertain state; restoring the
+		// active key would make this process accept traffic the next restart may
+		// reject.
+		if !errors.Is(err, errDurableWritePostRename) {
+			s.data.Followers[key] = follower
+			if hadStatus {
+				s.data.RuntimeStatus[key] = previousStatus
+			}
 		}
 		return FollowerSummary{}, err
 	}
@@ -876,7 +887,10 @@ func CompositeAuditKeyResolver(primary EnrollmentStore, fallback AuditKeyResolve
 			if err == nil {
 				return key, nil
 			}
-			if errors.Is(err, errFollowerDecommissioned) {
+			// Do not turn a known identity's revoked, mismatched, or unreadable
+			// enrollment state into authorization by a static key. Static keys are
+			// bootstrap-only and may fill an explicit never-enrolled miss.
+			if !errors.Is(err, ErrFollowerNotFound) {
 				return conductor.SignatureKey{}, conductor.ErrSignatureVerification
 			}
 		}

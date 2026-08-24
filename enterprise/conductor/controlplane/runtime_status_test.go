@@ -1222,6 +1222,41 @@ func TestRemoveEnrolledFollowerRestoresRuntimeStatusOnSaveFailure(t *testing.T) 
 	}
 }
 
+func TestRemoveEnrolledFollowerKeepsTombstoneAfterPostRenameSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-post-rename-sync", identity, "audit-key-post-rename-sync")
+
+	originalSyncDirectory := syncDirectory
+	syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
+	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{Identity: identity, Now: testNow}); !errors.Is(err, errDurableWritePostRename) {
+		t.Fatalf("RemoveEnrolledFollower(post-rename sync failure) error = %v, want errDurableWritePostRename", err)
+	}
+	if _, err := store.ResolveEnrolledAuditKey(identity, "audit-key-post-rename-sync"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("ResolveEnrolledAuditKey() after post-rename sync failure error = %v, want signature verification failure", err)
+	}
+	followers, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers() error = %v", err)
+	}
+	if len(followers) != 0 {
+		t.Fatalf("followers after post-rename sync failure = %+v, want tombstone hidden from roster", followers)
+	}
+
+	reloaded, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reload) error = %v", err)
+	}
+	if _, err := reloaded.ResolveEnrolledAuditKey(identity, "audit-key-post-rename-sync"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("ResolveEnrolledAuditKey(reload) error = %v, want signature verification failure", err)
+	}
+}
+
 type truncatedPreflightEnrollmentStore struct {
 	followers []FollowerSummary
 	statuses  []FollowerRuntimeStatus

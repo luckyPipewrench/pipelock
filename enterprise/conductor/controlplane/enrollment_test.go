@@ -8,6 +8,7 @@ package controlplane
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -587,6 +588,83 @@ func TestRemovedFollowerCanReEnroll(t *testing.T) {
 	}
 	if len(summaries) != 1 {
 		t.Fatalf("roster entries = %d, want 1 after re-enrollment", len(summaries))
+	}
+}
+
+func TestReenrolledFollowerCannotUseRetiredStaticAuditKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	oldPub, _ := testAuditSigner(t)
+	newPub, _ := testAuditSigner(t)
+
+	enroll := func(tokenID, keyID string, pub ed25519.PublicKey) error {
+		issued, issueErr := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+			TokenID:  tokenID,
+			Identity: identity,
+			Expires:  testNow.Add(time.Hour),
+			Now:      testNow,
+		})
+		if issueErr != nil {
+			return issueErr
+		}
+		_, consumeErr := store.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+			Token:      issued.Token,
+			AuditKeyID: keyID,
+			AuditKey: conductor.SignatureKey{
+				PublicKey:  pub,
+				KeyPurpose: signing.PurposeAuditBatchSigning,
+			},
+			Now: testNow,
+		})
+		return consumeErr
+	}
+
+	if err := enroll("tok-retired-static-1", "audit-key-old", oldPub); err != nil {
+		t.Fatalf("initial enrollment error = %v", err)
+	}
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{Identity: identity, Now: testNow}); err != nil {
+		t.Fatalf("RemoveEnrolledFollower() error = %v", err)
+	}
+	if err := enroll("tok-retired-static-2", "audit-key-new", newPub); err != nil {
+		t.Fatalf("re-enrollment error = %v", err)
+	}
+	reloaded, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reload) error = %v", err)
+	}
+
+	fallbackHits := 0
+	resolver := CompositeAuditKeyResolver(reloaded, func(FollowerIdentity, string) (conductor.SignatureKey, error) {
+		fallbackHits++
+		return conductor.SignatureKey{PublicKey: oldPub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
+	})
+	if _, err := resolver(identity, "audit-key-old"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("resolver(retired static key) error = %v, want ErrSignatureVerification", err)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("static fallback hits = %d, want 0 for retired key after re-enrollment", fallbackHits)
+	}
+	if _, err := resolver(identity, "audit-key-new"); err != nil {
+		t.Fatalf("resolver(active key) error = %v, want nil", err)
+	}
+}
+
+func TestCompositeAuditKeyResolverDoesNotFallBackAfterPrimaryError(t *testing.T) {
+	pub, _ := testAuditSigner(t)
+	fallbackHits := 0
+	resolver := CompositeAuditKeyResolver(truncatedPreflightEnrollmentStore{}, func(FollowerIdentity, string) (conductor.SignatureKey, error) {
+		fallbackHits++
+		return conductor.SignatureKey{PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
+	})
+	if _, err := resolver(defaultFollowerIdentity(), "audit-key-1"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("resolver(primary error) error = %v, want ErrSignatureVerification", err)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("static fallback hits = %d, want 0 after primary error", fallbackHits)
 	}
 }
 

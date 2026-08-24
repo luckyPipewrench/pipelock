@@ -78,6 +78,11 @@ var (
 	ErrAuditBatchConflict    = errors.New("conductor audit batch conflicts with accepted batch")
 	ErrAuditForkDetected     = errors.New("conductor audit sequence fork detected")
 	ErrUnsupportedRollback   = errors.New("conductor control plane rollback publication not implemented")
+	// errDurableWritePostRename identifies a directory-sync failure after the
+	// atomic rename made the new bytes visible. Callers must not roll back their
+	// in-memory security state on this error because persistence is uncertain.
+	errDurableWritePostRename = errors.New("conductor control plane write may have committed before directory fsync failed")
+	syncDirectory             = fsyncDir
 	// ErrVersionBelowStreamMax is returned by a forward publish whose version is
 	// not strictly greater than the highest version EVER published in the stream,
 	// yet is not below the current (possibly rolled-back) head. After a rollback
@@ -1317,7 +1322,10 @@ func durableWrite(path string, data []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("conductor control plane rename temp: %w", err)
 	}
-	return fsyncDir(dir)
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("%w: %w", errDurableWritePostRename, err)
+	}
+	return nil
 }
 
 func fsyncDir(dir string) error {

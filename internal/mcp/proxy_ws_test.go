@@ -58,6 +58,7 @@ func TestA2ACardURLForWSUpstream(t *testing.T) {
 		{name: "ws", in: "ws://agent.example/mcp", want: "http://agent.example/mcp"},
 		{name: "wss", in: "wss://agent.example/mcp", want: "https://agent.example/mcp"},
 		{name: "https", in: "https://agent.example/card", want: "https://agent.example/card"},
+		{name: "invalid", in: "%", want: "%"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := a2aCardURLForWSUpstream(tc.in); got != tc.want {

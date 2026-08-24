@@ -19,16 +19,30 @@ import (
 )
 
 type (
-	compactOptions  struct{ receiptDir, locationID, sessionID, publicKey string }
+	compactOptions struct {
+		receiptDir, locationID, sessionID, publicKey string
+		allowDegradedReceipts                        int
+	}
 	compactManifest struct {
-		Version     int                   `json:"version"`
-		SessionID   string                `json:"session_id"`
-		CreatedAt   time.Time             `json:"created_at"`
-		Original    []compactManifestFile `json:"original"`
-		Replacement []compactManifestFile `json:"replacement"`
-		Mappings    []compactByteMapping  `json:"mappings"`
+		Version             int                                `json:"version"`
+		SessionID           string                             `json:"session_id"`
+		CreatedAt           time.Time                          `json:"created_at"`
+		ReceiptVerification compactManifestReceiptVerification `json:"receipt_verification"`
+		Original            []compactManifestFile              `json:"original"`
+		Replacement         []compactManifestFile              `json:"replacement"`
+		Mappings            []compactByteMapping               `json:"mappings"`
 	}
 )
+
+type compactManifestReceiptVerification struct {
+	Status       string                      `json:"status"`
+	V1Count      uint64                      `json:"v1_signed_receipts"`
+	V1ChainHead  string                      `json:"v1_chain_head,omitempty"`
+	V2Count      uint64                      `json:"v2_signed_receipts"`
+	V2ChainHead  string                      `json:"v2_chain_head,omitempty"`
+	Degradations []compactReceiptDegradation `json:"degradations,omitempty"`
+	V1Suffixes   []compactReceiptSuffix      `json:"v1_verified_suffixes,omitempty"`
+}
 
 type compactManifestFile struct {
 	Name   string `json:"name"`
@@ -62,6 +76,7 @@ func compactCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "", "session ID to compact")
 	cmd.Flags().StringVar(&opts.publicKey, "key", "", "trusted receipt signing public key (inline or file)")
+	cmd.Flags().IntVar(&opts.allowDegradedReceipts, "allow-degraded-receipts", 0, "acknowledge exactly N recognized irrecoverable receipt gaps")
 	_ = cmd.MarkFlagRequired("receipt-dir")
 	_ = cmd.MarkFlagRequired("session")
 	_ = cmd.MarkFlagRequired("key")
@@ -111,6 +126,12 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	if err != nil {
 		return err
 	}
+	if original.v1FirstGap || original.v1TailGap {
+		return errors.New("degraded v1 receipt gap is at the first or last action_receipt; refusing to publish an evidence directory that receipt resume cannot load")
+	}
+	if original.v1Degraded && opts.allowDegradedReceipts != len(original.degradations) {
+		return fmt.Errorf("receipt proof is DEGRADED by %d recognized whole-receipt tombstone(s); inspect the source and rerun with --allow-degraded-receipts=%d to acknowledge exactly these gaps", len(original.degradations), len(original.degradations))
+	}
 	if len(writer.files) > recorder.MaxEvidenceReadDirectoryEntries {
 		return fmt.Errorf("compaction produced %d shards, exceeds %d", len(writer.files), recorder.MaxEvidenceReadDirectoryEntries)
 	}
@@ -132,7 +153,7 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	if !sameCompactProof(original, post) {
 		return errors.New("compaction changed original JSONL bytes or signed receipt proof")
 	}
-	manifest := compactManifest{Version: 1, SessionID: opts.sessionID, CreatedAt: time.Now().UTC(), Original: manifestStreamFiles(original.files), Replacement: manifestStreamFiles(writer.files), Mappings: writer.mappings}
+	manifest := compactManifest{Version: 2, SessionID: opts.sessionID, CreatedAt: time.Now().UTC(), ReceiptVerification: manifestReceiptVerification(original), Original: manifestStreamFiles(original.files), Replacement: manifestStreamFiles(writer.files), Mappings: writer.mappings}
 	archive := filepath.Join(parent, ".pipelock-evidence-archive-"+time.Now().UTC().Format("20060102T150405.000000000Z"))
 	stageLock, err := compactAcquireLock(stage)
 	if err != nil {
@@ -173,7 +194,20 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	}
 	committed = true
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "compacted session %q into %d bounded shard(s); original preserved at %s\n", opts.sessionID, len(writer.files), archive)
+	if original.v1Degraded {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "receipt proof: DEGRADED; preserved %d known whole-receipt redaction tombstone(s); see archive manifest\n", len(original.degradations))
+	} else {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "receipt proof: VERIFIED")
+	}
 	return nil
+}
+
+func manifestReceiptVerification(proof compactStreamProof) compactManifestReceiptVerification {
+	status := "verified"
+	if proof.v1Degraded {
+		status = "degraded"
+	}
+	return compactManifestReceiptVerification{Status: status, V1Count: proof.v1Count, V1ChainHead: proof.v1Head, V2Count: proof.v2Count, V2ChainHead: proof.v2Head, Degradations: append([]compactReceiptDegradation(nil), proof.degradations...), V1Suffixes: append([]compactReceiptSuffix(nil), proof.v1Suffixes...)}
 }
 
 func rollbackCompactExchange(active, old string, cause error) error {

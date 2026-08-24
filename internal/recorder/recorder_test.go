@@ -2546,13 +2546,11 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 	fakeKey := "AK" + "IA" + "IOSFODNN7EXAMPLE"
 
 	tests := []struct {
-		name      string
-		entryType string
-		detail    any
-		// For receipts: selective redaction (target/pattern only, structure preserved).
-		// For non-receipts: full redaction (entire detail replaced).
-		wantSelectiveRedact bool
-		wantFullRedact      bool
+		name            string
+		entryType       string
+		detail          any
+		wantRecordError bool
+		wantFullRedact  bool
 	}{
 		{
 			name:      "receipt target field is redacted",
@@ -2569,7 +2567,7 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 				"signature":  "ed25519:deadbeef",
 				"signer_key": "cafebabe",
 			},
-			wantSelectiveRedact: true,
+			wantRecordError: true,
 		},
 		{
 			name:      "receipt without secrets is preserved",
@@ -2588,6 +2586,23 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 			},
 		},
 		{
+			name:            "v2 signed receipt with secret is rejected",
+			entryType:       "evidence_receipt",
+			detail:          map[string]any{"record_type": "evidence_receipt_v2", "payload": map[string]any{"rule_id": fakeKey}, "signature": "ed25519:deadbeef", "signer_key": "cafebabe"},
+			wantRecordError: true,
+		},
+		{
+			name:      "v2 signed receipt without secrets is preserved",
+			entryType: "evidence_receipt",
+			detail:    map[string]any{"record_type": "evidence_receipt_v2", "payload": map[string]any{"rule_id": "safe-rule"}, "signature": "ed25519:deadbeef", "signer_key": "cafebabe"},
+		},
+		{
+			name:            "unmarshalable signed receipt is rejected",
+			entryType:       "action_receipt",
+			detail:          func() {},
+			wantRecordError: true,
+		},
+		{
 			name:           "non-receipt entry gets full redaction",
 			entryType:      "request",
 			detail:         map[string]string{"url": "https://example.com/?key=" + fakeKey},
@@ -2597,8 +2612,8 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 			name:      "receipt without action_record falls back to full redaction",
 			entryType: "action_receipt",
 			// Malformed receipt: missing action_record key triggers fallback
-			detail:         map[string]string{"target": "https://example.com/?key=" + fakeKey},
-			wantFullRedact: true,
+			detail:          map[string]string{"target": "https://example.com/?key=" + fakeKey},
+			wantRecordError: true,
 		},
 	}
 
@@ -2624,6 +2639,27 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 				Summary:   "test entry",
 				Detail:    tt.detail,
 			})
+			if tt.wantRecordError {
+				if err == nil || (!strings.Contains(err.Error(), "refusing to record unverifiable redaction") && !strings.Contains(err.Error(), "scan signed receipt detail before recording")) {
+					t.Fatalf("Record error = %v, want signed receipt redaction refusal", err)
+				}
+				if closeErr := subRec.Close(); closeErr != nil {
+					t.Fatalf("Close: %v", closeErr)
+				}
+				entries, readErr := recorder.ReadEntries(filepath.Join(subDir, "evidence-test-session-0.jsonl"))
+				if errors.Is(readErr, os.ErrNotExist) {
+					return
+				}
+				if readErr != nil {
+					t.Fatalf("ReadEntries: %v", readErr)
+				}
+				for _, entry := range entries {
+					if entry.Type == tt.entryType {
+						t.Fatalf("rejected signed receipt was persisted: %+v", entry)
+					}
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Record: %v", err)
 			}
@@ -2655,66 +2691,8 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 				}
 			}
 
-			if tt.wantSelectiveRedact {
-				// Receipt: target field redacted, structure preserved
-				detailMap, ok := entries[0].Detail.(map[string]any)
-				if !ok {
-					t.Fatal("receipt detail should be a map")
-				}
-
-				// Signature and signer_key preserved
-				if _, hasSig := detailMap["signature"]; !hasSig {
-					t.Error("receipt should preserve signature field")
-				}
-				if _, hasKey := detailMap["signer_key"]; !hasKey {
-					t.Error("receipt should preserve signer_key field")
-				}
-
-				// action_record structure preserved
-				ar, arOK := detailMap["action_record"].(map[string]any)
-				if !arOK {
-					t.Fatal("receipt should preserve action_record structure")
-				}
-
-				// Target is redacted
-				if target, ok := ar["target"].(string); !ok || target != "[REDACTED]" {
-					t.Errorf("target should be [REDACTED], got %v", ar["target"])
-				}
-
-				// Secret not present in serialized form
-				if strings.Contains(detailStr, fakeKey) {
-					t.Error("secret should not appear in receipt detail")
-				}
-
-				// Non-sensitive fields preserved
-				if verdict, ok := ar["verdict"].(string); !ok || verdict != "block" {
-					t.Errorf("verdict should be preserved, got %v", ar["verdict"])
-				}
-				if actionType, ok := ar["action_type"].(string); !ok || actionType != "read" {
-					t.Errorf("action_type should be preserved, got %v", ar["action_type"])
-				}
-				if transport, ok := ar["transport"].(string); !ok || transport != testTransport {
-					t.Errorf("transport should be preserved, got %v", ar["transport"])
-				}
-
-				// redacted_fields annotation present
-				rf, rfOK := ar["redacted_fields"].([]any)
-				if !rfOK {
-					t.Fatal("receipt should have redacted_fields annotation")
-				}
-				found := false
-				for _, f := range rf {
-					if f == "target" {
-						found = true
-					}
-				}
-				if !found {
-					t.Error("redacted_fields should include 'target'")
-				}
-			}
-
 			// Clean receipt (no secrets): no modifications
-			if !tt.wantSelectiveRedact && !tt.wantFullRedact && tt.entryType == "action_receipt" {
+			if !tt.wantRecordError && !tt.wantFullRedact && tt.entryType == "action_receipt" {
 				detailMap, ok := entries[0].Detail.(map[string]any)
 				if !ok {
 					t.Fatal("receipt detail should be a map")

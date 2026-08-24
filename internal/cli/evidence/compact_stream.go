@@ -14,15 +14,19 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	legacyreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -186,7 +190,20 @@ func (w *compactStreamWriter) close() error {
 }
 
 func sameCompactProof(a, b compactStreamProof) bool {
-	return a.bytes == b.bytes && a.sum == b.sum && a.v1Count == b.v1Count && a.v1Head == b.v1Head && a.v2Count == b.v2Count && a.v2Head == b.v2Head
+	if a.bytes != b.bytes || a.sum != b.sum || a.v1Count != b.v1Count || a.v1Head != b.v1Head || a.v1Degraded != b.v1Degraded || a.v1FirstGap != b.v1FirstGap || a.v1TailGap != b.v1TailGap || a.v2Count != b.v2Count || a.v2Head != b.v2Head || len(a.degradations) != len(b.degradations) || len(a.v1Suffixes) != len(b.v1Suffixes) {
+		return false
+	}
+	for i := range a.degradations {
+		if a.degradations[i] != b.degradations[i] {
+			return false
+		}
+	}
+	for i := range a.v1Suffixes {
+		if a.v1Suffixes[i] != b.v1Suffixes[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func sameCompactNameSet(a, b []string) bool {
@@ -227,13 +244,62 @@ var compactKnownRecorderTypes = map[string]struct{}{
 }
 
 type compactStreamProof struct {
-	files   []compactStreamFile
-	bytes   int64
-	sum     string
-	v1Count uint64
-	v1Head  string
-	v2Count uint64
-	v2Head  string
+	files        []compactStreamFile
+	bytes        int64
+	sum          string
+	v1Count      uint64
+	v1Head       string
+	v1Degraded   bool
+	v1FirstGap   bool
+	v1TailGap    bool
+	degradations []compactReceiptDegradation
+	v1Suffixes   []compactReceiptSuffix
+	v2Count      uint64
+	v2Head       string
+}
+
+type compactReceiptSuffix struct {
+	Count          uint64 `json:"signed_receipts"`
+	OriginSeq      uint64 `json:"origin_seq"`
+	OriginPrevHash string `json:"origin_prev_hash"`
+	FinalSeq       uint64 `json:"final_seq"`
+	Head           string `json:"head"`
+}
+
+type compactReceiptDegradation struct {
+	File              string `json:"file"`
+	RecorderSeq       uint64 `json:"recorder_seq"`
+	OriginalSize      int64  `json:"original_size"`
+	CheckpointCovered bool   `json:"checkpoint_covered"`
+	Reason            string `json:"reason"`
+}
+
+const compactLegacyRedactionReason = "known whole-receipt redaction tombstone"
+
+type compactLegacyReceiptTombstone struct {
+	Redacted         bool        `json:"redacted"`
+	DetectedPatterns []string    `json:"detected_patterns"`
+	OriginalSize     json.Number `json:"original_size"`
+}
+
+func decodeCompactLegacyReceiptTombstone(raw []byte) (int64, bool) {
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return 0, false
+	}
+	var tombstone compactLegacyReceiptTombstone
+	if err := contract.DecodeStrictJSON(raw, &tombstone); err != nil || !tombstone.Redacted || len(tombstone.DetectedPatterns) == 0 {
+		return 0, false
+	}
+	for _, marker := range tombstone.DetectedPatterns {
+		if !strings.HasPrefix(marker, "[REDACTED:") || !strings.HasSuffix(marker, "]") || len(marker) <= len("[REDACTED:]") || strings.ContainsAny(marker, "\r\n") {
+			return 0, false
+		}
+	}
+	size, err := strconv.ParseInt(string(tombstone.OriginalSize), 10, 64)
+	if err != nil || size <= 0 {
+		return 0, false
+	}
+	return size, true
 }
 
 // compactOuterVerifier checks the recorder envelope while each line is still
@@ -297,13 +363,31 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 	var proof compactStreamProof
 	h := sha256.New()
 	outer := compactOuterVerifier{key: key}
-	v1, err := legacyreceipt.NewStreamingVerifier(hex.EncodeToString(key))
+	keyHex := hex.EncodeToString(key)
+	v1, err := legacyreceipt.NewStreamingVerifier(keyHex)
 	if err != nil {
 		return compactStreamProof{}, fmt.Errorf("initialize v1 receipt verifier: %w", err)
 	}
 	v2, err := contractreceipt.NewPinnedStreamingVerifier(key)
 	if err != nil {
 		return compactStreamProof{}, fmt.Errorf("initialize v2 receipt verifier: %w", err)
+	}
+	var suffix *legacyreceipt.UnanchoredSuffixVerifier
+	var suffixCount uint64
+	var expectedSuffixOrigin *uint64
+	var v1EntrySeen bool
+	finishSuffix := func() error {
+		if suffix == nil || suffixCount == 0 {
+			return nil
+		}
+		result, finishErr := suffix.Finish()
+		if finishErr != nil {
+			return finishErr
+		}
+		proof.v1Suffixes = append(proof.v1Suffixes, compactReceiptSuffix{Count: result.Count, OriginSeq: result.OriginSeq, OriginPrevHash: result.OriginPrevHash, FinalSeq: result.FinalSeq, Head: result.Head})
+		suffix = nil
+		suffixCount = 0
+		return nil
 	}
 	for _, name := range files {
 		path := filepath.Join(location.Dir, name)
@@ -328,12 +412,71 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 				if _, ok := compactKnownRecorderTypes[entry.Type]; !ok {
 					return fmt.Errorf("unknown recorder entry type %q at seq %d", entry.Type, entry.Sequence)
 				}
+				if entry.Type == "checkpoint" {
+					for i := range proof.degradations {
+						proof.degradations[i].CheckpointCovered = true
+					}
+				}
 				switch entry.Type {
 				case "action_receipt":
-					if err := v1.Add(entry.RawDetail); err != nil {
-						return fmt.Errorf("verify v1 action_receipt at recorder seq %d: %w", entry.Sequence, err)
+					originalSize, tombstone := decodeCompactLegacyReceiptTombstone(entry.RawDetail)
+					if !v1EntrySeen {
+						proof.v1FirstGap = tombstone
+						v1EntrySeen = true
 					}
-					proof.v1Count++
+					proof.v1TailGap = tombstone
+					if tombstone {
+						if !proof.v1Degraded && proof.v1Count > 0 {
+							result := v1.Finish()
+							if !result.Valid {
+								return fmt.Errorf("verify v1 receipt prefix before redaction tombstone: %s", result.Error)
+							}
+							next := result.FinalSeq + 2
+							expectedSuffixOrigin = &next
+						} else if suffixCount > 0 {
+							result, finishErr := suffix.Finish()
+							if finishErr != nil {
+								return fmt.Errorf("finish v1 suffix before redaction tombstone: %w", finishErr)
+							}
+							if err := finishSuffix(); err != nil {
+								return fmt.Errorf("record v1 suffix before redaction tombstone: %w", err)
+							}
+							next := result.FinalSeq + 2
+							expectedSuffixOrigin = &next
+						} else if expectedSuffixOrigin != nil {
+							*expectedSuffixOrigin = *expectedSuffixOrigin + 1
+						} else {
+							next := uint64(1)
+							expectedSuffixOrigin = &next
+						}
+						proof.v1Degraded = true
+						proof.degradations = append(proof.degradations, compactReceiptDegradation{File: name, RecorderSeq: entry.Sequence, OriginalSize: originalSize, Reason: compactLegacyRedactionReason})
+					} else if proof.v1Degraded {
+						if suffix == nil {
+							suffix, err = legacyreceipt.NewUnanchoredSuffixVerifier(keyHex)
+							if err != nil {
+								return fmt.Errorf("initialize v1 suffix verifier: %w", err)
+							}
+						}
+						if err := suffix.Add(entry.RawDetail); err != nil {
+							return fmt.Errorf("verify v1 action_receipt after degraded chain at recorder seq %d: %w", entry.Sequence, err)
+						}
+						if suffixCount == 0 && expectedSuffixOrigin != nil {
+							result, finishErr := suffix.Finish()
+							if finishErr != nil {
+								return fmt.Errorf("inspect v1 suffix origin: %w", finishErr)
+							}
+							if result.OriginSeq != *expectedSuffixOrigin {
+								return fmt.Errorf("verify v1 action_receipt after degraded chain at recorder seq %d: expected suffix chain_seq %d, got %d", entry.Sequence, *expectedSuffixOrigin, result.OriginSeq)
+							}
+						}
+						suffixCount++
+						proof.v1Count++
+					} else if err := v1.Add(entry.RawDetail); err != nil {
+						return fmt.Errorf("verify v1 action_receipt at recorder seq %d: %w", entry.Sequence, err)
+					} else {
+						proof.v1Count++
+					}
 				case contractreceipt.EvidenceEntryType:
 					if err := v2.AddRaw(entry.RawDetail); err != nil {
 						return fmt.Errorf("verify v2 evidence_receipt at recorder seq %d: %w", entry.Sequence, err)
@@ -377,12 +520,16 @@ func streamCompactFiles(location recorder.EvidenceLocation, files []string, sess
 	if proof.v1Count == 0 && proof.v2Count == 0 {
 		return compactStreamProof{}, fmt.Errorf("session %q contains no signed evidence receipts", session)
 	}
-	if proof.v1Count > 0 {
+	if proof.v1Count > 0 && !proof.v1Degraded {
 		result := v1.Finish()
 		if !result.Valid {
 			return compactStreamProof{}, fmt.Errorf("verify v1 receipt chain: %s", result.Error)
 		}
 		proof.v1Head = result.RootHash
+	} else if proof.v1Degraded {
+		if err := finishSuffix(); err != nil {
+			return compactStreamProof{}, fmt.Errorf("finish v1 degraded suffix: %w", err)
+		}
 	}
 	if proof.v2Count > 0 {
 		result := v2.Finish()

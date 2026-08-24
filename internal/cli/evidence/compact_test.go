@@ -231,6 +231,39 @@ func TestStreamCompactFilesVerifiesSignedOuterCheckpoint(t *testing.T) {
 	}
 }
 
+func TestStreamCompactFilesReportsCheckpointCoverageAfterGap(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1, SignCheckpoints: true}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(recorder.Entry{SessionID: "proxy", Type: "action_receipt", EventKind: "proxy_decision", Transport: "fetch", Summary: "signed", Detail: receiptForCompactV1(t, priv, 0, legacyreceipt.GenesisHash, "before-gap")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(recorder.Entry{SessionID: "proxy", Type: "action_receipt", EventKind: "proxy_decision", Transport: "fetch", Summary: "gap", Detail: map[string]any{"redacted": true, "detected_patterns": []string{"[REDACTED:test pattern]"}, "original_size": 42}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	location := recorder.EvidenceLocation{Root: dir, Dir: dir}
+	names, err := compactStreamNames(location, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := streamCompactFiles(location, names, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil })
+	if err != nil {
+		t.Fatalf("stream checkpoint-covered gap: %v", err)
+	}
+	if len(proof.degradations) != 1 || !proof.degradations[0].CheckpointCovered {
+		t.Fatalf("degradations=%+v, want one checkpoint-covered gap", proof.degradations)
+	}
+}
+
 func TestRunCompactSupportsOversizeLegacyShardAndResumeAppend(t *testing.T) {
 	if !supportsCompactExchangeTest() {
 		t.Skip("atomic evidence directory exchange is unsupported")
@@ -610,7 +643,7 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 	if !sameCompactProof(base, base) {
 		t.Fatal("same proof did not compare equal")
 	}
-	for _, changed := range []compactStreamProof{{bytes: 2}, {sum: "other"}, {v1Count: 4}, {v1Head: "other"}, {v2Count: 4}, {v2Head: "other"}} {
+	for _, changed := range []compactStreamProof{{bytes: 2}, {sum: "other"}, {v1Count: 4}, {v1Head: "other"}, {v1Degraded: true}, {v1FirstGap: true}, {v1TailGap: true}, {degradations: []compactReceiptDegradation{{RecorderSeq: 9}}}, {v1Suffixes: []compactReceiptSuffix{{OriginSeq: 9}}}, {v2Count: 4}, {v2Head: "other"}} {
 		candidate := base
 		if changed.bytes != 0 {
 			candidate.bytes = changed.bytes
@@ -624,6 +657,21 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 		if changed.v1Head != "" {
 			candidate.v1Head = changed.v1Head
 		}
+		if changed.v1Degraded {
+			candidate.v1Degraded = true
+		}
+		if changed.v1FirstGap {
+			candidate.v1FirstGap = true
+		}
+		if changed.v1TailGap {
+			candidate.v1TailGap = true
+		}
+		if changed.degradations != nil {
+			candidate.degradations = changed.degradations
+		}
+		if changed.v1Suffixes != nil {
+			candidate.v1Suffixes = changed.v1Suffixes
+		}
 		if changed.v2Count != 0 {
 			candidate.v2Count = changed.v2Count
 		}
@@ -633,6 +681,19 @@ func TestCompactStreamHelpersCompareWholeProofs(t *testing.T) {
 		if sameCompactProof(base, candidate) {
 			t.Fatalf("different proof compared equal: %#v", candidate)
 		}
+	}
+	withDetails := base
+	withDetails.degradations = []compactReceiptDegradation{{RecorderSeq: 1}}
+	withDetails.v1Suffixes = []compactReceiptSuffix{{OriginSeq: 2}}
+	differentDegradation := withDetails
+	differentDegradation.degradations = []compactReceiptDegradation{{RecorderSeq: 9}}
+	if sameCompactProof(withDetails, differentDegradation) {
+		t.Fatal("different degradation content compared equal")
+	}
+	differentSuffix := withDetails
+	differentSuffix.v1Suffixes = []compactReceiptSuffix{{OriginSeq: 7}}
+	if sameCompactProof(withDetails, differentSuffix) {
+		t.Fatal("different suffix content compared equal")
 	}
 	if sameCompactNameSet([]string{"a"}, []string{"a", "b"}) || sameCompactNameSet([]string{"a"}, []string{"b"}) || !sameCompactNameSet([]string{"a", "b"}, []string{"a", "b"}) {
 		t.Fatal("unexpected compact name-set comparison")
@@ -876,6 +937,300 @@ func TestStreamCompactFilesAcceptsMixedV1AndV2ReceiptFamilies(t *testing.T) {
 	}
 }
 
+func TestCompactLegacyReceiptTombstoneClassifierFailsClosed(t *testing.T) {
+	valid := `{"redacted":true,"detected_patterns":["[REDACTED:AWS access key pattern]"],"original_size":1234}`
+	if size, ok := decodeCompactLegacyReceiptTombstone([]byte(valid)); !ok || size != 1234 {
+		t.Fatalf("valid historical tombstone = size %d ok %t", size, ok)
+	}
+	validConfiguredName := `{"redacted":true,"detected_patterns":["[REDACTED:Vendor token [prod]]"],"original_size":2097152}`
+	if size, ok := decodeCompactLegacyReceiptTombstone([]byte(validConfiguredName)); !ok || size != 2097152 {
+		t.Fatalf("valid configured-name tombstone = size %d ok %t", size, ok)
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "extra field", raw: `{"redacted":true,"detected_patterns":["[REDACTED:x]"],"original_size":1,"extra":true}`},
+		{name: "missing field", raw: `{"redacted":true,"original_size":1}`},
+		{name: "false", raw: `{"redacted":false,"detected_patterns":["[REDACTED:x]"],"original_size":1}`},
+		{name: "empty patterns", raw: `{"redacted":true,"detected_patterns":[],"original_size":1}`},
+		{name: "bad marker", raw: `{"redacted":true,"detected_patterns":["secret"],"original_size":1}`},
+		{name: "fractional size", raw: `{"redacted":true,"detected_patterns":["[REDACTED:x]"],"original_size":1.5}`},
+		{name: "duplicate key", raw: `{"redacted":true,"redacted":true,"detected_patterns":["[REDACTED:x]"],"original_size":1}`},
+		{name: "marshal error tombstone", raw: `{"redacted":true,"reason":"marshal error"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := decodeCompactLegacyReceiptTombstone([]byte(tc.raw)); ok {
+				t.Fatal("malformed tombstone accepted")
+			}
+		})
+	}
+}
+
+func TestStreamCompactFilesPreservesKnownReceiptDegradation(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := receiptForCompactV1(t, priv, 0, legacyreceipt.GenesisHash, "first")
+	firstHash, err := legacyreceipt.ReceiptHash(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterGap := receiptForCompactV1(t, priv, 2, firstHash, "after-gap")
+	afterGapHash, err := legacyreceipt.ReceiptHash(afterGap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffixTail := receiptForCompactV1(t, priv, 3, afterGapHash, "suffix-tail")
+	tombstone := map[string]any{"redacted": true, "detected_patterns": []string{"[REDACTED:AWS access key pattern]"}, "original_size": 777}
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	writeChain := func(receipts ...legacyreceipt.Receipt) {
+		t.Helper()
+		outerPrev := recorder.GenesisHash
+		var data bytes.Buffer
+		details := []any{first, tombstone}
+		for _, receipt := range receipts {
+			details = append(details, receipt)
+		}
+		for i, detail := range details {
+			e := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i), Timestamp: time.Unix(int64(i+1), 0).UTC(), SessionID: "proxy", Type: "action_receipt", EventKind: "proxy_decision", Transport: "fetch", Summary: "legacy", Detail: detail, PrevHash: outerPrev}
+			e.Hash = recorder.ComputeHash(e)
+			outerPrev = e.Hash
+			line, marshalErr := json.Marshal(e)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			data.Write(line)
+			data.WriteByte('\n')
+		}
+		if err := os.WriteFile(path, data.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeChain(afterGap, suffixTail)
+	location := recorder.EvidenceLocation{Root: dir, Dir: dir}
+	proof, err := streamCompactFiles(location, []string{"evidence-proxy-0.jsonl"}, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil })
+	if err != nil {
+		t.Fatalf("stream degraded legacy receipts: %v", err)
+	}
+	if !proof.v1Degraded || proof.v1Count != 3 || proof.v1Head != "" || len(proof.degradations) != 1 || len(proof.v1Suffixes) != 1 || proof.v1Suffixes[0].Count != 2 || proof.v1Suffixes[0].Head == "" {
+		t.Fatalf("degraded proof = %+v", proof)
+	}
+	want := compactReceiptDegradation{File: "evidence-proxy-0.jsonl", RecorderSeq: 1, OriginalSize: 777, Reason: compactLegacyRedactionReason}
+	if proof.degradations[0] != want {
+		t.Fatalf("degradation = %+v, want %+v", proof.degradations[0], want)
+	}
+	if proof.degradations[0].CheckpointCovered {
+		t.Fatal("gap without a later checkpoint reported checkpoint coverage")
+	}
+	manifest := manifestReceiptVerification(proof)
+	if manifest.Status != "degraded" || manifest.V1ChainHead != "" || len(manifest.Degradations) != 1 || len(manifest.V1Suffixes) != 1 {
+		t.Fatalf("manifest receipt proof = %+v", manifest)
+	}
+
+	brokenTail := receiptForCompactV1(t, priv, 3, "unrelated-signed-head", "broken-suffix-tail")
+	writeChain(afterGap, brokenTail)
+	if _, err := streamCompactFiles(location, []string{"evidence-proxy-0.jsonl"}, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil }); err == nil || !strings.Contains(err.Error(), "chain_prev_hash mismatch") {
+		t.Fatalf("broken linked suffix error = %v", err)
+	}
+
+	afterGap.ActionRecord.Target = "https://api.vendor.example/tampered"
+	writeChain(afterGap)
+	if _, err := streamCompactFiles(location, []string{"evidence-proxy-0.jsonl"}, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil }); err == nil || !strings.Contains(err.Error(), "after degraded chain") {
+		t.Fatalf("tampered receipt after tombstone error = %v", err)
+	}
+}
+
+func TestStreamCompactFilesHandlesLeadingConsecutiveAndMultipleGaps(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tombstone := map[string]any{"redacted": true, "detected_patterns": []string{"[REDACTED:test pattern]"}, "original_size": 42}
+	makeReceipt := func(seq uint64, prev, id string) legacyreceipt.Receipt {
+		return receiptForCompactV1(t, priv, seq, prev, id)
+	}
+	for _, tc := range []struct {
+		name          string
+		details       []any
+		wantGaps      int
+		wantSuffixes  int
+		wantSuffixSeq []uint64
+	}{
+		{name: "leading gap", details: []any{tombstone, makeReceipt(1, "unknown-gap-head", "leading-origin")}, wantGaps: 1, wantSuffixes: 1, wantSuffixSeq: []uint64{1}},
+		{name: "consecutive gaps", details: []any{makeReceipt(0, legacyreceipt.GenesisHash, "prefix"), tombstone, tombstone, makeReceipt(3, "unknown-two-gap-head", "consecutive-origin")}, wantGaps: 2, wantSuffixes: 1, wantSuffixSeq: []uint64{3}},
+		{name: "separated gaps", details: []any{makeReceipt(0, legacyreceipt.GenesisHash, "prefix"), tombstone, makeReceipt(2, "unknown-first-gap-head", "first-origin"), tombstone, makeReceipt(4, "unknown-second-gap-head", "second-origin")}, wantGaps: 2, wantSuffixes: 2, wantSuffixSeq: []uint64{2, 4}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outerPrev := recorder.GenesisHash
+			var data bytes.Buffer
+			for i, detail := range tc.details {
+				entry := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i), Timestamp: time.Unix(int64(i+1), 0).UTC(), SessionID: "proxy", Type: "action_receipt", EventKind: "proxy_decision", Transport: "fetch", Summary: "legacy", Detail: detail, PrevHash: outerPrev}
+				entry.Hash = recorder.ComputeHash(entry)
+				outerPrev = entry.Hash
+				line, marshalErr := json.Marshal(entry)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				data.Write(line)
+				data.WriteByte('\n')
+			}
+			if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), data.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			proof, err := streamCompactFiles(recorder.EvidenceLocation{Root: dir, Dir: dir}, []string{"evidence-proxy-0.jsonl"}, "proxy", pub, func(compactStreamFile, []byte, recorder.Entry) error { return nil })
+			if err != nil {
+				t.Fatalf("stream gaps: %v", err)
+			}
+			if len(proof.degradations) != tc.wantGaps || len(proof.v1Suffixes) != tc.wantSuffixes {
+				t.Fatalf("proof gaps=%d suffixes=%d, want %d/%d", len(proof.degradations), len(proof.v1Suffixes), tc.wantGaps, tc.wantSuffixes)
+			}
+			for i, want := range tc.wantSuffixSeq {
+				if proof.v1Suffixes[i].OriginSeq != want {
+					t.Fatalf("suffix %d origin=%d, want %d", i, proof.v1Suffixes[i].OriginSeq, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRunCompactPublishesDegradedReceiptProof(t *testing.T) {
+	if !supportsCompactExchangeTest() {
+		t.Skip("atomic evidence directory exchange is unsupported")
+	}
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "recorder")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1 := receiptForCompactV1(t, priv, 0, legacyreceipt.GenesisHash, "before-redaction")
+	tombstone := map[string]any{"redacted": true, "detected_patterns": []string{"[REDACTED:AWS access key pattern]"}, "original_size": 777}
+	v1AfterGap := receiptForCompactV1(t, priv, 2, "unknown-destroyed-receipt-head", "after-redaction")
+	v2 := compactSignedReceipt(t, priv, 0, contractreceipt.GenesisHash)
+
+	outerPrev := recorder.GenesisHash
+	var source bytes.Buffer
+	for i, item := range []struct {
+		typ    string
+		detail any
+	}{{"action_receipt", v1}, {"action_receipt", tombstone}, {"action_receipt", v1AfterGap}, {contractreceipt.EvidenceEntryType, v2}} {
+		e := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i), Timestamp: time.Unix(int64(i+1), 0).UTC(), SessionID: "proxy", Type: item.typ, EventKind: "proxy_decision", Transport: "fetch", Summary: item.typ, Detail: item.detail, PrevHash: outerPrev}
+		e.Hash = recorder.ComputeHash(e)
+		outerPrev = e.Hash
+		line, marshalErr := json.Marshal(e)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		source.Write(line)
+		source.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), source.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := compactCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--receipt-dir", dir, "--session", "proxy", "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--allow-degraded-receipts") {
+		t.Fatalf("compact without degraded acknowledgement error = %v", err)
+	}
+	if active, readErr := os.ReadFile(filepath.Clean(filepath.Join(dir, "evidence-proxy-0.jsonl"))); readErr != nil || !bytes.Equal(active, source.Bytes()) {
+		t.Fatalf("refused compaction changed source: err=%v", readErr)
+	}
+	cmd = compactCmd()
+	cmd.SetArgs([]string{"--receipt-dir", dir, "--session", "proxy", "--key", hex.EncodeToString(pub), "--allow-degraded-receipts=2"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "DEGRADED by 1") {
+		t.Fatalf("compact with wrong degraded count error = %v", err)
+	}
+
+	cmd = compactCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--receipt-dir", dir, "--session", "proxy", "--key", hex.EncodeToString(pub), "--allow-degraded-receipts=1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("compact degraded legacy receipts: %v", err)
+	}
+	if !strings.Contains(out.String(), "receipt proof: DEGRADED") {
+		t.Fatalf("command output = %q", out.String())
+	}
+	archives, err := filepath.Glob(filepath.Join(parent, ".pipelock-evidence-archive-*"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("archives = %v, err = %v", archives, err)
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(archives[0], "compaction-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest compactManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != 2 || manifest.ReceiptVerification.Status != "degraded" || manifest.ReceiptVerification.V1ChainHead != "" || len(manifest.ReceiptVerification.Degradations) != 1 {
+		t.Fatalf("manifest = %+v", manifest)
+	}
+	active, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "evidence-proxy-0.jsonl")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(active, source.Bytes()) {
+		t.Fatal("degraded compaction changed JSONL bytes")
+	}
+}
+
+func TestRunCompactRefusesFirstOrLastV1Gap(t *testing.T) {
+	if !supportsCompactExchangeTest() {
+		t.Skip("atomic evidence directory exchange is unsupported")
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tombstone := map[string]any{"redacted": true, "detected_patterns": []string{"[REDACTED:test pattern]"}, "original_size": 42}
+	for _, tc := range []struct {
+		name    string
+		details []any
+	}{
+		{name: "first", details: []any{tombstone, receiptForCompactV1(t, priv, 1, "unknown-gap-head", "suffix")}},
+		{name: "last", details: []any{receiptForCompactV1(t, priv, 0, legacyreceipt.GenesisHash, "prefix"), tombstone}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outerPrev := recorder.GenesisHash
+			var source bytes.Buffer
+			for i, detail := range tc.details {
+				entry := recorder.Entry{Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i), Timestamp: time.Unix(int64(i+1), 0).UTC(), SessionID: "proxy", Type: "action_receipt", EventKind: "proxy_decision", Transport: "fetch", Summary: "legacy", Detail: detail, PrevHash: outerPrev}
+				entry.Hash = recorder.ComputeHash(entry)
+				outerPrev = entry.Hash
+				line, marshalErr := json.Marshal(entry)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				source.Write(line)
+				source.WriteByte('\n')
+			}
+			path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+			if err := os.WriteFile(path, source.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := runCompact(compactCmd(), compactOptions{receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), allowDegradedReceipts: 1})
+			if err == nil || !strings.Contains(err.Error(), "receipt resume cannot load") {
+				t.Fatalf("edge-gap compact error=%v", err)
+			}
+			active, readErr := os.ReadFile(filepath.Clean(path))
+			if readErr != nil || !bytes.Equal(active, source.Bytes()) {
+				t.Fatalf("refused edge-gap compact changed source: err=%v", readErr)
+			}
+		})
+	}
+}
+
 func compactSignedReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prev string) contractreceipt.EvidenceReceipt {
 	t.Helper()
 	payload, err := json.Marshal(contractreceipt.PayloadShadowDeltaStruct{
@@ -903,16 +1258,21 @@ func compactSignedReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, pre
 
 func receiptForCompactMixedV1(t *testing.T, priv ed25519.PrivateKey) legacyreceipt.Receipt {
 	t.Helper()
+	return receiptForCompactV1(t, priv, 0, legacyreceipt.GenesisHash, "compact-mixed-v1")
+}
+
+func receiptForCompactV1(t *testing.T, priv ed25519.PrivateKey, seq uint64, prev, actionID string) legacyreceipt.Receipt {
+	t.Helper()
 	r, err := legacyreceipt.Sign(legacyreceipt.ActionRecord{
 		Version:       legacyreceipt.ActionRecordVersion,
-		ActionID:      "compact-mixed-v1",
+		ActionID:      actionID,
 		ActionType:    legacyreceipt.ActionRead,
 		Timestamp:     time.Unix(1, 0).UTC(),
 		Target:        "https://api.vendor.example/compact",
 		Verdict:       "allow",
 		Transport:     "fetch",
-		ChainPrevHash: legacyreceipt.GenesisHash,
-		ChainSeq:      0,
+		ChainPrevHash: prev,
+		ChainSeq:      seq,
 	}, priv)
 	if err != nil {
 		t.Fatal(err)

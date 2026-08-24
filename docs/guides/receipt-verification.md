@@ -212,7 +212,7 @@ structure.
 
 ### Compacting an over-cap recorder directory
 
-Evidence readers refuse a session with more than 256 JSONL shards. Use the offline compaction ceremony only after `pipelock evidence doctor` confirms that the recorder and receipt chains are intact.
+Evidence readers refuse a session with more than 256 JSONL shards or an individual shard above 8 MiB. Stop the recorder before running the offline compaction ceremony. The compactor has its own bounded reader for legacy oversized shards, so a normal `pipelock evidence doctor` run isn't a prerequisite.
 
 ```bash
 sudo systemctl stop pipelock.service
@@ -223,9 +223,11 @@ sudo pipelock evidence compact \
 sudo systemctl start pipelock.service
 ```
 
-The command refuses to run while a recorder holds the directory lock. It accepts oversized legacy input and streams verification, recovery, and archive creation with bounded record memory. It verifies the trusted recorder hash chain, checkpoint signatures, and every signed v1 or v2 receipt chain before and after compaction, copies each JSONL record line without changing its bytes, and keeps every replacement shard at or below the 8 MiB read limit. Linux installs the new active directory with one atomic exchange; only then does the original directory become a timestamped sibling archive with SHA-256 digests and byte mappings.
+The command refuses to run while a recorder holds the directory lock. It accepts oversized legacy input and uses bounded record memory. It verifies the trusted recorder hash chain, checkpoint signatures, and signed v1 or v2 receipts before and after compaction. It copies each JSONL record line without changing its bytes and keeps every replacement shard at or below the 8 MiB read limit. Linux installs the new active directory with one atomic exchange. The original directory then becomes a timestamped sibling archive with SHA-256 digests and byte mappings.
 
-This first version accepts exactly one session, up to 4,096 input shards, and no raw-escrow sidecars in the active directory. It refuses mixed directories, malformed or unverifiable chains, unknown record types, duplicate shard starts, symlinks, and sources that change during the ceremony. A failed check leaves the original directory active.
+Earlier recorder output may contain an entire signed v1 receipt replaced by a redaction tombstone. That receipt and its chain position can't be recovered. The compactor accepts known middle-of-chain tombstones and reports `receipt proof: DEGRADED`; a tombstone at the first or last v1 receipt is refused because the published directory would not be safe to resume. The command exits non-zero and reports the observed middle-gap count; after inspection, rerun with `--allow-degraded-receipts=N` to acknowledge exactly that count. After each gap, it verifies the remaining signed receipts as a contiguous suffix; the first predecessor remains untrusted, while deletion, reordering, or splicing later in that suffix still fails. The version 2 archive manifest records every tombstone, whether a later signed recorder checkpoint covers it, and each verified suffix boundary. It doesn't publish a complete v1 chain head for a degraded chain. Any other malformed receipt still stops compaction.
+
+This version accepts exactly one session, up to 4,096 input shards, and no raw-escrow sidecars in the active directory. It refuses mixed directories, unknown record types, duplicate shard starts, symlinks, and sources that change during the ceremony. A failed check leaves the original directory active. Restart the recorder after either success or failure. Retain the archive until bounded reads and fresh emission succeed; general receipt verification correctly remains non-green for a degraded historical chain.
 
 ### Completeness analysis
 

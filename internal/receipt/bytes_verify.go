@@ -22,6 +22,131 @@ type receiptBytesEnvelopeV1 struct {
 	SignerKey    string          `json:"signer_key"`
 }
 
+// UnanchoredSuffixResult describes a contiguous v1 receipt segment whose
+// earlier chain history is unavailable. OriginPrevHash is recorded rather than
+// trusted: the verifier can prove the suffix from OriginSeq onward, not the
+// missing predecessor it references.
+type UnanchoredSuffixResult struct {
+	Count          uint64
+	OriginSeq      uint64
+	OriginPrevHash string
+	FinalSeq       uint64
+	Head           string
+}
+
+// UnanchoredSuffixVerifier verifies a bounded stream that starts after an
+// irrecoverable historical gap. Its first receipt must be signed by the
+// caller-pinned key. Every later receipt must use that same key, be valid in
+// its exact emitted-byte representation, and continue the suffix directly.
+// Key transitions are deliberately unsupported: accepting one without its
+// missing predecessor would make the new key's authority unverifiable.
+type UnanchoredSuffixVerifier struct {
+	expectedKeyHex string
+	seen           bool
+	failed         error
+	result         UnanchoredSuffixResult
+}
+
+// NewUnanchoredSuffixVerifier creates a verifier pinned to one trusted v1
+// signer key. A suffix cannot use trust-on-first-use because its missing
+// predecessor is precisely the trust boundary that cannot be reconstructed.
+func NewUnanchoredSuffixVerifier(expectedKeyHex string) (*UnanchoredSuffixVerifier, error) {
+	if expectedKeyHex == "" {
+		return nil, fmt.Errorf("unanchored suffix verification requires a trusted public key")
+	}
+	key, err := hex.DecodeString(expectedKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode trusted public key: %w", err)
+	}
+	if len(key) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid trusted public key length: got %d, want %d", len(key), ed25519.PublicKeySize)
+	}
+	return &UnanchoredSuffixVerifier{expectedKeyHex: expectedKeyHex}, nil
+}
+
+// Add verifies one exact v1 receipt and advances the suffix. Once it fails,
+// the verifier stays failed so a caller cannot accidentally continue from a
+// corrupted or substituted record.
+func (v *UnanchoredSuffixVerifier) Add(raw []byte) error {
+	if v.failed != nil {
+		return v.failed
+	}
+	if err := verifyV1SuffixBytesWithKey(raw, v.expectedKeyHex); err != nil {
+		return v.latch(err)
+	}
+	r, _ := Unmarshal(raw)
+	if r.ActionRecord.KeyTransition != nil {
+		return v.latch(fmt.Errorf("key_transition is unsupported in an unanchored receipt suffix"))
+	}
+	if v.seen {
+		if v.result.FinalSeq == ^uint64(0) {
+			return v.latch(fmt.Errorf("unanchored suffix sequence overflows after %d", v.result.FinalSeq))
+		}
+		if r.ActionRecord.ChainSeq != v.result.FinalSeq+1 {
+			return v.latch(fmt.Errorf("unanchored suffix sequence break: expected %d, got %d", v.result.FinalSeq+1, r.ActionRecord.ChainSeq))
+		}
+		if r.ActionRecord.ChainPrevHash != v.result.Head {
+			return v.latch(fmt.Errorf("unanchored suffix chain_prev_hash mismatch"))
+		}
+	}
+	head, _ := ReceiptHash(r)
+	if !v.seen {
+		v.result.OriginSeq = r.ActionRecord.ChainSeq
+		v.result.OriginPrevHash = r.ActionRecord.ChainPrevHash
+		v.seen = true
+	}
+	v.result.Count++
+	v.result.FinalSeq = r.ActionRecord.ChainSeq
+	v.result.Head = head
+	return nil
+}
+
+// verifyV1SuffixBytesWithKey preserves the one deliberate v1 parser
+// compatibility rule for historical action_record.detected_patterns metadata.
+// All ordinary receipts retain the stricter exact-emitted-byte check.
+func verifyV1SuffixBytesWithKey(raw []byte, expectedKeyHex string) error {
+	strictErr := VerifyV1BytesWithKey(raw, expectedKeyHex)
+	if strictErr == nil {
+		return nil
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return fmt.Errorf("decode legacy v1 suffix envelope: %w", err)
+	}
+	var action map[string]json.RawMessage
+	if err := json.Unmarshal(top["action_record"], &action); err != nil {
+		return fmt.Errorf("decode legacy v1 suffix action_record: %w", err)
+	}
+	if _, ok := action["detected_patterns"]; !ok {
+		return strictErr
+	}
+	receipt, err := Unmarshal(raw)
+	if err != nil {
+		return err
+	}
+	if err := VerifyWithKey(receipt, expectedKeyHex); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (v *UnanchoredSuffixVerifier) latch(err error) error {
+	v.failed = err
+	return err
+}
+
+// Finish returns the verified suffix boundary. Empty or failed suffixes do not
+// yield a proof because there is no signed trusted origin to report.
+func (v *UnanchoredSuffixVerifier) Finish() (UnanchoredSuffixResult, error) {
+	if v.failed != nil {
+		return UnanchoredSuffixResult{}, v.failed
+	}
+	if !v.seen {
+		return UnanchoredSuffixResult{}, fmt.Errorf("empty unanchored receipt suffix")
+	}
+	return v.result, nil
+}
+
 // VerifyV1BytesWithKey verifies a v1 receipt from the exact JSON bytes supplied
 // by the caller. It is additive: existing object-taking verification continues
 // to use VerifyWithKey.

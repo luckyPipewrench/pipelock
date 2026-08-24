@@ -634,6 +634,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.recordFailure(FailReasonMarshal)
 		return fmt.Errorf("marshaling receipt: %w", err)
 	}
+	if err := e.recorder.ValidateSignedReceiptDetail(json.RawMessage(receiptJSON)); err != nil {
+		e.recordFailure(FailReasonRecord)
+		return fmt.Errorf("validating signed receipt for recording: %w", err)
+	}
 
 	// Advance chain state BEFORE persist. Record may write the entry
 	// and then fail on checkpoint/rotation. If we left chain state

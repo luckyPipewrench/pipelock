@@ -10,8 +10,19 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+func TestResponseTaintSessionKey_UsesAuthenticatedIdentityBoundary(t *testing.T) {
+	const clientIP = "203.0.113.10"
+	if first, second := responseTaintSessionKey("rotated-a", clientIP, envelope.ActorAuthSelfDeclared), responseTaintSessionKey("rotated-b", clientIP, envelope.ActorAuthSelfDeclared); first != second {
+		t.Fatalf("self-declared agent rotation split taint state: %q != %q", first, second)
+	}
+	if first, second := responseTaintSessionKey("bound-a", clientIP, envelope.ActorAuthBound), responseTaintSessionKey("bound-b", clientIP, envelope.ActorAuthBound); first == second {
+		t.Fatalf("bound identities shared taint state: %q", first)
+	}
+}
 
 func TestEvaluateHTTPTaintDisabledAndNil(t *testing.T) {
 	t.Parallel()

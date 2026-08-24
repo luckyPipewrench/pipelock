@@ -79,6 +79,7 @@ type wsRelay struct {
 	reqPolicyPath    string
 	redactionLog     *redact.Report
 	rec              session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
+	taintSessionKey  string           // rotation-safe key re-resolved for every response observation
 	terminalOnce     sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
 
 	// lastActivity is the shared idle clock, updated by BOTH relay directions
@@ -979,24 +980,25 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	relay := &wsRelay{
-		clientConn:   clientConn,
-		upstreamConn: upstreamConn,
-		scanner:      sc,
-		proxy:        p,
-		cfg:          cfg,
-		redaction:    p.currentRedactionRuntimeFor(cfg),
-		agent:        agent,
-		metricAgent:  id.Profile,
-		actorAuth:    id.Auth,
-		clientIP:     clientIP,
-		requestID:    requestID,
-		targetURL:    targetURL,
-		hostname:     strings.ToLower(parsed.Hostname()),
-		path:         parsed.Path,
-		maxMsg:       cfg.WebSocketProxy.MaxMessageBytes,
-		scanText:     scanTextFrames,
-		allowBinary:  cfg.WebSocketProxy.AllowBinaryFrames,
-		rec:          wsRec,
+		clientConn:      clientConn,
+		upstreamConn:    upstreamConn,
+		scanner:         sc,
+		proxy:           p,
+		cfg:             cfg,
+		redaction:       p.currentRedactionRuntimeFor(cfg),
+		agent:           agent,
+		metricAgent:     id.Profile,
+		actorAuth:       id.Auth,
+		clientIP:        clientIP,
+		requestID:       requestID,
+		targetURL:       targetURL,
+		hostname:        strings.ToLower(parsed.Hostname()),
+		path:            parsed.Path,
+		maxMsg:          cfg.WebSocketProxy.MaxMessageBytes,
+		scanText:        scanTextFrames,
+		allowBinary:     cfg.WebSocketProxy.AllowBinaryFrames,
+		rec:             wsRec,
+		taintSessionKey: responseTaintSessionKey(agent, clientIP, id.Auth),
 	}
 	// Per-frame request_policy reuses the handshake route inputs: the escaped
 	// path the handshake gate matched on and a clone of the upgrade headers (for
@@ -2342,7 +2344,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Logger, msg []byte, allowTransform bool) ([]byte, bool) {
 	const responseScanLayer = "response_scan"
 
-	if len(msg) == 0 || !r.scanText || !r.scanner.ResponseScanningEnabled() {
+	if len(msg) == 0 {
+		return msg, false
+	}
+	if !r.scanText || !r.scanner.ResponseScanningEnabled() {
+		r.observeUpstreamResponseTaint(false)
 		return msg, false
 	}
 
@@ -2350,6 +2356,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	// to warn with no adaptive scoring or action upgrade.
 	wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
 	scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
+	r.observeUpstreamResponseTaint(!scanResult.Clean)
 	recordSuppressedResponseScanExempts(r.proxy.metrics, scanResult.SuppressedMatches, TransportWS)
 	if scanResult.Clean {
 		return msg, false
@@ -2421,6 +2428,29 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	}
 	return msg, false
+}
+
+func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) {
+	if r.cfg == nil || !r.cfg.Taint.Enabled {
+		return
+	}
+	sm := r.proxy.sessionMgrPtr.Load()
+	if sm == nil || r.taintSessionKey == "" {
+		return
+	}
+	rec := sm.GetOrCreate(r.taintSessionKey)
+	risk := rec.RiskSnapshot()
+	if promptHit && risk.PromptHit {
+		return
+	}
+	if !promptHit {
+		for _, source := range risk.Sources {
+			if source.URL == r.targetURL && source.Kind == "websocket_response" {
+				return
+			}
+		}
+	}
+	observeHTTPResponseTaint(rec, r.cfg, r.targetURL, "application/websocket", "websocket_response", promptHit)
 }
 
 // upstreamToClient reads frames from upstream, injection-scans text, writes to client.
@@ -2636,6 +2666,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Complete message. Count and scan.
 		if opCode == ws.OpBinary {
+			r.observeUpstreamResponseTaint(false)
 			actx := newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
 			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
 			logMediaExposureIfPresent(log, actx, mediaVerdict, TransportWS)

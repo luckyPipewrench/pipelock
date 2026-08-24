@@ -4187,7 +4187,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// RecordClean at the end when no finding was detected.
 	var fetchRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		fetchRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+		fetchRec = sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
 	}
 	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 

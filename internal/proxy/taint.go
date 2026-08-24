@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -30,6 +31,10 @@ type taintDecision struct {
 	Result              session.PolicyDecisionResult
 	ActionRef           string
 	TaskOverrideApplied bool
+}
+
+func responseTaintSessionKey(agent, clientIP string, auth envelope.ActorAuth) string {
+	return ceeSessionKey(agent, clientIP, auth)
 }
 
 func (p *Proxy) resolveTaintAsk(agent, target, method, reason string) (bool, string) {

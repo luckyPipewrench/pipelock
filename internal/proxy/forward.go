@@ -1052,7 +1052,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		DeferClean: true,
 	})
 
-	forwardSessionKey := ceeSessionKey(agent, clientIP, id.Auth)
+	forwardSessionKey := responseTaintSessionKey(agent, clientIP, id.Auth)
 	var forwardRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		forwardRec = sm.GetOrCreate(forwardSessionKey)

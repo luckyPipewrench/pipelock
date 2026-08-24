@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg"></a>
+  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"><img alt="Gauntlet" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml/badge.svg"></a>
   <a href="go.mod"><img alt="Go 1.25+" src="https://img.shields.io/github/go-mod/go-version/luckyPipewrench/pipelock?logo=go&label=Go"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/luckyPipewrench/pipelock"></a>
 </p>
@@ -35,7 +36,7 @@
 
 Pipelock sits between AI agents and the network. It inspects mediated HTTP, WebSocket, MCP, and A2A traffic, plus CONNECT tunnel contents when TLS interception is enabled, for secret exfiltration, prompt injection, SSRF, tool poisoning, and risky tool-call chains. Plain CONNECT without interception is scanned at the hostname and URL level.
 
-Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) over content-aware boundary decisions, so a reviewer can verify what Pipelock decided outside the agent runtime. The public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus exercises the detections. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
+Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) over content-aware boundary decisions, so a reviewer can verify what Pipelock decided outside the agent runtime. The public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus exercises the detections. The [Gauntlet](https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml) workflow is the product's scheduled candidate exam against a pinned corpus commit; it does not auto-publish a public score. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
 
 **Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Zed · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 

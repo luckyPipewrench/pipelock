@@ -10,9 +10,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+README = ROOT / "README.md"
 WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
 EXPECTED_AEB_REF = "2d6cb1d6e1a6d8a11b8e5a1649e7dee1c6e56aea"
+GAUNTLET_WORKFLOW_URL = (
+    "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
+)
+GAUNTLET_BADGE_URL = GAUNTLET_WORKFLOW_URL + "/badge.svg"
 EVIDENCE_FILES = (
     "continuous-gauntlet-pipelock.json",
     "promotion-decision.json",
@@ -128,6 +133,23 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertIn("schedule:", trigger)
         self.assertNotIn("pull_request", trigger)
         self.assertNotRegex(trigger, r"(?m)^\s+push:")
+
+    def test_readme_exposes_gauntlet_candidate_badge(self):
+        readme = README.read_text(encoding="utf-8")
+        self.assertTrue(
+            GAUNTLET_BADGE_URL in readme,
+            "README missing Gauntlet candidate badge URL",
+        )
+        self.assertTrue(
+            f'href="{GAUNTLET_WORKFLOW_URL}"' in readme,
+            "README missing Gauntlet candidate workflow link",
+        )
+        self.assertTrue('alt="Gauntlet"' in readme, "README missing Gauntlet badge alt text")
+        self.assertTrue(
+            "does not auto-publish a public score" in readme,
+            "README missing candidate-exam non-publish sentence",
+        )
+        self.assertNotRegex(readme, r"(?i)\bnightly\b")
 
     def test_checkout_credentials_and_actions_are_pinned(self):
         checkout_count = self.workflow.count("uses: actions/checkout@")

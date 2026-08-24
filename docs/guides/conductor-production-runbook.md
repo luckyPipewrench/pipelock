@@ -798,11 +798,11 @@ but it does not turn an invalid inventory into healthy delivery evidence.
 ## 14. Remove a follower
 
 `pipelock conductor follower remove` decommissions one exact follower identity.
-It deletes the active enrollment record from the Conductor store, so the
-follower disappears from `fleet status` and future audit evidence signed by that
-enrolled audit key is rejected. The command is admin-only and requires the full
-org/fleet/instance/environment tuple; a wrong or already-removed follower fails
-loud instead of being treated as success.
+It replaces the active enrollment with an inactive tombstone. The follower
+disappears from `fleet status`, and the removed identity can't submit evidence
+with its enrolled or matching static audit key. The command is admin-only and
+requires the full org/fleet/instance/environment tuple; a wrong or
+already-removed follower fails loud instead of being treated as success.
 
 ```bash
 pipelock conductor follower remove \

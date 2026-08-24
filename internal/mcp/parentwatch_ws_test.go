@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -104,6 +105,107 @@ func TestSessionExit_WSStopsBridge(t *testing.T) {
 	// with respect to each other, so reading the buffer the instant done fires
 	// races the write and fails under load. Poll for the explanation instead of
 	// assuming it has already landed.
+	testwait.For(t, 5*time.Second, func() bool {
+		return logBuf.contains("spawning session exited")
+	}, "missing session-exit explanation in operator log, got %q", logBuf.String())
+}
+
+func TestSessionExit_WSCancellationDuringDialIsClean(t *testing.T) {
+	clientIn := newBlockingReader()
+	defer func() { _ = clientIn.Close() }()
+	sc := testScannerForWS(t)
+	var parentDied atomic.Bool
+	dialStarted := make(chan struct{})
+	var dialOnce sync.Once
+	var clientOut, logBuf lockedHTTPBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWSProxy(context.Background(), clientIn, &clientOut, &logBuf, "ws://api.vendor.example/mcp", MCPProxyOpts{
+			Scanner: sc,
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				dialOnce.Do(func() { close(dialStarted) })
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			sessionExitForTest: &sessionExitTestHooks{watch: parentWatchOpts{
+				interval:  time.Millisecond,
+				startPPID: 4242,
+				getppid: func() int {
+					if parentDied.Load() {
+						return orphanedPPID
+					}
+					return 4242
+				},
+			}},
+		})
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WebSocket dial never started")
+	}
+	parentDied.Store(true)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWSProxy after session exit during dial = %v, want clean teardown", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WebSocket dial stayed alive after the spawning session exited")
+	}
+	testwait.For(t, 5*time.Second, func() bool {
+		return logBuf.contains("spawning session exited")
+	}, "missing session-exit explanation in operator log, got %q", logBuf.String())
+}
+
+func TestSessionExit_WSAuthorityDialCancellationIsClean(t *testing.T) {
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"com.pipelock/authority":"grant"}}}` + "\n"
+	var parentDied atomic.Bool
+	dialStarted := make(chan struct{})
+	var dialOnce sync.Once
+	var clientOut, logBuf lockedHTTPBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWSProxy(context.Background(), strings.NewReader(msg), &clientOut, &logBuf, "ws://api.vendor.example/mcp", MCPProxyOpts{
+			Scanner:              testScannerForWS(t),
+			AuthorityVerifier:    allowAuthorityVerifier(nil),
+			AuthorityActor:       "agent-a",
+			AuthorityDestination: "ws://api.vendor.example/mcp",
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				dialOnce.Do(func() { close(dialStarted) })
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			sessionExitForTest: &sessionExitTestHooks{watch: parentWatchOpts{
+				interval:  time.Millisecond,
+				startPPID: 4242,
+				getppid: func() int {
+					if parentDied.Load() {
+						return orphanedPPID
+					}
+					return 4242
+				},
+			}},
+		})
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("authority-delayed WebSocket dial never started")
+	}
+	parentDied.Store(true)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWSProxy after session exit during authority-delayed dial = %v, want clean teardown", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("authority-delayed WebSocket dial stayed alive after the spawning session exited")
+	}
 	testwait.For(t, 5*time.Second, func() bool {
 		return logBuf.contains("spawning session exited")
 	}, "missing session-exit explanation in operator log, got %q", logBuf.String())

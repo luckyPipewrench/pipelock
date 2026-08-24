@@ -148,6 +148,9 @@ func RunWSProxy(
 	}
 	if opts.AuthorityVerifier == nil {
 		if err := startUpstream(); err != nil {
+			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -225,6 +228,9 @@ func RunWSProxy(
 		// until the first message has passed every existing gate plus the grant
 		// check in scanHTTPInputDecision.
 		if err := startUpstream(); err != nil {
+			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
+				break
+			}
 			stdinErr = err
 			break
 		}

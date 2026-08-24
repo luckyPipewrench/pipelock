@@ -29,6 +29,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+var recorderCreateWritabilityProbe = os.CreateTemp
+
 // Default values for recorder configuration.
 const (
 	defaultCheckpointInterval = 1000
@@ -228,6 +230,17 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	if err := os.MkdirAll(filepath.Clean(cfg.Dir), dirPermissions); err != nil {
 		return nil, fmt.Errorf("creating evidence directory: %w", err)
 	}
+	ceremonyLock, ceremonyDir, err := acquireEvidenceWriterCeremonyLock(cfg.Dir)
+	if err != nil {
+		return nil, err
+	}
+	lockTransferred := false
+	defer func() {
+		if !lockTransferred && ceremonyLock != nil {
+			_ = unlockEvidenceFile(ceremonyLock)
+			_ = ceremonyLock.Close()
+		}
+	}()
 
 	// Writability probe: fail closed at startup if the evidence directory
 	// exists but is not writable. Without this, pipelock boots successfully
@@ -235,7 +248,7 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	// wrong filesystem perms) and silently drops every receipt's persistence
 	// while still enforcing policy - round-3 of the pre-tag gate finding. Operators end up
 	// running in a degraded, non-auditable state without a clear signal.
-	probe, probeErr := os.CreateTemp(filepath.Clean(cfg.Dir), ".pipelock-writability-probe-*")
+	probe, probeErr := recorderCreateWritabilityProbe(filepath.Clean(cfg.Dir), ".pipelock-writability-probe-*")
 	if probeErr != nil {
 		return nil, fmt.Errorf("evidence directory %s is not writable (receipts would not persist): %w", cfg.Dir, probeErr)
 	}
@@ -268,12 +281,9 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		r.escrowPub = &pub
 	}
 
-	ceremonyLock, ceremonyDir, err := acquireEvidenceWriterCeremonyLock(cfg.Dir)
-	if err != nil {
-		return nil, err
-	}
 	r.ceremonyLock = ceremonyLock
 	r.ceremonyDir = ceremonyDir
+	lockTransferred = true
 	r.evidenceDir = ceremonyDir
 	if r.evidenceDir == nil {
 		r.evidenceDir, err = os.Stat(filepath.Clean(cfg.Dir))

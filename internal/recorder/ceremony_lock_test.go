@@ -66,7 +66,74 @@ func TestEvidenceCeremonyLockRequiresStoppedRecorder(t *testing.T) {
 	}
 }
 
+func TestRecorderDoesNotProbeWhileCeremonyOwnsDirectory(t *testing.T) {
+	if !supportsEvidenceCeremonyLock() {
+		t.Skip("platform does not provide cross-process ceremony locking")
+	}
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	lock, err := AcquireEvidenceCeremonyLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	originalProbe := recorderCreateWritabilityProbe
+	probeCalled := false
+	recorderCreateWritabilityProbe = func(string, string) (*os.File, error) {
+		probeCalled = true
+		return nil, errors.New("probe must not run")
+	}
+	t.Cleanup(func() { recorderCreateWritabilityProbe = originalProbe })
+	_, err = New(Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, key)
+	if err == nil || !strings.Contains(err.Error(), "locking recorder against receipt ceremonies") {
+		t.Fatalf("recorder start error = %v", err)
+	}
+	if probeCalled {
+		t.Fatal("recorder mutated the evidence directory before acquiring its ceremony lock")
+	}
+}
+
+func TestEvidenceCeremonyLockBlocksOtherDirectoryWriters(t *testing.T) {
+	if !supportsEvidenceCeremonyLock() {
+		t.Skip("platform does not provide cross-process ceremony locking")
+	}
+	dir := t.TempDir()
+	lock, err := AcquireEvidenceCeremonyLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err = WithEvidenceWriterCeremonyLock(dir, func() error {
+		called = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "locking recorder against receipt ceremonies") {
+		t.Fatalf("competing writer error = %v", err)
+	}
+	if called {
+		t.Fatal("competing writer callback ran during offline ceremony")
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithEvidenceWriterCeremonyLock(dir, func() error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Fatalf("writer rejected after ceremony: %v", err)
+	}
+	if !called {
+		t.Fatal("writer callback did not run after ceremony")
+	}
+}
+
 func TestEvidenceCeremonyLockErrorAndEmptyLifecyclePaths(t *testing.T) {
+	if err := WithEvidenceWriterCeremonyLock(t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "callback is required") {
+		t.Fatalf("nil writer callback error = %v", err)
+	}
 	if !supportsEvidenceCeremonyLock() {
 		t.Skip("platform does not provide cross-process ceremony locking")
 	}
@@ -121,6 +188,42 @@ func TestEvidenceCeremonyLockErrorAndEmptyLifecyclePaths(t *testing.T) {
 	}
 	if err := rec.releaseEvidenceWriterCeremonyLock(); err != nil {
 		t.Fatalf("release acquired writer lock: %v", err)
+	}
+}
+
+func TestEvidenceWriterCeremonyLockReleasesAfterPanic(t *testing.T) {
+	if !supportsEvidenceCeremonyLock() {
+		t.Skip("platform does not provide cross-process ceremony locking")
+	}
+	dir := t.TempDir()
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("writer callback panic was not propagated")
+			}
+		}()
+		_ = WithEvidenceWriterCeremonyLock(dir, func() error { panic("injected") })
+	}()
+	lock, err := AcquireEvidenceCeremonyLock(dir)
+	if err != nil {
+		t.Fatalf("ceremony lock remained held after callback panic: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("close ceremony lock: %v", err)
+	}
+}
+
+func TestEvidenceCeremonyLockRejectsSymlinkDirectory(t *testing.T) {
+	if !supportsEvidenceCeremonyLock() {
+		t.Skip("platform does not provide cross-process ceremony locking")
+	}
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "evidence-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireEvidenceCeremonyLock(link); err == nil {
+		t.Fatal("ceremony lock followed a symlink directory")
 	}
 }
 

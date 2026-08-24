@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard/runtimesnapshot"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -217,6 +218,32 @@ func TestWriteDashboardRuntimeSnapshotTickReportsWriteFailure(t *testing.T) {
 	}, path, "producer")
 	if !strings.Contains(stderr.String(), "dashboard runtime snapshot write failed") {
 		t.Fatalf("stderr = %q, want write failure", stderr.String())
+	}
+}
+
+func TestDashboardRuntimeSnapshotCannotWriteDuringEvidenceCeremony(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := recorder.AcquireEvidenceCeremonyLock(dir)
+	if err != nil {
+		t.Skipf("evidence ceremony lock unavailable: %v", err)
+	}
+	defer func() { _ = lock.Close() }()
+	cfg := config.Defaults()
+	cfg.FlightRecorder.Dir = dir
+	path := filepath.Join(dir, "dashboard", "runtime-snapshot.json")
+	var stderr strings.Builder
+	writeDashboardRuntimeSnapshotTick(dashboardRuntimeSnapshotOptions{
+		Context:        context.Background(),
+		BudgetProvider: &fakeAgentBudgetSnapshotProvider{},
+		StartupConfig:  cfg,
+		CurrentConfig:  func() *config.Config { return cfg },
+		Stderr:         &stderr,
+	}, path, "producer")
+	if !strings.Contains(stderr.String(), "locking recorder against receipt ceremonies") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("snapshot write ran during ceremony: %v", err)
 	}
 }
 

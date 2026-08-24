@@ -66,6 +66,30 @@ func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, os.FileInfo, error
 	return file, info, nil
 }
 
+// WithEvidenceWriterCeremonyLock runs one non-recorder evidence write under
+// the same shared directory lock used by Recorder. An offline ceremony holding
+// the exclusive lock makes this fail before fn can mutate the directory.
+func WithEvidenceWriterCeremonyLock(dir string, fn func() error) (err error) {
+	if fn == nil {
+		return errors.New("evidence writer callback is required")
+	}
+	file, _, err := acquireEvidenceWriterCeremonyLock(dir)
+	if err != nil {
+		return err
+	}
+	if file == nil {
+		return fn()
+	}
+	defer func() {
+		recovered := recover()
+		err = errors.Join(err, unlockEvidenceFile(file), file.Close())
+		if recovered != nil {
+			panic(recovered)
+		}
+	}()
+	return fn()
+}
+
 func (r *Recorder) ensureEvidenceWriterCeremonyLock(dirInfo os.FileInfo) error {
 	if !supportsEvidenceCeremonyLock() {
 		return nil
@@ -98,7 +122,7 @@ func (r *Recorder) releaseEvidenceWriterCeremonyLock() error {
 }
 
 func openEvidenceCeremonyLock(dir string) (*os.File, os.FileInfo, error) {
-	file, err := os.Open(filepath.Clean(dir))
+	file, err := os.OpenFile(filepath.Clean(dir), os.O_RDONLY|evidenceReadNoFollowFlag, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening evidence directory for receipt ceremony lock: %w", err)
 	}

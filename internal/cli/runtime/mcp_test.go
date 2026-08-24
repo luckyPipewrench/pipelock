@@ -413,6 +413,33 @@ func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
 	}
 }
 
+func TestDeferredJournalCannotWriteDuringEvidenceCeremony(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Defer.Enabled = true
+	cfg.FlightRecorder.Dir = dir
+	manager := buildDeferManager(cfg, io.Discard)
+	lock, err := recorder.AcquireEvidenceCeremonyLock(dir)
+	if err != nil {
+		t.Skipf("evidence ceremony lock unavailable: %v", err)
+	}
+	defer func() { _ = lock.Close() }()
+	err = manager.Hold(deferred.HeldAction{
+		DeferID:   "locked",
+		ActionID:  "locked",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(deferred.Resolution) {},
+	})
+	if err == nil || !strings.Contains(err.Error(), "locking recorder against receipt ceremonies") {
+		t.Fatalf("Hold error = %v, want ceremony lock failure", err)
+	}
+	if _, err := os.Stat(manager.JournalPath()); !os.IsNotExist(err) {
+		t.Fatalf("deferred journal write ran during ceremony: %v", err)
+	}
+}
+
 func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults()

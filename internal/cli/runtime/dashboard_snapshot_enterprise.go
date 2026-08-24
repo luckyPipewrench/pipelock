@@ -7,11 +7,13 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard/runtimesnapshot"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 func init() {
@@ -70,8 +72,18 @@ func writeDashboardRuntimeSnapshotTick(opts dashboardRuntimeSnapshotOptions, pat
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: dashboard runtime snapshot unavailable: %v\n", err)
 		return
 	}
-	if err := runtimesnapshot.Write(path, snap); err != nil {
-		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: dashboard runtime snapshot write failed: %v\n", err)
+	var writeErr error
+	if opts.StartupConfig == nil {
+		writeErr = errors.New("startup config is required for dashboard runtime snapshot writes")
+	} else if opts.StartupConfig.FlightRecorder.Dir == "" {
+		writeErr = runtimesnapshot.Write(path, snap)
+	} else {
+		writeErr = recorder.WithEvidenceWriterCeremonyLock(opts.StartupConfig.FlightRecorder.Dir, func() error {
+			return runtimesnapshot.Write(path, snap)
+		})
+	}
+	if writeErr != nil {
+		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: dashboard runtime snapshot write failed: %v\n", writeErr)
 	}
 }
 

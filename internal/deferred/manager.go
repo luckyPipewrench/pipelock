@@ -59,6 +59,7 @@ type Config struct {
 	MaxPendingBytes      int
 	MaxCascadeDepth      int
 	JournalPath          string
+	JournalWriteGuard    func(func() error) error
 	Warningf             func(format string, args ...any)
 }
 
@@ -681,23 +682,29 @@ func (m *Manager) appendJournal(entry journalEntry) error {
 	m.journalMu.Lock()
 	defer m.journalMu.Unlock()
 
-	path := filepath.Clean(m.cfg.JournalPath)
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return err
+	write := func() error {
+		path := filepath.Clean(m.cfg.JournalPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			return err
+		}
+		return nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
+	if m.cfg.JournalWriteGuard != nil {
+		return m.cfg.JournalWriteGuard(write)
 	}
-	defer func() { _ = f.Close() }()
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		return err
-	}
-	return nil
+	return write()
 }
 
 // PendingJournal returns held actions from a prior process that lack a terminal

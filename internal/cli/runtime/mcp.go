@@ -323,7 +323,10 @@ func buildDeferManager(cfg *config.Config, warningWriter io.Writer) *deferred.Ma
 		MaxPendingBytes:      cfg.Defer.MaxPendingBytes,
 		MaxCascadeDepth:      cfg.Defer.MaxCascadeDepth,
 		JournalPath:          deferJournalPath(cfg),
-		Warningf:             warningf,
+		JournalWriteGuard: func(write func() error) error {
+			return recorder.WithEvidenceWriterCeremonyLock(cfg.FlightRecorder.Dir, write)
+		},
+		Warningf: warningf,
 	})
 }
 

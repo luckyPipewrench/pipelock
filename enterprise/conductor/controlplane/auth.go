@@ -153,10 +153,9 @@ func ScopedBearerBundleAuthorizer(creds []ScopedBearerCredential) (BundleAuthori
 // ScopedBearerFollowerListAuthorizer authorizes a follower-roster read. Like
 // the audit-query authorizer it admits admin and auditor (reader) roles and
 // enforces the credential's org/fleet scope against the requested query, so a
-// token scoped to org A cannot enumerate org B's followers. Unlike the
-// historical audit-query semantics, roster reads reject empty-org admin/auditor
-// credentials at construction time: an unscoped read token is a cross-org
-// enumeration token.
+// token scoped to org A cannot enumerate org B's followers. It also rejects
+// empty-org admin/auditor credentials at construction time: an unscoped read
+// token is a cross-org enumeration token.
 func ScopedBearerFollowerListAuthorizer(creds []ScopedBearerCredential) (FollowerListAuthorizer, error) {
 	normalized, err := normalizeScopedBearerCredentials(creds)
 	if err != nil {
@@ -214,10 +213,22 @@ func ScopedBearerStreamStatusAuthorizer(creds []ScopedBearerCredential) (StreamS
 	}, nil
 }
 
+// ScopedBearerAuditQueryAuthorizer authorizes an audit-metadata read. Like
+// the follower-roster and stream-status authorizers it admits admin and
+// auditor (reader) roles and enforces the credential's org/fleet scope
+// against the requested query, so a token scoped to org A cannot enumerate
+// org B's audit metadata. It also rejects empty-org admin/auditor
+// credentials at construction time for the same reason those siblings do:
+// an unscoped read token is a cross-org enumeration token.
 func ScopedBearerAuditQueryAuthorizer(creds []ScopedBearerCredential) (AuditQueryAuthorizer, error) {
 	normalized, err := normalizeScopedBearerCredentials(creds)
 	if err != nil {
 		return nil, err
+	}
+	for _, cred := range normalized {
+		if (cred.Role == RoleAdmin || cred.Role == RoleAuditor) && cred.OrgID == "" {
+			return nil, fmt.Errorf("%w: org_id required for audit query credential", ErrAuditQueryForbidden)
+		}
 	}
 	return func(r *http.Request, q AuditBatchQuery) error {
 		cred, ok := matchBearerCredential(r, normalized)

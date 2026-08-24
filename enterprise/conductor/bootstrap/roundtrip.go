@@ -211,8 +211,8 @@ func startConductor(ctx context.Context, storageDir string, opts Options, materi
 		return nil, err
 	}
 	auditQueryAuth, err := controlplane.ScopedBearerAuditQueryAuthorizer([]controlplane.ScopedBearerCredential{
-		{Token: material.auditorToken, Role: controlplane.RoleAuditor},
-		{Token: material.adminToken, Role: controlplane.RoleAdmin},
+		{Token: material.auditorToken, Role: controlplane.RoleAuditor, OrgID: opts.OrgID},
+		{Token: material.adminToken, Role: controlplane.RoleAdmin, OrgID: opts.OrgID},
 	})
 	if err != nil {
 		_ = auditStore.Close()

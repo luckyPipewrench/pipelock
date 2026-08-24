@@ -412,6 +412,8 @@ type Proxy struct {
 	wd                   *health.Watchdog                      // wedge-detection watchdog (nil = disabled)
 	metricsSuppressed    bool                                  // never publish /metrics or /stats on this listener
 	probeInflight        atomic.Bool                           // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
+	metricsTargetPtr     atomic.Pointer[metricsDialTarget]     // resolved metrics listener; rebuilt when MetricsListen changes
+	lookupMetricsHost    func(context.Context, string) ([]string, error)
 }
 
 // Option configures optional Proxy behavior.
@@ -556,6 +558,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
+	p.refreshMetricsDialTarget(cfg.MetricsListen)
 
 	if p.currentContractLoader() == nil {
 		loader, loaderErr := buildContractLoader(cfg)
@@ -1974,6 +1977,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.cfgPtr.Store(cfg)
 		p.contractLoaderPtr.Store(contractLoader)
 	}
+	p.refreshMetricsDialTarget(cfg.MetricsListen)
 	p.disableCEE(&cfg.CrossRequestDetection)
 	if p.wd != nil {
 		p.wd.BeatConfig()
@@ -3592,6 +3596,107 @@ func blockIfNonOverridableSSRFTarget(ctx context.Context, host string, ip net.IP
 	return nil
 }
 
+// metricsHostnameLookupTimeout bounds the one lookup used to resolve a
+// hostname MetricsListen value. The result is cached for that listen
+// string so the hot dial path never blocks on DNS.
+const metricsHostnameLookupTimeout = time.Second
+
+var errMetricsHostnameNoIPs = errors.New("hostname resolved to no IP addresses")
+
+// metricsDialTarget is the resolved metrics listener compared against
+// each dial. It is built at config load and whenever MetricsListen
+// changes, not on every request. There is no TTL: the metrics socket is
+// bound once for a given listen string, and re-resolving on a timer
+// would stop blocking the bound address if DNS later moved.
+type metricsDialTarget struct {
+	listen      string
+	port        uint64
+	unspecified bool
+	ips         []net.IP
+	resolveErr  error
+}
+
+func configuredMetricsBlockDetail(host, port string) string {
+	return fmt.Sprintf("SSRF blocked: %s:%s is the configured metrics listener", host, port)
+}
+
+func unverifiedMetricsBlockDetail(host, port, kind string, err error) string {
+	return fmt.Sprintf("SSRF blocked: cannot verify whether %s:%s reaches the %s metrics listener: %v", host, port, kind, err)
+}
+
+func (p *Proxy) metricsHostLookup() func(context.Context, string) ([]string, error) {
+	if p != nil && p.lookupMetricsHost != nil {
+		return p.lookupMetricsHost
+	}
+	return net.DefaultResolver.LookupHost
+}
+
+func (p *Proxy) refreshMetricsDialTarget(listen string) {
+	if p == nil {
+		return
+	}
+	if listen == "" {
+		p.metricsTargetPtr.Store(nil)
+		return
+	}
+	p.metricsTargetPtr.Store(p.buildMetricsDialTarget(listen))
+}
+
+func (p *Proxy) cachedMetricsDialTarget(listen string) *metricsDialTarget {
+	if cached := p.metricsTargetPtr.Load(); cached != nil && cached.listen == listen {
+		return cached
+	}
+	built := p.buildMetricsDialTarget(listen)
+	p.metricsTargetPtr.Store(built)
+	return built
+}
+
+func (p *Proxy) buildMetricsDialTarget(listen string) *metricsDialTarget {
+	metricsHost, metricsPort, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil
+	}
+	wantPort, wantErr := strconv.ParseUint(metricsPort, 10, 16)
+	target := &metricsDialTarget{listen: listen, port: wantPort}
+	if wantErr != nil {
+		target.port = 0
+		return target
+	}
+	metricsIP := net.ParseIP(metricsHost)
+	if strings.TrimSpace(metricsHost) == "" || (metricsIP != nil && metricsIP.IsUnspecified()) {
+		target.unspecified = true
+		return target
+	}
+	if metricsIP != nil {
+		if v4 := metricsIP.To4(); v4 != nil {
+			metricsIP = v4
+		}
+		target.ips = []net.IP{metricsIP}
+		return target
+	}
+	lookupCtx, cancel := context.WithTimeout(context.Background(), metricsHostnameLookupTimeout)
+	defer cancel()
+	addrs, lookupErr := p.metricsHostLookup()(lookupCtx, metricsHost)
+	if lookupErr != nil {
+		target.resolveErr = lookupErr
+		return target
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			continue
+		}
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
+		target.ips = append(target.ips, ip)
+	}
+	if len(target.ips) == 0 {
+		target.resolveErr = errMetricsHostnameNoIPs
+	}
+	return target
+}
+
 // blockIfConfiguredMetricsTarget keeps the contained agent from using a broad
 // SSRF exception to query the proxy's own metrics listener. This check belongs
 // in the dial path, before trusted-domain, IP-allowlist, and grant exceptions,
@@ -3601,36 +3706,33 @@ func (p *Proxy) blockIfConfiguredMetricsTarget(ctx context.Context, host, port s
 	if cfg == nil || cfg.MetricsListen == "" {
 		return nil
 	}
-	metricsHost, metricsPort, err := net.SplitHostPort(cfg.MetricsListen)
-	if err != nil {
+	target := p.cachedMetricsDialTarget(cfg.MetricsListen)
+	if target == nil {
 		return nil
 	}
-	wantPort, wantErr := strconv.ParseUint(metricsPort, 10, 16)
 	gotPort, gotErr := strconv.ParseUint(port, 10, 16)
-	if wantErr != nil || gotErr != nil || wantPort == 0 || wantPort != gotPort || ip == nil {
+	if gotErr != nil || target.port == 0 || target.port != gotPort || ip == nil {
 		return nil
 	}
-	metricsIP := net.ParseIP(metricsHost)
-	if strings.TrimSpace(metricsHost) == "" || (metricsIP != nil && metricsIP.IsUnspecified()) {
+	if target.unspecified {
 		local, localErr := isLocalInterfaceIP(ip)
 		if localErr != nil {
-			return newSSRFDialBlockError(ctx, host, ip, fmt.Sprintf("SSRF blocked: cannot verify whether %s:%s reaches the wildcard metrics listener: %v", host, port, localErr))
+			return newSSRFDialBlockError(ctx, host, ip, unverifiedMetricsBlockDetail(host, port, "wildcard", localErr))
 		}
 		if !local {
 			return nil
 		}
-		return newSSRFDialBlockError(ctx, host, ip, fmt.Sprintf("SSRF blocked: %s:%s is the configured metrics listener", host, port))
+		return newSSRFDialBlockError(ctx, host, ip, configuredMetricsBlockDetail(host, port))
 	}
-	if metricsIP == nil {
-		return nil
+	if target.resolveErr != nil {
+		return newSSRFDialBlockError(ctx, host, ip, unverifiedMetricsBlockDetail(host, port, "hostname", target.resolveErr))
 	}
-	if metricsV4 := metricsIP.To4(); metricsV4 != nil {
-		metricsIP = metricsV4
+	for _, metricsIP := range target.ips {
+		if metricsIP.Equal(ip) {
+			return newSSRFDialBlockError(ctx, host, ip, configuredMetricsBlockDetail(host, port))
+		}
 	}
-	if !metricsIP.Equal(ip) {
-		return nil
-	}
-	return newSSRFDialBlockError(ctx, host, ip, fmt.Sprintf("SSRF blocked: %s:%s is the configured metrics listener", host, port))
+	return nil
 }
 
 func isLocalInterfaceIP(ip net.IP) (bool, error) {

@@ -331,3 +331,153 @@ func TestHostnameConfiguredMetricsListenerBlocksDialThroughAllowlist(t *testing.
 	}
 	assertConfiguredMetricsDenied(t, dialErr)
 }
+
+func TestHostnameMetricsListenerUnresolvableFailsClosed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p := &Proxy{
+		lookupMetricsHost: func(_ context.Context, host string) ([]string, error) {
+			return nil, fmt.Errorf("stub nxdomain for %s", host)
+		},
+	}
+	p.ConfigPtr().Store(cfg)
+
+	err := p.blockIfConfiguredMetricsTarget(t.Context(), "127.0.0.1", "9091", net.ParseIP("127.0.0.1"))
+	var blocked *ssrfDialBlockError
+	if !errors.As(err, &blocked) || !strings.Contains(blocked.detail, "cannot verify") {
+		t.Fatalf("error = %T %v, want cannot-verify denial", err, err)
+	}
+	if err := p.blockIfConfiguredMetricsTarget(t.Context(), "127.0.0.1", "9092", net.ParseIP("127.0.0.1")); err != nil {
+		t.Fatalf("different port blocked while hostname was unverified: %v", err)
+	}
+}
+
+func TestHostnameMetricsListenerEmptyResolutionFailsClosed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			return []string{}, nil
+		},
+	}
+	p.ConfigPtr().Store(cfg)
+
+	err := p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10"))
+	var blocked *ssrfDialBlockError
+	if !errors.As(err, &blocked) || !strings.Contains(blocked.detail, "cannot verify") {
+		t.Fatalf("error = %T %v, want cannot-verify denial", err, err)
+	}
+}
+
+func TestHostnameMetricsListenerAllowsUnrelatedIPAndPort(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			return []string{"192.0.2.10"}, nil
+		},
+	}
+	p.ConfigPtr().Store(cfg)
+
+	if err := p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.11", "9091", net.ParseIP("192.0.2.11")); err != nil {
+		t.Fatalf("unrelated IP blocked: %v", err)
+	}
+	if err := p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9092", net.ParseIP("192.0.2.10")); err != nil {
+		t.Fatalf("different port blocked: %v", err)
+	}
+}
+
+func TestHostnameMetricsListenerLookupCachedAcrossDials(t *testing.T) {
+	var lookups atomic.Int64
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			lookups.Add(1)
+			return []string{"192.0.2.10"}, nil
+		},
+	}
+	p.ConfigPtr().Store(cfg)
+	ip := net.ParseIP("192.0.2.10")
+	for range 8 {
+		assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", ip))
+	}
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("lookups = %d, want 1 (hot path must not resolve per dial)", got)
+	}
+}
+
+func TestHostnameMetricsListenerReloadsWhenListenChanges(t *testing.T) {
+	var seen []string
+	p := &Proxy{
+		lookupMetricsHost: func(_ context.Context, host string) ([]string, error) {
+			seen = append(seen, host)
+			switch host {
+			case "metrics-a.internal":
+				return []string{"192.0.2.10"}, nil
+			case "metrics-b.internal":
+				return []string{"192.0.2.20"}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host %s", host)
+			}
+		},
+	}
+
+	cfgA := config.Defaults()
+	cfgA.MetricsListen = net.JoinHostPort("metrics-a.internal", "9091")
+	p.ConfigPtr().Store(cfgA)
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10")))
+	if err := p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.20", "9091", net.ParseIP("192.0.2.20")); err != nil {
+		t.Fatalf("other IP blocked before reload: %v", err)
+	}
+
+	cfgB := config.Defaults()
+	cfgB.MetricsListen = net.JoinHostPort("metrics-b.internal", "9091")
+	p.ConfigPtr().Store(cfgB)
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.20", "9091", net.ParseIP("192.0.2.20")))
+	if err := p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10")); err != nil {
+		t.Fatalf("previous metrics IP still blocked after reload: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "metrics-a.internal" || seen[1] != "metrics-b.internal" {
+		t.Fatalf("lookups = %v, want [metrics-a.internal metrics-b.internal]", seen)
+	}
+}
+
+func TestHostnameMetricsListenerRefreshReresolvesSameListen(t *testing.T) {
+	var lookups atomic.Int64
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			if lookups.Add(1) == 1 {
+				return []string{"192.0.2.10"}, nil
+			}
+			return []string{"192.0.2.20"}, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.MetricsListen = net.JoinHostPort("metrics.internal", "9091")
+	p.ConfigPtr().Store(cfg)
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10")))
+
+	p.refreshMetricsDialTarget(cfg.MetricsListen)
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.20", "9091", net.ParseIP("192.0.2.20")))
+	if err := p.blockIfConfiguredMetricsTarget(t.Context(), "192.0.2.10", "9091", net.ParseIP("192.0.2.10")); err != nil {
+		t.Fatalf("stale metrics IP still blocked after refresh: %v", err)
+	}
+}
+
+func TestLiteralMetricsListenerDoesNotLookupHost(t *testing.T) {
+	var lookups atomic.Int64
+	p := &Proxy{
+		lookupMetricsHost: func(context.Context, string) ([]string, error) {
+			lookups.Add(1)
+			return []string{"127.0.0.1"}, nil
+		},
+	}
+	cfg := config.Defaults()
+	cfg.MetricsListen = "127.0.0.1:9091"
+	p.ConfigPtr().Store(cfg)
+	assertConfiguredMetricsDenied(t, p.blockIfConfiguredMetricsTarget(t.Context(), "127.0.0.1", "9091", net.ParseIP("127.0.0.1")))
+	if got := lookups.Load(); got != 0 {
+		t.Fatalf("lookups = %d, want 0 for a literal MetricsListen", got)
+	}
+}

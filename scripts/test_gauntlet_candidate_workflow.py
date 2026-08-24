@@ -170,6 +170,10 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
             PUBLIC_RESULTS_URL in readme,
             "README missing the public Gauntlet results page",
         )
+        self.assertIsNone(
+            re.search(r"https://pipelab\.org/gauntlet/(?!results/)", readme),
+            "README still has a Gauntlet link that is not /gauntlet/results/",
+        )
         self.assertNotRegex(readme, r"(?i)\bnightly\b")
 
     def test_checkout_credentials_and_actions_are_pinned(self):

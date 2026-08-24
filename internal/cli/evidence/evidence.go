@@ -40,6 +40,7 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(expireCmd())
 	cmd.AddCommand(compactCmd())
 	cmd.AddCommand(inspectEpochsCmd())
+	cmd.AddCommand(verifyEpochPinCmd())
 	cmd.AddCommand(doctorCmd())
 	cmd.AddCommand(verifyCertCmd())
 	return cmd

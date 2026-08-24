@@ -36,6 +36,19 @@ type inspectEpochsDocument struct {
 	CheckpointVerification compactManifestCheckpointVerification `json:"checkpoint_verification"`
 }
 
+func inspectEpochsDocumentFromProof(session string, proof compactStreamProof) inspectEpochsDocument {
+	receipts := manifestReceiptVerification(proof)
+	if len(proof.v1Epochs) > 1 {
+		receipts.Status = "verified_per_epoch"
+		if proof.v1Degraded {
+			receipts.Status = "degraded_per_epoch"
+		}
+		receipts.V1Count = 0
+		receipts.V1ChainHead = ""
+	}
+	return inspectEpochsDocument{Version: 1, SessionID: session, SourceBytes: proof.bytes, SourceSHA256: proof.sum, SourceFiles: manifestStreamFiles(proof.files), RecorderEpochs: append([]compactEpochProof{}, proof.v1Epochs...), ReceiptVerification: receipts, CheckpointVerification: manifestCheckpointVerification(proof)}
+}
+
 var inspectSyncDirectory = func(output *inspectOutput) error { return output.syncParent() }
 
 func inspectEpochsCmd() *cobra.Command {
@@ -108,21 +121,7 @@ func runInspectEpochs(cmd *cobra.Command, opts inspectEpochsOptions) error {
 	if err != nil {
 		return fmt.Errorf("verify epoch boundaries: %w", err)
 	}
-	receipts := manifestReceiptVerification(proof)
-	if len(proof.v1Epochs) > 1 {
-		// Independent v1 epochs do not share a meaningful aggregate head or
-		// suffix. Keep their proofs on recorder_epochs and retain only the v2
-		// chain, which remains a separate contract.
-		receipts.Status = "verified_per_epoch"
-		if proof.v1Degraded {
-			receipts.Status = "degraded_per_epoch"
-		}
-		receipts.V1Count = 0
-		receipts.V1ChainHead = ""
-		receipts.Degradations = nil
-		receipts.V1Suffixes = nil
-	}
-	document := inspectEpochsDocument{Version: 1, SessionID: opts.sessionID, SourceBytes: proof.bytes, SourceSHA256: proof.sum, SourceFiles: manifestStreamFiles(proof.files), RecorderEpochs: append([]compactEpochProof{}, proof.v1Epochs...), ReceiptVerification: receipts, CheckpointVerification: manifestCheckpointVerification(proof)}
+	document := inspectEpochsDocumentFromProof(opts.sessionID, proof)
 	data, err := json.Marshal(document)
 	if err != nil {
 		return fmt.Errorf("encode epoch boundaries: %w", err)

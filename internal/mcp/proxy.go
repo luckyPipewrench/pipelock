@@ -317,6 +317,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// client request, no valid request ID exists to hijack.
 		var trackedOutcome TrackedRequestOutcome
 		var hasTrackedOutcome bool
+		var trackedMethod string
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
 			if canonicalID(rpcID) == "" && tracker.Strict() {
@@ -330,6 +331,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if rpcID != nil {
 				var valid bool
 				trackedOutcome, valid = tracker.Consume(rpcID)
+				if valid {
+					trackedMethod = trackedOutcome.Method
+				}
 				if !valid {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
 						lineNum, string(rpcID))
@@ -650,7 +654,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if isToolsList {
 			verdict = scanToolsListNonToolFields(line, sc, respScanOpts)
 		} else {
-			verdict = ScanResponseOpts(line, sc, respScanOpts)
+			a2aOpts := opts.a2aResponseOpts(respScanOpts)
+			a2aOpts.Method = trackedMethod
+			verdict = ScanResponseA2A(line, sc, a2aOpts)
 		}
 
 		if verdict.Clean {

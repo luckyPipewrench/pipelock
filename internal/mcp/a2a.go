@@ -287,6 +287,27 @@ func IsA2AMethod(method string) bool {
 	return a2amethods.Is(method)
 }
 
+const (
+	methodGetExtendedAgentCard         = "GetExtendedAgentCard"
+	methodGetAuthenticatedExtendedCard = "agent/getAuthenticatedExtendedCard"
+)
+
+// isAgentCardMethod reports whether method is an A2A JSON-RPC call whose
+// result is an Agent Card. Matching uses the canonical method name so a
+// case variant cannot skip card signature and drift enforcement.
+func isAgentCardMethod(method string) bool {
+	canonical, ok := a2amethods.Canonical(method)
+	if !ok {
+		return false
+	}
+	switch canonical {
+	case methodGetExtendedAgentCard, methodGetAuthenticatedExtendedCard:
+		return true
+	default:
+		return false
+	}
+}
+
 // a2aPathRe matches A2A REST endpoint paths after version prefix stripping.
 // Covers: /.well-known/agent-card.json, /message:send, /message:stream,
 // /tasks, /tasks/{id}, /tasks/{id}:cancel, /tasks/{id}:subscribe,

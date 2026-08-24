@@ -23,6 +23,28 @@ func TestRequestTracker_TrackAndValidate(t *testing.T) {
 	}
 }
 
+func TestRequestTracker_TrackRequestPreservesMethod(t *testing.T) {
+	tr := NewRequestTracker()
+	id := json.RawMessage(`1`)
+	tr.TrackRequest(id, "GetExtendedAgentCard")
+	outcome, ok := tr.Consume(id)
+	if !ok {
+		t.Fatal("expected tracked request to consume")
+	}
+	if outcome.Method != "GetExtendedAgentCard" {
+		t.Fatalf("Method = %q, want GetExtendedAgentCard", outcome.Method)
+	}
+
+	tr = NewStrictRequestTrackerFor(json.RawMessage(`7`), "agent/getAuthenticatedExtendedCard")
+	outcome, ok = tr.Consume(json.RawMessage(`7`))
+	if !ok {
+		t.Fatal("expected strict tracker to consume seeded ID")
+	}
+	if outcome.Method != "agent/getAuthenticatedExtendedCard" {
+		t.Fatalf("Method = %q, want agent/getAuthenticatedExtendedCard", outcome.Method)
+	}
+}
+
 func TestRequestTracker_ValidateWithoutTrack(t *testing.T) {
 	tr := NewRequestTracker()
 	id := json.RawMessage(`42`)

@@ -1029,6 +1029,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				TaintCfgFn:               mcpTaintCfgFn,
 				TaintTrustedSourceFn:     mcpTaintTrustedFn,
 				A2ACfgFn:                 mcpA2ACfgFn,
+				CardBaseline:             mcp.NewCardBaseline(1000),
+				A2ACardURL:               s.opts.MCPUpstream,
 				MediaPolicyFn:            mcpMediaPolicyFn,
 				ServerName:               s.opts.MCPServerName,
 				SuppressFn:               mcpResponseSuppressFn,

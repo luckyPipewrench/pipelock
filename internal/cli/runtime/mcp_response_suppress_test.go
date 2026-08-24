@@ -16,6 +16,34 @@ const (
 	testMCPResponseSuppress = "mcp://code-assistant/response"
 )
 
+func TestApplyMCPA2AOpts(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionBlock
+	baseline := mcp.NewCardBaseline(8)
+	opts := mcp.MCPProxyOpts{}
+
+	applyMCPA2AOpts(&opts, cfg, baseline, "https://agent.example.com/a2a")
+
+	if opts.A2ACfg == nil || !opts.A2ACfg.Enabled || opts.A2ACfg.Action != config.ActionBlock {
+		t.Fatalf("A2ACfg = %+v, want enabled block-mode snapshot", opts.A2ACfg)
+	}
+	if opts.CardBaseline != baseline {
+		t.Fatal("CardBaseline was not attached")
+	}
+	if opts.A2ACardURL != "https://agent.example.com/a2a" {
+		t.Fatalf("A2ACardURL = %q", opts.A2ACardURL)
+	}
+
+	applyMCPA2AOpts(&opts, nil, baseline, "")
+	if opts.A2ACfg == nil {
+		t.Fatal("nil config must not clear an already-attached A2ACfg")
+	}
+	if opts.A2ACardURL != "https://agent.example.com/a2a" {
+		t.Fatalf("empty cardURL must not clear A2ACardURL, got %q", opts.A2ACardURL)
+	}
+}
+
 func TestApplyMCPResponseSuppressOpts(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Suppress = []config.SuppressEntry{

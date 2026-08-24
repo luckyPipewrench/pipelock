@@ -195,6 +195,10 @@ type MCPProxyOpts struct {
 	A2ACfg       *config.A2AScanning
 	A2ACfgFn     func() *config.A2AScanning
 	CardBaseline *CardBaseline
+	// A2ACardURL is the Agent Card origin used for signature verification
+	// and drift keys on MCP transports that have an upstream URL. Empty
+	// is valid for stdio; origin-scoped signature checks then fail closed.
+	A2ACardURL string
 
 	// MediaPolicy enforces response-side media handling for base64 tool
 	// result content blocks (image/audio/video) before generic text scanning.
@@ -592,6 +596,15 @@ func (o MCPProxyOpts) a2aCfg() *config.A2AScanning {
 		return o.A2ACfgFn()
 	}
 	return o.A2ACfg
+}
+
+func (o MCPProxyOpts) a2aResponseOpts(scanOpts ResponseScanOptions) *A2AResponseOpts {
+	return &A2AResponseOpts{
+		Cfg:      o.a2aCfg(),
+		Baseline: o.CardBaseline,
+		CardKey:  CardCacheKeyFromRequest(o.A2ACardURL, ""),
+		ScanOpts: scanOpts,
+	}
 }
 
 func (o MCPProxyOpts) mediaPolicy() *config.MediaPolicy {

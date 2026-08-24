@@ -42,6 +42,9 @@ type RequestTracker struct {
 // post-response outcome for a previously admitted MCP request.
 type TrackedRequestOutcome struct {
 	Receipt receipt.EmitOpts
+	// Method is the JSON-RPC method of the matching request, used by
+	// response-side A2A routing (Agent Card vs field-aware body scan).
+	Method string
 }
 
 // PendingRequestOutcome is a drained pending JSON-RPC request ID plus its
@@ -72,11 +75,27 @@ func NewStrictRequestTracker(ids ...json.RawMessage) *RequestTracker {
 	return t
 }
 
+// NewStrictRequestTrackerFor records a single request ID with its JSON-RPC
+// method so the matching response can apply A2A Agent Card controls.
+func NewStrictRequestTrackerFor(id json.RawMessage, method string) *RequestTracker {
+	t := NewRequestTracker()
+	t.seeded = true
+	t.strict = true
+	t.TrackOutcome(id, TrackedRequestOutcome{Method: method})
+	return t
+}
+
 // Track records a request ID as pending. Nil/null IDs are ignored
 // (notifications don't expect responses). If the pending set exceeds
 // maxTrackedRequests, the oldest entry is evicted.
 func (t *RequestTracker) Track(id json.RawMessage) {
 	t.TrackOutcome(id, TrackedRequestOutcome{})
+}
+
+// TrackRequest records a request ID together with its JSON-RPC method so the
+// matching response can route A2A Agent Card checks without shape heuristics.
+func (t *RequestTracker) TrackRequest(id json.RawMessage, method string) {
+	t.TrackOutcome(id, TrackedRequestOutcome{Method: method})
 }
 
 // TrackOutcome records a request ID as pending and associates it with outcome

@@ -990,9 +990,9 @@ func ForwardScannedInput(
 					PolicyHash:          policyHash,
 				})
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, contractGate)
-				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt})
+				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt, Method: verdict.Method})
 			} else if isTrackableRequest(fwdLine, verdict.ID) {
-				tracker.Track(verdict.ID)
+				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
 			if err := forwardMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
@@ -1339,7 +1339,7 @@ func ForwardScannedInput(
 					switch res.FinalDecision {
 					case config.ActionAllow:
 						if isTrackableRequest(heldLine, heldID) {
-							tracker.Track(heldID)
+							tracker.TrackRequest(heldID, heldAuthorityFrame.Method)
 						}
 						if err := forwardMessage(heldLine); err != nil {
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
@@ -1520,7 +1520,7 @@ func ForwardScannedInput(
 			receiptEmitted = true
 			// Forward anyway (warn mode).
 			if isTrackableRequest(fwdLine, verdict.ID) {
-				tracker.Track(verdict.ID)
+				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
 			if err := forwardMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)

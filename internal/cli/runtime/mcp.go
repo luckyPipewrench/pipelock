@@ -259,6 +259,17 @@ func handleProxyError(err error, logW io.Writer, sentryClient *plsentry.Client) 
 	return err
 }
 
+func applyMCPA2AOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, baseline *mcp.CardBaseline, cardURL string) {
+	if cfg != nil {
+		a2a := cfg.A2AScanning
+		opts.A2ACfg = &a2a
+	}
+	opts.CardBaseline = baseline
+	if cardURL != "" {
+		opts.A2ACardURL = cardURL
+	}
+}
+
 func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, serverName string) {
 	opts.ServerName = serverName
 	trust := config.ResponseTrustUntrusted
@@ -1305,6 +1316,7 @@ Key-free evidence capture:
 			if policyCfg != nil {
 				policyAction = policyCfg.Action
 			}
+			a2aCardBaseline := mcp.NewCardBaseline(1000)
 			deferManager := buildDeferManager(cfg, cmd.ErrOrStderr())
 			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), receiptEmitter, v2ReceiptEmitter, captureConfigHash, cmd.ErrOrStderr()); err != nil {
 				return err
@@ -1383,6 +1395,7 @@ Key-free evidence capture:
 							return readMCPListenerTokenFile(listenerAuthTokenFile)
 						}
 					}
+					applyMCPA2AOpts(&listenerOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&listenerOpts, cfg, serverName)
 					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)
@@ -1433,6 +1446,7 @@ Key-free evidence capture:
 						DialContext:            upstreamDialContext,
 					}
 					applyMCPDoWOpts(&wsOpts, dowWiring, false)
+					applyMCPA2AOpts(&wsOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&wsOpts, cfg, serverName)
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					respAction, respTrust, respServer := mcpResponseLogFields(wsOpts)
@@ -1487,6 +1501,7 @@ Key-free evidence capture:
 					DialContext:            upstreamDialContext,
 				}
 				applyMCPDoWOpts(&httpOpts, dowWiring, false)
+				applyMCPA2AOpts(&httpOpts, cfg, a2aCardBaseline, upstreamURL)
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				respAction, respTrust, respServer := mcpResponseLogFields(httpOpts)
@@ -1669,6 +1684,7 @@ Key-free evidence capture:
 					DeferManager:           deferManager,
 				}
 				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
+				applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 				applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
@@ -1816,6 +1832,7 @@ Key-free evidence capture:
 				DeferManager:           deferManager,
 			}
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
+			applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			// The unsandboxed path has no UID/GID map setup. Harden before

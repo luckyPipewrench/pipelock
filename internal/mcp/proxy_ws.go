@@ -47,6 +47,9 @@ func RunWSProxy(
 	if opts.AuthorityDestination == "" {
 		opts.AuthorityDestination = upstreamURL
 	}
+	if opts.A2ACardURL == "" {
+		opts.A2ACardURL = upstreamURL
+	}
 	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
 		return fmt.Errorf("contract upstream evaluation: %w", gateErr)
 	} else if gate.Verdict == config.ActionBlock {
@@ -239,7 +242,7 @@ func RunWSProxy(
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
 		if isRequest(msg) {
-			tracker.Track(frame.ID)
+			tracker.TrackRequest(frame.ID, frame.Method)
 		}
 
 		// Forward to upstream.

@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg"></a>
-  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"><img alt="Gauntlet" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml/badge.svg"></a>
+  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"><img alt="Gauntlet exam" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml/badge.svg"></a>
   <a href="go.mod"><img alt="Go 1.25+" src="https://img.shields.io/github/go-mod/go-version/luckyPipewrench/pipelock?logo=go&label=Go"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/luckyPipewrench/pipelock"></a>
 </p>

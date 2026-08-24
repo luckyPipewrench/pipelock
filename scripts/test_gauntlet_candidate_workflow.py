@@ -147,7 +147,12 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
             f'href="{GAUNTLET_WORKFLOW_URL}"' in readme,
             "README missing Gauntlet candidate workflow link",
         )
-        self.assertTrue('alt="Gauntlet"' in readme, "README missing Gauntlet badge alt text")
+        self.assertTrue('alt="Gauntlet exam"' in readme, "README missing Gauntlet exam badge alt text")
+        self.assertNotIn(
+            'alt="Agent Egress Bench"',
+            readme,
+            "the scheduled-exam badge must not use the corpus repo name",
+        )
         self.assertTrue(
             "does not auto-publish a public score" in readme,
             "README missing candidate-exam non-publish sentence",

@@ -328,7 +328,9 @@ func (s *FileEnrollmentStore) CreateEnrollmentToken(_ context.Context, spec Enro
 	}
 	s.data.Tokens[spec.TokenID] = record
 	if err := s.saveLocked(); err != nil {
-		delete(s.data.Tokens, spec.TokenID)
+		if !errors.Is(err, errDurableWritePostRename) {
+			delete(s.data.Tokens, spec.TokenID)
+		}
 		return IssuedEnrollmentToken{}, err
 	}
 	return IssuedEnrollmentToken{TokenID: spec.TokenID, Token: token, ExpiresAt: expires}, nil
@@ -394,13 +396,15 @@ func (s *FileEnrollmentStore) ConsumeEnrollmentToken(_ context.Context, req Cons
 		s.data.RuntimeStatus = make(map[string]FollowerRuntimeStatus)
 	}
 	if err := s.saveLocked(); err != nil {
-		token.ConsumedAt = nil
-		token.ConsumedByID = ""
-		s.data.Tokens[tokenID] = token
-		if hadPreviousFollower {
-			s.data.Followers[followerKey] = previousFollower
-		} else {
-			delete(s.data.Followers, followerKey)
+		if !errors.Is(err, errDurableWritePostRename) {
+			token.ConsumedAt = nil
+			token.ConsumedByID = ""
+			s.data.Tokens[tokenID] = token
+			if hadPreviousFollower {
+				s.data.Followers[followerKey] = previousFollower
+			} else {
+				delete(s.data.Followers, followerKey)
+			}
 		}
 		return EnrolledFollower{}, err
 	}
@@ -619,10 +623,12 @@ func (s *FileEnrollmentStore) UpsertFollowerRuntimeStatus(_ context.Context, sta
 	}
 	s.data.RuntimeStatus[key] = normalized
 	if err := s.saveLocked(); err != nil {
-		if hadPrevious {
-			s.data.RuntimeStatus[key] = previous
-		} else {
-			delete(s.data.RuntimeStatus, key)
+		if !errors.Is(err, errDurableWritePostRename) {
+			if hadPrevious {
+				s.data.RuntimeStatus[key] = previous
+			} else {
+				delete(s.data.RuntimeStatus, key)
+			}
 		}
 		return FollowerRuntimeStatus{}, err
 	}
@@ -743,10 +749,12 @@ func (s *FileEnrollmentStore) RevokeEnrollmentToken(_ context.Context, req Revok
 	token.RevokedAt = &revokedAt
 	s.data.Tokens[tokenID] = token
 	if err := s.saveLocked(); err != nil {
-		// Roll back the in-memory mutation so a failed durable write does not
-		// leave a token that looks revoked in memory but is not on disk.
-		token.RevokedAt = nil
-		s.data.Tokens[tokenID] = token
+		if !errors.Is(err, errDurableWritePostRename) {
+			// Roll back the in-memory mutation so a failed durable write does not
+			// leave a token that looks revoked in memory but is not on disk.
+			token.RevokedAt = nil
+			s.data.Tokens[tokenID] = token
+		}
 		return EnrollmentTokenSummary{}, err
 	}
 	return token.summary(now), nil

@@ -49,13 +49,13 @@ Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/actio
   <a href="#what-it-does">Features</a> ·
   <a href="#how-it-works">Architecture</a> ·
   <a href="#docs">Docs</a> ·
-  <a href="https://playground.pipelab.org">Playground</a> ·
+  <a href="https://pipelab.org/playground">Playground</a> ·
   <a href="https://pipelab.org/blog/">Blog</a> ·
   <a href="https://app.dosu.dev/bcccd1cf-be85-4c0e-ae05-edeb0ff50b59/ask">Ask Dosu</a>
 </p>
 
 <p align="center">
-  <strong>Try it in your browser at the <a href="https://playground.pipelab.org">live playground</a>. If Pipelock earns it, <a href="https://github.com/luckyPipewrench/pipelock/stargazers">star the repo</a> so other people find it.</strong>
+  <strong>Try it in your browser at the <a href="https://pipelab.org/playground">live playground</a>. If Pipelock earns it, <a href="https://github.com/luckyPipewrench/pipelock/stargazers">star the repo</a> so other people find it.</strong>
 </p>
 
 ---
@@ -218,7 +218,7 @@ The free single-session evidence viewer shown above is separate. It needs no lic
 
 [**agent-egress-bench**](https://github.com/luckyPipewrench/agent-egress-bench) runs a corpus of agent-exfiltration and prompt-injection attacks against Pipelock, or against any other tool. The numbers come from a run anyone can repeat, not a claim.
 
-[**See the live results**](https://pipelab.org/gauntlet/) · [**Run it yourself**](https://github.com/luckyPipewrench/agent-egress-bench)
+[**See the live results**](https://pipelab.org/gauntlet/results/) · [**Run it yourself**](https://github.com/luckyPipewrench/agent-egress-bench)
 
 </div>
 
@@ -749,7 +749,7 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 
-Run `make test` to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/).
+Run `make test` to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/results/).
 
 ---
 

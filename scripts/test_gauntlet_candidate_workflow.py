@@ -18,6 +18,9 @@ GAUNTLET_WORKFLOW_URL = (
     "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
 )
 GAUNTLET_BADGE_URL = GAUNTLET_WORKFLOW_URL + "/badge.svg"
+PLAYGROUND_PAGE_URL = "https://pipelab.org/playground"
+PLAYGROUND_BROKER_ORIGIN = "https://playground.pipelab.org"
+PUBLIC_RESULTS_URL = "https://pipelab.org/gauntlet/results/"
 EVIDENCE_FILES = (
     "continuous-gauntlet-pipelock.json",
     "promotion-decision.json",
@@ -148,6 +151,19 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertTrue(
             "does not auto-publish a public score" in readme,
             "README missing candidate-exam non-publish sentence",
+        )
+        self.assertTrue(
+            PLAYGROUND_PAGE_URL in readme,
+            "README missing the public playground page",
+        )
+        self.assertNotIn(
+            PLAYGROUND_BROKER_ORIGIN,
+            readme,
+            "README must not send people to the playground broker origin",
+        )
+        self.assertTrue(
+            PUBLIC_RESULTS_URL in readme,
+            "README missing the public Gauntlet results page",
         )
         self.assertNotRegex(readme, r"(?i)\bnightly\b")
 

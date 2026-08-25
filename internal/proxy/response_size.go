@@ -3,7 +3,33 @@
 
 package proxy
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+)
+
+// shieldMaxBytesForResponse returns the whole-body Browser Shield ceiling for
+// a response that has already been buffered. Forward, CONNECT, and reverse
+// responses are bounded by the normal scan cap; when a size-exempt response
+// crosses that cap, its larger memory reservation stays held until the shield
+// finishes. Both cases can safely reuse the response-scanning ceiling. Fetch
+// has no size-exempt bounded-buffer path and keeps the ordinary shield ceiling.
+func shieldMaxBytesForResponse(cfg *config.Config, hostname, transport string) int {
+	limit := cfg.BrowserShield.MaxShieldBytes
+	if limit <= 0 || transport == TransportFetch ||
+		!isResponseSizeExempt(hostname, cfg.ResponseScanning.SizeExemptDomains) {
+		return limit
+	}
+
+	switch transport {
+	case TransportForward, TransportConnect, TransportReverse:
+		if cfg.ResponseScanning.SizeExemptScanMaxBytes > limit {
+			return cfg.ResponseScanning.SizeExemptScanMaxBytes
+		}
+	}
+	return limit
+}
 
 // responseSizeBlockReason renders the operator-facing reason for a response
 // blocked on size. sizeExemptHonored reports whether the blocking path actually

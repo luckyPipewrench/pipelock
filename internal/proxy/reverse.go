@@ -1972,19 +1972,20 @@ responseScanning:
 			// read up to size_exempt_scan_max_bytes (64 MiB by default), well
 			// past the 5 MiB shield cap, so precisely the hosts trusted enough
 			// to scan whole were the ones losing the scrub.
-			oversize := cfg.BrowserShield.MaxShieldBytes > 0 && len(body) > cfg.BrowserShield.MaxShieldBytes
+			shieldMaxBytes := shieldMaxBytesForResponse(cfg, revHost, TransportReverse)
+			oversize := shieldMaxBytes > 0 && len(body) > shieldMaxBytes
 			if oversize {
 				rp.metrics.RecordShieldSkipped("oversize")
 				actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
-				reason := shieldOversizeBlockReason(revHost, len(body), cfg.BrowserShield.MaxShieldBytes)
+				reason := shieldOversizeBlockReason(revHost, len(body), shieldMaxBytes)
 				switch cfg.BrowserShield.OversizeAction {
 				case config.ShieldOversizeScanHead:
 					rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
-					head, summary := runShieldPipelineSharedResult(rp.shieldEngine, body[:cfg.BrowserShield.MaxShieldBytes], resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+					head, summary := runShieldPipelineSharedResult(rp.shieldEngine, body[:shieldMaxBytes], resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
 					if summary != nil {
 						shieldChanged = true
 						summary.BodyBytes = len(body)
-						summary.ScannedBytes = cfg.BrowserShield.MaxShieldBytes
+						summary.ScannedBytes = shieldMaxBytes
 						summary.Partial = true
 						summary.AdaptiveSignalsRecorded = 0
 						summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
@@ -2003,7 +2004,7 @@ responseScanning:
 							Agent:          agent,
 						})
 					}
-					body = append(head, body[cfg.BrowserShield.MaxShieldBytes:]...)
+					body = append(head, body[shieldMaxBytes:]...)
 				case config.ShieldOversizeWarn:
 					rp.logger.LogAnomaly(actx, "shield_oversize", reason, 0)
 				default: // block: fail closed, same as every other transport

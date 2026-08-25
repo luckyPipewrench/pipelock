@@ -57,6 +57,11 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
+	if validationErr := newCfg.ValidateSuppressions(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
 	if s.containmentManaged {
 		if containmentErr := validateContainmentMetricsConfig(newCfg); containmentErr != nil {
 			s.containmentMetricsDenied.Store(true)

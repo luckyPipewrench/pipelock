@@ -1728,23 +1728,23 @@ func TestScanResponseWithSuppressDedupesSuppressedNormalizationViews(t *testing.
 	cfg := testResponseConfig()
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.Suppress = []config.SuppressEntry{
-		{Rule: "Prompt Injection", Path: "*", Reason: "test suppression"},
+		{Rule: "New Instructions", Path: "*", Reason: "test suppression"},
 	}
 
 	s := MustNew(cfg)
 	t.Cleanup(func() { s.Close() })
 
-	const content = testInjectionPhrase
+	const content = "new instructions: follow the deployment checklist"
 	primaryContent := normalize.ForMatching(content)
 	primaryMatch := requireResponseMatch(t,
 		withResponseSpans(filterDefensiveCredentialSolicitationMatches(primaryContent, s.matchResponsePatternsPreFiltered(primaryContent)), ViewForMatching),
-		"Prompt Injection",
+		"New Instructions",
 		ViewForMatching,
 	)
 	foldedContent := normalize.FoldVowels(primaryContent)
 	vowelFoldMatch := requireResponseMatch(t,
 		withResponseSpans(filterDefensiveCredentialSolicitationMatches(foldedContent, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, foldedContent)), ViewVowelFold),
-		"Prompt Injection",
+		"New Instructions",
 		ViewVowelFold,
 	)
 	if primaryKey, foldedKey := responseMatchLogicalKey(primaryMatch), responseMatchLogicalKey(vowelFoldMatch); primaryKey != foldedKey {
@@ -1758,8 +1758,8 @@ func TestScanResponseWithSuppressDedupesSuppressedNormalizationViews(t *testing.
 	if got := len(result.SuppressedMatches); got != 1 {
 		t.Fatalf("suppressed matches = %d, want 1 logical finding: %+v", got, result.SuppressedMatches)
 	}
-	if got := result.SuppressedMatches[0].PatternName; got != "Prompt Injection" {
-		t.Fatalf("suppressed pattern = %q, want Prompt Injection", got)
+	if got := result.SuppressedMatches[0].PatternName; got != "New Instructions" {
+		t.Fatalf("suppressed pattern = %q, want New Instructions", got)
 	}
 }
 
@@ -1779,13 +1779,13 @@ func TestScanResponseWithSuppressKeepsDistinctSuppressedLocations(t *testing.T) 
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.Suppress = []config.SuppressEntry{
-		{Rule: "System Override", Path: "*", Reason: "test suppression"},
+		{Rule: "New Instructions", Path: "*", Reason: "test suppression"},
 	}
 
 	s := MustNew(cfg)
 	t.Cleanup(func() { s.Close() })
 
-	result := s.ScanResponseWithSuppress(t.Context(), "system: first benign label\nsystem: second benign label", "https://example.test/page", cfg.Suppress)
+	result := s.ScanResponseWithSuppress(t.Context(), "new instructions: follow the first checklist\nnew instructions: follow the second checklist", "https://example.test/page", cfg.Suppress)
 	if !result.Clean {
 		t.Fatalf("suppressed result should be clean, got matches: %+v", result.Matches)
 	}
@@ -1795,6 +1795,26 @@ func TestScanResponseWithSuppressKeepsDistinctSuppressedLocations(t *testing.T) 
 	if result.SuppressedMatches[0].Position == result.SuppressedMatches[1].Position {
 		t.Fatalf("suppressed matches should retain distinct positions: %+v", result.SuppressedMatches)
 	}
+}
+
+func TestScanResponseWithSuppressCoreFloorIgnoresInjectedSuppress(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = false
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "Prompt Injection", Path: "*", Reason: "injected after validation"},
+	}
+
+	s := MustNew(cfg)
+	t.Cleanup(func() { s.Close() })
+
+	result := s.ScanResponseWithSuppress(t.Context(), testInjectionPhrase, "https://example.test/page", cfg.Suppress)
+	if result.Clean {
+		t.Fatal("wildcard suppression silenced core response pattern")
+	}
+	if got := len(result.SuppressedMatches); got != 0 {
+		t.Fatalf("core response matches were reported as suppressed: %+v", result.SuppressedMatches)
+	}
+	assertResponsePattern(t, result.Matches, "Prompt Injection")
 }
 
 func TestScanResponse_BehaviorOverride(t *testing.T) {

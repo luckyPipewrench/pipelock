@@ -354,7 +354,7 @@ func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []co
 	}
 	var kept []scanner.TextDLPMatch
 	for _, m := range res.Matches {
-		if !config.IsSuppressed(m.PatternName, target, suppress) {
+		if config.IsCoreDLPPatternName(m.PatternName) || !config.IsSuppressed(m.PatternName, target, suppress) {
 			kept = append(kept, m)
 		}
 	}

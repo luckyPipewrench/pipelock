@@ -105,7 +105,9 @@ dlp:
 ### Suppression rules
 
 The `suppress` configuration section lets you suppress specific scanner
-findings by scanner name and pattern. See the [suppression guide](suppression.md).
+findings by scanner name and pattern. It applies only to non-core rules; core
+DLP and core response floor names fail config validation. See the
+[suppression guide](suppression.md).
 
 ### Opaque content entropy
 

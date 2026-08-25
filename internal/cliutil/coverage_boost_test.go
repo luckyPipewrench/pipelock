@@ -156,6 +156,16 @@ func TestCheckConfigSuppression(t *testing.T) {
 			t.Error("expected not suppressed for nil entries")
 		}
 	})
+
+	t.Run("core floor ignores injected config entry", func(t *testing.T) {
+		coreEntries := []config.SuppressEntry{
+			{Rule: "AWS Access ID", Path: "*", Reason: "injected after validation"},
+		}
+		r := CheckConfigSuppression("src/main.go", "AWS Access ID", coreEntries)
+		if r.Suppressed {
+			t.Fatal("wildcard config entry suppressed a core floor finding")
+		}
+	})
 }
 
 func TestCheckFinding(t *testing.T) {

@@ -81,7 +81,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 		}
 		kept := matches[:0]
 		for _, match := range matches {
-			if !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
+			if config.IsCoreResponsePatternName(match.PatternName) || !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
 				kept = append(kept, match)
 			} else {
 				key := responseMatchLogicalKey(match)

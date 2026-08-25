@@ -3099,7 +3099,7 @@ func TestServer_Reload_StrictRejectsSuppressWidening(t *testing.T) {
 	buf.reset()
 	newCfg := oldCfg.Clone()
 	newCfg.Suppress = append(newCfg.Suppress, config.SuppressEntry{
-		Rule:   "Prompt Injection",
+		Rule:   "New Instructions",
 		Path:   "*",
 		Reason: "review repro",
 	})

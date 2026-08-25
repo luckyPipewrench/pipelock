@@ -1158,7 +1158,7 @@ func TestScanRequestBody_DLPHonorsScopedSuppress(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	body := `{"input": "` + fakeAPIKey() + `"}`
+	body := `{"input": "` + fakeAnthropicKey() + `"}`
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),
 		ContentType: contentTypeJSON,
@@ -1167,7 +1167,7 @@ func TestScanRequestBody_DLPHonorsScopedSuppress(t *testing.T) {
 		Target:      "https://chatgpt.com/backend-api/codex/responses",
 		Suppress: []config.SuppressEntry{
 			{
-				Rule:   "AWS Access ID",
+				Rule:   "Anthropic API Key",
 				Path:   "*chatgpt.com*",
 				Reason: "test canary suppression",
 			},
@@ -1183,7 +1183,7 @@ func TestScanRequestBody_DLPPartialSuppressKeepsOtherMatches(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	body := `{"aws": "` + fakeAPIKey() + `", "gh": "` + fakeGitHubToken() + `"}`
+	body := `{"anthropic": "` + fakeAnthropicKey() + `", "openai": "sk-proj-` + strings.Repeat("A", 40) + `"}`
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),
 		ContentType: contentTypeJSON,
@@ -1192,17 +1192,17 @@ func TestScanRequestBody_DLPPartialSuppressKeepsOtherMatches(t *testing.T) {
 		Target:      "https://chatgpt.com/backend-api/codex/responses",
 		Suppress: []config.SuppressEntry{
 			{
-				Rule:   "AWS Access ID",
+				Rule:   "Anthropic API Key",
 				Path:   "*chatgpt.com*",
 				Reason: "test canary suppression",
 			},
 		},
 	})
 	if result.Clean {
-		t.Fatal("expected unsuppressed GitHub token to remain a DLP finding")
+		t.Fatal("expected unsuppressed OpenAI key to remain a DLP finding")
 	}
-	if got := result.DLPMatches[0].PatternName; got != "GitHub Token" {
-		t.Fatalf("pattern = %q, want GitHub Token", got)
+	if got := result.DLPMatches[0].PatternName; got != "OpenAI API Key" {
+		t.Fatalf("pattern = %q, want OpenAI API Key", got)
 	}
 }
 
@@ -2472,7 +2472,7 @@ func TestScanRequestHeaders_SplitSecretRepeatedValues(t *testing.T) {
 func TestScanRequestHeadersForTarget_SuppressedValueDoesNotMaskLaterUnsuppressedValue(t *testing.T) {
 	cfg := testScannerConfig()
 	cfg.Suppress = []config.SuppressEntry{{
-		Rule:   "AWS Access ID",
+		Rule:   "Anthropic API Key",
 		Path:   "https://api.example.com/*",
 		Reason: "allow scoped provider credential",
 	}}
@@ -2480,15 +2480,15 @@ func TestScanRequestHeadersForTarget_SuppressedValueDoesNotMaskLaterUnsuppressed
 	defer sc.Close()
 
 	headers := http.Header{}
-	headers.Add("Authorization", "Bearer "+fakeAPIKey())
 	headers.Add("Authorization", "Bearer "+fakeAnthropicKey())
+	headers.Add("Authorization", "Bearer sk-proj-"+strings.Repeat("A", 40))
 
 	result := scanRequestHeadersForTarget(context.Background(), headers, cfg, sc, "https://api.example.com/v1/messages")
 	if result == nil || result.Clean {
 		t.Fatal("expected unsuppressed DLP match after suppressed header value")
 	}
-	if got := result.DLPMatches[0].PatternName; got != "Anthropic API Key" {
-		t.Fatalf("pattern = %q, want Anthropic API Key", got)
+	if got := result.DLPMatches[0].PatternName; got != "OpenAI API Key" {
+		t.Fatalf("pattern = %q, want OpenAI API Key", got)
 	}
 }
 
@@ -3032,7 +3032,7 @@ func TestForwardProxy_HeaderScan_SuppressedCriticalHeaderAllowed(t *testing.T) {
 		cfg.RequestBodyScanning.ScanHeaders = true
 		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
 		cfg.Suppress = []config.SuppressEntry{{
-			Rule:   "AWS Access ID",
+			Rule:   "Anthropic API Key",
 			Path:   upstream.URL + "/*",
 			Reason: "trusted destination auth header",
 		}}
@@ -3043,7 +3043,7 @@ func TestForwardProxy_HeaderScan_SuppressedCriticalHeaderAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
+	req.Header.Set("Authorization", "Bearer "+fakeAnthropicKey())
 
 	client := &http.Client{
 		Transport: &http.Transport{

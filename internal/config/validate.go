@@ -2605,6 +2605,13 @@ func (c *Config) validateSuppress() error {
 	return nil
 }
 
+// ValidateSuppressions validates the suppression surface independently of the
+// full config. Runtime boundaries use it when callers provide an in-memory
+// config that did not pass through Load.
+func (c *Config) ValidateSuppressions() error {
+	return c.validateSuppress()
+}
+
 func (c *Config) validateKillSwitch() error {
 	// Validate kill switch allowlist CIDRs are parseable
 	for _, cidr := range c.KillSwitch.AllowlistIPs {

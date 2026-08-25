@@ -67,6 +67,9 @@ func CheckConfigSuppression(file string, rule string, entries []config.SuppressE
 	if file == "" || len(entries) == 0 {
 		return SuppressResult{}
 	}
+	if config.IsCoreDLPPatternName(rule) || config.IsCoreResponsePatternName(rule) {
+		return SuppressResult{}
+	}
 
 	reason, ok := config.SuppressedReason(rule, file, entries)
 	if ok {

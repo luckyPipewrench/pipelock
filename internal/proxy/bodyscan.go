@@ -1088,7 +1088,7 @@ func filterBodyDLPMatches(matches []scanner.TextDLPMatch, target string, suppres
 		if _, skip := disabled[match.PatternName]; skip && !config.IsCoreDLPPatternName(match.PatternName) {
 			continue
 		}
-		if config.IsSuppressed(match.PatternName, target, suppress) {
+		if !config.IsCoreDLPPatternName(match.PatternName) && config.IsSuppressed(match.PatternName, target, suppress) {
 			continue
 		}
 		filtered = append(filtered, match)

@@ -48,7 +48,7 @@ func TestApplyMCPResponseSuppressOpts(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Suppress = []config.SuppressEntry{
 		{
-			Rule:   "Credential Solicitation",
+			Rule:   "New Instructions",
 			Path:   testMCPResponseSuppress,
 			Reason: "false positive on first-party server code-assistant",
 		},

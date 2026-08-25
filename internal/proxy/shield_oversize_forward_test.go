@@ -4,9 +4,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -40,7 +42,7 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 	defer upstream.Close()
 
 	dir := t.TempDir()
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
@@ -125,6 +127,7 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 	}
 
 	var found bool
+	trustedKey := hex.EncodeToString(pub)
 	for _, entry := range readAllEntries(t, dir) {
 		if entry.Type != receiptEntryType {
 			continue
@@ -148,10 +151,17 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		// reading receipts cannot see which limit fired. Recorded as adjacent
 		// work rather than widened into this change.
 		if recorded.ActionRecord.Pattern == wantOutcomePattern {
-			found = true
-			if err := receipt.VerifyInternalConsistencyOnly(recorded); err != nil {
-				t.Fatalf("receipt verification failed: %v", err)
+			if err := receipt.VerifyV1BytesWithKey(entry.RawDetail, trustedKey); err != nil {
+				t.Fatalf("receipt authenticity verification failed: %v", err)
 			}
+			tampered := bytes.Replace(entry.RawDetail, []byte(upstreamURL.Hostname()), []byte("tampered.example"), 1)
+			if bytes.Equal(tampered, entry.RawDetail) {
+				t.Fatal("receipt fixture does not contain the upstream host needed for the tamper check")
+			}
+			if err := receipt.VerifyV1BytesWithKey(tampered, trustedKey); err == nil {
+				t.Fatal("receipt authenticity verification accepted a modified target")
+			}
+			found = true
 		}
 	}
 	if !found {

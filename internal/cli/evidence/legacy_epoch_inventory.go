@@ -213,7 +213,13 @@ func runVerifyLegacyEpochInventory(cmd *cobra.Command, opts verifyLegacyInventor
 	if _, err := hex.DecodeString(wantDigest); err != nil {
 		return errors.New("--sha256 must be hexadecimal")
 	}
-	data, err := os.ReadFile(filepath.Clean(opts.inventoryFile))
+	inventoryPath := filepath.Clean(opts.inventoryFile)
+	file, err := os.Open(inventoryPath) // #nosec G304 -- operator-selected inventory is verified before use.
+	if err != nil {
+		return fmt.Errorf("read --inventory: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, recorder.MaxEvidenceReadFileBytes+1))
 	if err != nil {
 		return fmt.Errorf("read --inventory: %w", err)
 	}
@@ -314,9 +320,12 @@ func buildLegacyInventory(location recorder.EvidenceLocation, session string) (l
 		fileHash := sha256.New()
 		var offset int64
 		err := recorder.StreamEvidenceLocationFileForOfflineCompaction(location, name, func(source io.Reader, info os.FileInfo) error {
-			reader := bufio.NewReaderSize(source, 64*1024)
+			reader := bufio.NewReaderSize(source, recorder.MaxEntryLineBytes+1)
 			for {
-				line, readErr := reader.ReadBytes('\n')
+				line, readErr := reader.ReadSlice('\n')
+				if errors.Is(readErr, bufio.ErrBufferFull) {
+					return fmt.Errorf("source shard %q entry at byte %d exceeds %d-byte limit", name, offset, recorder.MaxEntryLineBytes)
+				}
 				if len(line) > 0 {
 					if errors.Is(readErr, io.EOF) {
 						return fmt.Errorf("source shard %q does not end in newline", name)

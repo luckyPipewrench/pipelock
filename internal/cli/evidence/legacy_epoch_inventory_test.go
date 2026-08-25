@@ -271,6 +271,40 @@ func TestAddLegacyInventoryEntryClassifiesBranches(t *testing.T) {
 	}
 }
 
+func TestLegacyInventoryBoundsFailClosed(t *testing.T) {
+	t.Run("anomalies", func(t *testing.T) {
+		epoch := legacyInventoryEpoch{Anomalies: make([]legacyInventoryAnomaly, maxLegacyInventoryAnomalies)}
+		err := addLegacyAnomaly(&epoch, "sequence_gap", "a.jsonl", 0, 1, false)
+		if err == nil || !strings.Contains(err.Error(), "anomalies") {
+			t.Fatalf("error = %v, want anomalies bound", err)
+		}
+	})
+
+	t.Run("signer runs", func(t *testing.T) {
+		epoch := legacyInventoryEpoch{SignerRuns: make([]legacySignerRun, maxLegacyInventoryRuns)}
+		entry := legacyInventoryTestEntry(t, 0, recorder.GenesisHash, "action_receipt", json.RawMessage(`{"signer_key":"`+strings.Repeat("c", 64)+`"}`))
+		err := addLegacyReceipt(&epoch, "a.jsonl", 0, entry, make(map[string]struct{}))
+		if err == nil || !strings.Contains(err.Error(), "signer runs") {
+			t.Fatalf("error = %v, want signer-runs bound", err)
+		}
+	})
+
+	t.Run("epochs", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+		entry := legacyInventoryTestEntry(t, 0, recorder.GenesisHash, "capture", map[string]string{"safe": "value"})
+		line := legacyInventoryTestLine(t, entry)
+		wire := bytes.Repeat(line, maxLegacyInventoryEpochs+1)
+		if err := os.WriteFile(path, wire, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := buildLegacyInventory(recorder.EvidenceLocation{Root: dir, Dir: dir}, "proxy")
+		if err == nil || !strings.Contains(err.Error(), "epochs") {
+			t.Fatalf("error = %v, want epochs bound", err)
+		}
+	})
+}
+
 func TestBuildLegacyInventoryRecordsSignerReentryAndEpochs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "evidence-proxy-0.jsonl")

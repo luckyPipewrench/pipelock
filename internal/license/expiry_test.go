@@ -201,6 +201,9 @@ func TestShouldEmitExpiryWarningIdempotentPerBand(t *testing.T) {
 	if !ShouldEmitExpiryWarning(current, ExpiryWarningState{LicenseID: "lic_test", Band: "early", ThresholdDays: 15}) {
 		t.Fatal("a skipped intermediate band must not suppress the current band")
 	}
+	if !ShouldEmitExpiryWarning(current, ExpiryWarningState{LicenseID: "lic_test", Band: "early", ThresholdDays: 8}) {
+		t.Fatal("a state from a different named band must not suppress the current band when their threshold days match")
+	}
 	if !ShouldEmitExpiryWarning(current, ExpiryWarningState{LicenseID: "lic_other", Band: "mid", ThresholdDays: 8}) {
 		t.Fatal("license change should emit")
 	}

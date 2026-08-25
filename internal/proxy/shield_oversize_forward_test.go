@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,7 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 	wantReason := shieldOversizeBlockReason(upstreamURL.Hostname(), len(body), cfg.BrowserShield.MaxShieldBytes)
+	wantOutcomePattern := receiptOutcomePattern(strconv.Itoa(http.StatusForbidden), 0, "shield_oversize")
 
 	proxySrv := newIPv4Server(t, p.buildHandler(p.buildMux()))
 	t.Cleanup(proxySrv.Close)
@@ -135,10 +137,17 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		if err != nil {
 			t.Fatalf("unmarshal receipt: %v", err)
 		}
-		// The forward transport records a terminal OUTCOME receipt naming the
-		// reason, rather than the fetch path's block receipt. Assert the
-		// evidence this transport actually produces.
-		if strings.Contains(recorded.ActionRecord.Pattern, "shield_oversize") {
+		// The forward transport records a terminal OUTCOME receipt rather than
+		// the fetch path's block receipt, so match its exact composed pattern.
+		// A substring match on "shield_oversize" alone would pass on any
+		// receipt that merely mentions the layer, which proves nothing.
+		//
+		// Note what this pins down: the outcome receipt carries the SHORT
+		// reason only. The detailed text naming the cap and its remedies goes
+		// to the client but never into the evidence chain, so an auditor
+		// reading receipts cannot see which limit fired. Recorded as adjacent
+		// work rather than widened into this change.
+		if recorded.ActionRecord.Pattern == wantOutcomePattern {
 			found = true
 			if err := receipt.VerifyInternalConsistencyOnly(recorded); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
@@ -146,6 +155,6 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		}
 	}
 	if !found {
-		t.Fatal("forward path emitted no receipt naming shield_oversize")
+		t.Fatalf("forward path emitted no outcome receipt with pattern %q", wantOutcomePattern)
 	}
 }

@@ -260,6 +260,24 @@ func (e *EntitlementDB) CountActiveEvalForEmail(ctx context.Context, normalizedE
 	return count, nil
 }
 
+// CountActiveTrialForEmail returns the number of active, unexpired trial
+// entitlements for a normalized email. Used to enforce one active trial per
+// email at mint time, mirroring the Enterprise Eval rule. It bounds only
+// same-email repeats; a fresh email is a new trial by design, which is
+// acceptable because trials gate multi-agent coordination and never detection.
+func (e *EntitlementDB) CountActiveTrialForEmail(ctx context.Context, normalizedEmail string, now time.Time) (int, error) {
+	const query = `
+	SELECT COUNT(*) FROM entitlements
+	WHERE tier = ? AND status = ? AND customer_email = ? AND current_period_end > ?
+	`
+	var count int
+	err := e.db.QueryRowContext(ctx, query, tierTrial, statusActive, normalizedEmail, now.UTC()).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count active trial for %s: %w", normalizedEmail, err)
+	}
+	return count, nil
+}
+
 // ErrEvalOrderNotMintable means the eval order's persisted state changed (refund,
 // revocation, or an existing mint) between validation and the mint transaction,
 // so minting must be refused.

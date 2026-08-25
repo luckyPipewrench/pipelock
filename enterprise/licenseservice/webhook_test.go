@@ -95,6 +95,26 @@ func newTestSetup(t *testing.T) *testSetup {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/v1/orders/") {
 			orderID := strings.TrimPrefix(r.URL.Path, "/v1/orders/")
+			// Zero-amount trial orders: order_free_<n>_<email-local-part>
+			// maps to the prod_trial_free product so tests can vary the
+			// customer email per order and exercise the per-email dedupe.
+			if rest, ok := strings.CutPrefix(orderID, "order_free_"); ok {
+				email := testCustomerEmail
+				if _, local, found := strings.Cut(rest, "_"); found {
+					email = local + "@example.com"
+				}
+				_, _ = fmt.Fprintf(w, `{
+					"id": %q,
+					"billing_reason": "purchase",
+					"status": "paid",
+					"paid": true,
+					"net_amount": 0,
+					"currency": "usd",
+					"customer": {"email": %q, "metadata": {}},
+					"product": {"id": "prod_trial_free", "name": "Pipelock Pro Trial", "metadata": {"pipelock_tier": "trial"}}
+				}`, orderID, email)
+				return
+			}
 			productID, tier := "prod_trial", tierTrial
 			org := "testcorp"
 			if orderID == "order_trial_123" {
@@ -155,6 +175,7 @@ func newTestSetup(t *testing.T) *testSetup {
 		OrderProducts: []OrderProductConfig{
 			{ProductID: "prod_trial", Tier: tierTrial, AmountCents: 100, Currency: "usd"},
 			{ProductID: "prod_trial_test", Tier: tierTrial, AmountCents: 100, Currency: "usd"},
+			{ProductID: "prod_trial_free", Tier: tierTrial, AmountCents: 0, Currency: "usd"},
 		},
 	}
 
@@ -3004,5 +3025,81 @@ func TestHandleOrderEvent_ReplayIsIdempotent(t *testing.T) {
 	}
 	if !ent2.CurrentPeriodEnd.Equal(firstPeriodEnd) {
 		t.Errorf("replay changed period end: got %v, want %v (stable)", ent2.CurrentPeriodEnd, firstPeriodEnd)
+	}
+}
+
+// zeroTrialOrderEvent builds an order.created event for the zero-amount trial
+// product with the given order ID and customer email.
+func zeroTrialOrderEvent(t *testing.T, orderID, email string) *PolarWebhookEvent {
+	t.Helper()
+	orderData, err := json.Marshal(map[string]interface{}{
+		"id":             orderID,
+		"billing_reason": "purchase",
+		"status":         "paid",
+		"paid":           true,
+		"net_amount":     0,
+		"currency":       "usd",
+		"customer": map[string]interface{}{
+			"email":    email,
+			"metadata": map[string]string{},
+		},
+		"product": map[string]interface{}{
+			"id":       "prod_trial_free",
+			"name":     "Pipelock Pro Trial",
+			"metadata": map[string]string{"pipelock_tier": "trial"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal order data: %v", err)
+	}
+	return &PolarWebhookEvent{Type: EventOrderCreated, Data: json.RawMessage(orderData)}
+}
+
+func TestHandleOrderEvent_ZeroAmountTrialMintsOncePerEmail(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	// First zero-amount trial order mints.
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_1_alpha", "alpha@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent first trial: %v", err)
+	}
+	ent, err := ts.db.GetBySubscriptionID(ctx, "order_free_1_alpha")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent == nil || ent.Tier != tierTrial || ent.LastLicenseID == "" {
+		t.Fatalf("first zero-amount trial did not mint: %+v", ent)
+	}
+
+	// A webhook replay of the SAME order stays idempotent: no error, no
+	// second entitlement, and the per-email dedupe must not trip on the
+	// entitlement this order created itself.
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_1_alpha", "alpha@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent replay: %v", err)
+	}
+
+	// A SECOND order for the same email is refused: acknowledged without a
+	// mint, so webhook retries stop, but no new entitlement appears.
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_2_alpha", "alpha@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent duplicate-email trial: %v", err)
+	}
+	dup, err := ts.db.GetBySubscriptionID(ctx, "order_free_2_alpha")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID duplicate: %v", err)
+	}
+	if dup != nil {
+		t.Fatalf("second trial for the same email minted an entitlement: %+v", dup)
+	}
+
+	// A different email still mints normally.
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_3_beta", "beta@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent second email: %v", err)
+	}
+	other, err := ts.db.GetBySubscriptionID(ctx, "order_free_3_beta")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID other: %v", err)
+	}
+	if other == nil || other.LastLicenseID == "" {
+		t.Fatalf("trial for a different email did not mint: %+v", other)
 	}
 }

@@ -237,7 +237,14 @@ func LoadConfig() (*Config, error) {
 		if !validTiers[product.Tier] || product.Tier != tierTrial {
 			return nil, fmt.Errorf("ORDER_PRODUCTS product %s has invalid one-time tier %q", product.ProductID, product.Tier)
 		}
-		if product.AmountCents <= 0 {
+		// A trial is deliberately a zero-amount product; every other one-time
+		// tier must carry a real price so a misconfigured paid product can
+		// never silently become free.
+		if product.Tier == tierTrial {
+			if product.AmountCents < 0 {
+				return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set a non-negative amount_cents", product.ProductID)
+			}
+		} else if product.AmountCents <= 0 {
 			return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set positive amount_cents", product.ProductID)
 		}
 		if product.Currency == "" {

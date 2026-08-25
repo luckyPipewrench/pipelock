@@ -950,6 +950,29 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 		return fmt.Errorf("load existing entitlement for order %s: %w", order.ID, err)
 	}
 
+	// One active trial per normalized email, mirroring the Enterprise Eval
+	// rule. Checked only for a FIRST processing of this order: a webhook
+	// replay of an already-processed order must stay idempotent rather than
+	// tripping over the entitlement it created itself. Fail closed on a
+	// normalization or count error: never mint on an unverifiable state.
+	if tier == tierTrial && existing == nil {
+		email, err := NormalizeEmail(order.Customer.Email)
+		if err != nil {
+			return fmt.Errorf("normalize trial email for order %s: %w", order.ID, err)
+		}
+		active, err := h.db.CountActiveTrialForEmail(ctx, email, time.Now())
+		if err != nil {
+			return fmt.Errorf("count active trial for order %s: %w", order.ID, err)
+		}
+		if active > 0 {
+			_ = h.ledger.LogError(order.ID, "trial denied", fmt.Errorf("an active trial already exists for this email"))
+			h.log.Info().
+				Str("order_id", order.ID).
+				Msg("ignoring trial order: an active trial already exists for this email")
+			return nil
+		}
+	}
+
 	var periodEnd time.Time
 	if existing != nil {
 		periodEnd = existing.CurrentPeriodEnd

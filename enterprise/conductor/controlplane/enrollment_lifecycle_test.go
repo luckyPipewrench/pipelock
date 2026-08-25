@@ -469,6 +469,21 @@ func TestCreateEnrollmentTokenKeepsPendingStateAfterPostRenameSyncFailure(t *tes
 	if len(tokens) != 1 || tokens[0].State != EnrollmentTokenStatePending {
 		t.Fatalf("tokens after post-rename failure = %+v, want one pending token", tokens)
 	}
+
+	// The rename succeeded and only the directory sync failed, so the token is
+	// already on disk. Asserting against the same in-memory store cannot show
+	// that; reopening the file is what proves the retained state is durable.
+	reopened, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reopen) error = %v", err)
+	}
+	persisted, err := reopened.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{TokenID: tokenID, Now: testNow})
+	if err != nil {
+		t.Fatalf("ListEnrollmentTokens(reopened) error = %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].State != EnrollmentTokenStatePending {
+		t.Fatalf("tokens from reopened store = %+v, want one pending token", persisted)
+	}
 }
 
 func TestConsumeEnrollmentTokenRollsBackBeforeRenameFailure(t *testing.T) {
@@ -537,6 +552,19 @@ func TestConsumeEnrollmentTokenKeepsConsumedStateAfterPostRenameSyncFailure(t *t
 	}
 	if _, err := store.ResolveEnrolledAuditKey(identity, request.AuditKeyID); err != nil {
 		t.Fatalf("ResolveEnrolledAuditKey() error = %v, want enrolled key", err)
+	}
+
+	// Same reason as the create case: prove the consumed state and the enrolled
+	// key survived to disk rather than only to the in-memory map.
+	reopened, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reopen) error = %v", err)
+	}
+	if _, err := reopened.ConsumeEnrollmentToken(context.Background(), request); !errors.Is(err, ErrEnrollmentTokenConsumed) {
+		t.Fatalf("ConsumeEnrollmentToken(reopened) error = %v, want ErrEnrollmentTokenConsumed", err)
+	}
+	if _, err := reopened.ResolveEnrolledAuditKey(identity, request.AuditKeyID); err != nil {
+		t.Fatalf("ResolveEnrolledAuditKey(reopened) error = %v, want enrolled key", err)
 	}
 }
 

@@ -1231,6 +1231,13 @@ func TestRemoveEnrolledFollowerKeepsTombstoneAfterPostRenameSyncFailure(t *testi
 	identity := defaultFollowerIdentity()
 	mustEnrollFollower(t, store, "tok-post-rename-sync", identity, "audit-key-post-rename-sync")
 
+	// Removal deletes the follower's runtime status alongside the enrollment.
+	// Without a status present that branch never runs, so the test would pass
+	// while the changed deletion path stayed unexercised.
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.2.3", strings.Repeat("f", 64))); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+
 	originalSyncDirectory := syncDirectory
 	syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
 	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
@@ -1248,12 +1255,27 @@ func TestRemoveEnrolledFollowerKeepsTombstoneAfterPostRenameSyncFailure(t *testi
 		t.Fatalf("followers after post-rename sync failure = %+v, want tombstone hidden from roster", followers)
 	}
 
+	liveStatuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(liveStatuses) != 0 {
+		t.Fatalf("runtime statuses after post-rename sync failure = %+v, want the removed follower's status gone", liveStatuses)
+	}
+
 	reloaded, err := OpenFileEnrollmentStore(path)
 	if err != nil {
 		t.Fatalf("OpenFileEnrollmentStore(reload) error = %v", err)
 	}
 	if _, err := reloaded.ResolveEnrolledAuditKey(identity, "audit-key-post-rename-sync"); !errors.Is(err, conductor.ErrSignatureVerification) {
 		t.Fatalf("ResolveEnrolledAuditKey(reload) error = %v, want signature verification failure", err)
+	}
+	reloadedStatuses, err := reloaded.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus(reload) error = %v", err)
+	}
+	if len(reloadedStatuses) != 0 {
+		t.Fatalf("runtime statuses from reopened store = %+v, want the removal to have persisted", reloadedStatuses)
 	}
 }
 
@@ -1301,6 +1323,20 @@ func TestUpsertFollowerRuntimeStatusKeepsStatusAfterPostRenameSyncFailure(t *tes
 	}
 	if len(statuses) != 1 || statuses[0].PipelockVersion != want.PipelockVersion {
 		t.Fatalf("statuses after post-rename failure = %+v, want %+v", statuses, want)
+	}
+
+	// The rename committed and only the directory sync failed, so the status is
+	// on disk. Reopening is what proves that rather than the in-memory map.
+	reopened, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reopen) error = %v", err)
+	}
+	persisted, err := reopened.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus(reopened) error = %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].PipelockVersion != want.PipelockVersion {
+		t.Fatalf("statuses from reopened store = %+v, want %+v", persisted, want)
 	}
 }
 

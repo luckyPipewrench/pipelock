@@ -71,6 +71,12 @@ func TestDefaultScenarios_PublicContract(t *testing.T) {
 		if s.ExpectedLayer != w.layer {
 			t.Errorf("%s layer = %q, want %q", s.ID, s.ExpectedLayer, w.layer)
 		}
+		if s.ExpectedVerdict == verdictBlock && s.RedactedShape == "" {
+			t.Errorf("%s blocked scenario missing redacted shape", s.ID)
+		}
+		if s.ExpectedVerdict == verdictAllow && s.RedactedShape != "" {
+			t.Errorf("%s allowed scenario unexpectedly has redacted shape %q", s.ID, s.RedactedShape)
+		}
 	}
 }
 

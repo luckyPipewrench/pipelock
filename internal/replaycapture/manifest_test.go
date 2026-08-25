@@ -64,6 +64,9 @@ func TestBuildManifest_BindsPacketAndReceipts(t *testing.T) {
 	if m.CompletenessNote == "" {
 		t.Errorf("completeness note must be present")
 	}
+	if m.RedactedShape != scenario.RedactedShape {
+		t.Errorf("redacted shape = %q, want %q", m.RedactedShape, scenario.RedactedShape)
+	}
 	// The blocked scenario must carry its block receipt view.
 	var sawBlock bool
 	for _, v := range m.Receipts {

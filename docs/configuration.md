@@ -1771,6 +1771,8 @@ Fragment reassembly detects known DLP patterns inside the configured byte and ti
 
 Suppress known false positives by rule name and path/URL pattern.
 
+Top-level suppressions cannot name immutable core DLP or core response patterns. Pipelock rejects those entries at startup and reload so a scoped exception cannot remove the minimum safety floor. Use `dlp.patterns[].exempt_domains` for a URL destination exception on a configurable DLP pattern. The core URL floor does not consult that field, and core body, header, URL, and response false positives require a pattern precision fix.
+
 ```yaml
 suppress:
   - rule: "Jailbreak Attempt"
@@ -1780,7 +1782,7 @@ suppress:
 
 | Field | Description |
 |-------|-------------|
-| `rule` | Pattern/rule name to suppress (required) |
+| `rule` | Non-core pattern/rule name to suppress (required). Core floor names fail validation. |
 | `path` | Exact path, glob, or URL suffix (required) |
 | `reason` | Human-readable justification |
 

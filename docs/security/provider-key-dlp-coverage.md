@@ -67,6 +67,8 @@ suppress:
 `suppress` covers request-body and request-header findings on the same provider
 route. The same key remains blocked on every other destination.
 
+The shipped provider-key suppressions name only configurable provider patterns. None target immutable core DLP names, which cannot be suppressed.
+
 ## Provider-Opaque Fields
 
 Some provider APIs legitimately carry long opaque identifiers or provider-bound

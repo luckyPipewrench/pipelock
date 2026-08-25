@@ -33,7 +33,7 @@ pipelock logs --file pipelock-audit.log --last 50
 pipelock logs --file pipelock-audit.log --filter blocked
 ```
 
-Each finding includes an `event` field and the `scanner` that triggered. For DLP findings, the `reason` field names the matched pattern (e.g., "AWS Access ID", "GitHub Token"). For response scanning, the `patterns` field lists which patterns matched. Use these names when writing suppressions.
+Each finding includes an `event` field and the `scanner` that triggered. For DLP findings, the `reason` field names the matched pattern (e.g., "AWS Access ID", "GitHub Token"). For response scanning, the `patterns` field lists which patterns matched. Non-core names can be used in suppressions; core floor names require a pattern precision fix.
 
 ## Seeing What Matched
 
@@ -58,16 +58,16 @@ The recorder keeps receipt and decision context, but sensitive content is redact
 
 ## Suppressing Specific Findings
 
-Add suppressions to your config when you know a finding is safe. Each entry takes a `rule` (pattern name), `path` (URL or glob pattern), and optional `reason` for the audit trail.
+Add suppressions to your config when you know a non-core finding is safe. Each entry takes a `rule` (pattern name), `path` (URL or glob pattern), and optional `reason` for the audit trail. Core DLP and core response floor names fail validation at startup and reload.
 
 ```yaml
 suppress:
-  - rule: "AWS Access ID"
+  - rule: "Internal Provider API Key"
     path: "api.example.com/v2/*"
-    reason: "Internal service uses AKIA-prefixed keys for test accounts"
-  - rule: "AWS Access ID"
+    reason: "Provider-bound credential on its first-party endpoint"
+  - rule: "Jailbreak Attempt"
     path: "internal-testing.example.com/*"
-    reason: "Test environment uses canary-format keys"
+    reason: "Test environment contains a known non-core fixture"
 ```
 
 Suppressed findings still appear in logs with `suppressed: true`, so you can review them later.
@@ -113,11 +113,11 @@ dlp:
         - "internal-testing.example.com"
 ```
 
-This keeps the pattern active everywhere else while skipping it for the specified domain.
+This keeps the configurable pattern active everywhere else while skipping it for the specified domain. It does not change the compiled core URL floor, which does not consult operator exemptions.
 
 ### Suppressing specific findings
 
-For URL-path-level suppression (finer than domain exemption), use `suppress` entries at the top level of your config. See the [Suppressing Specific Findings](#suppressing-specific-findings) section above.
+For non-core body and header findings, use `suppress` entries at the top level of your config. URL DLP does not consult this list. See the [Suppressing Specific Findings](#suppressing-specific-findings) section above.
 
 For custom provider API keys, use both controls together: add `exempt_domains` on the DLP pattern for URL scans to the provider's own host, and add a matching `suppress` entry for body/header findings on that provider URL. The built-in provider-key rules already do this for their documented hosts.
 
@@ -164,16 +164,16 @@ Response injection patterns can flag legitimate content: documentation about AI 
 
 There are two knobs here and they are not interchangeable. Start with the narrow one.
 
-**One pattern firing on one destination: use `suppress`.** This drops only the named pattern for URLs matching the path glob, and leaves every other response control on that host intact. It is the right fix for the common case of a single injection or solicitation pattern matching legitimate prose.
+**One non-core pattern firing on one destination: use `suppress`.** This drops only the named non-core pattern for URLs matching the path glob, and leaves every other response control on that host intact. Core response floor patterns cannot be suppressed and require a pattern precision fix.
 
 ```yaml
 suppress:
-  - rule: "Prompt Injection"
+  - rule: "Jailbreak Attempt"
     path: "*docs.vendor.example*"
     reason: "vendor docs explain injection defenses in prose"
 ```
 
-Suppressions apply per normalization pass, including the compiled-in core patterns, so a suppressed match cannot mask a later encoded finding on the same body. Suppressed findings still appear in logs with `suppressed: true`.
+Suppressions apply per normalization pass to configurable patterns, so a suppressed match cannot mask a later encoded finding on the same body. Compiled core matches are never suppression candidates. Suppressed non-core findings still appear in logs with `suppressed: true`.
 
 **Whole-host trust: use `exempt_domains`, and know what it costs.** This is the broadest response-side control. For forward-proxy and TLS-intercepted traffic, an exempt host's response streams through untouched: no injection scan, and also no media metadata strip, no Browser Shield rewrite, and no response scan-cap block. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. Reach for it when you trust the host wholesale or need large downloads byte-intact, not to silence one pattern.
 
@@ -238,17 +238,17 @@ cross_request_detection:
 
 | Scenario | Scanner | Pattern | Fix |
 |----------|---------|---------|-----|
-| API returns docs about prompt injection | response | Prompt Injection | Add a `suppress` entry for `Prompt Injection` scoped to that host's URLs. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
+| API returns docs that trigger a non-core response rule | response | Jailbreak Attempt | Add a `suppress` entry for `Jailbreak Attempt` scoped to that host's URLs. Core response floor matches require a pattern precision fix. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
 | URL contains UUID path segments | entropy | (path entropy) | Raise `entropy_threshold` or add to `subdomain_entropy_exclusions` |
 | Base64-encoded JWT in Authorization header | dlp | JWT Token | Add per-pattern `exempt_domains` for the auth provider |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
 | Service with long hex/base32 subdomain labels | subdomain_entropy | (structural hostname-exfil signal) | Add the host to `subdomain_entropy_exclusions` (raising the threshold does not allow encoded labels) |
-| Internal API keys matching AWS format, in a URL or query | dlp | AWS Access ID | Add `exempt_domains` to the `AWS Access ID` pattern, copying the built-in `regex` and `severity` into the override: a same-name entry REPLACES the built-in, so an override that omits them silently disables the detection instead of narrowing it. See [per-pattern domain exemptions](#per-pattern-domain-exemptions) for the complete form. URL scanning does not consult top-level `suppress`, so a `suppress` entry is inert for this case |
-| Internal API keys matching AWS format, in a request body or header | dlp | AWS Access ID | Add a `suppress` entry with the rule name, a path glob, and a reason |
+| Internal API keys matching AWS format, in a URL or query | core_dlp | AWS Access ID | The compiled core URL floor does not consult `suppress` or operator `exempt_domains`. Fix the pattern precision; structurally valid S3 presigned URLs already use the narrow built-in carve-out described below |
+| Internal API keys matching AWS format, in a request body or header | body_dlp/header_dlp | AWS Access ID | Core DLP names cannot be suppressed. Fix the pattern precision or use a distinct non-core custom pattern for a different credential format |
 | GET to an AWS S3 presigned URL (issuer's bucket) | dlp | AWS Access ID | None required — handled automatically. The scanner detects a structurally valid SigV4 query set (all five parameters required exactly once: `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential=<KeyID>/<YYYYMMDD>/<region>/<service>/aws4_request`, `X-Amz-Date`, `X-Amz-Signature`, `X-Amz-Expires` as a positive integer) hosted on an `amazonaws.com` (or `amazonaws.com.cn`) endpoint, and exempts only the access-key component inside the credential value. The same access-key elsewhere in the URL — path, hostname, other query params, ordered subsequence concatenation — still blocks. Duplicate fields, mismatched scope dates, overlong key prefixes, non-AWS hosts, and bogus algorithms all fall back to normal DLP. SigV4 carve-outs are adaptive-neutral: they neither poison the threat score nor earn clean-decay. An `X-Amz-Expires` above 24h attaches an info-tier `SigV4 Long Expiry` warn finding for audit visibility but does not block. |
 | WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Add `exempt_domains` to the `Environment Variable Secret` pattern for the WebSocket upstream host, or a `suppress` entry scoped to that upstream URL |
 | Test fixtures containing fake secrets | dlp | (multiple) | Use `pipelock:ignore` inline comments |
-| Security research site with injection examples | response | Credential Solicitation | Add a `suppress` entry for `Credential Solicitation` scoped to that host's URLs. Suppression reaches the core patterns, so overriding the pattern in `response_scanning.patterns` is not required and does not work on its own |
+| Security research site with injection examples | core_response | Credential Solicitation | Core response floor names cannot be suppressed. Fix the pattern precision, or make the broader whole-host trust decision with `response_scanning.exempt_domains` |
 | Hash-based object storage paths | entropy | (path entropy) | Add storage domain to `subdomain_entropy_exclusions` |
 
 ## Transitioning from Audit to Enforcement

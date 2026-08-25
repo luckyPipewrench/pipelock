@@ -22,8 +22,9 @@ import (
 
 // mcpExplainReport is the structured form of an `explain mcp-response` verdict.
 // Like explainReport, the remediation block is the load-bearing part: for an
-// MCP response block it names the EXACT per-server suppress entry that lifts the
-// block without weakening any other server or scanner.
+// non-core MCP response block it names the exact per-server suppress entry that
+// lifts the block without weakening any other server or scanner. Core floor
+// blocks instead direct the operator to fix pattern precision.
 type mcpExplainReport struct {
 	ConfigFile  string                 `json:"config_file"`
 	Mode        string                 `json:"mode"`
@@ -67,11 +68,12 @@ func explainMCPResponseCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "mcp-response",
-		Short: "Explain an MCP response block and the exact per-server suppression knob",
+		Short: "Explain an MCP response block and its narrowest remediation",
 		Long: `Read a single JSON-RPC 2.0 MCP response from stdin, scan it for prompt
 injection exactly as the MCP response scanner would, and explain any block - naming
-the EXACT suppress entry that lifts it for one server without weakening any
-other server or any other scanner.
+the exact suppress entry that lifts a non-core finding for one server without
+weakening any other server or scanner. Core floor findings cannot be suppressed
+and require a pattern precision fix.
 
 Unlike URL DLP, MCP response scanning consults the top-level suppress: list
 scoped by a per-server target ("mcp://<server-name>/response"). The remediation
@@ -213,6 +215,11 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 	report.Allowed = report.Action == config.ActionWarn
 	if !report.Allowed && len(verdict.DLPMatches) == 0 {
 		report.Remediation = mcpExplainRemediationFor(report.Patterns, serverName)
+		for _, pattern := range report.Patterns {
+			if config.IsCoreResponsePatternName(pattern) {
+				report.Notes = append(report.Notes, "core response floor finding "+pattern+" cannot be suppressed; fix the pattern precision in a release.")
+			}
+		}
 	}
 	if len(verdict.DLPMatches) > 0 {
 		report.Notes = append(report.Notes, "inbound DLP findings cannot be suppressed through response_scanning; Pipelock blocks them when this server's trust action is block.")
@@ -261,16 +268,23 @@ func dedupeMCPResponsePatternNames(responseMatches []scanner.ResponseMatch, dlpM
 }
 
 // mcpExplainRemediationFor builds the per-server suppress remediation: one
-// entry per blocking pattern, scoped to this server's response target.
+// entry per non-core blocking pattern, scoped to this server's response target.
+// A nil result means every finding belongs to the immutable core floor.
 func mcpExplainRemediationFor(patterns []string, serverName string) *mcpExplainRemediation {
 	target := mcpResponseTargetDisplay(serverName)
 	entries := make([]config.SuppressEntry, 0, len(patterns))
 	for _, p := range patterns {
+		if config.IsCoreResponsePatternName(p) {
+			continue
+		}
 		entries = append(entries, config.SuppressEntry{
 			Rule:   p,
 			Path:   target,
 			Reason: "false positive on first-party server " + serverNameOrPlaceholder(serverName),
 		})
+	}
+	if len(entries) == 0 {
+		return nil
 	}
 	return &mcpExplainRemediation{
 		SuppressEntries:    entries,

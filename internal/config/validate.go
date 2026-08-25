@@ -2586,7 +2586,7 @@ func (c *Config) validateSuppress() error {
 			return fmt.Errorf("suppress entry %d missing required field \"rule\"", i)
 		}
 		if IsCoreDLPPatternName(s.Rule) {
-			return fmt.Errorf("suppress entry %d rule %q targets a core floor pattern; core floor patterns cannot be suppressed: use dlp.patterns[].exempt_domains for URL destination exceptions, or tighten the pattern to fix body and header false positives", i, s.Rule)
+			return fmt.Errorf("suppress entry %d rule %q targets a core floor pattern; core floor patterns cannot be suppressed: dlp.patterns[].exempt_domains applies only to configurable URL DLP patterns, so fix this core pattern's precision", i, s.Rule)
 		}
 		if IsCoreResponsePatternName(s.Rule) {
 			return fmt.Errorf("suppress entry %d rule %q targets a core floor pattern; core floor patterns cannot be suppressed: tighten the response pattern to fix the false positive", i, s.Rule)

@@ -68,7 +68,7 @@ const (
 )
 
 const (
-	bodyDLPOperatorKnob        = "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."
+	bodyDLPOperatorKnob        = "Request body DLP matched. For a non-core false positive, add a top-level `suppress:` entry with `rule:` set to the matched rule name and `path:` scoped to the request path. Core DLP matches cannot be suppressed; fix the core pattern's precision."
 	bodyEntropyOperatorKnob    = "If this destination is trusted to receive opaque body or WebSocket-frame content, add only that host to `request_body_scanning.content_entropy_exclusions`; for a WebSocket-only endpoint, prefer `websocket_proxy.content_entropy_exclusions`. `trusted_domains` is broader because it also affects SSRF trust."
 	bodyEntropyOperatorBroader = "Raising `request_body_scanning.content_entropy_threshold` or setting `request_body_scanning.content_entropy_action: warn` affects opaque body/frame entropy for every destination; prefer a per-host exclusion first."
 	denialOfWalletOperatorKnob = "Correct the denial-of-wallet condition named by the reason. `runaway expansion` and alternating `cycle detected` use fixed detector thresholds and have no per-detector limit knob. " +
@@ -76,8 +76,8 @@ const (
 	denialOfWalletToolCallsOperatorKnob = "Raise `agents._default.budget.max_tool_calls_per_session` (or the matched `agents.<name>.budget.max_tool_calls_per_session`) if the DoW subject's per-window tool-call budget is intentionally higher."
 	denialOfWalletWallClockOperatorKnob = "Raise `agents._default.budget.max_wall_clock_minutes` (or the matched `agents.<name>.budget.max_wall_clock_minutes`) if the DoW subject's per-window active time is intentionally longer-lived."
 	denialOfWalletRetriesOperatorKnob   = "Raise `agents._default.budget.max_retries_per_tool` (or the matched `agents.<name>.budget.max_retries_per_tool`) if repeated identical calls are expected."
-	responseScanOperatorKnob            = "For a false-positive response finding, add a top-level `suppress:` entry with `rule:` set to the event's matched pattern and `path:` scoped to the exact request path. `response_scanning.exempt_domains` is broader: it disables injection scanning for every response from that host."
-	headerDLPOperatorKnob               = "For a false-positive header finding, add a top-level `suppress:` entry with `rule:` set to the matched DLP pattern and `path:` scoped to the exact request path. Header scanning calls this suppression list before enforcing the finding."
+	responseScanOperatorKnob            = "For a non-core false-positive response finding, add a top-level `suppress:` entry with `rule:` set to the event's matched pattern and `path:` scoped to the exact request path. Core response floor matches cannot be suppressed; fix the core pattern's precision. `response_scanning.exempt_domains` is broader: it disables injection scanning for every response from that host."
+	headerDLPOperatorKnob               = "For a non-core false-positive header finding, add a top-level `suppress:` entry with `rule:` set to the matched DLP pattern and `path:` scoped to the exact request path. Core DLP matches cannot be suppressed; fix the core pattern's precision."
 	bodyPromptInjectionOperatorKnob     = "Correct the outbound request body. The only destination carve-out this hard-block path consults is `response_scanning.exempt_domains`; adding a host there also disables injection scanning for every inbound response from that host, so it is a broad trust decision rather than a single-finding suppression."
 	addressProtectionOperatorKnob       = "After independently verifying the intended destination, add the exact address to `address_protection.allowed_addresses` (or the matched `agents.<name>.allowed_addresses`). Do not weaken similarity thresholds to approve one address."
 	chainDetectionOperatorKnob          = "If the event's named chain is expected, set that exact key under `tool_chain_detection.pattern_overrides` to `warn`; for a custom pattern, narrow its `sequence` or `action`. This changes only that named pattern."
@@ -99,7 +99,7 @@ const (
 	responseSizeOperatorKnob            = "Raise only the exact transport response ceiling named in the reason. A `response_scanning.size_exempt_domains` entry is not a universal override: fetch-handler response-size blocks do not consult it."
 	shieldOversizeOperatorKnob          = "Raise `browser_shield.max_shield_bytes` for the expected response size, or add only the trusted host to `browser_shield.exempt_domains`. Changing `browser_shield.oversize_action` to `warn` or `scan_head` permits incompletely shielded content and is broader."
 	contractOperatorKnob                = "Correct the action to match the active contract, or inspect and ratify a narrowly updated contract through the contract operator workflow. Disabling contract enforcement or broadening the manifest without review is not a safe remediation."
-	sseStreamOperatorKnob               = "For a false-positive SSE finding, add a top-level `suppress:` entry for the matched response rule and exact path. For event-size failures, raise `response_scanning.sse_streaming.max_event_bytes`; changing its action to `warn` affects every SSE finding."
+	sseStreamOperatorKnob               = "For a non-core false-positive SSE finding, add a top-level `suppress:` entry for the matched response rule and exact path. Core response floor matches cannot be suppressed; fix the core pattern's precision. For event-size failures, raise `response_scanning.sse_streaming.max_event_bytes`; changing its action to `warn` affects every SSE finding."
 	unscannableOperatorKnob             = "Remove or narrow the matching `response_scanning.unscannable_passthrough` entry to restore fail-closed scanning, or make the upstream response scannable. This event records an explicit full-content visibility gap; do not broaden the entry."
 	a2aScanOperatorKnob                 = "Correct the flagged A2A content. There is no per-finding suppression, and `a2a_scanning.action` is not a universal override: malformed/uninspectable payloads and hostname-exfiltration findings hard-block without consulting it."
 	a2aCardSignatureOperatorKnob        = "Sign the Agent Card with a key whose exact origin is authorized by `a2a_scanning.trusted_agent_card_keys`, or add the verified signer/origin pair there. Disabling signed-card requirements trusts every unsigned card and is broader."
@@ -258,7 +258,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 		AgentReason:  "Request blocked: the URL scheme is not permitted.",
 	},
 	ScannerCoreResponse: {
-		OperatorKnob: "Core response scanning cannot be disabled wholesale, even when `response_scanning.enabled` is false. For a proven false positive, `ScanResponseWithSuppress` does consult the top-level `suppress:` list: match the exact core pattern name and scope `path:` to the affected response path.",
+		OperatorKnob: "Core response scanning is an immutable safety floor and cannot be suppressed or disabled by config. If this is a genuine false positive, the pattern itself must be tightened in a release; there is no per-pattern config carve-out.",
 		Immutable:    true,
 		AgentReason:  "Response blocked: a prompt-injection pattern was detected.",
 	},

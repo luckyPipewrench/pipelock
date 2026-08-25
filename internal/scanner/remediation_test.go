@@ -392,13 +392,13 @@ func TestOperatorHintForResultResolvesAuditReasons(t *testing.T) {
 }
 
 func TestRemediationHintsDoNotRecommendInertKnobs(t *testing.T) {
-	t.Run("core response discloses scoped suppression", func(t *testing.T) {
+	t.Run("core response rejects inert suppression advice", func(t *testing.T) {
 		hint := OperatorHintForResult(ScannerCoreResponse, "core response pattern: role_override")
-		if !strings.Contains(hint, "top-level `suppress:`") || !strings.Contains(hint, "exact core pattern") {
-			t.Fatalf("core-response hint = %q, want its consulted scoped suppression", hint)
+		if strings.Contains(hint, "top-level `suppress:`") {
+			t.Fatalf("core-response hint = %q, recommends forbidden suppression", hint)
 		}
-		if !strings.Contains(hint, "cannot be disabled wholesale") {
-			t.Fatalf("core-response hint = %q, want immutable-wholesale distinction", hint)
+		if !strings.Contains(hint, "cannot be suppressed") || !strings.Contains(hint, "pattern itself must be tightened") {
+			t.Fatalf("core-response hint = %q, want immutable precision-fix guidance", hint)
 		}
 	})
 

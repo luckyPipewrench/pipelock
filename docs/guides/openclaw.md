@@ -317,11 +317,11 @@ curl http://localhost:3000/mcp
 
 ### DLP false positives
 
-If pipelock blocks legitimate traffic containing strings that match DLP patterns, add suppression rules to your config:
+If pipelock blocks legitimate traffic containing strings that match a non-core DLP pattern, add an exact-name suppression rule to your config. Core DLP names cannot be suppressed and require a pattern precision fix:
 
 ```yaml
 suppress:
-  - rule: "dlp_*"
+  - rule: "Internal Provider API Key"
     path: "*.example.com"
     reason: "Known safe endpoint"
 ```

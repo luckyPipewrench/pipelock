@@ -35,6 +35,8 @@ Rule names are case-insensitive. `pipelock:ignore credential in url` works.
 
 Add `suppress` entries to your pipelock config file to silence findings across file paths:
 
+Config suppression applies only to non-core rules. Pipelock rejects core DLP and core response floor names at startup and reload because those minimum protections cannot be removed by config.
+
 ```yaml
 suppress:
   - rule: "Credential in URL"

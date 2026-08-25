@@ -1706,16 +1706,18 @@ responseScanning:
 		return nil
 	}
 
-	// Response-scanning short-circuit. Runs AFTER the media policy branch
-	// above so disabling response scanning does not silently bypass image
-	// metadata stripping, audio/video blocks, or exposure events.
-	if !cfg.ResponseScanning.Enabled {
+	// Buffer shieldable responses when either response scanning or Browser
+	// Shield needs the body. These controls are independent: disabling
+	// injection scanning must not silently bypass an explicitly enabled shield.
+	// The buffered path below already enforces the normal and size-exempt memory
+	// ceilings used by forward and CONNECT.
+	if !cfg.ResponseScanning.Enabled && (rp.shieldEngine == nil || !cfg.BrowserShield.Enabled) {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
 		return nil
 	}
-	if revRespExempt {
+	if cfg.ResponseScanning.Enabled && revRespExempt {
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScanExempt(actx, revHost)
 		rp.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportReverse)
@@ -1758,6 +1760,14 @@ responseScanning:
 	// httputil.ReverseProxy auto-flushes text/event-stream per write, so
 	// the pipe writer's per-event Write reaches the client immediately.
 	if HasSingleSSEContentType(resp.Header) {
+		// Browser Shield has no SSE pipeline. Preserve streaming when response
+		// scanning is disabled instead of buffering an open-ended response that
+		// neither enabled control would inspect.
+		if !cfg.ResponseScanning.Enabled {
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
+			return nil
+		}
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		sseLayer := LayerSSEStream
 		sseOpts := SSEDispatchOptions{
@@ -2063,6 +2073,13 @@ responseScanning:
 		resp.Header.Del("ETag")
 		resp.Header.Del("Content-MD5")
 		resp.Header.Del("Digest")
+	}
+	if !cfg.ResponseScanning.Enabled {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+		recordReverseOutcome(resp.StatusCode, int64(len(body)), "complete")
+		return nil
 	}
 
 	// Scan the response text for injection patterns.

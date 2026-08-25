@@ -1995,6 +1995,7 @@ responseScanning:
 							Layer:          browserShieldLayer,
 							Pattern:        browserShieldPattern,
 							Severity:       browserShieldSeverity,
+							Shield:         summary,
 							Transport:      TransportReverse,
 							Method:         resp.Request.Method,
 							Target:         shieldReceiptTarget(resp.Request.URL.String()),
@@ -2008,7 +2009,21 @@ responseScanning:
 				default: // block: fail closed, same as every other transport
 					rp.logger.LogBlocked(actx, "shield_oversize", reason)
 					rp.metrics.RecordBlocked(revHost, "shield_oversize", 0, agent)
+					rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+					rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "shield_oversize")
+					emitReverseReceipt(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionBlock,
+						Layer:     "shield_oversize",
+						Pattern:   reason,
+						Transport: TransportReverse,
+						Method:    resp.Request.Method,
+						Target:    targetURL,
+						RequestID: requestID,
+						Agent:     agent,
+					})
 					replaceWithBlockReason(resp, reason)
+					recordReverseOutcome(http.StatusForbidden, int64(len(body)), "shield_oversize")
 					return nil
 				}
 			} else {

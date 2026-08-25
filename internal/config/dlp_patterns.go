@@ -3,7 +3,10 @@
 
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 //go:generate go run ./gen_dlp_presets.go
 
@@ -364,12 +367,12 @@ var coreOnlyDLPPatterns = []DLPPattern{
 // safety floor used by the scanner.
 func IsCoreDLPPatternName(name string) bool {
 	for _, coreName := range coreDLPPatternNames {
-		if name == coreName {
+		if strings.EqualFold(name, coreName) {
 			return true
 		}
 	}
 	for _, pattern := range coreOnlyDLPPatterns {
-		if name == pattern.Name {
+		if strings.EqualFold(name, pattern.Name) {
 			return true
 		}
 	}

@@ -22,7 +22,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
-const oversizeShieldTail = "<footer>tail-must-remain-byte-for-byte</footer></body></html>"
+const (
+	oversizeShieldTail    = "<footer>tail-must-remain-byte-for-byte</footer></body></html>"
+	oversizeShieldTestCap = 2048
+)
 
 // oversizeShieldPage returns an HTML page carrying a tracking pixel, larger
 // than the cap the test sets. The pixel is what proves whether the shield ran:
@@ -40,17 +43,18 @@ func oversizeShieldPage(minBytes int) string {
 // reverseShieldOversizeHarness serves one oversized shieldable page through the
 // reverse proxy with the given strictness, oversize action, and deliberately
 // small cap.
-func reverseShieldOversizeHarness(t *testing.T, strictness, action string, capBytes int) *http.Response {
+func reverseShieldOversizeHarness(t *testing.T, strictness, action string, responseScanning bool) *http.Response {
 	t.Helper()
 
 	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = responseScanning
 	cfg.BrowserShield.Enabled = true
 	cfg.BrowserShield.Strictness = strictness
 	cfg.BrowserShield.StripTrackingPixels = true
-	cfg.BrowserShield.MaxShieldBytes = capBytes
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
 	cfg.BrowserShield.OversizeAction = action
 
-	page := oversizeShieldPage(capBytes * 2)
+	page := oversizeShieldPage(oversizeShieldTestCap * 2)
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("ETag", `"upstream"`)
@@ -91,7 +95,7 @@ func reverseShieldOversizeHarness(t *testing.T, strictness, action string, capBy
 // body reached the client. Every other transport honours oversize_action. This
 // is the fail-closed direction.
 func TestReverseProxy_ShieldOversize_BlockRefusesTheResponse(t *testing.T) {
-	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, 2048)
+	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, true)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
@@ -122,11 +126,24 @@ func TestReverseProxy_ShieldOversize_BlockRefusesTheResponse(t *testing.T) {
 	}
 }
 
+func TestReverseProxy_ShieldOversize_BlockRefusesWhenResponseScanningDisabled(t *testing.T) {
+	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("block with response scanning disabled returned status %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "tracker.vendor.example") {
+		t.Fatal("blocked response leaked the upstream tracking pixel")
+	}
+}
+
 // scan_head shields the first max_shield_bytes and passes the remainder
 // through. The pixel sits in the head, so it must be gone while the tail
 // survives intact.
 func TestReverseProxy_ShieldOversize_ScanHeadScrubsTheHead(t *testing.T) {
-	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeScanHead, 2048)
+	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeScanHead, true)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -156,7 +173,7 @@ func TestReverseProxy_ShieldOversize_ScanHeadScrubsTheHead(t *testing.T) {
 // warn is the deliberate pass-through: the operator asked to be told, not
 // protected. It must not block, and it must not pretend to have scrubbed.
 func TestReverseProxy_ShieldOversize_WarnPassesThrough(t *testing.T) {
-	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessMinimal, config.ShieldOversizeWarn, 2048)
+	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessMinimal, config.ShieldOversizeWarn, true)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -306,6 +323,55 @@ func TestReverseProxy_ShieldUnderCap_ScrubsWholeBody(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(body), "tracker.vendor.example") {
 		t.Fatal("under-cap body was not shielded")
+	}
+}
+
+// Browser Shield is independent of response injection scanning. Disabling the
+// latter must not make reverse responses bypass an explicitly enabled shield.
+func TestReverseProxy_ShieldRunsWhenResponseScanningDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
+	cfg.BrowserShield.StripTrackingPixels = true
+	cfg.BrowserShield.MaxShieldBytes = 1 << 20
+
+	page := "<html><body><img src=\"https://tracker.vendor.example/p.gif\" width=\"1\" height=\"1\"><p>small</p></body></html>"
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, page)
+	}))
+	t.Cleanup(upstreamSrv.Close)
+
+	upstreamURL, err := url.Parse(upstreamSrv.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	t.Cleanup(logger.Close)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+	proxySrv := httptest.NewServer(handler)
+	t.Cleanup(proxySrv.Close)
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("response status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if strings.Contains(string(body), "tracker.vendor.example") {
+		t.Fatal("Browser Shield was skipped when response scanning was disabled")
 	}
 }
 

@@ -42,3 +42,29 @@ func TestLoadBytesAllowsNonCoreSuppression(t *testing.T) {
 		t.Fatalf("LoadBytes rejected non-core suppression: %v", err)
 	}
 }
+
+func TestValidateSuppressionsRejectsInMemoryCoreEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{{Rule: "AWS Access ID", Path: "*"}}
+	if err := cfg.ValidateSuppressions(); err == nil {
+		t.Fatal("ValidateSuppressions accepted in-memory core floor suppression")
+	}
+
+	cfg.Suppress = []SuppressEntry{{Rule: "Anthropic API Key", Path: "*"}}
+	if err := cfg.ValidateSuppressions(); err != nil {
+		t.Fatalf("ValidateSuppressions rejected non-core suppression: %v", err)
+	}
+}
+
+func TestCoreResponsePatternNamesReturnsCopy(t *testing.T) {
+	names := CoreResponsePatternNames()
+	if len(names) == 0 || !IsCoreResponsePatternName(names[0]) {
+		t.Fatalf("CoreResponsePatternNames returned invalid registry: %v", names)
+	}
+
+	original := names[0]
+	names[0] = "modified by caller"
+	if fresh := CoreResponsePatternNames(); fresh[0] != original {
+		t.Fatalf("CoreResponsePatternNames exposed mutable registry: got %q, want %q", fresh[0], original)
+	}
+}

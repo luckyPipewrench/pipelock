@@ -14,6 +14,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +119,107 @@ func TestHandlerRejectsInvalidAuditBatch(t *testing.T) {
 				t.Fatalf("response leaked %q: %s", tc.mustHide, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandlerRemovedFollowerCannotIngestViaStaticAuditFallback(t *testing.T) {
+	// Premise: a follower removed from the live roster can still have audit
+	// batches accepted if a static trusted audit key matches the same
+	// identity, because CompositeAuditKeyResolver falls back to
+	// StaticAuditKeyResolver after ResolveEnrolledAuditKey fails. Removal
+	// must fail closed for future ingest even when that static key remains.
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	pub, priv := testAuditSigner(t)
+	issued, err := enrollments.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "tok-removed-static",
+		Identity: identity,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	if _, err := enrollments.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-1",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken() error = %v", err)
+	}
+
+	static, err := StaticAuditKeyResolver([]StaticAuditKey{{
+		KeyID: "audit-key-1",
+		Key: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		OrgID:      identity.OrgID,
+		FleetID:    identity.FleetID,
+		InstanceID: identity.InstanceID,
+	}})
+	if err != nil {
+		t.Fatalf("StaticAuditKeyResolver() error = %v", err)
+	}
+	sink := &captureAuditSink{}
+	handler := newAuditIngestTestHandler(t, sink, CompositeAuditKeyResolver(enrollments, static), 0)
+
+	payload := []byte(`{"entry":"ok"}`)
+	enrolled := postAuditBatch(t, handler, signedAuditIngestRequest(t, identity, payload, priv, testNow))
+	if enrolled.Code != http.StatusAccepted {
+		t.Fatalf("enrolled ingest status = %d body=%s, want 202", enrolled.Code, enrolled.Body.String())
+	}
+
+	if _, err := enrollments.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{
+		Identity: identity,
+		Now:      testNow,
+	}); err != nil {
+		t.Fatalf("RemoveEnrolledFollower() error = %v", err)
+	}
+
+	removed := postAuditBatch(t, handler, signedAuditIngestRequest(t, identity, payload, priv, testNow))
+	if removed.Code != http.StatusUnauthorized {
+		t.Fatalf("removed follower static-fallback ingest status = %d body=%s, want 401", removed.Code, removed.Body.String())
+	}
+	if len(sink.batches) != 1 {
+		t.Fatalf("sink batch count = %d, want 1 (only the enrolled ingest)", len(sink.batches))
+	}
+}
+
+func TestHandlerNeverEnrolledFollowerStillIngestsViaStaticAuditFallback(t *testing.T) {
+	// Static keys remain a bootstrap path for identities that were never on
+	// the roster. Removal-fail-closed must not take that path with it.
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	pub, priv := testAuditSigner(t)
+	static, err := StaticAuditKeyResolver([]StaticAuditKey{{
+		KeyID: "audit-key-1",
+		Key: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		OrgID:      identity.OrgID,
+		FleetID:    identity.FleetID,
+		InstanceID: identity.InstanceID,
+	}})
+	if err != nil {
+		t.Fatalf("StaticAuditKeyResolver() error = %v", err)
+	}
+	sink := &captureAuditSink{}
+	handler := newAuditIngestTestHandler(t, sink, CompositeAuditKeyResolver(enrollments, static), 0)
+	w := postAuditBatch(t, handler, signedAuditIngestRequest(t, identity, []byte(`{"entry":"ok"}`), priv, testNow))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("never-enrolled static-fallback ingest status = %d body=%s, want 202", w.Code, w.Body.String())
 	}
 }
 

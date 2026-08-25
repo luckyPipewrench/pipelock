@@ -1222,6 +1222,124 @@ func TestRemoveEnrolledFollowerRestoresRuntimeStatusOnSaveFailure(t *testing.T) 
 	}
 }
 
+func TestRemoveEnrolledFollowerKeepsTombstoneAfterPostRenameSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-post-rename-sync", identity, "audit-key-post-rename-sync")
+
+	// Removal deletes the follower's runtime status alongside the enrollment.
+	// Without a status present that branch never runs, so the test would pass
+	// while the changed deletion path stayed unexercised.
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.2.3", strings.Repeat("f", 64))); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+
+	originalSyncDirectory := syncDirectory
+	syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
+	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{Identity: identity, Now: testNow}); !errors.Is(err, errDurableWritePostRename) {
+		t.Fatalf("RemoveEnrolledFollower(post-rename sync failure) error = %v, want errDurableWritePostRename", err)
+	}
+	if _, err := store.ResolveEnrolledAuditKey(identity, "audit-key-post-rename-sync"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("ResolveEnrolledAuditKey() after post-rename sync failure error = %v, want signature verification failure", err)
+	}
+	followers, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers() error = %v", err)
+	}
+	if len(followers) != 0 {
+		t.Fatalf("followers after post-rename sync failure = %+v, want tombstone hidden from roster", followers)
+	}
+
+	liveStatuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(liveStatuses) != 0 {
+		t.Fatalf("runtime statuses after post-rename sync failure = %+v, want the removed follower's status gone", liveStatuses)
+	}
+
+	reloaded, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reload) error = %v", err)
+	}
+	if _, err := reloaded.ResolveEnrolledAuditKey(identity, "audit-key-post-rename-sync"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("ResolveEnrolledAuditKey(reload) error = %v, want signature verification failure", err)
+	}
+	reloadedStatuses, err := reloaded.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus(reload) error = %v", err)
+	}
+	if len(reloadedStatuses) != 0 {
+		t.Fatalf("runtime statuses from reopened store = %+v, want the removal to have persisted", reloadedStatuses)
+	}
+}
+
+func TestUpsertFollowerRuntimeStatusRollsBackNewStatusBeforeRenameFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-runtime-pre-rename", identity, "audit-key-runtime-pre-rename")
+	store.path = filepath.Dir(path)
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.2.3", strings.Repeat("d", 64))); err == nil {
+		t.Fatal("UpsertFollowerRuntimeStatus() error = nil, want pre-rename write error")
+	}
+	store.path = path
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 0 {
+		t.Fatalf("statuses after pre-rename failure = %+v, want none", statuses)
+	}
+}
+
+func TestUpsertFollowerRuntimeStatusKeepsStatusAfterPostRenameSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-runtime-post-rename", identity, "audit-key-runtime-post-rename")
+	want := runtimeStatus(identity, "1.2.3", strings.Repeat("e", 64))
+	originalSyncDirectory := syncDirectory
+	syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
+	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), want); !errors.Is(err, errDurableWritePostRename) {
+		t.Fatalf("UpsertFollowerRuntimeStatus(post-rename sync failure) error = %v, want errDurableWritePostRename", err)
+	}
+	syncDirectory = originalSyncDirectory
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].PipelockVersion != want.PipelockVersion {
+		t.Fatalf("statuses after post-rename failure = %+v, want %+v", statuses, want)
+	}
+
+	// The rename committed and only the directory sync failed, so the status is
+	// on disk. Reopening is what proves that rather than the in-memory map.
+	reopened, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reopen) error = %v", err)
+	}
+	persisted, err := reopened.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus(reopened) error = %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].PipelockVersion != want.PipelockVersion {
+		t.Fatalf("statuses from reopened store = %+v, want %+v", persisted, want)
+	}
+}
+
 type truncatedPreflightEnrollmentStore struct {
 	followers []FollowerSummary
 	statuses  []FollowerRuntimeStatus

@@ -69,11 +69,11 @@ func followerRemoveCmd() *cobra.Command {
 		Short: "Remove an enrolled follower from Conductor trust",
 		Long: `Remove an enrolled follower from the Conductor enrollment store.
 
-Removal is an admin-only decommission action. It deletes the follower's active
-enrollment record, so the follower no longer appears in fleet status and future
-audit evidence signed with its enrolled audit key is rejected. The exact
-org/fleet/instance/environment tuple is required; an unknown follower fails
-loud instead of being treated as success.`,
+Removal is an admin-only decommission action. It replaces the active enrollment
+with an inactive tombstone. The follower no longer appears in fleet status, and
+the removed identity can't submit evidence with its enrolled or matching static
+audit key. The exact org/fleet/instance/environment tuple is required; an
+unknown follower fails loud instead of being treated as success.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {

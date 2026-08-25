@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -359,5 +360,241 @@ func TestFileEnrollmentStoreRevokeIsDurableAndConsumedNotRevokable(t *testing.T)
 	// A second store cannot re-revoke a revoked token.
 	if _, err := reopened.RevokeEnrollmentToken(context.Background(), RevokeEnrollmentTokenRequest{TokenID: "durable-token", Now: testNow}); !errors.Is(err, ErrEnrollmentTokenNotPending) {
 		t.Fatalf("re-revoke after restart error = %v, want ErrEnrollmentTokenNotPending", err)
+	}
+}
+
+func TestRevokeEnrollmentTokenKeepsRevocationAfterPostRenameSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	tokenID := strings.Join([]string{"post", "rename", "revoke"}, "-")
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  tokenID,
+		Identity: identity,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+
+	originalSyncDirectory := syncDirectory
+	syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
+	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
+	if _, err := store.RevokeEnrollmentToken(context.Background(), RevokeEnrollmentTokenRequest{TokenID: tokenID, Now: testNow}); !errors.Is(err, errDurableWritePostRename) {
+		t.Fatalf("RevokeEnrollmentToken(post-rename sync failure) error = %v, want errDurableWritePostRename", err)
+	}
+	syncDirectory = originalSyncDirectory
+
+	pub, _ := testAuditSigner(t)
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-post-rename-revoke",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}); !errors.Is(err, ErrEnrollmentTokenInvalid) {
+		t.Fatalf("ConsumeEnrollmentToken(revoked token) error = %v, want ErrEnrollmentTokenInvalid", err)
+	}
+
+	reloaded, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reload) error = %v", err)
+	}
+	tokens, err := reloaded.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{TokenID: tokenID})
+	if err != nil {
+		t.Fatalf("ListEnrollmentTokens() error = %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].State != EnrollmentTokenStateRevoked {
+		t.Fatalf("tokens after reload = %+v, want one revoked token", tokens)
+	}
+}
+
+func TestCreateEnrollmentTokenRollsBackBeforeRenameFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	tokenID := strings.Join([]string{"pre", "rename", "create"}, "-")
+	store.path = filepath.Dir(path)
+	if _, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  tokenID,
+		Identity: identity,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	}); err == nil {
+		t.Fatal("CreateEnrollmentToken() error = nil, want pre-rename write error")
+	}
+	store.path = path
+	tokens, err := store.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{TokenID: tokenID, Now: testNow})
+	if err != nil {
+		t.Fatalf("ListEnrollmentTokens() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("tokens after pre-rename failure = %+v, want none", tokens)
+	}
+}
+
+func TestCreateEnrollmentTokenKeepsPendingStateAfterPostRenameSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	tokenID := strings.Join([]string{"post", "rename", "create"}, "-")
+	originalSyncDirectory := syncDirectory
+	syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
+	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
+	if _, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  tokenID,
+		Identity: identity,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	}); !errors.Is(err, errDurableWritePostRename) {
+		t.Fatalf("CreateEnrollmentToken(post-rename sync failure) error = %v, want errDurableWritePostRename", err)
+	}
+	syncDirectory = originalSyncDirectory
+	tokens, err := store.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{TokenID: tokenID, Now: testNow})
+	if err != nil {
+		t.Fatalf("ListEnrollmentTokens() error = %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].State != EnrollmentTokenStatePending {
+		t.Fatalf("tokens after post-rename failure = %+v, want one pending token", tokens)
+	}
+
+	// The rename succeeded and only the directory sync failed, so the token is
+	// already on disk. Asserting against the same in-memory store cannot show
+	// that; reopening the file is what proves the retained state is durable.
+	reopened, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reopen) error = %v", err)
+	}
+	persisted, err := reopened.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{TokenID: tokenID, Now: testNow})
+	if err != nil {
+		t.Fatalf("ListEnrollmentTokens(reopened) error = %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].State != EnrollmentTokenStatePending {
+		t.Fatalf("tokens from reopened store = %+v, want one pending token", persisted)
+	}
+}
+
+func TestConsumeEnrollmentTokenRollsBackBeforeRenameFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	tokenID := strings.Join([]string{"pre", "rename", "consume"}, "-")
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{TokenID: tokenID, Identity: identity, Expires: testNow.Add(time.Hour), Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	pub, _ := testAuditSigner(t)
+	request := ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-pre-rename-consume",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}
+	store.path = filepath.Dir(path)
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), request); err == nil {
+		t.Fatal("ConsumeEnrollmentToken() error = nil, want pre-rename write error")
+	}
+	store.path = path
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), request); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken() after rollback error = %v, want success", err)
+	}
+}
+
+func TestConsumeEnrollmentTokenKeepsConsumedStateAfterPostRenameSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	tokenID := strings.Join([]string{"post", "rename", "consume"}, "-")
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{TokenID: tokenID, Identity: identity, Expires: testNow.Add(time.Hour), Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	pub, _ := testAuditSigner(t)
+	request := ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-post-rename-consume",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}
+	originalSyncDirectory := syncDirectory
+	syncDirectory = func(string) error { return errors.New("injected directory sync failure") }
+	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), request); !errors.Is(err, errDurableWritePostRename) {
+		t.Fatalf("ConsumeEnrollmentToken(post-rename sync failure) error = %v, want errDurableWritePostRename", err)
+	}
+	syncDirectory = originalSyncDirectory
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), request); !errors.Is(err, ErrEnrollmentTokenConsumed) {
+		t.Fatalf("ConsumeEnrollmentToken(retry) error = %v, want ErrEnrollmentTokenConsumed", err)
+	}
+	if _, err := store.ResolveEnrolledAuditKey(identity, request.AuditKeyID); err != nil {
+		t.Fatalf("ResolveEnrolledAuditKey() error = %v, want enrolled key", err)
+	}
+
+	// Same reason as the create case: prove the consumed state and the enrolled
+	// key survived to disk rather than only to the in-memory map.
+	reopened, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore(reopen) error = %v", err)
+	}
+	if _, err := reopened.ConsumeEnrollmentToken(context.Background(), request); !errors.Is(err, ErrEnrollmentTokenConsumed) {
+		t.Fatalf("ConsumeEnrollmentToken(reopened) error = %v, want ErrEnrollmentTokenConsumed", err)
+	}
+	if _, err := reopened.ResolveEnrolledAuditKey(identity, request.AuditKeyID); err != nil {
+		t.Fatalf("ResolveEnrolledAuditKey(reopened) error = %v, want enrolled key", err)
+	}
+}
+
+func TestRevokeEnrollmentTokenRollsBackBeforeRenameFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	tokenID := strings.Join([]string{"pre", "rename", "revoke"}, "-")
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{TokenID: tokenID, Identity: identity, Expires: testNow.Add(time.Hour), Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	store.path = filepath.Dir(path)
+	if _, err := store.RevokeEnrollmentToken(context.Background(), RevokeEnrollmentTokenRequest{TokenID: tokenID, Now: testNow}); err == nil {
+		t.Fatal("RevokeEnrollmentToken() error = nil, want pre-rename write error")
+	}
+	store.path = path
+	pub, _ := testAuditSigner(t)
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-pre-rename-revoke",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken() after rollback error = %v, want success", err)
 	}
 }

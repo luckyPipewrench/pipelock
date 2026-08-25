@@ -35,7 +35,7 @@ SPDX-License-Identifier: Apache-2.0
 | SSRF to metadata/private networks | URL scanner SSRF layer after DLP/blocklist pre-resolution checks. |
 | Malicious or stale policy bundle | Signed bundle verification, payload hash, lineage checks, and not-before skew bounded by `MessageNotBeforeSkew`. |
 | Fleet-wide emergency-control forgery | Purpose-bound Ed25519 threshold keys for remote kill and rollback. |
-| Revoked follower evidence accepted after decommission | Enrollment-store audit-key resolver; `conductor follower remove` deletes the active enrollment so future evidence fails signature-key resolution. |
+| Revoked follower evidence accepted after decommission | Enrollment-store audit-key resolver; `conductor follower remove` retains an inactive tombstone so the removed identity can't use a static audit key. |
 | Rollback of license revocation state | Signed CRL generation high-water and monotonic recovery path. |
 | Conductor storage loss | Offline backup/restore of storage state plus separate secret/KMS restore for private keys. |
 

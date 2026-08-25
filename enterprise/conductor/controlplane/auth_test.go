@@ -152,7 +152,7 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	}
 	auditor, err := ScopedBearerAuditQueryAuthorizer([]ScopedBearerCredential{
 		{Token: "audit-token", Role: RoleAuditor, OrgID: "org-main", FleetID: "prod"},
-		{Token: "admin-token", Role: RoleAdmin},
+		{Token: "admin-token", Role: RoleAdmin, OrgID: "org-main"},
 	})
 	if err != nil {
 		t.Fatalf("ScopedBearerAuditQueryAuthorizer() error = %v", err)
@@ -213,6 +213,45 @@ func TestScopedBearerFollowerListAuthorizerRejectsUnscopedReadCredentials(t *tes
 		Role:  RoleAuditor,
 	}}); !errors.Is(err, ErrFollowerListForbidden) {
 		t.Fatalf("ScopedBearerFollowerListAuthorizer(unscoped auditor) error = %v, want ErrFollowerListForbidden", err)
+	}
+}
+
+func TestScopedBearerAuditQueryAuthorizerRejectsUnscopedReadCredentials(t *testing.T) {
+	// Empty-org admin/auditor credentials are cross-org enumeration tokens
+	// because scopedCredentialAllows treats a blank OrgID as matching every
+	// org. Construction must refuse them, matching the follower-list and
+	// stream-status authorizers. Whitespace-only org_id normalizes to empty
+	// and must be rejected identically.
+	for _, tc := range []struct {
+		name string
+		cred ScopedBearerCredential
+	}{
+		{"empty-org admin", ScopedBearerCredential{Token: "admin-token", Role: RoleAdmin}},
+		{"empty-org auditor", ScopedBearerCredential{Token: "audit-token", Role: RoleAuditor}},
+		{"whitespace-org admin", ScopedBearerCredential{Token: "admin-token", Role: RoleAdmin, OrgID: "   "}},
+		{"tab-org auditor", ScopedBearerCredential{Token: "audit-token", Role: RoleAuditor, OrgID: "\t"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ScopedBearerAuditQueryAuthorizer([]ScopedBearerCredential{tc.cred})
+			if !errors.Is(err, ErrAuditQueryForbidden) {
+				t.Fatalf("ScopedBearerAuditQueryAuthorizer(%+v) error = %v, want ErrAuditQueryForbidden", tc.cred, err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "org_id required for audit query credential") {
+				t.Fatalf("ScopedBearerAuditQueryAuthorizer(%+v) error = %v, want actionable org_id required message", tc.cred, err)
+			}
+		})
+	}
+
+	auth, err := ScopedBearerAuditQueryAuthorizer([]ScopedBearerCredential{{
+		Token: "admin-token",
+		Role:  RoleAdmin,
+		OrgID: "org-main",
+	}})
+	if err != nil {
+		t.Fatalf("ScopedBearerAuditQueryAuthorizer(scoped admin) error = %v, want nil", err)
+	}
+	if err := auth(bearerRequest(t, AuditBatchesPath, "admin-token"), AuditBatchQuery{OrgID: "org-other", FleetID: "prod"}); !errors.Is(err, ErrAuditQueryForbidden) {
+		t.Fatalf("scoped admin query for unrelated org error = %v, want ErrAuditQueryForbidden", err)
 	}
 }
 

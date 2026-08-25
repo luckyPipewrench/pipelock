@@ -70,10 +70,12 @@ func explainMCPResponseCmd() *cobra.Command {
 		Use:   "mcp-response",
 		Short: "Explain an MCP response block and its narrowest remediation",
 		Long: `Read a single JSON-RPC 2.0 MCP response from stdin, scan it for prompt
-injection exactly as the MCP response scanner would, and explain any block - naming
-the exact suppress entry that lifts a non-core finding for one server without
-weakening any other server or scanner. Core floor findings cannot be suppressed
-and require a pattern precision fix.
+injection and inbound credential DLP exactly as the MCP response scanner would, and
+explain any block - naming the exact suppress entry that lifts a non-core injection
+finding for one server without weakening any other server or scanner. Core floor
+findings cannot be suppressed and require a pattern precision fix. Inbound DLP
+findings have no suppression remediation at all: a DLP block is resolved by removing
+the credential from the response or tightening the pattern, never by suppress.
 
 Unlike URL DLP, MCP response scanning consults the top-level suppress: list
 scoped by a per-server target ("mcp://<server-name>/response"). The remediation
@@ -227,7 +229,11 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 	if report.Allowed {
 		report.Notes = append(report.Notes, "MCP response trust class "+trust+" maps this finding to warn; runtime forwards the response and logs the match.")
 	}
-	if serverName == "" {
+	// Only worth saying when a suppress entry could actually match: for an
+	// all-core or DLP-only block there is no suppression remediation, so
+	// telling the operator to re-run with --server-name would contradict the
+	// cannot-be-suppressed notes above.
+	if serverName == "" && report.Remediation != nil {
 		report.Notes = append(report.Notes,
 			"no --server-name given: the suppress target is empty and no suppress entry can match. "+
 				"Re-run with --server-name <name> matching how the proxy is launched.")

@@ -69,6 +69,27 @@ func TestBuildMCPExplainReport_CoreResponseOmitsSuppressEntry(t *testing.T) {
 	}
 }
 
+func TestBuildMCPExplainReport_CoreOnlyWithoutServerNameOmitsServerNameNote(t *testing.T) {
+	cfg := config.Defaults()
+	report, err := buildMCPExplainReport(cfg, "(test)", "", []byte(mcpSolicitation))
+	if err != nil {
+		t.Fatalf("buildMCPExplainReport: %v", err)
+	}
+	if report.Allowed {
+		t.Fatal("core response finding must block")
+	}
+	if report.Remediation != nil {
+		t.Fatalf("core-only finding offered forbidden suppression: %+v", report.Remediation)
+	}
+	joined := strings.Join(report.Notes, " ")
+	if strings.Contains(joined, "--server-name") {
+		t.Fatalf("core-only block with no remediation must not suggest --server-name: %+v", report.Notes)
+	}
+	if !strings.Contains(joined, "cannot be suppressed") {
+		t.Fatalf("core-only report lacks precision-fix guidance: %+v", report.Notes)
+	}
+}
+
 func TestBuildMCPExplainReport_ReasoningTrustWarnsWithoutSuppressRemediation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{

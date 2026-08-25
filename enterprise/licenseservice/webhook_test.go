@@ -102,6 +102,9 @@ func newTestSetup(t *testing.T) *testSetup {
 				email := testCustomerEmail
 				if _, local, found := strings.Cut(rest, "_"); found {
 					email = local + "@example.com"
+					if local == "bademail" {
+						email = "not-an-email"
+					}
 				}
 				_, _ = fmt.Fprintf(w, `{
 					"id": %q,
@@ -3101,5 +3104,20 @@ func TestHandleOrderEvent_ZeroAmountTrialMintsOncePerEmail(t *testing.T) {
 	}
 	if other == nil || other.LastLicenseID == "" {
 		t.Fatalf("trial for a different email did not mint: %+v", other)
+	}
+}
+
+func TestHandleOrderEvent_TrialUnnormalizableEmailFailsClosed(t *testing.T) {
+	ts := newTestSetup(t)
+	err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, "order_free_9_bademail", "not-an-email"))
+	if err == nil || !strings.Contains(err.Error(), "normalize trial email") {
+		t.Fatalf("expected a normalize failure, got %v", err)
+	}
+	ent, dbErr := ts.db.GetBySubscriptionID(t.Context(), "order_free_9_bademail")
+	if dbErr != nil {
+		t.Fatalf("GetBySubscriptionID: %v", dbErr)
+	}
+	if ent != nil {
+		t.Fatalf("trial with an unnormalizable email must not mint: %+v", ent)
 	}
 }

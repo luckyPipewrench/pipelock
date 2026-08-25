@@ -319,3 +319,13 @@ func TestHandleOrderRefund_DuplicateIsNoop(t *testing.T) {
 		t.Fatalf("refund replay: %v", err)
 	}
 }
+
+func TestCountActiveTrialForEmailClosedDB(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := db.CountActiveTrialForEmail(t.Context(), "a@b.com", time.Now()); err == nil {
+		t.Error("CountActiveTrialForEmail on closed db should error")
+	}
+}

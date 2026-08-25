@@ -105,6 +105,12 @@ func newTestSetup(t *testing.T) *testSetup {
 					if local == "bademail" {
 						email = "not-an-email"
 					}
+					if local == "alphaupper" {
+						email = "ALPHA@Example.com"
+					}
+					if local == "gammaupper" {
+						email = "GAMMA@Example.com"
+					}
 				}
 				_, _ = fmt.Fprintf(w, `{
 					"id": %q,
@@ -3075,10 +3081,26 @@ func TestHandleOrderEvent_ZeroAmountTrialMintsOncePerEmail(t *testing.T) {
 	}
 
 	// A webhook replay of the SAME order stays idempotent: no error, no
-	// second entitlement, and the per-email dedupe must not trip on the
-	// entitlement this order created itself.
+	// second entitlement, no new license, and no state drift. The per-email
+	// dedupe must not trip on the entitlement this order created itself.
 	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_1_alpha", "alpha@example.com")); err != nil {
 		t.Fatalf("HandleOrderEvent replay: %v", err)
+	}
+	replayed, err := ts.db.GetBySubscriptionID(ctx, "order_free_1_alpha")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID after replay: %v", err)
+	}
+	if replayed == nil {
+		t.Fatal("entitlement vanished after replay")
+	}
+	if replayed.LastLicenseID != ent.LastLicenseID {
+		t.Fatalf("replay minted a new license: %q -> %q", ent.LastLicenseID, replayed.LastLicenseID)
+	}
+	if replayed.LastDeliveryStatus != ent.LastDeliveryStatus {
+		t.Fatalf("replay changed delivery status: %q -> %q", ent.LastDeliveryStatus, replayed.LastDeliveryStatus)
+	}
+	if ent.LastLicenseExpiresAt == nil || replayed.LastLicenseExpiresAt == nil || !replayed.LastLicenseExpiresAt.Equal(*ent.LastLicenseExpiresAt) {
+		t.Fatalf("replay changed license expiry: %v -> %v", ent.LastLicenseExpiresAt, replayed.LastLicenseExpiresAt)
 	}
 
 	// A SECOND order for the same email is refused: acknowledged without a
@@ -3094,6 +3116,19 @@ func TestHandleOrderEvent_ZeroAmountTrialMintsOncePerEmail(t *testing.T) {
 		t.Fatalf("second trial for the same email minted an entitlement: %+v", dup)
 	}
 
+	// A case variant of the same email is also refused: the entitlement
+	// stores the normalized email, so the canonical keys collide.
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_4_alphaupper", "ALPHA@Example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent variant-email trial: %v", err)
+	}
+	variant, err := ts.db.GetBySubscriptionID(ctx, "order_free_4_alphaupper")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID variant: %v", err)
+	}
+	if variant != nil {
+		t.Fatalf("case-variant email minted a second trial: %+v", variant)
+	}
+
 	// A different email still mints normally.
 	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_3_beta", "beta@example.com")); err != nil {
 		t.Fatalf("HandleOrderEvent second email: %v", err)
@@ -3104,6 +3139,65 @@ func TestHandleOrderEvent_ZeroAmountTrialMintsOncePerEmail(t *testing.T) {
 	}
 	if other == nil || other.LastLicenseID == "" {
 		t.Fatalf("trial for a different email did not mint: %+v", other)
+	}
+}
+
+func TestHandleOrderEvent_TrialDenialSurvivesAuditLedgerFailure(t *testing.T) {
+	// A duplicate trial is still acknowledged without a mint when the audit
+	// ledger cannot record the denial; the failure is surfaced in the
+	// structured log instead of aborting webhook handling.
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_7_delta", "delta@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent first trial: %v", err)
+	}
+	if err := ts.handler.ledger.Close(); err != nil {
+		t.Fatalf("close ledger: %v", err)
+	}
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_8_delta", "delta@example.com")); err != nil {
+		t.Fatalf("duplicate trial with a failed ledger must still acknowledge: %v", err)
+	}
+	dup, err := ts.db.GetBySubscriptionID(ctx, "order_free_8_delta")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if dup != nil {
+		t.Fatalf("duplicate trial minted despite denial: %+v", dup)
+	}
+}
+
+func TestHandleOrderEvent_TrialVariantEmailCannotDoubleDip(t *testing.T) {
+	// The FIRST order arrives with a non-canonical email form. If the
+	// entitlement stored the raw order email, a later canonical-form order
+	// would not match the count query and would mint a second trial. Storing
+	// the normalized email closes that variant bypass.
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_5_gammaupper", "GAMMA@Example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent uppercase first trial: %v", err)
+	}
+	first, err := ts.db.GetBySubscriptionID(ctx, "order_free_5_gammaupper")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID first: %v", err)
+	}
+	if first == nil || first.LastLicenseID == "" {
+		t.Fatalf("uppercase-email trial did not mint: %+v", first)
+	}
+	if first.CustomerEmail != "gamma@example.com" {
+		t.Fatalf("entitlement stored a non-canonical email: %q", first.CustomerEmail)
+	}
+
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_6_gamma", "gamma@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent canonical second trial: %v", err)
+	}
+	second, err := ts.db.GetBySubscriptionID(ctx, "order_free_6_gamma")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID second: %v", err)
+	}
+	if second != nil {
+		t.Fatalf("canonical-form order double-dipped past an uppercase first trial: %+v", second)
 	}
 }
 

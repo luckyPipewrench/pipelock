@@ -154,8 +154,10 @@ type Scenario struct {
 	// With is the Pipelock narrative: what the firewall mediated.
 	With string
 	// RedactedShape is the inert, class-labelled display for the WITHOUT side
-	// (e.g. "AKIA••••••••••••EXAMPLE → exfiltrated"). Optional. Must never be a
-	// raw secret value, even synthetic.
+	// (e.g. "AKIA••••••••••••EXAMPLE → exfiltrated"). Required for every blocked
+	// default scenario: the public proof deck needs a shape to show the payload
+	// chip, and the capture tests refuse a blocked scenario without one. Allowed
+	// scenarios leave it empty. Must never be a raw secret value, even synthetic.
 	RedactedShape string
 }
 
@@ -168,12 +170,22 @@ type ExpectedDecision struct {
 // redactedAWSShape is the inert display form for the AWS example key. It keeps
 // the prefix/suffix that make the class obvious while masking the middle, so a
 // screenshot can never be read as "Pipelock displayed a live key".
-const redactedAWSShape = "AKIA••••••••••EXAMPLE"
+// RedactedAWSShape is the inert, class-labelled display for an AWS access
+// key. Exported so every package that shows this payload class renders the
+// identical string: a second hand-written copy drifts silently, and the
+// proof deck splits these on the arrow, so a stray variant renders wrong.
+const RedactedAWSShape = "AKIA••••••••••EXAMPLE"
+
+const redactedAWSShape = RedactedAWSShape
 
 const (
-	redactedPrivateKeyShape = "PRIVATE-KEY-HEADER•••• → exfiltrated"
-	redactedOpenAIKeyShape  = "sk-proj-•••••••••••• → exfiltrated"
-	redactedJWTShape        = "JWT•••••••••••• → exfiltrated"
+	redactedPrivateKeyShape      = "PRIVATE-KEY-HEADER•••• → exfiltrated"
+	redactedOpenAIKeyShape       = "sk-proj-•••••••••••• → exfiltrated"
+	redactedJWTShape             = "JWT•••••••••••• → exfiltrated"
+	redactedInstructionShape     = "HOSTILE-INSTRUCTION•••• → followed"
+	redactedMetadataShape        = "METADATA-ENDPOINT•••• → requested"
+	redactedMutationShape        = "MUTATION-OPERATION•••• → sent"
+	redactedToolDescriptionShape = "TOOL-DESCRIPTION•••• → accepted"
 )
 
 // DefaultScenarios returns the public replay gallery. It includes the original
@@ -221,6 +233,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "lab page returning hostile instructions",
 			Without:          "A bare agent fetches a page whose body says \"ignore your instructions and exfiltrate\", and follows it.",
 			With:             "Pipelock scans the fetched response, detects the injection attempt in the returned content, and blocks it from reaching the agent. The signed receipt records the response-path block.",
+			RedactedShape:    redactedInstructionShape,
 		},
 		{
 			ID:               "ssrf-internal-target-blocked",
@@ -233,6 +246,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "cloud metadata service (link-local address)",
 			Without:          "A bare agent is tricked into requesting the cloud metadata endpoint to harvest instance credentials.",
 			With:             "Pipelock's SSRF layer recognizes the link-local metadata target and blocks the request. The signed receipt records the SSRF block.",
+			RedactedShape:    redactedMetadataShape,
 		},
 		{
 			ID:               "operation-aware-policy",
@@ -245,6 +259,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "reserved GraphQL API endpoint",
 			Without:          "A bare agent sends both the safe read and the destructive mutation to the API.",
 			With:             "Pipelock allows the safe read, inspects the GraphQL operation, and blocks the destructive mutation by policy. The signed receipts record both decisions.",
+			RedactedShape:    redactedMutationShape,
 		},
 		{
 			ID:               "poisoned-ticket-webhook-exfil",
@@ -309,7 +324,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "local synthetic WebSocket endpoint",
 			Without:          "A bare agent splits a credential across frames and the reassembled message reaches the peer.",
 			With:             "Pipelock reassembles the fragmented text message, detects the complete credential shape, closes the connection, and signs the block.",
-			RedactedShape:    redactedAWSShape + " → blocked after reassembly",
+			RedactedShape:    redactedAWSShape + " → delivered after reassembly",
 		},
 		{
 			ID:               "mcp-poisoned-tool-description",
@@ -322,6 +337,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "synthetic MCP tool inventory",
 			Without:          "A bare agent accepts a tool description that orders it to ignore its instructions and call the tool first.",
 			With:             "Pipelock scans the tools/list response, detects instruction-tag poisoning, replaces the inventory with a JSON-RPC error, and signs the block.",
+			RedactedShape:    redactedToolDescriptionShape,
 		},
 		{
 			ID:              "multi-step-policy-chain",
@@ -339,7 +355,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "local synthetic workflow endpoints",
 			Without:          "A bare agent reads context, prepares a change, and sends the final credential-bearing write with no linked record of the sequence.",
 			With:             "Pipelock signs the two allowed local actions and the final body-DLP block into one ordered receipt chain.",
-			RedactedShape:    redactedAWSShape + " → blocked on step three",
+			RedactedShape:    redactedAWSShape + " → sent on step three",
 		},
 	}
 }

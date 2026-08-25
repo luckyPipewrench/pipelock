@@ -107,6 +107,10 @@ func TestLookupPlaygroundScenario(t *testing.T) {
 	if scenario.ID != LiveDemoScenarioID {
 		t.Fatalf("scenario ID = %q", scenario.ID)
 	}
+	const wantShape = "AKIA••••••••••EXAMPLE → exfiltrated"
+	if scenario.RedactedShape != wantShape {
+		t.Fatalf("redacted shape = %q, want %q", scenario.RedactedShape, wantShape)
+	}
 
 	if _, ok := lookupPlaygroundScenario("missing-playground-scenario"); ok {
 		t.Fatal("unexpected scenario match")

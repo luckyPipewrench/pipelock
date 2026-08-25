@@ -4,6 +4,7 @@
 package replaycapture
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -64,6 +65,9 @@ func TestBuildManifest_BindsPacketAndReceipts(t *testing.T) {
 	if m.CompletenessNote == "" {
 		t.Errorf("completeness note must be present")
 	}
+	if m.RedactedShape != scenario.RedactedShape {
+		t.Errorf("redacted shape = %q, want %q", m.RedactedShape, scenario.RedactedShape)
+	}
 	// The blocked scenario must carry its block receipt view.
 	var sawBlock bool
 	for _, v := range m.Receipts {
@@ -87,6 +91,15 @@ func TestBuildManifest_BindsPacketAndReceipts(t *testing.T) {
 	var rt Manifest
 	if err := json.Unmarshal(raw, &rt); err != nil {
 		t.Fatalf("manifest not valid JSON: %v", err)
+	}
+	// A byte search proves only that the characters appear somewhere in the
+	// document. The site reads the parsed field and splits it on the arrow, so
+	// assert the round-tripped value itself.
+	if rt.RedactedShape != scenario.RedactedShape {
+		t.Fatalf("round-trip redacted shape = %q, want %q", rt.RedactedShape, scenario.RedactedShape)
+	}
+	if !bytes.Contains(raw, []byte(scenario.RedactedShape)) {
+		t.Fatalf("manifest escaped or omitted redacted shape bytes: %q", scenario.RedactedShape)
 	}
 	if rt.ScenarioID != scenario.ID {
 		t.Errorf("round-trip scenario id mismatch")

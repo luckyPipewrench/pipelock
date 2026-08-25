@@ -19,7 +19,7 @@ func liveDemoScenario() replaycapture.Scenario {
 		DestinationClass: "attacker-controlled collector (reserved example host)",
 		Without:          "A bare agent posts a credential-shaped value to a collector and the value escapes.",
 		With:             "Pipelock scans the request body, detects the credential-shaped value, blocks the request, and signs a receipt recording the block.",
-		RedactedShape:    "AKIA************EXAMPLE -> blocked",
+		RedactedShape:    replaycapture.RedactedAWSShape + " → exfiltrated",
 	}
 }
 

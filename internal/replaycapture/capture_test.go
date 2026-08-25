@@ -38,19 +38,20 @@ func TestDefaultScenarios_PublicContract(t *testing.T) {
 		transport string
 		verdict   string
 		layer     string
+		shape     string
 	}{
-		{"allowed-safe-read", TransportFetch, verdictAllow, ""},
-		{"secret-exfil-url-blocked", TransportFetch, verdictBlock, "core_dlp"},
-		{"prompt-injection-response-blocked", TransportFetch, verdictBlock, "response_scan"},
-		{"ssrf-internal-target-blocked", TransportFetch, verdictBlock, "ssrf_metadata"},
-		{"operation-aware-policy", TransportForward, verdictBlock, "request_policy"},
-		{"poisoned-ticket-webhook-exfil", TransportForward, verdictBlock, "body_dlp"},
-		{"poisoned-readme-key-paste", TransportForward, verdictBlock, "body_dlp"},
-		{"hostile-page-session-keys", TransportForward, verdictBlock, "body_dlp"},
-		{"amber-warning-observed", TransportForward, verdictWarn, "body_dlp"},
-		{"websocket-fragmented-secret", TransportWebSocket, verdictBlock, "dlp"},
-		{"mcp-poisoned-tool-description", TransportMCPStdio, verdictBlock, "mcp_tool_scan"},
-		{"multi-step-policy-chain", TransportForward, verdictBlock, "body_dlp"},
+		{"allowed-safe-read", TransportFetch, verdictAllow, "", ""},
+		{"secret-exfil-url-blocked", TransportFetch, verdictBlock, "core_dlp", redactedAWSShape + " → exfiltrated"},
+		{"prompt-injection-response-blocked", TransportFetch, verdictBlock, "response_scan", redactedInstructionShape},
+		{"ssrf-internal-target-blocked", TransportFetch, verdictBlock, "ssrf_metadata", redactedMetadataShape},
+		{"operation-aware-policy", TransportForward, verdictBlock, "request_policy", redactedMutationShape},
+		{"poisoned-ticket-webhook-exfil", TransportForward, verdictBlock, "body_dlp", redactedPrivateKeyShape},
+		{"poisoned-readme-key-paste", TransportForward, verdictBlock, "body_dlp", redactedOpenAIKeyShape},
+		{"hostile-page-session-keys", TransportForward, verdictBlock, "body_dlp", redactedJWTShape},
+		{"amber-warning-observed", TransportForward, verdictWarn, "body_dlp", "LABWARN•••••••• → observed"},
+		{"websocket-fragmented-secret", TransportWebSocket, verdictBlock, "dlp", redactedAWSShape + " → delivered after reassembly"},
+		{"mcp-poisoned-tool-description", TransportMCPStdio, verdictBlock, "mcp_tool_scan", redactedToolDescriptionShape},
+		{"multi-step-policy-chain", TransportForward, verdictBlock, "body_dlp", redactedAWSShape + " → sent on step three"},
 	}
 
 	got := DefaultScenarios()
@@ -70,6 +71,15 @@ func TestDefaultScenarios_PublicContract(t *testing.T) {
 		}
 		if s.ExpectedLayer != w.layer {
 			t.Errorf("%s layer = %q, want %q", s.ID, s.ExpectedLayer, w.layer)
+		}
+		if s.RedactedShape != w.shape {
+			t.Errorf("%s redacted shape = %q, want %q", s.ID, s.RedactedShape, w.shape)
+		}
+		if s.ExpectedVerdict == verdictBlock && s.RedactedShape == "" {
+			t.Errorf("%s blocked scenario missing redacted shape", s.ID)
+		}
+		if s.ExpectedVerdict == verdictAllow && s.RedactedShape != "" {
+			t.Errorf("%s allowed scenario unexpectedly has redacted shape %q", s.ID, s.RedactedShape)
 		}
 	}
 }

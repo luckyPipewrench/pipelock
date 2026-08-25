@@ -1913,13 +1913,16 @@ responseScanning:
 					Reader: io.MultiReader(bytes.NewReader(head), bytes.NewReader(body[cfg.BrowserShield.MaxShieldBytes:]), resp.Body),
 					Closer: resp.Body,
 				}
-				if delta := len(head) - cfg.BrowserShield.MaxShieldBytes; delta != 0 {
+				delta := len(head) - cfg.BrowserShield.MaxShieldBytes
+				if delta != 0 {
 					if resp.ContentLength >= 0 {
 						resp.ContentLength += int64(delta)
 						resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
 					} else {
 						resp.Header.Del("Content-Length")
 					}
+				}
+				if summary.TotalRewrites > 0 {
 					resp.Header.Del("ETag")
 					resp.Header.Del("Content-MD5")
 					resp.Header.Del("Digest")

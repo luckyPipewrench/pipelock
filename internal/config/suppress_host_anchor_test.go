@@ -129,6 +129,9 @@ func TestDefaultProviderKeyDomains_DriveSuppressionsAndExemptDomains(t *testing.
 
 	for _, d := range defaultProviderKeyDomains {
 		t.Run(d.rule, func(t *testing.T) {
+			if IsCoreDLPPatternName(d.rule) || IsCoreResponsePatternName(d.rule) {
+				t.Fatalf("default provider suppression %q targets a core floor pattern", d.rule)
+			}
 			if !IsSuppressed(d.rule, "https://api."+d.domain[2:]+"/v1", cfg.Suppress) {
 				t.Fatalf("default suppressions do not cover %q on %q", d.rule, d.domain)
 			}

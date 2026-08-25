@@ -1281,6 +1281,19 @@ func TestCore_PatternCount(t *testing.T) {
 	}
 }
 
+func TestCoreResponsePatternNamesMatchConfigGuard(t *testing.T) {
+	t.Parallel()
+	guarded := config.CoreResponsePatternNames()
+	if len(guarded) != len(coreResponsePatternDefs()) {
+		t.Fatalf("guarded core response names = %d, scanner definitions = %d", len(guarded), len(coreResponsePatternDefs()))
+	}
+	for _, pattern := range coreResponsePatternDefs() {
+		if !config.IsCoreResponsePatternName(pattern.name) {
+			t.Errorf("core response pattern %q is missing from the suppression guard", pattern.name)
+		}
+	}
+}
+
 func TestCore_InternalCIDRs(t *testing.T) {
 	t.Parallel()
 	s := MustNew(testConfig())

@@ -3122,6 +3122,33 @@ func TestServer_Reload_StrictRejectsSuppressWidening(t *testing.T) {
 	}
 }
 
+func TestServer_ReloadRejectsCoreFloorSuppressAndPreservesRuntime(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	newCfg := oldCfg.Clone()
+	newCfg.Suppress = append(newCfg.Suppress, config.SuppressEntry{
+		Rule:   "AWS Access ID",
+		Path:   "*",
+		Reason: "injected after validation",
+	})
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload accepted core floor suppression")
+	}
+	if !strings.Contains(err.Error(), "core floor patterns cannot be suppressed") {
+		t.Fatalf("Reload error = %q, want core floor rejection", err)
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("live config changed after rejected core floor suppression")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("live scanner changed after rejected core floor suppression")
+	}
+}
+
 func TestServer_Reload_RejectsImplausiblyEmptySecurityTeardown(t *testing.T) {
 	s, buf := newTestServer(t, nil)
 	oldCfg := s.proxy.CurrentConfig()

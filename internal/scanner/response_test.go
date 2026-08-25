@@ -1797,6 +1797,26 @@ func TestScanResponseWithSuppressKeepsDistinctSuppressedLocations(t *testing.T) 
 	}
 }
 
+func TestScanResponseWithSuppressCoreFloorIgnoresInjectedSuppress(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = false
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "Prompt Injection", Path: "*", Reason: "injected after validation"},
+	}
+
+	s := MustNew(cfg)
+	t.Cleanup(func() { s.Close() })
+
+	result := s.ScanResponseWithSuppress(t.Context(), testInjectionPhrase, "https://example.test/page", cfg.Suppress)
+	if result.Clean {
+		t.Fatal("wildcard suppression silenced core response pattern")
+	}
+	if got := len(result.SuppressedMatches); got != 0 {
+		t.Fatalf("core response matches were reported as suppressed: %+v", result.SuppressedMatches)
+	}
+	assertResponsePattern(t, result.Matches, "Prompt Injection")
+}
+
 func TestScanResponse_BehaviorOverride(t *testing.T) {
 	s := MustNew(testResponseConfig())
 

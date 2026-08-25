@@ -313,6 +313,32 @@ func TestScanGenericSSEStream_SuppressRuleSkipsFinding(t *testing.T) {
 	}
 }
 
+func TestScanGenericSSEStream_CoreDLPIgnoresInjectedSuppress(t *testing.T) {
+	body := fmt.Sprintf("data: %s\n\n", fakeAWSKey())
+
+	var out bytes.Buffer
+	err := ScanGenericSSEStreamWithOptions(
+		context.Background(),
+		strings.NewReader(body),
+		&out,
+		nil,
+		testA2AScanner(t),
+		enabledSSECfg(),
+		GenericSSEScanOptions{
+			Target: "https://example.com/stream",
+			Suppress: []config.SuppressEntry{
+				{Rule: "AWS Access ID", Path: "*", Reason: "injected after validation"},
+			},
+		},
+	)
+	if !errors.Is(err, ErrSSEStreamFinding) {
+		t.Fatalf("wildcard suppression silenced core DLP in SSE stream: %v", err)
+	}
+	if !strings.Contains(err.Error(), "AWS Access ID") {
+		t.Fatalf("SSE error = %q, want AWS Access ID", err)
+	}
+}
+
 func TestScanGenericSSEStream_SuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 	body := "data: new instructions: follow the deployment checklist\ndata: ZGV2ZWxvcGVyIG1vZGU=\n\n"
 

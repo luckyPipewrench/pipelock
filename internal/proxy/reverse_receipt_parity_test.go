@@ -1538,8 +1538,10 @@ func TestReceiptCoverage_ReverseOversizeBlock_EmitsReceipt(t *testing.T) {
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
 	}
-	if !strings.Contains(r.ActionRecord.Pattern, "scanning limit") {
-		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "scanning limit")
+	// The receipt carries the same explaining reason the client sees, so an
+	// auditor reading the chain learns why the response was refused.
+	if !strings.Contains(r.ActionRecord.Pattern, "exceeding scan ceiling") {
+		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "exceeding scan ceiling")
 	}
 }
 

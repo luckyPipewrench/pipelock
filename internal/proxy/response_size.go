@@ -15,6 +15,23 @@ func responseSizeBlockReason(host string, size, limit int64, knob string, sizeEx
 	if host == "" {
 		host = "unknown-host"
 	}
+	// An empty knob means this transport's ceiling is a compile-time constant
+	// with nothing to raise. Lead with the remedy that does exist, and say the
+	// ceiling is fixed, rather than naming a setting the operator would go
+	// looking for and never find.
+	if knob == "" {
+		const fixed = "this transport's scan ceiling is fixed and cannot be raised by configuration"
+		if sizeExemptHonored {
+			return fmt.Sprintf(
+				"response from %s is %d bytes, exceeding scan ceiling %d bytes; add the trusted host to response_scanning.size_exempt_domains (%s)",
+				host, size, limit, fixed,
+			)
+		}
+		return fmt.Sprintf(
+			"response from %s is %d bytes, exceeding scan ceiling %d bytes; %s and this path has no per-host size exemption",
+			host, size, limit, fixed,
+		)
+	}
 	remedy := fmt.Sprintf("raise %s", knob)
 	if sizeExemptHonored {
 		remedy += " or add the trusted host to response_scanning.size_exempt_domains"

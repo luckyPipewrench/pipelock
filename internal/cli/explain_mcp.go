@@ -75,7 +75,8 @@ explain any block - naming the exact suppress entry that lifts a non-core inject
 finding for one server without weakening any other server or scanner. Core floor
 findings cannot be suppressed and require a pattern precision fix. Inbound DLP
 findings have no suppression remediation at all: a DLP block is resolved by removing
-the credential from the response or tightening the pattern, never by suppress.
+the credential from the response or tightening the pattern, never by adding a
+suppress entry.
 
 Unlike URL DLP, MCP response scanning consults the top-level suppress: list
 scoped by a per-server target ("mcp://<server-name>/response"). The remediation

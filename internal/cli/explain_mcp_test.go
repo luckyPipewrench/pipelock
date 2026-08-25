@@ -243,6 +243,20 @@ func TestBuildMCPExplainReport_InvalidJSONIsParseError(t *testing.T) {
 	}
 }
 
+func TestExplainMCPResponseCmd_LongHelpNamesDLPSuppressBoundary(t *testing.T) {
+	cmd := explainMCPResponseCmd()
+	help := strings.Join(strings.Fields(cmd.Long), " ")
+	if !strings.Contains(help, "inbound credential DLP") {
+		t.Fatalf("help omits inbound DLP scan scope: %q", cmd.Long)
+	}
+	if !strings.Contains(help, "never by adding a suppress entry") {
+		t.Fatalf("help omits complete DLP suppress instruction: %q", cmd.Long)
+	}
+	if strings.Contains(help, "never by suppress.") {
+		t.Fatalf("help still uses truncated suppress instruction: %q", cmd.Long)
+	}
+}
+
 func TestExplainMCPResponseCmd_TextAndJSON(t *testing.T) {
 	tests := []struct {
 		name    string

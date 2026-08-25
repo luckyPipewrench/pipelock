@@ -318,7 +318,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "local synthetic WebSocket endpoint",
 			Without:          "A bare agent splits a credential across frames and the reassembled message reaches the peer.",
 			With:             "Pipelock reassembles the fragmented text message, detects the complete credential shape, closes the connection, and signs the block.",
-			RedactedShape:    redactedAWSShape + " → blocked after reassembly",
+			RedactedShape:    redactedAWSShape + " → delivered after reassembly",
 		},
 		{
 			ID:               "mcp-poisoned-tool-description",
@@ -349,7 +349,7 @@ func DefaultScenarios() []Scenario {
 			DestinationClass: "local synthetic workflow endpoints",
 			Without:          "A bare agent reads context, prepares a change, and sends the final credential-bearing write with no linked record of the sequence.",
 			With:             "Pipelock signs the two allowed local actions and the final body-DLP block into one ordered receipt chain.",
-			RedactedShape:    redactedAWSShape + " → blocked on step three",
+			RedactedShape:    redactedAWSShape + " → sent on step three",
 		},
 	}
 }

@@ -4,6 +4,7 @@
 package replaycapture
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -90,6 +91,9 @@ func TestBuildManifest_BindsPacketAndReceipts(t *testing.T) {
 	var rt Manifest
 	if err := json.Unmarshal(raw, &rt); err != nil {
 		t.Fatalf("manifest not valid JSON: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(scenario.RedactedShape)) {
+		t.Fatalf("manifest escaped or omitted redacted shape bytes: %q", scenario.RedactedShape)
 	}
 	if rt.ScenarioID != scenario.ID {
 		t.Errorf("round-trip scenario id mismatch")

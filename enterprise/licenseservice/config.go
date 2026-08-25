@@ -237,8 +237,13 @@ func LoadConfig() (*Config, error) {
 		if !validTiers[product.Tier] || product.Tier != tierTrial {
 			return nil, fmt.Errorf("ORDER_PRODUCTS product %s has invalid one-time tier %q", product.ProductID, product.Tier)
 		}
-		if product.AmountCents <= 0 {
-			return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set positive amount_cents", product.ProductID)
+		// A trial is deliberately a zero-amount product, and the tier check
+		// above already restricts ORDER_PRODUCTS to the trial tier, so only
+		// negative amounts are invalid here. If a non-trial one-time tier is
+		// ever allowed, it must reinstate a positive-amount requirement so a
+		// misconfigured paid product can never silently become free.
+		if product.AmountCents < 0 {
+			return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set a non-negative amount_cents", product.ProductID)
 		}
 		if product.Currency == "" {
 			return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set currency", product.ProductID)

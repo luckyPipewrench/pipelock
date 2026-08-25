@@ -260,6 +260,76 @@ func (e *EntitlementDB) CountActiveEvalForEmail(ctx context.Context, normalizedE
 	return count, nil
 }
 
+// CountActiveTrialForEmail returns the number of active, unexpired trial
+// entitlements for a normalized email. Used to enforce one active trial per
+// email at mint time, mirroring the Enterprise Eval rule. It bounds only
+// same-email repeats; a fresh email is a new trial by design, which is
+// acceptable because trials gate multi-agent coordination and never detection.
+//
+// Matching happens in Go through NormalizeEmail, not SQL LOWER. SQLite's
+// LOWER (and this driver's build, which has no ICU) only folds ASCII, so a
+// legacy row stored as ÜSER@Example.com would miss üser@example.com and
+// mint a second trial. Application-level canonicalization is the same key
+// the webhook writes for new rows. Unparseable stored values are skipped:
+// they cannot be this identity, because the incoming address already
+// survived NormalizeEmail.
+func (e *EntitlementDB) CountActiveTrialForEmail(ctx context.Context, normalizedEmail string, now time.Time) (int, error) {
+	if err := errForceCountActiveTrial; err != nil {
+		return 0, fmt.Errorf("count active trial for %s: %w", normalizedEmail, err)
+	}
+	const query = `
+	SELECT customer_email FROM entitlements
+	WHERE tier = ? AND status = ? AND current_period_end > ?
+	`
+	rows, err := e.db.QueryContext(ctx, query, tierTrial, statusActive, now.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("count active trial for %s: %w", normalizedEmail, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	emails, err := collectTrialEmails(rows)
+	if err != nil {
+		return 0, fmt.Errorf("count active trial for %s: %w", normalizedEmail, err)
+	}
+	count := 0
+	for _, stored := range emails {
+		canonical, nerr := NormalizeEmail(stored)
+		if nerr != nil {
+			continue
+		}
+		if canonical == normalizedEmail {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// errForceCountActiveTrial is set only in tests so HandleOrderEvent can
+// exercise the count-error return without closing the database (GetBySubscriptionID
+// would fail first). Production leaves it nil.
+var errForceCountActiveTrial error
+
+type trialEmailRows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+func collectTrialEmails(rows trialEmailRows) ([]string, error) {
+	var emails []string
+	for rows.Next() {
+		var stored string
+		if err := rows.Scan(&stored); err != nil {
+			return nil, err
+		}
+		emails = append(emails, stored)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return emails, nil
+}
+
 // ErrEvalOrderNotMintable means the eval order's persisted state changed (refund,
 // revocation, or an existing mint) between validation and the mint transaction,
 // so minting must be refused.

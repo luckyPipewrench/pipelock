@@ -319,3 +319,131 @@ func TestHandleOrderRefund_DuplicateIsNoop(t *testing.T) {
 		t.Fatalf("refund replay: %v", err)
 	}
 }
+
+func TestCountActiveTrialForEmailClosedDB(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := db.CountActiveTrialForEmail(t.Context(), "a@b.com", time.Now()); err == nil {
+		t.Error("CountActiveTrialForEmail on closed db should error")
+	}
+}
+
+func TestCountActiveTrialForEmailCanonicalizesLegacyRows(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now()
+	periodEnd := now.Add(10 * 24 * time.Hour)
+	legacyUmlaut := "ÜSER@Example.com"
+
+	rows := []*Entitlement{
+		{
+			SubscriptionID:   "order_legacy_ascii",
+			CustomerEmail:    "DELTA@Example.com",
+			ProductID:        "prod_trial_free",
+			Tier:             tierTrial,
+			Status:           statusActive,
+			CurrentPeriodEnd: periodEnd,
+		},
+		{
+			SubscriptionID:   "order_legacy_umlaut",
+			CustomerEmail:    legacyUmlaut,
+			ProductID:        "prod_trial_free",
+			Tier:             tierTrial,
+			Status:           statusActive,
+			CurrentPeriodEnd: periodEnd,
+		},
+		{
+			SubscriptionID:   "order_legacy_garbage",
+			CustomerEmail:    "not-an-email",
+			ProductID:        "prod_trial_free",
+			Tier:             tierTrial,
+			Status:           statusActive,
+			CurrentPeriodEnd: periodEnd,
+		},
+		{
+			SubscriptionID:   "order_expired_umlaut",
+			CustomerEmail:    legacyUmlaut,
+			ProductID:        "prod_trial_free",
+			Tier:             tierTrial,
+			Status:           statusActive,
+			CurrentPeriodEnd: now.Add(-time.Hour),
+		},
+	}
+	for _, row := range rows {
+		if err := db.Upsert(ctx, row); err != nil {
+			t.Fatalf("seed %s: %v", row.SubscriptionID, err)
+		}
+	}
+
+	got, err := db.CountActiveTrialForEmail(ctx, "delta@example.com", now)
+	if err != nil {
+		t.Fatalf("ascii legacy count: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("ascii legacy count = %d, want 1", got)
+	}
+
+	got, err = db.CountActiveTrialForEmail(ctx, "üser@example.com", now)
+	if err != nil {
+		t.Fatalf("non-ASCII legacy count: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("non-ASCII legacy count = %d, want 1", got)
+	}
+
+	got, err = db.CountActiveTrialForEmail(ctx, "other@example.com", now)
+	if err != nil {
+		t.Fatalf("unrelated email count: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("unrelated email count = %d, want 0 (garbage and expired rows must not match)", got)
+	}
+}
+
+func TestCollectTrialEmailsScanAndIterErrors(t *testing.T) {
+	got, err := collectTrialEmails(&stubTrialRows{emails: []string{"DELTA@Example.com", "not-an-email"}})
+	if err != nil {
+		t.Fatalf("happy path: %v", err)
+	}
+	if len(got) != 2 || got[0] != "DELTA@Example.com" || got[1] != "not-an-email" {
+		t.Fatalf("happy path emails = %#v", got)
+	}
+
+	if _, err := collectTrialEmails(&stubTrialRows{emails: []string{"a@example.com"}, scanErr: errors.New("scan failed")}); err == nil {
+		t.Fatal("scan error must fail closed")
+	}
+	if _, err := collectTrialEmails(&stubTrialRows{iterErr: errors.New("iter failed")}); err == nil {
+		t.Fatal("iteration error must fail closed")
+	}
+}
+
+type stubTrialRows struct {
+	emails  []string
+	idx     int
+	scanErr error
+	iterErr error
+}
+
+func (s *stubTrialRows) Next() bool {
+	if s.idx >= len(s.emails) {
+		return false
+	}
+	s.idx++
+	return true
+}
+
+func (s *stubTrialRows) Scan(dest ...any) error {
+	if s.scanErr != nil {
+		return s.scanErr
+	}
+	ptr, ok := dest[0].(*string)
+	if !ok {
+		return errors.New("scan dest is not *string")
+	}
+	*ptr = s.emails[s.idx-1]
+	return nil
+}
+
+func (s *stubTrialRows) Err() error { return s.iterErr }

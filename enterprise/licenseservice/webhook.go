@@ -950,6 +950,45 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 		return fmt.Errorf("load existing entitlement for order %s: %w", order.ID, err)
 	}
 
+	// One active trial per normalized email, mirroring the Enterprise Eval
+	// rule. The entitlement stores the NORMALIZED email (the eval precedent)
+	// so the count comparison and the stored identity share one canonical
+	// key; storing the raw order email would let a case variant of the same
+	// address bypass the check. The dedupe runs only for a FIRST processing
+	// of this order: a webhook replay of an already-processed order must
+	// stay idempotent rather than tripping over the entitlement it created
+	// itself. Fail closed on a normalization or count error: never mint on
+	// an unverifiable state. The count-then-write pair is serialized by
+	// processMu; the service runs as a single writer against its SQLite
+	// store, and a database-level constraint for multi-writer deployments is
+	// tracked separately.
+	customerEmail := order.Customer.Email
+	if tier == tierTrial {
+		email, err := NormalizeEmail(order.Customer.Email)
+		if err != nil {
+			return fmt.Errorf("normalize trial email for order %s: %w", order.ID, err)
+		}
+		customerEmail = email
+		if existing == nil {
+			active, err := h.db.CountActiveTrialForEmail(ctx, email, time.Now())
+			if err != nil {
+				return fmt.Errorf("count active trial for order %s: %w", order.ID, err)
+			}
+			if active > 0 {
+				denial := fmt.Errorf("an active trial already exists for this email")
+				if lerr := h.ledger.LogError(order.ID, "trial denied", denial); lerr != nil {
+					h.log.Warn().Err(lerr).
+						Str("order_id", order.ID).
+						Msg("trial denial could not be recorded in the audit ledger")
+				}
+				h.log.Warn().
+					Str("order_id", order.ID).
+					Msg("trial order denied: an active trial already exists for this email")
+				return nil
+			}
+		}
+	}
+
 	var periodEnd time.Time
 	if existing != nil {
 		periodEnd = existing.CurrentPeriodEnd
@@ -959,7 +998,7 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 
 	ent := &Entitlement{
 		SubscriptionID:   order.ID, // Use order_id as unique key.
-		CustomerEmail:    order.Customer.Email,
+		CustomerEmail:    customerEmail,
 		ProductID:        order.Product.ID,
 		Tier:             tier,
 		BillingInterval:  billingIntervalOneTime,

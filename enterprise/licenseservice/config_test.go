@@ -247,12 +247,27 @@ func TestLoadConfig_OrderProducts(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_OrderProductsAcceptZeroAmountTrial(t *testing.T) {
+	// A trial is deliberately a zero-amount product; only negative amounts are
+	// rejected for the trial tier, while non-trial one-time products keep the
+	// positive-amount requirement.
+	setRequiredConfigEnv(t)
+	t.Setenv("ORDER_PRODUCTS", "prod_trial_free:trial:0:usd")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig rejected a zero-amount trial product: %v", err)
+	}
+	if len(cfg.OrderProducts) != 1 || cfg.OrderProducts[0].AmountCents != 0 {
+		t.Fatalf("OrderProducts = %+v, want one zero-amount trial product", cfg.OrderProducts)
+	}
+}
+
 func TestLoadConfig_OrderProductsRejectMalformed(t *testing.T) {
 	for _, value := range []string{
 		"prod_only",
 		":trial:100:usd",
 		"prod_trial:pro:100:usd",
-		"prod_trial:trial:0:usd",
+		"prod_trial:trial:-1:usd",
 		"prod_trial:trial:not-money:usd",
 		"prod_trial:trial:100:",
 		"prod_trial:trial:100:usd,prod_trial:trial:100:usd",

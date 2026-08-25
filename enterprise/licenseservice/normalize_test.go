@@ -15,6 +15,7 @@ func TestNormalizeEmail(t *testing.T) {
 		wantErr bool
 	}{
 		{"lowercases address and domain", "Buyer@Example.COM", "buyer@example.com", false},
+		{"lowercases non-ASCII local part", "ÜSER@Example.com", "üser@example.com", false},
 		{"trims surrounding whitespace", "  buyer@example.com  ", "buyer@example.com", false},
 		{"preserves plus tags", "buyer+eval@example.com", "buyer+eval@example.com", false},
 		{"preserves dots in local part", "first.last@example.com", "first.last@example.com", false},

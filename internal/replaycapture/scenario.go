@@ -154,8 +154,10 @@ type Scenario struct {
 	// With is the Pipelock narrative: what the firewall mediated.
 	With string
 	// RedactedShape is the inert, class-labelled display for the WITHOUT side
-	// (e.g. "AKIA••••••••••••EXAMPLE → exfiltrated"). Optional. Must never be a
-	// raw secret value, even synthetic.
+	// (e.g. "AKIA••••••••••••EXAMPLE → exfiltrated"). Required for every blocked
+	// default scenario: the public proof deck needs a shape to show the payload
+	// chip, and the capture tests refuse a blocked scenario without one. Allowed
+	// scenarios leave it empty. Must never be a raw secret value, even synthetic.
 	RedactedShape string
 }
 

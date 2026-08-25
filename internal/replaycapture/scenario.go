@@ -170,7 +170,13 @@ type ExpectedDecision struct {
 // redactedAWSShape is the inert display form for the AWS example key. It keeps
 // the prefix/suffix that make the class obvious while masking the middle, so a
 // screenshot can never be read as "Pipelock displayed a live key".
-const redactedAWSShape = "AKIA••••••••••EXAMPLE"
+// RedactedAWSShape is the inert, class-labelled display for an AWS access
+// key. Exported so every package that shows this payload class renders the
+// identical string: a second hand-written copy drifts silently, and the
+// proof deck splits these on the arrow, so a stray variant renders wrong.
+const RedactedAWSShape = "AKIA••••••••••EXAMPLE"
+
+const redactedAWSShape = RedactedAWSShape
 
 const (
 	redactedPrivateKeyShape      = "PRIVATE-KEY-HEADER•••• → exfiltrated"

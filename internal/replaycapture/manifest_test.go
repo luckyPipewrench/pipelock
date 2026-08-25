@@ -92,6 +92,12 @@ func TestBuildManifest_BindsPacketAndReceipts(t *testing.T) {
 	if err := json.Unmarshal(raw, &rt); err != nil {
 		t.Fatalf("manifest not valid JSON: %v", err)
 	}
+	// A byte search proves only that the characters appear somewhere in the
+	// document. The site reads the parsed field and splits it on the arrow, so
+	// assert the round-tripped value itself.
+	if rt.RedactedShape != scenario.RedactedShape {
+		t.Fatalf("round-trip redacted shape = %q, want %q", rt.RedactedShape, scenario.RedactedShape)
+	}
 	if !bytes.Contains(raw, []byte(scenario.RedactedShape)) {
 		t.Fatalf("manifest escaped or omitted redacted shape bytes: %q", scenario.RedactedShape)
 	}

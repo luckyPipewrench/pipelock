@@ -2035,6 +2035,7 @@ func newInterceptHandler(
 
 		// Browser Shield on intercepted response body.
 		if ic.Proxy != nil {
+			shieldBodyLen := len(respBody)
 			var shieldBlocked bool
 			var shieldSummary *receipt.ShieldSummary
 			respBody, shieldSummary, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
@@ -2042,7 +2043,7 @@ func newInterceptHandler(
 				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
 				writeBlockedError(w,
 					blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
-					"blocked: response body exceeds browser shield size limit", http.StatusForbidden)
+					"blocked: "+shieldOversizeBlockReason(ic.TargetHost, shieldBodyLen, ic.Config.BrowserShield.MaxShieldBytes), http.StatusForbidden)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "shield_oversize")
 				return
 			}

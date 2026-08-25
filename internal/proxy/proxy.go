@@ -3214,7 +3214,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d", len(body), cfg.BrowserShield.MaxShieldBytes), 0)
 			return body, nil, false
 		default: // block: fail-closed, return 403
-			p.logger.LogBlocked(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d (action: block)", len(body), cfg.BrowserShield.MaxShieldBytes))
+			p.logger.LogBlocked(actx, "shield_oversize", shieldOversizeBlockReason(hostname, len(body), cfg.BrowserShield.MaxShieldBytes))
 			return nil, nil, true
 		}
 	}

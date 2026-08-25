@@ -45,18 +45,27 @@ func oversizeShieldPage(minBytes int) string {
 // small cap.
 func reverseShieldOversizeHarness(t *testing.T, strictness, action string, responseScanning bool) *http.Response {
 	t.Helper()
+	return reverseShieldResponseHarness(t, strictness, action, responseScanning, oversizeShieldTestCap, oversizeShieldPage(oversizeShieldTestCap*2))
+}
+
+func reverseShieldResponseHarness(t *testing.T, strictness, action string, responseScanning bool, maxShieldBytes int, page string) *http.Response {
+	t.Helper()
+	return reverseShieldResponseHarnessWithContentType(t, strictness, action, responseScanning, maxShieldBytes, "text/html", page)
+}
+
+func reverseShieldResponseHarnessWithContentType(t *testing.T, strictness, action string, responseScanning bool, maxShieldBytes int, contentType, page string) *http.Response {
+	t.Helper()
 
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = responseScanning
 	cfg.BrowserShield.Enabled = true
 	cfg.BrowserShield.Strictness = strictness
 	cfg.BrowserShield.StripTrackingPixels = true
-	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.MaxShieldBytes = maxShieldBytes
 	cfg.BrowserShield.OversizeAction = action
 
-	page := oversizeShieldPage(oversizeShieldTestCap * 2)
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("ETag", `"upstream"`)
 		w.Header().Set("Content-MD5", "upstream-md5")
 		w.Header().Set("Digest", "sha-256=upstream-digest")
@@ -88,6 +97,59 @@ func reverseShieldOversizeHarness(t *testing.T, strictness, action string, respo
 	t.Cleanup(proxySrv.Close)
 
 	return testGet(t, proxySrv.URL+"/page")
+}
+
+// With response injection scanning disabled, Browser Shield must use its own
+// ceiling. Crossing the reverse response-scanner ceiling must not select the
+// scanner's block path or bypass the configured shield oversize action.
+func TestReverseProxy_ShieldOnlyResponseAboveScannerCeilingHonorsOversizeAction(t *testing.T) {
+	page := oversizeShieldPage(reverseProxyMaxBodyBytes + 4096)
+	for _, tt := range []struct {
+		name        string
+		action      string
+		wantStatus  int
+		wantTracker bool
+	}{
+		{name: "block", action: config.ShieldOversizeBlock, wantStatus: http.StatusForbidden},
+		{name: "warn", action: config.ShieldOversizeWarn, wantStatus: http.StatusOK, wantTracker: true},
+		{name: "scan_head", action: config.ShieldOversizeScanHead, wantStatus: http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := reverseShieldResponseHarness(t, config.ShieldStrictnessStandard, tt.action, false, oversizeShieldTestCap, page)
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			if got := strings.Contains(string(body), "tracker.vendor.example"); got != tt.wantTracker {
+				t.Errorf("tracking pixel present = %v, want %v", got, tt.wantTracker)
+			}
+			if tt.wantStatus == http.StatusOK && !strings.HasSuffix(string(body), oversizeShieldTail) {
+				t.Fatal("oversize action truncated the streamed response tail")
+			}
+		})
+	}
+}
+
+func TestReverseProxy_ShieldOnlyResponseAboveScannerCeilingPassesNonShieldableContent(t *testing.T) {
+	body := strings.Repeat("plain response data\n", reverseProxyMaxBodyBytes/10)
+	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, oversizeShieldTestCap, "text/plain", body)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("non-shieldable response status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if string(got) != body {
+		t.Fatal("non-shieldable response was modified or truncated")
+	}
 }
 
 // The reverse transport used to skip Browser Shield entirely above
@@ -274,6 +336,53 @@ func TestReverseProxy_ShieldOversize_ScanHeadEmitsPartialReceipt(t *testing.T) {
 	}
 	if got, want := r.ActionRecord.Shield.ScannedBytes, cfg.BrowserShield.MaxShieldBytes; got != want {
 		t.Errorf("scan_head receipt scanned_bytes = %d, want %d", got, want)
+	}
+}
+
+func TestReverseProxy_ShieldOversize_CleanScanHeadEmitsPartialReceipt(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.Strictness = config.ShieldStrictnessMinimal
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+	cfg.BrowserShield.StripExtensionProbing = false
+	cfg.BrowserShield.StripHiddenTraps = false
+	cfg.BrowserShield.StripTrackingPixels = false
+	cfg.BrowserShield.InjectFingerprintShims = false
+
+	page := "<html><body>" + strings.Repeat("ordinary text ", oversizeShieldTestCap) + oversizeShieldTail
+	proxySrv, dir, closeRec := reverseReceiptParitySetupWithShield(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, page)
+	}, shield.NewEngine(nil))
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clean scan_head status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	r := findReceiptByLayer(t, receipts, browserShieldLayer)
+	if r.ActionRecord.Shield == nil {
+		t.Fatal("clean scan_head receipt missing shield summary")
+	}
+	if got := r.ActionRecord.Shield.TotalRewrites; got != 0 {
+		t.Errorf("clean scan_head total_rewrites = %d, want 0", got)
+	}
+	if !r.ActionRecord.Shield.Partial {
+		t.Fatal("clean scan_head receipt must declare partial coverage")
+	}
+	if got, want := r.ActionRecord.Shield.BodyBytes, len(page); got != want {
+		t.Errorf("clean scan_head body_bytes = %d, want %d", got, want)
+	}
+	if got, want := r.ActionRecord.Shield.ScannedBytes, cfg.BrowserShield.MaxShieldBytes; got != want {
+		t.Errorf("clean scan_head scanned_bytes = %d, want %d", got, want)
 	}
 }
 

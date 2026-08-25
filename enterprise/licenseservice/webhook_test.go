@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -110,6 +111,9 @@ func newTestSetup(t *testing.T) *testSetup {
 					}
 					if local == "gammaupper" {
 						email = "GAMMA@Example.com"
+					}
+					if local == "umlaut" {
+						email = "üser@example.com"
 					}
 				}
 				_, _ = fmt.Fprintf(w, `{
@@ -3203,8 +3207,8 @@ func TestHandleOrderEvent_TrialVariantEmailCannotDoubleDip(t *testing.T) {
 
 func TestHandleOrderEvent_TrialLegacyCaseVariantRowStillCounts(t *testing.T) {
 	// A trial entitlement persisted before canonical storage may hold a raw
-	// case-variant email. The active-trial count folds the stored email's case,
-	// so that legacy row still denies a new trial for the normalized form.
+	// case-variant email. The active-trial count canonicalizes stored emails
+	// in Go, so that legacy row still denies a new trial for the normalized form.
 	ts := newTestSetup(t)
 	ctx := t.Context()
 
@@ -3229,6 +3233,54 @@ func TestHandleOrderEvent_TrialLegacyCaseVariantRowStillCounts(t *testing.T) {
 	}
 	if ent != nil {
 		t.Fatalf("canonical trial minted past an active legacy case-variant row: %+v", ent)
+	}
+}
+
+func TestHandleOrderEvent_TrialLegacyNonASCIICaseVariantRowStillCounts(t *testing.T) {
+	// SQLite LOWER is ASCII-only. A legacy row stored as ÜSER@Example.com must
+	// still block üser@example.com; SQL LOWER would miss it and mint a second trial.
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	legacy := &Entitlement{
+		SubscriptionID:   "order_legacy_umlaut",
+		CustomerEmail:    "ÜSER@Example.com",
+		ProductID:        "prod_trial_free",
+		Tier:             tierTrial,
+		Status:           statusActive,
+		CurrentPeriodEnd: time.Now().Add(10 * 24 * time.Hour),
+	}
+	if err := ts.db.Upsert(ctx, legacy); err != nil {
+		t.Fatalf("seed legacy non-ASCII trial entitlement: %v", err)
+	}
+
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_10_umlaut", "üser@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent canonical trial after non-ASCII legacy row: %v", err)
+	}
+	ent, err := ts.db.GetBySubscriptionID(ctx, "order_free_10_umlaut")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent != nil {
+		t.Fatalf("canonical trial minted past an active legacy non-ASCII case-variant row: %+v", ent)
+	}
+}
+
+func TestHandleOrderEvent_TrialCountErrorFailsClosed(t *testing.T) {
+	ts := newTestSetup(t)
+	errForceCountActiveTrial = errors.New("forced count failure")
+	t.Cleanup(func() { errForceCountActiveTrial = nil })
+
+	err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, "order_free_12_epsilon", "epsilon@example.com"))
+	if err == nil || !strings.Contains(err.Error(), "count active trial") {
+		t.Fatalf("expected count active trial failure, got %v", err)
+	}
+	ent, dbErr := ts.db.GetBySubscriptionID(t.Context(), "order_free_12_epsilon")
+	if dbErr != nil {
+		t.Fatalf("GetBySubscriptionID: %v", dbErr)
+	}
+	if ent != nil {
+		t.Fatalf("trial minted after a count error: %+v", ent)
 	}
 }
 

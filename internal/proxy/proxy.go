@@ -3603,17 +3603,30 @@ const metricsHostnameLookupTimeout = time.Second
 
 var errMetricsHostnameNoIPs = errors.New("hostname resolved to no IP addresses")
 
-// metricsDialTarget is the resolved metrics listener compared against
-// each dial. It is built at config load and whenever MetricsListen
-// changes, not on every request. There is no TTL: the metrics socket is
-// bound once for a given listen string, and re-resolving on a timer
-// would stop blocking the bound address if DNS later moved.
+// errMetricsTargetUnpublished marks a dial reaching the guard before the
+// resolved metrics target was published, or after the published one stopped
+// matching the configured listener. The dial path does not resolve, so this
+// state is reported as unverifiable rather than treated as permission.
+var errMetricsTargetUnpublished = errors.New("metrics listener target not published for the configured listen address")
+
+// metricsDialTarget is the resolved metrics listener compared against each
+// dial. It is published at config load, at reload, and when the listener
+// reports the address it actually bound; it is never built on the dial path.
+// There is no TTL: the metrics socket is bound once for a given listen string,
+// and re-resolving on a timer would stop blocking the bound address if DNS
+// later moved.
+//
+// bound records that this snapshot came from a real listener bind rather than
+// from parsing the configured string. That distinction is load-bearing when the
+// configured port is 0, because the configured form carries no port at all and
+// rebuilding from it would discard the only value that can match a dial.
 type metricsDialTarget struct {
 	listen      string
 	port        uint16
 	unspecified bool
 	ips         []net.IP
 	resolveErr  error
+	bound       bool
 }
 
 func configuredMetricsBlockDetail(host, port string) string {
@@ -3637,6 +3650,15 @@ func (p *Proxy) refreshMetricsDialTarget(listen string) {
 	}
 	if listen == "" {
 		p.metricsTargetPtr.Store(nil)
+		return
+	}
+	// A reload that leaves metrics_listen unchanged must not replace a target
+	// that came from a real bind. With a configured port of 0 the rebuilt
+	// target carries port 0, the dial guard treats port 0 as nothing to match,
+	// and an unrelated reload would silently reopen the metrics listener to
+	// every mediated transport. The listener is only rebound when the address
+	// changes, and that path publishes its own target.
+	if cached := p.metricsTargetPtr.Load(); cached != nil && cached.bound && cached.listen == listen {
 		return
 	}
 	p.metricsTargetPtr.Store(p.buildMetricsDialTarget(listen))
@@ -3664,6 +3686,7 @@ func (p *Proxy) UpdateMetricsDialTargetFromBoundAddr(addr string) {
 				listen:     cfg.MetricsListen,
 				port:       uint16(port),
 				resolveErr: fmt.Errorf("parse bound metrics listener %q", addr),
+				bound:      true,
 			})
 			return
 		}
@@ -3671,16 +3694,35 @@ func (p *Proxy) UpdateMetricsDialTargetFromBoundAddr(addr string) {
 		return
 	}
 	target.listen = cfg.MetricsListen
+	target.bound = true
 	p.metricsTargetPtr.Store(target)
 }
 
+// cachedMetricsDialTarget returns the published snapshot for listen. It never
+// builds one, because building resolves a hostname and this runs on the dial
+// path for every mediated request: doing that work here would block the request
+// for up to the lookup timeout, and concurrent misses would each repeat it,
+// which is a denial-of-service shape rather than a guard. A snapshot that is
+// missing or belongs to a different listen string means the published state is
+// stale, so the target reports itself unverifiable and the guard blocks, which
+// matches how an unresolvable hostname is already handled.
 func (p *Proxy) cachedMetricsDialTarget(listen string) *metricsDialTarget {
 	if cached := p.metricsTargetPtr.Load(); cached != nil && cached.listen == listen {
 		return cached
 	}
-	built := p.buildMetricsDialTarget(listen)
-	p.metricsTargetPtr.Store(built)
-	return built
+	_, configuredPort, splitErr := net.SplitHostPort(listen)
+	if splitErr != nil {
+		return nil
+	}
+	port, portErr := strconv.Atoi(configuredPort)
+	if portErr != nil || port < 1 || port > 65535 {
+		return nil
+	}
+	return &metricsDialTarget{
+		listen:     listen,
+		port:       uint16(port),
+		resolveErr: errMetricsTargetUnpublished,
+	}
 }
 
 func (p *Proxy) buildMetricsDialTarget(listen string) *metricsDialTarget {

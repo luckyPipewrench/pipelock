@@ -22,7 +22,7 @@
   },
   "packageRules": [
     {
-      "description": "Keep GitHub Actions, Docker, and k8s image refs pinned to digests so the OpenSSF Scorecard pinned-dependencies check stays satisfied. The digest-maintenance PRs this produces are batched into the weekly group below, so pinning costs no extra PR noise.",
+      "description": "Keep GitHub Actions, Docker, and k8s image refs pinned to digests so the OpenSSF Scorecard pinned-dependencies check stays satisfied. The digest-maintenance PRs this produces are batched into the weekly group below, so pinning costs no extra PR noise. charts/pipelock/values.yaml is excluded by a later rule: its image.tag and image.digest are intentionally empty and must not be written by an updater.",
       "matchManagers": ["github-actions", "dockerfile", "docker-compose", "kubernetes", "helm-values", "helmv3"],
       "pinDigests": true
     },
@@ -59,6 +59,27 @@
       "matchFileNames": ["sdk/verifiers/rust/**"],
       "matchPackageNames": ["jsonschema"],
       "allowedVersions": "<0.19"
+    },
+    {
+      "description": "Never let an updater write into charts/pipelock/values.yaml. The chart's image.tag is intentionally empty so it falls through to .Chart.AppVersion, and image.digest is a separate operator opt-in; the file itself states that a digest and a tag are never combined. The weekly dependency PR of 2026-08-24 wrote a digest into image.tag and the chart's values.schema.json rejected it. The chart has a second, independent guard: the pipelock.image helper in charts/pipelock/templates/_helpers.tpl fails template rendering outright when image.tag contains a digest, with a message telling the operator to set image.digest instead, so a malformed reference is never rendered and no pod is ever created. Both guards held. The defect being prevented here is therefore an updater writing a value the chart explicitly forbids, which breaks every install of that chart at render time until someone edits the file back. The release process sets the published tag; nothing in this file is an updater's to manage.",
+      "matchManagers": ["helm-values"],
+      "matchFileNames": ["charts/pipelock/values.yaml"],
+      "enabled": false
+    },
+    {
+      "description": "Hold unicode-normalization at the release whose tables are Unicode 15.0.0 in the Rust verifier. The Unicode version is not an implementation detail here: it is a field of the signed evidence-provenance transform profile (sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v*.json), the Python verifier pins UNICODE_VERSION to 15.0.0 and is held at Python 3.12 because its built-in database is exactly that, and NFC output feeds the AARP JCS canonicalizer that must agree byte-for-byte across Go, Python, Rust and TypeScript. Advancing one verifier alone would let two verifiers disagree about whether the same signed receipt is valid. Verified locally on 2026-08-24: 0.1.22 carries Unicode 15.0.0 and 0.1.25 carries 17.0.0; 0.1.23 and 0.1.24 were not checked, so this bound is deliberately conservative and is not a claim that 0.1.23 is unsafe. Advancing it is a coordinated all-verifier profile migration; the guard test unicode_normalization_tables_match_pinned_profile_version is the backstop that caught this.",
+      "matchManagers": ["cargo"],
+      "matchFileNames": ["sdk/verifiers/rust/**"],
+      "matchPackageNames": ["unicode-normalization"],
+      "allowedVersions": "<0.1.23"
+    },
+    {
+      "description": "Do not bump the sha2, hmac and p256 cluster in the Rust verifier piecemeal. These crates are coupled through the RustCrypto digest trait generation, and Cargo.toml deliberately carries sha2 twice: the current line plus an aliased older line for the HMAC path whose dependents still use the previous digest traits. The weekly dependency PR of 2026-08-24 moved the alias onto the same version as the primary, so both names resolved to one crate version and Cargo refused the build outright, taking down the Rust verifier and both cross-language gates. Pinning the alias back does not fix it either, because the same PR moved hmac to a release requiring the newer digest traits. Migrating this cluster means moving every member together and re-checking whether the alias is still needed at all, which an updater cannot reason about. Only minor and major updates are held, so a patch inside the current series still flows and an in-series security fix is not blocked; it is the series jump that changes the trait generation and breaks the alias. Both the alias key sha2_10 and the underlying crate name sha2 are listed so the rule matches whether the dependency is keyed by its alias or by the crate it renames.",
+      "matchManagers": ["cargo"],
+      "matchFileNames": ["sdk/verifiers/rust/**"],
+      "matchPackageNames": ["sha2", "sha2_10", "hmac", "p256"],
+      "matchUpdateTypes": ["minor", "major"],
+      "enabled": false
     }
   ]
 }

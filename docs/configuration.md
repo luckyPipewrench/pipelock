@@ -3467,7 +3467,7 @@ reverse_proxy:
     port: 443
     reason: "submission endpoint"
     added: "2026-05-26"
-    expires: "2026-08-24"
+    expires: "2099-12-31"
   max_body_bytes: 1048576
   request_timeout_seconds: 10
 ```

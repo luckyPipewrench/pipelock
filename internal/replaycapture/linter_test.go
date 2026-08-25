@@ -34,6 +34,28 @@ func TestLintGallery_RealGalleryIsClean(t *testing.T) {
 	}
 }
 
+func TestLintGalleryFailClosed_ScansManifestRedactedShape(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "scenario")
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	// Construct the published AWS example key at runtime so source scanners do
+	// not see a complete credential-shaped literal. The linter must still reject
+	// it when it appears in display-only manifest metadata.
+	rawKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	manifest := []byte(`{"redacted_shape":"` + rawKey + `"}`)
+	if err := os.WriteFile(filepath.Join(dir, artifactManifestName), manifest, filePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LintGalleryFailClosed(root, nil); err == nil || !strings.Contains(err.Error(), "raw-secret-shape") {
+		t.Fatalf("manifest redacted_shape with raw key: err = %v, want raw-secret-shape", err)
+	}
+}
+
 func TestScanBytes_CatchesViolations(t *testing.T) {
 	t.Parallel()
 

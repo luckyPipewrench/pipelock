@@ -265,10 +265,12 @@ func (e *EntitlementDB) CountActiveEvalForEmail(ctx context.Context, normalizedE
 // email at mint time, mirroring the Enterprise Eval rule. It bounds only
 // same-email repeats; a fresh email is a new trial by design, which is
 // acceptable because trials gate multi-agent coordination and never detection.
+// The comparison folds the stored email's case so a legacy trial row persisted
+// before canonical storage still counts against its normalized form.
 func (e *EntitlementDB) CountActiveTrialForEmail(ctx context.Context, normalizedEmail string, now time.Time) (int, error) {
 	const query = `
 	SELECT COUNT(*) FROM entitlements
-	WHERE tier = ? AND status = ? AND customer_email = ? AND current_period_end > ?
+	WHERE tier = ? AND status = ? AND LOWER(customer_email) = ? AND current_period_end > ?
 	`
 	var count int
 	err := e.db.QueryRowContext(ctx, query, tierTrial, statusActive, normalizedEmail, now.UTC()).Scan(&count)

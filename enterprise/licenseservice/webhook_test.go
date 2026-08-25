@@ -3201,6 +3201,37 @@ func TestHandleOrderEvent_TrialVariantEmailCannotDoubleDip(t *testing.T) {
 	}
 }
 
+func TestHandleOrderEvent_TrialLegacyCaseVariantRowStillCounts(t *testing.T) {
+	// A trial entitlement persisted before canonical storage may hold a raw
+	// case-variant email. The active-trial count folds the stored email's case,
+	// so that legacy row still denies a new trial for the normalized form.
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	legacy := &Entitlement{
+		SubscriptionID:   "order_legacy_delta",
+		CustomerEmail:    "DELTA@Example.com",
+		ProductID:        "prod_trial_free",
+		Tier:             tierTrial,
+		Status:           statusActive,
+		CurrentPeriodEnd: time.Now().Add(10 * 24 * time.Hour),
+	}
+	if err := ts.db.Upsert(ctx, legacy); err != nil {
+		t.Fatalf("seed legacy trial entitlement: %v", err)
+	}
+
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_7_delta", "delta@example.com")); err != nil {
+		t.Fatalf("HandleOrderEvent canonical trial after legacy row: %v", err)
+	}
+	ent, err := ts.db.GetBySubscriptionID(ctx, "order_free_7_delta")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent != nil {
+		t.Fatalf("canonical trial minted past an active legacy case-variant row: %+v", ent)
+	}
+}
+
 func TestHandleOrderEvent_TrialUnnormalizableEmailFailsClosed(t *testing.T) {
 	ts := newTestSetup(t)
 	err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, "order_free_9_bademail", "not-an-email"))

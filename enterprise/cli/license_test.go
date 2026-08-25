@@ -68,12 +68,13 @@ func TestLicenseStatusValidWithWarningBand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
 	lic := license.License{
 		ID:        "lic_status",
 		Email:     "status@example.com",
 		Org:       "Status Org",
-		IssuedAt:  time.Now().Unix(),
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour).Unix(),
+		IssuedAt:  now.Add(-49 * 24 * time.Hour).Unix(),
+		ExpiresAt: now.Add(7 * 24 * time.Hour).Unix(),
 		Features:  []string{license.FeatureAgents, license.FeatureFleet},
 		Tier:      "pro",
 	}
@@ -96,6 +97,9 @@ func TestLicenseStatusValidWithWarningBand(t *testing.T) {
 	if report.Severity != license.ExpirySeverityWarn {
 		t.Errorf("Severity = %q, want warn", report.Severity)
 	}
+	if report.Warning != "license expires in 7 day(s) on "+time.Now().UTC().Add(7*24*time.Hour).Format(time.DateOnly)+"; check billing or token delivery" {
+		t.Errorf("Warning = %q, want subscription billing guidance", report.Warning)
+	}
 	// Entitlements belong on the VERIFIED surface. Without these, status answered
 	// "are you licensed" but not "for what", and the only way to read features was
 	// license inspect, which states plainly that it does not check the signature.
@@ -104,6 +108,45 @@ func TestLicenseStatusValidWithWarningBand(t *testing.T) {
 	}
 	if len(report.Features) != 2 || report.Features[0] != license.FeatureAgents || report.Features[1] != license.FeatureFleet {
 		t.Errorf("Features = %v, want [%s %s]", report.Features, license.FeatureAgents, license.FeatureFleet)
+	}
+}
+
+func TestLicenseStatusTrialWarningMessage(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:        "lic_trial_status",
+		Email:     "trial-status@example.com",
+		IssuedAt:  now.Add(-16 * 24 * time.Hour).Unix(),
+		ExpiresAt: now.Add(14 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+		Tier:      "trial",
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := buildLicenseStatusReport(writeLicenseStatusConfig(t, token, pub, ""), "")
+	if err != nil {
+		t.Fatalf("buildLicenseStatusReport: %v", err)
+	}
+	if report.WarningBand != 15 || report.Severity != license.ExpirySeverityInfo {
+		t.Fatalf("report = %+v, want 15-day info warning", report)
+	}
+	want := "trial ends in 14 day(s) on " + time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly) + "; Pro features stop at expiry. Subscribe at https://pipelab.org/pricing/"
+	if report.Warning != want {
+		t.Fatalf("Warning = %q, want %q", report.Warning, want)
+	}
+
+	cmd := licenseStatusCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	printLicenseStatus(cmd, report)
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("printed status missing trial warning: %q", out.String())
 	}
 }
 
@@ -505,6 +548,7 @@ func TestPrintLicenseStatusVariants(t *testing.T) {
 		DaysRemaining:  7,
 		WarningBand:    7,
 		Severity:       "warn",
+		Warning:        "license expires in 7 day(s) on 2026-06-01; check billing or token delivery",
 		Intermediate:   true,
 		CRLConfigured:  true,
 		CRLExpiresAt:   "2026-06-02",

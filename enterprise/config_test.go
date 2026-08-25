@@ -536,11 +536,14 @@ func testLicenseKeyPair(t *testing.T) (token string, pubHex string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
 	lic := license.License{
 		ID:        "lic_test123",
 		Email:     "test@example.com",
+		IssuedAt:  now.Unix(),
 		Features:  []string{license.FeatureAgents},
-		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		Tier:      "pro",
 	}
 	tok, err := license.Issue(lic, priv)
 	if err != nil {
@@ -666,6 +669,12 @@ func TestEnforceLicenseGate_ValidLicense(t *testing.T) {
 	}
 	if cfg.LicenseExpiresAt == 0 {
 		t.Error("expected non-zero LicenseExpiresAt after valid license")
+	}
+	if cfg.LicenseIssuedAt == 0 {
+		t.Error("expected non-zero LicenseIssuedAt after valid license")
+	}
+	if cfg.LicenseTier != "pro" {
+		t.Errorf("LicenseTier = %q, want pro", cfg.LicenseTier)
 	}
 	if !cfg.LicenseAgentsFeature {
 		t.Error("expected LicenseAgentsFeature=true after valid agents license")

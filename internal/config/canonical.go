@@ -175,6 +175,8 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.LicenseCRLMaxAgeError = ""
 	view.LicensePublicKey = ""
 	view.LicenseExpiresAt = 0
+	view.LicenseIssuedAt = 0
+	view.LicenseTier = ""
 	view.LicenseID = ""
 	view.LicenseCRLExpiresAt = 0
 	view.LicenseCRLSHA256 = ""

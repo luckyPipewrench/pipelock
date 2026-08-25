@@ -448,7 +448,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			return nil, err
 		}
 		cfg.LicenseID = lic.ID
+		cfg.LicenseIssuedAt = lic.IssuedAt
 		cfg.LicenseExpiresAt = lic.ExpiresAt
+		cfg.LicenseTier = lic.Tier
 	}
 	if err := s.initConductorApplyAndAudit(cfg, m); err != nil {
 		s.cleanup()

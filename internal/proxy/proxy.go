@@ -5337,14 +5337,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Use the final response origin (after redirects), not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
+	shieldBodyLen := len(body)
 	body, _, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
 	if shieldBlocked {
+		reason := shieldOversizeBlockReason(shieldHost, shieldBodyLen, cfg.BrowserShield.MaxShieldBytes)
 		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     "shield_oversize",
-			Pattern:   "response body exceeds browser shield size limit",
+			Pattern:   reason,
 			Transport: "fetch",
 			Method:    http.MethodGet,
 			Target:    displayURL,
@@ -5355,7 +5357,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
 			http.StatusForbidden, FetchResponse{
 				URL: displayURL, Agent: agent, Blocked: true,
-				BlockReason: "response body exceeds browser shield size limit",
+				BlockReason: reason,
 			})
 		outcomeStatus = strconv.Itoa(http.StatusForbidden)
 		outcomeBytes = int64(len(body))

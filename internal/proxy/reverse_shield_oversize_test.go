@@ -609,11 +609,14 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 		name                    string
 		responseScanningEnabled bool
 		scanMaxBytes            int
+		inflightMaxBytes        int
 		wantStatus              int
+		wantBodyContains        string
 	}{
 		{name: "response_scanning_enabled", responseScanningEnabled: true, scanMaxBytes: len(page) + 1024, wantStatus: http.StatusOK},
 		{name: "shield_only", responseScanningEnabled: false, scanMaxBytes: len(page) + 1024, wantStatus: http.StatusOK},
 		{name: "shield_only_exceeds_bounded_ceiling", responseScanningEnabled: false, scanMaxBytes: shieldCap * 2, wantStatus: http.StatusForbidden},
+		{name: "shield_only_exceeds_inflight_budget", responseScanningEnabled: false, scanMaxBytes: len(page) + 1024, inflightMaxBytes: shieldCap, wantStatus: http.StatusForbidden, wantBodyContains: "response_scanning.size_exempt_scan_max_inflight_bytes"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -627,6 +630,9 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 			cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
 			cfg.ResponseScanning.SizeExemptScanMaxBytes = tc.scanMaxBytes
 			cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = cfg.ResponseScanning.SizeExemptScanMaxBytes
+			if tc.inflightMaxBytes > 0 {
+				cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = tc.inflightMaxBytes
+			}
 
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
@@ -653,6 +659,9 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 			}
 			if tc.wantStatus == http.StatusOK && strings.Contains(string(body), "tracker.vendor.example") {
 				t.Fatal("tracking pixel beyond the ordinary shield cap survived whole-body shielding")
+			}
+			if tc.wantBodyContains != "" && !strings.Contains(string(body), tc.wantBodyContains) {
+				t.Fatalf("response body %q does not contain %q", body, tc.wantBodyContains)
 			}
 		})
 	}

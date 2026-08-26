@@ -38,6 +38,14 @@ def event_paths(workflow: str, event: str) -> list[str]:
     return paths
 
 
+def job_block(workflow: str, job: str) -> str:
+    marker = f"  {job}:\n"
+    start = workflow.index(marker)
+    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\n", workflow[start + len(marker) :])
+    end = len(workflow) if next_job is None else start + len(marker) + next_job.start()
+    return workflow[start:end]
+
+
 def matches(pattern: str, path: str) -> bool:
     """Match the small GitHub Actions glob subset used by these workflows."""
     expression = re.escape(pattern)
@@ -135,13 +143,29 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
         self.assertIn("push:", trigger)
         self.assertIn("pull_request:", trigger)
 
-        report = self.hardening[self.hardening.index("  hardening-report:\n") :]
+        report = job_block(self.hardening, "hardening-report")
         self.assertIn("if: ${{ github.event_name != 'pull_request' }}", report)
         for job in ("workflow-audit", "runtime-policy"):
-            job_start = self.hardening.index(f"  {job}:\n")
-            next_job = self.hardening.find("\n  ", job_start + 3)
-            block = self.hardening[job_start:] if next_job == -1 else self.hardening[job_start:next_job]
-            self.assertNotIn("github.event_name != 'pull_request'", block, job)
+            self.assertNotIn(
+                "github.event_name != 'pull_request'",
+                job_block(self.hardening, job),
+                job,
+            )
+
+    def test_job_block_includes_conditions_after_runs_on(self):
+        workflow = """jobs:
+  workflow-audit:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - run: echo audit
+  runtime-policy:
+    runs-on: ubuntu-latest
+"""
+        self.assertIn(
+            "github.event_name != 'pull_request'",
+            job_block(workflow, "workflow-audit"),
+        )
 
 
 if __name__ == "__main__":

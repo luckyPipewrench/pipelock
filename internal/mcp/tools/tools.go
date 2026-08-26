@@ -1121,6 +1121,16 @@ func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 // clients can surface them to an agent as part of the tool definition.
 func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 	var parts []string
+	// Dropping a truncated key set is only safe because
+	// toolDefinitionsHaveUninspectableText has already refused the definition
+	// by the time this runs. That pre-scan checks key-extraction truncation
+	// directly, through toolKeyExtractionTruncated, on every field this
+	// function reads. It has to: key extraction truncates on breadth as well as
+	// depth, and a string-extraction or schema-depth check cannot see a field
+	// that is shallow and merely enormous. If the pre-scan ever stops running
+	// first, or drops that check, this silent drop becomes a scan gap rather
+	// than a fail-closed one, and padding keys past the bound becomes a way to
+	// hide one.
 	appendJSONKeys := func(field json.RawMessage) {
 		if extracted := jsonrpc.ExtractKeysFromJSONResult(field); !extracted.Truncated {
 			parts = append(parts, extracted.Keys...)
@@ -1172,6 +1182,18 @@ func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 // be inspected as text. A plain extension field named "data" remains
 // inspectable and is scanned; it becomes opaque only when paired with an
 // explicit binary encoding, MIME type, or image/audio/video content type.
+// toolKeyExtractionTruncated reports whether key extraction for a field hit its
+// bound. Key extraction truncates on breadth as well as depth, so a field that
+// is shallow and merely enormous is invisible to the string-extraction and
+// schema-depth checks. Without this the keys past the bound are dropped and
+// never scanned, which turns padding into a way to hide a directive in a key.
+func toolKeyExtractionTruncated(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	return jsonrpc.ExtractKeysFromJSONResult(raw).Truncated
+}
+
 func toolFieldContainsOpaqueMedia(raw json.RawMessage) bool {
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -1214,19 +1236,29 @@ func valueContainsOpaqueToolMedia(value interface{}) bool {
 }
 
 func toolMediaDataIsOpaque(fields map[string]interface{}) bool {
-	if encoding, ok := fields["encoding"].(string); ok {
+	// The upstream server chooses the casing of its own JSON keys, and the
+	// container key is already matched case-insensitively, so looking these
+	// signals up by exact case let one capital letter decide whether the
+	// fail-closed path runs at all: `{"data":..., "Encoding":"base64"}` was
+	// treated as ordinary text while the same payload with `encoding` was
+	// refused. Normalize once, then read the signals from the normalized set.
+	normalized := make(map[string]interface{}, len(fields))
+	for key, value := range fields {
+		normalized[strings.ToLower(key)] = value
+	}
+	if encoding, ok := normalized["encoding"].(string); ok {
 		encoding = strings.ToLower(encoding)
 		if encoding == "base64" || encoding == "binary" {
 			return true
 		}
 	}
-	if kind, ok := fields["type"].(string); ok {
+	if kind, ok := normalized["type"].(string); ok {
 		switch strings.ToLower(kind) {
 		case "image", "audio", "video", "blob":
 			return true
 		}
 	}
-	mimeType, ok := fields["mimeType"].(string)
+	mimeType, ok := normalized["mimetype"].(string)
 	if !ok {
 		return false
 	}
@@ -1725,7 +1757,16 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 func toolDefinitionsHaveUninspectableText(defs []ToolDef) bool {
 	for _, tool := range defs {
 		for _, field := range []json.RawMessage{tool.InputSchema, tool.OutputSchema} {
-			if len(field) > 0 && schemaTextExtractionTruncated(field) {
+			// Schemas get the opaque-media check too, not just the depth check.
+			// A schema can carry a content block under default, const or
+			// examples, so a server that moved a binary payload out of _meta
+			// and into outputSchema would otherwise skip the refusal that the
+			// same payload triggers anywhere else.
+			if len(field) == 0 {
+				continue
+			}
+			if schemaTextExtractionTruncated(field) || toolKeyExtractionTruncated(field) ||
+				toolFieldContainsOpaqueMedia(field) {
 				return true
 			}
 		}
@@ -1734,13 +1775,15 @@ func toolDefinitionsHaveUninspectableText(defs []ToolDef) bool {
 				continue
 			}
 			extracted := jsonrpc.ExtractStringsFromJSONResult(field)
-			if extracted.Truncated || toolFieldContainsOpaqueMedia(field) {
+			if extracted.Truncated || toolKeyExtractionTruncated(field) ||
+				toolFieldContainsOpaqueMedia(field) {
 				return true
 			}
 		}
 		for _, field := range tool.unknown {
 			extracted := jsonrpc.ExtractStringsFromJSONResult(field)
-			if extracted.Truncated || toolFieldContainsOpaqueMedia(field) {
+			if extracted.Truncated || toolKeyExtractionTruncated(field) ||
+				toolFieldContainsOpaqueMedia(field) {
 				return true
 			}
 		}

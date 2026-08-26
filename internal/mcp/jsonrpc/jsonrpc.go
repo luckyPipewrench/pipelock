@@ -301,6 +301,16 @@ func SortedKeys(m map[string]interface{}) []string {
 // overflow from maliciously deeply-nested JSON.
 const maxExtractDepth = 64
 
+// maxExtractKeys bounds how many object keys one extraction contributes to the
+// scanned text. Sized far above any real tool listing and far below what an
+// adversarial one can produce: a server publishing a hundred tools with fifty
+// parameters each stays well inside it, while a message engineered purely for
+// breadth stops here and is reported truncated, which callers already treat as
+// fail-closed. Chosen against a measurement rather than a guess: a 2.6MB
+// listing carrying eighty thousand keys took roughly twenty seconds to scan
+// before this bound existed.
+const maxExtractKeys = 20000
+
 // ExtractStringsForKeys extracts string values only from top-level keys
 // matching the keyPattern regex. Values under non-matching keys are excluded.
 // Nested values under matching keys are extracted recursively.
@@ -399,17 +409,31 @@ func ExtractKeysFromJSONResult(raw json.RawMessage) ExtractKeysResult {
 	truncated := false
 	var extract func(v interface{}, depth int)
 	extract = func(v interface{}, depth int) {
-		if depth > maxExtractDepth {
+		// Depth alone does not bound the work: a wide, shallow document stays
+		// within maxExtractDepth while producing an unbounded number of keys,
+		// and every key is then joined into text that each scanner pattern runs
+		// over. Breadth is bounded here for the same reason depth is, and it
+		// reports through the same Truncated flag, so a caller that already
+		// fails closed on truncation needs no new branch.
+		if depth > maxExtractDepth || len(result) >= maxExtractKeys {
 			truncated = true
 			return
 		}
 		switch val := v.(type) {
 		case []interface{}:
 			for _, item := range val {
+				if len(result) >= maxExtractKeys {
+					truncated = true
+					return
+				}
 				extract(item, depth+1)
 			}
 		case map[string]interface{}:
 			for _, key := range SortedKeys(val) {
+				if len(result) >= maxExtractKeys {
+					truncated = true
+					return
+				}
 				result = append(result, key)
 				extract(val[key], depth+1)
 			}

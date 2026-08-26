@@ -29,13 +29,33 @@ import (
 
 // ToolDef represents a single tool definition in an MCP tools/list response.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
-	raw         json.RawMessage
+	Name         string          `json:"name"`
+	Title        string          `json:"title,omitempty"`
+	Description  string          `json:"description,omitempty"`
+	InputSchema  json.RawMessage `json:"inputSchema,omitempty"`
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+	Annotations  json.RawMessage `json:"annotations,omitempty"`
+	Meta         json.RawMessage `json:"_meta,omitempty"`
+	raw          json.RawMessage
+	unknown      map[string]json.RawMessage
 }
 
 func (t *ToolDef) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	unknown := make(map[string]json.RawMessage)
+	for field, value := range fields {
+		switch field {
+		case "name", "title", "description", "inputSchema", "outputSchema", "annotations", "_meta":
+		default:
+			// MCP tool definitions are extensible. Keep every unknown value for
+			// bounded visible-text extraction instead of treating a future or
+			// vendor field as either a scan bypass or a protocol error.
+			unknown[field] = append(json.RawMessage(nil), value...)
+		}
+	}
 	type toolDefAlias ToolDef
 	var decoded toolDefAlias
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -43,6 +63,7 @@ func (t *ToolDef) UnmarshalJSON(data []byte) error {
 	}
 	*t = ToolDef(decoded)
 	t.raw = append(t.raw[:0], data...)
+	t.unknown = unknown
 	return nil
 }
 
@@ -1092,6 +1113,122 @@ func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 	return strings.Join(parts, ". ")
 }
 
+// extractToolGeneralTextWithParams returns every supported agent-visible tool
+// field except Description. The response-scanning path deliberately omits all
+// tool descriptions to preserve tools/list compatibility; this dedicated tool
+// scanner owns their checks and its action can warn without forwarding a
+// response-scanner block. Unknown top-level fields are recursively extracted
+// with the same bounded visible-string policy as extensible metadata.
+func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
+	var parts []string
+	for _, field := range []string{t.Name, t.Title} {
+		if field != "" {
+			parts = append(parts, field)
+		}
+	}
+	for _, schema := range []json.RawMessage{t.InputSchema, t.OutputSchema} {
+		if len(schema) > 0 {
+			parts = append(parts, ExtractSchemaDescriptions(schema)...)
+		}
+	}
+	for _, name := range paramNames {
+		expanded := expandParamName(name)
+		if expanded != name {
+			parts = append(parts, expanded)
+		}
+		parts = append(parts, name)
+	}
+	// Metadata is extensible and agent-visible. Its readable strings use the
+	// generic bounded extractor; actual opaque media is rejected before this
+	// function is called rather than skipped as though it were harmless.
+	for _, metadata := range []json.RawMessage{t.Annotations, t.Meta} {
+		if extracted := jsonrpc.ExtractStringsFromJSONResult(metadata); !extracted.Truncated {
+			parts = append(parts, extracted.Strings...)
+		}
+	}
+	unknownKeys := make([]string, 0, len(t.unknown))
+	for key := range t.unknown {
+		unknownKeys = append(unknownKeys, key)
+	}
+	sort.Strings(unknownKeys)
+	for _, key := range unknownKeys {
+		if extracted := jsonrpc.ExtractStringsFromJSONResult(t.unknown[key]); !extracted.Truncated {
+			parts = append(parts, extracted.Strings...)
+		}
+	}
+	return strings.Join(parts, ". ")
+}
+
+// toolFieldContainsOpaqueMedia recognizes the MCP media encodings that cannot
+// be inspected as text. A plain extension field named "data" remains
+// inspectable and is scanned; it becomes opaque only when paired with an
+// explicit binary encoding, MIME type, or image/audio/video content type.
+func toolFieldContainsOpaqueMedia(raw json.RawMessage) bool {
+	var parsed interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return false
+	}
+	return valueContainsOpaqueToolMedia(parsed)
+}
+
+func valueContainsOpaqueToolMedia(value interface{}) bool {
+	switch v := value.(type) {
+	case []interface{}:
+		for _, child := range v {
+			if valueContainsOpaqueToolMedia(child) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for key, child := range v {
+			if child == nil {
+				continue
+			}
+			switch strings.ToLower(key) {
+			// blob, raw and data are one class and are judged the same way: a
+			// key name alone does not make a value uninspectable. Treating
+			// blob/raw as unconditionally opaque refused an entire tools/list
+			// over an ordinary string that happened to sit under one of those
+			// names, which is a legitimate shape for a cursor or cache key.
+			// Opacity requires an explicit binary signal on the value itself.
+			case "blob", "raw", "data":
+				if toolMediaDataIsOpaque(v) {
+					return true
+				}
+			}
+			if valueContainsOpaqueToolMedia(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func toolMediaDataIsOpaque(fields map[string]interface{}) bool {
+	if encoding, ok := fields["encoding"].(string); ok {
+		encoding = strings.ToLower(encoding)
+		if encoding == "base64" || encoding == "binary" {
+			return true
+		}
+	}
+	if kind, ok := fields["type"].(string); ok {
+		switch strings.ToLower(kind) {
+		case "image", "audio", "video", "blob":
+			return true
+		}
+	}
+	mimeType, ok := fields["mimeType"].(string)
+	if !ok {
+		return false
+	}
+	mimeType = strings.ToLower(mimeType)
+	return !strings.HasPrefix(mimeType, "text/") &&
+		mimeType != "application/json" &&
+		!strings.HasSuffix(mimeType, "+json") &&
+		mimeType != "application/xml" &&
+		mimeType != "application/javascript"
+}
+
 // expandParamName expands a parameter name into space-separated words by:
 //  1. Replacing underscores and hyphens with spaces.
 //  2. Splitting camelCase boundaries (lowercase to uppercase transitions).
@@ -1191,6 +1328,39 @@ func ExtractSchemaDescriptions(schema json.RawMessage) []string {
 	}
 	collectAllSchemaText(parsed, &result, 0)
 	return result
+}
+
+// schemaTextExtractionTruncated reports whether schema text lies beyond the
+// depth that ExtractSchemaDescriptions can inspect. It keeps the fail-closed
+// boundary aligned with the actual scanner instead of treating a deeper schema
+// as clean merely because the more general JSON extractor can traverse it.
+func schemaTextExtractionTruncated(schema json.RawMessage) bool {
+	var parsed interface{}
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		return false
+	}
+	return schemaValueDepthTruncated(parsed, 0)
+}
+
+func schemaValueDepthTruncated(value interface{}, depth int) bool {
+	if depth > maxSchemaDepth {
+		return true
+	}
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for _, child := range v {
+			if schemaValueDepthTruncated(child, depth+1) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, child := range v {
+			if schemaValueDepthTruncated(child, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // maxSchemaDepth limits recursion depth for schema walking to prevent stack
@@ -1334,17 +1504,25 @@ func isToolsListResult(result json.RawMessage) bool {
 }
 
 func tryParseToolsList(result json.RawMessage) []ToolDef {
-	if len(result) == 0 || string(result) == jsonrpc.Null {
+	tools, err := parseToolsList(result)
+	if err != nil {
 		return nil
+	}
+	return tools
+}
+
+func parseToolsList(result json.RawMessage) ([]ToolDef, error) {
+	if len(result) == 0 || string(result) == jsonrpc.Null {
+		return nil, nil
 	}
 
 	var tl toolsListResult
 	if err := json.Unmarshal(result, &tl); err != nil {
-		return nil
+		return nil, err
 	}
 
 	if len(tl.Tools) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var valid []ToolDef
@@ -1354,10 +1532,10 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 		}
 	}
 	if len(valid) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	return valid
+	return valid, nil
 }
 
 // checkToolPoison runs tool-specific poisoning patterns against normalized text.
@@ -1489,7 +1667,13 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
 
-	tools := tryParseToolsList(rpc.Result)
+	tools, err := parseToolsList(rpc.Result)
+	if err != nil {
+		// A malformed tool definition cannot be parsed into a complete
+		// inspectable inventory. Unknown extension fields are preserved and
+		// scanned by ToolDef.UnmarshalJSON, so they do not take this path.
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", RPCID: rpc.ID}
+	}
 	if tools == nil {
 		// tools/list response with empty or all-unnamed tools - still a tools/list,
 		// just nothing to scan for poisoning.
@@ -1502,6 +1686,9 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		names[i] = t.Name
 	}
 
+	if toolDefinitionsHaveUninspectableText(tools) {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
+	}
 	if resourceLimit := toolScanCapacityLimit(tools, names, cfg); resourceLimit != "" {
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
 	}
@@ -1519,6 +1706,36 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 	}
 
 	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, Observations: observations, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
+}
+
+// toolDefinitionsHaveUninspectableText rejects a definition whose structured
+// or extension fields exceed extraction bounds, or contain opaque media that
+// cannot be scanned as text. Unknown names alone are never uninspectable:
+// their readable values are scanned by extractToolGeneralTextWithParams.
+func toolDefinitionsHaveUninspectableText(defs []ToolDef) bool {
+	for _, tool := range defs {
+		for _, field := range []json.RawMessage{tool.InputSchema, tool.OutputSchema} {
+			if len(field) > 0 && schemaTextExtractionTruncated(field) {
+				return true
+			}
+		}
+		for _, field := range []json.RawMessage{tool.Annotations, tool.Meta} {
+			if len(field) == 0 {
+				continue
+			}
+			extracted := jsonrpc.ExtractStringsFromJSONResult(field)
+			if extracted.Truncated || toolFieldContainsOpaqueMedia(field) {
+				return true
+			}
+		}
+		for _, field := range tool.unknown {
+			extracted := jsonrpc.ExtractStringsFromJSONResult(field)
+			if extracted.Truncated || toolFieldContainsOpaqueMedia(field) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // scanToolsBatch scans a JSON-RPC 2.0 batch response for tool poisoning.
@@ -1612,11 +1829,14 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			paramNames = ExtractParamNames(tool.InputSchema)
 		}
 
-		text := extractToolTextWithParams(tool, paramNames)
+		descriptionText := extractToolTextWithParams(tool, paramNames)
+		generalText := extractToolGeneralTextWithParams(tool, paramNames)
+		text := strings.Trim(strings.Join([]string{descriptionText, generalText}, ". "), ". ")
 
 		if text != "" {
-			// General injection patterns (reuses response scanning pipeline).
-			// ScanResponse does its own Unicode normalization internally.
+			// This is the dedicated tool scanner, whose action is independent of
+			// response scanning. The response path itself never scans tool
+			// descriptions, preserving the tools/list false-positive carve-out.
 			result := sc.ScanResponse(context.Background(), text)
 			if !result.Clean {
 				match.Injection = result.Matches

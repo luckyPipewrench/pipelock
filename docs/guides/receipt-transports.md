@@ -9,7 +9,7 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `fetch` | URL block | scanner layer name | URL scan finding in enforce or escalated audit mode |
 | `fetch` | Redirect block | `redirect` | Cross-origin redirect blocked |
 | `fetch` | Response size | `response_size` or `budget` | Response exceeds config limit or byte budget |
-| `fetch` | Shield oversize | `shield_oversize` | Response exceeds browser shield size limit |
+| `fetch` | Shield oversize | `shield_oversize` | Shieldable response exceeded `browser_shield.max_shield_bytes`; pattern names the host, size, and remedies |
 | `fetch` | Media policy | `media_policy` | Blocked media type |
 | `fetch` | Response scan | `response_scan` | Prompt injection detected in response content |
 | `fetch` | Header DLP | `dlp_header` | Secret found in request headers |

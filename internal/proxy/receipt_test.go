@@ -1627,6 +1627,117 @@ func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
 	}
 }
 
+// TestProxy_ReceiptEmission_PostFetchShieldOversize keeps the user-visible
+// fetch error and the signed receipt pattern aligned with the browser-shield
+// decision that produced them.
+func TestProxy_ReceiptEmission_PostFetchShieldOversize(t *testing.T) {
+	t.Parallel()
+
+	body := "<html>" + strings.Repeat("x", 64) + "</html>"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test-hash",
+		Principal:  "test",
+		Actor:      "test",
+	})
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.Patterns = nil
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = 16
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+
+	logger := audit.NewNop()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	p, err := New(cfg, logger, sc, metrics.New(),
+		WithRecorder(rec),
+		WithReceiptEmitter(emitter),
+	)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	wantReason := shieldOversizeBlockReason(upstreamURL.Hostname(), len(body), cfg.BrowserShield.MaxShieldBytes)
+
+	handler := p.buildHandler(p.buildMux())
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/oversize", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode fetch response: %v", err)
+	}
+	if resp.BlockReason != wantReason {
+		t.Errorf("fetch block reason = %q, want %q", resp.BlockReason, wantReason)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	var found bool
+	for _, entry := range readAllEntries(t, dir) {
+		if entry.Type != receiptEntryType {
+			continue
+		}
+		detailJSON, err := json.Marshal(entry.Detail)
+		if err != nil {
+			t.Fatalf("marshal receipt detail: %v", err)
+		}
+		recorded, err := receipt.Unmarshal(detailJSON)
+		if err != nil {
+			t.Fatalf("unmarshal receipt: %v", err)
+		}
+		if recorded.ActionRecord.Verdict == actionBlock && recorded.ActionRecord.Layer == "shield_oversize" {
+			found = true
+			if recorded.ActionRecord.Pattern != wantReason {
+				t.Errorf("receipt pattern = %q, want %q", recorded.ActionRecord.Pattern, wantReason)
+			}
+			if err := receipt.VerifyInternalConsistencyOnly(recorded); err != nil {
+				t.Fatalf("receipt verification failed: %v", err)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no block receipt with layer=shield_oversize found")
+	}
+}
+
 // TestProxy_ReceiptEmission_ForwardResponseSize verifies that the forward
 // proxy's fail-closed response-size block emits a terminal receipt.
 func TestProxy_ReceiptEmission_ForwardResponseSize(t *testing.T) {

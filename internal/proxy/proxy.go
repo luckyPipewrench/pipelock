@@ -5483,7 +5483,22 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			recordSuppressedResponseScanExempts(p.metrics, rawResult.SuppressedMatches, TransportFetch)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found := p.filterAndActOnResponseScan(r.Context(), w, rawResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+			blocked, _, found := p.filterAndActOnResponseScan(responseScanContext{
+				requestContext: r.Context(),
+				writer:         w,
+				result:         rawResult,
+				content:        content,
+				displayURL:     displayURL,
+				agent:          agent,
+				clientIP:       clientIP,
+				requestID:      requestID,
+				actionID:       actionID,
+				scanner:        sc,
+				config:         cfg,
+				logger:         log,
+				sessionLevel:   recEscalationLevel(fetchRec),
+				exempt:         responseScanExempt,
+			})
 			if blocked {
 				p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 				outcomeStatus = strconv.Itoa(http.StatusForbidden)
@@ -5581,7 +5596,22 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-		blocked, newContent, found := p.filterAndActOnResponseScan(r.Context(), w, scanResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+		blocked, newContent, found := p.filterAndActOnResponseScan(responseScanContext{
+			requestContext: r.Context(),
+			writer:         w,
+			result:         scanResult,
+			content:        content,
+			displayURL:     displayURL,
+			agent:          agent,
+			clientIP:       clientIP,
+			requestID:      requestID,
+			actionID:       actionID,
+			scanner:        sc,
+			config:         cfg,
+			logger:         log,
+			sessionLevel:   recEscalationLevel(fetchRec),
+			exempt:         responseScanExempt,
+		})
 		if found {
 			hasFinding = true
 		}
@@ -5650,6 +5680,26 @@ func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.R
 	}
 }
 
+// responseScanContext groups the fetch response state used to enforce a scan result.
+// Keep both keyed literals complete: omitted fields compile as zero values, and some
+// zero values are valid runtime state.
+type responseScanContext struct {
+	requestContext context.Context
+	writer         http.ResponseWriter
+	result         scanner.ResponseScanResult
+	content        string
+	displayURL     string
+	agent          string
+	clientIP       string
+	requestID      string
+	actionID       string
+	scanner        *scanner.Scanner
+	config         *config.Config
+	logger         *audit.Logger
+	sessionLevel   int
+	exempt         bool
+}
+
 // filterAndActOnResponseScan applies suppression filtering and the configured
 // response scanning action to a scan result. Returns blocked=true if the
 // request was blocked (HTTP response already written), the output content
@@ -5658,17 +5708,22 @@ func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.R
 // exempt indicates the domain was in exempt_domains: findings are logged as
 // warn but adaptive scoring is skipped and UpgradeAction is not applied.
 // This preserves operator visibility without triggering escalation death spirals.
-func (p *Proxy) filterAndActOnResponseScan(
-	reqCtx context.Context,
-	w http.ResponseWriter,
-	result scanner.ResponseScanResult,
-	content, displayURL, agent, clientIP, requestID, actionID string,
-	sc *scanner.Scanner,
-	cfg *config.Config,
-	log *audit.Logger,
-	sessionLevel int,
-	exempt bool,
-) (blocked bool, out string, found bool) {
+func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool, out string, found bool) {
+	reqCtx := in.requestContext
+	w := in.writer
+	result := in.result
+	content := in.content
+	displayURL := in.displayURL
+	agent := in.agent
+	clientIP := in.clientIP
+	requestID := in.requestID
+	actionID := in.actionID
+	sc := in.scanner
+	cfg := in.config
+	log := in.logger
+	sessionLevel := in.sessionLevel
+	exempt := in.exempt
+
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
 		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))

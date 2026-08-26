@@ -20,6 +20,10 @@ CI_RACE_PRODUCERS = (
     "test-enterprise-go126",
 )
 LEGACY_CI_RACE_PRODUCERS = ("test-oss", "test-enterprise")
+RUNNER_COMMAND = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:bash\s+)?scripts/run-race-test\.sh(?:\s|$)"
+)
+DIRECT_RACE_COMMAND = re.compile(r"(?:^|[;&|]\s*)go test\b.*(?:^|\s)-race(?:\s|$)")
 
 
 def printed_command(*args: str) -> str:
@@ -41,14 +45,36 @@ def job_block(workflow: str, name: str) -> str:
     return workflow[start:end]
 
 
-def job_invokes_race_runner(job: str) -> bool:
-    for line in job.splitlines():
+def race_execution_counts(block: str) -> tuple[int, int]:
+    runner_count = 0
+    direct_count = 0
+    for line in block.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if "scripts/run-race-test.sh" in stripped:
-            return True
-    return False
+        if RUNNER_COMMAND.search(stripped):
+            runner_count += 1
+        if DIRECT_RACE_COMMAND.search(stripped):
+            direct_count += 1
+    return runner_count, direct_count
+
+
+def make_target_block(makefile: str, name: str) -> str:
+    marker = f"{name}:"
+    start = makefile.index(marker)
+    next_target = re.search(
+        r"(?m)^[A-Za-z0-9_.%/-]+(?:\s[^:]*)?:",
+        makefile[start + len(marker) :],
+    )
+    end = len(makefile) if next_target is None else start + len(marker) + next_target.start()
+    return makefile[start:end]
+
+
+def workflow_step_block(workflow: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    start = workflow.index(marker)
+    next_step = workflow.find("\n      - ", start + len(marker))
+    return workflow[start:] if next_step == -1 else workflow[start:next_step]
 
 
 def ci_race_shape_errors(ci: str) -> list[str]:
@@ -57,6 +83,7 @@ def ci_race_shape_errors(ci: str) -> list[str]:
     delegated: list[str] = []
     inline: list[str] = []
     drifted: list[str] = []
+    mixed: list[str] = []
     split_topology = any(f"  {name}:\n" in ci for name in CI_RACE_PRODUCERS)
     producer_names = CI_RACE_PRODUCERS if split_topology else LEGACY_CI_RACE_PRODUCERS
     for name in producer_names:
@@ -65,13 +92,23 @@ def ci_race_shape_errors(ci: str) -> list[str]:
         except ValueError:
             errors.append(f"missing {name}")
             continue
-        if job_invokes_race_runner(job):
+        runner_count, direct_count = race_execution_counts(job)
+        if runner_count and direct_count:
+            mixed.append(name)
+            continue
+        if runner_count:
             delegated.append(name)
             continue
-        if '-p="$package_parallelism" -parallel=2' in job and "-timeout=15m -count=1" in job:
+        if (
+            direct_count
+            and '-p="$package_parallelism" -parallel=2' in job
+            and "-timeout=15m -count=1" in job
+        ):
             inline.append(name)
         else:
             drifted.append(name)
+    if mixed:
+        errors.append(f"CI race jobs mixed runner delegation with direct race execution: {mixed}")
     if drifted:
         errors.append(f"CI race jobs drifted from shared shape: {drifted}")
     if delegated and inline:
@@ -104,10 +141,24 @@ class TestRaceTestShape(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         release = (ROOT / ".github/workflows/release.yaml").read_text(encoding="utf-8")
 
-        self.assertRegex(makefile, r"(?m)^test:\n\t\$\(MAKE\) --no-print-directory test-sharded$")
-        self.assertIn("scripts/run-race-test.sh --shard", makefile)
-        self.assertIn("scripts/run-race-test.sh --packages", makefile)
-        self.assertIn("scripts/run-race-test.sh \"${race_args[@]}\"", release)
+        test_target = make_target_block(makefile, "test")
+        self.assertEqual(test_target.count("$(MAKE) --no-print-directory test-sharded"), 1)
+        for target in (
+            "test-runtime-critical",
+            "test-shard-%",
+            "test-shard-enterprise-%",
+            "test-sharded",
+            "test-sharded-enterprise",
+        ):
+            with self.subTest(target=target):
+                self.assertEqual(
+                    race_execution_counts(make_target_block(makefile, target)),
+                    (1, 0),
+                )
+        self.assertEqual(
+            race_execution_counts(workflow_step_block(release, "Run tests")),
+            (1, 0),
+        )
 
     def test_ci_keeps_the_same_race_shape_until_it_delegates_to_the_runner(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
@@ -134,6 +185,29 @@ class TestRaceTestShape(unittest.TestCase):
         )
         errors = ci_race_shape_errors(commented)
         self.assertTrue(any("drifted from shared shape" in error for error in errors), errors)
+
+    def test_non_command_runner_mention_does_not_disable_the_shape_contract(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        mentioned = ci.replace(
+            "          set -o pipefail",
+            '          echo "scripts/run-race-test.sh is the preferred path"\n          set -o pipefail',
+            1,
+        ).replace('-p="$package_parallelism" -parallel=2', "-p=8 -parallel=8")
+        errors = ci_race_shape_errors(mentioned)
+        self.assertTrue(any("drifted from shared shape" in error for error in errors), errors)
+
+    def test_partial_runner_delegation_fails_the_contract(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        first_producer = "test-oss-go125" if "  test-oss-go125:\n" in ci else "test-oss"
+        mixed = ci.replace(
+            "          set -o pipefail",
+            "          scripts/run-race-test.sh --shard proxy\n          set -o pipefail",
+            1,
+        )
+        self.assertIn(
+            f"CI race jobs mixed runner delegation with direct race execution: ['{first_producer}']",
+            ci_race_shape_errors(mixed),
+        )
 
     def test_invalid_selection_fails_before_running_go(self) -> None:
         result = subprocess.run(

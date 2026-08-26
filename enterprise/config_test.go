@@ -664,14 +664,18 @@ func TestEnforceLicenseGate_ValidLicense(t *testing.T) {
 	cfg.LicensePublicKey = pubHex
 
 	EnforceLicenseGate(cfg)
+	fixture, err := license.DecodeUnverified(token)
+	if err != nil {
+		t.Fatalf("decode test license: %v", err)
+	}
 	if cfg.Agents == nil {
 		t.Error("expected agents to remain with valid license")
 	}
 	if cfg.LicenseExpiresAt == 0 {
 		t.Error("expected non-zero LicenseExpiresAt after valid license")
 	}
-	if cfg.LicenseIssuedAt == 0 {
-		t.Error("expected non-zero LicenseIssuedAt after valid license")
+	if cfg.LicenseIssuedAt != fixture.IssuedAt {
+		t.Errorf("LicenseIssuedAt = %d, want fixture claim %d", cfg.LicenseIssuedAt, fixture.IssuedAt)
 	}
 	if cfg.LicenseTier != "pro" {
 		t.Errorf("LicenseTier = %q, want pro", cfg.LicenseTier)

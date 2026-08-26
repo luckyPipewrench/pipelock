@@ -16,4 +16,8 @@ func TestNewServer_ConductorCarriesVerifiedLicenseWarningMetadata(t *testing.T) 
 	if cfg.LicenseTier != "enterprise" {
 		t.Fatalf("LicenseTier = %q, want enterprise", cfg.LicenseTier)
 	}
+	stderr := s.opts.Stderr.(*stderrSyncWriter).w.(*syncBuffer)
+	if !stderr.contains("license expires in 1 day(s)") {
+		t.Fatalf("startup warning did not use verified license metadata: %s", stderr.String())
+	}
 }

@@ -97,7 +97,7 @@ func TestLicenseStatusValidWithWarningBand(t *testing.T) {
 	if report.Severity != license.ExpirySeverityWarn {
 		t.Errorf("Severity = %q, want warn", report.Severity)
 	}
-	if report.Warning != "license expires in 7 day(s) on "+time.Now().UTC().Add(7*24*time.Hour).Format(time.DateOnly)+"; check billing or token delivery" {
+	if report.Warning != "license expires in 7 day(s) on "+time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly)+"; check billing or token delivery" {
 		t.Errorf("Warning = %q, want subscription billing guidance", report.Warning)
 	}
 	// Entitlements belong on the VERIFIED surface. Without these, status answered

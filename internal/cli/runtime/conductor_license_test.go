@@ -29,6 +29,7 @@ import (
 // env vars via t.Setenv's normal restoration.
 func setTestFleetLicense(t *testing.T) {
 	t.Helper()
+	now := time.Now().UTC()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -36,8 +37,8 @@ func setTestFleetLicense(t *testing.T) {
 	tok, err := license.Issue(license.License{
 		ID:        "test-fleet-license",
 		Email:     "test@example.com",
-		IssuedAt:  time.Now().Unix(),
-		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		IssuedAt:  now.Add(-time.Hour).Unix(),
+		ExpiresAt: now.Add(time.Hour).Unix(),
 		Features:  []string{license.FeatureAgents, license.FeatureFleet},
 		Tier:      "enterprise",
 	}, priv)

@@ -185,6 +185,8 @@ fi
 required_verifier_paths=(
 	'go.mod'
 	'go.sum'
+	'go.work'
+	'go.work.sum'
 	'cmd/pipelock/**'
 	'cmd/pipelock-verifier/**'
 	'internal/**'

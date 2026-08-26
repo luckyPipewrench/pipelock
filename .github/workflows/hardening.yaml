@@ -1,6 +1,9 @@
 name: Hardening
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
   push:
     branches: [main]
     tags-ignore: ['v*']
@@ -54,6 +57,10 @@ jobs:
         run: make runtime-policy-audit
 
   hardening-report:
+    # Complexity and duplication debt is advisory. Keep enforcement audits on
+    # every PR, but run this slower report on main, the weekly schedule, and
+    # an explicit manual request.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

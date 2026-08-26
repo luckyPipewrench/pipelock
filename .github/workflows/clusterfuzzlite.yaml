@@ -2,6 +2,17 @@ name: ClusterFuzzLite
 on:
   pull_request:
     branches: [ main ]
+    paths:
+      # ClusterFuzzLite builds Go fuzzers from source. Keep this advisory,
+      # expensive job tied to code, module, corpus, and fuzzer-build inputs.
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - '**/testdata/fuzz/**'
+      - '.clusterfuzzlite/**'
+      - '.github/workflows/clusterfuzzlite.yaml'
 permissions:
   contents: read
 jobs:

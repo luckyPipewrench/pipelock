@@ -205,7 +205,7 @@ func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix
 		release()
 		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureOversize,
-			Reason: responseSizeExemptScanBlockReason(host, int64(len(fullBody)), ceiling),
+			Reason: responseSizeExemptObservedScanBlockReason(host, int64(len(fullBody)), ceiling, false),
 		}
 	}
 	return fullBody, release, nil

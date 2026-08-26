@@ -2540,8 +2540,8 @@ func partialShieldSummary(summary *receipt.ShieldSummary, scanned []byte, conten
 }
 
 // reverseObservedBodyBytes returns an exact response size when the entire body
-// was buffered or Content-Length proves it. Unknown-length limited reads return
-// zero so receipts omit body_bytes instead of presenting a lower bound as exact.
+// was buffered or Content-Length proves it. Unknown-length limited reads retain
+// the observed lower bound and mark it inexact.
 func reverseObservedBodyBytes(contentLength int64, observed int, complete bool) (int, bool) {
 	if complete {
 		return observed, true
@@ -2549,7 +2549,7 @@ func reverseObservedBodyBytes(contentLength int64, observed int, complete bool) 
 	if contentLength >= int64(observed) && contentLength <= int64(^uint(0)>>1) {
 		return int(contentLength), true
 	}
-	return 0, false
+	return observed, false
 }
 
 func reverseRequestScanInflightLimit(cfg *config.Config) int {

@@ -381,7 +381,7 @@ func TestReverseProxy_ShieldOversize_WarnEmitsReceiptAndOutcome(t *testing.T) {
 	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=shield_oversize_warn")
 }
 
-func TestReverseProxy_ShieldOnlyUnknownLengthReceiptDoesNotClaimExactSize(t *testing.T) {
+func TestReverseProxy_ShieldOnlyUnknownLengthReceiptPreservesLowerBound(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = false
 	cfg.FlightRecorder.RequireReceipts = true
@@ -405,8 +405,8 @@ func TestReverseProxy_ShieldOnlyUnknownLengthReceiptDoesNotClaimExactSize(t *tes
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	warn := findReceiptByLayer(t, receipts, "shield_oversize")
-	if got := warn.ActionRecord.Shield.BodyBytes; got != 0 {
-		t.Fatalf("unknown-length receipt body_bytes = %d, want omitted/zero", got)
+	if got, want := warn.ActionRecord.Shield.BodyBytes, cfg.BrowserShield.MaxShieldBytes+1; got != want {
+		t.Fatalf("unknown-length receipt body_bytes = %d, want observed lower bound %d", got, want)
 	}
 	if !strings.Contains(warn.ActionRecord.Pattern, "at least") {
 		t.Fatalf("unknown-length reason presents lower bound as exact: %q", warn.ActionRecord.Pattern)

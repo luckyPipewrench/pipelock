@@ -597,6 +597,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		agent = resolved.Name
 		agentAuth = string(resolved.Auth)
 	}
+	// Put the grade on the request as soon as identity resolves. The collision
+	// audit below builds its context from r.Context(), and the reverse handler
+	// otherwise attaches the grade much further down, so the one event that
+	// reports a suspicious identity was reporting unknown provenance even for a
+	// bound agent.
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, agentAuth))
 	targetURL := reverseTargetURL(rp.upstream, r)
 	if reservedAgent, ok := edition.RejectedSelfDeclaredReservedControlActor(r, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity); ok {
 		auditAgent := agent
@@ -622,6 +628,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx = context.WithValue(ctx, ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
+	// Re-stated here because ctx is rebuilt from a fresh DLP-warn context above,
+	// which drops the value attached to the request earlier.
 	ctx = context.WithValue(ctx, ctxKeyAgentAuth, agentAuth)
 	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)

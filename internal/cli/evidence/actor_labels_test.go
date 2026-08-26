@@ -13,6 +13,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
+// proxyLifecycleActor is the identity the proxy opens every session under,
+// which is what made a lifecycle-counting guard misread an ordinary
+// single-agent session as two agents.
+const proxyLifecycleActor = "pipelock"
+
 // emitLifecycleThenActions reproduces the PRODUCTION shape the previous fixture
 // could not: the session is opened under the proxy's own identity while the
 // mediated actions carry the resolved request agent.
@@ -22,13 +27,13 @@ import (
 // occur. That is why a guard counting lifecycle records as distinct agents
 // survived review: the test that would have caught it agreed with the code by
 // construction.
-func emitLifecycleThenActions(t *testing.T, dir string, key ed25519.PrivateKey, openActor string, actionActors ...string) {
+func emitLifecycleThenActions(t *testing.T, dir string, key ed25519.PrivateKey, actionActors ...string) {
 	t.Helper()
 	rec := newTestRecorder(t, dir, key)
 
 	opener := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder: rec, PrivKey: key, ConfigHash: testPolicyHash,
-		Principal: testPrincipal, Actor: openActor,
+		Principal: testPrincipal, Actor: proxyLifecycleActor,
 	})
 	if err := opener.EmitSessionOpen(); err != nil {
 		t.Fatalf("EmitSessionOpen: %v", err)
@@ -84,7 +89,7 @@ func TestRecordedActorLabels_ExcludesLifecycleRecord(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, key := genKey(t)
-	emitLifecycleThenActions(t, dir, key, "pipelock", "agent-alpha", "agent-alpha")
+	emitLifecycleThenActions(t, dir, key, "agent-alpha", "agent-alpha")
 
 	labels := evidenceview.RecordedActorLabels(readSessionReceipts(t, dir))
 	if len(labels) != 1 || labels[0] != "agent-alpha" {
@@ -103,7 +108,7 @@ func TestOrdinarySessionRendersAndClaimsNoIdentity(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, key := genKey(t)
-	emitLifecycleThenActions(t, dir, key, "pipelock", "agent-alpha", "agent-alpha")
+	emitLifecycleThenActions(t, dir, key, "agent-alpha", "agent-alpha")
 
 	html := renderForTest(t, dir)
 
@@ -131,7 +136,7 @@ func TestTwoNamedLabelsStillRefusedAndDoNotLeak(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, key := genKey(t)
-	emitLifecycleThenActions(t, dir, key, "pipelock", "agent-alpha", "agent-bravo")
+	emitLifecycleThenActions(t, dir, key, "agent-alpha", "agent-bravo")
 
 	_, err := renderSessionHTML(resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report")
 	if err == nil {
@@ -153,7 +158,7 @@ func TestAnonymousPlusNamedStillRenders(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, key := genKey(t)
-	emitLifecycleThenActions(t, dir, key, "pipelock", anonymousActor, "agent-alpha")
+	emitLifecycleThenActions(t, dir, key, anonymousActor, "agent-alpha")
 
 	if _, err := renderSessionHTML(
 		resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report",

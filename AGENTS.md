@@ -16,7 +16,7 @@ Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent H
 
 ```bash
 make build          # Compile with version ldflags
-make test           # go test -race -count=1 ./...
+make test           # Run the OSS race suite as sequential CI-shaped shards
 make test-cover     # Write coverage.html
 make lint           # go vet + golangci-lint v2 + gofumpt check
 make bench          # Scanner and MCP benchmarks
@@ -32,8 +32,8 @@ Pre-commit parity for OSS and enterprise builds:
 ```bash
 golangci-lint run --new-from-rev=HEAD ./...
 golangci-lint run --build-tags enterprise --new-from-rev=HEAD ./...
-go test -race -count=1 ./...
-go test -tags enterprise -race -count=1 ./...
+make test
+make test-sharded-enterprise
 ```
 
 Full-repo CI-equivalent lint:
@@ -96,7 +96,7 @@ Emission is non-blocking for webhook output through an async buffer; syslog is s
 
 ## Testing
 
-- Race detector command: `go test -race -count=1 ./...`
+- Race detector command: `make test` (OSS) or `make test-sharded-enterprise` (enterprise)
 - Coverage target for new code: 95%, including error paths.
 - Test-count command: `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`
 - Synchronization uses channels or poll-with-deadline, not `time.Sleep`.

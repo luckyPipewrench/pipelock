@@ -704,8 +704,21 @@ jobs:
           fi
 
       - name: Run govulncheck
-        run: govulncheck ./...
+        # Scan both build graphs. Enterprise-only packages can make a vulnerable
+        # dependency reachable even when the default build remains clean.
+        run: |
+          default_status=0
+          enterprise_status=0
+          govulncheck ./... || default_status=$?
+          govulncheck -tags enterprise ./... || enterprise_status=$?
+          if (( default_status != 0 || enterprise_status != 0 )); then
+            echo "govulncheck failed: default=$default_status enterprise=$enterprise_status" >&2
+            exit 1
+          fi
 
+  # Helm remains a separate diagnostic job, but the required `build` context
+  # intentionally carries its result through `needs`. Keep that dependency
+  # until a separately approved ruleset change makes `helm` required itself.
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 5

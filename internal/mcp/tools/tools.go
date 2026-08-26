@@ -1804,8 +1804,12 @@ func toolDefinitionTextExceedsBudget(t ToolDef) bool {
 			return true
 		}
 	}
-	for _, field := range t.unknown {
-		total += len(field)
+	// The extension NAME is the map key, so it is not part of the value length.
+	// Names are scanned as agent-visible text, so a definition carrying a name
+	// of several megabytes and an empty value slipped the budget entirely and
+	// was forwarded after thirteen seconds of scanning.
+	for name, field := range t.unknown {
+		total += len(name) + len(field)
 		if total > maxToolDefinitionTextBytes {
 			return true
 		}

@@ -4110,6 +4110,23 @@ func TestScanTools_OversizedDefinitionTextFailsClosed(t *testing.T) {
 	}
 }
 
+func TestScanTools_OversizedUnknownFieldNameFailsClosed(t *testing.T) {
+	// The extension name is the map key, so it is not part of the value length.
+	// Names are scanned as agent-visible text, so counting only values let a
+	// definition carrying a multi-megabyte name and an empty value slip the
+	// budget: measured at thirteen seconds of scanning, then forwarded.
+	name := strings.Repeat("x", maxToolDefinitionTextBytes+1024)
+	result := ScanTools(
+		makeToolsResponse(`[{"name":"catalog_search","description":"Search.",`+
+			fmt.Sprintf("%q", name)+`:""}]`),
+		testScanner(t),
+		&ToolScanConfig{Action: "block"},
+	)
+	if result.Clean || result.ResourceLimit != "tool_definition_uninspectable" {
+		t.Fatalf("oversized unknown field name result = %+v, want fail-closed: the name is scanned text and must count", result)
+	}
+}
+
 func TestScanTools_RichLegitimateDefinitionStaysUnderBudget(t *testing.T) {
 	// The availability half. The budget is worthless if it refuses a real
 	// server, so pin a deliberately rich definition: a long description, forty

@@ -37,8 +37,7 @@ asserts every consumer of the loaded config flows through
 
 ## Required Automated Checks
 
-Run these before tagging locally, and keep the matching GitHub Actions checks
-required on `main`:
+Run these release-specific checks locally before tagging:
 
 ```bash
 make release-audit
@@ -47,6 +46,8 @@ make runtime-policy-audit
 go test -race -count=1 ./...
 golangci-lint run ./...
 ```
+
+Pull requests have a separate server-side contract. The `main` ruleset requires `security-scan`, `test (1.25)`, `test (1.26)`, `test-macos`, `lint`, `build`, `govulncheck`, and `codeql`.
 
 For a one-shot local gate:
 
@@ -68,7 +69,7 @@ make debt-check
 - After the tag exists, refresh Pipelock dogfood workflow pins that point at the
   prior Pipelock release SHA; use the full tag commit SHA and update the version
   comment together.
-- Confirm `Hardening / workflow-audit` and `Hardening / runtime-critical` are
+- Confirm `Hardening / workflow-audit` and `Hardening / runtime-policy` are
   green on the candidate commit.
 - Review the `Hardening / hardening-report` summary for policy-drift or debt
   warnings.

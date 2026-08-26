@@ -76,7 +76,7 @@ test-sharded:
 		scripts/run-race-test.sh --shard $$shard || exit $$?; \
 	done
 
-# Run every enterprise shard sequentially (mirrors the CI test-enterprise matrix).
+# Run every enterprise shard sequentially (mirrors both CI enterprise matrices).
 test-sharded-enterprise:
 	@for shard in $(TEST_SHARDS); do \
 		echo "=== enterprise test shard: $$shard ==="; \

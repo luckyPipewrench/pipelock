@@ -144,3 +144,40 @@ func TestTwoNamedLabelsStillRefusedAndDoNotLeak(t *testing.T) {
 		t.Fatalf("refusal should name the binding that makes the label trustworthy: %v", err)
 	}
 }
+
+// TestAnonymousPlusNamedStillRenders pins that the anonymous label is not a
+// second agent. A session where some actions resolved to a named agent and
+// others fell back to "anonymous" is one agent's session, and refusing it would
+// deny the operator the view with no confidentiality gain.
+func TestAnonymousPlusNamedStillRenders(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, key := genKey(t)
+	emitLifecycleThenActions(t, dir, key, "pipelock", anonymousActor, "agent-alpha")
+
+	if _, err := renderSessionHTML(
+		resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report",
+	); err != nil {
+		t.Fatalf("anonymous plus one named agent is a single-agent session: %v", err)
+	}
+}
+
+// TestEmptyActorStillCountsAsAnAgent guards the fallback the guard has always
+// had. A receipt with an empty Actor does not mean "no agent": it falls back to
+// the receipt's own session ID, then the session being rendered. Dropping that
+// fallback would let a receipt with an empty Actor go uncounted, so a session
+// mixing two agents could render and disclose the other agent's target URLs.
+func TestEmptyActorStillCountsAsAnAgent(t *testing.T) {
+	t.Parallel()
+	receipts := []receipt.Receipt{
+		{ActionRecord: receipt.ActionRecord{Actor: "agent-alpha", SessionID: "s-alpha"}},
+		{ActionRecord: receipt.ActionRecord{Actor: "", SessionID: "s-bravo"}},
+	}
+	keys := evidenceview.DistinctActorKeys("proxy", receipts)
+	if len(keys) != 2 {
+		t.Fatalf("empty Actor must fall back to its session ID, got %v", keys)
+	}
+	if err := validateSingleActorReceipts("proxy", receipts); err == nil {
+		t.Fatal("two distinct actor keys must refuse the single-agent view")
+	}
+}

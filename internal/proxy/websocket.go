@@ -172,6 +172,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	// Carry the provenance grade from the moment identity resolves, so every
+	// audit context built from r.Context() below reports the real grade.
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
 		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}

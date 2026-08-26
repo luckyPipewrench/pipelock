@@ -238,6 +238,47 @@ func RecordedActorLabels(receipts []receipt.Receipt) []string {
 	return labels
 }
 
+// DistinctActorKeys returns the distinct identity keys a session's
+// non-lifecycle receipts resolve to, for the guard that refuses to render a
+// session spanning two agents.
+//
+// This is SEPARATE from RecordedActorLabels on purpose. Display shows the
+// labels that were actually recorded; the guard must decide whether two
+// different agents are present, and an empty Actor does not mean "no agent".
+// It preserves the fallback the guard has always had: Actor, then the
+// receipt's own SessionID, then the session being rendered. Dropping that
+// fallback would let a receipt with an empty Actor go uncounted, so a session
+// mixing two agents could render and disclose the other agent's target URLs,
+// which can carry capability tokens.
+//
+// Lifecycle records are excluded for the same reason agentLabel excludes them:
+// the proxy opens every session under its own identity.
+func DistinctActorKeys(sessionID string, receipts []receipt.Receipt) []string {
+	seen := make(map[string]bool, 2)
+	for _, r := range receipts {
+		if r.ActionRecord.SessionControl != nil {
+			continue
+		}
+		key := strings.TrimSpace(r.ActionRecord.Actor)
+		if key == "" {
+			key = strings.TrimSpace(r.ActionRecord.SessionID)
+		}
+		if key == "" {
+			key = sessionID
+		}
+		if key == "" {
+			continue
+		}
+		seen[key] = true
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func agentLabel(id string, receipts []receipt.Receipt) string {
 	if len(receipts) == 0 {
 		return id

@@ -403,7 +403,7 @@ func interceptTunnel(
 		return fmt.Errorf("set handshake deadline: %w", err)
 	}
 
-	ictx := newConnectAuditContext(ic.Logger, net.JoinHostPort(ic.TargetHost, ic.TargetPort), ic.ClientIP, ic.RequestID, ic.Agent)
+	ictx := newConnectAuditContext(ic.actorAuthContext(), ic.Logger, net.JoinHostPort(ic.TargetHost, ic.TargetPort), ic.ClientIP, ic.RequestID, ic.Agent)
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	handshakeStart := time.Now()
@@ -2388,4 +2388,10 @@ func (l *singleConnListener) Close() error {
 
 func (l *singleConnListener) Addr() net.Addr {
 	return l.addr
+}
+
+// actorAuthContext returns a context carrying this interception's agent-label
+// provenance grade, so audit contexts built here report it instead of unknown.
+func (ic *InterceptContext) actorAuthContext() context.Context {
+	return context.WithValue(context.Background(), ctxKeyAgentAuth, string(ic.ActorAuth))
 }

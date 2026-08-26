@@ -485,10 +485,8 @@ func (c LogContext) Agent() string     { return c.agent }
 // treated as untrusted by every consumer.
 func (c LogContext) AgentAuth() string { return c.agentAuth }
 
-// WithActorAuth records how the agent label was established. It mirrors
-// WithDoWAttribution: the grade travels with the context so downstream
-// emitters can tell an infrastructure-bound identity from a caller-supplied
-// one. A caller that omits it gets the fail-closed unknown treatment.
+// agentAuthOrUnknown returns the recorded grade, or the fail-closed unknown
+// grade when the context never carried one.
 func (c LogContext) agentAuthOrUnknown() string {
 	if c.agentAuth == "" {
 		return string(envelope.ActorAuthUnknown)
@@ -496,6 +494,10 @@ func (c LogContext) agentAuthOrUnknown() string {
 	return c.agentAuth
 }
 
+// WithActorAuth records how the agent label was established. It mirrors
+// WithDoWAttribution: the grade travels with the context so downstream
+// emitters can tell an infrastructure-bound identity from a caller-supplied
+// one. A caller that omits it gets the fail-closed unknown treatment.
 func (c LogContext) WithActorAuth(auth string) LogContext {
 	c.agentAuth = auth
 	return c

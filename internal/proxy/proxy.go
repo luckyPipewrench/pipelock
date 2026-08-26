@@ -372,15 +372,20 @@ func agentAuthFromContext(ctx context.Context) string {
 	return string(envelope.ActorAuthUnknown)
 }
 
-func newConnectAuditContext(logger *audit.Logger, target, clientIP, requestID, agent string) audit.LogContext {
+// newConnectAuditContext builds an audit context for a CONNECT event.
+//
+// reqCtx is REQUIRED for the same reason it is on newHTTPAuditContext: the
+// grade has to ride the context or every CONNECT event silently reports
+// unknown provenance.
+func newConnectAuditContext(reqCtx context.Context, logger *audit.Logger, target, clientIP, requestID, agent string) audit.LogContext {
 	ctx, err := audit.NewConnectLogContext(target, clientIP, requestID, agent)
 	if err != nil {
 		if logger != nil {
 			logger.LogError(audit.NewMethodLogContext(http.MethodConnect), err)
 		}
-		return audit.NewMethodLogContext(http.MethodConnect)
+		return audit.NewMethodLogContext(http.MethodConnect).WithActorAuth(agentAuthFromContext(reqCtx))
 	}
-	return ctx
+	return ctx.WithActorAuth(agentAuthFromContext(reqCtx))
 }
 
 // Version is set at build time via ldflags.
@@ -4224,6 +4229,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	// Carry the provenance grade on the request from the moment identity is
+	// resolved. Every audit context below derives from r.Context(), so setting
+	// it only at fetch time would report "unknown" for each event on the way.
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
 		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
@@ -5004,7 +5013,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
-	ctx = context.WithValue(ctx, ctxKeyAgentAuth, string(id.Auth))
 	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)

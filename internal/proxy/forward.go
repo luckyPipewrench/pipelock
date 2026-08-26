@@ -125,6 +125,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	// Carry the provenance grade from the moment identity resolves, so every
+	// audit context built from r.Context() below reports the real grade.
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
@@ -228,7 +231,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 	}
-	targetCtx := newConnectAuditContext(p.logger, target, clientIP, requestID, agent)
+	targetCtx := newConnectAuditContext(r.Context(), p.logger, target, clientIP, requestID, agent)
 	headerCtx := targetCtx
 
 	// Scan through all layers (URL pipeline).
@@ -888,6 +891,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	// Carry the provenance grade from the moment identity resolves, so every
+	// audit context built from r.Context() below reports the real grade.
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
 		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}

@@ -397,9 +397,9 @@ const anonymousActor = "anonymous"
 // the guard can ignore unbound labels, which a v1 receipt cannot express.
 func validateSingleActorReceipts(sessionID string, receipts []receipt.Receipt) error {
 	named := make([]string, 0, 2)
-	for _, label := range evidenceview.RecordedActorLabels(receipts) {
-		if label != anonymousActor {
-			named = append(named, label)
+	for _, key := range evidenceview.DistinctActorKeys(sessionID, receipts) {
+		if key != anonymousActor {
+			named = append(named, key)
 		}
 	}
 	if len(named) < 2 {

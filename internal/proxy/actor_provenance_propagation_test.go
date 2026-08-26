@@ -32,6 +32,8 @@ func TestAuditContextCarriesRequestProvenance(t *testing.T) {
 		{"infrastructure bound", envelope.ActorAuthBound, string(envelope.ActorAuthBound)},
 		{"operator configured", envelope.ActorAuthConfigDefault, string(envelope.ActorAuthConfigDefault)},
 		{"caller self declared", envelope.ActorAuthSelfDeclared, string(envelope.ActorAuthSelfDeclared)},
+		{"pattern matched", envelope.ActorAuthMatched, string(envelope.ActorAuthMatched)},
+		{"explicitly unknown", envelope.ActorAuthUnknown, string(envelope.ActorAuthUnknown)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,5 +55,36 @@ func TestAuditContextWithoutProvenanceFailsClosed(t *testing.T) {
 	actx := newHTTPAuditContext(context.Background(), nil, "GET", "https://api.vendor.example/x", "10.0.0.1", "req-1", "agent-a")
 	if got := actx.AgentAuth(); got != string(envelope.ActorAuthUnknown) {
 		t.Fatalf("ungraded context should report unknown, got %q", got)
+	}
+}
+
+// TestConnectAuditContextCarriesRequestProvenance covers the CONNECT surface.
+// It took its context from nowhere until this change, so every CONNECT event
+// reported unknown provenance no matter how the label had been established.
+func TestConnectAuditContextCarriesRequestProvenance(t *testing.T) {
+	t.Parallel()
+	ctx := context.WithValue(context.Background(), ctxKeyAgentAuth, string(envelope.ActorAuthBound))
+	actx := newConnectAuditContext(ctx, nil, "api.vendor.example:443", "10.0.0.1", "req-1", "agent-a")
+	if got := actx.AgentAuth(); got != string(envelope.ActorAuthBound) {
+		t.Fatalf("connect audit context grade = %q, want bound", got)
+	}
+}
+
+// TestConnectAuditContextWithoutProvenanceFailsClosed is the CONNECT twin of
+// the fail-closed default above.
+func TestConnectAuditContextWithoutProvenanceFailsClosed(t *testing.T) {
+	t.Parallel()
+	actx := newConnectAuditContext(context.Background(), nil, "api.vendor.example:443", "10.0.0.1", "req-1", "agent-a")
+	if got := actx.AgentAuth(); got != string(envelope.ActorAuthUnknown) {
+		t.Fatalf("ungraded connect context should report unknown, got %q", got)
+	}
+}
+
+// TestUnrecognizedGradeIsNotTrusted pins that a grade string nobody defined is
+// treated as untrusted rather than passed through as if it were meaningful.
+func TestUnrecognizedGradeIsNotTrusted(t *testing.T) {
+	t.Parallel()
+	if envelope.NormalizeActorAuth("totally-made-up").TrustedForIdentity() {
+		t.Fatal("an unrecognized grade must not be trusted for identity")
 	}
 }

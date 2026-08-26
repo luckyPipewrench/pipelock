@@ -123,3 +123,36 @@ func TestEventAgentIdentityFailsClosed(t *testing.T) {
 		t.Fatal("ungraded label must not be trusted for identity")
 	}
 }
+
+// TestEveryUntrustedGradeExportsAdvisoryOnly generalizes the two tests above
+// from one grade to the whole untrusted set. The earlier pair only exercised
+// self-declared, so a grade added later, or the matched and unknown grades that
+// already existed, could have reached the SIEM identity fields untested.
+func TestEveryUntrustedGradeExportsAdvisoryOnly(t *testing.T) {
+	untrusted := []envelope.ActorAuth{
+		envelope.ActorAuthSelfDeclared,
+		envelope.ActorAuthMatched,
+		envelope.ActorAuthUnknown,
+	}
+	for _, grade := range untrusted {
+		t.Run(string(grade), func(t *testing.T) {
+			ev := eventWithAgent("evil-actor", string(grade))
+
+			cef := FormatCEFEvent(ev, "test")
+			if strings.Contains(cef, "suser=evil-actor") {
+				t.Fatalf("grade %q reached CEF suser: %q", grade, cef)
+			}
+			if !strings.Contains(cef, "evil-actor") {
+				t.Fatalf("grade %q dropped the label entirely from CEF: %q", grade, cef)
+			}
+
+			_, auth, trusted := eventAgentIdentity(ev)
+			if trusted {
+				t.Fatalf("grade %q must not be trusted for identity", grade)
+			}
+			if auth != string(grade) {
+				t.Fatalf("grade reported as %q, want %q", auth, grade)
+			}
+		})
+	}
+}

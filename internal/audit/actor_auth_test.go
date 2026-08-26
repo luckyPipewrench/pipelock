@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -81,7 +80,7 @@ func TestAgentFieldEmitsNameAndGradeTogether(t *testing.T) {
 func TestAgentAuthGradeIsNotFreeText(t *testing.T) {
 	t.Parallel()
 	ctx := NewMethodLogContext("GET").WithActorAuth("whatever-the-caller-said")
-	if !strings.EqualFold(ctx.AgentAuth(), "whatever-the-caller-said") {
+	if ctx.AgentAuth() != "whatever-the-caller-said" {
 		t.Fatal("the audit layer stores the grade verbatim; normalization belongs to the consumer")
 	}
 	if envelope.NormalizeActorAuth(ctx.AgentAuth()).TrustedForIdentity() {

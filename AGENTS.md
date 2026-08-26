@@ -16,7 +16,7 @@ Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent H
 
 ```bash
 make build          # Compile with version ldflags
-make test           # go test -race -count=1 ./...
+make test           # Run the OSS race suite as sequential CI-shaped shards
 make test-cover     # Write coverage.html
 make lint           # go vet + golangci-lint v2 + gofumpt check
 make bench          # Scanner and MCP benchmarks

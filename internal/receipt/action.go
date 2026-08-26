@@ -244,9 +244,8 @@ type RedactionSummary struct {
 	CacheBoundaryKept bool           `json:"cache_boundary_kept,omitempty"`
 }
 
-// ShieldSummary captures Browser Shield response-side rewrites for an allowed
-// response. Present only when the shield actually changed browser-visible
-// content.
+// ShieldSummary captures Browser Shield response-side rewrites or partial-scan
+// coverage for an allowed response.
 type ShieldSummary struct {
 	Pipeline                 string `json:"pipeline,omitempty"`
 	TotalRewrites            int    `json:"total_rewrites,omitempty"`

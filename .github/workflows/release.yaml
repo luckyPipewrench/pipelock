@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          python3 -m unittest scripts.test_ci_test_packages
+          python3 -m unittest scripts.test_ci_test_packages scripts.test_race_test_shape
 
           tmpdir="$(mktemp -d)"
           trap 'rm -rf "$tmpdir"' EXIT
@@ -123,15 +123,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag_args=()
-          package_args=("--shard" "$TEST_SHARD")
+          race_args=("--shard" "$TEST_SHARD")
           if [ -n "$GO_TEST_TAGS" ]; then
-            tag_args=("-tags" "$GO_TEST_TAGS")
-            package_args=("--tags" "$GO_TEST_TAGS" "${package_args[@]}")
+            race_args=("--tags" "$GO_TEST_TAGS" "${race_args[@]}")
           fi
-
-          packages="$(python3 scripts/ci_test_packages.py "${package_args[@]}")"
-          go test "${tag_args[@]}" -race -count=1 -timeout 30m $packages
+          scripts/run-race-test.sh "${race_args[@]}"
 
   # Source-tree conformance proves the implementations agree. This gate proves
   # the packages customers can install accept a receipt from this candidate

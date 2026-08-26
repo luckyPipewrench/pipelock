@@ -4087,6 +4087,42 @@ func TestScanTools_MediaSignalKeysAreMatchedCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestToolOpaqueMediaHelpers_EdgeInputs(t *testing.T) {
+	// Direct unit coverage for the branches the scan-level tests do not reach:
+	// malformed input, an empty field, arrays as the outer container, and a
+	// null value sitting under a signal key.
+	t.Run("malformed JSON is not opaque", func(t *testing.T) {
+		if toolFieldContainsOpaqueMedia(json.RawMessage(`{"data":`)) {
+			t.Fatal("unparseable field reported as opaque media")
+		}
+	})
+	t.Run("empty field is not truncated", func(t *testing.T) {
+		if toolKeyExtractionTruncated(nil) {
+			t.Fatal("empty field reported as truncated")
+		}
+	})
+	t.Run("array container is walked", func(t *testing.T) {
+		if !toolFieldContainsOpaqueMedia(json.RawMessage(`[{"data":"x","encoding":"base64"}]`)) {
+			t.Fatal("opaque media inside an array was not detected")
+		}
+	})
+	t.Run("null under a signal key is skipped", func(t *testing.T) {
+		if toolFieldContainsOpaqueMedia(json.RawMessage(`{"blob":null}`)) {
+			t.Fatal("null value reported as opaque media")
+		}
+	})
+	t.Run("non-string signal values are ignored", func(t *testing.T) {
+		if toolFieldContainsOpaqueMedia(json.RawMessage(`{"data":"x","encoding":7,"type":true}`)) {
+			t.Fatal("non-string signal values reported as opaque media")
+		}
+	})
+	t.Run("textual mime types are inspectable", func(t *testing.T) {
+		if toolFieldContainsOpaqueMedia(json.RawMessage(`{"data":"x","mimeType":"text/plain"}`)) {
+			t.Fatal("text/plain reported as opaque media")
+		}
+	})
+}
+
 func TestScanTools_ConflictingMediaSignalCasingsFailClosed(t *testing.T) {
 	// A server can send both "encoding":"text" and "Encoding":"base64". Folding
 	// the variants into one map entry let whichever survived decide the verdict,

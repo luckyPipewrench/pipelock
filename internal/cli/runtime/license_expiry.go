@@ -27,7 +27,9 @@ func emitLicenseExpiryWarning(cfg *config.Config, logger *audit.Logger, sentryCl
 	now := time.Now()
 	status := license.ExpiryStatus(license.License{
 		ID:        cfg.LicenseID,
+		IssuedAt:  cfg.LicenseIssuedAt,
 		ExpiresAt: cfg.LicenseExpiresAt,
+		Tier:      cfg.LicenseTier,
 	}, now)
 	if !status.Active {
 		return
@@ -43,13 +45,22 @@ func emitLicenseExpiryWarning(cfg *config.Config, logger *audit.Logger, sentryCl
 	}
 
 	expiresAt := status.ExpiresAt.Format(time.DateOnly)
+	message := status.Message()
 	if logger != nil {
-		logger.LogLicenseExpiry(status.LicenseID, status.ThresholdDays, status.DaysRemaining, status.Severity, expiresAt)
+		logger.LogLicenseExpiry(audit.LicenseExpiryWarning{
+			LicenseID:     status.LicenseID,
+			Tier:          status.Tier,
+			ThresholdDays: status.ThresholdDays,
+			DaysRemaining: status.DaysRemaining,
+			Severity:      status.Severity,
+			ExpiresAt:     expiresAt,
+			Message:       message,
+		})
 	}
-	_, _ = fmt.Fprintf(stderr, "WARNING: license expires in %d day(s) on %s\n",
-		status.DaysRemaining, expiresAt)
+	_, _ = fmt.Fprintf(stderr, "WARNING: %s\n", message)
 	if sentryClient != nil {
-		sentryClient.AddBreadcrumb("license", "license expiry warning", status.Severity, map[string]any{
+		sentryClient.AddBreadcrumb("license", message, status.Severity, map[string]any{
+			"tier":           status.Tier,
 			"threshold_days": fmt.Sprintf("%d", status.ThresholdDays),
 			"days_remaining": fmt.Sprintf("%d", status.DaysRemaining),
 			"expires_at":     expiresAt,

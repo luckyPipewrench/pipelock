@@ -101,7 +101,9 @@ func TestServer_ReloadUnverifiableLicenseInputPreservesAgents(t *testing.T) {
 	}
 	oldCfg.LicenseKey = tok
 	oldCfg.LicensePublicKey = pubHex
+	oldCfg.LicenseIssuedAt = time.Now().Add(-16 * 24 * time.Hour).Unix()
 	oldCfg.LicenseExpiresAt = time.Now().Add(time.Hour).Unix()
+	oldCfg.LicenseTier = "trial"
 
 	// Simulate EnforceLicenseGate's strip at reload-Load (no _default profile, so
 	// the failed verification leaves Agents nil) while the new CRL input is
@@ -119,6 +121,11 @@ func TestServer_ReloadUnverifiableLicenseInputPreservesAgents(t *testing.T) {
 	}
 	if _, ok := live.Agents["agent-a"]; !ok {
 		t.Fatalf("named agent not preserved restart-only: %+v", live.Agents)
+	}
+	if live.LicenseIssuedAt != oldCfg.LicenseIssuedAt || live.LicenseExpiresAt != oldCfg.LicenseExpiresAt || live.LicenseTier != oldCfg.LicenseTier {
+		t.Fatalf("runtime warning metadata changed across reload: got issued=%d expires=%d tier=%q want issued=%d expires=%d tier=%q",
+			live.LicenseIssuedAt, live.LicenseExpiresAt, live.LicenseTier,
+			oldCfg.LicenseIssuedAt, oldCfg.LicenseExpiresAt, oldCfg.LicenseTier)
 	}
 	if !buf.contains("new license inputs could not be verified") {
 		t.Fatalf("stderr missing unverifiable-input warning:\n%s", buf.String())

@@ -21,12 +21,32 @@ const (
 	ExpirySeverityError = "error"
 
 	expiryDay = 24 * time.Hour
+
+	trialTier          = "trial"
+	enterpriseEvalTier = "enterprise_eval"
+	pricingURL         = "https://pipelab.org/pricing/"
 )
+
+type expiryBand struct {
+	name     string
+	divisor  int
+	maximum  time.Duration
+	severity string
+}
+
+var expiryBands = [...]expiryBand{
+	{name: "early", divisor: 2, maximum: 30 * expiryDay, severity: ExpirySeverityInfo},
+	{name: "mid", divisor: 4, maximum: 14 * expiryDay, severity: ExpirySeverityWarn},
+	{name: "late", divisor: 8, maximum: 7 * expiryDay, severity: ExpirySeverityWarn},
+	{name: "final", divisor: 2, maximum: expiryDay, severity: ExpirySeverityError},
+}
 
 // ExpiryWarning describes the active renewal warning band for a license.
 type ExpiryWarning struct {
 	Active        bool
 	LicenseID     string
+	Tier          string
+	Band          string
 	ThresholdDays int
 	DaysRemaining int
 	Severity      string
@@ -34,33 +54,40 @@ type ExpiryWarning struct {
 }
 
 // ExpiryWarningState records the last emitted renewal warning. It is safe to
-// persist locally because it contains only the opaque license ID and threshold.
+// persist locally because it contains only the opaque license ID and band.
 type ExpiryWarningState struct {
 	LicenseID      string    `json:"license_id"`
+	Band           string    `json:"band,omitempty"`
 	ThresholdDays  int       `json:"threshold_days"`
 	LastEmittedUTC time.Time `json:"last_emitted_utc"`
 }
 
-// ExpiryStatus returns the current warning band for lic at now. Perpetual and
-// already-expired licenses do not produce renewal warnings.
+// ExpiryStatus returns the current warning band for lic at now. A valid issued
+// time makes each band relative to the token's own lifetime, capped at the
+// long-lived-license thresholds. Perpetual and already-expired licenses do not
+// produce renewal warnings. Tokens without a usable issued time fall back to
+// the legacy absolute bands so a malformed claim cannot silently suppress a
+// renewal warning.
 func ExpiryStatus(lic License, now time.Time) ExpiryWarning {
 	if lic.ExpiresAt <= 0 {
-		return ExpiryWarning{LicenseID: lic.ID}
+		return ExpiryWarning{LicenseID: lic.ID, Tier: lic.Tier}
 	}
 	expiresAt := time.Unix(lic.ExpiresAt, 0).UTC()
 	remaining := expiresAt.Sub(now.UTC())
 	if remaining <= 0 {
 		return ExpiryWarning{
 			LicenseID:     lic.ID,
+			Tier:          lic.Tier,
 			DaysRemaining: 0,
 			ExpiresAt:     expiresAt,
 		}
 	}
 	days := int(math.Ceil(float64(remaining) / float64(expiryDay)))
-	threshold := expiryThreshold(days)
-	if threshold == 0 {
+	band, threshold := expiryBandFor(lic.IssuedAt, now, expiresAt, remaining)
+	if band == nil {
 		return ExpiryWarning{
 			LicenseID:     lic.ID,
+			Tier:          lic.Tier,
 			DaysRemaining: days,
 			ExpiresAt:     expiresAt,
 		}
@@ -68,27 +95,51 @@ func ExpiryStatus(lic License, now time.Time) ExpiryWarning {
 	return ExpiryWarning{
 		Active:        true,
 		LicenseID:     lic.ID,
+		Tier:          lic.Tier,
+		Band:          band.name,
 		ThresholdDays: threshold,
 		DaysRemaining: days,
-		Severity:      expirySeverity(threshold),
+		Severity:      band.severity,
 		ExpiresAt:     expiresAt,
 	}
 }
 
+// Message returns the operator-facing warning text for an active expiry band.
+func (w ExpiryWarning) Message() string {
+	if !w.Active {
+		return ""
+	}
+	expiresAt := w.ExpiresAt.Format(time.DateOnly)
+	switch w.Tier {
+	case trialTier:
+		return fmt.Sprintf("trial ends in %d day(s) on %s; Pro features stop at expiry. Subscribe at %s", w.DaysRemaining, expiresAt, pricingURL)
+	case enterpriseEvalTier:
+		return fmt.Sprintf("Enterprise evaluation ends in %d day(s) on %s; licensed runtime surfaces stop at expiry. See %s", w.DaysRemaining, expiresAt, pricingURL)
+	default:
+		return fmt.Sprintf("license expires in %d day(s) on %s; check billing or token delivery", w.DaysRemaining, expiresAt)
+	}
+}
+
 // ShouldEmitExpiryWarning returns true when a warning should be emitted for
-// the current band. The same license and threshold emits once; a new license
-// or a lower threshold emits again.
+// the current band. The same license and band emits once; a new license or a
+// later band emits again.
 func ShouldEmitExpiryWarning(current ExpiryWarning, previous ExpiryWarningState) bool {
 	if !current.Active {
 		return false
 	}
-	return previous.LicenseID != current.LicenseID ||
-		previous.ThresholdDays != current.ThresholdDays
+	if previous.LicenseID != current.LicenseID {
+		return true
+	}
+	if current.Band != "" && previous.Band != "" {
+		return previous.Band != current.Band
+	}
+	return previous.ThresholdDays != current.ThresholdDays
 }
 
 func NewExpiryWarningState(current ExpiryWarning, now time.Time) ExpiryWarningState {
 	return ExpiryWarningState{
 		LicenseID:      current.LicenseID,
+		Band:           current.Band,
 		ThresholdDays:  current.ThresholdDays,
 		LastEmittedUTC: now.UTC(),
 	}
@@ -131,30 +182,38 @@ func SaveExpiryWarningState(path string, state ExpiryWarningState) error {
 	return nil
 }
 
-func expiryThreshold(daysRemaining int) int {
+func expiryBandFor(issuedAt int64, now, expiresAt time.Time, remaining time.Duration) (*expiryBand, int) {
+	issued := time.Unix(issuedAt, 0).UTC()
+	if issuedAt <= 0 || issued.After(now.UTC()) || !issued.Before(expiresAt) {
+		return legacyExpiryBand(daysRemaining(remaining))
+	}
+
+	lifetime := expiresAt.Sub(issued)
+	for i := len(expiryBands) - 1; i >= 0; i-- {
+		band := &expiryBands[i]
+		threshold := min(lifetime/time.Duration(band.divisor), band.maximum)
+		if remaining <= threshold {
+			return band, daysRemaining(threshold)
+		}
+	}
+	return nil, 0
+}
+
+func legacyExpiryBand(days int) (*expiryBand, int) {
 	switch {
-	case daysRemaining <= 1:
-		return 1
-	case daysRemaining <= 7:
-		return 7
-	case daysRemaining <= 14:
-		return 14
-	case daysRemaining <= 30:
-		return 30
+	case days <= 1:
+		return &expiryBands[3], 1
+	case days <= 7:
+		return &expiryBands[2], 7
+	case days <= 14:
+		return &expiryBands[1], 14
+	case days <= 30:
+		return &expiryBands[0], 30
 	default:
-		return 0
+		return nil, 0
 	}
 }
 
-func expirySeverity(threshold int) string {
-	switch threshold {
-	case 1:
-		return ExpirySeverityError
-	case 7, 14:
-		return ExpirySeverityWarn
-	case 30:
-		return ExpirySeverityInfo
-	default:
-		return ""
-	}
+func daysRemaining(remaining time.Duration) int {
+	return int(math.Ceil(float64(remaining) / float64(expiryDay)))
 }

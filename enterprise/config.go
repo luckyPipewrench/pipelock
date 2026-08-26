@@ -321,8 +321,11 @@ func EnforceLicenseGate(c *config.Config) {
 		return
 	}
 
-	// Store expiry for runtime enforcement. Zero means perpetual.
+	// Store verified claims for runtime enforcement and expiry warnings.
+	// A zero expiry means perpetual.
 	c.LicenseExpiresAt = lic.ExpiresAt
+	c.LicenseIssuedAt = lic.IssuedAt
+	c.LicenseTier = lic.Tier
 	c.LicenseID = lic.ID
 	c.LicenseAgentsFeature = true
 	if crlLoaded {

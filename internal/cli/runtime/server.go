@@ -395,8 +395,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			s.reportContainmentMetricsDrift(cfg, "startup", containmentErr)
 		}
 	}
-	emitLicenseExpiryWarning(cfg, logger, sentryClient, opts.Stderr)
-
 	runtimeMode := config.RuntimeForward
 	if hasMCPListen {
 		runtimeMode = config.RuntimeForwardWithMCPListener
@@ -448,8 +446,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			return nil, err
 		}
 		cfg.LicenseID = lic.ID
+		cfg.LicenseIssuedAt = lic.IssuedAt
 		cfg.LicenseExpiresAt = lic.ExpiresAt
+		cfg.LicenseTier = lic.Tier
 	}
+	emitLicenseExpiryWarning(cfg, logger, sentryClient, opts.Stderr)
 	if err := s.initConductorApplyAndAudit(cfg, m); err != nil {
 		s.cleanup()
 		return nil, err

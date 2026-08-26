@@ -671,8 +671,8 @@ func TestEnforceLicenseGate_ValidLicense(t *testing.T) {
 	if cfg.Agents == nil {
 		t.Error("expected agents to remain with valid license")
 	}
-	if cfg.LicenseExpiresAt == 0 {
-		t.Error("expected non-zero LicenseExpiresAt after valid license")
+	if cfg.LicenseExpiresAt != fixture.ExpiresAt {
+		t.Errorf("LicenseExpiresAt = %d, want fixture claim %d", cfg.LicenseExpiresAt, fixture.ExpiresAt)
 	}
 	if cfg.LicenseIssuedAt != fixture.IssuedAt {
 		t.Errorf("LicenseIssuedAt = %d, want fixture claim %d", cfg.LicenseIssuedAt, fixture.IssuedAt)

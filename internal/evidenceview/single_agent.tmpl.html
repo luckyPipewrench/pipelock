@@ -252,7 +252,8 @@ code {
     <div class="eyebrow mono">Single-agent evidence</div>
     <h1>{{.Title}}</h1>
     <div class="meta">
-      <span><b>Agent</b> {{.Evidence.Agent}}</span>
+      <span><b>Identity</b> not established by v1 receipts</span>
+      <span><b>Recorded labels</b> {{if .Evidence.RecordedLabels}}{{range $i, $l := .Evidence.RecordedLabels}}{{if $i}}, {{end}}{{$l}}{{end}}{{if .Evidence.LabelsReadLimited}} (loaded receipts only){{end}}{{else}}none recorded{{end}}</span>
       <span><b>Session</b> {{.Evidence.ID}}</span>
       <span><b>Receipts</b> {{.Evidence.ReceiptCount}}</span>
     </div>

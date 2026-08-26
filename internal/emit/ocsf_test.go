@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
 func TestFormatOCSFEventDetectionFinding(t *testing.T) {
@@ -24,6 +26,7 @@ func TestFormatOCSFEventDetectionFinding(t *testing.T) {
 		Fields: map[string]any{
 			"action":     conventionActionBlock,
 			"agent":      "agent-a",
+			"agent_auth": string(envelope.ActorAuthBound),
 			"client_ip":  "203.0.113.10",
 			"method":     "POST",
 			"pattern":    "api-key",
@@ -605,6 +608,7 @@ func TestFormatOCSFEventBoundsEveryStringInTheRecord(t *testing.T) {
 		Fields: map[string]any{
 			"action":     conventionActionBlock,
 			"agent":      hostile,
+			"agent_auth": string(envelope.ActorAuthBound),
 			"client_ip":  hostile,
 			"method":     hostile,
 			"request_id": hostile,

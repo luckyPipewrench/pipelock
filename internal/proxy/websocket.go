@@ -172,6 +172,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	// Carry the provenance grade from the moment identity resolves, so every
+	// audit context built from r.Context() below reports the real grade.
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
 		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
@@ -256,7 +259,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
 
-	actx := newHTTPAuditContext(log, "WS", targetURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(r.Context(), log, httpAuditEvent{Method: "WS", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 
 	// Run through all 9 scanner layers.
 	wsScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -519,7 +522,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if wsHeaderBlocked {
-			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
+				Reason: reason, ClientIP: clientIP, RequestID: requestID,
+				Agent: agent, AgentAuth: string(id.Auth),
+			})
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
@@ -581,7 +588,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 
 		if ceeRes.Blocked {
-			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, "cross_request", ceeRes.Reason, clientIP, requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: targetURL, Direction: audit.DirectionClientToServer, Scanner: "cross_request",
+				Reason: ceeRes.Reason, ClientIP: clientIP, RequestID: requestID,
+				Agent: agent, AgentAuth: string(id.Auth),
+			})
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:   receipt.NewActionID(),
@@ -1022,10 +1033,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	p.metrics.RecordWSStats(duration, stats.clientToServer, stats.serverToClient)
 	log.LogWSClose(audit.WSCloseEvent{
-		Target:         targetURL,
-		ClientIP:       clientIP,
-		RequestID:      requestID,
-		Agent:          agent,
+		Target:    targetURL,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent, AgentAuth: string(id.Auth),
 		ClientToServer: stats.clientToServer,
 		ServerToClient: stats.serverToClient,
 		TextFrames:     stats.textFrames,
@@ -1291,6 +1302,14 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 // applyRequestPolicy's shared finalizer. Only complete, UTF-8-validated text
 // frames reach here - the fragment-reassembly boundary (and binary frames,
 // which are not operation text) is a documented limit.
+// auditProvenanceCtx carries the relay's recorded agent provenance to an audit
+// context. A long-lived relay outlives the originating request, so the grade is
+// kept on the relay itself rather than read back off a request that may already
+// be done.
+func (r *wsRelay) auditProvenanceCtx() context.Context {
+	return context.WithValue(context.Background(), ctxKeyAgentAuth, string(r.actorAuth))
+}
+
 func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in := requestPolicyInput{
 		Host:        r.hostname,
@@ -1308,7 +1327,7 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in.Target = r.targetURL
 	in.RequestID = r.requestID
 	in.Agent = r.agent
-	in.AuditCtx = newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
+	in.AuditCtx = newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 	in.Emit = func(opts receipt.EmitOpts) error {
 		return r.proxy.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, r.cfg.CanonicalPolicyHash()))
 	}
@@ -1402,7 +1421,11 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 	}
 
 	if ceeRes.Blocked {
-		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "cross_request", ceeRes.Reason, r.clientIP, r.requestID)
+		log.LogWSBlocked(audit.WSBlockedEvent{
+			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: "cross_request",
+			Reason: ceeRes.Reason, ClientIP: r.clientIP, RequestID: r.requestID,
+			Agent: r.agent, AgentAuth: string(r.actorAuth),
+		})
 		r.proxy.metrics.RecordWSScanHit("cross_request")
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "cross_request",
@@ -1490,7 +1513,11 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 	if r.redaction != nil && r.redaction.required && len(crossDLP) > 0 {
 		reason := "redaction blocked request: websocket cross-message secret cannot be redacted"
 		r.recordSignal(session.SignalBlock, log)
-		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelRedaction, reason, r.clientIP, r.requestID)
+		log.LogWSBlocked(audit.WSBlockedEvent{
+			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabelRedaction,
+			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+			Agent: r.agent, AgentAuth: string(r.actorAuth),
+		})
 		r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
@@ -1571,7 +1598,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		if hardBlock || r.cfg.EnforceEnabled() {
 			r.recordSignal(session.SignalBlock, log)
 			reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
+				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
@@ -1597,7 +1628,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			sessionKey := sessionKeyFor(r.agent, r.clientIP)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: baseAction, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: r.clientIP, RequestID: r.requestID})
 			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
+				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
@@ -1618,11 +1653,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 
 		r.recordSignal(session.SignalNearMiss, log)
 		log.LogWSScan(audit.WSScanEvent{
-			Target:       r.targetURL,
-			Direction:    audit.DirectionClientToServer,
-			ClientIP:     r.clientIP,
-			RequestID:    r.requestID,
-			Agent:        r.agent,
+			Target:    r.targetURL,
+			Direction: audit.DirectionClientToServer,
+			ClientIP:  r.clientIP,
+			RequestID: r.requestID,
+			Agent:     r.agent, AgentAuth: string(r.actorAuth),
 			Action:       "audit",
 			MatchCount:   len(dlpMatches),
 			PatternNames: names,
@@ -1660,7 +1695,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				}
 			}
 			reason := fmt.Sprintf("address poisoning: %s", blockExplanation)
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabelAddressProtection,
+				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -1680,7 +1719,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction {
 			r.recordSignal(session.SignalBlock, log)
 			reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabelAddressProtection,
+				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -1700,11 +1743,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 
 		r.recordSignal(session.SignalNearMiss, log)
 		log.LogWSScan(audit.WSScanEvent{
-			Target:       r.targetURL,
-			Direction:    audit.DirectionClientToServer,
-			ClientIP:     r.clientIP,
-			RequestID:    r.requestID,
-			Agent:        r.agent,
+			Target:    r.targetURL,
+			Direction: audit.DirectionClientToServer,
+			ClientIP:  r.clientIP,
+			RequestID: r.requestID,
+			Agent:     r.agent, AgentAuth: string(r.actorAuth),
 			Action:       config.ActionWarn,
 			Scanner:      scannerLabelAddressProtection,
 			MatchCount:   len(addrFindings),
@@ -1881,7 +1924,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.hostname, r.cfg)
 	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		r.recordSignal(session.SignalBlock, log)
-		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, reason, r.clientIP, r.requestID)
+		log.LogWSBlocked(audit.WSBlockedEvent{
+			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabel,
+			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+			Agent: r.agent, AgentAuth: string(r.actorAuth),
+		})
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
@@ -1935,11 +1982,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				names[i] = f.Explanation
 			}
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       config.ActionWarn,
 				Scanner:      scannerLabelAddressProtection,
 				MatchCount:   len(result.AddressFindings),
@@ -1952,7 +1999,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		if !r.cfg.EnforceEnabled() && action != originalAction {
 			blockReason += " (escalated)"
 		}
-		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, blockReason, r.clientIP, r.requestID)
+		log.LogWSBlocked(audit.WSBlockedEvent{
+			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabel,
+			Reason: blockReason, ClientIP: r.clientIP, RequestID: r.requestID,
+			Agent: r.agent, AgentAuth: string(r.actorAuth),
+		})
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
@@ -1976,11 +2027,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		r.recordSignal(session.SignalNearMiss, log)
 		if len(result.DLPMatches) > 0 {
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       "audit",
 				MatchCount:   len(result.DLPMatches),
 				PatternNames: dlpMatchNames(result.DLPMatches),
@@ -1993,11 +2044,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				names[i] = f.Explanation
 			}
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       config.ActionWarn,
 				Scanner:      scannerLabelAddressProtection,
 				MatchCount:   len(result.AddressFindings),
@@ -2007,11 +2058,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		if result.EntropyFinding != nil {
 			r.proxy.metrics.RecordBodyEntropy(config.ActionWarn, r.metricAgent)
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       config.ActionWarn,
 				Scanner:      scannerLabelBodyEntropy,
 				MatchCount:   1,
@@ -2187,7 +2238,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.Active && frag.Opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
-				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
+				log.LogWSBlocked(audit.WSBlockedEvent{
+					Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: "ws_protocol",
+					Reason: "binary frames not allowed", ClientIP: r.clientIP, RequestID: r.requestID,
+					Agent: r.agent, AgentAuth: string(r.actorAuth),
+				})
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
 				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
@@ -2209,7 +2264,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		if redactionEnabled && !hdr.OpCode.IsControl() && (!hdr.Fin || hdr.OpCode == ws.OpContinuation) {
 			reason := string(redact.ReasonWebSocketFragmented)
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelRedaction, reason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabelRedaction,
+				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
@@ -2231,7 +2290,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Fragment reassembly for text frames.
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", closeReason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: "ws_protocol",
+				Reason: closeReason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2387,7 +2450,11 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	switch wsAction {
 	case config.ActionBlock:
 		reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
-		log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, responseScanLayer, reason, r.clientIP, r.requestID)
+		log.LogWSBlocked(audit.WSBlockedEvent{
+			Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: responseScanLayer,
+			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+			Agent: r.agent, AgentAuth: string(r.actorAuth),
+		})
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
@@ -2401,7 +2468,11 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		}
 		if !allowTransform || scanResult.TransformedContent == "" {
 			reason := fmt.Sprintf("injection detected (strip failed): %s", strings.Join(patternNames, ", "))
-			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, responseScanLayer, reason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: responseScanLayer,
+				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 				Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
@@ -2411,12 +2482,16 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			return nil, true
 		}
 		msg = []byte(scanResult.TransformedContent)
-		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: config.ActionStrip, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
+		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: config.ActionStrip, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	case config.ActionWarn:
-		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: config.ActionWarn, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
+		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: config.ActionWarn, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	case config.ActionAsk:
 		reason := fmt.Sprintf("injection detected (ask not supported for WS): %s", strings.Join(patternNames, ", "))
-		log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, responseScanLayer, reason, r.clientIP, r.requestID)
+		log.LogWSBlocked(audit.WSBlockedEvent{
+			Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: responseScanLayer,
+			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
+			Agent: r.agent, AgentAuth: string(r.actorAuth),
+		})
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
@@ -2425,7 +2500,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 		return nil, true
 	default:
-		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
+		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	}
 	return msg, false
 }
@@ -2610,7 +2685,11 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.Active && frag.Opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
-				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
+				log.LogWSBlocked(audit.WSBlockedEvent{
+					Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: "ws_protocol",
+					Reason: "binary frames not allowed", ClientIP: r.clientIP, RequestID: r.requestID,
+					Agent: r.agent, AgentAuth: string(r.actorAuth),
+				})
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
 				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
@@ -2633,7 +2712,11 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Fragment reassembly.
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
-			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", closeReason, r.clientIP, r.requestID)
+			log.LogWSBlocked(audit.WSBlockedEvent{
+				Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: "ws_protocol",
+				Reason: closeReason, ClientIP: r.clientIP, RequestID: r.requestID,
+				Agent: r.agent, AgentAuth: string(r.actorAuth),
+			})
 			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2665,11 +2748,15 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Complete message. Count and scan.
 		if opCode == ws.OpBinary {
 			r.observeUpstreamResponseTaint(false)
-			actx := newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
+			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
 			logMediaExposureIfPresent(log, actx, mediaVerdict, TransportWS)
 			if mediaVerdict.Blocked {
-				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "media_policy", mediaVerdict.BlockReason, r.clientIP, r.requestID)
+				log.LogWSBlocked(audit.WSBlockedEvent{
+					Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: "media_policy",
+					Reason: mediaVerdict.BlockReason, ClientIP: r.clientIP, RequestID: r.requestID,
+					Agent: r.agent, AgentAuth: string(r.actorAuth),
+				})
 				r.proxy.metrics.RecordWSScanHit("media_policy")
 				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),

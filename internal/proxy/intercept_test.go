@@ -1206,6 +1206,28 @@ func TestInterceptTunnel_MediaPolicyBlocksAudio(t *testing.T) {
 	}
 }
 
+func TestInterceptTunnel_MediaPolicyBlocksExplicitNonMediaSpoof(t *testing.T) {
+	jpegBytes := buildValidJPEG([]byte("Exif\x00\x00spoofed-content-type"))
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(jpegBytes)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	stripImages := true
+	cfg.MediaPolicy.StripImages = &stripImages
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/spoofed.jpg", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
 func TestInterceptTunnel_BlocksInjection(t *testing.T) {
 	injection := testInjectionPayload
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

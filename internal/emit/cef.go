@@ -80,11 +80,24 @@ func cefExtension(event Event) string {
 	if decisionType := eventDecisionType(event); decisionType != "" {
 		values["cat"] = decisionType
 	}
-	if agent := eventAgent(event); agent != "" {
-		values["suser"] = agent
+	// CEF suser is the source USER. Only a label whose provenance is trusted
+	// for identity may populate it; a caller-supplied name would otherwise
+	// become an authenticated-looking username in the customer SIEM. The
+	// untrusted label is still reported below as a Pipelock-namespaced
+	// advisory pair so operators keep visibility without false attribution.
+	if agent, auth, trusted := eventAgentIdentity(event); agent != "" {
+		if trusted {
+			values["suser"] = agent
+		} else {
+			values[cefUntrustedAgentLabelKey] = agent
+			values[cefUntrustedAgentAuthKey] = auth
+		}
 	}
 
 	for _, key := range sortedKeys(event.Fields) {
+		if isAgentIdentityField(key) {
+			continue
+		}
 		value := event.Fields[key]
 		cefKey, ok := cefFieldKey(key)
 		if !ok {
@@ -116,6 +129,11 @@ func sortedKeys[V any](values map[string]V) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+const (
+	cefUntrustedAgentLabelKey = "pipelockAgentLabel"
+	cefUntrustedAgentAuthKey  = "pipelockAgentAuth"
+)
 
 func cefFieldKey(key string) (string, bool) {
 	switch key {

@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
 const (
@@ -279,4 +281,36 @@ func eventAgent(event Event) string {
 		}
 	}
 	return ""
+}
+
+// eventAgentAuth returns the recorded provenance grade for the agent label.
+// A missing grade is reported as envelope.ActorAuthUnknown rather than "", so
+// every caller has to make an explicit trust decision instead of reading an
+// empty string as benign.
+var agentIdentityFieldKeys = map[string]bool{
+	"agent": true, "identity": true, "actor": true, "principal": true, "agent_auth": true,
+}
+
+func isAgentIdentityField(key string) bool { return agentIdentityFieldKeys[key] }
+
+func eventAgentAuth(event Event) string {
+	if value, ok := event.Fields["agent_auth"].(string); ok && value != "" {
+		return value
+	}
+	return string(envelope.ActorAuthUnknown)
+}
+
+// eventAgentIdentity returns the agent label ONLY when its provenance is
+// strong enough to present as an identity to an external consumer, along with
+// the grade for advisory reporting.
+//
+// This is the chokepoint that keeps a caller-controlled label out of
+// identity-shaped fields such as OCSF actor.user.name and CEF suser. It is
+// deliberately written so that an event carrying no grade at all is untrusted:
+// a future emitter that forgets to record provenance loses the identity field
+// rather than silently laundering an unverified name.
+func eventAgentIdentity(event Event) (label, auth string, trusted bool) {
+	label = eventAgent(event)
+	auth = eventAgentAuth(event)
+	return label, auth, label != "" && envelope.NormalizeActorAuth(auth).TrustedForIdentity()
 }

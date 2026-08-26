@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
 func TestFormatCEFEvent(t *testing.T) {
@@ -20,6 +22,7 @@ func TestFormatCEFEvent(t *testing.T) {
 		Fields: map[string]any{
 			"action":     conventionActionBlock,
 			"agent":      "agent-a",
+			"agent_auth": string(envelope.ActorAuthBound),
 			"client_ip":  "203.0.113.10",
 			"method":     "POST",
 			"pattern":    "api-key",
@@ -44,8 +47,9 @@ func TestFormatCEFEventEscapesDelimiters(t *testing.T) {
 		Timestamp:  time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
 		InstanceID: `node|a`,
 		Fields: map[string]any{
-			fieldReason: `bad|pipe=eq\slash` + "\nline",
-			"agent":     `agent|one=two\three` + "\nnext",
+			fieldReason:  `bad|pipe=eq\slash` + "\nline",
+			"agent":      `agent|one=two\three` + "\nnext",
+			"agent_auth": string(envelope.ActorAuthBound),
 		},
 	}
 
@@ -72,6 +76,7 @@ func TestFormatCEFEventEscapesLineForgeryPayloads(t *testing.T) {
 		Fields: map[string]any{
 			"action":            conventionActionBlock,
 			"agent":             "agent|id=value\\x\r\nforged",
+			"agent_auth":        string(envelope.ActorAuthBound),
 			"url":               payload,
 			fieldReason:         "matched snippet | key=value\\x\r\nforged",
 			"bad|key=\r\nforge": "value",
@@ -106,6 +111,7 @@ func TestFormatCEFEventRawFieldsCannotOverwriteCanonicalKeys(t *testing.T) {
 		Fields: map[string]any{
 			"action":        "allow",
 			"agent":         "agent-a",
+			"agent_auth":    string(envelope.ActorAuthBound),
 			"decision":      "allow",
 			"decision_type": "spoofed",
 			"event":         "spoofed-event",
@@ -136,6 +142,14 @@ func TestFormatCEFEventRawFieldsCannotOverwriteCanonicalKeys(t *testing.T) {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("CEF line allowed raw field overwrite %q:\n%s", forbidden, got)
 		}
+	}
+
+	// The spoofed identity field must never reach suser, whatever the
+	// canonical agent resolves to. Before provenance grading, any field in
+	// this family was mapped generically onto suser, so a caller-supplied
+	// value could arrive in the SIEM source-user field by the back door.
+	if strings.Contains(got, "suser=spoofed-agent") {
+		t.Fatalf("spoofed identity field reached suser: %s", got)
 	}
 }
 
@@ -288,6 +302,7 @@ func TestFormatCEFEventSampleProof(t *testing.T) {
 		Fields: map[string]any{
 			"action":     conventionActionBlock,
 			"agent":      "agent-a",
+			"agent_auth": string(envelope.ActorAuthBound),
 			"client_ip":  "203.0.113.10",
 			"method":     "POST",
 			"request_id": "req-123",

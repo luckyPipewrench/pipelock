@@ -32,7 +32,7 @@ func (l *Logger) LogDLPWarn(ctx LogContext, patternName, severity, transport str
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
-		optStr("agent", ctx.Agent())
+		agentField(ctx.Agent(), ctx.AgentAuth())
 	e.msg("DLP warn-mode match (informational)")
 
 	if l.emitter != nil {

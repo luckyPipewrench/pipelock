@@ -376,31 +376,44 @@ func renderSessionHTML(
 // two or more DISTINCT NAMED actors appear (the real cross-agent leak).
 const anonymousActor = "anonymous"
 
+// validateSingleActorReceipts refuses to render a session whose receipts carry
+// two or more distinct NAMED agent labels.
+//
+// The refusal is a CONFIDENTIALITY control, not a tier gate: one agent's report
+// would disclose another agent's target URLs, and those can carry capability
+// tokens. TestServeCmd_MixedActorSessionFailsClosed pins that property.
+//
+// It previously counted LIFECYCLE records too. The proxy opens every session
+// under its own identity while the mediated actions carry the resolved request
+// agent, so an ordinary single-agent session held two labels and was refused
+// with no attacker and no second agent involved. Counting only non-lifecycle
+// labels fixes that, and matches what agentLabel already did one function away.
+//
+// Residual, accepted deliberately: on a listener without a bound identity the
+// label is caller-supplied, so a caller who injects a distinct NAMED label can
+// still deny the operator this view. Rendering anyway would trade that
+// availability loss for disclosure of another agent's capability URLs, which is
+// the worse direction. Closing it properly needs receipt-carried provenance so
+// the guard can ignore unbound labels, which a v1 receipt cannot express.
 func validateSingleActorReceipts(sessionID string, receipts []receipt.Receipt) error {
-	var boundActor string
-	for _, r := range receipts {
-		actor := strings.TrimSpace(r.ActionRecord.Actor)
-		if actor == "" {
-			actor = strings.TrimSpace(r.ActionRecord.SessionID)
-		}
-		if actor == "" {
-			actor = sessionID
-		}
-		if actor == anonymousActor {
-			continue
-		}
-		if boundActor == "" {
-			boundActor = actor
-			continue
-		}
-		if actor != boundActor {
-			return fmt.Errorf(
-				"session %q contains receipts for multiple named agents (%q and %q); use the Pro/Enterprise multi-agent evidence console",
-				sessionID, boundActor, actor,
-			)
+	named := make([]string, 0, 2)
+	for _, key := range evidenceview.DistinctActorKeys(sessionID, receipts) {
+		if !evidenceview.IsAnonymousActorLabel(key, anonymousActor) {
+			named = append(named, key)
 		}
 	}
-	return nil
+	if len(named) < 2 {
+		return nil
+	}
+	return fmt.Errorf(
+		"session %q contains receipts under %d different agent labels (%s). the single-agent "+
+			"view refuses these because one agent's report would disclose another's target URLs, "+
+			"which can carry capability tokens. note that a v1 receipt records the label but not "+
+			"how it was established, so if this session should have only one agent, a caller may "+
+			"have supplied the extra label: set bind_default_agent_identity to make the label "+
+			"infrastructure-bound. for evidence that really does span agents, use the multi-agent "+
+			"evidence console",
+		sessionID, len(named), strings.Join(named, ", "))
 }
 
 func validateReceiptDir(dir string) (string, error) {

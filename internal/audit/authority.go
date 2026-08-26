@@ -62,7 +62,7 @@ func (l *Logger) LogAuthorityVerification(ctx LogContext, verification Authority
 		optStr("resource", ctx.Resource()).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
-		optStr("agent", ctx.Agent())
+		agentField(ctx.Agent(), ctx.AgentAuth())
 	e.msg(message)
 
 	if l.emitter != nil {

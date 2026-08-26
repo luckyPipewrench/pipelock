@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -647,22 +648,27 @@ func TestServeCmd_MixedActorSessionFailsClosed(t *testing.T) {
 	}
 }
 
-// A single named agent mixed with unattributed ("anonymous") traffic is a normal
-// single-agent session and must render, while two distinct NAMED agents must still
-// be rejected. anonymous is pipelock's default actor, not a second agent.
-func TestValidateSingleActorReceipts_AnonymousIsNotADistinctAgent(t *testing.T) {
+// anonymous is pipelock's default actor for unattributed traffic, not a second
+// agent, so it must never contribute a recorded label.
+//
+// This replaces a test that asserted two distinct named actors were REJECTED.
+// That behavior was removed deliberately: the label is caller-supplied on an
+// unbound listener, so rejecting made one request enough to deny an operator
+// the whole session's evidence. The surviving intent — anonymous is not an
+// agent — is asserted here against the label collector that replaced it.
+func TestRecordedActorLabels_AnonymousIsNotADistinctAgent(t *testing.T) {
 	t.Parallel()
 	mk := func(actor string) receipt.Receipt {
 		return receipt.Receipt{ActionRecord: receipt.ActionRecord{Actor: actor}}
 	}
-	if err := validateSingleActorReceipts("proxy", []receipt.Receipt{mk("pipelock"), mk("anonymous"), mk("pipelock")}); err != nil {
-		t.Fatalf("named agent + anonymous traffic must render, got: %v", err)
+	labels := evidenceview.RecordedActorLabels([]receipt.Receipt{mk("pipelock"), mk("anonymous"), mk("pipelock")})
+	if len(labels) != 2 {
+		t.Fatalf("expected the named label and anonymous to be collected once each, got %v", labels)
 	}
-	if err := validateSingleActorReceipts("proxy", []receipt.Receipt{mk("anonymous"), mk("anonymous")}); err != nil {
-		t.Fatalf("all-anonymous session must render, got: %v", err)
-	}
-	if err := validateSingleActorReceipts("proxy", []receipt.Receipt{mk("agent-alpha"), mk("anonymous"), mk("agent-bravo")}); err == nil {
-		t.Fatal("two distinct named agents must be rejected even with anonymous present")
+
+	named := evidenceview.RecordedActorLabels([]receipt.Receipt{mk("agent-alpha"), mk("anonymous"), mk("agent-bravo")})
+	if len(named) != 3 {
+		t.Fatalf("two named agents plus anonymous should collect three labels, got %v", named)
 	}
 }
 

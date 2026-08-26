@@ -88,8 +88,22 @@ type SummaryPip struct {
 
 // SessionEvidence is the full Evidence view for one session.
 type SessionEvidence struct {
-	ID              string
-	Agent           string
+	ID string
+
+	// Agent is the label used for internal grouping. It is NOT an
+	// authenticated identity and must not be rendered as one.
+	Agent string
+
+	// RecordedLabels holds the distinct non-lifecycle actor labels seen in
+	// this session, sorted. An ActionReceipt v1 records the label but not how
+	// it was established, so no label here may be presented as the agent's
+	// identity: on a listener without a bound identity, a caller supplies it.
+	// The report therefore states which labels it saw and claims nothing about
+	// who they were. LabelsReadLimited means the list covers only the receipts
+	// that were loaded, not necessarily the whole session.
+	RecordedLabels    []string
+	LabelsReadLimited bool
+
 	ReceiptsEnabled bool
 	ReceiptCount    int
 	Receipts        []receipt.Receipt
@@ -162,6 +176,8 @@ func SessionEvidenceOf(id string, receipts []receipt.Receipt, trustedKeys map[st
 		}
 	}
 
+	recordedLabels := RecordedActorLabels(receipts)
+
 	result := ComputeScorecard(receipts, trustedKeys, id)
 	scorecard := result.Scorecard
 	if readLimited {
@@ -169,20 +185,22 @@ func SessionEvidenceOf(id string, receipts []receipt.Receipt, trustedKeys map[st
 	}
 	timelineReceipts, timelineStartIndex, timelineLimited, timelineWindow := selectTimelineReceipts(receipts, readLimited, timelineLimit)
 	return SessionEvidence{
-		ID:              id,
-		Agent:           agentLabel(id, receipts),
-		ReceiptsEnabled: true,
-		ReceiptCount:    len(receipts),
-		Receipts:        append([]receipt.Receipt(nil), receipts...),
-		ReadLimited:     readLimited,
-		ReadLimit:       readLimit,
-		TimelineLimited: timelineLimited,
-		TimelineLimit:   timelineLimit,
-		TimelineWindow:  timelineWindow,
-		Chain:           result.Chain,
-		Scorecard:       scorecard,
-		Timeline:        buildTimeline(timelineReceipts, timelineStartIndex, result.Chain),
-		TrustedKeyText:  FormatKeyList(TrustedKeysForSession(SignerKeys(receipts), trustedKeys)),
+		ID:                id,
+		Agent:             agentLabel(id, receipts),
+		RecordedLabels:    recordedLabels,
+		LabelsReadLimited: readLimited,
+		ReceiptsEnabled:   true,
+		ReceiptCount:      len(receipts),
+		Receipts:          append([]receipt.Receipt(nil), receipts...),
+		ReadLimited:       readLimited,
+		ReadLimit:         readLimit,
+		TimelineLimited:   timelineLimited,
+		TimelineLimit:     timelineLimit,
+		TimelineWindow:    timelineWindow,
+		Chain:             result.Chain,
+		Scorecard:         scorecard,
+		Timeline:          buildTimeline(timelineReceipts, timelineStartIndex, result.Chain),
+		TrustedKeyText:    FormatKeyList(TrustedKeysForSession(SignerKeys(receipts), trustedKeys)),
 	}
 }
 
@@ -194,6 +212,106 @@ func ScorecardPips(scorecard Scorecard) []SummaryPip {
 		{State: scorecard.Anchored.State, Label: "N"},
 		{State: scorecard.Completeness.State, Label: "C"},
 	}
+}
+
+// RecordedActorLabels returns the distinct actor labels carried by a session's
+// non-lifecycle receipts, sorted.
+//
+// Lifecycle records are excluded for the same reason agentLabel excludes them:
+// the proxy opens a session under its own identity, so counting that record
+// would report an ordinary single-agent session as carrying two labels.
+func RecordedActorLabels(receipts []receipt.Receipt) []string {
+	seen := make(map[string]bool, 2)
+	for _, r := range receipts {
+		if r.ActionRecord.SessionControl != nil {
+			continue
+		}
+		if actor := strings.TrimSpace(r.ActionRecord.Actor); actor != "" {
+			seen[actor] = true
+		}
+	}
+	labels := make([]string, 0, len(seen))
+	for label := range seen {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// actorKey reduces a recorded label to the key the single-agent guard counts
+// distinct agents by. It trims surrounding whitespace and nothing else.
+//
+// It deliberately does NOT fold case or collapse internal whitespace. An
+// earlier version did, to stop a case-variant label from reading as a second
+// agent, and that was the wrong trade at this boundary: two genuinely distinct
+// labels that differ only in case or spacing would collide into one key, the
+// guard would see a single agent, and the report would disclose both agents'
+// target URLs, which can carry capability tokens. A recorded label is not an
+// identity and can be caller-supplied, so case-insensitive equality is not a
+// safe statement that two labels name the same agent.
+//
+// The availability problem that motivated folding is real but narrower than it
+// looked, and it is solved at the sentinel instead: see isAnonymousLabel.
+func actorKey(s string) string {
+	return strings.TrimSpace(s)
+}
+
+// isAnonymousLabel reports whether a recorded label is the anonymous sentinel.
+//
+// This comparison IS case-insensitive, and that is safe where actorKey's is
+// not: "anonymous" is a constant this codebase writes when no agent resolved,
+// not a name anyone claims. Treating "Anonymous" as a second agent denied
+// ordinary single-agent sessions with no attacker and no second agent present.
+func isAnonymousLabel(key, anonymous string) bool {
+	return strings.EqualFold(strings.TrimSpace(key), anonymous)
+}
+
+// IsAnonymousActorLabel reports whether a recorded actor label is the caller's
+// anonymous sentinel, compared case-insensitively. Callers pass their own
+// sentinel so this package does not have to know the CLI's constant.
+func IsAnonymousActorLabel(key, anonymous string) bool {
+	return isAnonymousLabel(key, anonymous)
+}
+
+// DistinctActorKeys returns the distinct identity keys a session's
+// non-lifecycle receipts resolve to, for the guard that refuses to render a
+// session spanning two agents.
+//
+// This is SEPARATE from RecordedActorLabels on purpose. Display shows the
+// labels that were actually recorded; the guard must decide whether two
+// different agents are present, and an empty Actor does not mean "no agent".
+// It preserves the fallback the guard has always had: Actor, then the
+// receipt's own SessionID, then the session being rendered. Dropping that
+// fallback would let a receipt with an empty Actor go uncounted, so a session
+// mixing two agents could render and disclose the other agent's target URLs,
+// which can carry capability tokens.
+//
+// Lifecycle records are excluded for the same reason agentLabel excludes them:
+// the proxy opens every session under its own identity.
+func DistinctActorKeys(sessionID string, receipts []receipt.Receipt) []string {
+	seen := make(map[string]bool, 2)
+	for _, r := range receipts {
+		if r.ActionRecord.SessionControl != nil {
+			continue
+		}
+		key := actorKey(r.ActionRecord.Actor)
+		if key == "" {
+			key = actorKey(r.ActionRecord.SessionID)
+		}
+		if key == "" {
+			key = actorKey(sessionID)
+		}
+		if key == "" {
+			continue
+		}
+		seen[key] = true
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func agentLabel(id string, receipts []receipt.Receipt) string {

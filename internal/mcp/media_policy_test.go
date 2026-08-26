@@ -390,33 +390,6 @@ func TestForwardScanned_MediaPolicyStripsToolResultImage(t *testing.T) {
 	}
 }
 
-func TestMCPContentTypeIsGeneric(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		mt   string
-		want bool
-	}{
-		{name: "empty", mt: "", want: true},
-		{name: "octet_stream", mt: "application/octet-stream", want: true},
-		{name: "binary_octet_stream", mt: "binary/octet-stream", want: true},
-		{name: "image_png", mt: "image/png", want: false},
-		{name: "text_plain", mt: "text/plain", want: false},
-		{name: "audio_mpeg", mt: "audio/mpeg", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := mcpContentTypeIsGeneric(tt.mt)
-			if got != tt.want {
-				t.Errorf("mcpContentTypeIsGeneric(%q) = %v, want %v", tt.mt, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestSniffMCPMediaType(t *testing.T) {
 	t.Parallel()
 
@@ -445,6 +418,38 @@ func TestSniffMCPMediaType(t *testing.T) {
 				t.Errorf("sniffMCPMediaType() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplyMCPMediaPolicy_ExplicitNonMediaSpoofBlocked(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	stripImages := true
+	cfg.MediaPolicy.StripImages = &stripImages
+	jpeg := buildMCPValidJPEG([]byte("Exif\x00\x00spoofed-content-type"))
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "text/html", jpeg, testMCPMediaTransport)
+	if !verdict.Blocked {
+		t.Fatal("JPEG bytes declared as text/html bypassed MCP media policy")
+	}
+	if verdict.MediaType != "image/jpeg" {
+		t.Errorf("MediaType = %q, want image/jpeg", verdict.MediaType)
+	}
+}
+
+func TestApplyMCPMediaPolicy_ExplicitTextPreserved(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	for _, body := range []string{
+		"BMW,model,price\nX5,2026,65000\n",
+		"ID3 tagging guidance for our media team\n",
+		"GIF89a is a file signature\n",
+	} {
+		for _, contentType := range []string{"text/plain", "application/octet-stream"} {
+			verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, contentType, []byte(body), testMCPMediaTransport)
+			if verdict.Blocked {
+				t.Errorf("ordinary %s body %q blocked as %q", contentType, body, verdict.MediaType)
+			}
+		}
 	}
 }
 

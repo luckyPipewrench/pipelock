@@ -2003,7 +2003,36 @@ responseScanning:
 	// can pad the first maxBytes and place injection text after the scanning
 	// window. This matches request-side behavior (bodyscan.go blocks oversized
 	// requests) and ensures response scanning cannot be bypassed by size.
-	if len(body) > maxBytes {
+	if len(body) > maxBytes && shieldOnly && revRespSizeExempt {
+		var scanFailure *sizeExemptResponseReadError
+		var releaseSizeExemptScan sizeExemptScanRelease
+		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
+		if scanFailure != nil {
+			_ = resp.Body.Close()
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, string(scanFailure.Kind))
+			actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+			if scanFailure.Err != nil {
+				rp.logger.LogError(actx, scanFailure.Err)
+			}
+			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{scanFailure.Reason}, nil)
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     LayerReverseResponseBlocked,
+				Pattern:   scanFailure.Reason,
+				Transport: "reverse",
+				Method:    resp.Request.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			replaceWithBlockResponse(resp, []string{scanFailure.Reason})
+			recordReverseOutcome(http.StatusForbidden, -1, string(scanFailure.Kind))
+			return nil
+		}
+		defer releaseSizeExemptScan()
+	} else if len(body) > maxBytes {
 		if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
 			decision := applyShieldOversize(body, false, cfg.BrowserShield.MaxShieldBytes)
 			if !decision.shieldable {

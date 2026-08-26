@@ -595,16 +595,6 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 		t.Fatalf("test page size %d must exceed normal reverse scan ceiling %d", len(page), reverseProxyMaxBodyBytes)
 	}
 
-	cfg := reverseTestConfig()
-	cfg.BrowserShield.Enabled = true
-	cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
-	cfg.BrowserShield.StripTrackingPixels = true
-	cfg.BrowserShield.MaxShieldBytes = shieldCap
-	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
-	cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
-	cfg.ResponseScanning.SizeExemptScanMaxBytes = len(page) + 1024
-	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = cfg.ResponseScanning.SizeExemptScanMaxBytes
-
 	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = io.WriteString(w, page)
@@ -615,31 +605,46 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
-	sc := scanner.MustNew(cfg)
-	t.Cleanup(sc.Close)
+	for _, responseScanningEnabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("response_scanning_%t", responseScanningEnabled), func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.ResponseScanning.Enabled = responseScanningEnabled
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
+			cfg.BrowserShield.StripTrackingPixels = true
+			cfg.BrowserShield.MaxShieldBytes = shieldCap
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+			cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
+			cfg.ResponseScanning.SizeExemptScanMaxBytes = len(page) + 1024
+			cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = cfg.ResponseScanning.SizeExemptScanMaxBytes
 
-	var cfgPtr atomic.Pointer[config.Config]
-	var scPtr atomic.Pointer[scanner.Scanner]
-	cfgPtr.Store(cfg)
-	scPtr.Store(sc)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
 
-	logger, _ := audit.New("json", "stdout", "", false, false)
-	t.Cleanup(logger.Close)
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
-	proxySrv := httptest.NewServer(handler)
-	t.Cleanup(proxySrv.Close)
+			var cfgPtr atomic.Pointer[config.Config]
+			var scPtr atomic.Pointer[scanner.Scanner]
+			cfgPtr.Store(cfg)
+			scPtr.Store(sc)
 
-	resp := testGet(t, proxySrv.URL+"/page")
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("bounded size-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	if strings.Contains(string(body), "tracker.vendor.example") {
-		t.Fatal("tracking pixel beyond the ordinary shield cap survived whole-body shielding")
+			logger, _ := audit.New("json", "stdout", "", false, false)
+			t.Cleanup(logger.Close)
+			handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+			proxySrv := httptest.NewServer(handler)
+			t.Cleanup(proxySrv.Close)
+
+			resp := testGet(t, proxySrv.URL+"/page")
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("bounded size-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			if strings.Contains(string(body), "tracker.vendor.example") {
+				t.Fatal("tracking pixel beyond the ordinary shield cap survived whole-body shielding")
+			}
+		})
 	}
 }
 

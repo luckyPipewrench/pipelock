@@ -570,6 +570,7 @@ func TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper(t *testing.T) 
 	const foreignDirectPID = -1
 	sweeperDone := make(chan struct{})
 	sweeperStopped := make(chan struct{})
+	var sweeps atomic.Uint64
 	go func() {
 		defer close(sweeperStopped)
 		for {
@@ -578,6 +579,7 @@ func TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper(t *testing.T) 
 				return
 			default:
 				reapAdoptedZombies(foreignDirectPID)
+				sweeps.Add(1)
 			}
 		}
 	}()
@@ -589,7 +591,48 @@ func TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper(t *testing.T) 
 	var logBuf syncBuffer
 	cmd := exec.CommandContext(ctx, "cat")
 	if err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts); err != nil {
-		t.Fatalf("best-effort sandbox proxy with a concurrent sibling reaper = %v, want the session to keep its own child", err)
+		t.Fatalf("best-effort sandbox proxy with a concurrent sibling reaper = %v, want the session to keep its own child (sweeps=%d, %s, log=%q)",
+			err, sweeps.Load(), describeSandboxLifecycleFailure(ctx, err), logBuf.String())
+	}
+}
+
+// describeSandboxLifecycleFailure turns the three materially different
+// failures of the sibling-reaper regression into observable CI evidence. A
+// generic "subprocess exited" failure cannot distinguish a test-clock expiry,
+// a sibling stealing cmd.Wait's child status, and a termination initiated by
+// the proxy or exec.CommandContext.
+func describeSandboxLifecycleFailure(ctx context.Context, err error) string {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Sprintf("context=%v", ctxErr)
+	}
+	if errors.Is(err, syscall.ECHILD) {
+		return "child-status=stolen-by-sibling-reaper"
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return fmt.Sprintf("child-signal=%v", status.Signal())
+		}
+	}
+	return "child-status=unexpected-error-shape"
+}
+
+func TestDescribeSandboxLifecycleFailure(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := describeSandboxLifecycleFailure(cancelled, errors.New("ignored once context expires")); got != "context=context canceled" {
+		t.Fatalf("cancelled context diagnosis = %q", got)
+	}
+	if got := describeSandboxLifecycleFailure(context.Background(), syscall.ECHILD); got != "child-status=stolen-by-sibling-reaper" {
+		t.Fatalf("stolen-child diagnosis = %q", got)
+	}
+	if got := describeSandboxLifecycleFailure(context.Background(), errors.New("unexpected")); got != "child-status=unexpected-error-shape" {
+		t.Fatalf("unknown diagnosis = %q", got)
+	}
+
+	err := exec.CommandContext(t.Context(), "/bin/sh", "-c", "kill -TERM $$").Run()
+	if got := describeSandboxLifecycleFailure(context.Background(), err); got != "child-signal=terminated" {
+		t.Fatalf("terminated-child diagnosis = %q (err=%v)", got, err)
 	}
 }
 

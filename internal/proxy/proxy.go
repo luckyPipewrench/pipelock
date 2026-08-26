@@ -341,6 +341,22 @@ func requestMeta(r *http.Request) (clientIP, requestID string) {
 	return
 }
 
+// httpAuditEvent carries the descriptive fields of an HTTP-shaped audit event.
+//
+// These are grouped so newHTTPAuditContext stays inside the project's
+// six-parameter limit. The request context deliberately stays a separate
+// positional parameter rather than joining the struct: it is what carries the
+// agent label's provenance grade, and a struct field is easy to leave unset,
+// which is exactly the failure that shipped an ungraded first version of this
+// change.
+type httpAuditEvent struct {
+	Method    string
+	TargetURL string
+	ClientIP  string
+	RequestID string
+	Agent     string
+}
+
 // newHTTPAuditContext builds an audit context for an HTTP-shaped event.
 //
 // reqCtx is REQUIRED and carries the agent label's provenance grade. It is a
@@ -351,15 +367,20 @@ func requestMeta(r *http.Request) (clientIP, requestID string) {
 // fields were withheld even from infrastructure-bound deployments. Pass the
 // request context where one exists; pass context.Background() only where none
 // genuinely does, which yields the fail-closed unknown grade explicitly.
-func newHTTPAuditContext(reqCtx context.Context, logger *audit.Logger, method, targetURL, clientIP, requestID, agent string) audit.LogContext {
-	ctx, err := audit.NewHTTPLogContext(method, targetURL, clientIP, requestID, agent)
+func newHTTPAuditContext(reqCtx context.Context, logger *audit.Logger, ev httpAuditEvent) audit.LogContext {
+	grade := agentAuthFromContext(reqCtx)
+	ctx, err := audit.NewHTTPLogContext(ev.Method, ev.TargetURL, ev.ClientIP, ev.RequestID, ev.Agent)
 	if err != nil {
+		// Build the fallback once and grade it before logging. Logging an
+		// ungraded fallback and returning a graded one would make the error
+		// event itself the only record claiming unknown provenance.
+		fallback := audit.NewMethodLogContext(ev.Method).WithActorAuth(grade)
 		if logger != nil {
-			logger.LogError(audit.NewMethodLogContext(method), err)
+			logger.LogError(fallback, err)
 		}
-		return audit.NewMethodLogContext(method).WithActorAuth(agentAuthFromContext(reqCtx))
+		return fallback
 	}
-	return ctx.WithActorAuth(agentAuthFromContext(reqCtx))
+	return ctx.WithActorAuth(grade)
 }
 
 // agentAuthFromContext returns the provenance grade recorded alongside the
@@ -378,14 +399,16 @@ func agentAuthFromContext(ctx context.Context) string {
 // grade has to ride the context or every CONNECT event silently reports
 // unknown provenance.
 func newConnectAuditContext(reqCtx context.Context, logger *audit.Logger, target, clientIP, requestID, agent string) audit.LogContext {
+	grade := agentAuthFromContext(reqCtx)
 	ctx, err := audit.NewConnectLogContext(target, clientIP, requestID, agent)
 	if err != nil {
+		fallback := audit.NewMethodLogContext(http.MethodConnect).WithActorAuth(grade)
 		if logger != nil {
-			logger.LogError(audit.NewMethodLogContext(http.MethodConnect), err)
+			logger.LogError(fallback, err)
 		}
-		return audit.NewMethodLogContext(http.MethodConnect).WithActorAuth(agentAuthFromContext(reqCtx))
+		return fallback
 	}
-	return ctx.WithActorAuth(agentAuthFromContext(reqCtx))
+	return ctx.WithActorAuth(grade)
 }
 
 // Version is set at build time via ldflags.
@@ -779,7 +802,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			result := currentScanner.Scan(redirectScanCtx, redirectURL)
 			*req = *req.WithContext(withAllowedSSRFDialScanSnapshot(redirectScanCtx, currentScanner, req.URL.Hostname(), effectiveURLPort(req.URL), result))
 			if !result.Allowed {
-				actx := newHTTPAuditContext(req.Context(), logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				if currentCfg.EnforceEnabled() {
 					// Preserve the originating scanner label (SSRF,
 					// DLP, blocklist, …) in the typed block error so
@@ -799,14 +822,14 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// target, which must satisfy the same repository allowlist as the
 			// admitted request.
 			if gitPush := evaluateGitPushAllowlist(currentCfg.GitProtection, req.Method, req.URL); gitPush.Block {
-				actx := newHTTPAuditContext(req.Context(), logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				logger.LogBlocked(actx, "git_protection", "redirect from "+originalURL+" blocked: "+gitPush.Reason)
 				return newRedirectBlockedRequest("git_protection", gitPush.Reason)
 			}
 			redirectRec, _ := req.Context().Value(ctxKeyRedirectSessionRecorder).(session.Recorder)
 			redirectTaint := evaluateHTTPTaint(currentCfg, redirectRec, req.Method, req.URL)
 			if redirectTaint.Result.Decision == session.PolicyAsk || redirectTaint.Result.Decision == session.PolicyBlock {
-				actx := newHTTPAuditContext(req.Context(), logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				logger.LogTaintDecision(actx, audit.TaintDecision{
 					TaintLevel: redirectTaint.Risk.Level.String(), ActionClass: redirectTaint.ActionClass.String(),
 					Sensitivity: redirectTaint.Sensitivity.String(), Authority: redirectTaint.Authority.String(),
@@ -846,7 +869,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				Target:      redirectURL,
 				RequestID:   requestID,
 				Agent:       agentName,
-				AuditCtx:    newHTTPAuditContext(req.Context(), logger, req.Method, redirectURL, clientIP, requestID, agentName),
+				AuditCtx:    newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName}),
 				Emit: func(opts receipt.EmitOpts) error {
 					return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, currentCfg.CanonicalPolicyHash()))
 				},
@@ -869,7 +892,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				Transport:       redirectTransport,
 			})
 			if gateErr != nil {
-				actx := newHTTPAuditContext(req.Context(), logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				logger.LogBlocked(actx, blockLayerContract, "redirect from "+originalURL+" blocked: "+gateErr.Error())
 				return newRedirectBlockedRequest(blockLayerContract, "contract evaluation failed")
 			}
@@ -878,7 +901,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				if reason == "" {
 					reason = gate.WinningSource
 				}
-				actx := newHTTPAuditContext(req.Context(), logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				logger.LogBlocked(actx, blockLayerContract, "redirect from "+originalURL+" blocked: "+reason)
 				return newRedirectBlockedRequest(blockLayerContract, reason)
 			}
@@ -951,7 +974,7 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
 	agentName, _ := req.Context().Value(ctxKeyAgent).(string)
-	actx := newHTTPAuditContext(req.Context(), p.logger, req.Method, req.URL.String(), clientIP, requestID, agentName)
+	actx := newHTTPAuditContext(req.Context(), p.logger, httpAuditEvent{Method: req.Method, TargetURL: req.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 
 	// 1. Parse the ORIGINAL envelope. Identity fields (Actor,
 	//    ActorAuth, ReceiptID, Taint, TaskID, RequiresReauth)
@@ -4339,7 +4362,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// internally decodes for matching, but targetURL retains partial decoding
 	// from Go's query parsing. Operators should see the final resolved URL.
 	displayURL := scanner.IterativeDecode(targetURL)
-	actx := newHTTPAuditContext(r.Context(), p.logger, http.MethodGet, displayURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(r.Context(), p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 
 	// Scan URL through all scanners
 	scanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -5707,7 +5730,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionBlock:
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-		log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
+		log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
 		emitResponseReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
@@ -5728,7 +5751,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
+			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
 			emitResponseReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
@@ -5759,14 +5782,14 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, http.MethodGet, displayURL, clientIP, requestID, agent), "ask:allow", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, http.MethodGet, displayURL, clientIP, requestID, agent), "ask:strip", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
+			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
 			emitResponseReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
@@ -5787,13 +5810,13 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
-		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, http.MethodGet, displayURL, clientIP, requestID, agent), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, http.MethodGet, displayURL, clientIP, requestID, agent), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, http.MethodGet, displayURL, clientIP, requestID, agent), action, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

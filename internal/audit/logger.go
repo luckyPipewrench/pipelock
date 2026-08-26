@@ -1834,8 +1834,30 @@ func (l *Logger) LogWSClose(ev WSCloseEvent) {
 	}
 }
 
+// WSBlockedEvent bundles the per-event fields LogWSBlocked emits.
+//
+// This is a struct rather than a parameter list because the event needs the
+// agent label and its provenance grade, and a block decision is exactly where
+// an auditor needs to know whether the label was infrastructure-bound or merely
+// caller-supplied. Adding two more positional parameters would have pushed the
+// call past the project's six-parameter limit at twenty-one call sites.
+type WSBlockedEvent struct {
+	Target    string
+	Direction string
+	Scanner   string
+	Reason    string
+	ClientIP  string
+	RequestID string
+	Agent     string
+	// AgentAuth is how the agent label was established. An empty value is
+	// recorded as the fail-closed unknown grade.
+	AgentAuth string
+}
+
 // LogWSBlocked logs a blocked WebSocket frame or connection.
-func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, requestID string) {
+func (l *Logger) LogWSBlocked(ev WSBlockedEvent) {
+	target, direction, scannerName := ev.Target, ev.Direction, ev.Scanner
+	reason, clientIP, requestID := ev.Reason, ev.ClientIP, ev.RequestID
 	technique := TechniqueForScanner(scannerName)
 
 	e := newLogEntry(l.zl.Warn(), EventWSBlocked).
@@ -1845,6 +1867,7 @@ func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, 
 		str("reason", reason).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
+		agentField(ev.Agent, ev.AgentAuth).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerName, reason)).
 		optStr("mitre_technique", technique)
 

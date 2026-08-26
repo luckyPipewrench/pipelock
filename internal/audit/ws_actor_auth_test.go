@@ -95,6 +95,44 @@ func TestWSEventsEmitTheGradeWithTheLabel(t *testing.T) {
 		},
 	}
 
+	cases = append(cases,
+		struct {
+			name  string
+			emit  func(*Logger)
+			want  string
+			event string
+		}{
+			name:  "blocked carries a bound grade",
+			event: "ws_blocked",
+			want:  string(envelope.ActorAuthBound),
+			emit: func(l *Logger) {
+				l.LogWSBlocked(WSBlockedEvent{
+					Target: "ws://api.vendor.example/stream", Direction: DirectionClientToServer,
+					Scanner: ScannerDLP, Reason: "secret detected", ClientIP: "10.0.0.5",
+					RequestID: "req-5", Agent: "agent-a",
+					AgentAuth: string(envelope.ActorAuthBound),
+				})
+			},
+		},
+		struct {
+			name  string
+			emit  func(*Logger)
+			want  string
+			event string
+		}{
+			name:  "blocked without a grade fails closed to unknown",
+			event: "ws_blocked",
+			want:  string(envelope.ActorAuthUnknown),
+			emit: func(l *Logger) {
+				l.LogWSBlocked(WSBlockedEvent{
+					Target: "ws://api.vendor.example/stream", Direction: DirectionClientToServer,
+					Scanner: ScannerDLP, Reason: "secret detected", ClientIP: "10.0.0.5",
+					RequestID: "req-6", Agent: "agent-a",
+				})
+			},
+		},
+	)
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "test.log")

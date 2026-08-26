@@ -472,7 +472,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 			m.RecordCrossRequestEntropyExceeded()
 			detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
 				et.CurrentUsage(sessionKey), et.Budget())
-			actx := newHTTPAuditContext(ctx, logger, "CEE", targetURL, clientIP, requestID, agent)
+			actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
 				logger.LogBlocked(actx, "cross_request_entropy", detail)
 				result.Blocked = true
@@ -491,7 +491,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		m.RecordCrossRequestPathDepthExceeded()
 		detail := fmt.Sprintf("URL path exceeds CEE depth cap (%d segments); request cannot be safely inspected",
 			scanner.MaxPathPositions)
-		actx := newHTTPAuditContext(ctx, logger, "CEE", targetURL, clientIP, requestID, agent)
+		actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 		logger.LogBlocked(actx, "cross_request_path_depth", detail)
 		result.Blocked = true
 		result.FragmentHit = true
@@ -598,7 +598,7 @@ func ceeFragmentEvaluate(ctx context.Context, bufferKey string, appendResult sca
 	if appendResult.PathDepthExceeded {
 		m.RecordCrossRequestPathDepthExceeded()
 		detail := fmt.Sprintf("URL path exceeds CEE depth cap (%d segments); request cannot be safely inspected", scanner.MaxPathPositions)
-		actx := newHTTPAuditContext(ctx, logger, "CEE", targetURL, clientIP, requestID, agent)
+		actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 		logger.LogBlocked(actx, "cross_request_path_depth", detail)
 		return &ceeResult{
 			Blocked:     true,
@@ -609,7 +609,7 @@ func ceeFragmentEvaluate(ctx context.Context, bufferKey string, appendResult sca
 	if appendResult.CapacityExceeded {
 		m.RecordCrossRequestFragmentCapacityExceeded()
 		detail := "fragment reassembly session capacity exhausted; request cannot be safely inspected"
-		actx := newHTTPAuditContext(ctx, logger, "CEE", targetURL, clientIP, requestID, agent)
+		actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 		logger.LogBlocked(actx, "cross_request_fragment_capacity", detail)
 		return &ceeResult{
 			Blocked:     true,
@@ -626,7 +626,7 @@ func ceeFragmentEvaluate(ctx context.Context, bufferKey string, appendResult sca
 	}
 	m.RecordCrossRequestDLPMatch()
 	detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
-	actx := newHTTPAuditContext(ctx, logger, "CEE", targetURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 	if ceeCfg.Action == config.ActionBlock {
 		logger.LogBlocked(actx, "cross_request_fragment", detail)
 		return &ceeResult{

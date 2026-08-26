@@ -2597,7 +2597,10 @@ func TestLogWSBlocked_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSBlocked("ws://evil.com/exfil", DirectionClientToServer, ScannerDLP, "secret detected", testClientIP, "req-300")
+	logger.LogWSBlocked(WSBlockedEvent{
+		Target: "ws://evil.com/exfil", Direction: DirectionClientToServer, Scanner: ScannerDLP,
+		Reason: "secret detected", ClientIP: testClientIP, RequestID: "req-300",
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -2632,7 +2635,10 @@ func TestLogWSBlocked_Filtered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSBlocked("ws://evil.com/exfil", DirectionClientToServer, ScannerDLP, "secret detected", testClientIP, "req-300")
+	logger.LogWSBlocked(WSBlockedEvent{
+		Target: "ws://evil.com/exfil", Direction: DirectionClientToServer, Scanner: ScannerDLP,
+		Reason: "secret detected", ClientIP: testClientIP, RequestID: "req-300",
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -4013,7 +4019,10 @@ func TestEmit_LogWSBlocked(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogWSBlocked("ws://evil.com", DirectionClientToServer, ScannerDLP, "secret", testClientIP, "req-5")
+	logger.LogWSBlocked(WSBlockedEvent{
+		Target: "ws://evil.com", Direction: DirectionClientToServer, Scanner: ScannerDLP,
+		Reason: "secret", ClientIP: testClientIP, RequestID: "req-5",
+	})
 
 	ev, ok := sink.lastEvent()
 	if !ok {

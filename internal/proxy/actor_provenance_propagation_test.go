@@ -39,7 +39,7 @@ func TestAuditContextCarriesRequestProvenance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.WithValue(context.Background(), ctxKeyAgentAuth, string(tc.auth))
-			actx := newHTTPAuditContext(ctx, nil, "GET", "https://api.vendor.example/x", "10.0.0.1", "req-1", "agent-a")
+			actx := newHTTPAuditContext(ctx, nil, httpAuditEvent{Method: "GET", TargetURL: "https://api.vendor.example/x", ClientIP: "10.0.0.1", RequestID: "req-1", Agent: "agent-a"})
 			if got := actx.AgentAuth(); got != tc.want {
 				t.Fatalf("audit context grade = %q, want %q", got, tc.want)
 			}
@@ -52,7 +52,7 @@ func TestAuditContextCarriesRequestProvenance(t *testing.T) {
 // treats it as untrusted rather than reading a missing value as benign.
 func TestAuditContextWithoutProvenanceFailsClosed(t *testing.T) {
 	t.Parallel()
-	actx := newHTTPAuditContext(context.Background(), nil, "GET", "https://api.vendor.example/x", "10.0.0.1", "req-1", "agent-a")
+	actx := newHTTPAuditContext(context.Background(), nil, httpAuditEvent{Method: "GET", TargetURL: "https://api.vendor.example/x", ClientIP: "10.0.0.1", RequestID: "req-1", Agent: "agent-a"})
 	if got := actx.AgentAuth(); got != string(envelope.ActorAuthUnknown) {
 		t.Fatalf("ungraded context should report unknown, got %q", got)
 	}
@@ -86,5 +86,49 @@ func TestUnrecognizedGradeIsNotTrusted(t *testing.T) {
 	t.Parallel()
 	if envelope.NormalizeActorAuth("totally-made-up").TrustedForIdentity() {
 		t.Fatal("an unrecognized grade must not be trusted for identity")
+	}
+}
+
+// TestInterceptBaseContextCarriesProvenance covers the tunnel's inner server.
+// interceptTunnel serves inner requests through their own http.Server, and that
+// server had no BaseContext, so every request inside a TLS-intercepted tunnel
+// started from a bare context. The envelope-failure, authority-mismatch, and
+// primary audit events therefore all reported unknown provenance even though
+// the tunnel itself knew the real grade.
+func TestInterceptBaseContextCarriesProvenance(t *testing.T) {
+	t.Parallel()
+	ic := &InterceptContext{ActorAuth: envelope.ActorAuthBound}
+	ctx := ic.baseContext()(nil)
+	if got := agentAuthFromContext(ctx); got != string(envelope.ActorAuthBound) {
+		t.Fatalf("inner-request base context grade = %q, want bound", got)
+	}
+}
+
+// TestInterceptBaseContextWithoutGradeFailsClosed pins the safe default for an
+// interception whose grade was never resolved.
+func TestInterceptBaseContextWithoutGradeFailsClosed(t *testing.T) {
+	t.Parallel()
+	ic := &InterceptContext{}
+	ctx := ic.baseContext()(nil)
+	if got := agentAuthFromContext(ctx); got != string(envelope.ActorAuthUnknown) {
+		t.Fatalf("ungraded interception should report unknown, got %q", got)
+	}
+}
+
+// TestAuditContextConstructorErrorKeepsProvenance covers the error path. The
+// fallback context used to be built twice: once ungraded for the error log and
+// once graded for the return, so the error event itself was the one record
+// claiming unknown provenance.
+func TestAuditContextConstructorErrorKeepsProvenance(t *testing.T) {
+	t.Parallel()
+	ctx := context.WithValue(context.Background(), ctxKeyAgentAuth, string(envelope.ActorAuthBound))
+	// An empty target URL is what audit.NewHTTPLogContext rejects, so this
+	// drives the real error branch rather than the happy path.
+	actx := newHTTPAuditContext(ctx, nil, httpAuditEvent{
+		Method: "GET", TargetURL: "", ClientIP: "10.0.0.1",
+		RequestID: "req-1", Agent: "agent-a",
+	})
+	if got := actx.AgentAuth(); got != string(envelope.ActorAuthBound) {
+		t.Fatalf("constructor-error fallback grade = %q, want bound", got)
 	}
 }

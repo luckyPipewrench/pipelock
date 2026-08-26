@@ -466,6 +466,12 @@ func interceptTunnel(
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
+		// Every request served inside the tunnel inherits the grade that says
+		// how this connection's agent label was established. Without this the
+		// inner requests start from a bare context, so the envelope-failure,
+		// authority-mismatch, and primary audit events below all reported
+		// unknown provenance even though the tunnel knew the real grade.
+		BaseContext: ic.baseContext(),
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			// Close the listener when the connection finishes so Serve()
 			// exits promptly instead of blocking on Accept() forever.
@@ -531,7 +537,7 @@ func newInterceptHandler(
 		if ic.Proxy != nil {
 			if err := ic.Proxy.verifyInboundEnvelope(r, ic.Config); err != nil {
 				pattern := inboundEnvelopeFailurePattern(err)
-				ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent),
+				ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}),
 					blockLayerMediationEnvelope, pattern)
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerMediationEnvelope)
 				_ = interceptEmitReceipt(ic, receipt.EmitOpts{
@@ -571,7 +577,7 @@ func newInterceptHandler(
 		if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
 			mismatch := r.Host + " vs " + target
 			mismatchURL := schemeHTTPS + "://" + net.JoinHostPort(reqHost, reqPort) + r.URL.RequestURI()
-			ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, r.Method, mismatchURL, ic.ClientIP, ic.RequestID, ic.Agent), "tls_authority_mismatch", "authority mismatch: "+mismatch)
+			ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: mismatchURL, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}), "tls_authority_mismatch", "authority mismatch: "+mismatch)
 			ic.Metrics.RecordTLSRequestBlocked("authority_mismatch")
 			_ = interceptEmitReceipt(ic, receipt.EmitOpts{
 				ActionID:  actionID,
@@ -609,7 +615,7 @@ func newInterceptHandler(
 
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
-		actx := newHTTPAuditContext(r.Context(), ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent)
+		actx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that
@@ -2393,5 +2399,23 @@ func (l *singleConnListener) Addr() net.Addr {
 // actorAuthContext returns a context carrying this interception's agent-label
 // provenance grade, so audit contexts built here report it instead of unknown.
 func (ic *InterceptContext) actorAuthContext() context.Context {
-	return context.WithValue(context.Background(), ctxKeyAgentAuth, string(ic.ActorAuth))
+	return withActorAuth(context.Background(), ic.ActorAuth)
+}
+
+// baseContext returns the http.Server BaseContext hook for the tunnel's inner
+// server, so every request served inside the tunnel starts from a context
+// carrying this interception's agent-label provenance grade.
+//
+// It is a named method rather than an inline closure so a test can call the
+// exact function the server is wired with, instead of asserting that some
+// field is non-nil.
+func (ic *InterceptContext) baseContext() func(net.Listener) context.Context {
+	return func(net.Listener) context.Context {
+		return ic.actorAuthContext()
+	}
+}
+
+// withActorAuth attaches an agent-label provenance grade to a context.
+func withActorAuth(parent context.Context, auth envelope.ActorAuth) context.Context {
+	return context.WithValue(parent, ctxKeyAgentAuth, string(auth))
 }

@@ -398,9 +398,10 @@ func TestBuildDoctorReportShowsLicenseExpiryWarning(t *testing.T) {
 	lic := license.License{
 		ID:        "lic_doctor_warning",
 		Email:     "doctor@example.com",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(7 * 24 * time.Hour).Unix(),
+		IssuedAt:  now.Add(-11 * 24 * time.Hour).Unix(),
+		ExpiresAt: now.Add(3 * 24 * time.Hour).Unix(),
 		Features:  []string{license.FeatureAgents},
+		Tier:      "trial",
 	}
 	token, err := license.Issue(lic, priv)
 	if err != nil {
@@ -415,8 +416,15 @@ func TestBuildDoctorReportShowsLicenseExpiryWarning(t *testing.T) {
 	if check.Status != doctorStatusWarn {
 		t.Fatalf("license status = %+v, want warning", check)
 	}
-	if !strings.Contains(check.Detail, "7-day renewal band") {
-		t.Fatalf("detail = %q, want renewal band", check.Detail)
+	for _, want := range []string{
+		"trial ends in",
+		"Pro features stop at expiry.",
+		"Subscribe at https://pipelab.org/pricing/",
+		"4-day lifetime-aware band",
+	} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("detail = %q, want %q", check.Detail, want)
+		}
 	}
 }
 
@@ -479,6 +487,7 @@ func TestDoctorLicenseStatusBranches(t *testing.T) {
 	t.Run("thirty day expiry band is info", func(t *testing.T) {
 		lic := active
 		lic.ID = "lic_doctor_30"
+		lic.IssuedAt = now.Add(-31 * 24 * time.Hour).Unix()
 		lic.ExpiresAt = now.Add(29 * 24 * time.Hour).Unix()
 		token, err := license.Issue(lic, priv)
 		if err != nil {
@@ -488,7 +497,7 @@ func TestDoctorLicenseStatusBranches(t *testing.T) {
 		cfg.LicenseKey = token
 		cfg.LicensePublicKey = hex.EncodeToString(pub)
 		check := checkDoctorLicense(cfg)
-		if check.Status != doctorStatusInfo || !strings.Contains(check.Detail, "30-day renewal band") {
+		if check.Status != doctorStatusInfo || !strings.Contains(check.Detail, "30-day lifetime-aware band") {
 			t.Fatalf("check = %+v, want info renewal band", check)
 		}
 	})

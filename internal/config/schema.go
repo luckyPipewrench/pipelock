@@ -469,10 +469,13 @@ type Config struct {
 	SSRF             SSRF     `yaml:"ssrf"`
 	DNS              DNS      `yaml:"dns"`
 
-	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
-	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
-	// enforcement so agents are disabled even without a config reload.
-	LicenseExpiresAt int64 `yaml:"-"`
+	// LicenseExpiresAt, LicenseIssuedAt, and LicenseTier are claims from the
+	// verified license token, populated at runtime. They are used for expiry
+	// enforcement and lifetime-aware warning messages, never parsed from YAML.
+	// A zero expiry means perpetual.
+	LicenseExpiresAt int64  `yaml:"-"`
+	LicenseIssuedAt  int64  `yaml:"-" json:"-"`
+	LicenseTier      string `yaml:"-" json:"-"`
 	// LicenseID and CRL metadata are runtime-derived from the verified
 	// license token and CRL. They are excluded from policy serialization.
 	LicenseID               string `yaml:"-" json:"-"`

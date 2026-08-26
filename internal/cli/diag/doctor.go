@@ -245,9 +245,9 @@ func checkDoctorLicense(cfg *config.Config) doctorReportCheck {
 			Configured: true,
 			Reachable:  true,
 			Enforcing:  true,
-			Detail: fmt.Sprintf("license %s expires in %d day(s) on %s; %d-day renewal band severity=%s",
-				lic.ID, warning.DaysRemaining, warning.ExpiresAt.Format(time.DateOnly), warning.ThresholdDays, warning.Severity),
-			Next: "renew or refresh the license before expiry disables enterprise agent profiles",
+			Detail: fmt.Sprintf("license %s: %s; %d-day lifetime-aware band severity=%s",
+				lic.ID, warning.Message(), warning.ThresholdDays, warning.Severity),
+			Next: "act before the shown expiry to avoid licensed runtime surfaces stopping",
 		}
 	}
 	detail := "license token is configured"

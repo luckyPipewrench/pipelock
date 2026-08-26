@@ -1657,11 +1657,23 @@ func (l *Logger) LogRuleBundleDegraded(ev RuleBundleDegradedEvent) {
 	}
 }
 
+// LicenseExpiryWarning is the operator-facing data for an active license
+// expiry band.
+type LicenseExpiryWarning struct {
+	LicenseID     string
+	Tier          string
+	ThresholdDays int
+	DaysRemaining int
+	Severity      string
+	ExpiresAt     string
+	Message       string
+}
+
 // LogLicenseExpiry logs a renewal warning for the active enterprise license.
-func (l *Logger) LogLicenseExpiry(licenseID string, thresholdDays, daysRemaining int, severity, expiresAt string) {
+func (l *Logger) LogLicenseExpiry(warning LicenseExpiryWarning) {
 	level := l.zl.Info()
 	emitSeverity := emit.SeverityInfo
-	switch severity {
+	switch warning.Severity {
 	case severityCritical, "error":
 		level = l.zl.Error()
 		emitSeverity = emit.SeverityCritical
@@ -1670,12 +1682,14 @@ func (l *Logger) LogLicenseExpiry(licenseID string, thresholdDays, daysRemaining
 		emitSeverity = emit.SeverityWarn
 	}
 	e := newLogEntry(level, EventLicenseExpiry).
-		str("license_id", licenseID).
-		intField("threshold_days", thresholdDays).
-		intField("days_remaining", daysRemaining).
-		str("severity", severity).
-		str("expires_at", expiresAt)
-	e.msg("license expiry warning")
+		str("license_id", warning.LicenseID).
+		str("tier", warning.Tier).
+		intField("threshold_days", warning.ThresholdDays).
+		intField("days_remaining", warning.DaysRemaining).
+		str("severity", warning.Severity).
+		str("expires_at", warning.ExpiresAt).
+		str("message", warning.Message)
+	e.msg(warning.Message)
 
 	if l.emitter != nil {
 		l.emitter.EmitWithSeverity(context.Background(), emitSeverity, string(EventLicenseExpiry), e.fields)

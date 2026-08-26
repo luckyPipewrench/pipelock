@@ -4732,7 +4732,15 @@ func TestLogLicenseExpiry(t *testing.T) {
 			logger, sink := newLoggerWithEmitter(t)
 			defer logger.Close()
 
-			logger.LogLicenseExpiry("lic_expiry", 14, 13, tt.severity, "2026-06-01T00:00:00Z")
+			logger.LogLicenseExpiry(LicenseExpiryWarning{
+				LicenseID:     "lic_expiry",
+				Tier:          "trial",
+				ThresholdDays: 14,
+				DaysRemaining: 13,
+				Severity:      tt.severity,
+				ExpiresAt:     "2026-06-01T00:00:00Z",
+				Message:       "trial ends in 13 day(s)",
+			})
 
 			ev, ok := sink.lastEvent()
 			if !ok {
@@ -4747,6 +4755,9 @@ func TestLogLicenseExpiry(t *testing.T) {
 			if ev.Fields["license_id"] != "lic_expiry" {
 				t.Errorf("license_id = %v, want lic_expiry", ev.Fields["license_id"])
 			}
+			if ev.Fields["tier"] != "trial" {
+				t.Errorf("tier = %v, want trial", ev.Fields["tier"])
+			}
 			if ev.Fields["threshold_days"] != 14 {
 				t.Errorf("threshold_days = %v, want 14", ev.Fields["threshold_days"])
 			}
@@ -4758,6 +4769,9 @@ func TestLogLicenseExpiry(t *testing.T) {
 			}
 			if ev.Fields["expires_at"] != "2026-06-01T00:00:00Z" {
 				t.Errorf("expires_at = %v, want timestamp", ev.Fields["expires_at"])
+			}
+			if ev.Fields["message"] != "trial ends in 13 day(s)" {
+				t.Errorf("message = %v, want operator warning", ev.Fields["message"])
 			}
 		})
 	}

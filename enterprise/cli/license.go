@@ -415,6 +415,7 @@ type licenseStatusReport struct {
 	DaysRemaining       int      `json:"days_remaining,omitempty"`
 	WarningBand         int      `json:"warning_band,omitempty"`
 	Severity            string   `json:"severity,omitempty"`
+	Warning             string   `json:"warning,omitempty"`
 	CRLConfigured       bool     `json:"crl_configured"`
 	CRLExpiresAt        string   `json:"crl_expires_at,omitempty"`
 	CRLSHA256           string   `json:"crl_sha256,omitempty"`
@@ -532,6 +533,7 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 		report.DaysRemaining = warn.DaysRemaining
 		report.WarningBand = warn.ThresholdDays
 		report.Severity = warn.Severity
+		report.Warning = warn.Message()
 	}
 	if err != nil {
 		switch {
@@ -674,8 +676,8 @@ func printLicenseStatus(cmd *cobra.Command, report licenseStatusReport) {
 	}
 	if report.ExpiresAt != "" {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  %s (%d day(s) remaining)\n", report.ExpiresAt, report.DaysRemaining)
-		if report.WarningBand > 0 {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Warning:  %d-day renewal band (%s)\n", report.WarningBand, report.Severity)
+		if report.Warning != "" {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Warning:  %s\n", report.Warning)
 		}
 	} else if report.Status == licenseStatusValid {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  never\n")

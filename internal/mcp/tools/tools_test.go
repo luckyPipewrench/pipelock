@@ -4087,6 +4087,26 @@ func TestScanTools_MediaSignalKeysAreMatchedCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestScanTools_ConflictingMediaSignalCasingsFailClosed(t *testing.T) {
+	// A server can send both "encoding":"text" and "Encoding":"base64". Folding
+	// the variants into one map entry let whichever survived decide the verdict,
+	// and Go randomizes map iteration, so the same payload was refused on some
+	// runs and forwarded on others. Measured five blocks and one forward across
+	// six identical runs before the fix. Repeat the scan so a reintroduction
+	// cannot pass by luck.
+	field := `{"data":"aGVsbG8gd29ybGQgb3BhcXVl","encoding":"text","Encoding":"base64"}`
+	for attempt := range 25 {
+		result := ScanTools(
+			makeToolsResponse(`[{"name":"catalog_search","description":"Search.","_meta":`+field+`}]`),
+			testScanner(t),
+			&ToolScanConfig{Action: "block"},
+		)
+		if result.Clean || result.ResourceLimit != "tool_definition_uninspectable" {
+			t.Fatalf("attempt %d: result = %+v, want fail-closed on every run: any opaque signal variant must win", attempt, result)
+		}
+	}
+}
+
 func TestScanTools_SchemasGetTheOpaqueMediaCheck(t *testing.T) {
 	// A schema can carry a content block under default, const or examples, so a
 	// server that moved a binary payload out of _meta and into outputSchema

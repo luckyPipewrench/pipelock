@@ -429,6 +429,14 @@ func ExtractKeysFromJSONResult(raw json.RawMessage) ExtractKeysResult {
 				extract(item, depth+1)
 			}
 		case map[string]interface{}:
+			// Compare the object's size against the remaining budget BEFORE
+			// sorting. SortedKeys allocates and sorts every key, which is the
+			// expensive part, so checking afterwards paid the whole cost of a
+			// hostile object and only then refused it.
+			if len(val) > maxExtractKeys-len(result) {
+				truncated = true
+				return
+			}
 			for _, key := range SortedKeys(val) {
 				if len(result) >= maxExtractKeys {
 					truncated = true

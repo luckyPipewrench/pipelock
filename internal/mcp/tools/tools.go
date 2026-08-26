@@ -1242,26 +1242,49 @@ func toolMediaDataIsOpaque(fields map[string]interface{}) bool {
 	// fail-closed path runs at all: `{"data":..., "Encoding":"base64"}` was
 	// treated as ordinary text while the same payload with `encoding` was
 	// refused. Normalize once, then read the signals from the normalized set.
-	normalized := make(map[string]interface{}, len(fields))
+	// Every case variant is inspected rather than folded into one map entry.
+	// Collapsing them let a server send both "encoding":"text" and
+	// "Encoding":"base64" so that whichever survived decided the verdict, and
+	// because Go randomizes map iteration the same payload was refused on some
+	// runs and forwarded on others. A security decision that changes between
+	// identical runs cannot be reproduced or tested, so any opaque variant wins.
+	var mimeTypes []string
 	for key, value := range fields {
-		normalized[strings.ToLower(key)] = value
-	}
-	if encoding, ok := normalized["encoding"].(string); ok {
-		encoding = strings.ToLower(encoding)
-		if encoding == "base64" || encoding == "binary" {
-			return true
+		switch strings.ToLower(key) {
+		case "encoding":
+			if encoding, ok := value.(string); ok {
+				switch strings.ToLower(encoding) {
+				case "base64", "binary":
+					return true
+				}
+			}
+		case "type":
+			if kind, ok := value.(string); ok {
+				switch strings.ToLower(kind) {
+				case "image", "audio", "video", "blob":
+					return true
+				}
+			}
+		case "mimetype":
+			if mime, ok := value.(string); ok {
+				mimeTypes = append(mimeTypes, mime)
+			}
 		}
 	}
-	if kind, ok := normalized["type"].(string); ok {
-		switch strings.ToLower(kind) {
-		case "image", "audio", "video", "blob":
-			return true
-		}
-	}
-	mimeType, ok := normalized["mimetype"].(string)
-	if !ok {
+	if len(mimeTypes) == 0 {
 		return false
 	}
+	for _, candidate := range mimeTypes {
+		if toolMimeTypeIsOpaque(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// toolMimeTypeIsOpaque reports whether a media type carries content this code
+// cannot inspect as text.
+func toolMimeTypeIsOpaque(mimeType string) bool {
 	mimeType = strings.ToLower(mimeType)
 	return !strings.HasPrefix(mimeType, "text/") &&
 		mimeType != "application/json" &&

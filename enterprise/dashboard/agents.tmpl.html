@@ -122,13 +122,13 @@
     <header class="page-head">
       <div class="eyebrow mono">Evidence &middot; Agents</div>
       <h1>Agent evidence</h1>
-      <p class="lead">Every agent that produced signed receipts in the configured evidence source, with its per-agent chain, anchor, and trusted-key rollup. Read-only. An agent absent here simply has no loaded receipts &mdash; that is not proof it was idle.</p>
-      <div class="summary mono"><b>{{len .Groups}}</b> agent{{if ne (len .Groups) 1}}s{{end}} with loaded evidence{{if .Filter.Agent}} &middot; filtered to &ldquo;{{.Filter.Agent}}&rdquo;{{end}}</div>
+      <p class="lead">Every agent label recorded on signed receipts in the configured evidence source, with its per-label chain, anchor, and trusted-key rollup. Identity not established by v1 receipts: these are recorded labels rather than proven identities. Read-only. A label absent here simply has no loaded receipts &mdash; that is not proof it was idle.</p>
+      <div class="summary mono"><b>{{len .Groups}}</b> recorded label{{if ne (len .Groups) 1}}s{{end}} with loaded evidence{{if .Filter.Agent}} &middot; filtered to &ldquo;{{.Filter.Agent}}&rdquo;{{end}}</div>
     </header>
 
     <form class="filter-form" method="get" action="/agents">
       <div>
-        <label for="f-agent">Agent</label><br>
+        <label for="f-agent">Recorded label</label><br>
         <input type="text" id="f-agent" name="agent" value="{{.Filter.Agent}}" maxlength="128">
       </div>
       <div>
@@ -178,7 +178,7 @@
         </div>
       </div>
     {{else}}
-      <div class="empty">The roster proves which agents have loaded receipt sessions in the configured evidence source. No agents or receipts are loaded from that source for this view or filter. Point <code>pipelock dashboard serve</code> at a flight-recorder evidence directory with <code>--receipt-dir</code>, or clear the current filter.</div>
+      <div class="empty">The roster lists labels recorded on loaded receipts in the configured evidence source; identity not established by v1 receipts. No labels or receipts are loaded from that source for this view or filter. Point <code>pipelock dashboard serve</code> at a flight-recorder evidence directory with <code>--receipt-dir</code>, or clear the current filter.</div>
     {{end}}
   </main>
 </body>

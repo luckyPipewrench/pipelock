@@ -100,6 +100,8 @@ func TestOverviewHandlerRendersAttentionLedgerAndHonestEmptyStates(t *testing.T)
 	body := rec.Body.String()
 	for _, want := range []string{
 		"Operator Overview",
+		"Identity not established by v1 receipts",
+		"Recorded label",
 		"No aggregate score.",
 		"No fleet source configured",
 		"No conductor decision source configured",

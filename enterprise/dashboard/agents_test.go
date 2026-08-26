@@ -142,12 +142,13 @@ func TestHandler_AgentsRendersGroups(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Agent evidence") {
-		t.Fatal("body should contain the agents page heading")
+	// Assert the CLAIM, not the page title. The page keeps its navigational
+	// name; what had to change is the identity claim it made about a v1 label.
+	if !strings.Contains(body, "Identity not established by v1 receipts") {
+		t.Fatal("roster must state that a v1 receipt does not establish identity")
 	}
-	// The designed header carries the honest what-this-proves lead, not a bare title.
-	if !strings.Contains(body, "produced signed receipts in the configured evidence source") {
-		t.Fatal("body should contain the honest agents-page intent lead")
+	if !strings.Contains(body, "recorded labels rather than proven identities") {
+		t.Fatal("roster lead must describe the values as recorded labels")
 	}
 	if !strings.Contains(body, "with loaded evidence") {
 		t.Fatal("body should contain the agent-count summary line")
@@ -168,6 +169,37 @@ func TestHandler_AgentsRendersGroups(t *testing.T) {
 	}
 }
 
+func TestHandler_AgentsDescribesGroupsAsRecordedLabels(t *testing.T) {
+	t.Parallel()
+
+	dir, trusted := writeTrustedHandlerSession(t)
+	handler := New(Options{
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
+	})
+
+	for _, path := range []string{"/agents", "/evidence"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(
+			context.Background(), http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want %d; body=%s", path, rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		body := rec.Body.String()
+		for _, want := range []string{
+			"Identity not established by v1 receipts",
+			"Recorded label",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s body missing %q: %s", path, want, body)
+			}
+		}
+	}
+}
+
 func TestHandler_AgentsEmptyStateExplainsReceiptSource(t *testing.T) {
 	t.Parallel()
 
@@ -184,8 +216,9 @@ func TestHandler_AgentsEmptyStateExplainsReceiptSource(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"The roster proves which agents have loaded receipt sessions",
-		"No agents or receipts are loaded",
+		"The roster lists labels recorded on loaded receipts",
+		"Identity not established by v1 receipts",
+		"No labels or receipts are loaded",
 		"--receipt-dir",
 	} {
 		if !strings.Contains(body, want) {

@@ -395,9 +395,10 @@
         <span class="badge">{{len .Enforcement.Rows}} groups</span>
       </div>
       <div class="section-body">
+        <p class="dim">Identity not established by v1 receipts. Recorded labels support grouping and filtering.</p>
         {{if .Enforcement.Rows}}
           <table>
-            <thead><tr><th>Decision</th><th>Scanner / rule</th><th>Agent</th><th>Count</th><th>Last seen</th></tr></thead>
+            <thead><tr><th>Decision</th><th>Scanner / rule</th><th>Recorded label</th><th>Count</th><th>Last seen</th></tr></thead>
             <tbody>
               {{range .Enforcement.Rows}}
                 <tr><td class="mono">{{.Verdict}}</td><td>{{.Scanner}}</td><td><a href="{{.Link}}">{{.Agent}}</a></td><td>{{.Count}}</td><td><code>{{.LastSeen}}</code></td></tr>
@@ -427,7 +428,7 @@
         </div>
         {{if .Evidence.Rows}}
           <table>
-            <thead><tr><th>Session</th><th>Agent</th><th>Chain</th><th>Anchor</th><th>Signer</th><th>Receipts</th></tr></thead>
+            <thead><tr><th>Session</th><th>Recorded label</th><th>Chain</th><th>Anchor</th><th>Signer</th><th>Receipts</th></tr></thead>
             <tbody>
               {{range .Evidence.Rows}}
                 <tr><td><a href="{{.Link}}"><code>{{.SessionID}}</code></a></td><td>{{.Agent}}</td><td class="{{.Severity}}">{{.Chain}}</td><td>{{.Anchor}}</td><td>{{.Signer}}</td><td>{{.Receipts}}</td></tr>

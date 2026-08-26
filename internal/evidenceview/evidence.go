@@ -238,24 +238,39 @@ func RecordedActorLabels(receipts []receipt.Receipt) []string {
 	return labels
 }
 
-// normalizeActorKey reduces a recorded label to the form the single-agent
-// guard compares on: surrounding and internal whitespace collapsed, and case
-// folded.
+// actorKey reduces a recorded label to the key the single-agent guard counts
+// distinct agents by. It trims surrounding whitespace and nothing else.
 //
-// Comparing raw strings made the denial cheaper to trigger than intended.
-// "Anonymous" did not match the lowercase sentinel, and two labels differing
-// only in case or spacing counted as two agents, so an ordinary session could
-// be refused with no attacker and no second agent present. Refusing a report
-// the operator is entitled to is a real failure direction on a security
-// product, because the control that keeps denying legitimate work is the
-// control that gets turned off.
+// It deliberately does NOT fold case or collapse internal whitespace. An
+// earlier version did, to stop a case-variant label from reading as a second
+// agent, and that was the wrong trade at this boundary: two genuinely distinct
+// labels that differ only in case or spacing would collide into one key, the
+// guard would see a single agent, and the report would disclose both agents'
+// target URLs, which can carry capability tokens. A recorded label is not an
+// identity and can be caller-supplied, so case-insensitive equality is not a
+// safe statement that two labels name the same agent.
 //
-// The cost, accepted deliberately: two genuinely distinct agents whose names
-// differ only by case or spacing now collide into one key and the session would
-// render. That requires an operator to have configured two such names, and the
-// alternative is denying every ordinary session that ever varied its label.
-func normalizeActorKey(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+// The availability problem that motivated folding is real but narrower than it
+// looked, and it is solved at the sentinel instead: see isAnonymousLabel.
+func actorKey(s string) string {
+	return strings.TrimSpace(s)
+}
+
+// isAnonymousLabel reports whether a recorded label is the anonymous sentinel.
+//
+// This comparison IS case-insensitive, and that is safe where actorKey's is
+// not: "anonymous" is a constant this codebase writes when no agent resolved,
+// not a name anyone claims. Treating "Anonymous" as a second agent denied
+// ordinary single-agent sessions with no attacker and no second agent present.
+func isAnonymousLabel(key, anonymous string) bool {
+	return strings.EqualFold(strings.TrimSpace(key), anonymous)
+}
+
+// IsAnonymousActorLabel reports whether a recorded actor label is the caller's
+// anonymous sentinel, compared case-insensitively. Callers pass their own
+// sentinel so this package does not have to know the CLI's constant.
+func IsAnonymousActorLabel(key, anonymous string) bool {
+	return isAnonymousLabel(key, anonymous)
 }
 
 // DistinctActorKeys returns the distinct identity keys a session's
@@ -279,12 +294,12 @@ func DistinctActorKeys(sessionID string, receipts []receipt.Receipt) []string {
 		if r.ActionRecord.SessionControl != nil {
 			continue
 		}
-		key := normalizeActorKey(r.ActionRecord.Actor)
+		key := actorKey(r.ActionRecord.Actor)
 		if key == "" {
-			key = normalizeActorKey(r.ActionRecord.SessionID)
+			key = actorKey(r.ActionRecord.SessionID)
 		}
 		if key == "" {
-			key = normalizeActorKey(sessionID)
+			key = actorKey(sessionID)
 		}
 		if key == "" {
 			continue

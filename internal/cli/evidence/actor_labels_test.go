@@ -219,3 +219,41 @@ func TestCaseVariantNamedLabelsStillRefused(t *testing.T) {
 		t.Fatal("two distinct named agents must still be refused")
 	}
 }
+
+// TestCaseOnlyDistinctNamedLabelsAreRefused pins the confidentiality property a
+// previous version of this change broke.
+//
+// That version case-folded and whitespace-collapsed every label before counting
+// distinct agents, so "Agent-Alpha" and "agent-alpha" became one key, the guard
+// saw a single agent, and the report rendered both agents' target URLs, which
+// can carry capability tokens. A recorded label is not an identity and can be
+// caller-supplied, so equal-ignoring-case is not a safe claim that two labels
+// name the same agent. Only the anonymous sentinel is compared loosely, because
+// that string is a constant this codebase writes, not a name anyone claims.
+func TestCaseOnlyDistinctNamedLabelsAreRefused(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, key := genKey(t)
+	emitLifecycleThenActions(t, dir, key, "Agent-Alpha", "agent-alpha")
+
+	if _, err := renderSessionHTML(
+		resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report",
+	); err == nil {
+		t.Fatal("labels differing only by case are two recorded labels and must not render as one agent")
+	}
+}
+
+// TestWhitespaceOnlyDistinctNamedLabelsAreRefused is the whitespace twin of the
+// case test above.
+func TestWhitespaceOnlyDistinctNamedLabelsAreRefused(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, key := genKey(t)
+	emitLifecycleThenActions(t, dir, key, "agent alpha", "agent  alpha")
+
+	if _, err := renderSessionHTML(
+		resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report",
+	); err == nil {
+		t.Fatal("labels differing only by internal spacing must not render as one agent")
+	}
+}

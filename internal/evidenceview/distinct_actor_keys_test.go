@@ -35,7 +35,7 @@ func TestDistinctActorKeys(t *testing.T) {
 			receipts: []receipt.Receipt{
 				{ActionRecord: receipt.ActionRecord{Actor: " Agent-Alpha ", SessionID: "s-1"}},
 			},
-			want: []string{"agent-alpha"},
+			want: []string{"Agent-Alpha"},
 		},
 		{
 			name: "empty actor falls back to the receipt session id",
@@ -68,22 +68,25 @@ func TestDistinctActorKeys(t *testing.T) {
 			want: []string{"agent-alpha"},
 		},
 		{
-			name:      "case variants are one agent, not two",
+			// A recorded label is not an identity, so equal-ignoring-case is
+			// not a safe claim that two labels name the same agent. Collapsing
+			// them would let one report disclose both agents' target URLs.
+			name:      "case variants stay distinct",
 			sessionID: "proxy",
 			receipts: []receipt.Receipt{
 				{ActionRecord: receipt.ActionRecord{Actor: "Agent-Alpha"}},
 				{ActionRecord: receipt.ActionRecord{Actor: "agent-alpha"}},
 			},
-			want: []string{"agent-alpha"},
+			want: []string{"Agent-Alpha", "agent-alpha"},
 		},
 		{
-			name:      "internal whitespace variants are one agent, not two",
+			name:      "internal whitespace variants stay distinct",
 			sessionID: "proxy",
 			receipts: []receipt.Receipt{
 				{ActionRecord: receipt.ActionRecord{Actor: "agent alpha"}},
 				{ActionRecord: receipt.ActionRecord{Actor: "agent\t alpha"}},
 			},
-			want: []string{"agent alpha"},
+			want: []string{"agent\t alpha", "agent alpha"},
 		},
 		{
 			name:      "genuinely different agents still count separately",

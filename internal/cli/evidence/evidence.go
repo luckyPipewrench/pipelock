@@ -398,7 +398,7 @@ const anonymousActor = "anonymous"
 func validateSingleActorReceipts(sessionID string, receipts []receipt.Receipt) error {
 	named := make([]string, 0, 2)
 	for _, key := range evidenceview.DistinctActorKeys(sessionID, receipts) {
-		if key != anonymousActor {
+		if !evidenceview.IsAnonymousActorLabel(key, anonymousActor) {
 			named = append(named, key)
 		}
 	}

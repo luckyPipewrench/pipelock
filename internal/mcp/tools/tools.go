@@ -1525,17 +1525,18 @@ func parseToolsList(result json.RawMessage) ([]ToolDef, error) {
 		return nil, nil
 	}
 
-	var valid []ToolDef
 	for _, t := range tl.Tools {
 		if t.Name != "" {
-			valid = append(valid, t)
+			continue
 		}
-	}
-	if len(valid) == 0 {
-		return nil, nil
+		// A tools/list entry without its required name is not a tool that a
+		// conforming MCP client can safely use. Treating it as ignorable would
+		// also make the response-scanner carve-out an injection bypass: the
+		// malformed entry is still forwarded, but neither scanner sees it.
+		return nil, errors.New("tool definition is missing required name")
 	}
 
-	return valid, nil
+	return tl.Tools, nil
 }
 
 // checkToolPoison runs tool-specific poisoning patterns against normalized text.

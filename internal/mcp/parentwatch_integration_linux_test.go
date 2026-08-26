@@ -569,10 +569,14 @@ func TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper(t *testing.T) 
 	// session under test and behaves exactly like a foreign session's reaper.
 	const foreignDirectPID = -1
 	sweeperDone := make(chan struct{})
+	sweeperReady := make(chan struct{})
 	sweeperStopped := make(chan struct{})
 	var sweeps atomic.Uint64
 	go func() {
 		defer close(sweeperStopped)
+		reapAdoptedZombies(foreignDirectPID)
+		sweeps.Add(1)
+		close(sweeperReady)
 		for {
 			select {
 			case <-sweeperDone:
@@ -587,6 +591,14 @@ func TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper(t *testing.T) 
 		close(sweeperDone)
 		<-sweeperStopped
 	}()
+	select {
+	case <-sweeperReady:
+	case <-ctx.Done():
+		t.Fatalf("sibling reaper did not complete its startup sweep: %v", ctx.Err())
+	}
+	if sweeps.Load() == 0 {
+		t.Fatal("sibling reaper signaled readiness without a completed sweep")
+	}
 
 	var logBuf syncBuffer
 	cmd := exec.CommandContext(ctx, "cat")
@@ -619,20 +631,35 @@ func describeSandboxLifecycleFailure(ctx context.Context, err error) string {
 
 func TestDescribeSandboxLifecycleFailure(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cancel()
-	if got := describeSandboxLifecycleFailure(cancelled, errors.New("ignored once context expires")); got != "context=context canceled" {
-		t.Fatalf("cancelled context diagnosis = %q", got)
-	}
-	if got := describeSandboxLifecycleFailure(context.Background(), syscall.ECHILD); got != "child-status=stolen-by-sibling-reaper" {
-		t.Fatalf("stolen-child diagnosis = %q", got)
-	}
-	if got := describeSandboxLifecycleFailure(context.Background(), errors.New("unexpected")); got != "child-status=unexpected-error-shape" {
-		t.Fatalf("unknown diagnosis = %q", got)
+	expired, expire := context.WithTimeout(context.Background(), 0)
+	defer expire()
+	<-expired.Done()
+
+	terminated := exec.CommandContext(t.Context(), "/bin/sh", "-c", "kill -TERM $$").Run()
+	if terminated == nil {
+		t.Fatal("terminated-child fixture exited successfully")
 	}
 
-	err := exec.CommandContext(t.Context(), "/bin/sh", "-c", "kill -TERM $$").Run()
-	if got := describeSandboxLifecycleFailure(context.Background(), err); got != "child-signal=terminated" {
-		t.Fatalf("terminated-child diagnosis = %q (err=%v)", got, err)
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want string
+	}{
+		{name: "cancelled context", ctx: cancelled, err: errors.New("ignored once context expires"), want: "context=context canceled"},
+		{name: "expired deadline", ctx: expired, err: errors.New("ignored once context expires"), want: "context=context deadline exceeded"},
+		{name: "stolen child", ctx: context.Background(), err: syscall.ECHILD, want: "child-status=stolen-by-sibling-reaper"},
+		{name: "unexpected error", ctx: context.Background(), err: errors.New("unexpected"), want: "child-status=unexpected-error-shape"},
+		{name: "terminated child", ctx: context.Background(), err: terminated, want: "child-signal=terminated"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := describeSandboxLifecycleFailure(test.ctx, test.err); got != test.want {
+				t.Fatalf("diagnosis = %q, want %q (err=%v)", got, test.want, test.err)
+			}
+		})
 	}
 }
 

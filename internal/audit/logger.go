@@ -1797,10 +1797,14 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 
 // WSCloseEvent bundles the per-event fields LogWSClose emits.
 type WSCloseEvent struct {
-	Target         string
-	ClientIP       string
-	RequestID      string
-	Agent          string
+	Target    string
+	ClientIP  string
+	RequestID string
+	Agent     string
+	// AgentAuth is how the agent label was established. It travels with the
+	// label so the pair is emitted together; an empty value is recorded as the
+	// fail-closed unknown grade rather than omitted.
+	AgentAuth      string
 	ClientToServer int64
 	ServerToClient int64
 	TextFrames     int64
@@ -1817,7 +1821,7 @@ func (l *Logger) LogWSClose(ev WSCloseEvent) {
 		str("target", ev.Target).
 		str("client_ip", ev.ClientIP).
 		str("request_id", ev.RequestID).
-		str("agent", ev.Agent).
+		agentField(ev.Agent, ev.AgentAuth).
 		int64Field("client_to_server_bytes", ev.ClientToServer).
 		int64Field("server_to_client_bytes", ev.ServerToClient).
 		int64Field("text_frames", ev.TextFrames).
@@ -1856,11 +1860,13 @@ func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, 
 // WSScanEvent bundles the per-event fields LogWSScan emits.
 // Direction is one of DirectionClientToServer / DirectionServerToClient.
 type WSScanEvent struct {
-	Target       string
-	Direction    string
-	ClientIP     string
-	RequestID    string
-	Agent        string
+	Target    string
+	Direction string
+	ClientIP  string
+	RequestID string
+	Agent     string
+	// AgentAuth is how the agent label was established. See WSCloseEvent.
+	AgentAuth    string
 	Action       string
 	Scanner      string
 	MatchCount   int
@@ -1891,7 +1897,7 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 		str("direction", ev.Direction).
 		str("client_ip", ev.ClientIP).
 		str("request_id", ev.RequestID).
-		optStr("agent", ev.Agent).
+		agentField(ev.Agent, ev.AgentAuth).
 		str("action", ev.Action).
 		str("scanner", scanner).
 		intField("match_count", ev.MatchCount).

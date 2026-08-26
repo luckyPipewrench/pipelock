@@ -238,6 +238,26 @@ func RecordedActorLabels(receipts []receipt.Receipt) []string {
 	return labels
 }
 
+// normalizeActorKey reduces a recorded label to the form the single-agent
+// guard compares on: surrounding and internal whitespace collapsed, and case
+// folded.
+//
+// Comparing raw strings made the denial cheaper to trigger than intended.
+// "Anonymous" did not match the lowercase sentinel, and two labels differing
+// only in case or spacing counted as two agents, so an ordinary session could
+// be refused with no attacker and no second agent present. Refusing a report
+// the operator is entitled to is a real failure direction on a security
+// product, because the control that keeps denying legitimate work is the
+// control that gets turned off.
+//
+// The cost, accepted deliberately: two genuinely distinct agents whose names
+// differ only by case or spacing now collide into one key and the session would
+// render. That requires an operator to have configured two such names, and the
+// alternative is denying every ordinary session that ever varied its label.
+func normalizeActorKey(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
 // DistinctActorKeys returns the distinct identity keys a session's
 // non-lifecycle receipts resolve to, for the guard that refuses to render a
 // session spanning two agents.
@@ -259,12 +279,12 @@ func DistinctActorKeys(sessionID string, receipts []receipt.Receipt) []string {
 		if r.ActionRecord.SessionControl != nil {
 			continue
 		}
-		key := strings.TrimSpace(r.ActionRecord.Actor)
+		key := normalizeActorKey(r.ActionRecord.Actor)
 		if key == "" {
-			key = strings.TrimSpace(r.ActionRecord.SessionID)
+			key = normalizeActorKey(r.ActionRecord.SessionID)
 		}
 		if key == "" {
-			key = sessionID
+			key = normalizeActorKey(sessionID)
 		}
 		if key == "" {
 			continue

@@ -33,7 +33,7 @@ func TestDistinctActorKeys(t *testing.T) {
 		{
 			name: "actor wins when present",
 			receipts: []receipt.Receipt{
-				{ActionRecord: receipt.ActionRecord{Actor: " agent-alpha ", SessionID: "s-1"}},
+				{ActionRecord: receipt.ActionRecord{Actor: " Agent-Alpha ", SessionID: "s-1"}},
 			},
 			want: []string{"agent-alpha"},
 		},
@@ -66,6 +66,33 @@ func TestDistinctActorKeys(t *testing.T) {
 				{ActionRecord: receipt.ActionRecord{Actor: "agent-alpha"}},
 			},
 			want: []string{"agent-alpha"},
+		},
+		{
+			name:      "case variants are one agent, not two",
+			sessionID: "proxy",
+			receipts: []receipt.Receipt{
+				{ActionRecord: receipt.ActionRecord{Actor: "Agent-Alpha"}},
+				{ActionRecord: receipt.ActionRecord{Actor: "agent-alpha"}},
+			},
+			want: []string{"agent-alpha"},
+		},
+		{
+			name:      "internal whitespace variants are one agent, not two",
+			sessionID: "proxy",
+			receipts: []receipt.Receipt{
+				{ActionRecord: receipt.ActionRecord{Actor: "agent alpha"}},
+				{ActionRecord: receipt.ActionRecord{Actor: "agent\t alpha"}},
+			},
+			want: []string{"agent alpha"},
+		},
+		{
+			name:      "genuinely different agents still count separately",
+			sessionID: "proxy",
+			receipts: []receipt.Receipt{
+				{ActionRecord: receipt.ActionRecord{Actor: "agent-alpha"}},
+				{ActionRecord: receipt.ActionRecord{Actor: "agent-bravo"}},
+			},
+			want: []string{"agent-alpha", "agent-bravo"},
 		},
 		{
 			name:      "duplicates collapse",

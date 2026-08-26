@@ -186,3 +186,36 @@ func TestEmptyActorStillCountsAsAnAgent(t *testing.T) {
 		t.Fatal("two distinct actor keys must refuse the single-agent view")
 	}
 }
+
+// TestCaseVariantAnonymousStillRenders pins the sentinel comparison. The guard
+// used to skip only the exact lowercase "anonymous", so a label that differed
+// only in case counted as a second agent and denied the operator an ordinary
+// single-agent report.
+func TestCaseVariantAnonymousStillRenders(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, key := genKey(t)
+	emitLifecycleThenActions(t, dir, key, "Anonymous", "agent-alpha")
+
+	if _, err := renderSessionHTML(
+		resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report",
+	); err != nil {
+		t.Fatalf("a case-variant anonymous label is not a second agent: %v", err)
+	}
+}
+
+// TestCaseVariantNamedLabelsStillRefused proves the loosened comparison did not
+// loosen the confidentiality control itself: two genuinely different named
+// agents are still refused.
+func TestCaseVariantNamedLabelsStillRefused(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, key := genKey(t)
+	emitLifecycleThenActions(t, dir, key, "agent-alpha", "agent-bravo")
+
+	if _, err := renderSessionHTML(
+		resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report",
+	); err == nil {
+		t.Fatal("two distinct named agents must still be refused")
+	}
+}

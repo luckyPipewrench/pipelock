@@ -1025,10 +1025,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	p.metrics.RecordWSStats(duration, stats.clientToServer, stats.serverToClient)
 	log.LogWSClose(audit.WSCloseEvent{
-		Target:         targetURL,
-		ClientIP:       clientIP,
-		RequestID:      requestID,
-		Agent:          agent,
+		Target:    targetURL,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent, AgentAuth: string(id.Auth),
 		ClientToServer: stats.clientToServer,
 		ServerToClient: stats.serverToClient,
 		TextFrames:     stats.textFrames,
@@ -1629,11 +1629,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 
 		r.recordSignal(session.SignalNearMiss, log)
 		log.LogWSScan(audit.WSScanEvent{
-			Target:       r.targetURL,
-			Direction:    audit.DirectionClientToServer,
-			ClientIP:     r.clientIP,
-			RequestID:    r.requestID,
-			Agent:        r.agent,
+			Target:    r.targetURL,
+			Direction: audit.DirectionClientToServer,
+			ClientIP:  r.clientIP,
+			RequestID: r.requestID,
+			Agent:     r.agent, AgentAuth: string(r.actorAuth),
 			Action:       "audit",
 			MatchCount:   len(dlpMatches),
 			PatternNames: names,
@@ -1711,11 +1711,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 
 		r.recordSignal(session.SignalNearMiss, log)
 		log.LogWSScan(audit.WSScanEvent{
-			Target:       r.targetURL,
-			Direction:    audit.DirectionClientToServer,
-			ClientIP:     r.clientIP,
-			RequestID:    r.requestID,
-			Agent:        r.agent,
+			Target:    r.targetURL,
+			Direction: audit.DirectionClientToServer,
+			ClientIP:  r.clientIP,
+			RequestID: r.requestID,
+			Agent:     r.agent, AgentAuth: string(r.actorAuth),
 			Action:       config.ActionWarn,
 			Scanner:      scannerLabelAddressProtection,
 			MatchCount:   len(addrFindings),
@@ -1946,11 +1946,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				names[i] = f.Explanation
 			}
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       config.ActionWarn,
 				Scanner:      scannerLabelAddressProtection,
 				MatchCount:   len(result.AddressFindings),
@@ -1987,11 +1987,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		r.recordSignal(session.SignalNearMiss, log)
 		if len(result.DLPMatches) > 0 {
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       "audit",
 				MatchCount:   len(result.DLPMatches),
 				PatternNames: dlpMatchNames(result.DLPMatches),
@@ -2004,11 +2004,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				names[i] = f.Explanation
 			}
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       config.ActionWarn,
 				Scanner:      scannerLabelAddressProtection,
 				MatchCount:   len(result.AddressFindings),
@@ -2018,11 +2018,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		if result.EntropyFinding != nil {
 			r.proxy.metrics.RecordBodyEntropy(config.ActionWarn, r.metricAgent)
 			log.LogWSScan(audit.WSScanEvent{
-				Target:       r.targetURL,
-				Direction:    audit.DirectionClientToServer,
-				ClientIP:     r.clientIP,
-				RequestID:    r.requestID,
-				Agent:        r.agent,
+				Target:    r.targetURL,
+				Direction: audit.DirectionClientToServer,
+				ClientIP:  r.clientIP,
+				RequestID: r.requestID,
+				Agent:     r.agent, AgentAuth: string(r.actorAuth),
 				Action:       config.ActionWarn,
 				Scanner:      scannerLabelBodyEntropy,
 				MatchCount:   1,
@@ -2422,9 +2422,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			return nil, true
 		}
 		msg = []byte(scanResult.TransformedContent)
-		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: config.ActionStrip, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
+		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: config.ActionStrip, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	case config.ActionWarn:
-		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: config.ActionWarn, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
+		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: config.ActionWarn, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	case config.ActionAsk:
 		reason := fmt.Sprintf("injection detected (ask not supported for WS): %s", strings.Join(patternNames, ", "))
 		log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, responseScanLayer, reason, r.clientIP, r.requestID)
@@ -2436,7 +2436,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 		return nil, true
 	default:
-		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
+		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	}
 	return msg, false
 }

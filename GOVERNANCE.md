@@ -20,7 +20,7 @@ All contributions are welcome via pull request. See [CONTRIBUTING.md](CONTRIBUTI
 
 Pull requests require:
 
-- Passing CI (test, lint, build, CodeQL, govulncheck)
+- Passing every required CI context listed in [CONTRIBUTING.md](CONTRIBUTING.md#pull-requests)
 - At least one approving review
 - All review threads resolved
 

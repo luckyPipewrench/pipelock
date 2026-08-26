@@ -18,9 +18,6 @@ jobs:
   # Pipelock scans the PR diff before anything else runs. If the scan
   # finds credential leaks, injection patterns, or security misconfigs,
   # all downstream jobs are skipped — no compromised code executes.
-  # Pipelock scans the PR diff before anything else runs. If the scan finds
-  # credential leaks, all downstream jobs are skipped, so no compromised code
-  # executes.
   #
   # The scanner is BUILT FROM THE DEFAULT BRANCH rather than downloaded as a
   # release. A released binary is frozen at the last tag, so a scanner fix on
@@ -531,7 +528,7 @@ jobs:
           GOOS=aix GOARCH=ppc64 go test -c -o /tmp/recorder-aix.test ./internal/recorder
           GOOS=aix GOARCH=ppc64 go test -c -o /tmp/license-aix.test ./internal/license
 
-  # The reviewer's own tests, which no pull request has ever run.
+  # The reviewer's own regression suite now runs on pull requests.
   #
   # The repositories that kept their own copy of the reviewer ran these as a
   # step inside the review itself. That never gated anything: a review is

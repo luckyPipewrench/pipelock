@@ -34,7 +34,7 @@ Branch naming:
 
 ### Pre-Commit Checklist
 
-These match exactly what CI checks. Both must pass with zero issues.
+Run both before opening a pull request. They cover the core local Go checks; CI also runs platform, build, dependency, workflow, and security jobs.
 
 ```bash
 golangci-lint run ./...          # Full lint (19 linters, see .golangci.yml)
@@ -44,7 +44,7 @@ go test -race -count=1 ./...     # All tests with race detector
 ## Pull Requests
 
 1. Fill in a clear description of what changed and why
-2. CI runs 6 required checks: **test** (Go 1.25 + 1.26 matrix), **lint**, **build**, **govulncheck**, **CodeQL**, **pipelock** (self-scan)
+2. CI requires eight GitHub Actions contexts: **security-scan**, **test (1.25)**, **test (1.26)**, **test-macos**, **lint**, **build**, **govulncheck**, and **codeql**. The advisory **Pipelock CI Summary** rolls them up for readability but isn't a required context.
 3. Address reviewer feedback and bot comments. Automated AI review (e.g. CodeRabbit) is **advisory only** — maintainers make all security decisions, and a bot's passing status or summary does not by itself mean a change was security-reviewed.
 4. PRs are squash-merged
 

@@ -2,9 +2,9 @@ name: Verifiers
 
 # Gates the TypeScript and Rust reference verifiers under sdk/verifiers/.
 # The Go conformance suite under sdk/conformance/ is already gated by the
-# existing CI workflow's `test` job. This file adds matching CI coverage
-# for the non-Go reference verifiers so changes that break either one fail
-# at the PR stage instead of merging silently.
+# existing CI workflow's `test (1.25)` and `test (1.26)` aggregate jobs. This
+# file adds matching CI coverage for the non-Go reference verifiers. Changes
+# that break either one fail at the PR stage instead of merging silently.
 #
 # Security note: no run: step in this workflow consumes untrusted
 # github.event.* input. Every command runs over repo-controlled paths.

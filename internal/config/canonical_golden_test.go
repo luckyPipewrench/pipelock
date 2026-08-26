@@ -336,7 +336,11 @@ const (
 	// must shift ph. Listen and Upstream on the same struct stay excluded,
 	// which the ops-field invariance test confirms by landing on this same
 	// hash.
-	goldenHashDefaults = "39b0e9ee2b528bb0831b2e69e8435c24e853643270984dd12d1c9ecf5c57e7ec"
+	// Re-bumped for the External Data Transfer Directive pattern gaining a
+	// read-then-transfer branch: a default detection pattern changed, which
+	// is a policy-semantics change by definition, so ph must shift for
+	// verifiers to detect it. Detection only widens; no pattern was removed.
+	goldenHashDefaults = "e95659d06fc45f13c1cef2d8a9c984f95006cbc9204a97f7c8bb67679a83e56a"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -506,7 +510,11 @@ const (
 	// must shift ph. Listen and Upstream on the same struct stay excluded,
 	// which the ops-field invariance test confirms by landing on this same
 	// hash.
-	goldenHashRichConfig = "bd8ed545b6de3fa3d0f8d5a379bac5e99cac589f7a7fb0a39d59d5adaf80d2a6"
+	// Re-bumped for the External Data Transfer Directive pattern gaining a
+	// read-then-transfer branch: a default detection pattern changed, which
+	// is a policy-semantics change by definition, so ph must shift for
+	// verifiers to detect it. Detection only widens; no pattern was removed.
+	goldenHashRichConfig = "1179361b53c1677af7753f3fd9784e8aa4a8014a2bcc6f3915a106532768a853"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

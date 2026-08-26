@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1624,6 +1625,28 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 		emitReverseReceipt(passthroughReceipt)
 	}
+	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) &&
+		(cfg.ResponseScanning.Enabled || cfg.MediaPolicy.IsEnabled()) {
+		_ = resp.Body.Close()
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "compressed")
+		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
+		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"compressed_response"}, nil)
+		emitReverseReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     LayerReverseResponseBlocked,
+			Pattern:   "compressed response cannot be scanned",
+			Transport: TransportReverse,
+			Method:    resp.Request.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
+		recordReverseOutcome(http.StatusForbidden, -1, "compressed_response")
+		return nil
+	}
 
 	// Media policy runs regardless of response-scanning state so an
 	// operator who disables response scanning for performance cannot
@@ -1639,7 +1662,43 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// if we enter the branch in the first place.
 	mediaCT := resp.Header.Get("Content-Type")
 	mediaCTCanon := canonicalContentType(mediaCT)
-	if (isBinaryMIME(mediaCT) || contentTypeIsGeneric(mediaCTCanon)) && cfg.MediaPolicy.IsEnabled() {
+	mediaCTForPolicy := mediaCT
+	detectedMedia := false
+	if cfg.MediaPolicy.IsEnabled() && !isBinaryMIME(mediaCT) && !contentTypeIsGeneric(mediaCTCanon) && !HasSingleSSEContentType(resp.Header) {
+		const mediaSignatureBytes = 16
+		peeked := bufio.NewReaderSize(resp.Body, mediaSignatureBytes)
+		head, err := peeked.Peek(mediaSignatureBytes)
+		if err != nil && !errors.Is(err, io.EOF) {
+			_ = resp.Body.Close()
+			actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
+			rp.logger.LogBlocked(actx, "media_policy", "media response read error")
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "media_policy")
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     LayerReverseResponseBlocked,
+				Pattern:   "media response read error",
+				Transport: TransportReverse,
+				Method:    resp.Request.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			replaceWithMediaBlockResponse(resp, "media response read error")
+			recordReverseOutcome(http.StatusForbidden, -1, "media_policy")
+			return nil
+		}
+		resp.Body = readCloserWithClose{Reader: peeked, Closer: resp.Body}
+		if effective := effectiveMediaType(mediaCTCanon, head); isMediaType(effective) {
+			mediaCTForPolicy = effective
+			mediaCTCanon = effective
+			detectedMedia = true
+			resp.Header.Set("Content-Type", effective)
+			resp.Header.Set("X-Content-Type-Options", "nosniff")
+		}
+	}
+	if (isBinaryMIME(mediaCT) || contentTypeIsGeneric(mediaCTCanon) || detectedMedia) && cfg.MediaPolicy.IsEnabled() {
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		canonCT := mediaCTCanon
 		isImage := strings.HasPrefix(canonCT, "image/")
@@ -1656,7 +1715,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// replaceWithMediaBlockResponse overwrites resp.Body
 			// while the original stream is still open, leaking the
 			// upstream TCP connection.
-			verdict := applyMediaPolicy(cfg, mediaCT, nil)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, nil)
 			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
 			if verdict.Blocked {
 				_ = resp.Body.Close()
@@ -1695,12 +1754,23 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				rp.logger.LogBlocked(actx, "media_policy", "media response read error")
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "media_policy")
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     LayerReverseResponseBlocked,
+					Pattern:   "media response read error",
+					Transport: TransportReverse,
+					Method:    resp.Request.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				})
 				replaceWithMediaBlockResponse(resp, "media response read error")
 				recordReverseOutcome(http.StatusForbidden, -1, "media_policy")
 				return nil
 			}
 			oversize := int64(len(body)) > maxRead
-			verdict := applyMediaPolicy(cfg, mediaCT, body)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body)
 			// If oversized, synthesize a block verdict with an
 			// explicit exposure payload so the exposure event still
 			// fires for oversize images.
@@ -1869,12 +1939,6 @@ responseScanning:
 	// injection scanning must not silently bypass an explicitly enabled shield.
 	// The buffered path below already enforces the normal and size-exempt memory
 	// ceilings used by forward and CONNECT.
-	if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
-		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
-			strconv.Itoa(resp.StatusCode))
-		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
-		return nil
-	}
 	if cfg.ResponseScanning.Enabled && revRespExempt {
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		rp.logger.LogResponseScanExempt(actx, revHost)
@@ -1908,6 +1972,12 @@ responseScanning:
 		})
 		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
 		recordReverseOutcome(http.StatusForbidden, -1, "compressed_response")
+		return nil
+	}
+	if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+			strconv.Itoa(resp.StatusCode))
+		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
 		return nil
 	}
 

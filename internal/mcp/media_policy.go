@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
-	"net/http"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -235,11 +234,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 		return mcpMediaVerdict{Body: body, MediaType: mt}
 	}
 
-	if !isMCPMediaType(mt) && mcpContentTypeIsGeneric(mt) && len(body) > 0 {
-		if sniffed := sniffMCPMediaType(body); sniffed != "" {
-			mt = sniffed
-		}
-	}
+	mt = effectiveMCPMediaType(mt, body)
 
 	if !isMCPMediaType(mt) {
 		return mcpMediaVerdict{Body: body, MediaType: mt}
@@ -366,21 +361,16 @@ func isMCPMediaType(mt string) bool {
 	return strings.HasPrefix(mt, "image/") || strings.HasPrefix(mt, "audio/") || strings.HasPrefix(mt, "video/")
 }
 
-func mcpContentTypeIsGeneric(mt string) bool {
-	return mt == "" || mt == "application/octet-stream" || mt == "binary/octet-stream"
+func sniffMCPMediaType(body []byte) string {
+	return media.DetectType(body)
 }
 
-func sniffMCPMediaType(body []byte) string {
-	if len(body) == 0 {
-		return ""
+func effectiveMCPMediaType(declared string, body []byte) string {
+	if isMCPMediaType(declared) || len(body) == 0 {
+		return declared
 	}
-	head := body
-	if len(head) > 512 {
-		head = head[:512]
-	}
-	sniffed := canonicalMCPContentType(http.DetectContentType(head))
-	if isMCPMediaType(sniffed) {
+	if sniffed := sniffMCPMediaType(body); sniffed != "" {
 		return sniffed
 	}
-	return ""
+	return declared
 }

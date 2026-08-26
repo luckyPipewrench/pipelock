@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"encoding/json"
 	"hash/crc32"
@@ -14,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -766,24 +768,207 @@ func TestApplyMediaPolicy_HeaderSpoofingBypassBlocked(t *testing.T) {
 	}
 }
 
-// TestApplyMediaPolicy_ExplicitNonMediaNotSniffed verifies that an
-// explicit non-generic declaration (e.g. text/html) is NOT overridden by
-// content sniffing. The spoofing defense is scoped to generic/empty
-// declarations; honoring explicit non-media claims preserves legitimate
-// upstream behavior.
-func TestApplyMediaPolicy_ExplicitNonMediaNotSniffed(t *testing.T) {
+// TestApplyMediaPolicy_ExplicitNonMediaSpoofBlocked verifies that an upstream
+// cannot bypass strip_images by labeling image bytes as text/html.
+func TestApplyMediaPolicy_ExplicitNonMediaSpoofBlocked(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
+	stripImages := true
+	cfg.MediaPolicy.StripImages = &stripImages
 	jpegBytes := buildValidJPEG([]byte("Exif\x00\x00payload"))
 	v := applyMediaPolicy(cfg, "text/html; charset=utf-8", jpegBytes)
-	if v.Blocked {
-		t.Errorf("text/html declaration should passthrough, got block: %s", v.BlockReason)
+	if !v.Blocked {
+		t.Fatal("JPEG bytes declared as text/html bypassed strip_images")
 	}
-	if v.StripResult != nil {
-		t.Error("text/html declaration should NOT trigger metadata strip via sniffing")
+	if v.MediaType != "image/jpeg" {
+		t.Errorf("MediaType = %q, want image/jpeg", v.MediaType)
 	}
-	if !bytes.Equal(v.Body, jpegBytes) {
-		t.Error("body modified despite explicit non-media declaration")
+}
+
+func TestApplyMediaPolicy_ExplicitNonMediaBodyPreserved(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	stripImages := true
+	cfg.MediaPolicy.StripImages = &stripImages
+	for _, tt := range []struct {
+		contentType string
+		body        string
+	}{
+		{"text/html; charset=utf-8", "<!doctype html><html><body>ordinary page</body></html>"},
+		{"text/csv", "BMW,model,price\nX5,2026,65000\n"},
+		{"text/plain", "ID3 tagging guidance for our media team\n"},
+		{"application/octet-stream", "BMW,model,price\nX5,2026,65000\n"},
+		{"application/octet-stream", "ID3 tagging guidance for our media team\n"},
+		{"application/octet-stream", "GIF89a is a file signature\n"},
+	} {
+		body := []byte(tt.body)
+		v := applyMediaPolicy(cfg, tt.contentType, body)
+		if v.Blocked {
+			t.Errorf("ordinary %s blocked as %q: %s", tt.contentType, v.MediaType, v.BlockReason)
+		}
+		if !bytes.Equal(v.Body, body) {
+			t.Errorf("ordinary %s body was modified", tt.contentType)
+		}
+	}
+}
+
+// TestReverseProxy_MediaPolicyBlocksExplicitNonMediaSpoof proves the full
+// reverse-proxy path does not trust an upstream Content-Type over image bytes.
+func TestReverseProxy_MediaPolicyBlocksExplicitNonMediaSpoof(t *testing.T) {
+	cfg := reverseTestConfig()
+	stripImages := true
+	cfg.MediaPolicy.StripImages = &stripImages
+	jpegBytes := buildValidJPEG([]byte("Exif\x00\x00spoofed-content-type"))
+
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(jpegBytes)
+	}
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	resp := testGet(t, proxy.URL+"/spoofed.jpg")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestReverseProxy_MediaPolicyBlocksPrintablePrefixGIFSpoof(t *testing.T) {
+	cfg := reverseTestConfig()
+	stripImages := true
+	cfg.MediaPolicy.StripImages = &stripImages
+	gif := append([]byte("GIF89a"), 1, 0, 1, 0, 0, 0, 0)
+	gif = append(gif, 0x3b)
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(gif)
+	})
+	resp := testGet(t, proxy.URL+"/spoofed.gif")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestReverseProxy_MediaPolicyRewritesSpoofedContentType(t *testing.T) {
+	cfg := reverseTestConfig()
+	jpegBytes := buildValidJPEG([]byte("Exif\x00\x00spoofed-content-type"))
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(jpegBytes)
+	})
+
+	resp := testGet(t, proxy.URL+"/spoofed.jpg")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "image/jpeg" {
+		t.Errorf("Content-Type = %q, want image/jpeg", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
+func TestReverseProxy_MediaPolicyBlocksCompressedSpoofWhenScanningDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = false
+	stripImages := true
+	cfg.MediaPolicy.StripImages = &stripImages
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	_, _ = zw.Write(buildValidJPEG([]byte("Exif\x00\x00compressed-spoof")))
+	_ = zw.Close()
+
+	for _, contentType := range []string{"text/html; charset=utf-8", "application/octet-stream"} {
+		proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write(compressed.Bytes())
+		})
+		resp := testGet(t, proxy.URL+"/spoofed.jpg")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("Content-Type %q: status = %d, want 403", contentType, resp.StatusCode)
+		}
+	}
+}
+
+func TestReverseProxy_MediaSniffPreservesShortChunkedStream(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = false
+	release := make(chan struct{})
+	defer close(release)
+	firstChunkSent := make(chan struct{})
+
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{\"event\":\"start\"}\n"))
+		w.(http.Flusher).Flush()
+		close(firstChunkSent)
+		<-release
+	})
+
+	done := make(chan int, 1)
+	go func() {
+		resp := testGet(t, proxy.URL+"/stream")
+		defer func() { _ = resp.Body.Close() }()
+		done <- resp.StatusCode
+	}()
+	<-firstChunkSent
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Errorf("status = %d, want 200", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not receive headers after the upstream flushed a complete short chunk")
+	}
+}
+
+func TestForwardHTTP_MediaPolicyBlocksExplicitNonMediaSpoof(t *testing.T) {
+	jpegBytes := buildValidJPEG([]byte("Exif\x00\x00spoofed-content-type"))
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(jpegBytes)
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		stripImages := true
+		cfg.MediaPolicy.StripImages = &stripImages
+	})
+	defer cleanup()
+
+	resp := doGet(t, proxyClient(proxyAddr), backend.URL+"/spoofed.jpg")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestFetchEndpoint_MediaPolicyBlocksExplicitNonMediaSpoof(t *testing.T) {
+	jpegBytes := buildValidJPEG([]byte("Exif\x00\x00spoofed-content-type"))
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(jpegBytes)
+	}))
+	defer backend.Close()
+
+	p, blocker := setupTestProxy(t)
+	defer blocker.Close()
+	stripImages := true
+	p.cfgPtr.Load().MediaPolicy.StripImages = &stripImages
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/spoofed.jpg", nil)
+	w := httptest.NewRecorder()
+	p.handleFetch(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (body=%s)", w.Code, w.Body.String())
 	}
 }
 

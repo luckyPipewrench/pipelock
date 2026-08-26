@@ -3937,7 +3937,11 @@ func TestScanTools_CoversEverySupportedAgentVisibleToolField(t *testing.T) {
 		{"title", `{"name":"catalog_search","title":"` + directive + `"}`},
 		{"annotation title", `{"name":"catalog_search","annotations":{"title":"` + directive + `"}}`},
 		{"output schema description", `{"name":"catalog_search","outputSchema":{"type":"object","description":"` + directive + `"}}`},
+		{"output schema property", `{"name":"catalog_search","outputSchema":{"type":"object","properties":{"` + directive + `":{"type":"string"}}}}`},
 		{"meta visible string", `{"name":"catalog_search","_meta":{"display":"` + directive + `"}}`},
+		{"meta key", `{"name":"catalog_search","_meta":{"` + directive + `":"safe"}}`},
+		{"extension key", `{"name":"catalog_search","` + directive + `":"safe"}`},
+		{"nested extension key", `{"name":"catalog_search","x-vendor":{"` + directive + `":"safe"}}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3975,7 +3979,8 @@ func TestScanTools_UnknownToolDefinitionFieldsForwardWhenReadable(t *testing.T) 
 		name  string
 		field string
 	}{
-		{"icons", `"icons":[{"src":"https://cdn.vendor.example/search.svg","sizes":["16x16","32x32"]}]`},
+		{"icons", `"icons":[{"src":"https://cdn.vendor.example/search.svg","mimeType":"image/svg+xml","sizes":["16x16","32x32"]}]`},
+		{"execution", `"execution":{"taskSupport":"optional"}`},
 		{"vendor extension", `"x-vendor-hint":"Results can be filtered by category."`},
 		{"plain data extension", `"x-vendor-hint":{"data":"Catalog Search"}`},
 		{"future field", `"costHint":{"estimate":"One credit per lookup","tiers":[{"name":"standard","credits":1}]}`},

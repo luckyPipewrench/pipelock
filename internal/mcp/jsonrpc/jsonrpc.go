@@ -115,6 +115,13 @@ type ExtractStringsResult struct {
 	Truncated bool
 }
 
+// ExtractKeysResult is the bounded recursive JSON-key extraction result.
+// Truncated is true when the JSON contains keys beyond maxExtractDepth.
+type ExtractKeysResult struct {
+	Keys      []string
+	Truncated bool
+}
+
 // TextResult is the bounded text extraction result.
 type TextResult struct {
 	Text      string
@@ -381,4 +388,36 @@ func ExtractStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 		extract(parsed, 0)
 	}
 	return ExtractStringsResult{Strings: result, Truncated: truncated}
+}
+
+// ExtractKeysFromJSONResult recursively extracts JSON object keys and reports
+// whether extraction hit the nesting cap. Most response scanning deliberately
+// ignores keys because they are normally structural. Callers that surface a
+// JSON object as agent-visible tool metadata can opt into scanning its keys.
+func ExtractKeysFromJSONResult(raw json.RawMessage) ExtractKeysResult {
+	var result []string
+	truncated := false
+	var extract func(v interface{}, depth int)
+	extract = func(v interface{}, depth int) {
+		if depth > maxExtractDepth {
+			truncated = true
+			return
+		}
+		switch val := v.(type) {
+		case []interface{}:
+			for _, item := range val {
+				extract(item, depth+1)
+			}
+		case map[string]interface{}:
+			for _, key := range SortedKeys(val) {
+				result = append(result, key)
+				extract(val[key], depth+1)
+			}
+		}
+	}
+	var parsed interface{}
+	if err := json.Unmarshal(raw, &parsed); err == nil {
+		extract(parsed, 0)
+	}
+	return ExtractKeysResult{Keys: result, Truncated: truncated}
 }

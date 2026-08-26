@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -282,6 +283,22 @@ func TestExtractStringsFromJSON_NestedObjectValuesOnly(t *testing.T) {
 	got := ExtractStringsFromJSON(raw)
 	if len(got) != 1 || got[0] != "value" {
 		t.Errorf("expected [value] (not key), got %v", got)
+	}
+}
+
+func TestExtractKeysFromJSONResult(t *testing.T) {
+	raw := json.RawMessage(`{"top":{"nested":"value"},"items":[{"child":"value"}]}`)
+	got := ExtractKeysFromJSONResult(raw)
+	want := []string{"items", "child", "top", "nested"}
+	if !slices.Equal(got.Keys, want) || got.Truncated {
+		t.Fatalf("ExtractKeysFromJSONResult = %+v, want keys %v without truncation", got, want)
+	}
+}
+
+func TestExtractKeysFromJSONResult_DepthGuard(t *testing.T) {
+	got := ExtractKeysFromJSONResult(json.RawMessage(deepJSONRPCObject(maxExtractDepth + 2)))
+	if !got.Truncated {
+		t.Fatalf("ExtractKeysFromJSONResult = %+v, want truncated result", got)
 	}
 }
 

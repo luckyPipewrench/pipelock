@@ -326,7 +326,8 @@ func TestForwardScanned_ToolsListUnknownFieldsForwardWithToolBlock(t *testing.T)
 		field string
 	}{
 		{"title", `"title":"Catalog Search"`},
-		{"icons", `"icons":[{"src":"https://cdn.vendor.example/search.svg","sizes":["16x16","32x32"]}]`},
+		{"icons", `"icons":[{"src":"https://cdn.vendor.example/search.svg","mimeType":"image/svg+xml","sizes":["16x16","32x32"]}]`},
+		{"execution", `"execution":{"taskSupport":"optional"}`},
 		{"vendor extension", `"x-vendor-hint":"Results can be filtered by category."`},
 		{"plain data extension", `"x-vendor-hint":{"data":"Catalog Search"}`},
 		{"future field", `"costHint":{"estimate":"One credit per lookup","tiers":[{"name":"standard","credits":1}]}`},
@@ -362,7 +363,11 @@ func TestForwardScanned_ToolsListBlocksAgentVisibleToolFields(t *testing.T) {
 		{"title", `"title":"` + directive + `"`},
 		{"annotations title", `"annotations":{"title":"` + directive + `"}`},
 		{"output schema description", `"outputSchema":{"type":"object","description":"` + directive + `"}`},
+		{"output schema property", `"outputSchema":{"type":"object","properties":{"` + directive + `":{"type":"string"}}}`},
 		{"meta display", `"_meta":{"display":"` + directive + `"}`},
+		{"meta key", `"_meta":{"` + directive + `":"safe"}`},
+		{"extension key", `"` + directive + `":"safe"`},
+		{"nested extension key", `"x-vendor":{"` + directive + `":"safe"}`},
 		{"unrecognized nested field", `"costHint":{"tiers":[{"notice":"` + directive + `"}]}`},
 	}
 	for _, tt := range tests {

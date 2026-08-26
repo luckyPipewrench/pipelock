@@ -1117,10 +1117,15 @@ func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 // field except Description. The response-scanning path deliberately omits all
 // tool descriptions to preserve tools/list compatibility; this dedicated tool
 // scanner owns their checks and its action can warn without forwarding a
-// response-scanner block. Unknown top-level fields are recursively extracted
-// with the same bounded visible-string policy as extensible metadata.
+// response-scanner block. Extension and schema key names are included because
+// clients can surface them to an agent as part of the tool definition.
 func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 	var parts []string
+	appendJSONKeys := func(field json.RawMessage) {
+		if extracted := jsonrpc.ExtractKeysFromJSONResult(field); !extracted.Truncated {
+			parts = append(parts, extracted.Keys...)
+		}
+	}
 	for _, field := range []string{t.Name, t.Title} {
 		if field != "" {
 			parts = append(parts, field)
@@ -1129,6 +1134,7 @@ func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 	for _, schema := range []json.RawMessage{t.InputSchema, t.OutputSchema} {
 		if len(schema) > 0 {
 			parts = append(parts, ExtractSchemaDescriptions(schema)...)
+			appendJSONKeys(schema)
 		}
 	}
 	for _, name := range paramNames {
@@ -1145,6 +1151,7 @@ func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 		if extracted := jsonrpc.ExtractStringsFromJSONResult(metadata); !extracted.Truncated {
 			parts = append(parts, extracted.Strings...)
 		}
+		appendJSONKeys(metadata)
 	}
 	unknownKeys := make([]string, 0, len(t.unknown))
 	for key := range t.unknown {
@@ -1152,9 +1159,11 @@ func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 	}
 	sort.Strings(unknownKeys)
 	for _, key := range unknownKeys {
+		parts = append(parts, key)
 		if extracted := jsonrpc.ExtractStringsFromJSONResult(t.unknown[key]); !extracted.Truncated {
 			parts = append(parts, extracted.Strings...)
 		}
+		appendJSONKeys(t.unknown[key])
 	}
 	return strings.Join(parts, ". ")
 }

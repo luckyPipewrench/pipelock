@@ -55,10 +55,18 @@ func responseSizeObservedBlockReason(host string, size, limit int64, knob string
 }
 
 func responseSizeExemptScanBlockReason(host string, size, limit int64) string {
+	return responseSizeExemptObservedScanBlockReason(host, size, limit, true)
+}
+
+func responseSizeExemptObservedScanBlockReason(host string, size, limit int64, exact bool) string {
 	if host == "" {
 		host = "unknown-host"
 	}
-	return fmt.Sprintf("size-exempt response from %s is %d bytes, exceeding bounded scan ceiling %d bytes; raise response_scanning.size_exempt_scan_max_bytes or configure response_scanning.unscannable_passthrough for deliberately unscannable opaque content", host, size, limit)
+	sizeText := fmt.Sprintf("%d bytes", size)
+	if !exact {
+		sizeText = fmt.Sprintf("at least %d bytes", size)
+	}
+	return fmt.Sprintf("size-exempt response from %s is %s, exceeding bounded scan ceiling %d bytes; raise response_scanning.size_exempt_scan_max_bytes or configure response_scanning.unscannable_passthrough for deliberately unscannable opaque content", host, sizeText, limit)
 }
 
 // shieldOversizeBlockReason explains a browser-shield oversize block the way

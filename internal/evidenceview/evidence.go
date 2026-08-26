@@ -88,8 +88,22 @@ type SummaryPip struct {
 
 // SessionEvidence is the full Evidence view for one session.
 type SessionEvidence struct {
-	ID              string
-	Agent           string
+	ID string
+
+	// Agent is the label used for internal grouping. It is NOT an
+	// authenticated identity and must not be rendered as one.
+	Agent string
+
+	// RecordedLabels holds the distinct non-lifecycle actor labels seen in
+	// this session, sorted. An ActionReceipt v1 records the label but not how
+	// it was established, so no label here may be presented as the agent's
+	// identity: on a listener without a bound identity, a caller supplies it.
+	// The report therefore states which labels it saw and claims nothing about
+	// who they were. LabelsReadLimited means the list covers only the receipts
+	// that were loaded, not necessarily the whole session.
+	RecordedLabels    []string
+	LabelsReadLimited bool
+
 	ReceiptsEnabled bool
 	ReceiptCount    int
 	Receipts        []receipt.Receipt
@@ -162,6 +176,8 @@ func SessionEvidenceOf(id string, receipts []receipt.Receipt, trustedKeys map[st
 		}
 	}
 
+	recordedLabels := RecordedActorLabels(receipts)
+
 	result := ComputeScorecard(receipts, trustedKeys, id)
 	scorecard := result.Scorecard
 	if readLimited {
@@ -169,20 +185,22 @@ func SessionEvidenceOf(id string, receipts []receipt.Receipt, trustedKeys map[st
 	}
 	timelineReceipts, timelineStartIndex, timelineLimited, timelineWindow := selectTimelineReceipts(receipts, readLimited, timelineLimit)
 	return SessionEvidence{
-		ID:              id,
-		Agent:           agentLabel(id, receipts),
-		ReceiptsEnabled: true,
-		ReceiptCount:    len(receipts),
-		Receipts:        append([]receipt.Receipt(nil), receipts...),
-		ReadLimited:     readLimited,
-		ReadLimit:       readLimit,
-		TimelineLimited: timelineLimited,
-		TimelineLimit:   timelineLimit,
-		TimelineWindow:  timelineWindow,
-		Chain:           result.Chain,
-		Scorecard:       scorecard,
-		Timeline:        buildTimeline(timelineReceipts, timelineStartIndex, result.Chain),
-		TrustedKeyText:  FormatKeyList(TrustedKeysForSession(SignerKeys(receipts), trustedKeys)),
+		ID:                id,
+		Agent:             agentLabel(id, receipts),
+		RecordedLabels:    recordedLabels,
+		LabelsReadLimited: readLimited,
+		ReceiptsEnabled:   true,
+		ReceiptCount:      len(receipts),
+		Receipts:          append([]receipt.Receipt(nil), receipts...),
+		ReadLimited:       readLimited,
+		ReadLimit:         readLimit,
+		TimelineLimited:   timelineLimited,
+		TimelineLimit:     timelineLimit,
+		TimelineWindow:    timelineWindow,
+		Chain:             result.Chain,
+		Scorecard:         scorecard,
+		Timeline:          buildTimeline(timelineReceipts, timelineStartIndex, result.Chain),
+		TrustedKeyText:    FormatKeyList(TrustedKeysForSession(SignerKeys(receipts), trustedKeys)),
 	}
 }
 
@@ -194,6 +212,30 @@ func ScorecardPips(scorecard Scorecard) []SummaryPip {
 		{State: scorecard.Anchored.State, Label: "N"},
 		{State: scorecard.Completeness.State, Label: "C"},
 	}
+}
+
+// RecordedActorLabels returns the distinct actor labels carried by a session's
+// non-lifecycle receipts, sorted.
+//
+// Lifecycle records are excluded for the same reason agentLabel excludes them:
+// the proxy opens a session under its own identity, so counting that record
+// would report an ordinary single-agent session as carrying two labels.
+func RecordedActorLabels(receipts []receipt.Receipt) []string {
+	seen := make(map[string]bool, 2)
+	for _, r := range receipts {
+		if r.ActionRecord.SessionControl != nil {
+			continue
+		}
+		if actor := strings.TrimSpace(r.ActionRecord.Actor); actor != "" {
+			seen[actor] = true
+		}
+	}
+	labels := make([]string, 0, len(seen))
+	for label := range seen {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 func agentLabel(id string, receipts []receipt.Receipt) string {

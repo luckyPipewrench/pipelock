@@ -39,7 +39,41 @@ const (
 	// ActorAuthSelfDeclared means the actor name is unknown or from the
 	// fallback path. Attacker-controllable. Informational only.
 	ActorAuthSelfDeclared ActorAuth = "self-declared"
+
+	// ActorAuthUnknown is the fail-closed grade for a label whose provenance
+	// was never recorded. It is written explicitly rather than left empty so a
+	// consumer can tell "we did not grade this" apart from "no actor present".
+	ActorAuthUnknown ActorAuth = "unknown"
 )
+
+// TrustedForIdentity reports whether a grade is strong enough to present the
+// label as an identity to an external consumer: an OCSF actor.user.name, a CEF
+// suser, or an operator-facing Identity panel.
+//
+// Only ActorAuthBound and ActorAuthConfigDefault qualify. ActorAuthMatched is
+// excluded ON PURPOSE: it means a caller supplied a name that happens to match
+// a configured profile, which proves the name exists, not that the caller is
+// that agent. Any unrecognized or empty grade is untrusted, so an emitter that
+// forgets to record provenance fails closed instead of laundering a
+// caller-controlled string into an identity field.
+func (a ActorAuth) TrustedForIdentity() bool {
+	switch a {
+	case ActorAuthBound, ActorAuthConfigDefault:
+		return true
+	default:
+		return false
+	}
+}
+
+// NormalizeActorAuth maps an empty or unrecognized grade to ActorAuthUnknown.
+func NormalizeActorAuth(raw string) ActorAuth {
+	switch ActorAuth(raw) {
+	case ActorAuthBound, ActorAuthConfigDefault, ActorAuthMatched, ActorAuthSelfDeclared:
+		return ActorAuth(raw)
+	default:
+		return ActorAuthUnknown
+	}
+}
 
 // Envelope is the mediation metadata attached to proxied requests.
 type Envelope struct {

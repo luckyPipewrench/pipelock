@@ -591,8 +591,11 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	admissionEmitter := snap.admissionEmitter
 	clientIP, requestID := requestMeta(r)
 	agent, _ := r.Context().Value(ctxKeyAgent).(string)
+	agentAuth := agentAuthFromContext(r.Context())
 	if agent == "" {
-		agent = edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity).Name
+		resolved := edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
+		agent = resolved.Name
+		agentAuth = string(resolved.Auth)
 	}
 	targetURL := reverseTargetURL(rp.upstream, r)
 	if reservedAgent, ok := edition.RejectedSelfDeclaredReservedControlActor(r, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity); ok {
@@ -619,6 +622,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx = context.WithValue(ctx, ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
+	ctx = context.WithValue(ctx, ctxKeyAgentAuth, agentAuth)
 	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
 	r = r.WithContext(ctx)

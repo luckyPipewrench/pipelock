@@ -66,6 +66,7 @@ const (
 	ctxKeyClientIP contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAgent
+	ctxKeyAgentAuth    // provenance grade for ctxKeyAgent (envelope.ActorAuth)
 	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
 	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
 	ctxKeyAgentContractLoader
@@ -349,6 +350,30 @@ func newHTTPAuditContext(logger *audit.Logger, method, targetURL, clientIP, requ
 		return audit.NewMethodLogContext(method)
 	}
 	return ctx
+}
+
+// agentAuthFromContext returns the provenance grade recorded alongside the
+// agent name. A request that never carried a grade yields ActorAuthUnknown,
+// which every downstream identity surface treats as untrusted.
+func agentAuthFromContext(ctx context.Context) string {
+	if auth, ok := ctx.Value(ctxKeyAgentAuth).(string); ok && auth != "" {
+		return auth
+	}
+	return string(envelope.ActorAuthUnknown)
+}
+
+// newHTTPAuditContextFor builds an audit context that carries the agent label
+// TOGETHER with how that label was established. Prefer it over
+// newHTTPAuditContext on any path that still has the request: without the
+// grade the label is treated as caller-controlled and is withheld from
+// identity-shaped SIEM fields, which is safe but costs a bound deployment the
+// attribution it is entitled to.
+func newHTTPAuditContextFor(r *http.Request, logger *audit.Logger, method, targetURL, clientIP, requestID, agent string) audit.LogContext {
+	actx := newHTTPAuditContext(logger, method, targetURL, clientIP, requestID, agent)
+	if r == nil {
+		return actx
+	}
+	return actx.WithActorAuth(agentAuthFromContext(r.Context()))
 }
 
 func newConnectAuditContext(logger *audit.Logger, target, clientIP, requestID, agent string) audit.LogContext {
@@ -4983,6 +5008,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
+	ctx = context.WithValue(ctx, ctxKeyAgentAuth, string(id.Auth))
 	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)

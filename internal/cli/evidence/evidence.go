@@ -395,7 +395,12 @@ func validateSingleActorReceipts(sessionID string, receipts []receipt.Receipt) e
 		}
 		if actor != boundActor {
 			return fmt.Errorf(
-				"session %q contains receipts for multiple named agents (%q and %q); use the Pro/Enterprise multi-agent evidence console",
+				"session %q contains receipts under two different agent labels (%q and %q). "+
+					"either this session genuinely mixes agents, or a caller supplied the second "+
+					"label: v1 receipts record the label but not how it was established, so they "+
+					"cannot tell these apart. set bind_default_agent_identity to make the label "+
+					"infrastructure-bound, or use the multi-agent evidence console for sessions "+
+					"that really do span agents",
 				sessionID, boundActor, actor,
 			)
 		}

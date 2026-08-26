@@ -88,6 +88,24 @@ func field(label, value string) ExplanationField {
 	return ExplanationField{Present: true, Label: label, Detail: value}
 }
 
+// unprovenLabelField renders an identity-shaped label from an ActionReceipt v1
+// without implying the signature authenticated it.
+//
+// A v1 receipt stores Actor and Principal as bare strings and has no field for
+// how either was established, so the grade computed at request time cannot be
+// recovered from a stored receipt. On an unbound listener the actor label can
+// come straight from the caller-supplied agent header. The signature proves
+// Pipelock recorded this label, not that anyone proved it. Say so here rather
+// than presenting it under an Identity heading as though it were verified.
+func unprovenLabelField(label, value string) ExplanationField {
+	f := field(label, value)
+	if !f.Present {
+		return f
+	}
+	f.Detail = value + " (recorded label, provenance not carried by v1 receipts)"
+	return f
+}
+
 func boolField(label string, value bool, present bool) ExplanationField {
 	if !present {
 		return ExplanationField{Present: false, Label: label, Detail: notReported}
@@ -201,8 +219,8 @@ func ExplainReceipt(r receipt.Receipt) DecisionExplanation {
 		DataClassesOut: sliceField("Data Classes Out", ar.DataClassesOut),
 
 		Target:    field("Target", ar.Target),
-		Actor:     field("Actor", ar.Actor),
-		Principal: field("Principal", ar.Principal),
+		Actor:     unprovenLabelField("Actor", ar.Actor),
+		Principal: unprovenLabelField("Principal", ar.Principal),
 		ChainSeq:  uintField("Chain Seq", ar.ChainSeq, true),
 	}
 }

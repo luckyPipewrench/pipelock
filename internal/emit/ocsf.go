@@ -167,6 +167,8 @@ func FormatOCSFEvent(event Event, deviceVersion string) string {
 				"instance_id":   event.InstanceID,
 				"action":        action,
 				"decision_type": decisionType,
+				"agent_label":   ocsfTruncateString(eventAgent(event)),
+				"agent_auth":    eventAgentAuth(event),
 				"fields":        ocsfJSONValue(event.Fields),
 			},
 		},
@@ -327,9 +329,26 @@ func ocsfActionID(action string) int {
 	}
 }
 
+// ocsfActorFromEvent populates OCSF actor.user.name ONLY from a label whose
+// provenance is trusted for identity.
+//
+// OCSF gives actor.user.name a specific meaning: the identity that performed
+// the activity. A SIEM rule or an analyst reads it as an answer to "who did
+// this". On an unbound listener the agent label is supplied by the caller via
+// the request header or query parameter, so emitting it here would let a
+// requester write arbitrary usernames into the customer security feed, falsely
+// attribute an event to an existing agent, and defeat correlation keyed on
+// that field. Pipelock already strips the same header outbound for exactly
+// this reason (see stripInternalIdentity in internal/proxy/agent.go); this is
+// the same refusal applied to our own evidence.
+//
+// The untrusted label is not discarded. It stays in the Pipelock-namespaced
+// unmapped.pipelock block below, beside agent_auth, so an operator keeps full
+// visibility and can still filter on it without an OCSF consumer mistaking it
+// for an authenticated identity.
 func ocsfActorFromEvent(event Event) *ocsfActor {
-	agent := eventAgent(event)
-	if agent == "" {
+	agent, _, trusted := eventAgentIdentity(event)
+	if agent == "" || !trusted {
 		return nil
 	}
 	return &ocsfActor{User: ocsfUser{Name: agent}}

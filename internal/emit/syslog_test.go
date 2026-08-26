@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 )
@@ -801,9 +803,10 @@ func TestMakeSyslogMessage_CEF(t *testing.T) {
 		Timestamp:  time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
 		InstanceID: testInstanceName,
 		Fields: map[string]any{
-			"action":    conventionActionBlock,
-			"agent":     "agent-a",
-			fieldReason: "header token",
+			"action":     conventionActionBlock,
+			"agent":      "agent-a",
+			"agent_auth": string(envelope.ActorAuthBound),
+			fieldReason:  "header token",
 		},
 	}, FormatCEF, "1.2.3")
 	if err != nil {

@@ -19,6 +19,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/rs/zerolog"
@@ -226,6 +228,22 @@ func (e *logEntry) str(key, value string) *logEntry {
 	e.event = e.event.Str(key, sanitized)
 	e.fields[key] = sanitized
 	return e
+}
+
+// agentField emits the agent label together with its provenance grade. Use
+// this instead of optStr("agent", ...) everywhere: an agent name without its
+// grade is indistinguishable from a caller-controlled label once it reaches an
+// external consumer, so the two must never be emitted separately. An unknown
+// grade is written explicitly rather than omitted, so a consumer can tell
+// "not graded" apart from "field absent".
+func (e *logEntry) agentField(agent, auth string) *logEntry {
+	if agent == "" {
+		return e
+	}
+	if auth == "" {
+		auth = string(envelope.ActorAuthUnknown)
+	}
+	return e.str("agent", agent).str("agent_auth", auth)
 }
 
 func (e *logEntry) optStr(key, value string) *logEntry {
@@ -448,6 +466,7 @@ type LogContext struct {
 	clientIP        string
 	requestID       string
 	agent           string
+	agentAuth       string
 	dowSubjectKey   string
 	dowSubjectTrust string
 }
@@ -459,6 +478,28 @@ func (c LogContext) Resource() string  { return c.resource }
 func (c LogContext) ClientIP() string  { return c.clientIP }
 func (c LogContext) RequestID() string { return c.requestID }
 func (c LogContext) Agent() string     { return c.agent }
+
+// AgentAuth reports the provenance grade of the agent label, using the
+// envelope.ActorAuth vocabulary ("bound", "config-default", "matched",
+// "self-declared"). An empty value means the grade is unknown and MUST be
+// treated as untrusted by every consumer.
+func (c LogContext) AgentAuth() string { return c.agentAuth }
+
+// WithActorAuth records how the agent label was established. It mirrors
+// WithDoWAttribution: the grade travels with the context so downstream
+// emitters can tell an infrastructure-bound identity from a caller-supplied
+// one. A caller that omits it gets the fail-closed unknown treatment.
+func (c LogContext) agentAuthOrUnknown() string {
+	if c.agentAuth == "" {
+		return string(envelope.ActorAuthUnknown)
+	}
+	return c.agentAuth
+}
+
+func (c LogContext) WithActorAuth(auth string) LogContext {
+	c.agentAuth = auth
+	return c
+}
 
 // WithDoWAttribution adds denial-of-wallet subject metadata to a copy of the
 // context. The raw subject key stays process-local and is HMAC-redacted by the
@@ -994,7 +1035,7 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
 		durMS(duration).
-		optStr("agent", ctx.agent)
+		agentField(ctx.agent, ctx.agentAuth)
 	e.msg("request allowed")
 
 	if l.emitter != nil {
@@ -1086,7 +1127,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		optStr("request_id", ctx.requestID).
 		str("scanner", scanner).
 		str("reason", reason).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("display_label", displayLabel).
@@ -1112,7 +1153,7 @@ func (l *Logger) LogError(ctx LogContext, err error) {
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		errField(err)
 	e.msg("request error")
 
@@ -1142,7 +1183,7 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("scanner", scanner).
@@ -1187,7 +1228,7 @@ func (l *Logger) LogAgentIdentityCollision(ctx LogContext, reservedAgent string)
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		str("scanner", scanner).
 		optStr("mitre_technique", technique).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAgentIdentity, "reserved control actor")).
@@ -1252,7 +1293,7 @@ func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) 
 		event = event.Str("request_id", ctx.requestID)
 	}
 	if ctx.agent != "" {
-		event = event.Str("agent", sanitizeString(ctx.agent))
+		event = event.Str("agent", sanitizeString(ctx.agent)).Str("agent_auth", ctx.agentAuthOrUnknown())
 	}
 	event.Msg(msg)
 
@@ -1283,6 +1324,7 @@ func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) 
 		}
 		if ctx.agent != "" {
 			fields["agent"] = sanitizeString(ctx.agent)
+			fields["agent_auth"] = ctx.agentAuthOrUnknown()
 		}
 		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
 	}
@@ -1320,7 +1362,7 @@ func (l *Logger) LogResponseScanExemptOverCapUnscanned(ctx LogContext, hostname,
 		event = event.Str("request_id", ctx.requestID)
 	}
 	if ctx.agent != "" {
-		event = event.Str("agent", sanitizeString(ctx.agent))
+		event = event.Str("agent", sanitizeString(ctx.agent)).Str("agent_auth", ctx.agentAuthOrUnknown())
 	}
 	event.Msg("response scan exempt over-cap response streamed unscanned")
 
@@ -1352,6 +1394,7 @@ func (l *Logger) LogResponseScanExemptOverCapUnscanned(ctx LogContext, hostname,
 		}
 		if ctx.agent != "" {
 			fields["agent"] = sanitizeString(ctx.agent)
+			fields["agent_auth"] = ctx.agentAuthOrUnknown()
 		}
 		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
 	}
@@ -1393,7 +1436,7 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 		str("url", ctx.url).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		str("transport", info.Transport).
 		str("content_type", info.ContentType).
 		optStr("format", info.Format).
@@ -1444,7 +1487,7 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 		strs("patterns", patternNames).
 		str("mitre_technique", technique).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditResponseScan, strings.Join(patternNames, ", "))).
-		optStr("agent", ctx.agent)
+		agentField(ctx.agent, ctx.agentAuth)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)
 	}
@@ -1476,7 +1519,7 @@ func (l *Logger) LogTaintDecision(ctx LogContext, d TaintDecision) {
 		str("url", ctx.url).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		str("session_taint_level", d.TaintLevel).
 		str("action_class", d.ActionClass).
 		str("action_sensitivity", d.Sensitivity).
@@ -1502,7 +1545,7 @@ func (l *Logger) LogTunnelOpen(ctx LogContext) {
 		optStr("target", ctx.target).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent)
+		agentField(ctx.agent, ctx.agentAuth)
 	e.msg("tunnel opened")
 
 	if l.emitter != nil {
@@ -1519,7 +1562,7 @@ func (l *Logger) LogTunnelClose(ctx LogContext, totalBytes int64, duration time.
 		optStr("target", ctx.target).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		int64Field("total_bytes", totalBytes).
 		durMS(duration)
 	e.msg("tunnel closed")
@@ -1541,7 +1584,7 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
 		durMS(duration)
@@ -1559,7 +1602,7 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 		str("redirect_url", redirectURL).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
-		optStr("agent", agent).
+		agentField(agent, string(envelope.ActorAuthUnknown)).
 		intField("hop", hop)
 	e.msg("redirect followed")
 
@@ -1725,7 +1768,7 @@ func (l *Logger) LogShutdown(reason string) {
 func (l *Logger) LogAgentListener(addr, agent string) {
 	e := newLogEntry(l.zl.Info(), EventAgentListener).
 		str("listen", addr).
-		str("agent", agent)
+		agentField(agent, string(envelope.ActorAuthUnknown))
 	e.msg("agent listener started")
 
 	if l.emitter != nil {
@@ -1742,7 +1785,7 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 		str("target", target).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
-		str("agent", agent)
+		agentField(agent, string(envelope.ActorAuthUnknown))
 	e.msg("websocket opened")
 
 	if l.emitter != nil {
@@ -2042,7 +2085,7 @@ func (l *Logger) LogSNIMismatch(connectHost, sniHost, clientIP, requestID, agent
 		str("sni_host", sniHost).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
-		optStr("agent", agent).
+		agentField(agent, string(envelope.ActorAuthUnknown)).
 		str("category", category).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditSNIMismatch, category)).
 		str("mitre_technique", technique)
@@ -2083,7 +2126,7 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.ScannerBodyDLP, "")).
@@ -2111,7 +2154,7 @@ func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string,
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		intField("match_count", matchCount).
 		strs("findings", findingNames).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(string(eventType), strings.Join(findingNames, ", "))).
@@ -2137,7 +2180,7 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
-		optStr("agent", ctx.agent).
+		agentField(ctx.agent, ctx.agentAuth).
 		strs("patterns", patternNames).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditHeaderDLP, strings.Join(patternNames, ", "))).
 		str("mitre_technique", technique)

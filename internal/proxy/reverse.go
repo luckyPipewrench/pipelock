@@ -1862,7 +1862,7 @@ responseScanning:
 		// neither enabled control would inspect.
 		if !cfg.ResponseScanning.Enabled {
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
-			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
+			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "sse_stream_unscanned")
 			return nil
 		}
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
@@ -2084,12 +2084,7 @@ responseScanning:
 			if sizeExact {
 				reasonSize = int64(observedSize)
 			}
-			oversizedReason := responseSizeBlockReason(revHost, reasonSize, int64(maxBytes), "", true)
-			if !sizeExact {
-				oversizedReason = strings.Replace(oversizedReason,
-					fmt.Sprintf("is %d bytes", reasonSize),
-					fmt.Sprintf("is at least %d bytes", reasonSize), 1)
-			}
+			oversizedReason := responseSizeObservedBlockReason(revHost, reasonSize, int64(maxBytes), "", true, sizeExact)
 			_ = resp.Body.Close()
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "oversized")

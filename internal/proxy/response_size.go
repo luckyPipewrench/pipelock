@@ -12,8 +12,18 @@ import "fmt"
 // send an operator to a knob that cannot lift their block. A remediation hint
 // must only name knobs the blocking path consults.
 func responseSizeBlockReason(host string, size, limit int64, knob string, sizeExemptHonored bool) string {
+	return responseSizeObservedBlockReason(host, size, limit, knob, sizeExemptHonored, true)
+}
+
+// responseSizeObservedBlockReason distinguishes a complete size from the lower
+// bound produced by a limited read of a streamed response.
+func responseSizeObservedBlockReason(host string, size, limit int64, knob string, sizeExemptHonored, exact bool) string {
 	if host == "" {
 		host = "unknown-host"
+	}
+	sizeText := fmt.Sprintf("%d bytes", size)
+	if !exact {
+		sizeText = fmt.Sprintf("at least %d bytes", size)
 	}
 	// An empty knob means this transport's ceiling is a compile-time constant
 	// with nothing to raise. Lead with the remedy that does exist, and say the
@@ -23,13 +33,13 @@ func responseSizeBlockReason(host string, size, limit int64, knob string, sizeEx
 		const fixed = "this transport's scan ceiling is fixed and cannot be raised by configuration"
 		if sizeExemptHonored {
 			return fmt.Sprintf(
-				"response from %s is %d bytes, exceeding scan ceiling %d bytes; add the trusted host to response_scanning.size_exempt_domains (%s)",
-				host, size, limit, fixed,
+				"response from %s is %s, exceeding scan ceiling %d bytes; add the trusted host to response_scanning.size_exempt_domains (%s)",
+				host, sizeText, limit, fixed,
 			)
 		}
 		return fmt.Sprintf(
-			"response from %s is %d bytes, exceeding scan ceiling %d bytes; %s and this path has no per-host size exemption",
-			host, size, limit, fixed,
+			"response from %s is %s, exceeding scan ceiling %d bytes; %s and this path has no per-host size exemption",
+			host, sizeText, limit, fixed,
 		)
 	}
 	remedy := fmt.Sprintf("raise %s", knob)
@@ -41,7 +51,7 @@ func responseSizeBlockReason(host string, size, limit int64, knob string, sizeEx
 		// otherwise assume it applies here and quietly get no effect.
 		remedy += " (this path has no per-host size exemption)"
 	}
-	return fmt.Sprintf("response from %s is %d bytes, exceeding scan ceiling %d bytes; %s", host, size, limit, remedy)
+	return fmt.Sprintf("response from %s is %s, exceeding scan ceiling %d bytes; %s", host, sizeText, limit, remedy)
 }
 
 func responseSizeExemptScanBlockReason(host string, size, limit int64) string {

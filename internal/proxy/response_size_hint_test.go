@@ -48,3 +48,15 @@ func TestResponseSizeBlockReasonOnlyNamesConsultedKnobs(t *testing.T) {
 		}
 	})
 }
+
+func TestResponseSizeObservedBlockReasonMarksLowerBound(t *testing.T) {
+	t.Parallel()
+
+	got := responseSizeObservedBlockReason("api.vendor.example", 2048, 1024, "", true, false)
+	if !strings.Contains(got, "is at least 2048 bytes") {
+		t.Fatalf("reason = %q, want streamed lower-bound wording", got)
+	}
+	if strings.Contains(got, "is 2048 bytes") {
+		t.Fatalf("reason = %q, must not claim an exact streamed size", got)
+	}
+}

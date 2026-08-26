@@ -256,7 +256,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
 
-	actx := newHTTPAuditContext(log, "WS", targetURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(r.Context(), log, "WS", targetURL, clientIP, requestID, agent)
 
 	// Run through all 9 scanner layers.
 	wsScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -1291,6 +1291,14 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 // applyRequestPolicy's shared finalizer. Only complete, UTF-8-validated text
 // frames reach here - the fragment-reassembly boundary (and binary frames,
 // which are not operation text) is a documented limit.
+// auditProvenanceCtx carries the relay's recorded agent provenance to an audit
+// context. A long-lived relay outlives the originating request, so the grade is
+// kept on the relay itself rather than read back off a request that may already
+// be done.
+func (r *wsRelay) auditProvenanceCtx() context.Context {
+	return context.WithValue(context.Background(), ctxKeyAgentAuth, string(r.actorAuth))
+}
+
 func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in := requestPolicyInput{
 		Host:        r.hostname,
@@ -1308,7 +1316,7 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in.Target = r.targetURL
 	in.RequestID = r.requestID
 	in.Agent = r.agent
-	in.AuditCtx = newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
+	in.AuditCtx = newHTTPAuditContext(r.auditProvenanceCtx(), log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
 	in.Emit = func(opts receipt.EmitOpts) error {
 		return r.proxy.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, r.cfg.CanonicalPolicyHash()))
 	}
@@ -2665,7 +2673,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Complete message. Count and scan.
 		if opCode == ws.OpBinary {
 			r.observeUpstreamResponseTaint(false)
-			actx := newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
+			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
 			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
 			logMediaExposureIfPresent(log, actx, mediaVerdict, TransportWS)
 			if mediaVerdict.Blocked {

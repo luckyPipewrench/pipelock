@@ -963,7 +963,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		}))
 	}
-	actx := newHTTPAuditContext(p.logger, r.Method, targetURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(r.Context(), p.logger, r.Method, targetURL, clientIP, requestID, agent)
 
 	// Scan through all layers (URL pipeline)
 	fwdScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{

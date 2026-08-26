@@ -116,7 +116,7 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 	if err != nil {
 		return err
 	}
-	html, err := renderSessionHTML(cmd, location, sessionID, trusted, opts.title)
+	html, err := renderSessionHTML(location, sessionID, trusted, opts.title)
 	if err != nil {
 		return err
 	}
@@ -310,7 +310,7 @@ func evidenceServeHandler(location recorder.EvidenceLocation, sessionID string) 
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		html, err := renderSessionHTML(nil, location, sessionID, nil, "Pipelock Evidence Report")
+		html, err := renderSessionHTML(location, sessionID, nil, "Pipelock Evidence Report")
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "evidence serve: render evidence report: %v\n", err)
 			http.Error(w, "render evidence report", http.StatusInternalServerError)
@@ -323,7 +323,6 @@ func evidenceServeHandler(location recorder.EvidenceLocation, sessionID string) 
 }
 
 func renderSessionHTML(
-	cmd *cobra.Command,
 	location recorder.EvidenceLocation,
 	sessionID string,
 	trusted map[string]evidenceview.TrustedKey,

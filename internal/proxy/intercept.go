@@ -531,7 +531,7 @@ func newInterceptHandler(
 		if ic.Proxy != nil {
 			if err := ic.Proxy.verifyInboundEnvelope(r, ic.Config); err != nil {
 				pattern := inboundEnvelopeFailurePattern(err)
-				ic.Logger.LogBlocked(newHTTPAuditContext(ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent),
+				ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent),
 					blockLayerMediationEnvelope, pattern)
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerMediationEnvelope)
 				_ = interceptEmitReceipt(ic, receipt.EmitOpts{
@@ -571,7 +571,7 @@ func newInterceptHandler(
 		if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
 			mismatch := r.Host + " vs " + target
 			mismatchURL := schemeHTTPS + "://" + net.JoinHostPort(reqHost, reqPort) + r.URL.RequestURI()
-			ic.Logger.LogBlocked(newHTTPAuditContext(ic.Logger, r.Method, mismatchURL, ic.ClientIP, ic.RequestID, ic.Agent), "tls_authority_mismatch", "authority mismatch: "+mismatch)
+			ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, r.Method, mismatchURL, ic.ClientIP, ic.RequestID, ic.Agent), "tls_authority_mismatch", "authority mismatch: "+mismatch)
 			ic.Metrics.RecordTLSRequestBlocked("authority_mismatch")
 			_ = interceptEmitReceipt(ic, receipt.EmitOpts{
 				ActionID:  actionID,
@@ -609,7 +609,7 @@ func newInterceptHandler(
 
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
-		actx := newHTTPAuditContext(ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent)
+		actx := newHTTPAuditContext(r.Context(), ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent)
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that

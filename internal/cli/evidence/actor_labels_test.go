@@ -4,12 +4,9 @@
 package evidence
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
@@ -70,9 +67,9 @@ func readSessionReceipts(t *testing.T, dir string) []receipt.Receipt {
 
 // renderForTest drives the real render path so the assertions below cover the
 // template an operator actually sees, not a hand-built struct.
-func renderForTest(t *testing.T, cmd *cobra.Command, dir string) string {
+func renderForTest(t *testing.T, dir string) string {
 	t.Helper()
-	html, err := renderSessionHTML(cmd, resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report")
+	html, err := renderSessionHTML(resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report")
 	if err != nil {
 		t.Fatalf("renderSessionHTML: %v", err)
 	}
@@ -108,12 +105,7 @@ func TestOrdinarySessionRendersAndClaimsNoIdentity(t *testing.T) {
 	_, key := genKey(t)
 	emitLifecycleThenActions(t, dir, key, "pipelock", "agent-alpha", "agent-alpha")
 
-	var out bytes.Buffer
-	cmd := Cmd()
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-
-	html := renderForTest(t, cmd, dir)
+	html := renderForTest(t, dir)
 
 	if strings.Contains(html, "<b>Agent</b> agent-alpha") {
 		t.Fatal("a v1 label is still presented as an established identity")
@@ -141,12 +133,7 @@ func TestTwoNamedLabelsStillRefusedAndDoNotLeak(t *testing.T) {
 	_, key := genKey(t)
 	emitLifecycleThenActions(t, dir, key, "pipelock", "agent-alpha", "agent-bravo")
 
-	cmd := Cmd()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-
-	_, err := renderSessionHTML(cmd, resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report")
+	_, err := renderSessionHTML(resolveTestEvidenceLocation(t, dir), "proxy", nil, "Pipelock Evidence Report")
 	if err == nil {
 		t.Fatal("a genuinely two-agent session must not render in the single-agent view")
 	}

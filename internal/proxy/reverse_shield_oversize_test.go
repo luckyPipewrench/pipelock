@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -97,6 +99,33 @@ func reverseShieldResponseHarnessWithContentType(t *testing.T, strictness, actio
 	t.Cleanup(proxySrv.Close)
 
 	return testGet(t, proxySrv.URL+"/page")
+}
+
+func reverseShieldConfiguredServer(t *testing.T, cfg *config.Config, upstream http.HandlerFunc, configure func(*config.Config, *url.URL), logger *audit.Logger) *httptest.Server {
+	t.Helper()
+	upstreamSrv := httptest.NewServer(upstream)
+	t.Cleanup(upstreamSrv.Close)
+	upstreamURL, err := url.Parse(upstreamSrv.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	if configure != nil {
+		configure(cfg, upstreamURL)
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	if logger == nil {
+		logger, _ = audit.New("json", "stdout", "", false, false)
+		t.Cleanup(logger.Close)
+	}
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+	proxySrv := httptest.NewServer(handler)
+	t.Cleanup(proxySrv.Close)
+	return proxySrv
 }
 
 // With response injection scanning disabled, Browser Shield must use its own
@@ -295,11 +324,102 @@ func TestReverseProxy_ShieldOversize_BlockEmitsReceiptAndOutcome(t *testing.T) {
 	assertReverseIntentOutcomePair(t, receipts, "status=403", "reason=shield_oversize")
 }
 
+func TestReverseProxy_ShieldOversize_WarnEmitsReceiptAndOutcome(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+	page := oversizeShieldPage(oversizeShieldTestCap * 2)
+	proxySrv, dir, closeRec := reverseReceiptParitySetupWithShield(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, page)
+	}, shield.NewEngine(nil))
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("warn status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	warn := findReceiptByLayer(t, receipts, "shield_oversize")
+	if warn.ActionRecord.Verdict != config.ActionAllow {
+		t.Errorf("warn receipt verdict = %q, want %q", warn.ActionRecord.Verdict, config.ActionAllow)
+	}
+	if warn.ActionRecord.Shield == nil || !warn.ActionRecord.Shield.Partial || warn.ActionRecord.Shield.ScannedBytes != 0 {
+		t.Fatalf("warn receipt must disclose an unscanned partial body: %+v", warn.ActionRecord.Shield)
+	}
+	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=shield_oversize_warn")
+}
+
+func TestReverseProxy_ShieldOnlyUnknownLengthReceiptDoesNotClaimExactSize(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+	page := oversizeShieldPage(oversizeShieldTestCap * 2)
+	proxySrv, dir, closeRec := reverseReceiptParitySetupWithShield(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = io.WriteString(w, page)
+	}, shield.NewEngine(nil))
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	warn := findReceiptByLayer(t, receipts, "shield_oversize")
+	if got := warn.ActionRecord.Shield.BodyBytes; got != 0 {
+		t.Fatalf("unknown-length receipt body_bytes = %d, want omitted/zero", got)
+	}
+	if !strings.Contains(warn.ActionRecord.Pattern, "at least") {
+		t.Fatalf("unknown-length reason presents lower bound as exact: %q", warn.ActionRecord.Pattern)
+	}
+}
+
+func TestReverseProxy_ResponseScannerUnknownLengthOversizeUsesLowerBound(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.BrowserShield.Enabled = false
+	page := strings.Repeat("ordinary response text ", reverseProxyMaxBodyBytes/10)
+	proxySrv := reverseShieldConfiguredServer(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = io.WriteString(w, page)
+	}, nil, nil)
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown-length oversize response status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if !strings.Contains(string(body), "is at least") {
+		t.Fatalf("unknown-length block reason presents lower bound as exact: %s", body)
+	}
+}
+
 // scan_head emits an allow receipt for the rewrite. Its signed summary must
 // disclose that only the head was shielded; otherwise a receipt can describe a
 // partial transformation as if it covered the entire response.
 func TestReverseProxy_ShieldOversize_ScanHeadEmitsPartialReceipt(t *testing.T) {
 	cfg := reverseTestConfig()
+	cfg.FlightRecorder.RequireReceipts = true
 	cfg.BrowserShield.Enabled = true
 	cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
 	cfg.BrowserShield.StripTrackingPixels = true
@@ -337,6 +457,7 @@ func TestReverseProxy_ShieldOversize_ScanHeadEmitsPartialReceipt(t *testing.T) {
 	if got, want := r.ActionRecord.Shield.ScannedBytes, cfg.BrowserShield.MaxShieldBytes; got != want {
 		t.Errorf("scan_head receipt scanned_bytes = %d, want %d", got, want)
 	}
+	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=shield_oversize_scan_head")
 }
 
 func TestReverseProxy_ShieldOversize_CleanScanHeadEmitsPartialReceipt(t *testing.T) {
@@ -481,6 +602,78 @@ func TestReverseProxy_ShieldRunsWhenResponseScanningDisabled(t *testing.T) {
 	}
 	if strings.Contains(string(body), "tracker.vendor.example") {
 		t.Fatal("Browser Shield was skipped when response scanning was disabled")
+	}
+}
+
+func TestReverseProxy_ShieldRunsForGenericMIMEWhenResponseScanningDisabled(t *testing.T) {
+	page := "<html><body><img src=\"https://tracker.vendor.example/p.gif\" width=\"1\" height=\"1\"></body></html>"
+	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 1<<20, "application/octet-stream", page)
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("generic MIME response status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if strings.Contains(string(body), "tracker.vendor.example") {
+		t.Fatal("generic MIME HTML bypassed Browser Shield")
+	}
+}
+
+func TestReverseProxy_ShieldExemptHostPassesLargeResponseWhenResponseScanningDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	page := oversizeShieldPage(reverseProxyMaxBodyBytes + 4096)
+	proxySrv := reverseShieldConfiguredServer(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, page)
+	}, func(cfg *config.Config, upstreamURL *url.URL) {
+		cfg.BrowserShield.ExemptDomains = []string{upstreamURL.Hostname()}
+	}, nil)
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("shield-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if string(body) != page {
+		t.Fatal("shield-exempt response was modified or truncated")
+	}
+}
+
+func TestReverseProxy_ShieldOversize_ScanHeadEmitsAudit(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+	page := oversizeShieldPage(oversizeShieldTestCap * 2)
+	auditPath := t.TempDir() + "/audit.log"
+	logger, err := audit.New("json", "file", auditPath, false, false)
+	if err != nil {
+		t.Fatalf("create audit logger: %v", err)
+	}
+	proxySrv := reverseShieldConfiguredServer(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, page)
+	}, nil, logger)
+	resp := testGet(t, proxySrv.URL+"/page")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	logger.Close()
+	logBytes, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if !bytes.Contains(logBytes, []byte("shield_oversize_scan_head")) {
+		t.Fatalf("scan_head audit event missing: %s", logBytes)
 	}
 }
 

@@ -58,14 +58,25 @@ func responseSizeExemptScanBlockReason(host string, size, limit int64) string {
 // knob the message never named; legal texts and long specs trip this cap
 // routinely, so the block page has to carry its own remediation.
 func shieldOversizeBlockReason(host string, size, limit int) string {
+	return shieldOversizeObservedReason(host, size, limit, true)
+}
+
+// shieldOversizeObservedReason keeps streamed oversize evidence honest. A
+// limit reader proves only that an unknown-length body is larger than the
+// configured cap; it does not know the final byte count.
+func shieldOversizeObservedReason(host string, size, limit int, exact bool) string {
 	if host == "" {
 		host = "unknown-host"
 	}
+	sizeText := fmt.Sprintf("%d bytes", size)
+	if !exact {
+		sizeText = fmt.Sprintf("at least %d bytes", size)
+	}
 	return fmt.Sprintf(
-		"response from %s is %d bytes, exceeding browser_shield.max_shield_bytes %d; "+
+		"response from %s is %s, exceeding browser_shield.max_shield_bytes %d; "+
 			"raise browser_shield.max_shield_bytes, set browser_shield.oversize_action to scan_head "+
 			"(shields the first max_shield_bytes and passes the rest unshielded), "+
 			"or add the trusted host to browser_shield.exempt_domains",
-		host, size, limit,
+		host, sizeText, limit,
 	)
 }

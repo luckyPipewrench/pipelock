@@ -605,17 +605,27 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
-	for _, responseScanningEnabled := range []bool{true, false} {
-		t.Run(fmt.Sprintf("response_scanning_%t", responseScanningEnabled), func(t *testing.T) {
+	tests := []struct {
+		name                    string
+		responseScanningEnabled bool
+		scanMaxBytes            int
+		wantStatus              int
+	}{
+		{name: "response_scanning_enabled", responseScanningEnabled: true, scanMaxBytes: len(page) + 1024, wantStatus: http.StatusOK},
+		{name: "shield_only", responseScanningEnabled: false, scanMaxBytes: len(page) + 1024, wantStatus: http.StatusOK},
+		{name: "shield_only_exceeds_bounded_ceiling", responseScanningEnabled: false, scanMaxBytes: shieldCap * 2, wantStatus: http.StatusForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			cfg := reverseTestConfig()
-			cfg.ResponseScanning.Enabled = responseScanningEnabled
+			cfg.ResponseScanning.Enabled = tc.responseScanningEnabled
 			cfg.BrowserShield.Enabled = true
 			cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
 			cfg.BrowserShield.StripTrackingPixels = true
 			cfg.BrowserShield.MaxShieldBytes = shieldCap
 			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
 			cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
-			cfg.ResponseScanning.SizeExemptScanMaxBytes = len(page) + 1024
+			cfg.ResponseScanning.SizeExemptScanMaxBytes = tc.scanMaxBytes
 			cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = cfg.ResponseScanning.SizeExemptScanMaxBytes
 
 			sc := scanner.MustNew(cfg)
@@ -634,14 +644,14 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 
 			resp := testGet(t, proxySrv.URL+"/page")
 			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("bounded size-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("bounded size-exempt response status = %d, want %d", resp.StatusCode, tc.wantStatus)
 			}
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatalf("read response: %v", err)
 			}
-			if strings.Contains(string(body), "tracker.vendor.example") {
+			if tc.wantStatus == http.StatusOK && strings.Contains(string(body), "tracker.vendor.example") {
 				t.Fatal("tracking pixel beyond the ordinary shield cap survived whole-body shielding")
 			}
 		})

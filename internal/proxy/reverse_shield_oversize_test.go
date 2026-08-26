@@ -660,6 +660,9 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 			if tc.wantStatus == http.StatusOK && strings.Contains(string(body), "tracker.vendor.example") {
 				t.Fatal("tracking pixel beyond the ordinary shield cap survived whole-body shielding")
 			}
+			if tc.wantStatus == http.StatusOK && !strings.Contains(string(body), "</body></html>") {
+				t.Fatal("bounded whole-body shielding did not preserve the response tail")
+			}
 			if tc.wantBodyContains != "" && !strings.Contains(string(body), tc.wantBodyContains) {
 				t.Fatalf("response body %q does not contain %q", body, tc.wantBodyContains)
 			}

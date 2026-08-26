@@ -47,6 +47,18 @@ func TestResponseSizeReasonUsesUnknownHostFallback(t *testing.T) {
 	}
 }
 
+func TestResponseSizeExemptObservedReasonMarksLowerBound(t *testing.T) {
+	t.Parallel()
+
+	got := responseSizeExemptObservedScanBlockReason("api.vendor.example", 11, 10, false)
+	if !strings.Contains(got, "is at least 11 bytes") {
+		t.Fatalf("reason = %q, want bounded-read lower-bound wording", got)
+	}
+	if strings.Contains(got, "is 11 bytes") {
+		t.Fatalf("reason = %q, must not claim an exact bounded-read size", got)
+	}
+}
+
 func TestSizeExemptResponseHelpersCoverBoundaryBranches(t *testing.T) {
 	t.Run("nilReadErrorString", func(t *testing.T) {
 		var scanErr *sizeExemptResponseReadError
@@ -108,6 +120,19 @@ func TestSizeExemptResponseHelpersCoverBoundaryBranches(t *testing.T) {
 		release()
 		if got := budget.inflightBytes.Load(); got != 0 {
 			t.Fatalf("inflight bytes after release = %d, want 0", got)
+		}
+	})
+
+	t.Run("boundedOversizeReportsLowerBound", func(t *testing.T) {
+		var budget sizeExemptScanBudget
+
+		_, release, scanErr := budget.readBoundedSizeExemptResponse("api.vendor.example", nil, strings.NewReader("12345"), 3, 6)
+		release()
+		if scanErr == nil {
+			t.Fatal("expected bounded oversize error")
+		}
+		if !strings.Contains(scanErr.Reason, "is at least 4 bytes") {
+			t.Fatalf("reason = %q, want ceiling+1 lower-bound wording", scanErr.Reason)
 		}
 	})
 }

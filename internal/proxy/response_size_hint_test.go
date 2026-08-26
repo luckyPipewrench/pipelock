@@ -48,3 +48,41 @@ func TestResponseSizeBlockReasonOnlyNamesConsultedKnobs(t *testing.T) {
 		}
 	})
 }
+
+func TestResponseSizeObservedBlockReasonMarksLowerBound(t *testing.T) {
+	t.Parallel()
+
+	got := responseSizeObservedBlockReason("api.vendor.example", 2048, 1024, "", true, false)
+	if !strings.Contains(got, "is at least 2048 bytes") {
+		t.Fatalf("reason = %q, want streamed lower-bound wording", got)
+	}
+	if strings.Contains(got, "is 2048 bytes") {
+		t.Fatalf("reason = %q, must not claim an exact streamed size", got)
+	}
+}
+
+func TestReverseObservedBodyBytesPreservesKnownInformation(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		contentLength int64
+		observed      int
+		complete      bool
+		wantBytes     int
+		wantExact     bool
+	}{
+		{name: "complete read", contentLength: -1, observed: 17, complete: true, wantBytes: 17, wantExact: true},
+		{name: "declared length", contentLength: 29, observed: 17, wantBytes: 29, wantExact: true},
+		{name: "unknown length", contentLength: -1, observed: 17, wantBytes: 17, wantExact: false},
+		{name: "invalid short declared length", contentLength: 12, observed: 17, wantBytes: 17, wantExact: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotBytes, gotExact := reverseObservedBodyBytes(tc.contentLength, tc.observed, tc.complete)
+			if gotBytes != tc.wantBytes || gotExact != tc.wantExact {
+				t.Fatalf("reverseObservedBodyBytes() = (%d, %t), want (%d, %t)", gotBytes, gotExact, tc.wantBytes, tc.wantExact)
+			}
+		})
+	}
+}

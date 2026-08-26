@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // reverseReceiptParitySetup wires the same plumbing as reverseTestSetup
@@ -92,6 +93,31 @@ func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Con
 			t.Fatalf("recorder close: %v", err)
 		}
 	}
+}
+
+func waitForReverseOutcomeReceipt(t *testing.T, dir string) {
+	t.Helper()
+	testwait.For(t, waitForReceiptTimeout, func() bool {
+		entries, err := os.ReadDir(filepath.Clean(dir))
+		if err != nil {
+			return false
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+				continue
+			}
+			receipts, extractErr := receipt.ExtractReceipts(filepath.Join(dir, entry.Name()))
+			if extractErr != nil {
+				continue
+			}
+			for _, rcpt := range receipts {
+				if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && rcpt.ActionRecord.Transport == TransportReverse {
+					return true
+				}
+			}
+		}
+		return false
+	}, "reverse outcome receipt in %s", dir)
 }
 
 func TestReverseEmitReceipt_NoV1EmitterSkipsV2(t *testing.T) {
@@ -805,6 +831,21 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 			},
 		},
 		{
+			name:        "unscanned SSE stream",
+			path:        "/events",
+			wantStatus:  http.StatusOK,
+			wantPattern: []string{"status=200", "reason=sse_stream_unscanned"},
+			setup: func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func()) {
+				t.Helper()
+				cfg.ResponseScanning.Enabled = false
+				cfg.BrowserShield.Enabled = true
+				return reverseReceiptParitySetupWithShield(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: done\n\n"))
+				}, shield.NewEngine(nil))
+			},
+		},
+		{
 			name:        "media block",
 			path:        "/clip.mp3",
 			wantStatus:  http.StatusForbidden,
@@ -914,7 +955,7 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
 			}
 
-			waitForReceiptOrTimeout(t, dir)
+			waitForReverseOutcomeReceipt(t, dir)
 			closeRec()
 			receipts := extractReceiptsFromDir(t, dir)
 			assertReverseIntentOutcomePair(t, receipts, tc.wantPattern...)
@@ -1538,8 +1579,10 @@ func TestReceiptCoverage_ReverseOversizeBlock_EmitsReceipt(t *testing.T) {
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
 	}
-	if !strings.Contains(r.ActionRecord.Pattern, "scanning limit") {
-		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "scanning limit")
+	// The receipt carries the same explaining reason the client sees, so an
+	// auditor reading the chain learns why the response was refused.
+	if !strings.Contains(r.ActionRecord.Pattern, "exceeding scan ceiling") {
+		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "exceeding scan ceiling")
 	}
 }
 

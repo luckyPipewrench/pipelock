@@ -8,6 +8,7 @@ package runtime
 import "testing"
 
 func TestNewServer_ConductorCarriesVerifiedLicenseWarningMetadata(t *testing.T) {
+	t.Setenv("PIPELOCK_HOME", t.TempDir())
 	s, _ := newConductorApplyTestServer(t)
 	cfg := s.proxy.CurrentConfig()
 	if cfg.LicenseIssuedAt == 0 || cfg.LicenseExpiresAt == 0 {

@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -321,7 +322,32 @@ func TestReverseProxy_ShieldOversize_BlockEmitsReceiptAndOutcome(t *testing.T) {
 	if block.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("shield oversize receipt verdict = %q, want %q", block.ActionRecord.Verdict, config.ActionBlock)
 	}
-	assertReverseIntentOutcomePair(t, receipts, "status=403", "reason=shield_oversize")
+	assertReverseIntentOutcomePair(t, receipts,
+		"status=403",
+		fmt.Sprintf("bytes=%d", len(page)),
+		"reason=shield_oversize",
+		"bytes_exact=true",
+	)
+}
+
+func TestReceiptObservedOutcomePatternPreservesExactness(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		exact bool
+	}{
+		{name: "known content length", exact: true},
+		{name: "streamed lower bound", exact: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := receiptObservedOutcomePattern("403", 2049, "shield_oversize", tc.exact)
+			want := fmt.Sprintf("status=403 bytes=2049 reason=shield_oversize bytes_exact=%t", tc.exact)
+			if got != want {
+				t.Fatalf("outcome pattern = %q, want %q", got, want)
+			}
+		})
+	}
 }
 
 func TestReverseProxy_ShieldOversize_WarnEmitsReceiptAndOutcome(t *testing.T) {

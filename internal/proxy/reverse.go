@@ -352,13 +352,26 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 }
 
 func (rp *ReverseProxyHandler) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string) {
+	rp.emitOutcomeReceiptWithPattern(cfg, opts, receiptOutcomePattern(status, bytesTransferred, reason))
+}
+
+func (rp *ReverseProxyHandler) emitObservedOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string, exact bool) {
+	pattern := receiptObservedOutcomePattern(status, bytesTransferred, reason, exact)
+	rp.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
+}
+
+func receiptObservedOutcomePattern(status string, bytesTransferred int64, reason string, exact bool) string {
+	return receiptOutcomePattern(status, bytesTransferred, reason) + " bytes_exact=" + strconv.FormatBool(exact)
+}
+
+func (rp *ReverseProxyHandler) emitOutcomeReceiptWithPattern(cfg *config.Config, opts receipt.EmitOpts, pattern string) {
 	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
 		return
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
 	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
-	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
+	opts.Pattern = pattern
 	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	e := rp.receiptEmitter()
 	if e == nil {
@@ -1119,6 +1132,7 @@ type reverseOutcomeTracker struct {
 	status           string
 	bytesTransferred int64
 	reason           string
+	bytesExact       *bool
 	emitted          bool
 }
 
@@ -1161,6 +1175,26 @@ func (t *reverseOutcomeTracker) Record(status int, bytesTransferred int64, reaso
 	t.status = statusText
 	t.bytesTransferred = bytesTransferred
 	t.reason = reason
+	t.bytesExact = nil
+}
+
+func (t *reverseOutcomeTracker) RecordObserved(status int, bytesTransferred int64, reason string, exact bool) {
+	if t == nil {
+		return
+	}
+	statusText := "unknown"
+	if status > 0 {
+		statusText = strconv.Itoa(status)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.emitted {
+		return
+	}
+	t.status = statusText
+	t.bytesTransferred = bytesTransferred
+	t.reason = reason
+	t.bytesExact = &exact
 }
 
 func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
@@ -1178,7 +1212,12 @@ func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
 	status := t.status
 	bytesTransferred := t.bytesTransferred
 	reason := t.reason
+	bytesExact := t.bytesExact
 	t.mu.Unlock()
+	if bytesExact != nil {
+		rp.emitObservedOutcomeReceipt(cfg, opts, status, bytesTransferred, reason, *bytesExact)
+		return
+	}
 	rp.emitOutcomeReceipt(cfg, opts, status, bytesTransferred, reason)
 }
 
@@ -1445,6 +1484,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	recordReverseOutcome := func(status int, bytesTransferred int64, reason string) {
 		outcomeTracker.Record(status, bytesTransferred, reason)
 	}
+	recordReverseObservedOutcome := func(status int, bytesTransferred int64, reason string, exact bool) {
+		outcomeTracker.RecordObserved(status, bytesTransferred, reason, exact)
+	}
 
 	// Record the final client-visible status at each exit point, not here.
 	// The upstream status may be rewritten to 403 by scanning decisions.
@@ -1535,11 +1577,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				Agent:     agent,
 			})
 			replaceWithBlockReason(resp, reason)
-			outcomeBytes := int64(-1)
-			if bodyBytesExact {
-				outcomeBytes = int64(bodyBytes)
-			}
-			recordReverseOutcome(http.StatusForbidden, outcomeBytes, "shield_oversize")
+			recordReverseObservedOutcome(http.StatusForbidden, int64(bodyBytes), "shield_oversize", bodyBytesExact)
 			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: "shield_oversize"}
 		}
 	}
@@ -2102,11 +2140,7 @@ responseScanning:
 				Agent:     agent,
 			})
 			replaceWithBlockReason(resp, oversizedReason)
-			outcomeBytes := int64(-1)
-			if sizeExact {
-				outcomeBytes = int64(observedSize)
-			}
-			recordReverseOutcome(http.StatusForbidden, outcomeBytes, "oversized")
+			recordReverseObservedOutcome(http.StatusForbidden, int64(observedSize), "oversized", sizeExact)
 			return nil
 		}
 	}

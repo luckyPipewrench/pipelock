@@ -3193,28 +3193,31 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		return body, nil, false
 	}
 
-	// Max shield bytes: enforce oversize action. Only runs for content the
-	// shield would rewrite (HTML/JS/SVG) per the gate above.
-	if cfg.BrowserShield.MaxShieldBytes > 0 && len(body) > cfg.BrowserShield.MaxShieldBytes {
+	// Max shield bytes: enforce oversize action. A size-exempt response already
+	// admitted to the bounded whole-buffer path can reuse that path's larger
+	// ceiling. Over-cap bodies retain the inflight reservation until this work
+	// finishes; under-cap bodies remain bounded by the normal scan ceiling.
+	shieldMaxBytes := shieldMaxBytesForResponse(cfg, hostname, transport)
+	if shieldMaxBytes > 0 && len(body) > shieldMaxBytes {
 		p.metrics.RecordShieldSkipped("oversize")
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
 			p.metrics.RecordShieldOversizeScanHead(transport)
 			// Rewrite only the head; append the unshielded tail so the full
 			// response body is returned intact.
-			head, summary := p.runShieldPipelineResult(body[:cfg.BrowserShield.MaxShieldBytes], contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
+			head, summary := p.runShieldPipelineResult(body[:shieldMaxBytes], contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
 			if summary != nil {
 				summary.BodyBytes = len(body)
-				summary.ScannedBytes = cfg.BrowserShield.MaxShieldBytes
+				summary.ScannedBytes = shieldMaxBytes
 				summary.Partial = true
 				p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID)
 			}
-			return append(head, body[cfg.BrowserShield.MaxShieldBytes:]...), summary, false
+			return append(head, body[shieldMaxBytes:]...), summary, false
 		case config.ShieldOversizeWarn:
-			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d", len(body), cfg.BrowserShield.MaxShieldBytes), 0)
+			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
 			return body, nil, false
 		default: // block: fail-closed, return 403
-			p.logger.LogBlocked(actx, "shield_oversize", shieldOversizeBlockReason(hostname, len(body), cfg.BrowserShield.MaxShieldBytes))
+			p.logger.LogBlocked(actx, "shield_oversize", shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes))
 			return nil, nil, true
 		}
 	}
@@ -5338,9 +5341,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
 	shieldBodyLen := len(body)
+	shieldMaxBytes := shieldMaxBytesForResponse(cfg, shieldHost, TransportFetch)
 	body, _, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
 	if shieldBlocked {
-		reason := shieldOversizeBlockReason(shieldHost, shieldBodyLen, cfg.BrowserShield.MaxShieldBytes)
+		reason := shieldOversizeBlockReason(shieldHost, shieldBodyLen, shieldMaxBytes)
 		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:  actionID,

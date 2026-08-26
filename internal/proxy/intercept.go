@@ -2038,12 +2038,13 @@ func newInterceptHandler(
 			shieldBodyLen := len(respBody)
 			var shieldBlocked bool
 			var shieldSummary *receipt.ShieldSummary
+			shieldMaxBytes := shieldMaxBytesForResponse(ic.Config, ic.TargetHost, TransportConnect)
 			respBody, shieldSummary, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
 			if shieldBlocked {
 				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
 				writeBlockedError(w,
 					blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
-					"blocked: "+shieldOversizeBlockReason(ic.TargetHost, shieldBodyLen, ic.Config.BrowserShield.MaxShieldBytes), http.StatusForbidden)
+					"blocked: "+shieldOversizeBlockReason(ic.TargetHost, shieldBodyLen, shieldMaxBytes), http.StatusForbidden)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "shield_oversize")
 				return
 			}

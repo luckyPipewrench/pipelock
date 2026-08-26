@@ -2508,12 +2508,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		shieldBodyLen := len(respBody)
 		var shieldBlocked bool
 		var shieldSummary *receipt.ShieldSummary
+		shieldMaxBytes := shieldMaxBytesForResponse(cfg, fwdRespHost, TransportForward)
 		respBody, shieldSummary, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
 		if shieldBlocked {
 			p.metrics.RecordBlocked(fwdRespHost, "shield_oversize", time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
-				"blocked: "+shieldOversizeBlockReason(fwdRespHost, shieldBodyLen, cfg.BrowserShield.MaxShieldBytes), http.StatusForbidden)
+				"blocked: "+shieldOversizeBlockReason(fwdRespHost, shieldBodyLen, shieldMaxBytes), http.StatusForbidden)
 			outcomeStatus = strconv.Itoa(http.StatusForbidden)
 			outcomeBytes = int64(len(respBody))
 			outcomeReason = "shield_oversize"

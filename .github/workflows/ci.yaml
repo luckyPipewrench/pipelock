@@ -114,15 +114,16 @@ jobs:
             --exclude sdk/conformance/testdata/aarp-corpus/ \
             < "${diff_file}"
 
-  test-oss:
+  # Keep each Go minor in a separate producer. A matrix-level aggregate cannot
+  # distinguish which minor failed: its single result is red for either one.
+  test-oss-go125:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    name: test-oss (${{ matrix.go-version }}, ${{ matrix.shard }})
+    name: test-oss (1.25, ${{ matrix.shard }})
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25', '1.26']
         shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -132,7 +133,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.25'
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -140,12 +141,9 @@ jobs:
       - name: Download dependencies
         run: bash scripts/ci-retry.sh go mod download
 
-      - name: Replay harness (deterministic regression)
-        run: make test-replay-harness
-
       - name: Run tests (OSS)
         env:
-          TEST_LABEL: OSS Go ${{ matrix.go-version }} ${{ matrix.shard }}
+          TEST_LABEL: OSS Go 1.25 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
@@ -172,15 +170,14 @@ jobs:
           fi
           exit "$test_status"
 
-  test-enterprise:
+  test-oss-go126:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    name: test-enterprise (${{ matrix.go-version }}, ${{ matrix.shard }})
+    name: test-oss (1.26, ${{ matrix.shard }})
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25', '1.26']
         shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -190,7 +187,55 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.26'
+
+      - name: Verify dependencies
+        run: bash scripts/ci-retry.sh go mod verify
+
+      - name: Download dependencies
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Run tests (OSS)
+        env:
+          TEST_LABEL: OSS Go 1.26 ${{ matrix.shard }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          set -o pipefail
+          set +e
+          packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
+          package_parallelism=2
+          if [ "$TEST_SHARD" = "proxy" ]; then
+            package_parallelism=1
+          fi
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
+            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
+          test_status=$?
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
+          summary_status=$?
+          if [ "$summary_status" -ne 0 ]; then
+            exit "$summary_status"
+          fi
+          exit "$test_status"
+
+  test-enterprise-go125:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    name: test-enterprise (1.25, ${{ matrix.shard }})
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25'
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -199,9 +244,8 @@ jobs:
         run: bash scripts/ci-retry.sh go mod download
 
       - name: Run tests (enterprise with coverage)
-        if: matrix.go-version == '1.25'
         env:
-          TEST_LABEL: enterprise Go ${{ matrix.go-version }} ${{ matrix.shard }}
+          TEST_LABEL: enterprise Go 1.25 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
@@ -228,38 +272,7 @@ jobs:
           fi
           exit "$test_status"
 
-      - name: Run tests (enterprise)
-        if: matrix.go-version != '1.25'
-        env:
-          TEST_LABEL: enterprise Go ${{ matrix.go-version }} ${{ matrix.shard }}
-          TEST_SHARD: ${{ matrix.shard }}
-        run: |
-          set -o pipefail
-          set +e
-          packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
-          package_parallelism=2
-          if [ "$TEST_SHARD" = "proxy" ]; then
-            # The proxy shard has two race-instrumented packages. Running them
-            # sequentially lowers peak memory without serializing t.Parallel
-            # tests inside either package.
-            package_parallelism=1
-          fi
-          # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
-          # Keep package and intra-package test fan-out below CPU count so
-          # deadline/timer tests are not starved by the shard matrix.
-          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
-            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
-          test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
-          summary_status=$?
-          if [ "$summary_status" -ne 0 ]; then
-            exit "$summary_status"
-          fi
-          exit "$test_status"
-
       - name: Upload coverage
-        if: matrix.go-version == '1.25'
         # Coverage upload is best-effort telemetry: the Codecov uploader's own
         # CLI-integrity GPG check intermittently fails to fetch Codecov's public
         # key ("no valid OpenPGP data found"), which exits non-zero regardless of
@@ -270,6 +283,54 @@ jobs:
         with:
           files: ./coverage-${{ matrix.shard }}.out
           fail_ci_if_error: false
+
+  test-enterprise-go126:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    name: test-enterprise (1.26, ${{ matrix.shard }})
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Verify dependencies
+        run: bash scripts/ci-retry.sh go mod verify
+
+      - name: Download dependencies
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Run tests (enterprise)
+        env:
+          TEST_LABEL: enterprise Go 1.26 ${{ matrix.shard }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          set -o pipefail
+          set +e
+          packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          package_parallelism=2
+          if [ "$TEST_SHARD" = "proxy" ]; then
+            package_parallelism=1
+          fi
+          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
+            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
+          test_status=$?
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
+          summary_status=$?
+          if [ "$summary_status" -ne 0 ]; then
+            exit "$summary_status"
+          fi
+          exit "$test_status"
 
   test-subprocess-coverage:
     needs: [security-scan]
@@ -309,24 +370,63 @@ jobs:
           files: ./coverage-subprocess.out
           fail_ci_if_error: false
 
-  test:
-    needs: [test-oss, test-enterprise, test-subprocess-coverage]
+  test-go125:
+    needs: [security-scan, test-oss-go125, test-enterprise-go125, test-subprocess-coverage]
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    name: test (${{ matrix.go-version }})
+    name: test (1.25)
     timeout-minutes: 5
-    strategy:
-      matrix:
-        go-version: ['1.25', '1.26']
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        if: ${{ needs.security-scan.result == 'success' }}
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        if: ${{ needs.security-scan.result == 'success' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25'
+      - name: Replay harness (deterministic regression)
+        if: ${{ needs.security-scan.result == 'success' }}
+        run: make test-replay-harness
       - name: Required check compatibility gate
         run: |
-          echo "test-oss result: ${{ needs.test-oss.result }}"
-          echo "test-enterprise result: ${{ needs.test-enterprise.result }}"
+          echo "security-scan result: ${{ needs.security-scan.result }}"
+          echo "test-oss-go125 result: ${{ needs.test-oss-go125.result }}"
+          echo "test-enterprise-go125 result: ${{ needs.test-enterprise-go125.result }}"
           echo "test-subprocess-coverage result: ${{ needs.test-subprocess-coverage.result }}"
-          test "${{ needs.test-oss.result }}" = "success"
-          test "${{ needs.test-enterprise.result }}" = "success"
+          test "${{ needs.security-scan.result }}" = "success"
+          test "${{ needs.test-oss-go125.result }}" = "success"
+          test "${{ needs.test-enterprise-go125.result }}" = "success"
           test "${{ needs.test-subprocess-coverage.result }}" = "success"
+
+  test-go126:
+    needs: [security-scan, test-oss-go126, test-enterprise-go126]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    name: test (1.26)
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        if: ${{ needs.security-scan.result == 'success' }}
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        if: ${{ needs.security-scan.result == 'success' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+      - name: Replay harness (deterministic regression)
+        if: ${{ needs.security-scan.result == 'success' }}
+        run: make test-replay-harness
+      - name: Required check compatibility gate
+        run: |
+          echo "security-scan result: ${{ needs.security-scan.result }}"
+          echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
+          echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
+          test "${{ needs.security-scan.result }}" = "success"
+          test "${{ needs.test-oss-go126.result }}" = "success"
+          test "${{ needs.test-enterprise-go126.result }}" = "success"
 
   test-macos:
     needs: [security-scan]
@@ -604,12 +704,25 @@ jobs:
           fi
 
       - name: Run govulncheck
-        run: govulncheck ./...
+        # Scan both build graphs. Enterprise-only packages can make a vulnerable
+        # dependency reachable even when the default build remains clean.
+        run: |
+          default_status=0
+          enterprise_status=0
+          govulncheck ./... || default_status=$?
+          govulncheck -tags enterprise ./... || enterprise_status=$?
+          if (( default_status != 0 || enterprise_status != 0 )); then
+            echo "govulncheck failed: default=$default_status enterprise=$enterprise_status" >&2
+            exit 1
+          fi
 
+  # Helm remains a separate diagnostic job, but the required `build` context
+  # intentionally carries its result through `needs`. Keep that dependency
+  # until a separately approved ruleset change makes `helm` required itself.
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [security-scan, test, lint, helm]
+    needs: [security-scan, test-go125, test-go126, lint, helm]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -647,3 +760,54 @@ jobs:
         run: |
           GOOS=windows GOARCH=amd64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-amd64.exe ./cmd/pipelock
           GOOS=windows GOARCH=arm64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-arm64.exe ./cmd/pipelock
+
+  # Operator-facing rollup only. Branch protection continues to evaluate the
+  # required producer checks independently.
+  pipelock-ci-summary:
+    needs: [security-scan, test-go125, test-go126, test-macos, lint, build, govulncheck]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    name: Pipelock CI Summary
+    timeout-minutes: 5
+    steps:
+      - name: Report required check evidence
+        env:
+          SECURITY_SCAN_RESULT: ${{ needs.security-scan.result }}
+          TEST_GO125_RESULT: ${{ needs.test-go125.result }}
+          TEST_GO126_RESULT: ${{ needs.test-go126.result }}
+          MACOS_RESULT: ${{ needs.test-macos.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          GOVULNCHECK_RESULT: ${{ needs.govulncheck.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          summary="$GITHUB_STEP_SUMMARY"
+          printf '%s\n\n' '## Pipelock CI Summary' > "$summary"
+          printf '%s\n\n' '| Required check | Evidence |' >> "$summary"
+          printf '%s\n' '| --- | --- |' >> "$summary"
+
+          record_result() {
+            local name="$1"
+            local result="$2"
+            printf '| %s | %s |\n' "$name" "$result" >> "$summary"
+            case "$result" in
+              success) ;;
+              *) failed=1 ;;
+            esac
+          }
+
+          record_result 'security-scan' "$SECURITY_SCAN_RESULT"
+          record_result 'test (1.25)' "$TEST_GO125_RESULT"
+          record_result 'test (1.26)' "$TEST_GO126_RESULT"
+          record_result 'test-macos' "$MACOS_RESULT"
+          record_result 'lint' "$LINT_RESULT"
+          record_result 'build' "$BUILD_RESULT"
+          record_result 'govulncheck' "$GOVULNCHECK_RESULT"
+
+          printf '\nCodeQL is separately required and runs in its own workflow; it is intentionally outside this summary.\n' >> "$summary"
+
+          if [ "$failed" -ne 0 ]; then
+            printf '\nOne or more required checks failed, were cancelled, skipped unexpectedly, or had unknown evidence.\n' >> "$summary"
+            exit 1
+          fi

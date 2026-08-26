@@ -41,13 +41,13 @@ install:
 	go install $(LDFLAGS) ./cmd/pipelock
 
 test:
-	go test -race -count=1 ./...
+	$(MAKE) --no-print-directory test-sharded
 
 test-wasm-verifier:
 	node --test deploy/wasm-verify/chain-parity.test.js
 
 test-runtime-critical:
-	go test -race -count=1 -timeout 15m ./internal/config ./internal/cli ./internal/mcp ./internal/proxy
+	scripts/run-race-test.sh --packages "./internal/config ./internal/cli ./internal/mcp ./internal/proxy"
 
 # Test shards mirror CI (scripts/ci_test_packages.py): the three heavy packages
 # (proxy, scanner, mcp) plus three balanced rest shards. Their union is the same
@@ -62,37 +62,25 @@ FORCE:
 
 # Run one CI-equivalent OSS shard, e.g. `make test-shard-proxy`.
 test-shard-%: FORCE
-	packages=$$(python3 scripts/ci_test_packages.py --shard $*) || exit $$?; \
-	package_parallelism=2; \
-	if [ "$*" = "proxy" ]; then package_parallelism=1; fi; \
-	go test -race -p=$$package_parallelism -parallel=2 -count=1 -timeout=15m $$packages
+	scripts/run-race-test.sh --shard $*
 
 # Run one CI-equivalent enterprise shard, e.g. `make test-shard-enterprise-mcp`.
 test-shard-enterprise-%: FORCE
-	packages=$$(python3 scripts/ci_test_packages.py --tags enterprise --shard $*) || exit $$?; \
-	package_parallelism=2; \
-	if [ "$*" = "proxy" ]; then package_parallelism=1; fi; \
-	go test -tags enterprise -race -p=$$package_parallelism -parallel=2 -count=1 -timeout=15m $$packages
+	scripts/run-race-test.sh --tags enterprise --shard $*
 
 # Run every OSS shard sequentially: same coverage as `make test`, sharded and
 # labelled (serial to respect the local single-race-at-a-time constraint).
 test-sharded:
 	@for shard in $(TEST_SHARDS); do \
 		echo "=== OSS test shard: $$shard ==="; \
-		packages=$$(python3 scripts/ci_test_packages.py --shard $$shard) || exit $$?; \
-		package_parallelism=2; \
-		if [ "$$shard" = "proxy" ]; then package_parallelism=1; fi; \
-		go test -race -p=$$package_parallelism -parallel=2 -count=1 -timeout=15m $$packages || exit $$?; \
+		scripts/run-race-test.sh --shard $$shard || exit $$?; \
 	done
 
 # Run every enterprise shard sequentially (mirrors the CI test-enterprise matrix).
 test-sharded-enterprise:
 	@for shard in $(TEST_SHARDS); do \
 		echo "=== enterprise test shard: $$shard ==="; \
-		packages=$$(python3 scripts/ci_test_packages.py --tags enterprise --shard $$shard) || exit $$?; \
-		package_parallelism=2; \
-		if [ "$$shard" = "proxy" ]; then package_parallelism=1; fi; \
-		go test -tags enterprise -race -p=$$package_parallelism -parallel=2 -count=1 -timeout=15m $$packages || exit $$?; \
+		scripts/run-race-test.sh --tags enterprise --shard $$shard || exit $$?; \
 	done
 
 # test-replay-harness exercises the synthetic replay regression suite:
@@ -100,10 +88,10 @@ test-sharded-enterprise:
 # Refresh goldens after intentional logic changes:
 #   go test ./internal/capture -run TestReplayHarness -update
 test-replay-harness:
-	go test -race -count=1 -run TestReplayHarness ./internal/capture
+	scripts/run-race-test.sh --packages ./internal/capture --run TestReplayHarness
 
 test-cover:
-	go test -race -coverprofile=coverage.out ./...
+	go test -count=1 -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
@@ -161,7 +149,7 @@ runtime-policy-audit:
 debt-check:
 	golangci-lint run --enable-only dupl,gocyclo,gocognit,maintidx ./...
 
-release-check: test lint test-runtime-critical test-replay-harness release-audit runtime-policy-audit
+release-check: test lint release-audit runtime-policy-audit
 
 tidy-check:
 	go mod tidy

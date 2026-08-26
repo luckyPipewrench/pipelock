@@ -352,13 +352,26 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 }
 
 func (rp *ReverseProxyHandler) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string) {
+	rp.emitOutcomeReceiptWithPattern(cfg, opts, receiptOutcomePattern(status, bytesTransferred, reason))
+}
+
+func (rp *ReverseProxyHandler) emitObservedOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string, exact bool) {
+	pattern := receiptObservedOutcomePattern(status, bytesTransferred, reason, exact)
+	rp.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
+}
+
+func receiptObservedOutcomePattern(status string, bytesTransferred int64, reason string, exact bool) string {
+	return receiptOutcomePattern(status, bytesTransferred, reason) + " bytes_exact=" + strconv.FormatBool(exact)
+}
+
+func (rp *ReverseProxyHandler) emitOutcomeReceiptWithPattern(cfg *config.Config, opts receipt.EmitOpts, pattern string) {
 	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
 		return
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
 	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
-	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
+	opts.Pattern = pattern
 	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	e := rp.receiptEmitter()
 	if e == nil {
@@ -1119,7 +1132,16 @@ type reverseOutcomeTracker struct {
 	status           string
 	bytesTransferred int64
 	reason           string
+	bytesExact       *bool
 	emitted          bool
+}
+
+type reverseShieldOversizeDecision struct {
+	body          []byte
+	summary       *receipt.ShieldSummary
+	shieldable    bool
+	blocked       bool
+	outcomeReason string
 }
 
 func newReverseOutcomeTracker(cfg *config.Config, opts receipt.EmitOpts) *reverseOutcomeTracker {
@@ -1153,6 +1175,26 @@ func (t *reverseOutcomeTracker) Record(status int, bytesTransferred int64, reaso
 	t.status = statusText
 	t.bytesTransferred = bytesTransferred
 	t.reason = reason
+	t.bytesExact = nil
+}
+
+func (t *reverseOutcomeTracker) RecordObserved(status int, bytesTransferred int64, reason string, exact bool) {
+	if t == nil {
+		return
+	}
+	statusText := "unknown"
+	if status > 0 {
+		statusText = strconv.Itoa(status)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.emitted {
+		return
+	}
+	t.status = statusText
+	t.bytesTransferred = bytesTransferred
+	t.reason = reason
+	t.bytesExact = &exact
 }
 
 func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
@@ -1170,7 +1212,12 @@ func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
 	status := t.status
 	bytesTransferred := t.bytesTransferred
 	reason := t.reason
+	bytesExact := t.bytesExact
 	t.mu.Unlock()
+	if bytesExact != nil {
+		rp.emitObservedOutcomeReceipt(cfg, opts, status, bytesTransferred, reason, *bytesExact)
+		return
+	}
 	rp.emitOutcomeReceipt(cfg, opts, status, bytesTransferred, reason)
 }
 
@@ -1437,6 +1484,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	recordReverseOutcome := func(status int, bytesTransferred int64, reason string) {
 		outcomeTracker.Record(status, bytesTransferred, reason)
 	}
+	recordReverseObservedOutcome := func(status int, bytesTransferred int64, reason string, exact bool) {
+		outcomeTracker.RecordObserved(status, bytesTransferred, reason, exact)
+	}
 
 	// Record the final client-visible status at each exit point, not here.
 	// The upstream status may be rewritten to 403 by scanning decisions.
@@ -1446,6 +1496,91 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	revHost := resp.Request.URL.Hostname()
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
 	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
+	shieldActiveForHost := rp.shieldEngine != nil && cfg.BrowserShield.Enabled &&
+		!isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains)
+	applyShieldOversize := func(body []byte, complete bool, shieldMaxBytes int) reverseShieldOversizeDecision {
+		prefixLen := min(len(body), 512)
+		if shield.DetectPipeline(resp.Header.Get("Content-Type"), body[:prefixLen]) == shield.PipelineNone {
+			rp.metrics.RecordShieldSkipped("non_shieldable_content")
+			return reverseShieldOversizeDecision{body: body}
+		}
+
+		bodyBytes, bodyBytesExact := reverseObservedBodyBytes(resp.ContentLength, len(body), complete)
+		reason := shieldOversizeObservedReason(revHost, max(bodyBytes, len(body)), shieldMaxBytes, bodyBytesExact)
+		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+		rp.metrics.RecordShieldSkipped("oversize")
+		switch cfg.BrowserShield.OversizeAction {
+		case config.ShieldOversizeScanHead:
+			rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
+			rp.logger.LogAnomaly(actx, "shield_oversize_scan_head", reason, 0)
+			scanned := body[:shieldMaxBytes]
+			head, summary := runShieldPipelineSharedResult(rp.shieldEngine, scanned, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			summary = partialShieldSummary(summary, scanned, resp.Header.Get("Content-Type"), bodyBytes, shieldMaxBytes)
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID:       receipt.NewActionID(),
+				ParentActionID: actionID,
+				Verdict:        config.ActionAllow,
+				Layer:          browserShieldLayer,
+				Pattern:        browserShieldPattern,
+				Severity:       browserShieldSeverity,
+				Shield:         summary,
+				Transport:      TransportReverse,
+				Method:         resp.Request.Method,
+				Target:         shieldReceiptTarget(resp.Request.URL.String()),
+				RequestID:      requestID,
+				Agent:          agent,
+			})
+			return reverseShieldOversizeDecision{
+				body:          append(head, body[shieldMaxBytes:]...),
+				summary:       summary,
+				shieldable:    true,
+				outcomeReason: "shield_oversize_scan_head",
+			}
+		case config.ShieldOversizeWarn:
+			rp.logger.LogAnomaly(actx, "shield_oversize", reason, 0)
+			summary := partialShieldSummary(nil, body, resp.Header.Get("Content-Type"), bodyBytes, 0)
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID:       receipt.NewActionID(),
+				ParentActionID: actionID,
+				Verdict:        config.ActionAllow,
+				Layer:          "shield_oversize",
+				Pattern:        reason,
+				Severity:       browserShieldSeverity,
+				Shield:         summary,
+				Transport:      TransportReverse,
+				Method:         resp.Request.Method,
+				Target:         shieldReceiptTarget(resp.Request.URL.String()),
+				RequestID:      requestID,
+				Agent:          agent,
+			})
+			return reverseShieldOversizeDecision{
+				body:          body,
+				summary:       summary,
+				shieldable:    true,
+				outcomeReason: "shield_oversize_warn",
+			}
+		default:
+			_ = resp.Body.Close()
+			rp.logger.LogBlocked(actx, "shield_oversize", reason)
+			rp.metrics.RecordBlocked(revHost, "shield_oversize", 0, agent)
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "shield_oversize")
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "shield_oversize",
+				Pattern:   reason,
+				Transport: TransportReverse,
+				Method:    resp.Request.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			replaceWithBlockReason(resp, reason)
+			recordReverseObservedOutcome(http.StatusForbidden, int64(bodyBytes), "shield_oversize", bodyBytesExact)
+			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: "shield_oversize"}
+		}
+	}
 	emitUnscannablePassthrough := func(reason string) {
 		passthroughReceipt := receipt.EmitOpts{
 			ActionID:  requestActionID,
@@ -1585,7 +1720,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					resp.Body = io.NopCloser(bytes.NewReader(body))
 					resp.ContentLength = int64(len(body))
 				}
-				if !cfg.ResponseScanning.Enabled {
+				if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
 					// Nothing downstream reads these bytes: with response
 					// scanning off the fall-through path returns at the
 					// short-circuit below, which labels the outcome
@@ -1706,16 +1841,18 @@ responseScanning:
 		return nil
 	}
 
-	// Response-scanning short-circuit. Runs AFTER the media policy branch
-	// above so disabling response scanning does not silently bypass image
-	// metadata stripping, audio/video blocks, or exposure events.
-	if !cfg.ResponseScanning.Enabled {
+	// Buffer shieldable responses when either response scanning or Browser
+	// Shield needs the body. These controls are independent: disabling
+	// injection scanning must not silently bypass an explicitly enabled shield.
+	// The buffered path below already enforces the normal and size-exempt memory
+	// ceilings used by forward and CONNECT.
+	if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
 		return nil
 	}
-	if revRespExempt {
+	if cfg.ResponseScanning.Enabled && revRespExempt {
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScanExempt(actx, revHost)
 		rp.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportReverse)
@@ -1758,6 +1895,14 @@ responseScanning:
 	// httputil.ReverseProxy auto-flushes text/event-stream per write, so
 	// the pipe writer's per-event Write reaches the client immediately.
 	if HasSingleSSEContentType(resp.Header) {
+		// Browser Shield has no SSE pipeline. Preserve streaming when response
+		// scanning is disabled instead of buffering an open-ended response that
+		// neither enabled control would inspect.
+		if !cfg.ResponseScanning.Enabled {
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "sse_stream_unscanned")
+			return nil
+		}
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		sseLayer := LayerSSEStream
 		sseOpts := SSEDispatchOptions{
@@ -1822,6 +1967,13 @@ responseScanning:
 	// Read response body with size limit. Use a separate limited reader
 	// so the original body remains open for oversized passthrough.
 	maxBytes := reverseProxyMaxBodyBytes
+	shieldOnly := !cfg.ResponseScanning.Enabled && shieldActiveForHost
+	if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
+		// Browser Shield is independent of response injection scanning. When it
+		// is the only body consumer, read to its own ceiling instead of applying
+		// the response scanner's smaller compile-time ceiling.
+		maxBytes = cfg.BrowserShield.MaxShieldBytes
+	}
 	limited := io.LimitReader(resp.Body, int64(maxBytes)+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
@@ -1851,7 +2003,79 @@ responseScanning:
 	// can pad the first maxBytes and place injection text after the scanning
 	// window. This matches request-side behavior (bodyscan.go blocks oversized
 	// requests) and ensures response scanning cannot be bypassed by size.
-	if len(body) > maxBytes {
+	if len(body) > maxBytes && shieldOnly && revRespSizeExempt {
+		var scanFailure *sizeExemptResponseReadError
+		var releaseSizeExemptScan sizeExemptScanRelease
+		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
+		if scanFailure != nil {
+			_ = resp.Body.Close()
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, string(scanFailure.Kind))
+			actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+			if scanFailure.Err != nil {
+				rp.logger.LogError(actx, scanFailure.Err)
+			}
+			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{scanFailure.Reason}, nil)
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     LayerReverseResponseBlocked,
+				Pattern:   scanFailure.Reason,
+				Transport: "reverse",
+				Method:    resp.Request.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			replaceWithBlockResponse(resp, []string{scanFailure.Reason})
+			recordReverseOutcome(http.StatusForbidden, -1, string(scanFailure.Kind))
+			return nil
+		}
+		defer releaseSizeExemptScan()
+	} else if len(body) > maxBytes {
+		if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
+			decision := applyShieldOversize(body, false, cfg.BrowserShield.MaxShieldBytes)
+			if !decision.shieldable {
+				resp.Body = readCloserWithClose{
+					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
+					Closer: resp.Body,
+				}
+				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+				recordReverseOutcome(resp.StatusCode, resp.ContentLength, "non_shieldable_passthrough")
+				return nil
+			}
+			if decision.blocked {
+				return nil
+			}
+			if cfg.BrowserShield.OversizeAction == config.ShieldOversizeScanHead {
+				resp.Body = readCloserWithClose{
+					Reader: io.MultiReader(bytes.NewReader(decision.body), resp.Body),
+					Closer: resp.Body,
+				}
+				delta := len(decision.body) - len(body)
+				if delta != 0 {
+					if resp.ContentLength >= 0 {
+						resp.ContentLength += int64(delta)
+						resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+					} else {
+						resp.Header.Del("Content-Length")
+					}
+				}
+				if decision.summary.TotalRewrites > 0 {
+					resp.Header.Del("ETag")
+					resp.Header.Del("Content-MD5")
+					resp.Header.Del("Digest")
+				}
+			} else {
+				resp.Body = readCloserWithClose{
+					Reader: io.MultiReader(bytes.NewReader(decision.body), resp.Body),
+					Closer: resp.Body,
+				}
+			}
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+			recordReverseOutcome(resp.StatusCode, resp.ContentLength, decision.outcomeReason)
+			return nil
+		}
 		if revRespSizeExempt {
 			if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 				Host:              revHost,
@@ -1918,24 +2142,34 @@ responseScanning:
 			}
 			defer releaseSizeExemptScan()
 		} else {
+			// The reverse ceiling is a compile-time constant, so the only
+			// remedy is the per-host size exemption. Name the size, the
+			// limit and that remedy rather than the bare "exceeds scanning
+			// limit", which told the operator nothing they could act on.
+			observedSize, sizeExact := reverseObservedBodyBytes(resp.ContentLength, len(body), false)
+			reasonSize := int64(len(body))
+			if sizeExact {
+				reasonSize = int64(observedSize)
+			}
+			oversizedReason := responseSizeObservedBlockReason(revHost, reasonSize, int64(maxBytes), "", true, sizeExact)
 			_ = resp.Body.Close()
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "oversized")
 			actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
-			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"oversized_response"}, nil)
+			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{oversizedReason}, nil)
 			emitReverseReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     LayerReverseResponseBlocked,
-				Pattern:   "response exceeds scanning limit",
+				Pattern:   oversizedReason,
 				Transport: "reverse",
 				Method:    resp.Request.Method,
 				Target:    targetURL,
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			replaceWithBlockResponse(resp, []string{"response exceeds scanning limit"})
-			recordReverseOutcome(http.StatusForbidden, int64(len(body)), "oversized")
+			replaceWithBlockReason(resp, oversizedReason)
+			recordReverseObservedOutcome(http.StatusForbidden, int64(observedSize), "oversized", sizeExact)
 			return nil
 		}
 	}
@@ -1955,37 +2189,56 @@ responseScanning:
 
 	// Browser Shield on reverse proxy responses - uses shared pipeline.
 	shieldChanged := false
-	if rp.shieldEngine != nil && cfg.BrowserShield.Enabled {
-		revHost := resp.Request.URL.Hostname()
-		if !isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains) {
-			if cfg.BrowserShield.MaxShieldBytes <= 0 || len(body) <= cfg.BrowserShield.MaxShieldBytes {
-				originalBodyBytes := len(body)
-				var summary *receipt.ShieldSummary
-				body, summary = runShieldPipelineSharedResult(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
-				if summary != nil {
-					shieldChanged = true
-					summary.BodyBytes = originalBodyBytes
-					summary.ScannedBytes = originalBodyBytes
-					// Reverse proxy currently has no session manager
-					// context, so it reports the configured cap but
-					// records zero adaptive signals.
-					summary.AdaptiveSignalsRecorded = 0
-					summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
-					emitReverseReceipt(receipt.EmitOpts{
-						ActionID:       receipt.NewActionID(),
-						ParentActionID: actionID,
-						Verdict:        config.ActionAllow,
-						Layer:          browserShieldLayer,
-						Pattern:        browserShieldPattern,
-						Severity:       browserShieldSeverity,
-						Shield:         summary,
-						Transport:      "reverse",
-						Method:         resp.Request.Method,
-						Target:         shieldReceiptTarget(resp.Request.URL.String()),
-						RequestID:      requestID,
-						Agent:          agent,
-					})
-				}
+	shieldOutcomeReason := "complete"
+	if shieldActiveForHost {
+		// Oversize handling has to match the other transports. This path
+		// used to simply skip the shield above the cap, so a response
+		// larger than max_shield_bytes reached the client with no trap,
+		// tracking-pixel or extension-probe scrubbing, no block, and
+		// nothing in the audit log. That is a fail-open the operator
+		// cannot see, and it is reachable: a size_exempt_domains host is
+		// read up to size_exempt_scan_max_bytes (64 MiB by default), well
+		// past the 5 MiB shield cap, so precisely the hosts trusted enough
+		// to scan whole were the ones losing the scrub.
+		shieldMaxBytes := shieldMaxBytesForResponse(cfg, revHost, TransportReverse)
+		oversize := shieldMaxBytes > 0 && len(body) > shieldMaxBytes
+		if oversize {
+			decision := applyShieldOversize(body, true, shieldMaxBytes)
+			if decision.blocked {
+				return nil
+			}
+			if decision.shieldable {
+				body = decision.body
+				shieldChanged = decision.summary.TotalRewrites > 0
+				shieldOutcomeReason = decision.outcomeReason
+			}
+		} else {
+			originalBodyBytes := len(body)
+			var summary *receipt.ShieldSummary
+			body, summary = runShieldPipelineSharedResult(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
+			if summary != nil {
+				shieldChanged = true
+				summary.BodyBytes = originalBodyBytes
+				summary.ScannedBytes = originalBodyBytes
+				// Reverse proxy currently has no session manager
+				// context, so it reports the configured cap but
+				// records zero adaptive signals.
+				summary.AdaptiveSignalsRecorded = 0
+				summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID:       receipt.NewActionID(),
+					ParentActionID: actionID,
+					Verdict:        config.ActionAllow,
+					Layer:          browserShieldLayer,
+					Pattern:        browserShieldPattern,
+					Severity:       browserShieldSeverity,
+					Shield:         summary,
+					Transport:      "reverse",
+					Method:         resp.Request.Method,
+					Target:         shieldReceiptTarget(resp.Request.URL.String()),
+					RequestID:      requestID,
+					Agent:          agent,
+				})
 			}
 		}
 	}
@@ -1994,6 +2247,13 @@ responseScanning:
 		resp.Header.Del("ETag")
 		resp.Header.Del("Content-MD5")
 		resp.Header.Del("Digest")
+	}
+	if !cfg.ResponseScanning.Enabled {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+		recordReverseOutcome(resp.StatusCode, int64(len(body)), shieldOutcomeReason)
+		return nil
 	}
 
 	// Scan the response text for injection patterns.
@@ -2035,7 +2295,7 @@ responseScanning:
 		resp.ContentLength = int64(len(body))
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
-		recordReverseOutcome(resp.StatusCode, int64(len(body)), "complete")
+		recordReverseOutcome(resp.StatusCode, int64(len(body)), shieldOutcomeReason)
 		return nil
 	}
 
@@ -2121,7 +2381,7 @@ responseScanning:
 	resp.ContentLength = int64(len(body))
 	rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 		strconv.Itoa(resp.StatusCode))
-	recordReverseOutcome(resp.StatusCode, int64(len(body)), "complete")
+	recordReverseOutcome(resp.StatusCode, int64(len(body)), shieldOutcomeReason)
 	return nil
 }
 
@@ -2243,10 +2503,18 @@ func replaceWithMediaBlockResponse(resp *http.Response, reason string) {
 }
 
 func replaceWithBlockResponse(resp *http.Response, patternNames []string) {
+	replaceWithBlockReason(resp, fmt.Sprintf("injection: %s", strings.Join(patternNames, ", ")))
+}
+
+// replaceWithBlockReason writes the synthetic blocked response with an explicit
+// reason. Not every reverse-proxy block is an injection match: an oversize
+// Browser Shield block names the cap and its remedies instead, and stuffing that
+// text after an "injection:" prefix would misreport why the response was refused.
+func replaceWithBlockReason(resp *http.Response, reason string) {
 	blockResp := ReverseProxyBlockResponse{
 		Error:       "response blocked by pipelock",
 		Blocked:     true,
-		BlockReason: fmt.Sprintf("injection: %s", strings.Join(patternNames, ", ")),
+		BlockReason: reason,
 		Direction:   scanDirectionResponse,
 	}
 	blockBody, _ := json.Marshal(blockResp)
@@ -2281,6 +2549,37 @@ func reverseRequestScanMaxBytes(cfg *config.Config) int {
 		return reverseProxyMaxBodyBytes
 	}
 	return maxBytes
+}
+
+// partialShieldSummary records partial Browser Shield coverage even when the
+// scanned head needed no rewrite. A zero-rewrite summary is still evidence
+// that the tail was deliberately left unscanned.
+func partialShieldSummary(summary *receipt.ShieldSummary, scanned []byte, contentType string, bodyBytes, scannedBytes int) *receipt.ShieldSummary {
+	if summary == nil {
+		prefixLen := min(len(scanned), 512)
+		summary = &receipt.ShieldSummary{
+			Pipeline: shieldPipelineLabel(shield.DetectPipeline(contentType, scanned[:prefixLen])),
+		}
+	}
+	summary.BodyBytes = bodyBytes
+	summary.ScannedBytes = scannedBytes
+	summary.Partial = true
+	summary.AdaptiveSignalsRecorded = 0
+	summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
+	return summary
+}
+
+// reverseObservedBodyBytes returns an exact response size when the entire body
+// was buffered or Content-Length proves it. Unknown-length limited reads retain
+// the observed lower bound and mark it inexact.
+func reverseObservedBodyBytes(contentLength int64, observed int, complete bool) (int, bool) {
+	if complete {
+		return observed, true
+	}
+	if contentLength >= int64(observed) && contentLength <= int64(^uint(0)>>1) {
+		return int(contentLength), true
+	}
+	return observed, false
 }
 
 func reverseRequestScanInflightLimit(cfg *config.Config) int {

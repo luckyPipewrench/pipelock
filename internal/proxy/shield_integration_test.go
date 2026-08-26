@@ -339,6 +339,48 @@ func TestProxy_ApplyShield_OversizeScanHead(t *testing.T) {
 	}
 }
 
+// A host admitted to the bounded size-exempt response path should not hit a
+// second, smaller Browser Shield ceiling after response scanning succeeds.
+// Put the tracking pixel beyond the ordinary shield cap so this proves the
+// whole buffered document was rewritten rather than only its head.
+func TestProxy_ApplyShield_SizeExemptUsesBoundedWholeBody(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
+	cfg.BrowserShield.StripTrackingPixels = true
+	cfg.BrowserShield.MaxShieldBytes = 160
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	cfg.ResponseScanning.SizeExemptDomains = []string{"docs.vendor.example"}
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = 2048
+
+	body := []byte("<html><body>" + strings.Repeat("safe text ", 30) +
+		`<img src="https://tracker.vendor.example/p.gif" width="1" height="1">` +
+		"</body></html>")
+	if len(body) <= cfg.BrowserShield.MaxShieldBytes || len(body) >= cfg.ResponseScanning.SizeExemptScanMaxBytes {
+		t.Fatalf("test body size %d must be between shield cap %d and bounded ceiling %d", len(body), cfg.BrowserShield.MaxShieldBytes, cfg.ResponseScanning.SizeExemptScanMaxBytes)
+	}
+
+	result, summary, blocked := p.applyShield(body, "text/html", "docs.vendor.example", nil, cfg, audit.LogContext{}, "127.0.0.1", "req-size-exempt", TransportForward, "parent-action")
+	if blocked {
+		t.Fatal("bounded size-exempt response was blocked by the smaller shield ceiling")
+	}
+	if strings.Contains(string(result), "tracker.vendor.example") {
+		t.Fatal("tracking pixel beyond the ordinary shield cap survived whole-body shielding")
+	}
+	if summary == nil {
+		t.Fatal("whole-body shield did not emit a summary")
+	}
+	if summary.Partial {
+		t.Fatal("bounded size-exempt shield summary incorrectly reports partial coverage")
+	}
+	if summary.BodyBytes != len(body) || summary.ScannedBytes != len(body) {
+		t.Fatalf("shield summary = %+v, want body_bytes and scanned_bytes %d", summary, len(body))
+	}
+}
+
 func TestProxy_RunShieldPipeline_HTMLRewrite(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)

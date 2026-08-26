@@ -1987,8 +1987,14 @@ func TestReverseProxy_OversizedResponseBlocked(t *testing.T) {
 	if !blockResp.Blocked {
 		t.Fatal("expected blocked=true in response")
 	}
-	if !strings.Contains(blockResp.BlockReason, "scanning limit") {
-		t.Fatalf("expected BlockReason to mention scanning limit, got %q", blockResp.BlockReason)
+	for _, want := range []string{
+		"exceeding scan ceiling",
+		"response_scanning.size_exempt_domains",
+		"cannot be raised by configuration",
+	} {
+		if !strings.Contains(blockResp.BlockReason, want) {
+			t.Fatalf("expected BlockReason to contain %q, got %q", want, blockResp.BlockReason)
+		}
 	}
 }
 
@@ -2022,8 +2028,14 @@ func TestReverseProxy_OversizedResponseInjectionBypass(t *testing.T) {
 	if !blockResp.Blocked {
 		t.Fatal("expected blocked=true")
 	}
-	if !strings.Contains(blockResp.BlockReason, "scanning limit") {
-		t.Fatalf("expected BlockReason to mention scanning limit, got %q", blockResp.BlockReason)
+	for _, want := range []string{
+		"exceeding scan ceiling",
+		"response_scanning.size_exempt_domains",
+		"cannot be raised by configuration",
+	} {
+		if !strings.Contains(blockResp.BlockReason, want) {
+			t.Fatalf("expected BlockReason to contain %q, got %q", want, blockResp.BlockReason)
+		}
 	}
 }
 

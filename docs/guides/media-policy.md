@@ -137,9 +137,11 @@ Namespace-prefixed variants (e.g. `svg:foreignObject`) are also caught.
 
 ## MCP tool-result media
 
-Media policy also enforces on MCP tool results. When an MCP server returns a tool-result `content` block carrying base64 payload in any of the `data`, `blob`, or `raw` fields (plus an `image/*`, `audio/*`, or `video/*` MIME type, or bytes that sniff as such), pipelock evaluates the payload against the same size, type, and image-stripping rules used on HTTP responses.
+Media policy also enforces on MCP tool results. MCP servers can return base64 payloads in the `data`, `blob`, or `raw` fields of a tool-result `content` block.
 
-All three payload slots are evaluated — a malicious tool result cannot stash blocked media in `blob` while keeping a benign value in `data`. Pure-media tool results (no `text` blocks) are routed directly to media policy and are never fed as raw text into response-injection scanning. Content-type sniffing runs when the upstream server advertises a generic type like `application/octet-stream` or `binary/octet-stream`, so untyped binary media is still caught.
+Pipelock applies the HTTP media rules when the block declares an `image/*`, `audio/*`, or `video/*` MIME type, or when the decoded bytes match a supported media header.
+
+All three payload slots are evaluated. A malicious tool result can't stash blocked media in `blob` while keeping a benign value in `data`. Pure-media tool results (no `text` blocks) go directly to media policy and aren't fed as raw text into response-injection scanning. Pipelock checks the decoded bytes even when the server labels them as generic or non-media content. It validates the complete format header before overriding that label, so ordinary text that starts with a short media prefix isn't treated as media.
 
 Blocked MCP media returns a media-policy-specific JSON-RPC error to the client (distinct from the generic prompt-injection block response) so operators can tell the two enforcement paths apart.
 

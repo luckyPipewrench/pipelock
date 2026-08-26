@@ -6,13 +6,14 @@ package proxy
 import (
 	"fmt"
 	"mime"
-	"net/http"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/media"
 )
+
+const contentTypeOctetStream = "application/octet-stream"
 
 // MediaPolicyVerdict is the decision a media policy evaluation produces for
 // one response. Callers use it to route the body: blocked responses return
@@ -82,22 +83,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 		return MediaPolicyVerdict{Body: body, MediaType: mt}
 	}
 
-	// Content sniffing closes the header-spoofing bypass: an attacker who
-	// relabels a JPEG as application/octet-stream (or strips Content-Type
-	// entirely) would otherwise skip the isMediaType gate below and
-	// escape every media-policy check. When the declared type is missing
-	// or generic, sniff the first 512 bytes and use the detected type if
-	// it falls under the policy's scope.
-	//
-	// We do NOT override explicit non-generic declarations like text/html
-	// or application/pdf - those are deliberate content-type claims that
-	// the upstream may well honor. The attacker path this closes is the
-	// common case of a raw byte dump with no or default Content-Type.
-	if !isMediaType(mt) && contentTypeIsGeneric(mt) && len(body) > 0 {
-		if sniffed := sniffMediaType(body); sniffed != "" {
-			mt = sniffed
-		}
-	}
+	mt = effectiveMediaType(mt, body)
 
 	// Non-media content types pass through the media policy (content
 	// scanning is handled by the response scanner elsewhere).
@@ -213,6 +199,19 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 	}
 }
 
+// effectiveMediaType treats a declared media type as authoritative only when
+// it agrees with the bytes. DetectType validates the media header rather than
+// trusting short prefixes such as "BM" or "ID3" on their own.
+func effectiveMediaType(declared string, body []byte) string {
+	if isMediaType(declared) || len(body) == 0 {
+		return declared
+	}
+	if sniffed := sniffMediaType(body); sniffed != "" {
+		return sniffed
+	}
+	return declared
+}
+
 // exposureOrNil returns the exposure payload when event emission is enabled
 // for the policy, otherwise nil. Keeps the branch logic at the top of
 // applyMediaPolicy concise.
@@ -256,33 +255,17 @@ func isMediaType(mt string) bool {
 // sniffer is allowed to override.
 func contentTypeIsGeneric(mt string) bool {
 	switch mt {
-	case "", "application/octet-stream", "binary/octet-stream", "application/binary", "application/unknown":
+	case "", contentTypeOctetStream, "binary/octet-stream", "application/binary", "application/unknown":
 		return true
 	}
 	return false
 }
 
-// sniffMediaType runs net/http.DetectContentType on the first 512 bytes of
-// body and returns the canonical media type if the result falls under the
-// media policy's scope (image, audio, or video). Returns "" otherwise.
-// Isolated here so callers can add their own sniffing heuristics later
-// without touching applyMediaPolicy.
+// sniffMediaType uses the shared media-header parser so HTTP and MCP apply the
+// same classification rule.
 func sniffMediaType(body []byte) string {
-	head := body
-	if len(head) > 512 {
-		head = head[:512]
-	}
-	sniffed := canonicalContentType(httpDetectContentType(head))
-	if isMediaType(sniffed) {
-		return sniffed
-	}
-	return ""
+	return media.DetectType(body)
 }
-
-// httpDetectContentType is a seam for testing. Aliased to net/http's
-// DetectContentType; tests can shadow this package-level variable in the
-// future to inject specific sniffs without constructing crafted bodies.
-var httpDetectContentType = http.DetectContentType
 
 // ToEventFields flattens the exposure payload into a map suitable for the
 // emit.Event Fields map. Callers add transport/request/agent/source fields

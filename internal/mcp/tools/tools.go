@@ -1777,8 +1777,55 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 // or extension fields exceed extraction bounds, or contain opaque media that
 // cannot be scanned as text. Unknown names alone are never uninspectable:
 // their readable values are scanned by extractToolGeneralTextWithParams.
+// maxToolDefinitionTextBytes bounds the agent-visible text one tool definition
+// may contribute to the scan input. Sized far above any real definition: a tool
+// with a long description, a rich schema and populated metadata is orders of
+// magnitude below it, while a field built purely for size stops here. The depth
+// and key budgets do not cover this, because one string can be arbitrarily long
+// at depth one under a single key.
+const maxToolDefinitionTextBytes = 1 << 20 // 1MB per tool definition
+
+// toolDefinitionTextExceedsBudget reports whether the readable text of one tool
+// definition is too large to scan. It counts rather than concatenates, so
+// measuring the input does not itself allocate a copy of it.
+func toolDefinitionTextExceedsBudget(t ToolDef) bool {
+	total := len(t.Name) + len(t.Title) + len(t.Description)
+	if total > maxToolDefinitionTextBytes {
+		return true
+	}
+	for _, field := range []json.RawMessage{
+		t.InputSchema, t.OutputSchema, t.Annotations, t.Meta,
+	} {
+		if len(field) == 0 {
+			continue
+		}
+		total += len(field)
+		if total > maxToolDefinitionTextBytes {
+			return true
+		}
+	}
+	for _, field := range t.unknown {
+		total += len(field)
+		if total > maxToolDefinitionTextBytes {
+			return true
+		}
+	}
+	return false
+}
+
 func toolDefinitionsHaveUninspectableText(defs []ToolDef) bool {
 	for _, tool := range defs {
+		// Bound the total agent-visible text before any of it is scanned. The
+		// depth and key budgets do not constrain SIZE: one enormous string, or
+		// a wide array of strings, sits under both while still producing
+		// megabytes of input that every pattern then runs over. Measured on an
+		// 8MB single-string field: sixty-five seconds on the request path, and
+		// the definition was forwarded. Refusing here is fail-closed and keeps
+		// the bound local to tool scanning, so the shared extractor and its
+		// other consumers are unaffected.
+		if toolDefinitionTextExceedsBudget(tool) {
+			return true
+		}
 		for _, field := range []json.RawMessage{tool.InputSchema, tool.OutputSchema} {
 			// Schemas get the opaque-media check too, not just the depth check.
 			// A schema can carry a content block under default, const or

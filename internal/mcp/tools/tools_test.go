@@ -4087,6 +4087,52 @@ func TestScanTools_MediaSignalKeysAreMatchedCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestScanTools_OversizedDefinitionTextFailsClosed(t *testing.T) {
+	// Depth and key budgets do not bound SIZE. One long string, or a wide array
+	// of strings, sits under both while producing megabytes that every pattern
+	// then scans. Measured on an 8MB single-string field before this bound:
+	// sixty-five seconds on the request path, and the definition was forwarded.
+	for name, meta := range map[string]string{
+		"one long string": `{"notes":"` + strings.Repeat("a", maxToolDefinitionTextBytes+1024) + `"}`,
+		"wide string array": `{"notes":["` +
+			strings.Join(slices.Repeat([]string{strings.Repeat("b", 4096)}, 300), `","`) + `"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := ScanTools(
+				makeToolsResponse(`[{"name":"catalog_search","description":"Search.","_meta":`+meta+`}]`),
+				testScanner(t),
+				&ToolScanConfig{Action: "block"},
+			)
+			if result.Clean || result.ResourceLimit != "tool_definition_uninspectable" {
+				t.Fatalf("%s result = %+v, want fail-closed uninspectable verdict", name, result)
+			}
+		})
+	}
+}
+
+func TestScanTools_RichLegitimateDefinitionStaysUnderBudget(t *testing.T) {
+	// The availability half. The budget is worthless if it refuses a real
+	// server, so pin a deliberately rich definition: a long description, forty
+	// documented parameters, annotations and metadata.
+	var props strings.Builder
+	for i := range 40 {
+		if i > 0 {
+			props.WriteString(",")
+		}
+		fmt.Fprintf(&props, `"param_%02d":{"type":"string","description":%q}`,
+			i, strings.Repeat("A detailed explanation of this parameter. ", 3))
+	}
+	tool := `{"name":"catalog_search","title":"Catalog Search","description":` +
+		fmt.Sprintf("%q", strings.Repeat("Search the product catalog. ", 200)) +
+		`,"inputSchema":{"type":"object","properties":{` + props.String() + `}}` +
+		`,"annotations":{"readOnlyHint":true},"_meta":{"category":"retrieval"}}`
+
+	result := ScanTools(makeToolsResponse(`[`+tool+`]`), testScanner(t), &ToolScanConfig{Action: "block"})
+	if !result.Clean || result.ResourceLimit != "" {
+		t.Fatalf("rich legitimate definition result = %+v, want clean: the budget must not refuse a real server", result)
+	}
+}
+
 func TestToolOpaqueMediaHelpers_EdgeInputs(t *testing.T) {
 	// Direct unit coverage for the branches the scan-level tests do not reach:
 	// malformed input, an empty field, arrays as the outer container, and a

@@ -20,10 +20,14 @@ CI_RACE_PRODUCERS = (
     "test-enterprise-go126",
 )
 LEGACY_CI_RACE_PRODUCERS = ("test-oss", "test-enterprise")
+SHELL_ASSIGNMENT = r"[A-Za-z_][A-Za-z0-9_]*=(?:[^\s\"']*|\"[^\"]*\"|'[^']*')"
+COMMAND_PREFIX = rf"(?:env\s+)?(?:{SHELL_ASSIGNMENT}\s+)*"
 RUNNER_COMMAND = re.compile(
-    r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:bash\s+)?scripts/run-race-test\.sh(?:\s|$)"
+    rf"^{COMMAND_PREFIX}(?:bash\s+)?scripts/run-race-test\.sh(?:\s|$)"
 )
-DIRECT_RACE_COMMAND = re.compile(r"(?:^|[;&|]\s*)go test\b.*(?:^|\s)-race(?:\s|$)")
+DIRECT_RACE_COMMAND = re.compile(
+    rf"(?:^|[;&|]\s*){COMMAND_PREFIX}go test\b.*(?:^|\s)-race(?:\s|$)"
+)
 
 
 def printed_command(*args: str) -> str:
@@ -199,15 +203,23 @@ class TestRaceTestShape(unittest.TestCase):
     def test_partial_runner_delegation_fails_the_contract(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
         first_producer = "test-oss-go125" if "  test-oss-go125:\n" in ci else "test-oss"
-        mixed = ci.replace(
-            "          set -o pipefail",
-            "          scripts/run-race-test.sh --shard proxy\n          set -o pipefail",
-            1,
-        )
-        self.assertIn(
-            f"CI race jobs mixed runner delegation with direct race execution: ['{first_producer}']",
-            ci_race_shape_errors(mixed),
-        )
+        for prefix in ("", 'GOFLAGS="" ', "env GOFLAGS=-mod=readonly "):
+            with self.subTest(prefix=prefix):
+                mixed = ci.replace(
+                    "          set -o pipefail",
+                    "          scripts/run-race-test.sh --shard proxy\n          set -o pipefail",
+                    1,
+                ).replace("go test -race", f"{prefix}go test -race", 1)
+                self.assertIn(
+                    f"CI race jobs mixed runner delegation with direct race execution: ['{first_producer}']",
+                    ci_race_shape_errors(mixed),
+                )
+
+    def test_assignment_prefixed_commands_count_as_executable(self) -> None:
+        block = """GOFLAGS="" scripts/run-race-test.sh --shard proxy
+env CGO_ENABLED=1 go test -race ./internal/proxy
+"""
+        self.assertEqual(race_execution_counts(block), (1, 1))
 
     def test_invalid_selection_fails_before_running_go(self) -> None:
         result = subprocess.run(

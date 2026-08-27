@@ -155,10 +155,13 @@ func TestHandler_FaviconServedWithoutDashboardRoute404(t *testing.T) {
 		if got := rec.Header().Get("Content-Type"); got != contentTypeSVG {
 			t.Fatalf("favicon content type = %q, want %q", got, contentTypeSVG)
 		}
-		for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 64 64"`, `#00ffc8`} {
+		for _, want := range []string{`<svg xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 64 64"`, `#00e5a0`} {
 			if !strings.Contains(rec.Body.String(), want) {
 				t.Fatalf("favicon body missing %q: %s", want, rec.Body.String())
 			}
+		}
+		if strings.Contains(rec.Body.String(), "#00ffc8") {
+			t.Fatal("favicon body contains the retired cyan")
 		}
 	})
 	t.Run("head", func(t *testing.T) {

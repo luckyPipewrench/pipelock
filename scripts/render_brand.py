@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate and verify Pipelock's canonical brand assets."""
 
 from __future__ import annotations
@@ -113,7 +116,8 @@ def source_file(png: str) -> Path:
 
 def raster_fingerprint(png: Path, svg: Path) -> str:
     """Bind a raster provenance record to both its SVG source and PNG bytes."""
-    return f"svg {hashlib.sha256(svg.read_bytes()).hexdigest()}\npng {hashlib.sha256(png.read_bytes()).hexdigest()}\n"
+    svg_bytes = svg.read_bytes().replace(b"\r\n", b"\n")
+    return f"svg {hashlib.sha256(svg_bytes).hexdigest()}\npng {hashlib.sha256(png.read_bytes()).hexdigest()}\n"
 
 
 def check() -> list[str]:
@@ -163,7 +167,7 @@ def main() -> int:
         return 0
     ASSETS.mkdir(exist_ok=True)
     for filename, render in GENERATED.items():
-        (ASSETS / filename).write_text(render(), encoding="utf-8")
+        (ASSETS / filename).write_text(render(), encoding="utf-8", newline="\n")
         print(f"wrote assets/{filename}")
     return 0
 

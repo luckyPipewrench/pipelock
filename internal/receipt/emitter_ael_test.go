@@ -95,3 +95,35 @@ func TestEmitterCloseNativeAELForRotation(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+func TestEmitterRetireNativeAELRejectsStaleAndAlreadyAdmittedHeartbeats(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, HeartbeatSeconds: 30})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+
+	admitted := make(chan struct{})
+	release := make(chan struct{})
+	e.beforeChainLockForTest = func() {
+		close(admitted)
+		<-release
+	}
+	heartbeatErr := make(chan error, 1)
+	go func() { heartbeatErr <- e.EmitHeartbeat() }()
+	<-admitted
+	e.beforeChainLockForTest = nil
+	if err := e.RetireNativeAEL(); err != nil {
+		t.Fatalf("RetireNativeAEL: %v", err)
+	}
+	close(release)
+	if err := <-heartbeatErr; err == nil || !strings.Contains(err.Error(), "retired after signer rotation") {
+		t.Fatalf("already-admitted heartbeat error = %v", err)
+	}
+	if err := e.EmitHeartbeat(); err == nil || !strings.Contains(err.Error(), "retired after signer rotation") {
+		t.Fatalf("stale heartbeat error = %v", err)
+	}
+}

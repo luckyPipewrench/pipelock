@@ -86,19 +86,20 @@ const (
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
-	recorder   *recorder.Recorder
-	privKey    ed25519.PrivateKey
-	configHash atomic.Value // stores string; updated on hot reload
-	principal  string
-	actor      string
-	metrics    MetricsSink
-	onReceipt  func(rcpt *Receipt)
-	now        func() time.Time
-	initErr    error
-	healthMu   sync.RWMutex
-	healthErr  error
-	runNonce   string
-	nativeAEL  *aelpkg.Emitter
+	recorder               *recorder.Recorder
+	privKey                ed25519.PrivateKey
+	configHash             atomic.Value // stores string; updated on hot reload
+	principal              string
+	actor                  string
+	metrics                MetricsSink
+	onReceipt              func(rcpt *Receipt)
+	now                    func() time.Time
+	initErr                error
+	healthMu               sync.RWMutex
+	healthErr              error
+	beforeChainLockForTest func()
+	runNonce               string
+	nativeAEL              *aelpkg.Emitter
 
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -505,6 +506,9 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		sideEffect = sideEffectFromMCPAction(actionType)
 		reversibility = ReversibilityUnknown
 	}
+	if e.beforeChainLockForTest != nil {
+		e.beforeChainLockForTest()
+	}
 
 	// Chain integrity: lock covers stamp → sign → hash → persist → advance.
 	// The mutex must span from timestamp through persist so concurrent Emit
@@ -513,6 +517,13 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	// of reusing the same prev_hash/seq and forking the chain.
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
+	// Retirement can happen after the optimistic check above while this emit
+	// waits for chainMu. Re-check under the chain lock so a call admitted before
+	// signer rotation cannot append after the old native AEL run is closed.
+	if healthErr := e.HealthError(); healthErr != nil {
+		e.recordFailure(FailReasonUnavailable)
+		return fmt.Errorf("receipt emitter unhealthy: %w", healthErr)
+	}
 
 	if e.rootEmitted {
 		e.recordFailure(FailReasonSealed)
@@ -815,6 +826,28 @@ func (e *Emitter) CloseNativeAEL() error {
 		e.recordFailure(FailReasonAEL)
 		return fmt.Errorf("closing native AEL run: %w", err)
 	}
+	return nil
+}
+
+var errEmitterRetired = errors.New("receipt emitter retired after signer rotation")
+
+// RetireNativeAEL atomically closes the native run and bricks this emitter so
+// stale or already-admitted calls cannot append receipts after key rotation.
+func (e *Emitter) RetireNativeAEL() error {
+	if e == nil {
+		return nil
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	if e.nativeAEL != nil && e.nativeAEL.Opened() {
+		if err := e.nativeAEL.EmitClose(); err != nil {
+			e.recordFailure(FailReasonAEL)
+			closeErr := fmt.Errorf("closing native AEL run: %w", err)
+			e.MarkUnhealthy(closeErr)
+			return closeErr
+		}
+	}
+	e.MarkUnhealthy(errEmitterRetired)
 	return nil
 }
 

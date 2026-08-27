@@ -1951,8 +1951,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// here cannot leave the current receipt chain behind a staged record.
 	currentReceiptEmitter := p.receiptEmitterPtr.Load()
 	if current := currentReceiptEmitter; current != nil && !receiptStage.reuseExisting && current != receiptStage.emitter {
-		if err := current.CloseNativeAEL(); err != nil {
-			current.MarkUnhealthy(err)
+		if err := current.RetireNativeAEL(); err != nil {
 			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 				fmt.Errorf("native AEL rotation close failed, keeping old config: %w", err))
 			sc.Close()

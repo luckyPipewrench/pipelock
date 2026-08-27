@@ -10,8 +10,20 @@ import (
 	"path/filepath"
 )
 
+type directorySyncer interface {
+	Sync() error
+	Close() error
+}
+
 func syncDirectory(path string) error {
-	dir, err := os.Open(filepath.Clean(path))
+	return syncDirectoryWithOpen(path, func(name string) (directorySyncer, error) {
+		// #nosec G304 -- the artifact directory is intentionally operator-configured.
+		return os.Open(name)
+	})
+}
+
+func syncDirectoryWithOpen(path string, open func(string) (directorySyncer, error)) error {
+	dir, err := open(filepath.Clean(path))
 	if err != nil {
 		return err
 	}

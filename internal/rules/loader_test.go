@@ -631,6 +631,34 @@ func TestLoadBundles_MinPipelockTooHigh(t *testing.T) {
 	}
 }
 
+func TestLoadBundles_TestedThroughPipelockWarning(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "tested-ceiling")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	b := testBundle("tested-ceiling", []Rule{testDLPRule("tested-ceiling-001", confidenceHigh, StatusStable)})
+	b.TestedThroughPipelock = "1.2.0"
+	writeUnsignedBundle(t, bundleDir, b)
+
+	result := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: "1.3.0"})
+	if len(result.Errors) != 0 || len(result.Loaded) != 1 {
+		t.Fatalf("LoadBundles() errors=%v loaded=%v, want loaded bundle without errors", result.Errors, result.Loaded)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "tested through") {
+		t.Fatalf("LoadBundles() warnings=%v, want tested-through warning", result.Warnings)
+	}
+
+	b.MinPipelock = "2.0.0"
+	writeUnsignedBundle(t, bundleDir, b)
+	result = LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: "1.3.0"})
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0].Reason, "below minimum") {
+		t.Fatalf("LoadBundles() errors=%v, want fail-closed minimum-version rejection", result.Errors)
+	}
+}
+
 func TestLoadBundles_ConfidenceFilterHigh(t *testing.T) {
 	t.Parallel()
 

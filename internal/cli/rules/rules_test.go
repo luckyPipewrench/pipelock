@@ -228,7 +228,8 @@ func TestRulesList_WithBundle(t *testing.T) {
 
 func TestRulesList_JSON(t *testing.T) {
 	rulesDir := t.TempDir()
-	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
+	bundleYAML := strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1)
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(bundleYAML))
 
 	cmd := testRootCmd()
 	buf := &strings.Builder{}
@@ -253,6 +254,52 @@ func TestRulesList_JSON(t *testing.T) {
 	}
 	if entries[0].Signed {
 		t.Error("expected Signed = false for unsigned bundle")
+	}
+	if entries[0].TestedThroughPipelock != "1.2.0" {
+		t.Errorf("TestedThroughPipelock = %q, want 1.2.0", entries[0].TestedThroughPipelock)
+	}
+}
+
+func TestWarnTestedThroughPipelock(t *testing.T) {
+	var out strings.Builder
+	if err := warnTestedThroughPipelock(&out, "1.2.0", "1.3.0"); err != nil {
+		t.Fatalf("warnTestedThroughPipelock() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "warning:") || !strings.Contains(out.String(), "remains loaded") {
+		t.Fatalf("warnTestedThroughPipelock() output = %q, want advisory warning", out.String())
+	}
+}
+
+func TestWarnTestedThroughPipelockMalformedCeiling(t *testing.T) {
+	var out strings.Builder
+	err := warnTestedThroughPipelock(&out, "1.2", "1.3.0")
+	if err == nil || !strings.Contains(err.Error(), "tested_through_pipelock") {
+		t.Fatalf("warnTestedThroughPipelock() error = %v, want malformed ceiling error", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("warnTestedThroughPipelock() wrote %q before returning an error", out.String())
+	}
+}
+
+func TestRulesList_TextShowsTestedThroughWarning(t *testing.T) {
+	originalVersion := cliutil.Version
+	cliutil.Version = "1.3.0"
+	t.Cleanup(func() { cliutil.Version = originalVersion })
+
+	rulesDir := t.TempDir()
+	bundleYAML := strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1)
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(bundleYAML))
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "tested through Pipelock: 1.2.0") || !strings.Contains(output, "warning: bundle tested through") {
+		t.Fatalf("rules list output = %q, want tested-through ceiling and warning", output)
 	}
 }
 
@@ -691,7 +738,12 @@ func TestRulesUpdate_NotInstalled(t *testing.T) {
 }
 
 func TestRulesUpdate_RemoteUpToDate(t *testing.T) {
-	bundleData := []byte(validBundleYAML)
+	originalVersion := cliutil.Version
+	cliutil.Version = "1.3.0"
+	t.Cleanup(func() { cliutil.Version = originalVersion })
+
+	bundleYAML := strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1)
+	bundleData := []byte(bundleYAML)
 
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -765,6 +817,9 @@ func TestRulesUpdate_RemoteUpToDate(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "already up to date") {
 		t.Errorf("expected 'already up to date', got %q", output)
+	}
+	if !strings.Contains(output, "tested through Pipelock") {
+		t.Errorf("expected tested-through warning, got %q", output)
 	}
 
 	// Verify last_check was updated.

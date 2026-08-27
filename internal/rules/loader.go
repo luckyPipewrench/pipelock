@@ -106,17 +106,18 @@ const (
 
 // LoadedBundle describes a successfully loaded bundle (for diagnostics).
 type LoadedBundle struct {
-	Name             string
-	Version          string
-	Tier             string // standard, community, pro (v2+)
-	MonotonicVersion uint64 // rollback-prevention counter (v2+)
-	Source           string
-	Rules            int // total rules loaded after filtering
-	DLP              int
-	Injection        int
-	ToolPoison       int
-	Unsigned         bool
-	Expired          bool // bundle is past expires_at but loaded in stale mode
+	Name                  string
+	Version               string
+	TestedThroughPipelock string
+	Tier                  string // standard, community, pro (v2+)
+	MonotonicVersion      uint64 // rollback-prevention counter (v2+)
+	Source                string
+	Rules                 int // total rules loaded after filtering
+	DLP                   int
+	Injection             int
+	ToolPoison            int
+	Unsigned              bool
+	Expired               bool // bundle is past expires_at but loaded in stale mode
 }
 
 // IntegrityErrors returns load failures that indicate installed-bundle
@@ -334,6 +335,12 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassAvailability})
 		return
 	}
+	if warning, err := TestedThroughPipelockWarning(bundle.TestedThroughPipelock, opts.PipelockVersion); err != nil {
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassIntegrity})
+		return
+	} else if warning != "" {
+		ctx.Result.Warnings = append(ctx.Result.Warnings, fmt.Sprintf("bundle %q: %s", bundle.Name, warning))
+	}
 
 	// Check pipelock-* name reservation: only official signers allowed.
 	// Track official status for degraded-mode detection (based on verified
@@ -394,12 +401,13 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 
 	// Filter and convert rules.
 	loaded := LoadedBundle{
-		Name:             bundle.Name,
-		Version:          bundle.Version,
-		Tier:             bundle.Tier,
-		MonotonicVersion: bundle.MonotonicVersion,
-		Source:           lock.Source,
-		Unsigned:         lock.Unsigned,
+		Name:                  bundle.Name,
+		Version:               bundle.Version,
+		TestedThroughPipelock: bundle.TestedThroughPipelock,
+		Tier:                  bundle.Tier,
+		MonotonicVersion:      bundle.MonotonicVersion,
+		Source:                lock.Source,
+		Unsigned:              lock.Unsigned,
 	}
 
 	for i := range bundle.Rules {

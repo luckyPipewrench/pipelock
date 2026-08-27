@@ -64,6 +64,17 @@ func warnUnverifiableBundleVersion(w io.Writer, err error) {
 	_, _ = fmt.Fprintf(w, "warning: the bundle is installed, but this build will refuse to LOAD it at runtime until rules.allow_unversioned_bundle_load is set\n")
 }
 
+func warnTestedThroughPipelock(w io.Writer, testedThrough, currentVersion string) error {
+	warning, err := domrules.TestedThroughPipelockWarning(testedThrough, currentVersion)
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		_, _ = fmt.Fprintf(w, "warning: %s\n", warning)
+	}
+	return nil
+}
+
 // loadRulesConfig loads the pipelock config for trusted key resolution.
 // Resolution is explicit --config, then PIPELOCK_CONFIG, then the shared
 // user/system discovery path. CWD-local pipelock.yaml is intentionally ignored:
@@ -514,11 +525,13 @@ func timeNowUTC() string {
 
 // bundleListEntry is the JSON representation for "rules list --json".
 type bundleListEntry struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Source  string `json:"source"`
-	Signed  bool   `json:"signed"`
-	LastChk string `json:"last_check,omitempty"`
+	Name                  string `json:"name"`
+	Version               string `json:"version"`
+	TestedThroughPipelock string `json:"tested_through_pipelock,omitempty"`
+	Source                string `json:"source"`
+	Signed                bool   `json:"signed"`
+	LastChk               string `json:"last_check,omitempty"`
+	CompatibilityWarning  string `json:"compatibility_warning,omitempty"`
 }
 
 func rulesListCmd() *cobra.Command {
@@ -552,13 +565,21 @@ func rulesListCmd() *cobra.Command {
 				if err != nil {
 					continue // skip directories without lock files
 				}
-				bundles = append(bundles, bundleListEntry{
+				entry := bundleListEntry{
 					Name:    e.Name(),
 					Version: lf.InstalledVersion,
 					Source:  lf.Source,
 					Signed:  !lf.Unsigned,
 					LastChk: lf.LastCheck,
-				})
+				}
+				bundlePath := filepath.Clean(filepath.Join(dir, e.Name(), "bundle.yaml"))
+				if data, readErr := os.ReadFile(bundlePath); readErr == nil {
+					if bundle, parseErr := domrules.ParseBundle(data); parseErr == nil {
+						entry.TestedThroughPipelock = bundle.TestedThroughPipelock
+						entry.CompatibilityWarning, _ = domrules.TestedThroughPipelockWarning(bundle.TestedThroughPipelock, cliutil.Version)
+					}
+				}
+				bundles = append(bundles, entry)
 			}
 
 			if len(bundles) == 0 {
@@ -580,6 +601,12 @@ func rulesListCmd() *cobra.Command {
 				_, _ = fmt.Fprintf(out, "%-30s v%-14s %s  (%s)\n", b.Name, b.Version, signedLabel, b.Source)
 				if b.LastChk != "" {
 					_, _ = fmt.Fprintf(out, "  last checked: %s\n", b.LastChk)
+				}
+				if b.TestedThroughPipelock != "" {
+					_, _ = fmt.Fprintf(out, "  tested through Pipelock: %s\n", b.TestedThroughPipelock)
+				}
+				if b.CompatibilityWarning != "" {
+					_, _ = fmt.Fprintf(out, "  warning: %s\n", b.CompatibilityWarning)
 				}
 			}
 			return nil
@@ -690,6 +717,9 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 		}
 		warnUnverifiableBundleVersion(out, err)
 	}
+	if err := warnTestedThroughPipelock(out, bundle.TestedThroughPipelock, cliutil.Version); err != nil {
+		return err
+	}
 
 	// Check pipelock-* prefix reservation: local unsigned bundles cannot use it.
 	if strings.HasPrefix(bundle.Name, "pipelock-") {
@@ -792,6 +822,9 @@ func installRemote(opts installRemoteOptions) error {
 			return err
 		}
 		warnUnverifiableBundleVersion(out, err)
+	}
+	if err := warnTestedThroughPipelock(out, bundle.TestedThroughPipelock, cliutil.Version); err != nil {
+		return err
 	}
 
 	digest := sha256Hex(bundleData)
@@ -1086,6 +1119,9 @@ func updateBundle(opts updateBundleOpts) error {
 			return err
 		}
 		warnUnverifiableBundleVersion(opts.Out, err)
+	}
+	if err := warnTestedThroughPipelock(opts.Out, bundle.TestedThroughPipelock, cliutil.Version); err != nil {
+		return err
 	}
 
 	// Compare versions.

@@ -150,6 +150,39 @@ func setupUnsignedBundle(t *testing.T, rulesDir, bundleName string, bundleData [
 	}
 }
 
+// setupSignedBundle creates a bundle.yaml, detached signature, and lock file.
+func setupSignedBundle(t *testing.T, rulesDir, bundleName string, bundleData []byte, pub ed25519.PublicKey, priv ed25519.PrivateKey) {
+	t.Helper()
+
+	bundleDir := filepath.Join(rulesDir, bundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating bundle dir: %v", err)
+	}
+
+	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, bundleData, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	sig := ed25519.Sign(priv, bundleData)
+	if err := os.WriteFile(bundlePath+".sig", []byte(base64.StdEncoding.EncodeToString(sig)+"\n"), 0o600); err != nil {
+		t.Fatalf("writing signature: %v", err)
+	}
+
+	hash := sha256.Sum256(bundleData)
+	lf := &domrules.LockFile{
+		InstalledVersion:  testBundleVersion,
+		InstalledAt:       "2026-03-15T10:00:00Z",
+		Source:            "https://rules.example/test-bundle/bundle.yaml",
+		LastCheck:         "2026-03-15T10:00:00Z",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: hex.EncodeToString(pub),
+	}
+	if err := domrules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock file: %v", err)
+	}
+}
+
 // Tests in this file that call testRootCmd() are intentionally NOT parallel
 // because cobra commands share global state during execution.
 // Tests that mutate domrules keyring globals or httpsOnlyClient are also
@@ -258,6 +291,9 @@ func TestRulesList_JSON(t *testing.T) {
 	if entries[0].TestedThroughPipelock != "1.2.0" {
 		t.Errorf("TestedThroughPipelock = %q, want 1.2.0", entries[0].TestedThroughPipelock)
 	}
+	if entries[0].CompatibilityStatus != "verified" {
+		t.Errorf("CompatibilityStatus = %q, want verified", entries[0].CompatibilityStatus)
+	}
 }
 
 func TestWarnTestedThroughPipelock(t *testing.T) {
@@ -298,8 +334,93 @@ func TestRulesList_TextShowsTestedThroughWarning(t *testing.T) {
 		t.Fatalf("rules list: %v", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "tested through Pipelock: 1.2.0") || !strings.Contains(output, "warning: bundle tested through") {
+	if !strings.Contains(output, "compatibility metadata: verified") || !strings.Contains(output, "tested through Pipelock: 1.2.0") || !strings.Contains(output, "warning: bundle tested through") {
 		t.Fatalf("rules list output = %q, want tested-through ceiling and warning", output)
+	}
+}
+
+func TestRulesList_DoesNotReportCompatibilityFromTamperedBundle(t *testing.T) {
+	originalVersion := cliutil.Version
+	cliutil.Version = "10.0.0"
+	t.Cleanup(func() { cliutil.Version = originalVersion })
+
+	rulesDir := t.TempDir()
+	bundleData := []byte(strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1))
+	setupUnsignedBundle(t, rulesDir, testBundleName, bundleData)
+
+	tamperedData := []byte(strings.Replace(string(bundleData), "1.2.0", "9.9.9", 1))
+	bundlePath := filepath.Join(rulesDir, testBundleName, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, tamperedData, 0o600); err != nil {
+		t.Fatalf("tampering bundle: %v", err)
+	}
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list must remain available when a bundle fails verification: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "compatibility metadata: unverified: integrity check: SHA-256 mismatch") {
+		t.Fatalf("rules list output = %q, want unverified compatibility status", output)
+	}
+	if strings.Contains(output, "9.9.9") || strings.Contains(output, "tested through Pipelock:") || strings.Contains(output, "warning: bundle tested through") {
+		t.Fatalf("rules list output = %q, must not report tampered compatibility metadata", output)
+	}
+}
+
+func TestRulesList_UnavailableTrustPolicySuppressesCompatibility(t *testing.T) {
+	rulesDir := t.TempDir()
+	bundleData := []byte(strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1))
+	setupUnsignedBundle(t, rulesDir, testBundleName, bundleData)
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir, "--config", filepath.Join(t.TempDir(), "missing.yaml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list must remain available when the trust policy cannot load: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "compatibility metadata: unverified: loading trust policy:") {
+		t.Fatalf("rules list output = %q, want unverified compatibility status", output)
+	}
+	if strings.Contains(output, "tested through Pipelock:") || strings.Contains(output, "warning: bundle tested through") {
+		t.Fatalf("rules list output = %q, must not report compatibility metadata without a trust policy", output)
+	}
+}
+
+func TestRulesList_UsesConfiguredTrustPolicyForCompatibility(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating signing key: %v", err)
+	}
+	setRulesKeyringHexForTest(t, "")
+
+	rulesDir := t.TempDir()
+	bundleData := []byte(strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1))
+	setupSignedBundle(t, rulesDir, testBundleName, bundleData, pub, priv)
+
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configData := []byte("rules:\n  trust_embedded_keys: false\n  trusted_keys:\n    - name: test-signer\n      public_key: " + hex.EncodeToString(pub) + "\n")
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "compatibility metadata: verified") || !strings.Contains(output, "tested through Pipelock: 1.2.0") {
+		t.Fatalf("rules list output = %q, want compatibility metadata verified under configured trust policy", output)
 	}
 }
 

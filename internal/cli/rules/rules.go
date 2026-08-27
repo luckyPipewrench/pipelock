@@ -532,11 +532,15 @@ type bundleListEntry struct {
 	Signed                bool   `json:"signed"`
 	LastChk               string `json:"last_check,omitempty"`
 	CompatibilityWarning  string `json:"compatibility_warning,omitempty"`
+	CompatibilityStatus   string `json:"compatibility_status,omitempty"`
 }
 
 func rulesListCmd() *cobra.Command {
-	var rulesDir string
-	var jsonOut bool
+	var (
+		rulesDir   string
+		jsonOut    bool
+		configFile string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -545,6 +549,7 @@ func rulesListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir := domrules.ResolveRulesDir(rulesDir)
 			out := cmd.OutOrStdout()
+			policy, policyErr := rulesTrustPolicy(configFile, cmd.ErrOrStderr())
 
 			entries, err := os.ReadDir(dir)
 			if err != nil {
@@ -573,11 +578,20 @@ func rulesListCmd() *cobra.Command {
 					LastChk: lf.LastCheck,
 				}
 				bundlePath := filepath.Clean(filepath.Join(dir, e.Name(), "bundle.yaml"))
-				if data, readErr := os.ReadFile(bundlePath); readErr == nil {
-					if bundle, parseErr := domrules.ParseBundle(data); parseErr == nil {
+				if policyErr != nil {
+					entry.CompatibilityStatus = "unverified: loading trust policy: " + policyErr.Error()
+				} else if data, readErr := os.ReadFile(bundlePath); readErr == nil {
+					if verifyErr := domrules.VerifyIntegrityBytesWithPolicy(data, filepath.Dir(bundlePath), lf.Unsigned, lf.SignerFingerprint, lf.BundleSHA256, policy); verifyErr != nil {
+						entry.CompatibilityStatus = "unverified: " + verifyErr.Error()
+					} else if bundle, parseErr := domrules.ParseBundle(data); parseErr != nil {
+						entry.CompatibilityStatus = "unverified: parsing bundle: " + parseErr.Error()
+					} else {
 						entry.TestedThroughPipelock = bundle.TestedThroughPipelock
 						entry.CompatibilityWarning, _ = domrules.TestedThroughPipelockWarning(bundle.TestedThroughPipelock, cliutil.Version)
+						entry.CompatibilityStatus = "verified"
 					}
+				} else {
+					entry.CompatibilityStatus = "unverified: reading bundle: " + readErr.Error()
 				}
 				bundles = append(bundles, entry)
 			}
@@ -602,6 +616,9 @@ func rulesListCmd() *cobra.Command {
 				if b.LastChk != "" {
 					_, _ = fmt.Fprintf(out, "  last checked: %s\n", b.LastChk)
 				}
+				if b.CompatibilityStatus != "" {
+					_, _ = fmt.Fprintf(out, "  compatibility metadata: %s\n", b.CompatibilityStatus)
+				}
 				if b.TestedThroughPipelock != "" {
 					_, _ = fmt.Fprintf(out, "  tested through Pipelock: %s\n", b.TestedThroughPipelock)
 				}
@@ -615,6 +632,7 @@ func rulesListCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "override rules directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "output as JSON")
+	cmd.Flags().StringVar(&configFile, "config", "", "config file for trusted keys")
 	return cmd
 }
 

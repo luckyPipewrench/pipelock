@@ -522,7 +522,7 @@ func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 			if ctx.Err() != nil {
 				t.Fatalf("deadline expired before startup finished, so this is a timing failure and not a best-effort refusal: %v (context: %v)", err, ctx.Err())
 			}
-			t.Fatalf("best-effort sandbox proxy = %v", err)
+			t.Fatalf("best-effort sandbox proxy = %v (%s)", err, describeSandboxLifecycleFailure(ctx, err))
 		}
 		if !strings.Contains(logBuf.String(), "session descendant cleanup degraded") {
 			t.Errorf("missing subreaper warning, got %q", logBuf.String())

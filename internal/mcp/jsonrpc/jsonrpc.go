@@ -115,6 +115,13 @@ type ExtractStringsResult struct {
 	Truncated bool
 }
 
+// ExtractKeysResult is the bounded recursive JSON-key extraction result.
+// Truncated is true when the JSON contains keys beyond maxExtractDepth.
+type ExtractKeysResult struct {
+	Keys      []string
+	Truncated bool
+}
+
 // TextResult is the bounded text extraction result.
 type TextResult struct {
 	Text      string
@@ -294,6 +301,16 @@ func SortedKeys(m map[string]interface{}) []string {
 // overflow from maliciously deeply-nested JSON.
 const maxExtractDepth = 64
 
+// maxExtractKeys bounds how many object keys one extraction contributes to the
+// scanned text. Sized far above any real tool listing and far below what an
+// adversarial one can produce: a server publishing a hundred tools with fifty
+// parameters each stays well inside it, while a message engineered purely for
+// breadth stops here and is reported truncated, which callers already treat as
+// fail-closed. Chosen against a measurement rather than a guess: a 2.6MB
+// listing carrying eighty thousand keys took roughly twenty seconds to scan
+// before this bound existed.
+const maxExtractKeys = 20000
+
 // ExtractStringsForKeys extracts string values only from top-level keys
 // matching the keyPattern regex. Values under non-matching keys are excluded.
 // Nested values under matching keys are extracted recursively.
@@ -381,4 +398,58 @@ func ExtractStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 		extract(parsed, 0)
 	}
 	return ExtractStringsResult{Strings: result, Truncated: truncated}
+}
+
+// ExtractKeysFromJSONResult recursively extracts JSON object keys and reports
+// whether extraction hit the nesting cap. Most response scanning deliberately
+// ignores keys because they are normally structural. Callers that surface a
+// JSON object as agent-visible tool metadata can opt into scanning its keys.
+func ExtractKeysFromJSONResult(raw json.RawMessage) ExtractKeysResult {
+	var result []string
+	truncated := false
+	var extract func(v interface{}, depth int)
+	extract = func(v interface{}, depth int) {
+		// Depth alone does not bound the work: a wide, shallow document stays
+		// within maxExtractDepth while producing an unbounded number of keys,
+		// and every key is then joined into text that each scanner pattern runs
+		// over. Breadth is bounded here for the same reason depth is, and it
+		// reports through the same Truncated flag, so a caller that already
+		// fails closed on truncation needs no new branch.
+		if depth > maxExtractDepth || len(result) >= maxExtractKeys {
+			truncated = true
+			return
+		}
+		switch val := v.(type) {
+		case []interface{}:
+			for _, item := range val {
+				if len(result) >= maxExtractKeys {
+					truncated = true
+					return
+				}
+				extract(item, depth+1)
+			}
+		case map[string]interface{}:
+			// Compare the object's size against the remaining budget BEFORE
+			// sorting. SortedKeys allocates and sorts every key, which is the
+			// expensive part, so checking afterwards paid the whole cost of a
+			// hostile object and only then refused it.
+			if len(val) > maxExtractKeys-len(result) {
+				truncated = true
+				return
+			}
+			for _, key := range SortedKeys(val) {
+				if len(result) >= maxExtractKeys {
+					truncated = true
+					return
+				}
+				result = append(result, key)
+				extract(val[key], depth+1)
+			}
+		}
+	}
+	var parsed interface{}
+	if err := json.Unmarshal(raw, &parsed); err == nil {
+		extract(parsed, 0)
+	}
+	return ExtractKeysResult{Keys: result, Truncated: truncated}
 }

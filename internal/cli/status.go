@@ -177,7 +177,7 @@ func statusLicenseState(cfg *config.Config, now time.Time) statusLicense {
 		return statusLicense{State: "not_configured", Detail: "no enterprise license configured"}
 	case cfg.LicenseRevoked:
 		return statusLicense{State: "revoked", ID: cfg.LicenseID, Detail: cfg.LicenseRevocationReason}
-	case cfg.LicenseExpiresAt > 0 && now.Unix() > cfg.LicenseExpiresAt:
+	case cfg.LicenseExpiresAt > 0 && now.Unix() >= cfg.LicenseExpiresAt:
 		return statusLicense{State: "expired", ID: cfg.LicenseID, Detail: time.Unix(cfg.LicenseExpiresAt, 0).UTC().Format(time.DateOnly)}
 	case cfg.LicenseAgentsFeature:
 		return statusLicense{State: "active", ID: cfg.LicenseID, Detail: "agents feature enabled", Warning: warning}

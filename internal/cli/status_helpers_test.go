@@ -105,6 +105,15 @@ func TestStatusLicenseStateExpiryWarning(t *testing.T) {
 			t.Fatalf("expired license = %+v, want expired without renewal warning", got)
 		}
 	})
+
+	t.Run("exact expiry second", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Unix()
+		got := statusLicenseState(&cfg, now)
+		if got.State != "expired" || got.Warning != "" {
+			t.Fatalf("license at expiry second = %+v, want expired without renewal warning", got)
+		}
+	})
 }
 
 func TestModeActionAuditWarns(t *testing.T) {

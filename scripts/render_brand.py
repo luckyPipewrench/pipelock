@@ -88,7 +88,7 @@ def social_preview() -> str:
   </defs>
   <rect width="1280" height="640" fill="{BG}"/><rect width="1280" height="640" fill="url(#teal)"/><rect width="1280" height="640" fill="url(#purple)"/>
 {particles()}
-  <g transform="translate(150)">
+  <g transform="translate(75)">
     <g transform="translate(104 172) scale(1.18)">{mark()}</g>
     <text x="452" y="287" font-family="{MONO}" font-size="92" font-weight="700" letter-spacing="-.025em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
     <text x="456" y="342" font-family="{SANS}" font-size="25" fill="{MUTED}">Agent firewall with signed decision evidence</text>
@@ -98,7 +98,7 @@ def social_preview() -> str:
       <rect x="750" y="398" width="112" height="46" rx="23" fill="{ACCENT}" fill-opacity=".08" stroke="{ACCENT}" stroke-opacity=".42"/><text x="806" y="428" fill="{ACCENT}">prove</text>
     </g>
   </g>
-  <text x="640" y="566" text-anchor="middle" font-family="{MONO}" font-size="16" fill="{DIM}" letter-spacing=".12em">{FOOTER}</text>
+  <text x="120" y="566" font-family="{MONO}" font-size="16" fill="{DIM}" letter-spacing=".12em">{FOOTER}</text>
 </svg>
 '''
 

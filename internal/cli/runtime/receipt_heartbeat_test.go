@@ -113,6 +113,83 @@ func TestReceiptHeartbeatTickerStopsBeforeSeal(t *testing.T) {
 	}
 }
 
+func TestReceiptHeartbeatCadenceStillBeatsAfterTheFirst(t *testing.T) {
+	// The immediate-beat test above runs a one-hour cadence on purpose, so it
+	// cannot exercise the ticker at all. Without this test the periodic path, the
+	// ORIGINAL heartbeat mechanism, would have no coverage: proving the new beat
+	// is immediate must not cost the proof that the old one repeats.
+	dir := t.TempDir()
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	seen := make(chan receipt.Receipt, 16)
+	e := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rec,
+		PrivKey:  priv,
+		OnReceipt: func(rcpt *receipt.Receipt) {
+			select {
+			case seen <- *rcpt:
+			default:
+			}
+		},
+	})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	var log bytes.Buffer
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return e }, &log, false, nil)
+
+	// Two beats: the immediate one, then at least one from the ticker. Waiting for
+	// the second is what proves the cadence loop ran.
+	waitForHeartbeatReceipt(t, seen)
+	waitForHeartbeatReceipt(t, seen)
+	cancel()
+	wg.Wait()
+
+	receipts := readRuntimeReceipts(t, dir, hex.EncodeToString(pub))
+	heartbeats := 0
+	for _, r := range receipts {
+		if sc := r.ActionRecord.SessionControl; sc != nil && sc.Heartbeat != nil {
+			heartbeats++
+		}
+	}
+	if heartbeats < 2 {
+		t.Fatalf("heartbeat receipts = %d, want at least the immediate beat plus one cadence beat", heartbeats)
+	}
+}
+
+func TestReceiptHeartbeatWithoutAnEmitterDoesNotPanic(t *testing.T) {
+	// A nil emitter is the pre-session and post-teardown state. It must be a quiet
+	// no-op rather than a panic or a logged failure, because the scheduler is
+	// started and stopped around a lifecycle it does not own.
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var log bytes.Buffer
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return nil }, &log, true, func(error) {
+		t.Fatal("a nil emitter must not report a required-receipt failure")
+	})
+	cancel()
+	wg.Wait()
+	if log.Len() != 0 {
+		t.Fatalf("log = %q, want nothing written for a nil emitter", log.String())
+	}
+}
+
 func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
 	dir := t.TempDir()
 	_, priv, err := signing.GenerateKeyPair()
@@ -169,6 +246,83 @@ func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "receipt emitter unhealthy") {
 		t.Fatalf("Emit after required heartbeat failure error = %v, want unhealthy", err)
+	}
+}
+
+func TestRequiredCadenceHeartbeatFailureAfterAHealthyStartFailsClosed(t *testing.T) {
+	// The sibling required-failure test closes the recorder BEFORE the scheduler
+	// starts, so its failure now lands on the immediate beat and the cadence
+	// branch it used to cover became unreachable from it. This covers the
+	// remaining direction: a session that starts healthy and loses its recorder
+	// later, which is what a full disk or a revoked key looks like in production.
+	// It must fail closed there too, not just at startup.
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	beats := make(chan struct{}, 8)
+	e := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rec,
+		PrivKey:  priv,
+		OnReceipt: func(rcpt *receipt.Receipt) {
+			if sc := rcpt.ActionRecord.SessionControl; sc != nil && sc.Heartbeat != nil {
+				select {
+				case beats <- struct{}{}:
+				default:
+				}
+			}
+		},
+	})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	var log bytes.Buffer
+	requiredFailure := make(chan error, 1)
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return e }, &log, true, func(err error) {
+		select {
+		case requiredFailure <- err:
+		default:
+		}
+		cancel()
+	})
+	defer wg.Wait()
+
+	// The immediate beat must land first: without it, closing the recorder below
+	// would race the startup emission and this could pass on the wrong branch.
+	select {
+	case <-beats:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the immediate heartbeat")
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	select {
+	case err := <-requiredFailure:
+		if err == nil {
+			t.Fatal("cadence heartbeat failure callback received nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for a required cadence heartbeat failure")
+	}
+	if e.HealthError() == nil {
+		t.Fatal("emitter health error was not marked after a required cadence heartbeat failure")
 	}
 }
 

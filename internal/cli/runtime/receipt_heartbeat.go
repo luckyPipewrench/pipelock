@@ -33,6 +33,36 @@ func startReceiptHeartbeat(
 	if interval <= 0 {
 		interval = time.Minute
 	}
+	emitHeartbeat := func() bool {
+		e := emitterFn()
+		if e == nil {
+			return true
+		}
+		if err := e.EmitHeartbeat(); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
+			if logW != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: receipt heartbeat emit failed: %v\n", err)
+			}
+			if requireReceipts {
+				e.MarkUnhealthy(err)
+				if onRequiredFailure != nil {
+					onRequiredFailure(err)
+				}
+				return false
+			}
+		}
+		return true
+	}
+
+	// Emit a first non-durable heartbeat before waiting for the cadence ticker.
+	// Every production caller starts this only after its durable session_open
+	// succeeds, so the paired native AEL stream is necessarily open first. This
+	// makes hmax truthful even for a run that ends before one full interval.
+	// Failures retain the existing heartbeat failure direction: optional
+	// recording logs and continues; required recording marks the emitter
+	// unhealthy and asks the owning runtime to stop.
+	if !emitHeartbeat() {
+		return
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -41,21 +71,8 @@ func startReceiptHeartbeat(
 		for {
 			select {
 			case <-ticker.C:
-				e := emitterFn()
-				if e == nil {
-					continue
-				}
-				if err := e.EmitHeartbeat(); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
-					if logW != nil {
-						_, _ = fmt.Fprintf(logW, "pipelock: receipt heartbeat emit failed: %v\n", err)
-					}
-					if requireReceipts {
-						e.MarkUnhealthy(err)
-						if onRequiredFailure != nil {
-							onRequiredFailure(err)
-						}
-						return
-					}
+				if !emitHeartbeat() {
+					return
 				}
 			case <-ctx.Done():
 				return

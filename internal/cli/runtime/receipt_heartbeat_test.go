@@ -75,7 +75,9 @@ func TestReceiptHeartbeatTickerStopsBeforeSeal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	var log bytes.Buffer
-	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return e }, &log, false, nil)
+	// A one-hour cadence proves this is the immediate startup beat, not a
+	// ticker event. The durable session_open above must still be first.
+	startReceiptHeartbeat(ctx, &wg, time.Hour, func() *receipt.Emitter { return e }, &log, false, nil)
 	waitForHeartbeatReceipt(t, seen)
 	cancel()
 	wg.Wait()
@@ -88,8 +90,14 @@ func TestReceiptHeartbeatTickerStopsBeforeSeal(t *testing.T) {
 	}
 
 	receipts := readRuntimeReceipts(t, dir, hex.EncodeToString(pub))
-	if len(receipts) < 3 {
-		t.Fatalf("receipts = %d, want open heartbeat close", len(receipts))
+	if len(receipts) != 3 {
+		t.Fatalf("receipts = %d, want exactly open heartbeat close", len(receipts))
+	}
+	wantKinds := []receipt.SessionControlKind{receipt.SessionControlOpen, receipt.SessionControlHeartbeat, receipt.SessionControlClose}
+	for i, want := range wantKinds {
+		if receipts[i].ActionRecord.SessionControl == nil || receipts[i].ActionRecord.SessionControl.Kind != want {
+			t.Fatalf("receipt %d control = %#v, want %q", i, receipts[i].ActionRecord.SessionControl, want)
+		}
 	}
 	last := receipts[len(receipts)-1].ActionRecord.SessionControl
 	if last == nil || last.Close == nil {

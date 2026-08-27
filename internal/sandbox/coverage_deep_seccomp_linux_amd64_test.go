@@ -13,57 +13,128 @@
 
 package sandbox
 
-import "testing"
+import (
+	"testing"
+
+	"golang.org/x/sys/unix"
+)
 
 // ---------------------------------------------------------------------------
 // buildSeccompFilter: verify filter properties.
 // ---------------------------------------------------------------------------
 
-func TestBuildSeccompFilter_BestEffortAndStrict(t *testing.T) {
-	bestEffort := buildSeccompFilter(false)
-	strict := buildSeccompFilter(true)
-
-	const minInstructions = 4
-	if len(bestEffort) < minInstructions {
-		t.Errorf("best-effort filter too short: %d instructions", len(bestEffort))
-	}
-	if len(strict) < minInstructions {
-		t.Errorf("strict filter too short: %d instructions", len(strict))
-	}
-
-	t.Logf("best-effort: %d instructions, strict: %d instructions", len(bestEffort), len(strict))
-}
-
-// ---------------------------------------------------------------------------
-// seccomp conditionals: verify instruction counts.
-// ---------------------------------------------------------------------------
-
-func TestSeccompConditionals_InstructionCounts(t *testing.T) {
-	cloneInsns := cloneConditional()
-	clone3Strict := clone3Conditional(true)
-	clone3BestEff := clone3Conditional(false)
-	socketInsns := socketConditional()
-	personalityInsns := personalityConditional()
-
-	tests := []struct {
-		name  string
-		count int
-		got   int
-	}{
-		{name: "clone", count: 5, got: len(cloneInsns)},
-		{name: "clone3_strict", count: 2, got: len(clone3Strict)},
-		{name: "clone3_besteff", count: 2, got: len(clone3BestEff)},
-		{name: "socket", count: 5, got: len(socketInsns)},
-		{name: "personality", count: 9, got: len(personalityInsns)},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.got != tt.count {
-				t.Errorf("%s: got %d instructions, want %d", tt.name, tt.got, tt.count)
+func TestBuildSeccompFilter_ArchitectureGuardAndPrologue(t *testing.T) {
+	// An instruction COUNT proves nothing about a filter. A regression that
+	// removed the wrong-architecture kill, or turned it into an allow, would keep
+	// the same length and pass. The architecture guard is what stops a 32-bit or
+	// x32 syscall ABI from being interpreted against x86-64 syscall numbers, so a
+	// silent change there re-opens every number-based rule below it.
+	for _, strict := range []bool{false, true} {
+		name := "best_effort"
+		if strict {
+			name = "strict"
+		}
+		t.Run(name, func(t *testing.T) {
+			prog := buildSeccompFilter(strict)
+			if len(prog) < 4 {
+				t.Fatalf("filter has %d instructions, want at least the four-instruction prologue", len(prog))
+			}
+			want := []unix.SockFilter{
+				bpfLoad(offsetArch),
+				bpfJumpEq(unix.AUDIT_ARCH_X86_64, 1, 0),
+				bpfRet(unix.SECCOMP_RET_KILL_PROCESS),
+				bpfLoad(offsetNR),
+			}
+			for idx, expected := range want {
+				if prog[idx] != expected {
+					t.Errorf("instruction %d = %+v, want %+v", idx, prog[idx], expected)
+				}
+			}
+			// Stated explicitly because it is the property that matters rather than
+			// a consequence of the comparison above: a matching architecture skips
+			// one instruction to reach the syscall load, and any other architecture
+			// falls through to a kill rather than a permissive return.
+			if prog[2].Code != unix.BPF_RET|unix.BPF_K || prog[2].K != unix.SECCOMP_RET_KILL_PROCESS {
+				t.Errorf("wrong-architecture action = %+v, want a kill return", prog[2])
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// seccomp conditionals: verify the decision each branch encodes.
+// ---------------------------------------------------------------------------
+
+func TestSeccompConditionals_EncodeTheIntendedDecision(t *testing.T) {
+	deny := bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM))
+	allow := bpfRet(unix.SECCOMP_RET_ALLOW)
+
+	// Lengths are still asserted, because the surrounding filter's jump offsets
+	// are computed from them, but every case also pins the ACTION its branch
+	// takes. The strict and best-effort clone3 pair is the clearest example of
+	// why: both are two instructions, and the only difference between blocking
+	// clone3 and permitting it is which return the second instruction is.
+	t.Run("clone_denies_new_namespaces_and_allows_the_rest", func(t *testing.T) {
+		insns := cloneConditional()
+		if len(insns) != 5 {
+			t.Fatalf("clone conditional = %d instructions, want 5", len(insns))
+		}
+		if insns[0] != bpfJumpEq(unix.SYS_CLONE, 0, 4) {
+			t.Errorf("clone guard = %+v, want a jump that skips the block for other syscalls", insns[0])
+		}
+		if insns[1] != bpfLoad(offsetArgs0) {
+			t.Errorf("clone flag load = %+v, want the first argument", insns[1])
+		}
+		if insns[2] != bpfJumpSet(cloneNewMask, 0, 1) {
+			t.Errorf("namespace test = %+v, want a CLONE_NEW mask test falling through to deny", insns[2])
+		}
+		if insns[3] != deny {
+			t.Errorf("namespace-creation action = %+v, want EPERM", insns[3])
+		}
+		if insns[4] != allow {
+			t.Errorf("plain-clone action = %+v, want allow", insns[4])
+		}
+	})
+
+	t.Run("clone3_strict_denies_and_best_effort_allows", func(t *testing.T) {
+		strict := clone3Conditional(true)
+		bestEffort := clone3Conditional(false)
+		if len(strict) != 2 || len(bestEffort) != 2 {
+			t.Fatalf("clone3 conditionals = %d and %d instructions, want 2 each", len(strict), len(bestEffort))
+		}
+		if strict[1] != deny {
+			t.Errorf("strict clone3 action = %+v, want EPERM", strict[1])
+		}
+		if bestEffort[1] != allow {
+			t.Errorf("best-effort clone3 action = %+v, want allow", bestEffort[1])
+		}
+		if strict[1] == bestEffort[1] {
+			t.Error("strict and best-effort clone3 encode the same action, so strict mode is not stricter")
+		}
+	})
+
+	t.Run("socket_and_personality_keep_their_deny_branch", func(t *testing.T) {
+		for name, insns := range map[string][]unix.SockFilter{
+			"socket":      socketConditional(),
+			"personality": personalityConditional(),
+		} {
+			denies := 0
+			for _, insn := range insns {
+				if insn == deny {
+					denies++
+				}
+			}
+			if denies == 0 {
+				t.Errorf("%s conditional encodes no EPERM branch, so its restriction is gone: %+v", name, insns)
+			}
+		}
+		if got := len(socketConditional()); got != 5 {
+			t.Errorf("socket conditional = %d instructions, want 5", got)
+		}
+		if got := len(personalityConditional()); got != 9 {
+			t.Errorf("personality conditional = %d instructions, want 9", got)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -121,40 +192,43 @@ func TestSyscallLists_NoOverlap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBPFHelpers(t *testing.T) {
-	t.Run("bpfLoad", func(t *testing.T) {
-		insn := bpfLoad(42)
-		if insn.K != 42 {
-			t.Errorf("K = %d, want 42", insn.K)
-		}
-	})
+	// Every field is asserted, not just K. An opcode or a false-branch offset is
+	// as load-bearing as the constant: a helper emitting the wrong Code produces a
+	// filter the kernel interprets differently, and a wrong Jf sends the
+	// no-match case to the wrong instruction, which is how a deny becomes a
+	// fall-through.
+	tests := []struct {
+		name string
+		got  unix.SockFilter
+		want unix.SockFilter
+	}{
+		{
+			name: "bpfLoad",
+			got:  bpfLoad(42),
+			want: unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 42},
+		},
+		{
+			name: "bpfJumpEq",
+			got:  bpfJumpEq(100, 2, 3),
+			want: unix.SockFilter{Code: unix.BPF_JMP | 0x10 | unix.BPF_K, K: 100, Jt: 2, Jf: 3},
+		},
+		{
+			name: "bpfRet",
+			got:  bpfRet(0x7FFF0001),
+			want: unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: 0x7FFF0001},
+		},
+		{
+			name: "bpfJumpSet",
+			got:  bpfJumpSet(0xFF, 1, 0),
+			want: unix.SockFilter{Code: unix.BPF_JMP | 0x40 | unix.BPF_K, K: 0xFF, Jt: 1, Jf: 0},
+		},
+	}
 
-	t.Run("bpfJumpEq", func(t *testing.T) {
-		insn := bpfJumpEq(100, 2, 3)
-		if insn.K != 100 {
-			t.Errorf("K = %d, want 100", insn.K)
-		}
-		if insn.Jt != 2 {
-			t.Errorf("Jt = %d, want 2", insn.Jt)
-		}
-		if insn.Jf != 3 {
-			t.Errorf("Jf = %d, want 3", insn.Jf)
-		}
-	})
-
-	t.Run("bpfRet", func(t *testing.T) {
-		insn := bpfRet(0x7FFF0001)
-		if insn.K != 0x7FFF0001 {
-			t.Errorf("K = %d, want %d", insn.K, 0x7FFF0001)
-		}
-	})
-
-	t.Run("bpfJumpSet", func(t *testing.T) {
-		insn := bpfJumpSet(0xFF, 1, 0)
-		if insn.K != 0xFF {
-			t.Errorf("K = %d, want 255", insn.K)
-		}
-		if insn.Jt != 1 {
-			t.Errorf("Jt = %d, want 1", insn.Jt)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("%s = %+v, want %+v", tt.name, tt.got, tt.want)
+			}
+		})
+	}
 }

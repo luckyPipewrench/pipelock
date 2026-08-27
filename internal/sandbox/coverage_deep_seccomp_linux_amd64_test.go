@@ -113,26 +113,66 @@ func TestSeccompConditionals_EncodeTheIntendedDecision(t *testing.T) {
 		}
 	})
 
-	t.Run("socket_and_personality_keep_their_deny_branch", func(t *testing.T) {
-		for name, insns := range map[string][]unix.SockFilter{
-			"socket":      socketConditional(),
-			"personality": personalityConditional(),
-		} {
-			denies := 0
-			for _, insn := range insns {
-				if insn == deny {
-					denies++
-				}
-			}
-			if denies == 0 {
-				t.Errorf("%s conditional encodes no EPERM branch, so its restriction is gone: %+v", name, insns)
+	t.Run("socket_guards_the_socket_syscall_and_denies_AF_VSOCK", func(t *testing.T) {
+		// Counting deny branches is not enough: a guard pointed at the wrong
+		// syscall, or one testing the wrong address family, still contains exactly
+		// one EPERM return. AF_VSOCK is the family that can reach a hypervisor past
+		// network-namespace isolation, so both the syscall it guards and the family
+		// it refuses are the point.
+		insns := socketConditional()
+		if len(insns) != 5 {
+			t.Fatalf("socket conditional = %d instructions, want 5", len(insns))
+		}
+		want := []unix.SockFilter{
+			bpfJumpEq(unix.SYS_SOCKET, 0, 4),
+			bpfLoad(offsetArgs0),
+			bpfJumpEq(afVSOCK, 0, 1),
+			bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)),
+			bpfRet(unix.SECCOMP_RET_ALLOW),
+		}
+		for idx, expected := range want {
+			if insns[idx] != expected {
+				t.Errorf("socket instruction %d = %+v, want %+v", idx, insns[idx], expected)
 			}
 		}
-		if got := len(socketConditional()); got != 5 {
-			t.Errorf("socket conditional = %d instructions, want 5", got)
+	})
+
+	t.Run("personality_guards_its_syscall_and_denies_unlisted_values", func(t *testing.T) {
+		// Every allowed personality value jumps to the allow return, and anything
+		// unlisted falls through to EPERM. Asserting the jump targets is what makes
+		// that fall-through real: an offset that skips the deny return would turn
+		// this whole block into an unconditional allow while keeping its length and
+		// its EPERM instruction.
+		insns := personalityConditional()
+		if len(insns) != 9 {
+			t.Fatalf("personality conditional = %d instructions, want 9", len(insns))
 		}
-		if got := len(personalityConditional()); got != 9 {
-			t.Errorf("personality conditional = %d instructions, want 9", got)
+		if insns[0] != bpfJumpEq(unix.SYS_PERSONALITY, 0, 8) {
+			t.Errorf("personality guard = %+v, want a jump over the whole block for other syscalls", insns[0])
+		}
+		if insns[1] != bpfLoad(offsetArgs0) {
+			t.Errorf("personality value load = %+v, want the first argument", insns[1])
+		}
+		denyIdx, allowIdx := 7, 8
+		if insns[denyIdx] != bpfRet(unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)) {
+			t.Errorf("personality fall-through = %+v, want EPERM", insns[denyIdx])
+		}
+		if insns[allowIdx] != bpfRet(unix.SECCOMP_RET_ALLOW) {
+			t.Errorf("personality allow return = %+v, want allow", insns[allowIdx])
+		}
+		// Each accepted value must jump PAST the deny return to the allow return.
+		for idx := 2; idx < denyIdx; idx++ {
+			insn := insns[idx]
+			if insn.Code != unix.BPF_JMP|0x10|unix.BPF_K {
+				t.Errorf("personality instruction %d = %+v, want an equality jump", idx, insn)
+				continue
+			}
+			if target := idx + 1 + int(insn.Jt); target != allowIdx {
+				t.Errorf("accepted personality value at %d jumps to %d, want the allow return at %d", idx, target, allowIdx)
+			}
+			if insn.Jf != 0 {
+				t.Errorf("personality instruction %d has Jf=%d, want fall-through to the next test", idx, insn.Jf)
+			}
 		}
 	})
 }

@@ -97,6 +97,26 @@ func TestStatusCmd_TextIncludesLicenseAndSources(t *testing.T) {
 	}
 }
 
+func TestStatusReportPrintsLicenseWarning(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.LicenseKey = "tok"
+	cfg.LicenseID = "lic-1"
+	cfg.LicenseTier = "trial"
+	now := time.Now().UTC()
+	cfg.LicenseIssuedAt = now.Add(-30 * 24 * time.Hour).Unix()
+	cfg.LicenseExpiresAt = now.Add(7 * 24 * time.Hour).Unix()
+
+	report := buildStatusReport(cfg, "test-config.yaml")
+	if report.License.Warning == "" {
+		t.Fatal("expected active expiry warning")
+	}
+	var text bytes.Buffer
+	printStatusReport(&text, report)
+	if !strings.Contains(text.String(), "License warning: "+report.License.Warning) {
+		t.Fatalf("status text missing license warning:\n%s", text.String())
+	}
+}
+
 func TestStatusCmd_InvalidConfigReturnsExitConfig(t *testing.T) {
 	missingConfig := filepath.Join(t.TempDir(), "missing.yaml")
 	out, err := runStatusCmd(t, "--config", missingConfig)

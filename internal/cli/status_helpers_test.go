@@ -59,6 +59,43 @@ func TestStatusLicenseStateRoutes(t *testing.T) {
 	}
 }
 
+func TestStatusLicenseStateExpiryWarning(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	base := &config.Config{
+		LicenseKey:      "tok",
+		LicenseID:       "lic-1",
+		LicenseIssuedAt: now.Add(-30 * 24 * time.Hour).Unix(),
+		LicenseTier:     "trial",
+	}
+
+	t.Run("outside warning band", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Add(31 * 24 * time.Hour).Unix()
+		if got := statusLicenseState(&cfg, now).Warning; got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("warning band", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Add(7 * 24 * time.Hour).Unix()
+		if got, want := statusLicenseState(&cfg, now).Warning, "trial ends in 7 day(s) on 2026-08-23; Pro features stop at expiry. Subscribe at https://pipelab.org/pricing/"; got != want {
+			t.Fatalf("warning = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Add(-time.Hour).Unix()
+		got := statusLicenseState(&cfg, now)
+		if got.State != "expired" || got.Warning != "" {
+			t.Fatalf("expired license = %+v, want expired without renewal warning", got)
+		}
+	})
+}
+
 func TestModeActionAuditWarns(t *testing.T) {
 	t.Parallel()
 

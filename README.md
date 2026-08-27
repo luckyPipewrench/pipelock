@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="assets/pipelock-logo.svg" alt="Pipelock" width="200">
-</p>
-
-<h1 align="center">Pipelock</h1>
+<h1 align="center">
+  <img src="assets/pipelock-lockup.svg" alt="Pipelock" width="465">
+</h1>
 
 <p align="center">
   <strong>Open-source AI agent firewall for <a href="https://pipelab.org/learn/verifiable-egress-control/">Verifiable Egress Control</a>.</strong>
@@ -256,7 +254,7 @@ For agents running uncensored or abliterated models, the [`hostile-model` preset
 | Emergency kill switch (6 sources) | Yes | No | No | No |
 | Tool call chain detection | Yes | No | No | No |
 | Process sandbox (no Docker) | Yes | No | No | Yes (kernel-level) |
-| Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel) |
+| Single binary, no runtime deps | Yes | No (Python) | No (npm) | No (kernel) |
 
 Reference matrix: [docs/comparison.md](docs/comparison.md)
 

@@ -39,7 +39,7 @@ The matrix below compares Pipelock to earlier-generation tools (AIP, agentsh, sr
 |---------|----------|-----|---------|-----|
 | **Layer** | Application firewall + process containment (HTTP + MCP + WebSocket + Landlock + seccomp + netns) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Go | Go | TypeScript |
-| **Binary** | Single, ~22MB | Single | Single + kernel modules | npm package |
+| **Binary** | Single, ~36MB | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
 | **DLP (secret detection)** | Regex + entropy + env scan + BIP-39 seed phrases | Regex (per-argument) | Regex (LLM proxy) | No |
 | **Crypto secret detection** | Yes (BIP-39, WIF, xprv, ETH hex) | No | No | No |

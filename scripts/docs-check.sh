@@ -23,6 +23,8 @@ check_no_match() {
 
 echo "docs-check: checking for stale public doc claims"
 
+python3 scripts/render_brand.py --check
+
 check_no_match '143 attack cases' 'gauntlet corpus count'
 check_no_match '16 categories' 'gauntlet category count'
 check_no_match '7,500\+ tests' 'old test count'

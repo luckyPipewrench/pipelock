@@ -1,116 +1,162 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="Pipelock. Agent firewall with signed decision evidence. Apache 2.0 core  ·  maintained by PipeLab.">
   <defs>
-    <linearGradient id="bg-grad" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#0a0a14"/>
-      <stop offset="50%" stop-color="#0f0f1e"/>
-      <stop offset="100%" stop-color="#0a0a14"/>
-    </linearGradient>
-    <linearGradient id="shackle-grad" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
-      <stop offset="0%" stop-color="#00ffc8"/>
-      <stop offset="100%" stop-color="#00b894"/>
-    </linearGradient>
-    <linearGradient id="body-grad" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
-      <stop offset="0%" stop-color="#1a1a2e"/>
-      <stop offset="100%" stop-color="#0f0f1a"/>
-    </linearGradient>
-    <linearGradient id="line-fade" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">
-      <stop offset="0%" stop-color="#00ffc8" stop-opacity="0"/>
-      <stop offset="30%" stop-color="#00ffc8" stop-opacity="0.15"/>
-      <stop offset="70%" stop-color="#00ffc8" stop-opacity="0.15"/>
-      <stop offset="100%" stop-color="#00ffc8" stop-opacity="0"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="5" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <filter id="glow-soft">
-      <feGaussianBlur stdDeviation="2.5" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <filter id="glow-wide">
-      <feGaussianBlur stdDeviation="20" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#00ffc8" stroke-width="0.3" opacity="0.06"/>
-    </pattern>
+    <radialGradient id="teal" cx="28%" cy="22%" r="58%"><stop offset="0" stop-color="#00e5a0" stop-opacity=".22"/><stop offset="1" stop-color="#00e5a0" stop-opacity="0"/></radialGradient>
+    <radialGradient id="purple" cx="76%" cy="84%" r="58%"><stop offset="0" stop-color="#7c3aed" stop-opacity=".30"/><stop offset="1" stop-color="#7c3aed" stop-opacity="0"/></radialGradient>
   </defs>
-
-  <!-- Background -->
-  <rect width="1280" height="640" fill="url(#bg-grad)"/>
-
-  <!-- Subtle grid overlay -->
-  <rect width="1280" height="640" fill="url(#grid)"/>
-
-  <!-- Ambient glow behind padlock -->
-  <circle cx="320" cy="300" r="180" fill="#00ffc8" opacity="0.03" filter="url(#glow-wide)"/>
-
-  <!-- Horizontal accent line -->
-  <rect x="0" y="438" width="1280" height="1" fill="url(#line-fade)"/>
-
-  <!-- === Padlock (scaled, centered at x=320 y=280) === -->
-  <g transform="translate(320, 280) scale(0.65)">
-    <!-- Shackle -->
-    <path d="M-70 0 L-70 -70 C-70 -115 -40 -140 0 -140 C40 -140 70 -115 70 -70 L70 0"
-          stroke="url(#shackle-grad)" stroke-width="28" stroke-linecap="round" fill="none" filter="url(#glow)"/>
-
-    <!-- Pipe joints -->
-    <rect x="-86" y="-15" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
-    <rect x="54" y="-15" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
-
-    <!-- Lock body -->
-    <rect x="-110" y="0" width="220" height="160" rx="16" fill="url(#body-grad)"
-          stroke="#00ffc8" stroke-width="2.5" filter="url(#glow)"/>
-
-    <!-- Inner border -->
-    <rect x="-100" y="10" width="200" height="140" rx="10" fill="none"
-          stroke="#00ffc8" stroke-width="0.5" opacity="0.2"/>
-
-    <!-- Keyhole -->
-    <circle cx="0" cy="68" r="18" fill="#00ffc8" opacity="0.9" filter="url(#glow)"/>
-    <circle cx="0" cy="68" r="10" fill="#0f0f1a"/>
-    <rect x="-4" y="76" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
-    <rect x="-4" y="76" width="8" height="24" rx="3" fill="#0f0f1a" opacity="0.4"/>
-
-    <!-- Pipe threads -->
-    <line x1="-105" y1="30" x2="-105" y2="35" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
-    <line x1="-105" y1="42" x2="-105" y2="47" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
-    <line x1="-105" y1="54" x2="-105" y2="59" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
-    <line x1="105" y1="30" x2="105" y2="35" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
-    <line x1="105" y1="42" x2="105" y2="47" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
-    <line x1="105" y1="54" x2="105" y2="59" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+  <rect width="1280" height="640" fill="#09090b"/><rect width="1280" height="640" fill="url(#teal)"/><rect width="1280" height="640" fill="url(#purple)"/>
+  <g stroke="#00e5a0" stroke-width="1">
+    <line x1="264" y1="560" x2="375" y2="545" opacity="0.041"/>
+    <line x1="264" y1="560" x2="189" y2="462" opacity="0.028"/>
+    <line x1="264" y1="560" x2="213" y2="480" opacity="0.059"/>
+    <line x1="264" y1="560" x2="182" y2="499" opacity="0.051"/>
+    <line x1="1151" y1="494" x2="1136" y2="555" opacity="0.093"/>
+    <line x1="1151" y1="494" x2="1167" y2="490" opacity="0.142"/>
+    <line x1="1180" y1="115" x2="1191" y2="185" opacity="0.084"/>
+    <line x1="1180" y1="115" x2="1138" y2="192" opacity="0.066"/>
+    <line x1="1180" y1="115" x2="1084" y2="96" opacity="0.056"/>
+    <line x1="1180" y1="115" x2="1161" y2="180" opacity="0.088"/>
+    <line x1="635" y1="146" x2="711" y2="167" opacity="0.076"/>
+    <line x1="635" y1="146" x2="685" y2="134" opacity="0.105"/>
+    <line x1="635" y1="146" x2="733" y2="123" opacity="0.053"/>
+    <line x1="635" y1="146" x2="604" y2="136" opacity="0.125"/>
+    <line x1="635" y1="146" x2="736" y2="134" opacity="0.052"/>
+    <line x1="711" y1="167" x2="685" y2="134" opacity="0.115"/>
+    <line x1="711" y1="167" x2="733" y2="123" opacity="0.108"/>
+    <line x1="711" y1="167" x2="604" y2="136" opacity="0.041"/>
+    <line x1="711" y1="167" x2="831" y2="80" opacity="0.002"/>
+    <line x1="711" y1="167" x2="736" y2="134" opacity="0.116"/>
+    <line x1="1136" y1="555" x2="1167" y2="490" opacity="0.083"/>
+    <line x1="1191" y1="185" x2="1138" y2="192" opacity="0.103"/>
+    <line x1="1191" y1="185" x2="1084" y2="96" opacity="0.012"/>
+    <line x1="1191" y1="185" x2="1161" y2="180" opacity="0.128"/>
+    <line x1="685" y1="134" x2="733" y2="123" opacity="0.107"/>
+    <line x1="685" y1="134" x2="604" y2="136" opacity="0.074"/>
+    <line x1="685" y1="134" x2="736" y2="134" opacity="0.106"/>
+    <line x1="1002" y1="469" x2="945" y2="473" opacity="0.099"/>
+    <line x1="1002" y1="469" x2="936" y2="463" opacity="0.089"/>
+    <line x1="332" y1="195" x2="406" y2="305" opacity="0.019"/>
+    <line x1="332" y1="195" x2="468" y2="186" opacity="0.015"/>
+    <line x1="332" y1="195" x2="372" y2="209" opacity="0.115"/>
+    <line x1="332" y1="195" x2="394" y2="59" opacity="0.001"/>
+    <line x1="332" y1="195" x2="384" y2="273" opacity="0.06"/>
+    <line x1="332" y1="195" x2="283" y2="144" opacity="0.085"/>
+    <line x1="332" y1="195" x2="377" y2="233" opacity="0.097"/>
+    <line x1="332" y1="195" x2="344" y2="265" opacity="0.084"/>
+    <line x1="332" y1="195" x2="213" y2="187" opacity="0.033"/>
+    <line x1="92" y1="72" x2="124" y2="77" opacity="0.125"/>
+    <line x1="92" y1="72" x2="158" y2="124" opacity="0.07"/>
+    <line x1="124" y1="77" x2="158" y2="124" opacity="0.098"/>
+    <line x1="124" y1="77" x2="213" y2="187" opacity="0.009"/>
+    <line x1="406" y1="305" x2="468" y2="186" opacity="0.017"/>
+    <line x1="406" y1="305" x2="372" y2="209" opacity="0.051"/>
+    <line x1="406" y1="305" x2="384" y2="273" opacity="0.119"/>
+    <line x1="406" y1="305" x2="377" y2="233" opacity="0.077"/>
+    <line x1="406" y1="305" x2="344" y2="265" opacity="0.081"/>
+    <line x1="733" y1="123" x2="604" y2="136" opacity="0.022"/>
+    <line x1="733" y1="123" x2="831" y2="80" opacity="0.046"/>
+    <line x1="733" y1="123" x2="736" y2="134" opacity="0.148"/>
+    <line x1="468" y1="186" x2="372" y2="209" opacity="0.055"/>
+    <line x1="468" y1="186" x2="604" y2="136" opacity="0.005"/>
+    <line x1="468" y1="186" x2="468" y2="128" opacity="0.098"/>
+    <line x1="468" y1="186" x2="394" y2="59" opacity="0.003"/>
+    <line x1="468" y1="186" x2="384" y2="273" opacity="0.031"/>
+    <line x1="468" y1="186" x2="377" y2="233" opacity="0.051"/>
+    <line x1="468" y1="186" x2="344" y2="265" opacity="0.003"/>
+    <line x1="372" y1="209" x2="468" y2="128" opacity="0.026"/>
+    <line x1="372" y1="209" x2="384" y2="273" opacity="0.091"/>
+    <line x1="372" y1="209" x2="283" y2="144" opacity="0.042"/>
+    <line x1="372" y1="209" x2="377" y2="233" opacity="0.134"/>
+    <line x1="372" y1="209" x2="344" y2="265" opacity="0.093"/>
+    <line x1="604" y1="136" x2="468" y2="128" opacity="0.015"/>
+    <line x1="604" y1="136" x2="736" y2="134" opacity="0.019"/>
+    <line x1="945" y1="473" x2="936" y2="463" opacity="0.146"/>
+    <line x1="1181" y1="346" x2="1167" y2="490" opacity="0.006"/>
+    <line x1="468" y1="128" x2="394" y2="59" opacity="0.052"/>
+    <line x1="468" y1="128" x2="377" y2="233" opacity="0.012"/>
+    <line x1="189" y1="462" x2="213" y2="480" opacity="0.128"/>
+    <line x1="189" y1="462" x2="182" y2="499" opacity="0.12"/>
+    <line x1="394" y1="59" x2="283" y2="144" opacity="0.011"/>
+    <line x1="384" y1="273" x2="377" y2="233" opacity="0.117"/>
+    <line x1="384" y1="273" x2="344" y2="265" opacity="0.116"/>
+    <line x1="1138" y1="192" x2="1002" y2="179" opacity="0.014"/>
+    <line x1="1138" y1="192" x2="1084" y2="96" opacity="0.043"/>
+    <line x1="1138" y1="192" x2="1161" y2="180" opacity="0.132"/>
+    <line x1="283" y1="144" x2="377" y2="233" opacity="0.022"/>
+    <line x1="283" y1="144" x2="158" y2="124" opacity="0.025"/>
+    <line x1="283" y1="144" x2="344" y2="265" opacity="0.015"/>
+    <line x1="283" y1="144" x2="213" y2="187" opacity="0.072"/>
+    <line x1="1039" y1="56" x2="1002" y2="179" opacity="0.023"/>
+    <line x1="1039" y1="56" x2="1084" y2="96" opacity="0.096"/>
+    <line x1="1039" y1="56" x2="982" y2="114" opacity="0.073"/>
+    <line x1="213" y1="480" x2="182" y2="499" opacity="0.121"/>
+    <line x1="377" y1="233" x2="344" y2="265" opacity="0.111"/>
+    <line x1="1002" y1="179" x2="1084" y2="96" opacity="0.036"/>
+    <line x1="1002" y1="179" x2="982" y2="114" opacity="0.087"/>
+    <line x1="1002" y1="179" x2="895" y2="159" opacity="0.044"/>
+    <line x1="831" y1="80" x2="895" y2="159" opacity="0.052"/>
+    <line x1="831" y1="80" x2="736" y2="134" opacity="0.043"/>
+    <line x1="1084" y1="96" x2="982" y2="114" opacity="0.05"/>
+    <line x1="1084" y1="96" x2="1161" y2="180" opacity="0.038"/>
+    <line x1="982" y1="114" x2="895" y2="159" opacity="0.056"/>
+    <line x1="158" y1="124" x2="213" y2="187" opacity="0.071"/>
   </g>
-
-  <!-- === Typography (right side) === -->
-
-  <!-- Product name -->
-  <text x="580" y="275" font-family="'JetBrains Mono', 'Fira Code', 'SF Mono', 'Courier New', monospace"
-        font-size="72" font-weight="700" letter-spacing="8" fill="#00ffc8" filter="url(#glow-soft)">PIPELOCK</text>
-
-  <!-- Category claim - the term we're coining -->
-  <text x="583" y="320" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
-        font-size="22" font-weight="500" letter-spacing="6" fill="#94a3b8">AGENT FIREWALL</text>
-
-  <!-- Value props below the line -->
-  <text x="583" y="478" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
-        font-size="15" font-weight="400" letter-spacing="1.5" fill="#475569">Open Source</text>
-  <circle cx="695" cy="474" r="2" fill="#00ffc8" opacity="0.5"/>
-  <text x="712" y="478" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
-        font-size="15" font-weight="400" letter-spacing="1.5" fill="#475569">Zero Dependencies</text>
-  <circle cx="890" cy="474" r="2" fill="#00ffc8" opacity="0.5"/>
-  <text x="907" y="478" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
-        font-size="15" font-weight="400" letter-spacing="1.5" fill="#475569">Fail-Closed</text>
-
-  <!-- Thin top and bottom border accents -->
-  <rect x="0" y="0" width="1280" height="2" fill="#00ffc8" opacity="0.08"/>
-  <rect x="0" y="638" width="1280" height="2" fill="#00ffc8" opacity="0.08"/>
+  <g fill="#00e5a0" opacity=".5">
+    <circle cx="264" cy="560" r="1.6"/>
+    <circle cx="1151" cy="494" r="1.6"/>
+    <circle cx="1180" cy="115" r="1.6"/>
+    <circle cx="635" cy="146" r="1.6"/>
+    <circle cx="711" cy="167" r="1.6"/>
+    <circle cx="1136" cy="555" r="1.6"/>
+    <circle cx="1191" cy="185" r="1.6"/>
+    <circle cx="685" cy="134" r="1.6"/>
+    <circle cx="1002" cy="469" r="1.6"/>
+    <circle cx="332" cy="195" r="1.6"/>
+    <circle cx="92" cy="72" r="1.6"/>
+    <circle cx="124" cy="77" r="1.6"/>
+    <circle cx="406" cy="305" r="1.6"/>
+    <circle cx="733" cy="123" r="1.6"/>
+    <circle cx="468" cy="186" r="1.6"/>
+    <circle cx="372" cy="209" r="1.6"/>
+    <circle cx="604" cy="136" r="1.6"/>
+    <circle cx="945" cy="473" r="1.6"/>
+    <circle cx="375" cy="545" r="1.6"/>
+    <circle cx="1181" cy="346" r="1.6"/>
+    <circle cx="468" cy="128" r="1.6"/>
+    <circle cx="189" cy="462" r="1.6"/>
+    <circle cx="394" cy="59" r="1.6"/>
+    <circle cx="384" cy="273" r="1.6"/>
+    <circle cx="1138" cy="192" r="1.6"/>
+    <circle cx="283" cy="144" r="1.6"/>
+    <circle cx="1039" cy="56" r="1.6"/>
+    <circle cx="213" cy="480" r="1.6"/>
+    <circle cx="377" cy="233" r="1.6"/>
+    <circle cx="1002" cy="179" r="1.6"/>
+    <circle cx="1167" cy="490" r="1.6"/>
+    <circle cx="831" cy="80" r="1.6"/>
+    <circle cx="936" cy="463" r="1.6"/>
+    <circle cx="182" cy="499" r="1.6"/>
+    <circle cx="1084" cy="96" r="1.6"/>
+    <circle cx="982" cy="114" r="1.6"/>
+    <circle cx="158" cy="124" r="1.6"/>
+    <circle cx="344" cy="265" r="1.6"/>
+    <circle cx="895" cy="159" r="1.6"/>
+    <circle cx="1161" cy="180" r="1.6"/>
+    <circle cx="213" cy="187" r="1.6"/>
+    <circle cx="736" cy="134" r="1.6"/>
+  </g>
+  <g transform="translate(104 172) scale(1.18)">  <g aria-label="Pipelock lock mark">
+    <path d="M72 112V68C72 35 93 18 120 18S168 35 168 68V112" fill="none" stroke="#00e5a0" stroke-width="22" stroke-linecap="round"/>
+    <rect x="46" y="104" width="148" height="110" rx="14" fill="#0e0e11" stroke="#00e5a0" stroke-width="3"/>
+    <rect x="55" y="113" width="130" height="92" rx="9" fill="none" stroke="#00e5a0" stroke-opacity="0.18"/>
+    <circle cx="120" cy="150" r="13" fill="#00e5a0"/><circle cx="120" cy="150" r="6" fill="#09090b"/>
+    <path d="M116 158h8v24a4 4 0 0 1-8 0z" fill="#00e5a0"/>
+  </g></g>
+  <text x="452" y="287" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="92" font-weight="700" letter-spacing="-.025em"><tspan fill="#e2e8f0">Pipe</tspan><tspan fill="#00e5a0">lock</tspan></text>
+  <text x="456" y="342" font-family="Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="25" fill="#94a3b8">Agent firewall with signed decision evidence</text>
+  <g font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="600" text-anchor="middle">
+    <rect x="456" y="398" width="122" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="517" y="428" fill="#00e5a0">inspect</text>
+    <rect x="596" y="398" width="136" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="664" y="428" fill="#00e5a0">enforce</text>
+    <rect x="750" y="398" width="112" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="806" y="428" fill="#00e5a0">prove</text>
+  </g>
+  <text x="120" y="566" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#64748b" letter-spacing=".12em">Apache 2.0 core  ·  maintained by PipeLab</text>
 </svg>

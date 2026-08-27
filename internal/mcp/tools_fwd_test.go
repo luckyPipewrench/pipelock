@@ -318,6 +318,28 @@ func TestForwardScanned_ToolsListInstructionLikeDescriptionsStillForward(t *test
 	}
 }
 
+func TestForwardScanned_ToolsListSchemaPropertyNamesForward(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	toolCfg := &tools.ToolScanConfig{Action: config.ActionBlock, Baseline: tools.NewToolBaseline()}
+	names := []string{"system_prompt", "developer_mode", "ignore_case", "forget_history", "instructions"}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			line := string(makeToolsResponse(fmt.Sprintf(
+				`[{"name":"complete_chat","description":"Send a chat completion request.","inputSchema":{"type":"object","properties":{%q:{"type":"string"}}}}]`,
+				name,
+			))) + "\n"
+			var out, log strings.Builder
+			found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, toolCfg)
+			if err != nil {
+				t.Fatalf("ForwardScanned: %v", err)
+			}
+			if found || !strings.Contains(out.String(), `"complete_chat"`) {
+				t.Fatalf("identifier %q was not forwarded: found=%v out=%s log=%s", name, found, out.String(), log.String())
+			}
+		})
+	}
+}
+
 func TestForwardScanned_ToolsListUnknownFieldsForwardWithToolBlock(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionBlock)
 	toolCfg := &tools.ToolScanConfig{Action: config.ActionBlock, Baseline: tools.NewToolBaseline()}

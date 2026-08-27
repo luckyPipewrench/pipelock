@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
@@ -1062,6 +1063,42 @@ var contextLeakParamPattern = regexp.MustCompile(
 		`)\b`,
 )
 
+// isIdentifierToken reports a JSON key that is an identifier rather than
+// prose: letters, digits, underscore, and hyphen, with no spaces. The
+// injection scanner's matching view splits camelCase, so feeding
+// developerMode through it matches "developer mode" and refuses a legitimate
+// tools/list. Identifier keys are judged by the dedicated parameter-name
+// detectors; keys that contain spaces or other punctuation remain prose.
+func isIdentifierToken(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		switch {
+		case r == '_' || r == '-':
+		case unicode.IsLetter(r):
+		case i > 0 && unicode.IsDigit(r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isOrdinaryContextLeakIdentifier reports property names that expand into a
+// context-leak phrase but are ordinary API identifiers. A model-wrapper tool
+// legitimately names a parameter system_prompt; treating that identifier as
+// an attack refuses the entire tools/list, and the cheapest operator fix is
+// disabling tool scanning. Decorated wrapping-underscore forms such as
+// _system_prompt_ still match because they are not this exact identifier.
+func isOrdinaryContextLeakIdentifier(name string) bool {
+	switch name {
+	case "system_prompt", "systemPrompt", "SystemPrompt":
+		return true
+	}
+	return false
+}
+
 // hashTool computes the same full-tool-object digest that provenance
 // attestation verifies: every tool field is covered, with only Pipelock's own
 // embedded provenance _meta member stripped before hashing.
@@ -1072,40 +1109,18 @@ func hashTool(t ToolDef) string {
 	return provenance.ToolDigest(t.Name, t.Description, t.InputSchema)
 }
 
-// extractToolText extracts all scannable text from a tool definition.
-// Convenience wrapper that extracts param names internally.
+// extractToolText extracts prose from a tool definition: the description and
+// nested schema descriptions. Parameter names are identifiers, not prose; the
+// dedicated exfil and context-leak detectors judge them separately. Expanding
+// names into the injection scanner turned ordinary identifiers such as
+// developer_mode into jailbreak matches and refused the listing.
 func extractToolText(t ToolDef) string {
-	var paramNames []string
-	if len(t.InputSchema) > 0 {
-		paramNames = ExtractParamNames(t.InputSchema)
-	}
-	return extractToolTextWithParams(t, paramNames)
-}
-
-// extractToolTextWithParams extracts all scannable text from a tool definition
-// using pre-extracted parameter names. Includes the description, nested
-// "description" fields from inputSchema, and parameter key names (with
-// underscores and camelCase expanded to spaces) so that suspicious names like
-// "content_from_reading_ssh_id_rsa" or "contentFromReadingSshIdRsa" pass
-// through the injection and DLP scanners.
-func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 	var parts []string
 	if t.Description != "" {
 		parts = append(parts, t.Description)
 	}
 	if len(t.InputSchema) > 0 {
 		parts = append(parts, ExtractSchemaDescriptions(t.InputSchema)...)
-		// Add parameter names with underscores and camelCase expanded to spaces.
-		// This feeds names like "content_from_reading_ssh_id_rsa" and
-		// "contentFromReadingSshIdRsa" through injection/DLP scanning as
-		// "content from reading ssh id rsa".
-		for _, name := range paramNames {
-			expanded := expandParamName(name)
-			if expanded != name {
-				parts = append(parts, expanded)
-			}
-			parts = append(parts, name)
-		}
 	}
 	// A sentence boundary keeps word boundaries intact after Unicode
 	// normalization without letting a negated capability in one tool field
@@ -1113,13 +1128,15 @@ func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 	return strings.Join(parts, ". ")
 }
 
-// extractToolGeneralTextWithParams returns every supported agent-visible tool
-// field except Description. The response-scanning path deliberately omits all
-// tool descriptions to preserve tools/list compatibility; this dedicated tool
+// extractToolGeneralText returns every supported agent-visible tool field
+// except Description. The response-scanning path deliberately omits all tool
+// descriptions to preserve tools/list compatibility; this dedicated tool
 // scanner owns their checks and its action can warn without forwarding a
 // response-scanner block. Extension and schema key names are included because
-// clients can surface them to an agent as part of the tool definition.
-func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
+// clients can surface them to an agent as part of the tool definition. Keys are
+// scanned in their original form; they are not expanded into space-separated
+// words, because that is how an identifier becomes jailbreak prose.
+func extractToolGeneralText(t ToolDef) string {
 	var parts []string
 	// Dropping a truncated key set is only safe because
 	// toolDefinitionsHaveUninspectableText has already refused the definition
@@ -1133,7 +1150,11 @@ func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 	// hide one.
 	appendJSONKeys := func(field json.RawMessage) {
 		if extracted := jsonrpc.ExtractKeysFromJSONResult(field); !extracted.Truncated {
-			parts = append(parts, extracted.Keys...)
+			for _, key := range extracted.Keys {
+				if !isIdentifierToken(key) {
+					parts = append(parts, key)
+				}
+			}
 		}
 	}
 	for _, field := range []string{t.Name, t.Title} {
@@ -1146,13 +1167,6 @@ func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 			parts = append(parts, ExtractSchemaDescriptions(schema)...)
 			appendJSONKeys(schema)
 		}
-	}
-	for _, name := range paramNames {
-		expanded := expandParamName(name)
-		if expanded != name {
-			parts = append(parts, expanded)
-		}
-		parts = append(parts, name)
 	}
 	// Metadata is extensible and agent-visible. Its readable strings use the
 	// generic bounded extractor; actual opaque media is rejected before this
@@ -1169,7 +1183,9 @@ func extractToolGeneralTextWithParams(t ToolDef, paramNames []string) string {
 	}
 	sort.Strings(unknownKeys)
 	for _, key := range unknownKeys {
-		parts = append(parts, key)
+		if !isIdentifierToken(key) {
+			parts = append(parts, key)
+		}
 		if extracted := jsonrpc.ExtractStringsFromJSONResult(t.unknown[key]); !extracted.Truncated {
 			parts = append(parts, extracted.Strings...)
 		}
@@ -1486,6 +1502,10 @@ func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth in
 					handledSubtree = true
 				} else if s, ok := v.(string); ok && s != "" {
 					*result = append(*result, s)
+					// Consumed here. Without this the value is appended
+					// again by the string case in the walk below, which
+					// doubles the scanner input for every modelled field.
+					handledSubtree = true
 				}
 				break
 			}
@@ -1511,7 +1531,17 @@ func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth in
 		}
 
 		// Recurse into nested objects and arrays for schema composition
-		// keywords (allOf, anyOf, oneOf, if/then/else, items, $defs, etc.).
+		// keywords (allOf, anyOf, oneOf, if/then/else, items, $defs, etc.),
+		// and take string values under keys this walk does not model.
+		//
+		// Only the modelled field names were being read here, so a string
+		// under any other key was dropped: a schema carrying
+		// "instructions":"Ignore all previous instructions" reached the agent
+		// having never been scanned, because the tools/list response is
+		// excluded from general response scanning once ScanTools calls it
+		// clean. The agent reads whatever the schema contains, so the walk
+		// takes every string it contains rather than only the ones named in
+		// the specification.
 		switch val := v.(type) {
 		case map[string]interface{}:
 			collectAllSchemaText(val, result, depth+1)
@@ -1522,8 +1552,32 @@ func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth in
 			for _, item := range val {
 				collectSchemaValueText(item, result, depth+1)
 			}
+		case string:
+			if isAgentReadableSchemaText(val) {
+				*result = append(*result, val)
+			}
 		}
 	}
+}
+
+// schemaTypeKeywords are the JSON Schema type names. A string equal to one of
+// them is structure rather than anything an agent acts on.
+var schemaTypeKeywords = map[string]bool{
+	"object": true, "array": true, "string": true,
+	"number": true, "integer": true, "boolean": true, "null": true,
+}
+
+// isAgentReadableSchemaText reports whether a string found under a schema key
+// this walk does not model is worth scanning.
+//
+// The test is on the VALUE, not the key. Skipping by key name would mean
+// "type": "Ignore all previous instructions" is never scanned, which is the
+// bypass this walk exists to close. Skipping the seven type keywords by value
+// costs an attacker nothing, because a payload that is exactly the word
+// "object" instructs no one, and it keeps every tools/list scan from carrying
+// the structural vocabulary of the schema.
+func isAgentReadableSchemaText(value string) bool {
+	return value != "" && !schemaTypeKeywords[value]
 }
 
 // collectStringLeaves recursively extracts all string values from an
@@ -1800,7 +1854,7 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 // toolDefinitionsHaveUninspectableText rejects a definition whose structured
 // or extension fields exceed extraction bounds, or contain opaque media that
 // cannot be scanned as text. Unknown names alone are never uninspectable:
-// their readable values are scanned by extractToolGeneralTextWithParams.
+// their readable values are scanned by extractToolGeneralText.
 // maxToolDefinitionTextBytes bounds the agent-visible text one tool definition
 // may contribute to the scan input. Sized far above any real definition: a tool
 // with a long description, a rich schema and populated metadata is orders of
@@ -1980,8 +2034,8 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			paramNames = ExtractParamNames(tool.InputSchema)
 		}
 
-		descriptionText := extractToolTextWithParams(tool, paramNames)
-		generalText := extractToolGeneralTextWithParams(tool, paramNames)
+		descriptionText := extractToolText(tool)
+		generalText := extractToolGeneralText(tool)
 		text := strings.Trim(strings.Join([]string{descriptionText, generalText}, ". "), ". ")
 
 		if text != "" {
@@ -2017,7 +2071,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 					hasFinding = true
 					exfilHit = true
 				}
-				if !contextHit && contextLeakParamPattern.MatchString(expanded) {
+				if !contextHit && !isOrdinaryContextLeakIdentifier(name) && contextLeakParamPattern.MatchString(expanded) {
 					match.ToolPoison = append(match.ToolPoison, "Context-Leak Parameter Name")
 					hasFinding = true
 					contextHit = true

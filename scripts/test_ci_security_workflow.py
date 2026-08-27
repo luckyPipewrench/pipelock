@@ -46,6 +46,7 @@ class CISecurityWorkflowTest(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
         self.govulncheck = job_block(self.workflow, "govulncheck")
+        self.build_binaries = job_block(self.workflow, "build-binaries")
         self.build = job_block(self.workflow, "build")
 
     def assert_govulncheck_contract(self, job: str) -> None:
@@ -136,6 +137,66 @@ exit "$DEFAULT_STATUS"
             "the required `build` context\n  # intentionally carries its result through `needs`",
             self.workflow,
         )
+
+    def test_build_compiles_in_parallel_without_weakening_required_gate(self) -> None:
+        producer_needs = re.search(r"(?m)^\s+needs:\s*\[([^]]+)\]$", self.build_binaries)
+        self.assertIsNotNone(producer_needs, "build-binaries needs list not found")
+        self.assertEqual(
+            {"security-scan"},
+            {dependency.strip() for dependency in producer_needs.group(1).split(",")},
+        )
+
+        gate_needs = re.search(r"(?m)^\s+needs:\s*\[([^]]+)\]$", self.build)
+        self.assertIsNotNone(gate_needs, "build needs list not found")
+        self.assertEqual(
+            {"security-scan", "test-go125", "test-go126", "lint", "helm", "build-binaries"},
+            {dependency.strip() for dependency in gate_needs.group(1).split(",")},
+        )
+        self.assertIn("if: ${{ always() }}", self.build)
+        for result in (
+            "SECURITY_SCAN_RESULT",
+            "TEST_GO125_RESULT",
+            "TEST_GO126_RESULT",
+            "LINT_RESULT",
+            "HELM_RESULT",
+            "BUILD_BINARIES_RESULT",
+        ):
+            self.assertIn(f'"${result}"', self.build)
+
+    def test_required_build_gate_fails_closed_for_every_incomplete_result(self) -> None:
+        script = step_script(self.build, "Report required build evidence")
+        result_names = (
+            "SECURITY_SCAN_RESULT",
+            "TEST_GO125_RESULT",
+            "TEST_GO126_RESULT",
+            "LINT_RESULT",
+            "HELM_RESULT",
+            "BUILD_BINARIES_RESULT",
+        )
+        base_env = os.environ.copy()
+        base_env.update({name: "success" for name in result_names})
+        success = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            check=False,
+            env=base_env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(0, success.returncode, success.stderr)
+
+        for name in result_names:
+            for evidence in ("failure", "cancelled", "skipped", ""):
+                with self.subTest(name=name, evidence=evidence):
+                    env = base_env.copy()
+                    env[name] = evidence
+                    result = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", script],
+                        check=False,
+                        env=env,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(0, result.returncode)
 
     def test_helm_transitive_gate_contract_rejects_removed_dependency(self) -> None:
         needs_match = re.search(r"(?m)^(\s+needs:\s*\[)([^]]+)(\])$", self.build)

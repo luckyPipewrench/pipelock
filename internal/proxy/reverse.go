@@ -88,6 +88,16 @@ type ReverseProxyHandler struct {
 	sizeExemptScanBudget sizeExemptScanBudget
 	requestScanBudget    reverseRequestScanBudget
 	reloadMu             *sync.RWMutex
+	// responseBodyLimit is an internal test seam. Production construction leaves
+	// it zero, which responseScanBodyLimit maps to the fixed 1 MiB safety limit.
+	responseBodyLimit int
+}
+
+func (rp *ReverseProxyHandler) responseScanBodyLimit() int {
+	if rp != nil && rp.responseBodyLimit > 0 {
+		return rp.responseBodyLimit
+	}
+	return reverseProxyMaxBodyBytes
 }
 
 // reverseRequestScanBudget bounds the configured body-scan reservations held
@@ -1473,6 +1483,7 @@ func reverseRequestContext(resp *http.Response) context.Context {
 }
 
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
+	responseBodyLimit := rp.responseScanBodyLimit()
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
 	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
 	if cfg == nil || sc == nil {
@@ -1839,7 +1850,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				resp.Header.Del("Digest")
 				resp.Header.Del("Content-MD5")
 			}
-			if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt && len(body) > reverseProxyMaxBodyBytes {
+			if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt && len(body) > responseBodyLimit {
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              revHost,
 					Path:              resp.Request.URL.EscapedPath(),
@@ -1879,7 +1890,7 @@ responseScanning:
 	if isBinaryMIME(mediaCT) {
 		binaryOutcomeReason := mediaUnscannedOutcome
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
-			limited := io.LimitReader(resp.Body, int64(reverseProxyMaxBodyBytes)+1)
+			limited := io.LimitReader(resp.Body, int64(responseBodyLimit)+1)
 			body, err := io.ReadAll(limited)
 			if err != nil {
 				_ = resp.Body.Close()
@@ -1902,7 +1913,7 @@ responseScanning:
 				recordReverseOutcome(http.StatusForbidden, -1, "response_read_error")
 				return nil
 			}
-			if len(body) > reverseProxyMaxBodyBytes {
+			if len(body) > responseBodyLimit {
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              revHost,
 					Path:              resp.Request.URL.EscapedPath(),
@@ -2059,7 +2070,7 @@ responseScanning:
 
 	// Read response body with size limit. Use a separate limited reader
 	// so the original body remains open for oversized passthrough.
-	maxBytes := reverseProxyMaxBodyBytes
+	maxBytes := responseBodyLimit
 	shieldOnly := !cfg.ResponseScanning.Enabled && shieldActiveForHost
 	if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
 		// Browser Shield is independent of response injection scanning. When it

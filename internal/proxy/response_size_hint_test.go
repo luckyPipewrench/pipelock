@@ -86,3 +86,27 @@ func TestReverseObservedBodyBytesPreservesKnownInformation(t *testing.T) {
 		})
 	}
 }
+
+func TestReverseProxyResponseScanBodyLimit(t *testing.T) {
+	t.Parallel()
+	if reverseProxyMaxBodyBytes != 1<<20 {
+		t.Fatalf("production response scan body limit = %d, want exactly 1 MiB", reverseProxyMaxBodyBytes)
+	}
+
+	for _, tc := range []struct {
+		name string
+		rp   *ReverseProxyHandler
+		want int
+	}{
+		{name: "nil handler uses production limit", want: reverseProxyMaxBodyBytes},
+		{name: "zero value uses production limit", rp: &ReverseProxyHandler{}, want: reverseProxyMaxBodyBytes},
+		{name: "test override", rp: &ReverseProxyHandler{responseBodyLimit: 4096}, want: 4096},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.rp.responseScanBodyLimit(); got != tc.want {
+				t.Fatalf("responseScanBodyLimit() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

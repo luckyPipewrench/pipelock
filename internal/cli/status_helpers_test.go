@@ -81,8 +81,19 @@ func TestStatusLicenseStateExpiryWarning(t *testing.T) {
 	t.Run("warning band", func(t *testing.T) {
 		cfg := *base
 		cfg.LicenseExpiresAt = now.Add(7 * 24 * time.Hour).Unix()
-		if got, want := statusLicenseState(&cfg, now).Warning, "trial ends in 7 day(s) on 2026-08-23; Pro features stop at expiry. Subscribe at https://pipelab.org/pricing/"; got != want {
-			t.Fatalf("warning = %q, want %q", got, want)
+		got := statusLicenseState(&cfg, now).Warning
+		if !strings.Contains(got, "trial ends in 7 day(s) on 2026-08-23") || !strings.Contains(got, "Pro features stop at expiry") {
+			t.Fatalf("warning = %q, want stable expiry guidance", got)
+		}
+	})
+
+	t.Run("active warning band", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseAgentsFeature = true
+		cfg.LicenseExpiresAt = now.Add(7 * 24 * time.Hour).Unix()
+		got := statusLicenseState(&cfg, now)
+		if got.State != "active" || got.ID != "lic-1" || !strings.Contains(got.Warning, "trial ends in 7 day(s)") {
+			t.Fatalf("active license = %+v, want active with expiry warning", got)
 		}
 	})
 

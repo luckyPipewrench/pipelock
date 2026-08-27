@@ -499,7 +499,7 @@ func TestedThroughPipelockWarning(testedThrough, currentVersion string) (string,
 		return "", nil
 	}
 
-	return fmt.Sprintf("bundle tested through Pipelock %q, but running %q; the bundle remains loaded because tested_through_pipelock is advisory", testedThrough, currentVersion), nil
+	return fmt.Sprintf("bundle tested through Pipelock %q, but running %q; tested_through_pipelock is advisory", testedThrough, currentVersion), nil
 }
 
 type semverVersion struct {

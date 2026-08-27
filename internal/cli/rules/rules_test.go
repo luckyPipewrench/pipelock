@@ -265,7 +265,7 @@ func TestWarnTestedThroughPipelock(t *testing.T) {
 	if err := warnTestedThroughPipelock(&out, "1.2.0", "1.3.0"); err != nil {
 		t.Fatalf("warnTestedThroughPipelock() error = %v", err)
 	}
-	if !strings.Contains(out.String(), "warning:") || !strings.Contains(out.String(), "remains loaded") {
+	if !strings.Contains(out.String(), "warning:") || !strings.Contains(out.String(), "tested_through_pipelock is advisory") {
 		t.Fatalf("warnTestedThroughPipelock() output = %q, want advisory warning", out.String())
 	}
 }

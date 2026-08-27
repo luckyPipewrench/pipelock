@@ -10,8 +10,13 @@ var beforeStartupSessionOpenForTest func(*receipt.Emitter) error
 func emitStartupSessionOpen(e *receipt.Emitter) error {
 	if beforeStartupSessionOpenForTest != nil {
 		if err := beforeStartupSessionOpenForTest(e); err != nil {
+			e.MarkUnhealthy(err)
 			return err
 		}
 	}
-	return e.EmitSessionOpen()
+	if err := e.EmitSessionOpen(); err != nil {
+		e.MarkUnhealthy(err)
+		return err
+	}
+	return nil
 }

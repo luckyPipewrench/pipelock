@@ -60,6 +60,9 @@ func startReceiptHeartbeat(
 	// Failures retain the existing heartbeat failure direction: optional
 	// recording logs and continues; required recording marks the emitter
 	// unhealthy and asks the owning runtime to stop.
+	if ctx.Err() != nil {
+		return
+	}
 	if !emitHeartbeat() {
 		return
 	}

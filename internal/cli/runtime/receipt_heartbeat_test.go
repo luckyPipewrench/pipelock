@@ -190,6 +190,74 @@ func TestReceiptHeartbeatWithoutAnEmitterDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestReceiptHeartbeatPreCanceledContextDoesNotEmit(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+	e := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var wg sync.WaitGroup
+	var log bytes.Buffer
+	startReceiptHeartbeat(ctx, &wg, time.Hour, func() *receipt.Emitter { return e }, &log, true, func(err error) {
+		t.Fatalf("pre-canceled heartbeat reported required failure: %v", err)
+	})
+	wg.Wait()
+	if log.Len() != 0 {
+		t.Fatalf("log = %q, want no startup heartbeat attempt", log.String())
+	}
+	entries, err := recorder.ReadEntries(filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want only session_open", len(entries))
+	}
+}
+
+func TestReceiptHeartbeatSealedChainIsQuiet(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+	e := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv})
+	if err := e.EmitTranscriptRoot("sealed-before-heartbeat"); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var log bytes.Buffer
+	startReceiptHeartbeat(ctx, &wg, time.Hour, func() *receipt.Emitter { return e }, &log, true, func(err error) {
+		t.Fatalf("sealed chain reported required failure: %v", err)
+	})
+	cancel()
+	wg.Wait()
+	if log.Len() != 0 {
+		t.Fatalf("log = %q, want ErrChainSealed suppressed", log.String())
+	}
+	if err := e.HealthError(); err != nil {
+		t.Fatalf("HealthError() = %v, want sealed chain to remain healthy", err)
+	}
+}
+
 func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
 	dir := t.TempDir()
 	_, priv, err := signing.GenerateKeyPair()
@@ -217,7 +285,6 @@ func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	var wg sync.WaitGroup
 	var log bytes.Buffer
 	requiredFailure := make(chan error, 1)
@@ -226,6 +293,7 @@ func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
 		cancel()
 	})
 	defer wg.Wait()
+	defer cancel()
 
 	select {
 	case err := <-requiredFailure:
@@ -288,7 +356,6 @@ func TestRequiredCadenceHeartbeatFailureAfterAHealthyStartFailsClosed(t *testing
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	var wg sync.WaitGroup
 	var log bytes.Buffer
 	requiredFailure := make(chan error, 1)
@@ -300,6 +367,7 @@ func TestRequiredCadenceHeartbeatFailureAfterAHealthyStartFailsClosed(t *testing
 		cancel()
 	})
 	defer wg.Wait()
+	defer cancel()
 
 	// The immediate beat must land first: without it, closing the recorder below
 	// would race the startup emission and this could pass on the wrong branch.

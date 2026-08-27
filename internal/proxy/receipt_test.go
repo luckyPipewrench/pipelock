@@ -970,6 +970,9 @@ fetch_proxy:
 	if afterEmitter := p.receiptEmitterPtr.Load(); afterEmitter != beforeEmitter {
 		t.Fatal("receipt emitter changed even though reload session_open emission failed")
 	}
+	if beforeEmitter.HealthError() == nil {
+		t.Fatal("retained emitter remained healthy after replacement advanced the shared receipt chain")
+	}
 
 	handler := p.buildHandler(p.buildMux())
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
@@ -1000,24 +1003,13 @@ fetch_proxy:
 		}
 		receipts = append(receipts, r)
 	}
-	if len(receipts) != 2 {
-		t.Fatalf("receipt count = %d, want old session_open and old-policy block receipt", len(receipts))
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want only the old session_open and no forked post-failure receipt", len(receipts))
 	}
 	if receipts[0].ActionRecord.SessionControl == nil ||
 		receipts[0].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
 		t.Fatalf("first receipt session_control = %+v, want old session_open",
 			receipts[0].ActionRecord.SessionControl)
-	}
-	if receipts[1].ActionRecord.SessionControl != nil {
-		t.Fatalf("post-failure request unexpectedly carried session_control: %+v",
-			receipts[1].ActionRecord.SessionControl)
-	}
-	if want := cfg.CanonicalPolicyHash(); receipts[1].ActionRecord.PolicyHash != want {
-		t.Fatalf("post-failure receipt policy hash = %q, want old hash %q",
-			receipts[1].ActionRecord.PolicyHash, want)
-	}
-	if receipts[1].ActionRecord.PolicyHash == reloadCfg.CanonicalPolicyHash() {
-		t.Fatal("post-failure receipt unexpectedly attested failed reload config")
 	}
 	result := receipt.VerifyChainTrusted(receipts, []string{hex.EncodeToString(pub)})
 	if !result.Valid {
@@ -1418,6 +1410,9 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	if p.receiptEmitterPtr.Load() != newEmitter {
 		t.Fatal("failed native AEL rotation published the replacement emitter")
 	}
+	if newEmitter.HealthError() == nil {
+		t.Fatal("failed native AEL rotation did not brick the retained emitter")
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -1447,8 +1442,8 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	if len(receipts) == 0 {
 		t.Fatal("no receipt found after key rotation reload")
 	}
-	if len(receipts) != 5 {
-		t.Fatalf("receipt count = %d, want startup open, rotated open, blocked fetch, shutdown close, and staged failed-reload open", len(receipts))
+	if len(receipts) != 4 {
+		t.Fatalf("receipt count = %d, want startup open, rotated open, blocked fetch, and shutdown close", len(receipts))
 	}
 	if receipts[0].ActionRecord.SessionControl == nil ||
 		receipts[0].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {

@@ -207,8 +207,11 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		e.initErr = fmt.Errorf("generate run nonce: %w", nonceErr)
 		return e
 	}
-	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	e.initErr = e.resumeChain()
+	if e.initErr != nil {
+		return e
+	}
+	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	return e
 }
 

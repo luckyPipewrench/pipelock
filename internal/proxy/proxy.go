@@ -1935,18 +1935,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			}
 		}
 	}
-	if cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil && !receiptStage.reuseExisting && receiptStage.emitter != nil {
-		if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
-			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-				fmt.Errorf("session_open receipt emit failed, keeping old config: %w", err))
-			sc.Close()
-			if newEd != nil {
-				newEd.Close()
-			}
-			return false
-		}
-	}
-
 	// Staging above may load keys and build evidence components. Keep that I/O
 	// off the request snapshot lock; only publication and in-place state changes
 	// need to exclude CEE admissions.
@@ -1959,12 +1947,32 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// A signer rotation gives native AEL a new key-scoped run. Close the old
 	// run while admissions are excluded and before publishing any new runtime
 	// state, so every replaced emitter has an explicit terminal record. The
-	// replacement's open was staged durably above; a close failure aborts the
-	// reload and leaves the old emitter fail-closed through its sticky AEL error.
-	if current := p.receiptEmitterPtr.Load(); current != nil && !receiptStage.reuseExisting && current != receiptStage.emitter {
+	// replacement open is persisted only after this close succeeds, so aborting
+	// here cannot leave the current receipt chain behind a staged record.
+	currentReceiptEmitter := p.receiptEmitterPtr.Load()
+	if current := currentReceiptEmitter; current != nil && !receiptStage.reuseExisting && current != receiptStage.emitter {
 		if err := current.CloseNativeAEL(); err != nil {
+			current.MarkUnhealthy(err)
 			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 				fmt.Errorf("native AEL rotation close failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
+	}
+	if cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil && !receiptStage.reuseExisting && receiptStage.emitter != nil {
+		if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
+			// The old AEL run is already terminal. If the replacement receipt was
+			// written before its paired AEL open failed, the old emitter's chain
+			// head is stale. Brick it explicitly so no later request can fork the
+			// signed receipt chain while the reload remains uncommitted.
+			if currentReceiptEmitter != nil {
+				currentReceiptEmitter.MarkUnhealthy(err)
+			}
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("session_open receipt emit failed, keeping old config fail-closed: %w", err))
 			sc.Close()
 			if newEd != nil {
 				newEd.Close()

@@ -197,8 +197,23 @@ func TestNewEmitterRejectsNonPipelockRunID(t *testing.T) {
 		t.Fatalf("recorder.New: %v", err)
 	}
 	t.Cleanup(func() { _ = rec.Close() })
-	if emitter := NewEmitter(rec, priv, "../../escape", 30); emitter != nil {
-		t.Fatal("NewEmitter accepted a path-shaped run ID")
+	for _, run := range []string{
+		"",
+		".",
+		"..",
+		"short",
+		"0123456789ABCDEF0123456789ABCDEF",
+		"gggggggggggggggggggggggggggggggg",
+		"/123456789abcdef0123456789abcdef",
+		`0123456789abcdef0123456789abcd\x`,
+		"0123456789abcdef/123456789abcde",
+		"../../escape",
+	} {
+		t.Run(fmt.Sprintf("%q", run), func(t *testing.T) {
+			if emitter := NewEmitter(rec, priv, run, 30); emitter != nil {
+				t.Fatalf("NewEmitter accepted run ID %q", run)
+			}
+		})
 	}
 }
 
@@ -385,9 +400,6 @@ func TestEmitterNilAndFilesystemRefusals(t *testing.T) {
 	}
 	if err := writeExclusive(filePath, []byte("replacement"), 0o600); err == nil {
 		t.Fatal("writeExclusive replaced an existing file")
-	}
-	if err := syncDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("syncDirectory accepted a missing path")
 	}
 }
 

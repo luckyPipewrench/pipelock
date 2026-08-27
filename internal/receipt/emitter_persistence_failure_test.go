@@ -90,6 +90,9 @@ func TestEmitterMalformedPersistedEvidenceBricksEmission(t *testing.T) {
 	if err := e.InitError(); err == nil || !strings.Contains(err.Error(), "reading existing evidence file") {
 		t.Fatalf("InitError = %v, want malformed persisted evidence rejection", err)
 	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ael")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed receipt-chain recovery created AEL artifacts: %v", statErr)
+	}
 
 	err := e.Emit(EmitOpts{
 		ActionID:  NewActionID(),

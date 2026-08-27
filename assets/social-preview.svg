@@ -144,19 +144,21 @@
     <circle cx="213" cy="187" r="1.6"/>
     <circle cx="736" cy="134" r="1.6"/>
   </g>
-  <g transform="translate(104 172) scale(1.18)">  <g aria-label="Pipelock lock mark">
+  <g transform="translate(150)">
+    <g transform="translate(104 172) scale(1.18)">  <g aria-label="Pipelock lock mark">
     <path d="M72 112V68C72 35 93 18 120 18S168 35 168 68V112" fill="none" stroke="#00e5a0" stroke-width="22" stroke-linecap="round"/>
     <rect x="46" y="104" width="148" height="110" rx="14" fill="#0e0e11" stroke="#00e5a0" stroke-width="3"/>
     <rect x="55" y="113" width="130" height="92" rx="9" fill="none" stroke="#00e5a0" stroke-opacity="0.18"/>
     <circle cx="120" cy="150" r="13" fill="#00e5a0"/><circle cx="120" cy="150" r="6" fill="#09090b"/>
     <path d="M116 158h8v24a4 4 0 0 1-8 0z" fill="#00e5a0"/>
   </g></g>
-  <text x="452" y="287" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="92" font-weight="700" letter-spacing="-.025em"><tspan fill="#e2e8f0">Pipe</tspan><tspan fill="#00e5a0">lock</tspan></text>
-  <text x="456" y="342" font-family="Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="25" fill="#94a3b8">Agent firewall with signed decision evidence</text>
-  <g font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="600" text-anchor="middle">
-    <rect x="456" y="398" width="122" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="517" y="428" fill="#00e5a0">inspect</text>
-    <rect x="596" y="398" width="136" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="664" y="428" fill="#00e5a0">enforce</text>
-    <rect x="750" y="398" width="112" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="806" y="428" fill="#00e5a0">prove</text>
+    <text x="452" y="287" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="92" font-weight="700" letter-spacing="-.025em"><tspan fill="#e2e8f0">Pipe</tspan><tspan fill="#00e5a0">lock</tspan></text>
+    <text x="456" y="342" font-family="Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="25" fill="#94a3b8">Agent firewall with signed decision evidence</text>
+    <g font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="600" text-anchor="middle">
+      <rect x="456" y="398" width="122" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="517" y="428" fill="#00e5a0">inspect</text>
+      <rect x="596" y="398" width="136" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="664" y="428" fill="#00e5a0">enforce</text>
+      <rect x="750" y="398" width="112" height="46" rx="23" fill="#00e5a0" fill-opacity=".08" stroke="#00e5a0" stroke-opacity=".42"/><text x="806" y="428" fill="#00e5a0">prove</text>
+    </g>
   </g>
-  <text x="120" y="566" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#64748b" letter-spacing=".12em">Apache 2.0 core  ·  maintained by PipeLab</text>
+  <text x="640" y="566" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#64748b" letter-spacing=".12em">Apache 2.0 core  ·  maintained by PipeLab</text>
 </svg>

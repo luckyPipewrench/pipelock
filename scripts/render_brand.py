@@ -88,15 +88,17 @@ def social_preview() -> str:
   </defs>
   <rect width="1280" height="640" fill="{BG}"/><rect width="1280" height="640" fill="url(#teal)"/><rect width="1280" height="640" fill="url(#purple)"/>
 {particles()}
-  <g transform="translate(104 172) scale(1.18)">{mark()}</g>
-  <text x="452" y="287" font-family="{MONO}" font-size="92" font-weight="700" letter-spacing="-.025em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
-  <text x="456" y="342" font-family="{SANS}" font-size="25" fill="{MUTED}">Agent firewall with signed decision evidence</text>
-  <g font-family="{MONO}" font-size="17" font-weight="600" text-anchor="middle">
-    <rect x="456" y="398" width="122" height="46" rx="23" fill="{ACCENT}" fill-opacity=".08" stroke="{ACCENT}" stroke-opacity=".42"/><text x="517" y="428" fill="{ACCENT}">inspect</text>
-    <rect x="596" y="398" width="136" height="46" rx="23" fill="{ACCENT}" fill-opacity=".08" stroke="{ACCENT}" stroke-opacity=".42"/><text x="664" y="428" fill="{ACCENT}">enforce</text>
-    <rect x="750" y="398" width="112" height="46" rx="23" fill="{ACCENT}" fill-opacity=".08" stroke="{ACCENT}" stroke-opacity=".42"/><text x="806" y="428" fill="{ACCENT}">prove</text>
+  <g transform="translate(150)">
+    <g transform="translate(104 172) scale(1.18)">{mark()}</g>
+    <text x="452" y="287" font-family="{MONO}" font-size="92" font-weight="700" letter-spacing="-.025em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
+    <text x="456" y="342" font-family="{SANS}" font-size="25" fill="{MUTED}">Agent firewall with signed decision evidence</text>
+    <g font-family="{MONO}" font-size="17" font-weight="600" text-anchor="middle">
+      <rect x="456" y="398" width="122" height="46" rx="23" fill="{ACCENT}" fill-opacity=".08" stroke="{ACCENT}" stroke-opacity=".42"/><text x="517" y="428" fill="{ACCENT}">inspect</text>
+      <rect x="596" y="398" width="136" height="46" rx="23" fill="{ACCENT}" fill-opacity=".08" stroke="{ACCENT}" stroke-opacity=".42"/><text x="664" y="428" fill="{ACCENT}">enforce</text>
+      <rect x="750" y="398" width="112" height="46" rx="23" fill="{ACCENT}" fill-opacity=".08" stroke="{ACCENT}" stroke-opacity=".42"/><text x="806" y="428" fill="{ACCENT}">prove</text>
+    </g>
   </g>
-  <text x="120" y="566" font-family="{MONO}" font-size="16" fill="{DIM}" letter-spacing=".12em">{FOOTER}</text>
+  <text x="640" y="566" text-anchor="middle" font-family="{MONO}" font-size="16" fill="{DIM}" letter-spacing=".12em">{FOOTER}</text>
 </svg>
 '''
 
@@ -109,6 +111,11 @@ def source_file(png: str) -> Path:
     return ASSETS / f"{png}.source"
 
 
+def raster_fingerprint(png: Path, svg: Path) -> str:
+    """Bind a raster provenance record to both its SVG source and PNG bytes."""
+    return f"svg {hashlib.sha256(svg.read_bytes()).hexdigest()}\npng {hashlib.sha256(png.read_bytes()).hexdigest()}\n"
+
+
 def check() -> list[str]:
     problems = []
     for filename, render in GENERATED.items():
@@ -116,11 +123,14 @@ def check() -> list[str]:
         if not path.exists() or path.read_text(encoding="utf-8") != render():
             problems.append(f"assets/{filename}: missing or stale; run scripts/render_brand.py")
     for png, svg in RASTERS.items():
+        png_path = ASSETS / png
+        svg_path = ASSETS / svg
         stamp = source_file(png)
-        if not (ASSETS / png).exists() or not stamp.exists():
+        if not png_path.exists() or not svg_path.exists() or not stamp.exists():
             problems.append(f"assets/{png}: raster or provenance sidecar missing")
-        elif stamp.read_text(encoding="utf-8").strip() != hashlib.sha256((ASSETS / svg).read_bytes()).hexdigest():
-            problems.append(f"assets/{png}: exported from an older assets/{svg}")
+            continue
+        if stamp.read_text(encoding="utf-8") != raster_fingerprint(png_path, svg_path):
+            problems.append(f"assets/{png}: PNG or assets/{svg} changed since export")
     for path in (ASSETS / "pipelock-logo.svg", ASSETS / "pipelock-favicon.svg", ASSETS / "social-preview.svg"):
         if path.exists() and "#00ffc8" in path.read_text(encoding="utf-8").lower():
             problems.append(f"{path.relative_to(ROOT)}: contains retired #00ffc8 cyan")
@@ -134,7 +144,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.stamp_png:
         for png, svg in RASTERS.items():
-            source_file(png).write_text(hashlib.sha256((ASSETS / svg).read_bytes()).hexdigest() + "\n", encoding="utf-8")
+            png_path = ASSETS / png
+            svg_path = ASSETS / svg
+            if not png_path.exists() or not svg_path.exists():
+                print(f"cannot stamp assets/{png}: raster or assets/{svg} missing")
+                return 1
+            source_file(png).write_text(raster_fingerprint(png_path, svg_path), encoding="utf-8")
             print(f"stamped assets/{png}.source")
         return 0
     if args.check:

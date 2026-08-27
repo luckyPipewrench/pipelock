@@ -160,13 +160,30 @@ func TestSeccompConditionals_EncodeTheIntendedDecision(t *testing.T) {
 		if insns[allowIdx] != bpfRet(unix.SECCOMP_RET_ALLOW) {
 			t.Errorf("personality allow return = %+v, want allow", insns[allowIdx])
 		}
-		// Each accepted value must jump PAST the deny return to the allow return.
-		for idx := 2; idx < denyIdx; idx++ {
+		// The accepted VALUES are stated here independently, not read back from the
+		// implementation's own constants, because the set of personalities the
+		// sandbox tolerates is the security decision. Asserting only opcodes and
+		// jump targets leaves a changed constant free to admit an unintended
+		// personality while every other assertion still passes.
+		//
+		// PER_LINUX, ADDR_NO_RANDOMIZE, PER_LINUX32, PER_LINUX32|ADDR_NO_RANDOMIZE,
+		// and the 0xFFFFFFFF query form. Adding a value here is a deliberate
+		// widening of what a contained process may ask the kernel to emulate.
+		wantAccepted := []uint32{0x00000000, 0x00000008, 0x00020000, 0x00020008, 0xFFFFFFFF}
+		if got := denyIdx - 2; got != len(wantAccepted) {
+			t.Fatalf("personality accepts %d values, want exactly %d", got, len(wantAccepted))
+		}
+		for offset, wantK := range wantAccepted {
+			idx := 2 + offset
 			insn := insns[idx]
 			if insn.Code != unix.BPF_JMP|0x10|unix.BPF_K {
 				t.Errorf("personality instruction %d = %+v, want an equality jump", idx, insn)
 				continue
 			}
+			if insn.K != wantK {
+				t.Errorf("personality instruction %d tests value %#x, want %#x", idx, insn.K, wantK)
+			}
+			// Each accepted value must jump PAST the deny return to the allow return.
 			if target := idx + 1 + int(insn.Jt); target != allowIdx {
 				t.Errorf("accepted personality value at %d jumps to %d, want the allow return at %d", idx, target, allowIdx)
 			}

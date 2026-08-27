@@ -1380,18 +1380,41 @@ func collectParamNames(obj map[string]interface{}, seen map[string]bool, depth i
 // plus string members of enum and examples arrays.
 // Falls back to extracting string schemas (non-object JSON values).
 func ExtractSchemaDescriptions(schema json.RawMessage) []string {
-	var result []string
-	var parsed map[string]interface{}
+	var parsed interface{}
 	if err := json.Unmarshal(schema, &parsed); err != nil {
-		// Non-object schema - could be a bare string with injected content.
-		var s string
-		if json.Unmarshal(schema, &s) == nil && s != "" {
-			return []string{s}
-		}
 		return nil
 	}
-	collectAllSchemaText(parsed, &result, 0)
+	var result []string
+	collectSchemaValueText(parsed, &result, 0)
 	return result
+}
+
+// collectSchemaValueText extracts agent-visible text from a schema value of any
+// JSON shape, not only an object.
+//
+// A well-formed MCP schema is an object, but nothing forces an upstream server
+// to send one and the agent reads whatever arrives. Parsing straight into a map
+// dropped every other shape: a top-level array carried its instructions past
+// the scanner entirely, leaving only the key names behind, and ScanTools then
+// marked the tools/list clean so the proxy skipped general response scanning
+// and forwarded it. Dispatch on the actual shape instead, so an unexpected one
+// is scanned rather than silently unread.
+func collectSchemaValueText(value interface{}, result *[]string, depth int) {
+	if depth > maxSchemaDepth {
+		return
+	}
+	switch v := value.(type) {
+	case map[string]interface{}:
+		collectAllSchemaText(v, result, depth)
+	case []interface{}:
+		for _, item := range v {
+			collectSchemaValueText(item, result, depth+1)
+		}
+	case string:
+		if v != "" {
+			*result = append(*result, v)
+		}
+	}
 }
 
 // schemaTextExtractionTruncated reports whether schema text lies beyond the
@@ -1493,10 +1516,11 @@ func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth in
 		case map[string]interface{}:
 			collectAllSchemaText(val, result, depth+1)
 		case []interface{}:
+			// Every element, not only the objects. A bare string sitting
+			// directly in a composition array is agent-visible text and was
+			// being dropped by an object-only walk.
 			for _, item := range val {
-				if m, ok := item.(map[string]interface{}); ok {
-					collectAllSchemaText(m, result, depth+1)
-				}
+				collectSchemaValueText(item, result, depth+1)
 			}
 		}
 	}

@@ -139,6 +139,7 @@ func TestEmitterNativeAELFailureQuarantinesWithoutLifecycleSuccess(t *testing.T)
 	dir := t.TempDir()
 	_, priv := generateTestKey(t)
 	rec := newTestRecorder(t, dir, priv)
+	t.Cleanup(func() { _ = rec.Close() })
 	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, HeartbeatSeconds: 30})
 	if err := e.nativeAEL.Abort(); err != nil {
 		t.Fatalf("Abort native AEL: %v", err)

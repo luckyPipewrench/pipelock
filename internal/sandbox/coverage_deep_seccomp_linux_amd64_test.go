@@ -166,10 +166,14 @@ func TestSeccompConditionals_EncodeTheIntendedDecision(t *testing.T) {
 		// jump targets leaves a changed constant free to admit an unintended
 		// personality while every other assertion still passes.
 		//
-		// PER_LINUX, ADDR_NO_RANDOMIZE, PER_LINUX32, PER_LINUX32|ADDR_NO_RANDOMIZE,
-		// and the 0xFFFFFFFF query form. Adding a value here is a deliberate
-		// widening of what a contained process may ask the kernel to emulate.
-		wantAccepted := []uint32{0x00000000, 0x00000008, 0x00020000, 0x00020008, 0xFFFFFFFF}
+		// PER_LINUX, PER_LINUX32, ADDR_NO_RANDOMIZE, PER_LINUX32|ADDR_NO_RANDOMIZE,
+		// and the 0xFFFFFFFF query form, with the values Linux actually defines in
+		// include/uapi/linux/personality.h. Written out here rather than read from
+		// the implementation's constants precisely because those constants were
+		// mislabelled: they admitted UNAME26 (0x00020000) while refusing the real
+		// ADDR_NO_RANDOMIZE (0x00040000). Adding a value to this list is a
+		// deliberate widening of what a contained process may ask the kernel for.
+		wantAccepted := []uint32{0x00000000, 0x00000008, 0x00040000, 0x00040008, 0xFFFFFFFF}
 		if got := denyIdx - 2; got != len(wantAccepted) {
 			t.Fatalf("personality accepts %d values, want exactly %d", got, len(wantAccepted))
 		}

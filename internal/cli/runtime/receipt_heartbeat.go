@@ -34,12 +34,8 @@ func startReceiptHeartbeat(
 		interval = time.Minute
 	}
 	emitHeartbeat := func() bool {
-		// No nil check here: receipt.Emitter.EmitHeartbeat is itself nil-safe and
-		// returns nil, so a guard in this scheduler would duplicate that contract
-		// while adding a branch no test can make fail. An adversarial pass proved
-		// exactly that by setting the old guard to false and watching its test
-		// still pass, so the branch is removed rather than documented. Re-adding
-		// one would recreate an unprovable branch.
+		// receipt.Emitter.EmitHeartbeat is nil-safe, so this needs no nil guard of
+		// its own and adding one would create a branch nothing can exercise.
 		e := emitterFn()
 		if err := e.EmitHeartbeat(); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
 			if logW != nil {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,18 +181,28 @@ func TestReceiptHeartbeatWithoutAnEmitterStaysQuiet(t *testing.T) {
 	var wg sync.WaitGroup
 	var log bytes.Buffer
 	failures := make(chan error, 1)
-	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return nil }, &log, true, func(err error) {
+	observedCadence := make(chan struct{}, 1)
+	var calls atomic.Int32
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter {
+		if calls.Add(1) >= 3 {
+			select {
+			case observedCadence <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}, &log, true, func(err error) {
 		select {
 		case failures <- err:
 		default:
 		}
 	})
-	// Give the cadence loop several intervals to misbehave before trusting the
-	// assertion: a nil-emitter failure on the second beat would otherwise be missed.
 	select {
+	case <-observedCadence:
 	case err := <-failures:
 		t.Fatalf("a nil emitter reported a required-receipt failure: %v", err)
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for cadence heartbeat calls")
 	}
 	cancel()
 	wg.Wait()

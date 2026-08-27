@@ -497,6 +497,56 @@ jobs:
       - name: internal/config test package builds on Windows
         run: go test -count=1 -run "TestWindows" ./internal/config/...
 
+  # Native linux/arm64 lane. GoReleaser publishes a linux/arm64 binary
+  # (.goreleaser.yaml) and no job has ever executed a test on that architecture,
+  # so three of six published Go targets ran zero tests. arm64 is not a
+  # theoretical target here: it is Graviton, Ampere, Apple Silicon Linux VMs, and
+  # the single-board machines an evaluator is most likely to reach for.
+  #
+  # The architecture is load-bearing for containment, not incidental. seccomp is
+  # built only for linux && amd64 (internal/sandbox/seccomp_linux.go), so an
+  # arm64 binary composes against seccomp_other.go and reports that layer
+  # unavailable. In the CLI's default non-strict mode a missing layer reduces
+  # containment and only logs it, so the arm64 degradation path is exactly the
+  # behavior that most needs a test and had none. The seccomp tests themselves
+  # are tagged linux && amd64 and stay out of this lane by construction; what
+  # runs here is the shared sandbox code deciding what to do when a layer is
+  # absent.
+  #
+  # TARGETED, like the macOS and Windows lanes above, not full parity. The amd64
+  # matrix remains the exhaustive lane.
+  test-linux-arm64:
+    needs: [security-scan]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      # A published target that has never been compiled natively can break in
+      # ways cross-compilation catches and ways it does not, and `go build` never
+      # builds _test.go files, so a test package that cannot compile on arm64
+      # would stay invisible to it.
+      - name: Verify arm64 build (OSS + enterprise)
+        run: |
+          go build ./...
+          go build -tags enterprise ./...
+
+      - name: Sandbox behavior on an architecture without seccomp
+        run: go test -race -count=1 ./internal/sandbox/...
+
+      # Preflight is what tells an operator which layers they are actually
+      # getting. On arm64 it must report seccomp as unavailable rather than
+      # claiming it, and it must do so without erroring.
+      - name: Preflight reports the real arm64 layer set
+        run: go test -race -count=1 -run "TestPreflight|TestDetect" ./internal/sandbox/...
+
   # Exercise the browser target's concrete fail-closed filesystem fallbacks,
   # then compile the same contracts for WASI and AIX so build-tag gaps cannot
   # silently remove their implementations.

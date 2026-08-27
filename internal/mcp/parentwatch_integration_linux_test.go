@@ -508,6 +508,25 @@ func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
 // says it was the clock rather than implying a product verdict.
 const subreaperDirectionDeadline = 2 * time.Minute
 
+// subprocessKilledBySignal reports whether a run failed because the subprocess
+// was terminated by a signal rather than exiting on its own.
+//
+// The deadline attribution above covers the clock. It does not cover this: the
+// context can still be live while something outside the unit under test kills
+// the child. That is reachable here because this package runs a reaper that
+// walks /proc, and the sibling test below documents the same class reproducing
+// on a loaded runner and not on a development host. Without this branch the
+// failure reads as though best-effort mode refused, which is a product verdict
+// the run never actually produced.
+func subprocessKilledBySignal(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled()
+}
+
 func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 	failure := errors.New("subreaper unavailable")
 
@@ -521,6 +540,9 @@ func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 		if err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts); err != nil {
 			if ctx.Err() != nil {
 				t.Fatalf("deadline expired before startup finished, so this is a timing failure and not a best-effort refusal: %v (context: %v)", err, ctx.Err())
+			}
+			if subprocessKilledBySignal(err) {
+				t.Fatalf("the subprocess was killed by a signal while the deadline was still live, so this is external interference and not a best-effort refusal: %v", err)
 			}
 			t.Fatalf("best-effort sandbox proxy = %v", err)
 		}

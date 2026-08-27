@@ -713,13 +713,12 @@ jobs:
             exit 1
           fi
 
-  # Helm remains a separate diagnostic job, but the required `build` context
-  # intentionally carries its result through `needs`. Keep that dependency
-  # until a separately approved ruleset change makes `helm` required itself.
-  build:
+  # Compile in parallel with tests and lint so a successful critical path does
+  # not pay the build cost after the slowest test shard has already finished.
+  build-binaries:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [security-scan, test-go125, test-go126, lint, helm]
+    needs: [security-scan]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -757,6 +756,40 @@ jobs:
         run: |
           GOOS=windows GOARCH=amd64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-amd64.exe ./cmd/pipelock
           GOOS=windows GOARCH=arm64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-arm64.exe ./cmd/pipelock
+
+  # Helm remains a separate diagnostic job, but the required `build` context
+  # intentionally carries its result through `needs`. Keep that dependency
+  # until a separately approved ruleset change makes `helm` required itself.
+  # The parallel build-binaries producer also flows through this gate, so a
+  # compilation failure cannot present as a successful required build check.
+  build:
+    needs: [security-scan, test-go125, test-go126, lint, helm, build-binaries]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report required build evidence
+        env:
+          SECURITY_SCAN_RESULT: ${{ needs.security-scan.result }}
+          TEST_GO125_RESULT: ${{ needs.test-go125.result }}
+          TEST_GO126_RESULT: ${{ needs.test-go126.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          HELM_RESULT: ${{ needs.helm.result }}
+          BUILD_BINARIES_RESULT: ${{ needs.build-binaries.result }}
+        run: |
+          set -euo pipefail
+          for result in \
+            "$SECURITY_SCAN_RESULT" \
+            "$TEST_GO125_RESULT" \
+            "$TEST_GO126_RESULT" \
+            "$LINT_RESULT" \
+            "$HELM_RESULT" \
+            "$BUILD_BINARIES_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "required build evidence is incomplete or failed" >&2
+              exit 1
+            fi
+          done
 
   # Operator-facing rollup only. Branch protection continues to evaluate the
   # required producer checks independently.

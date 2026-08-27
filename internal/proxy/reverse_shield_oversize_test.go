@@ -26,8 +26,9 @@ import (
 )
 
 const (
-	oversizeShieldTail    = "<footer>tail-must-remain-byte-for-byte</footer></body></html>"
-	oversizeShieldTestCap = 2048
+	oversizeShieldTail                  = "<footer>tail-must-remain-byte-for-byte</footer></body></html>"
+	oversizeShieldTestCap               = 2048
+	oversizeShieldResponseScanTestLimit = 16 * 1024
 )
 
 // oversizeShieldPage returns an HTML page carrying a tracking pixel, larger
@@ -589,10 +590,10 @@ func TestReverseProxy_ShieldUnderCap_ScrubsWholeBody(t *testing.T) {
 func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 	const shieldCap = 2048
 
-	page := "<html><body>" + strings.Repeat("safe document text ", reverseProxyMaxBodyBytes/19+1) +
+	page := "<html><body>" + strings.Repeat("safe document text ", oversizeShieldResponseScanTestLimit/19+1) +
 		`<img src="https://tracker.vendor.example/p.gif" width="1" height="1"></body></html>`
-	if len(page) <= reverseProxyMaxBodyBytes {
-		t.Fatalf("test page size %d must exceed normal reverse scan ceiling %d", len(page), reverseProxyMaxBodyBytes)
+	if len(page) <= oversizeShieldResponseScanTestLimit {
+		t.Fatalf("test page size %d must exceed test response scan ceiling %d", len(page), oversizeShieldResponseScanTestLimit)
 	}
 
 	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -610,10 +611,15 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 		responseScanningEnabled bool
 		scanMaxBytes            int
 		inflightMaxBytes        int
+		useProductionLimit      bool
+		oversizeAction          string
 		wantStatus              int
+		wantTracker             bool
 		wantBodyContains        string
 	}{
 		{name: "response_scanning_enabled", responseScanningEnabled: true, scanMaxBytes: len(page) + 1024, wantStatus: http.StatusOK},
+		{name: "response_scanning_exceeds_test_bounded_ceiling", responseScanningEnabled: true, scanMaxBytes: oversizeShieldResponseScanTestLimit / 2, oversizeAction: config.ShieldOversizeWarn, wantStatus: http.StatusForbidden, wantBodyContains: "response_scanning.size_exempt_scan_max_bytes"},
+		{name: "response_scanning_same_body_below_production_ceiling", responseScanningEnabled: true, scanMaxBytes: oversizeShieldResponseScanTestLimit / 2, useProductionLimit: true, oversizeAction: config.ShieldOversizeWarn, wantStatus: http.StatusOK, wantTracker: true},
 		{name: "shield_only", responseScanningEnabled: false, scanMaxBytes: len(page) + 1024, wantStatus: http.StatusOK},
 		{name: "shield_only_exceeds_bounded_ceiling", responseScanningEnabled: false, scanMaxBytes: shieldCap * 2, wantStatus: http.StatusForbidden},
 		{name: "shield_only_exceeds_inflight_budget", responseScanningEnabled: false, scanMaxBytes: len(page) + 1024, inflightMaxBytes: shieldCap, wantStatus: http.StatusForbidden, wantBodyContains: "response_scanning.size_exempt_scan_max_inflight_bytes"},
@@ -627,6 +633,9 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 			cfg.BrowserShield.StripTrackingPixels = true
 			cfg.BrowserShield.MaxShieldBytes = shieldCap
 			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+			if tc.oversizeAction != "" {
+				cfg.BrowserShield.OversizeAction = tc.oversizeAction
+			}
 			cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
 			cfg.ResponseScanning.SizeExemptScanMaxBytes = tc.scanMaxBytes
 			cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = cfg.ResponseScanning.SizeExemptScanMaxBytes
@@ -645,6 +654,14 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 			logger, _ := audit.New("json", "stdout", "", false, false)
 			t.Cleanup(logger.Close)
 			handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+			wantResponseBodyLimit := reverseProxyMaxBodyBytes
+			if !tc.useProductionLimit {
+				handler.responseBodyLimit = oversizeShieldResponseScanTestLimit
+				wantResponseBodyLimit = oversizeShieldResponseScanTestLimit
+			}
+			if got := handler.responseScanBodyLimit(); got != wantResponseBodyLimit {
+				t.Fatalf("response scan ceiling = %d, want %d", got, wantResponseBodyLimit)
+			}
 			proxySrv := httptest.NewServer(handler)
 			t.Cleanup(proxySrv.Close)
 
@@ -657,8 +674,9 @@ func TestReverseProxy_ShieldSizeExempt_ScrubsBoundedWholeBody(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read response: %v", err)
 			}
-			if tc.wantStatus == http.StatusOK && strings.Contains(string(body), "tracker.vendor.example") {
-				t.Fatal("tracking pixel beyond the ordinary shield cap survived whole-body shielding")
+			trackerPresent := strings.Contains(string(body), "tracker.vendor.example")
+			if tc.wantStatus == http.StatusOK && trackerPresent != tc.wantTracker {
+				t.Fatalf("tracking pixel present = %v, want %v", trackerPresent, tc.wantTracker)
 			}
 			if tc.wantStatus == http.StatusOK && !strings.Contains(string(body), "</body></html>") {
 				t.Fatal("bounded whole-body shielding did not preserve the response tail")

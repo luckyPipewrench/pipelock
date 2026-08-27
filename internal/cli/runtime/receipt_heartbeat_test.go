@@ -173,16 +173,26 @@ func TestReceiptHeartbeatCadenceStillBeatsAfterTheFirst(t *testing.T) {
 	}
 }
 
-func TestReceiptHeartbeatWithoutAnEmitterDoesNotPanic(t *testing.T) {
-	// A nil emitter is the pre-session and post-teardown state. It must be a quiet
-	// no-op rather than a panic or a logged failure, because the scheduler is
-	// started and stopped around a lifecycle it does not own.
+func TestReceiptHeartbeatWithoutAnEmitterStaysQuiet(t *testing.T) {
+	// The emitter's nil receiver is the quiet pre-session and post-teardown state.
+	// Required recording must not turn that state into a failure.
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	var log bytes.Buffer
-	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return nil }, &log, true, func(error) {
-		t.Fatal("a nil emitter must not report a required-receipt failure")
+	failures := make(chan error, 1)
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return nil }, &log, true, func(err error) {
+		select {
+		case failures <- err:
+		default:
+		}
 	})
+	// Give the cadence loop several intervals to misbehave before trusting the
+	// assertion: a nil-emitter failure on the second beat would otherwise be missed.
+	select {
+	case err := <-failures:
+		t.Fatalf("a nil emitter reported a required-receipt failure: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 	cancel()
 	wg.Wait()
 	if log.Len() != 0 {

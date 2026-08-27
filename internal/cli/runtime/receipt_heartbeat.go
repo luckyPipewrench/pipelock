@@ -34,10 +34,13 @@ func startReceiptHeartbeat(
 		interval = time.Minute
 	}
 	emitHeartbeat := func() bool {
+		// No nil check here: receipt.Emitter.EmitHeartbeat is itself nil-safe and
+		// returns nil, so a guard in this scheduler would duplicate that contract
+		// while adding a branch no test can make fail. An adversarial pass proved
+		// exactly that by setting the old guard to false and watching its test
+		// still pass, so the branch is removed rather than documented. Re-adding
+		// one would recreate an unprovable branch.
 		e := emitterFn()
-		if e == nil {
-			return true
-		}
 		if err := e.EmitHeartbeat(); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
 			if logW != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: receipt heartbeat emit failed: %v\n", err)

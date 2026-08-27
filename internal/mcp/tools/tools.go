@@ -1029,6 +1029,25 @@ var exfilParamPattern = regexp.MustCompile(
 		`credentials?|passwd|env.(?:secret|key|file|var)|aws.secret|access.token|auth.token)\b`,
 )
 
+// directiveParamPattern detects a parameter or schema key that is itself an
+// instruction to override the agent's existing instructions.
+//
+// Ordinary identifiers are deliberately excluded from prose scanning, because a
+// tool that names a property "instructions" or "role" is doing something
+// completely normal and refusing its whole tools/list over that is the kind of
+// false positive that gets tool scanning switched off. A key spelled
+// "ignore-previous-instructions" is not that: it reads as an identifier to the
+// filter and as a directive to the agent, so it was being forwarded clean.
+//
+// The pattern therefore requires all three parts of the attack phrasing, an
+// override verb, a scope word, and a rules noun, rather than any one of them.
+// A name has to be trying to say the sentence to match it.
+var directiveParamPattern = regexp.MustCompile(
+	`(?i)\b(ignore|disregard|forget|override|bypass)\b\s+(?:\w+\s+){0,2}` +
+		`\b(previous|prior|all|above|earlier|preceding|former|initial|original)\b\s+(?:\w+\s+){0,2}` +
+		`\b(instructions?|rules?|directives?|prompts?|constraints?|guidelines?|guardrails?|restrictions?|commands?)\b`,
+)
+
 // contextLeakParamPattern detects parameter names that direct the agent to
 // populate them with internal model context - system prompt, conversation
 // history, tool-call history, chain of thought, model identity, available
@@ -1239,7 +1258,17 @@ func valueContainsOpaqueToolMedia(value interface{}) bool {
 			// names, which is a legitimate shape for a cursor or cache key.
 			// Opacity requires an explicit binary signal on the value itself.
 			case "blob", "raw", "data":
+				// The signal can sit beside the payload key or inside it.
+				// Checking only the outer map read
+				// {"data":"<base64>","encoding":"base64"} and missed
+				// {"raw":{"encoding":"base64","value":"<base64>"}}, whose
+				// inner map carries the signal but has no payload key of its
+				// own for the walk below to re-check. The nested form then
+				// reached the readable-text path as an ordinary string.
 				if toolMediaDataIsOpaque(v) {
+					return true
+				}
+				if nested, ok := child.(map[string]interface{}); ok && toolMediaDataIsOpaque(nested) {
 					return true
 				}
 			}
@@ -2060,12 +2089,17 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// false positives from action words in the description pairing with
 			// sensitive targets in unrelated parameters. Each param is checked
 			// against both patterns; the first match per pattern is reported.
-			var exfilHit, contextHit bool
+			var exfilHit, contextHit, directiveHit bool
 			for _, name := range paramNames {
-				if exfilHit && contextHit {
+				if exfilHit && contextHit && directiveHit {
 					break
 				}
 				expanded := normalize.ForToolText(expandParamName(name))
+				if !directiveHit && directiveParamPattern.MatchString(expanded) {
+					match.ToolPoison = append(match.ToolPoison, "Directive Parameter Name")
+					hasFinding = true
+					directiveHit = true
+				}
 				if !exfilHit && exfilParamPattern.MatchString(expanded) {
 					match.ToolPoison = append(match.ToolPoison, "Exfiltration Parameter Name")
 					hasFinding = true

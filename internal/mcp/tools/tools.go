@@ -1213,6 +1213,36 @@ func extractToolGeneralText(t ToolDef) string {
 	return strings.Join(parts, ". ")
 }
 
+// extractToolDirectiveKeys returns agent-visible JSON keys whose identifier
+// spelling is itself a directive. Ordinary identifiers remain outside the
+// prose scanner, but directive-shaped keys must be checked across every schema
+// surface rather than only inputSchema properties.
+func extractToolDirectiveKeys(t ToolDef) []string {
+	var keys []string
+	appendDirectiveKeys := func(field json.RawMessage) {
+		if len(field) == 0 {
+			return
+		}
+		for _, key := range jsonrpc.ExtractKeysFromJSONResult(field).Keys {
+			expanded := normalize.ForToolText(expandParamName(key))
+			if directiveParamPattern.MatchString(expanded) {
+				keys = append(keys, key)
+			}
+		}
+	}
+	for _, field := range []json.RawMessage{t.InputSchema, t.OutputSchema, t.Annotations, t.Meta} {
+		appendDirectiveKeys(field)
+	}
+	for key, field := range t.unknown {
+		expanded := normalize.ForToolText(expandParamName(key))
+		if directiveParamPattern.MatchString(expanded) {
+			keys = append(keys, key)
+		}
+		appendDirectiveKeys(field)
+	}
+	return keys
+}
+
 // toolFieldContainsOpaqueMedia recognizes the MCP media encodings that cannot
 // be inspected as text. A plain extension field named "data" remains
 // inspectable and is scanned; it becomes opaque only when paired with an
@@ -1268,11 +1298,36 @@ func valueContainsOpaqueToolMedia(value interface{}) bool {
 				if toolMediaDataIsOpaque(v) {
 					return true
 				}
-				if nested, ok := child.(map[string]interface{}); ok && toolMediaDataIsOpaque(nested) {
+				if valueContainsOpaqueMediaSignal(child) {
 					return true
 				}
 			}
 			if valueContainsOpaqueToolMedia(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// valueContainsOpaqueMediaSignal checks the entire value beneath a payload
+// key. MCP extension payloads may wrap encoded media in objects or arrays, so
+// limiting the signal check to the immediate child leaves deeper content
+// incorrectly classified as inspectable text.
+func valueContainsOpaqueMediaSignal(value interface{}) bool {
+	switch v := value.(type) {
+	case []interface{}:
+		for _, child := range v {
+			if valueContainsOpaqueMediaSignal(child) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		if toolMediaDataIsOpaque(v) {
+			return true
+		}
+		for _, child := range v {
+			if valueContainsOpaqueMediaSignal(child) {
 				return true
 			}
 		}
@@ -2062,6 +2117,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		if len(tool.InputSchema) > 0 {
 			paramNames = ExtractParamNames(tool.InputSchema)
 		}
+		directiveKeys := extractToolDirectiveKeys(tool)
 
 		descriptionText := extractToolText(tool)
 		generalText := extractToolGeneralText(tool)
@@ -2089,7 +2145,12 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// false positives from action words in the description pairing with
 			// sensitive targets in unrelated parameters. Each param is checked
 			// against both patterns; the first match per pattern is reported.
-			var exfilHit, contextHit, directiveHit bool
+			var exfilHit, contextHit bool
+			directiveHit := len(directiveKeys) > 0
+			if directiveHit {
+				match.ToolPoison = append(match.ToolPoison, "Directive Parameter Name")
+				hasFinding = true
+			}
 			for _, name := range paramNames {
 				if exfilHit && contextHit && directiveHit {
 					break

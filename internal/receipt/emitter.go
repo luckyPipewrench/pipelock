@@ -725,6 +725,15 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		}
 		return emitErr
 	}
+	if err := e.emitNativeAEL(ar, sessionControl, durable); err != nil {
+		e.recordFailure(FailReasonAEL)
+		emitErr := fmt.Errorf("emitting native AEL record: %w", err)
+		// The receipt is already persisted and its chain position consumed. Do not
+		// advertise lifecycle success, and quarantine the emitter so a retry cannot
+		// duplicate that receipt while the paired AEL stream is unhealthy.
+		e.MarkUnhealthy(emitErr)
+		return emitErr
+	}
 	if openControl {
 		e.sessionOpenEmitted = true
 		e.openNonce = sessionControl.Open.OpenNonce
@@ -734,10 +743,6 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	}
 	if sessionControl != nil && sessionControl.Kind == SessionControlHeartbeat {
 		e.lastHeartbeat = ar.Timestamp
-	}
-	if err := e.emitNativeAEL(ar, sessionControl, durable); err != nil {
-		e.recordFailure(FailReasonAEL)
-		return fmt.Errorf("emitting native AEL record: %w", err)
 	}
 
 	// Notify the observer (if any) AFTER the receipt is durably recorded, so a
@@ -827,6 +832,14 @@ func (e *Emitter) CloseNativeAEL() error {
 		return fmt.Errorf("closing native AEL run: %w", err)
 	}
 	return nil
+}
+
+// AbortNativeAEL releases a staged native emitter that will not be published.
+func (e *Emitter) AbortNativeAEL() error {
+	if e == nil || e.nativeAEL == nil {
+		return nil
+	}
+	return e.nativeAEL.Abort()
 }
 
 var errEmitterRetired = errors.New("receipt emitter retired after signer rotation")

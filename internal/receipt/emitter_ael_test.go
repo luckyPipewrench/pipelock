@@ -67,7 +67,13 @@ func TestEmitterCloseNativeAELForRotation(t *testing.T) {
 	if err := nilEmitter.CloseNativeAEL(); err != nil {
 		t.Fatalf("nil CloseNativeAEL: %v", err)
 	}
+	if err := nilEmitter.AbortNativeAEL(); err != nil {
+		t.Fatalf("nil AbortNativeAEL: %v", err)
+	}
 	bareEmitter := &Emitter{}
+	if err := bareEmitter.AbortNativeAEL(); err != nil {
+		t.Fatalf("bare AbortNativeAEL: %v", err)
+	}
 	if err := bareEmitter.emitNativeAEL(ActionRecord{}, nil, false); err != nil {
 		t.Fatalf("emitNativeAEL without native emitter: %v", err)
 	}
@@ -125,5 +131,28 @@ func TestEmitterRetireNativeAELRejectsStaleAndAlreadyAdmittedHeartbeats(t *testi
 	}
 	if err := e.EmitHeartbeat(); err == nil || !strings.Contains(err.Error(), "retired after signer rotation") {
 		t.Fatalf("stale heartbeat error = %v", err)
+	}
+}
+
+func TestEmitterNativeAELFailureQuarantinesWithoutLifecycleSuccess(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, HeartbeatSeconds: 30})
+	if err := e.nativeAEL.Abort(); err != nil {
+		t.Fatalf("Abort native AEL: %v", err)
+	}
+	if err := e.EmitSessionOpen(); err == nil || !strings.Contains(err.Error(), "emitting native AEL record") {
+		t.Fatalf("EmitSessionOpen error = %v, want native AEL failure", err)
+	}
+	if e.sessionOpenEmitted || e.openNonce != "" {
+		t.Fatalf("failed native open advanced lifecycle: emitted=%t nonce=%q", e.sessionOpenEmitted, e.openNonce)
+	}
+	if e.HealthError() == nil {
+		t.Fatal("failed native open did not quarantine receipt emitter")
+	}
+	if err := e.EmitSessionOpen(); err == nil || !strings.Contains(err.Error(), "receipt emitter unhealthy") {
+		t.Fatalf("retry error = %v, want quarantined emitter", err)
 	}
 }

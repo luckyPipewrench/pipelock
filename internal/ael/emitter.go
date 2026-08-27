@@ -213,6 +213,26 @@ func (e *Emitter) Opened() bool {
 	return e.opened
 }
 
+// Abort closes a staged record stream without claiming a terminal lifecycle
+// record. It is used only when the owning runtime cannot publish the emitter.
+func (e *Emitter) Abort() error {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.file == nil {
+		return nil
+	}
+	err := e.file.Close()
+	e.file = nil
+	e.closed = true
+	if err != nil {
+		e.lastErr = err
+	}
+	return err
+}
+
 func (e *Emitter) emit(kind string, extra map[string]any, durable bool) error {
 	if e == nil {
 		return nil

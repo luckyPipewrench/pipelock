@@ -185,6 +185,40 @@ func TestEmitterPersistenceFailureIsSticky(t *testing.T) {
 	}
 }
 
+func TestEmitterAbortClosesStagedStream(t *testing.T) {
+	t.Parallel()
+	var nilEmitter *Emitter
+	if err := nilEmitter.Abort(); err != nil {
+		t.Fatalf("nil Abort: %v", err)
+	}
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	emitter := NewEmitter(rec, priv, "fedcba9876543210fedcba9876543210", 30)
+	if emitter == nil {
+		t.Fatal("NewEmitter returned nil")
+	}
+	if emitter.Opened() {
+		t.Fatal("staged emitter unexpectedly open")
+	}
+	if err := emitter.Abort(); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if err := emitter.Abort(); err != nil {
+		t.Fatalf("second Abort: %v", err)
+	}
+	if err := emitter.EmitOpen(); err == nil || !strings.Contains(err.Error(), "run is closed") {
+		t.Fatalf("EmitOpen after Abort error = %v", err)
+	}
+}
+
 func TestNewEmitterRejectsNonPipelockRunID(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

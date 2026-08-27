@@ -1856,6 +1856,15 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		}
 		return false
 	}
+	receiptStagePublished := receiptStage.reuseExisting || receiptStage.emitter == nil
+	defer func() {
+		if receiptStagePublished {
+			return
+		}
+		if err := receiptStage.emitter.AbortNativeAEL(); err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("close unpublished native AEL emitter: %w", err))
+		}
+	}()
 	contractLoader, contractErr := buildContractLoader(cfg)
 	if contractErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
@@ -2011,6 +2020,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.receiptEmitterPtr.Store(receiptStage.emitter)
 		p.v2EmitterPtr.Store(receiptStage.v2)
 		p.receiptKeyPath = receiptStage.keyPath
+		receiptStagePublished = true
 	}
 
 	// Apply enabled CEE components before publishing their config. A stricter

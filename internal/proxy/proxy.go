@@ -1956,6 +1956,23 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.reloadLocked()
 	}
 
+	// A signer rotation gives native AEL a new key-scoped run. Close the old
+	// run while admissions are excluded and before publishing any new runtime
+	// state, so every replaced emitter has an explicit terminal record. The
+	// replacement's open was staged durably above; a close failure aborts the
+	// reload and leaves the old emitter fail-closed through its sticky AEL error.
+	if current := p.receiptEmitterPtr.Load(); current != nil && !receiptStage.reuseExisting && current != receiptStage.emitter {
+		if err := current.CloseNativeAEL(); err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("native AEL rotation close failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
+	}
+
 	// Publish both emitters now that staging has fully succeeded. The
 	// atomic.Pointer swaps are individually atomic; between them, a
 	// request can observe "new envelope + old receipt" for a few

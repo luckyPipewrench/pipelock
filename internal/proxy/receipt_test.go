@@ -6,6 +6,7 @@ package proxy
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1344,6 +1345,15 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	if origEmitter == nil {
 		t.Fatal("expected non-nil emitter before reload")
 	}
+	aelRoot := filepath.Join(recDir, "ael")
+	beforeRuns, err := os.ReadDir(aelRoot)
+	if err != nil {
+		t.Fatalf("ReadDir AEL before rotation: %v", err)
+	}
+	if len(beforeRuns) != 1 {
+		t.Fatalf("AEL runs before rotation = %d, want 1", len(beforeRuns))
+	}
+	originalAELRun := filepath.Join(aelRoot, beforeRuns[0].Name())
 
 	// Reload with key B - should replace the emitter.
 	reloadCfg := config.Defaults()
@@ -1362,6 +1372,29 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	if newEmitter == origEmitter {
 		t.Fatal("expected NEW emitter instance after key rotation, got same pointer")
 	}
+	// #nosec G304 -- originalAELRun came from this test's recorder directory.
+	originalAELLines, err := os.ReadFile(filepath.Join(originalAELRun, "recorders", "pipelock.jsonl"))
+	if err != nil {
+		t.Fatalf("read original AEL run: %v", err)
+	}
+	encodedLines := strings.Split(strings.TrimSpace(string(originalAELLines)), "\n")
+	lastParts := strings.Split(encodedLines[len(encodedLines)-1], ".")
+	if len(lastParts) != 2 {
+		t.Fatalf("original AEL terminal record has %d compact parts", len(lastParts))
+	}
+	terminalPayload, err := base64.RawURLEncoding.DecodeString(lastParts[0])
+	if err != nil {
+		t.Fatalf("decode original AEL terminal payload: %v", err)
+	}
+	var terminalRecord struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(terminalPayload, &terminalRecord); err != nil {
+		t.Fatalf("unmarshal original AEL terminal payload: %v", err)
+	}
+	if terminalRecord.Type != "close" {
+		t.Fatalf("original AEL terminal type = %q, want close", terminalRecord.Type)
+	}
 
 	// Emit a receipt via a request and verify it is signed with key B.
 	handler := p.buildHandler(p.buildMux())
@@ -1373,6 +1406,18 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 		t.Errorf("expected 403, got %d", w.Code)
 	}
 
+	if err := newEmitter.EmitSessionClose("test complete"); err != nil {
+		t.Fatalf("EmitSessionClose B: %v", err)
+	}
+	// A replacement attempt after the current native run has closed must abort
+	// instead of publishing another emitter over an unclosable lifecycle.
+	failedReloadScanner := scanner.MustNew(cfg)
+	if p.Reload(cfg, failedReloadScanner) {
+		t.Fatal("reload succeeded after native AEL rotation close failure")
+	}
+	if p.receiptEmitterPtr.Load() != newEmitter {
+		t.Fatal("failed native AEL rotation published the replacement emitter")
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -1402,8 +1447,8 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	if len(receipts) == 0 {
 		t.Fatal("no receipt found after key rotation reload")
 	}
-	if len(receipts) != 3 {
-		t.Fatalf("receipt count = %d, want startup open, rotated open, and blocked fetch receipt", len(receipts))
+	if len(receipts) != 5 {
+		t.Fatalf("receipt count = %d, want startup open, rotated open, blocked fetch, shutdown close, and staged failed-reload open", len(receipts))
 	}
 	if receipts[0].ActionRecord.SessionControl == nil ||
 		receipts[0].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {

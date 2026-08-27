@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	aelpkg "github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -69,6 +70,8 @@ const (
 	FailReasonMarshal = "marshal"
 	// FailReasonRecord is a recorder-write failure.
 	FailReasonRecord = "record"
+	// FailReasonAEL is a native AEL artifact emission failure.
+	FailReasonAEL = "ael"
 	// FailReasonSync is a recorder durability-sync failure.
 	FailReasonSync = "sync"
 	// FailReasonSealed is an emit attempt after the transcript root was emitted.
@@ -95,6 +98,7 @@ type Emitter struct {
 	healthMu   sync.RWMutex
 	healthErr  error
 	runNonce   string
+	nativeAEL  *aelpkg.Emitter
 
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -203,6 +207,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		e.initErr = fmt.Errorf("generate run nonce: %w", nonceErr)
 		return e
 	}
+	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	e.initErr = e.resumeChain()
 	return e
 }
@@ -716,6 +721,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	if sessionControl != nil && sessionControl.Kind == SessionControlHeartbeat {
 		e.lastHeartbeat = ar.Timestamp
 	}
+	if err := e.emitNativeAEL(ar, sessionControl, durable); err != nil {
+		e.recordFailure(FailReasonAEL)
+		return fmt.Errorf("emitting native AEL record: %w", err)
+	}
 
 	// Notify the observer (if any) AFTER the receipt is durably recorded, so a
 	// streamed decision can never appear before it exists on disk. The call is
@@ -727,6 +736,82 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.onReceipt(&rc)
 	}
 
+	return nil
+}
+
+func (e *Emitter) emitNativeAEL(ar ActionRecord, control *SessionControl, durable bool) error {
+	if e.nativeAEL == nil {
+		return nil
+	}
+	ensureOpen := func() error {
+		if e.nativeAEL.Opened() {
+			return nil
+		}
+		return e.nativeAEL.EmitOpen()
+	}
+	if control != nil {
+		switch control.Kind {
+		case SessionControlOpen:
+			return e.nativeAEL.EmitOpen()
+		case SessionControlHeartbeat:
+			if !e.sessionOpenEmitted {
+				return nil
+			}
+			if err := ensureOpen(); err != nil {
+				return err
+			}
+			return e.nativeAEL.EmitHeartbeat()
+		case SessionControlClose:
+			if !e.sessionOpenEmitted {
+				return nil
+			}
+			if err := ensureOpen(); err != nil {
+				return err
+			}
+			return e.nativeAEL.EmitClose()
+		}
+	}
+	// Receipt emitters are also used directly by compatibility tools and unit
+	// callers that do not establish a process lifecycle. Native AEL is emitted
+	// only for a run with an explicit open record; production runtimes always
+	// open the session before mediating traffic.
+	if !e.sessionOpenEmitted {
+		return nil
+	}
+	if err := ensureOpen(); err != nil {
+		return err
+	}
+	direction := "internal"
+	switch ar.ActionType {
+	case ActionRead:
+		direction = "in"
+	case ActionWrite, ActionDelegate, ActionSpend, ActionCommit, ActionActuate:
+		direction = "out"
+	}
+	return e.nativeAEL.EmitActivity(aelpkg.Activity{
+		Class:     string(ar.ActionType),
+		ID:        ar.ActionID,
+		Direction: direction,
+	}, durable)
+}
+
+// CloseNativeAEL closes this emitter's native AEL run when the proxy replaces
+// the receipt emitter during a live signer rotation. The receipt chain records
+// its existing key-transition boundary on the replacement emitter; AEL uses an
+// explicit close/open pair because each signing key owns a separate run.
+func (e *Emitter) CloseNativeAEL() error {
+	if e == nil {
+		return nil
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	if e.nativeAEL == nil || !e.nativeAEL.Opened() {
+		return nil
+	}
+	if err := e.nativeAEL.EmitClose(); err != nil {
+		e.recordFailure(FailReasonAEL)
+		return fmt.Errorf("closing native AEL run: %w", err)
+	}
 	return nil
 }
 

@@ -387,7 +387,8 @@ func TestForwardScanned_ToolsListNestedOpaqueMediaBlocks(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ForwardScanned: %v", err)
 			}
-			if !found || !strings.Contains(out.String(), "tool_definition_uninspectable") {
+			if !found || strings.Contains(out.String(), `"catalog_search"`) ||
+				!strings.Contains(out.String(), "tool_definition_uninspectable") {
 				t.Fatalf("nested opaque media was forwarded: found=%v out=%s log=%s", found, out.String(), log.String())
 			}
 		})

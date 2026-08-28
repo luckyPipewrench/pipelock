@@ -548,14 +548,17 @@ jobs:
           go build ./...
           go build -tags enterprise ./...
 
-      - name: Sandbox behavior on an architecture without seccomp
+      - name: Sandbox behavior without Pipelock's seccomp filter
         run: go test -race -count=1 ./internal/sandbox/...
 
-      # Preflight is what tells an operator which layers they are actually
-      # getting. On arm64 it must report seccomp as unavailable rather than
-      # claiming it, and it must do so without erroring.
+      # Preflight and diagnose are what tell an operator which layers they are
+      # actually getting. On arm64 they must report seccomp as unavailable
+      # rather than claiming it.
       - name: Preflight reports the real arm64 layer set
         run: go test -race -count=1 -run "TestPreflight|TestDetect" ./internal/sandbox/...
+
+      - name: Diagnose reports the real arm64 layer set
+        run: go test -race -count=1 -run TestDiagnoseReportsSeccompUnavailableWithoutFilter ./internal/cli/diag/...
 
   # Exercise the browser target's concrete fail-closed filesystem fallbacks,
   # then compile the same contracts for WASI and AIX so build-tag gaps cannot

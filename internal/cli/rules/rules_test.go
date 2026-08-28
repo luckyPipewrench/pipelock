@@ -3097,3 +3097,137 @@ func TestRulesStatus_IncludeDefaultsFalse(t *testing.T) {
 		t.Error("expected 'disabled' when include_defaults: false")
 	}
 }
+
+// TestFetchBundleForRecordedSource_PinsOfficialSource proves the routing that
+// update and diff depend on. A bundle installed by official name records the
+// official registry URL as its source, so re-fetching that recorded source must
+// use the pinned client. Before this routing existed the pin covered only the
+// one-time install, leaving update and diff, the commands an operator runs
+// repeatedly, on the client that accepts a redirect to any HTTPS host.
+func TestFetchBundleForRecordedSource_PinsOfficialSource(t *testing.T) {
+	// NOT parallel: mutates the shared clients.
+	originalOfficial := officialRegistryClient
+	originalHTTPS := httpsOnlyClient
+	t.Cleanup(func() {
+		officialRegistryClient = originalOfficial
+		httpsOnlyClient = originalHTTPS
+	})
+
+	// The general client must never be reached for a recorded official source.
+	httpsOnlyClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("recorded official source was fetched with the unpinned client: %s", req.URL)
+		}),
+		CheckRedirect: originalHTTPS.CheckRedirect,
+	}
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "pipelab.org":
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://rules-attacker.example/bundle.yaml"}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			default:
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("redirected response")),
+				}, nil
+			}
+		}),
+		CheckRedirect: originalOfficial.CheckRedirect,
+	}
+
+	_, _, err := fetchBundleForRecordedSource(t.Context(), officialRegistryURL+testBundlePath)
+	if !errors.Is(err, errOfficialRegistryRedirect) {
+		t.Fatalf("error = %v, want the recorded official source to be fetched under the pinned redirect policy", err)
+	}
+}
+
+// TestFetchBundleForRecordedSource_LeavesThirdPartySourceUnpinned is the other
+// direction: a recorded third-party source must stay on the general client, so
+// the pin does not quietly become a global redirect policy.
+func TestFetchBundleForRecordedSource_LeavesThirdPartySourceUnpinned(t *testing.T) {
+	// NOT parallel: mutates the shared clients.
+	originalOfficial := officialRegistryClient
+	originalHTTPS := httpsOnlyClient
+	t.Cleanup(func() {
+		officialRegistryClient = originalOfficial
+		httpsOnlyClient = originalHTTPS
+	})
+
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("third-party source was fetched with the pinned client: %s", req.URL)
+		}),
+		CheckRedirect: originalOfficial.CheckRedirect,
+	}
+	reached := false
+	httpsOnlyClient = &http.Client{
+		Transport: rulesRoundTripper(func(*http.Request) (*http.Response, error) {
+			reached = true
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+		CheckRedirect: originalHTTPS.CheckRedirect,
+	}
+
+	_, _, _ = fetchBundleForRecordedSource(t.Context(), "https://source.example/bundle.yaml")
+	if !reached {
+		t.Fatal("third-party recorded source did not use the general client")
+	}
+}
+
+// TestFetchOfficialRegistryBundle_AllowsSameOriginRedirect covers the
+// AVAILABILITY half of the design. Same-origin redirects are permitted on
+// purpose so a future registry path move does not break the documented install
+// command. Without this test, a later tightening that refused every redirect
+// would keep all the refusal tests green while breaking that command in
+// production.
+func TestFetchOfficialRegistryBundle_AllowsSameOriginRedirect(t *testing.T) {
+	// NOT parallel: mutates officialRegistryClient.
+	originalClient := officialRegistryClient
+	moved := "/rules-moved/community-rules/bundle.yaml"
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Host != "pipelab.org" {
+				return nil, fmt.Errorf("left the official origin: %s", req.URL)
+			}
+			if !strings.HasPrefix(req.URL.Path, "/rules-moved/") {
+				target := moved
+				if strings.HasSuffix(req.URL.Path, signing.SigExtension) {
+					target += signing.SigExtension
+				}
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://pipelab.org" + target}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}
+			body := "moved-bundle"
+			if strings.HasSuffix(req.URL.Path, signing.SigExtension) {
+				body = "moved-signature"
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+		CheckRedirect: originalClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalClient })
+
+	bundleData, sigData, err := fetchOfficialRegistryBundle(t.Context(), officialRegistryURL+testBundlePath)
+	if err != nil {
+		t.Fatalf("same-origin redirect refused: %v; a registry path move must not break the documented install", err)
+	}
+	if string(bundleData) != "moved-bundle" || string(sigData) != "moved-signature" {
+		t.Fatalf("bundle=%q sig=%q, want the redirected artifacts", bundleData, sigData)
+	}
+}

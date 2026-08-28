@@ -436,6 +436,23 @@ func fetchOfficialRegistryBundle(ctx context.Context, bundleURL string) ([]byte,
 	return fetchRemoteBundleWithClient(ctx, bundleURL, officialRegistryClient)
 }
 
+// fetchBundleForRecordedSource fetches a bundle whose URL came from an
+// installed bundle's lock file rather than from the operator's --source flag.
+// A bundle installed by official name records the official registry URL as its
+// source, so update and diff must re-fetch it under the same pinned redirect
+// policy the install used; otherwise the pin covers only the one-time install
+// and not the commands an operator runs repeatedly afterwards.
+//
+// Routing on the RECORDED source preserves the separation that matters: an
+// operator-supplied --source that happens to spell the official URL stays on
+// the general client and never acquires official-path handling.
+func fetchBundleForRecordedSource(ctx context.Context, source string) ([]byte, []byte, error) {
+	if isOfficialRegistryURL(source) {
+		return fetchOfficialRegistryBundle(ctx, source)
+	}
+	return fetchRemoteBundle(ctx, source)
+}
+
 func fetchRemoteBundleWithClient(ctx context.Context, bundleURL string, client *http.Client) ([]byte, []byte, error) {
 	if !strings.HasPrefix(bundleURL, "https://") {
 		return nil, nil, fmt.Errorf("remote source must use HTTPS: %s", bundleURL)
@@ -455,10 +472,20 @@ func fetchRemoteBundleWithClient(ctx context.Context, bundleURL string, client *
 	return bundleData, sigData, nil
 }
 
+// maxBundleRedirects bounds a redirect chain. Setting CheckRedirect at all
+// replaces net/http's default callback, and the ten-hop cap lives IN that
+// default, so a custom callback that never inspects via silently removes the
+// bound. Without this, a redirect loop spins until the request context expires
+// instead of failing fast.
+const maxBundleRedirects = 10
+
 // httpsOnlyClient is a shared HTTP client that rejects HTTPS-to-HTTP
 // redirect downgrades. Bundle fetches must stay on HTTPS.
 var httpsOnlyClient = &http.Client{
-	CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxBundleRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxBundleRedirects)
+		}
 		if req.URL.Scheme != schemeHTTPS {
 			return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL)
 		}
@@ -469,9 +496,12 @@ var httpsOnlyClient = &http.Client{
 // officialRegistryClient allows redirects only when they stay on the exact
 // official registry origin. User-supplied --source URLs never use this client.
 var officialRegistryClient = &http.Client{
-	CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxBundleRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxBundleRedirects)
+		}
 		if !isOfficialRegistryURL(req.URL.String()) {
-			return fmt.Errorf("%w: redirects must stay on %s (got %s)", errOfficialRegistryRedirect, officialRegistryURL, req.URL)
+			return fmt.Errorf("%w: redirects must stay on %s (got %s); if the registry moved, install explicitly with --source <url>", errOfficialRegistryRedirect, officialRegistryURL, req.URL)
 		}
 		return nil
 	},
@@ -1382,7 +1412,7 @@ func updateBundle(opts updateBundleOpts) error {
 
 	// Fetch latest from source.
 	ctx := context.Background()
-	bundleData, sigData, err := fetchRemoteBundle(ctx, lf.Source)
+	bundleData, sigData, err := fetchBundleForRecordedSource(ctx, lf.Source)
 	if err != nil {
 		return fmt.Errorf("fetching update for %s: %w", opts.Name, err)
 	}
@@ -1623,7 +1653,15 @@ func rulesDiffCmd() *cobra.Command {
 
 			// Fetch remote bundle.
 			ctx := context.Background()
-			remoteData, _, err := fetchRemoteBundle(ctx, fetchURL)
+			// Only a RECORDED official source gets the pinned client. An
+			// explicit --source override stays on the general path, so it
+			// cannot acquire official-path handling by spelling the URL.
+			var remoteData []byte
+			if sourceURL == "" {
+				remoteData, _, err = fetchBundleForRecordedSource(ctx, fetchURL)
+			} else {
+				remoteData, _, err = fetchRemoteBundle(ctx, fetchURL)
+			}
 			if err != nil {
 				return fmt.Errorf("fetching remote bundle: %w", err)
 			}

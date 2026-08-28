@@ -1752,6 +1752,42 @@ func TestCheckExistingInstall_MalformedLockBlocksReplacement(t *testing.T) {
 	}
 }
 
+func TestCheckExistingInstallRejectsMalformedVersions(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		candidateVersion string
+		installedVersion string
+		want             string
+	}{
+		{
+			name:             "candidate",
+			candidateVersion: "not-a-calver",
+			installedVersion: "2026.08.0",
+			want:             "parsing candidate version",
+		},
+		{
+			name:             "installed",
+			candidateVersion: "2026.09.0",
+			installedVersion: "not-a-calver",
+			want:             "parsing installed version",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "bundle")
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatalf("create bundle dir: %v", err)
+			}
+			if err := domrules.WriteLockFile(filepath.Join(dir, "bundle.lock"), &domrules.LockFile{InstalledVersion: tc.installedVersion}); err != nil {
+				t.Fatalf("write lock: %v", err)
+			}
+			err := checkExistingInstall(dir, tc.candidateVersion, "digest")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("checkExistingInstall error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRulesVerify_NoBundles(t *testing.T) {
 	rulesDir := t.TempDir()
 

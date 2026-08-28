@@ -100,8 +100,10 @@ type ProducerConfig struct {
 	// false so the wire form is byte-identical to v1 and passes the conductor's
 	// strict unknown-field decoder. Default false = do not emit (fail-safe).
 	EmitAppliedState bool
-	// EmitAppliedStateHeartbeat gates the recorder-independent heartbeat. It
-	// must only be true when capability negotiation confirmed audit schema v3.
+	// EmitAppliedStateHeartbeat enables the recorder-independent heartbeat
+	// scheduler. The callback remains responsible for capability negotiation
+	// before it emits any v3 request, allowing a failed startup handshake to be
+	// retried without weakening wire compatibility with older conductors.
 	EmitAppliedStateHeartbeat bool
 	// AppliedStateProvider supplies the current applied-state snapshot when
 	// EmitAppliedState is true. It is a callback so the producer stays decoupled
@@ -109,8 +111,9 @@ type ProducerConfig struct {
 	// the batch (best-effort) while the batch itself still flows.
 	AppliedStateProvider func() (conductor.FollowerAppliedState, bool)
 	// AppliedStateHeartbeat sends a recorder-independent signed state update.
-	// It runs periodically only when EmitAppliedStateHeartbeat was negotiated. Failures
-	// are best-effort: the next interval retries with a fresh statement.
+	// It runs periodically only when EmitAppliedStateHeartbeat is enabled. Failures
+	// are best-effort: the next interval retries negotiation or emission with a
+	// fresh statement.
 	AppliedStateHeartbeat func(context.Context) error
 	HeartbeatInterval     time.Duration
 }

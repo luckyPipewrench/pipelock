@@ -328,9 +328,10 @@ func TestCapabilitiesResponse_RequiresMTLSAndThresholds(t *testing.T) {
 		t.Fatalf("Validate() over skew cap = %v, want ErrSkewExceeded", err)
 	}
 
+	overflowingSkewSeconds := int64(math.MaxInt64)/int64(time.Second) + 1
 	if strconv.IntSize == 64 {
 		caps = validCapabilitiesResponse()
-		caps.MaxCreatedSkewSeconds = int(int64(math.MaxInt64)/int64(time.Second) + 1)
+		caps.MaxCreatedSkewSeconds = int(overflowingSkewSeconds)
 		err = caps.Validate()
 		if !errors.Is(err, ErrSkewExceeded) {
 			t.Fatalf("Validate() overflowing skew = %v, want ErrSkewExceeded", err)

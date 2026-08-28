@@ -29,8 +29,6 @@ const reservedBundlePrefix = "pipelock-"
 
 var errBundleFileTooLarge = errors.New("bundle file exceeds maximum size")
 
-var saveFreshnessStateForLoad = SaveFreshnessState
-
 // LoadOptions controls bundle loading behavior.
 type LoadOptions struct {
 	MinConfidence        string              // high, medium, low
@@ -259,14 +257,7 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		// Save updated freshness state if any v2+ bundles were loaded.
 		for _, lb := range result.Loaded {
 			if lb.MonotonicVersion > 0 {
-				if saveErr := saveFreshnessStateForLoad(rulesDir, freshnessState); saveErr != nil {
-					result.Errors = append(result.Errors, BundleError{
-						Name:   ".freshness.json",
-						Reason: fmt.Sprintf("saving freshness state: %v", saveErr),
-						Class:  BundleErrorClassIntegrity,
-					})
-					result.Degraded = true
-				}
+				persistLoadedFreshness(rulesDir, freshnessState, result, SaveFreshnessState)
 				break
 			}
 		}
@@ -292,6 +283,17 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	}
 
 	return result
+}
+
+func persistLoadedFreshness(rulesDir string, state *FreshnessState, result *LoadResult, save func(string, *FreshnessState) error) {
+	if err := save(rulesDir, state); err != nil {
+		result.Errors = append(result.Errors, BundleError{
+			Name:   ".freshness.json",
+			Reason: fmt.Sprintf("saving freshness state: %v", err),
+			Class:  BundleErrorClassIntegrity,
+		})
+		result.Degraded = true
+	}
 }
 
 // bundleExecCtx groups execution context passed through the bundle loading

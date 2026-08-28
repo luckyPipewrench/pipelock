@@ -891,6 +891,9 @@ func installRemote(opts installRemoteOptions) error {
 // the install, while the older installed bundle cannot erase the new floor.
 func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bundleData, sigData []byte, lf *domrules.LockFile, checkInstalled bool) error {
 	return domrules.WithFreshnessLock(rulesDir, func() error {
+		if err := checkInstalledBundleTier(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
+			return err
+		}
 		if checkInstalled {
 			if err := checkExistingInstall(filepath.Join(rulesDir, bundle.Name), bundle.Version, lf.BundleSHA256); err != nil {
 				return err
@@ -922,6 +925,27 @@ func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bu
 		}
 		return stageBundle(rulesDir, bundle.Name, bundleData, sigData, lf)
 	})
+}
+
+func checkInstalledBundleTier(destDir string, candidate *domrules.Bundle) error {
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(destDir, "bundle.yaml")))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading installed bundle identity: %w", err)
+	}
+	if len(data) > domrules.MaxBundleFileSize {
+		return fmt.Errorf("reading installed bundle identity: bundle file exceeds maximum size (%d bytes)", domrules.MaxBundleFileSize)
+	}
+	installed, err := domrules.ParseBundle(data)
+	if err != nil {
+		return fmt.Errorf("parsing installed bundle identity: %w", err)
+	}
+	if installed.FormatVersion >= 2 && candidate.FormatVersion >= 2 && installed.Tier != candidate.Tier {
+		return fmt.Errorf("install %s: tier change from %q to %q is not allowed for an installed bundle name", candidate.Name, installed.Tier, candidate.Tier)
+	}
+	return nil
 }
 
 // checkExistingInstall checks if a bundle is already installed.
@@ -1238,15 +1262,6 @@ func updateBundle(opts updateBundleOpts) error {
 
 	_, _ = fmt.Fprintf(opts.Out, "Updated %s: v%s -> v%s\n", opts.Name, lf.InstalledVersion, bundle.Version)
 	return nil
-}
-
-func resetFreshnessStateAfterBundleChange(rulesDir string) error {
-	return domrules.WithFreshnessLock(rulesDir, func() error {
-		if err := domrules.ResetFreshnessStateFromInstalledBundles(rulesDir); err != nil {
-			return fmt.Errorf("updating rules freshness state: %w", err)
-		}
-		return nil
-	})
 }
 
 func rulesResetFreshnessCmd() *cobra.Command {

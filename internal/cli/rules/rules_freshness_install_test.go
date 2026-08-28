@@ -116,7 +116,7 @@ func updateRemoteForFreshnessTest(t *testing.T, rulesDir string) error {
 func TestStageRemoteBundleWithFreshnessRejectsVersionRollbackBeforeStaging(t *testing.T) {
 	rulesDir := t.TempDir()
 	name := "community-rules"
-	original := []byte("newer installed bytes")
+	original := []byte(v2NamedInstallBundleYAML(name, "2026.08.0", domrules.TierCommunity, 10, "test-signer"))
 	writeInstalledBundleForFreshnessTest(t, rulesDir, name, original)
 	if err := domrules.SaveFreshnessState(rulesDir, &domrules.FreshnessState{
 		HighestSeen: map[string]uint64{"community:" + name: 10},
@@ -143,7 +143,7 @@ func TestStageRemoteBundleWithFreshnessRejectsVersionRollbackBeforeStaging(t *te
 func TestStageRemoteBundleWithFreshnessRejectsFormatRollbackBeforeStaging(t *testing.T) {
 	rulesDir := t.TempDir()
 	name := "community-rules"
-	original := []byte("v2 installed bytes")
+	original := []byte(v2NamedInstallBundleYAML(name, "2026.08.0", domrules.TierCommunity, 10, "test-signer"))
 	writeInstalledBundleForFreshnessTest(t, rulesDir, name, original)
 	if err := domrules.SaveFreshnessState(rulesDir, &domrules.FreshnessState{
 		HighestSeen: map[string]uint64{"community:" + name: 10},
@@ -187,7 +187,7 @@ func TestStageRemoteBundleWithFreshnessRejectsExistingInstallAndV2Metadata(t *te
 		rulesDir := t.TempDir()
 		bundle, lock := remoteFreshnessCandidate("community-rules", 1, 0)
 		bundle.Version = lock.InstalledVersion
-		data := []byte("same candidate")
+		data := []byte(v1NamedInstallBundleYAML(bundle.Name, bundle.Version))
 		if err := stageRemoteBundleWithFreshness(rulesDir, bundle, data, nil, lock, true); err != nil {
 			t.Fatalf("first stage: %v", err)
 		}
@@ -227,6 +227,34 @@ func TestStageRemoteBundleWithFreshnessRejectsExistingInstallAndV2Metadata(t *te
 			}
 		})
 	}
+}
+
+func TestStageRemoteBundleWithFreshnessRejectsCrossTierReplacement(t *testing.T) {
+	const signer = "test-signer"
+	rulesDir := t.TempDir()
+	communityData := []byte(v2InstallBundleYAML("2026.08.0", 10, signer))
+	community, err := domrules.ParseBundle(communityData)
+	if err != nil {
+		t.Fatalf("parse community bundle: %v", err)
+	}
+	_, communityLock := remoteFreshnessCandidate(testBundleName, 2, 10)
+	communityLock.InstalledVersion = community.Version
+	if err := stageRemoteBundleWithFreshness(rulesDir, community, communityData, []byte("signature"), communityLock, false); err != nil {
+		t.Fatalf("stage community bundle: %v", err)
+	}
+
+	standardData := []byte(strings.Replace(v2InstallBundleYAML("2026.07.0", 1, signer), "tier: community", "tier: standard", 1))
+	standard, err := domrules.ParseBundle(standardData)
+	if err != nil {
+		t.Fatalf("parse standard bundle: %v", err)
+	}
+	_, standardLock := remoteFreshnessCandidate(testBundleName, 2, 1)
+	standardLock.InstalledVersion = standard.Version
+	err = stageRemoteBundleWithFreshness(rulesDir, standard, standardData, []byte("signature"), standardLock, false)
+	if err == nil || !strings.Contains(err.Error(), "tier change") {
+		t.Fatalf("cross-tier stage error = %v, want tier change rejection", err)
+	}
+	assertInstalledBundleBytes(t, rulesDir, testBundleName, communityData)
 }
 
 func TestStageBundleFreshnessRejectsCorruptPersistedState(t *testing.T) {
@@ -363,28 +391,36 @@ func signInstallBundle(data []byte, privateKey ed25519.PrivateKey) []byte {
 }
 
 func v2InstallBundleYAML(version string, monotonic uint64, fingerprint string) string {
+	return v2NamedInstallBundleYAML(testBundleName, version, domrules.TierCommunity, monotonic, fingerprint)
+}
+
+func v2NamedInstallBundleYAML(name, version, tier string, monotonic uint64, fingerprint string) string {
 	return fmt.Sprintf(`format_version: 2
-name: test-bundle
+name: %s
 version: %q
 author: test
 description: Test bundle
 min_pipelock: "1.0.0"
-tier: community
+tier: %s
 monotonic_version: %d
 published_at: "2026-08-27T00:00:00Z"
 expires_at: "2030-01-01T00:00:00Z"
 key_id: %q
 rules: []
-`, version, monotonic, fingerprint)
+`, name, version, tier, monotonic, fingerprint)
 }
 
 func v1InstallBundleYAML(version string) string {
+	return v1NamedInstallBundleYAML(testBundleName, version)
+}
+
+func v1NamedInstallBundleYAML(name, version string) string {
 	return fmt.Sprintf(`format_version: 1
-name: test-bundle
+name: %s
 version: %q
 author: test
 description: Test bundle
 min_pipelock: "1.0.0"
 rules: []
-`, version)
+`, name, version)
 }

@@ -41,6 +41,8 @@ def stream_events(
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
 
         observed_at = clock()
         if first_event_at is None:

@@ -15,6 +15,7 @@ class StreamGoTestJSONTest(unittest.TestCase):
         readings = iter([10.0, 12.5, 15.0, 16.0])
         lines = [
             "not json\n",
+            "null\n",
             json.dumps({"Action": "start", "Package": "example.com/proxy"}) + "\n",
             json.dumps(
                 {

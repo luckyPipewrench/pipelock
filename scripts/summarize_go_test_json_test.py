@@ -175,6 +175,7 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         results = summarize_go_test_json.parse_events(
             [
                 "not json",
+                "null",
                 json.dumps(
                     {
                         "Action": "pass",

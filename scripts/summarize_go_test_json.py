@@ -43,6 +43,8 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
 
         package = event.get("Package")
         if not isinstance(package, str) or package == "":

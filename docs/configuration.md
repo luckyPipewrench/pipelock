@@ -2574,7 +2574,8 @@ pipelock sandbox --dry-run --json -- python agent.py
 |-------------|--------|-------|
 | Bare metal / VM (Linux, amd64) | 3/3 | Full containment: Landlock + seccomp + network namespace |
 | Bare metal / VM (Linux, non-amd64) | 2/3 | Landlock + network namespace. Seccomp reports unavailable; see below. |
-| Containers (`--best-effort`) | 2/3 | Landlock + seccomp. Network via HTTP_PROXY + NetworkPolicy. |
+| Containers, amd64 (`--best-effort`) | 2/3 | Landlock + seccomp. Network via HTTP_PROXY + NetworkPolicy. |
+| Containers, non-amd64 (`--best-effort`) | 1/3 | Landlock only. Seccomp reports unavailable; network via HTTP_PROXY + NetworkPolicy. |
 | macOS | sandbox-exec | Apple SBPL profiles for filesystem + network restriction |
 
 **Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged on bare metal. macOS 13+ for sandbox-exec. Containers may need `--best-effort` if default seccomp blocks `CLONE_NEWUSER`.

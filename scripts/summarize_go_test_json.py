@@ -172,7 +172,7 @@ def print_summary(
                 file=out,
             )
             for line in test_result.output:
-                print(line, file=out)
+                print(escape_terminal_text(line), file=out)
 
     package_output_failures = [
         (package, result) for package, result in failures if result.output
@@ -182,7 +182,7 @@ def print_summary(
         for package, result in package_output_failures:
             print(f"--- {escape_terminal_text(package)} ---", file=out)
             for line in result.output:
-                print(line, file=out)
+                print(escape_terminal_text(line), file=out)
 
 
 def has_failed_packages(results: dict[str, PackageResult]) -> bool:

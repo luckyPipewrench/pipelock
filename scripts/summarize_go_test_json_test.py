@@ -257,6 +257,50 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertIn("unit\\u001b[0m", summary)
         self.assertIn("example.com/\\u001b[2Jproxy TestSlow\\u000aspoof", summary)
 
+    def test_escapes_terminal_controls_in_failure_output(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFailure",
+                    "Output": "test output\x1b[2J\rspoof\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFailure",
+                    "Elapsed": 1.0,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/proxy",
+                    "Output": "package output\x1b[0m\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Elapsed": 1.0,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+
+        summary = out.getvalue()
+        self.assertNotIn("\x1b", summary)
+        self.assertNotIn("\r", summary)
+        self.assertIn("test output\\u001b[2J\\u000dspoof", summary)
+        self.assertIn("package output\\u001b[0m", summary)
+
     def test_invalid_elapsed_values_fall_back_without_stopping_summary(self):
         lines = [
             json.dumps(

@@ -323,7 +323,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	lockPath := filepath.Join(bundleDir, lockFilename)
 
 	// Read and size-check bundle.yaml.
-	data, err := readBundleFile(bundlePath)
+	data, err := ReadBundleFile(bundlePath)
 	if err != nil {
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: classifyBundleFileReadError(err)})
 		return
@@ -522,8 +522,8 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	ctx.Result.Loaded = append(ctx.Result.Loaded, loaded)
 }
 
-// readBundleFile reads bundle.yaml with a size check.
-func readBundleFile(path string) ([]byte, error) {
+// ReadBundleFile reads a bundle artifact with a stat-first size check.
+func ReadBundleFile(path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat bundle file: %w", err)

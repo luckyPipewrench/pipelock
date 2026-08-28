@@ -221,6 +221,14 @@ func TestBundleTransactionRedoRejectsInvalidInputsAndArtifacts(t *testing.T) {
 	if _, err := WriteBundleTransactionRedo(t.TempDir(), &BundleTransactionRedo{}); err == nil {
 		t.Fatal("invalid redo accepted")
 	}
+	for _, name := range []string{".", ".."} {
+		invalid := *redo
+		invalid.BundleName = name
+		invalid.Candidate.Name = name
+		if _, err := WriteBundleTransactionRedo(t.TempDir(), &invalid); err == nil {
+			t.Fatalf("reserved bundle name %q accepted", name)
+		}
+	}
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, bundle.Name), 0o750); err != nil {
 		t.Fatalf("create prior: %v", err)
@@ -466,6 +474,24 @@ func TestRecoverBundleTransactionsRejectsMalformedRecordLayouts(t *testing.T) {
 				t.Fatalf("RecoverBundleTransactions error = %v, want fail-closed rejection", err)
 			}
 		})
+	}
+}
+
+func TestRecoverBundleTransactionsRemovesAbandonedAtomicTempFile(t *testing.T) {
+	rulesDir := t.TempDir()
+	dir := filepath.Join(rulesDir, ".pipelock-state", bundleTransactionDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, ".tmp-abandoned")
+	if err := os.WriteFile(tmp, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverBundleTransactions(rulesDir); err != nil {
+		t.Fatalf("RecoverBundleTransactions: %v", err)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("abandoned temp file remains: %v", err)
 	}
 }
 

@@ -7,10 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -135,7 +137,7 @@ func RecoverBundleTransactionsLocked(rulesDir string) error {
 	dir := filepath.Join(rulesDir, ".pipelock-state", bundleTransactionDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		// A non-directory .pipelock-state cannot contain a redo record. Leave
@@ -148,6 +150,12 @@ func RecoverBundleTransactionsLocked(rulesDir string) error {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), ".tmp-") {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove abandoned bundle transaction temp file %q: %w", entry.Name(), err)
+			}
+			continue
+		}
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			return fmt.Errorf("invalid bundle transaction artifact %q (fail-closed)", entry.Name())
 		}
@@ -229,12 +237,9 @@ func recoverBundleTransactionRedo(rulesDir, recordPath string, redo *BundleTrans
 }
 
 func validateActiveCandidate(dest string, redo *BundleTransactionRedo) error {
-	data, err := os.ReadFile(filepath.Clean(filepath.Join(dest, bundleFilename)))
+	data, err := ReadBundleFile(filepath.Join(dest, bundleFilename))
 	if err != nil {
 		return fmt.Errorf("read candidate bundle: %w", err)
-	}
-	if len(data) > MaxBundleFileSize {
-		return fmt.Errorf("candidate bundle exceeds maximum size")
 	}
 	if sha256Hex(data) != redo.Candidate.SHA256 {
 		return fmt.Errorf("candidate digest mismatch")
@@ -288,7 +293,7 @@ func readBundleTransactionRedo(path string) (*BundleTransactionRedo, error) {
 }
 
 func validateRedoShape(redo *BundleTransactionRedo) error {
-	if redo.Version != bundleTransactionVersion || redo.BundleName == "" || filepath.Base(redo.BundleName) != redo.BundleName {
+	if redo.Version != bundleTransactionVersion || redo.BundleName == "" || redo.BundleName == "." || redo.BundleName == ".." || filepath.Base(redo.BundleName) != redo.BundleName {
 		return fmt.Errorf("unsupported version or invalid bundle name")
 	}
 	if redo.Candidate.Lock == nil || redo.Candidate.Name != redo.BundleName || redo.Candidate.SHA256 == "" || (redo.Candidate.SignaturePresent && redo.Candidate.SignatureSHA256 == "") {
@@ -303,17 +308,14 @@ func bundleTransactionPath(rulesDir, bundleName string) string {
 }
 
 func bundleArtifactFingerprint(dir string) (*bundleArtifact, error) {
-	bundleData, err := os.ReadFile(filepath.Clean(filepath.Join(dir, bundleFilename)))
+	bundleData, err := ReadBundleFile(filepath.Join(dir, bundleFilename))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if len(bundleData) > MaxBundleFileSize {
-		return nil, fmt.Errorf("bundle exceeds maximum size")
-	}
-	lockData, err := os.ReadFile(filepath.Clean(filepath.Join(dir, lockFilename)))
+	lockData, err := ReadBundleFile(filepath.Join(dir, lockFilename))
 	if err != nil {
 		return nil, fmt.Errorf("read bundle lock: %w", err)
 	}
@@ -357,6 +359,8 @@ func mergeFreshnessState(dst, src *FreshnessState) {
 func cloneLockFile(lock *LockFile) *LockFile { copyLock := *lock; return &copyLock }
 
 func lockFilesEqual(a, b *LockFile) bool {
+	// LockFile must remain composed only of comparable fields while equality
+	// uses a direct struct comparison.
 	return a != nil && b != nil && *a == *b
 }
 

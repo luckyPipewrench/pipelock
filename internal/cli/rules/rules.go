@@ -401,7 +401,7 @@ func validateBundlePath(rulesDir, name string) (string, error) {
 	if err != nil {
 		// If the directory doesn't exist yet (install path), just verify the
 		// cleaned name doesn't escape. EvalSymlinks fails for non-existent paths.
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return bundleDir, nil
 		}
 		return "", fmt.Errorf("resolving bundle directory: %w", err)
@@ -973,15 +973,12 @@ func commitFreshnessStateWithSave(rulesDir string, next, previous *domrules.Fres
 }
 
 func checkInstalledBundleIdentity(destDir string, candidate *domrules.Bundle) error {
-	data, err := os.ReadFile(filepath.Clean(filepath.Join(destDir, "bundle.yaml")))
+	data, err := domrules.ReadBundleFile(filepath.Join(destDir, "bundle.yaml"))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("reading installed bundle identity: %w", err)
-	}
-	if len(data) > domrules.MaxBundleFileSize {
-		return fmt.Errorf("reading installed bundle identity: bundle file exceeds maximum size (%d bytes)", domrules.MaxBundleFileSize)
 	}
 	installed, err := domrules.ParseBundle(data)
 	if err != nil {

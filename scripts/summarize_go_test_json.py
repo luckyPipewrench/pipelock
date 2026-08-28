@@ -9,11 +9,29 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import sys
 from dataclasses import dataclass, field
 
 
 FAILED_OUTPUT_LIMIT = 80
+
+
+def escape_terminal_text(value: str) -> str:
+    return "".join(
+        character if character.isprintable() else f"\\u{ord(character):04x}"
+        for character in value
+    )
+
+
+def normalize_elapsed(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    try:
+        elapsed = float(value)
+    except OverflowError:
+        return 0.0
+    return elapsed if math.isfinite(elapsed) and elapsed > 0 else 0.0
 
 
 @dataclass
@@ -43,6 +61,8 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
 
         package = event.get("Package")
         if not isinstance(package, str) or package == "":
@@ -66,16 +86,14 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
             continue
 
         if action in {"pass", "fail", "skip"}:
-            elapsed = event.get("Elapsed", 0.0)
+            elapsed = normalize_elapsed(event.get("Elapsed", 0.0))
             if test_result is not None:
                 test_result.action = action
-                if isinstance(elapsed, (int, float)):
-                    test_result.elapsed = float(elapsed)
+                test_result.elapsed = elapsed
                 continue
 
             result.action = action
-            if isinstance(elapsed, (int, float)):
-                result.elapsed = float(elapsed)
+            result.elapsed = elapsed
 
     return results
 
@@ -88,7 +106,12 @@ def format_duration(seconds: float) -> str:
 
 
 def print_summary(
-    results: dict[str, PackageResult], *, label: str, top: int, out: object = sys.stdout
+    results: dict[str, PackageResult],
+    *,
+    label: str,
+    top: int,
+    top_tests: int = 25,
+    out: object = sys.stdout,
 ) -> None:
     packages = [
         (package, result)
@@ -98,14 +121,37 @@ def print_summary(
     packages.sort(key=lambda item: item[1].elapsed, reverse=True)
 
     total = sum(result.elapsed for _, result in packages)
-    print(f"Go test package timing ({label})", file=out)
+    print(f"Go test package timing ({escape_terminal_text(label)})", file=out)
     print(f"packages: {len(packages)}; summed package time: {format_duration(total)}", file=out)
     print(f"slowest {min(top, len(packages))} packages:", file=out)
     for package, result in packages[:top]:
         print(
-            f"  {format_duration(result.elapsed):>8}  {result.action:<4}  {package}",
+            f"  {format_duration(result.elapsed):>8}  {result.action:<4}  "
+            f"{escape_terminal_text(package)}",
             file=out,
         )
+
+    tests = [
+        (package, test, test_result)
+        for package, result in packages
+        for test, test_result in result.tests.items()
+        if test_result.action in {"pass", "fail", "skip"}
+    ]
+    tests.sort(key=lambda item: item[2].elapsed, reverse=True)
+    if tests:
+        print(f"slowest {min(top_tests, len(tests))} tests:", file=out)
+        print(
+            "  elapsed values can overlap for parallel tests; they are wall-clock "
+            "attribution, not exclusive CPU time",
+            file=out,
+        )
+        for package, test, test_result in tests[:top_tests]:
+            print(
+                f"  {format_duration(test_result.elapsed):>8}  "
+                f"{test_result.action:<4}  {escape_terminal_text(package)} "
+                f"{escape_terminal_text(test)}",
+                file=out,
+            )
 
     failures = [(package, result) for package, result in packages if result.action == "fail"]
     if not failures:
@@ -121,11 +167,12 @@ def print_summary(
         print("failed tests:", file=out)
         for package, test, test_result in all_failed_tests:
             print(
-                f"--- {package} {test} ({format_duration(test_result.elapsed)}) ---",
+                f"--- {escape_terminal_text(package)} {escape_terminal_text(test)} "
+                f"({format_duration(test_result.elapsed)}) ---",
                 file=out,
             )
             for line in test_result.output:
-                print(line, file=out)
+                print(escape_terminal_text(line), file=out)
 
     package_output_failures = [
         (package, result) for package, result in failures if result.output
@@ -133,9 +180,9 @@ def print_summary(
     if package_output_failures:
         print("failed package output tails:", file=out)
         for package, result in package_output_failures:
-            print(f"--- {package} ---", file=out)
+            print(f"--- {escape_terminal_text(package)} ---", file=out)
             for line in result.output:
-                print(line, file=out)
+                print(escape_terminal_text(line), file=out)
 
 
 def has_failed_packages(results: dict[str, PackageResult]) -> bool:
@@ -148,13 +195,18 @@ def main() -> int:
     )
     parser.add_argument("--label", default="go test", help="label printed in the summary")
     parser.add_argument("--top", type=int, default=20, help="number of slow packages to print")
+    parser.add_argument(
+        "--top-tests", type=int, default=25, help="number of slow tests to print"
+    )
     args = parser.parse_args()
 
     if args.top < 1:
         parser.error("--top must be at least 1")
+    if args.top_tests < 1:
+        parser.error("--top-tests must be at least 1")
 
     results = parse_events(sys.stdin.readlines())
-    print_summary(results, label=args.label, top=args.top)
+    print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
     if has_failed_packages(results):
         return 1
     return 0

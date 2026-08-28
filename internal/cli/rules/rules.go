@@ -783,11 +783,11 @@ func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, d
 		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK {
 			return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
 		}
+		previous := cloneFreshnessState(state)
 		domrules.RecordFormat(state, bundle.Name, bundle.FormatVersion)
-		if err := domrules.SaveFreshnessState(rulesDir, state); err != nil {
-			return fmt.Errorf("updating rules freshness state: %w", err)
-		}
-		return stageBundle(rulesDir, bundle.Name, data, nil, lf)
+		return stageBundleTransaction(rulesDir, bundle.Name, data, nil, lf, func() error {
+			return commitFreshnessState(rulesDir, state, previous)
+		})
 	})
 }
 
@@ -907,6 +907,7 @@ func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bu
 		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK {
 			return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
 		}
+		previous := cloneFreshnessState(state)
 		if bundle.FormatVersion >= 2 {
 			if err := domrules.CheckTierKeyBinding(bundle, lf.SignerFingerprint, nil); err != nil {
 				return fmt.Errorf("install %s: %w", bundle.Name, err)
@@ -920,11 +921,34 @@ func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bu
 			domrules.RecordVersion(state, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
 		}
 		domrules.RecordFormat(state, bundle.Name, bundle.FormatVersion)
-		if err := domrules.SaveFreshnessState(rulesDir, state); err != nil {
-			return fmt.Errorf("updating rules freshness state: %w", err)
-		}
-		return stageBundle(rulesDir, bundle.Name, bundleData, sigData, lf)
+		return stageBundleTransaction(rulesDir, bundle.Name, bundleData, sigData, lf, func() error {
+			return commitFreshnessState(rulesDir, state, previous)
+		})
 	})
+}
+
+func cloneFreshnessState(state *domrules.FreshnessState) *domrules.FreshnessState {
+	clone := &domrules.FreshnessState{
+		HighestSeen: make(map[string]uint64, len(state.HighestSeen)),
+		FormatFloor: make(map[string]int, len(state.FormatFloor)),
+	}
+	for key, value := range state.HighestSeen {
+		clone.HighestSeen[key] = value
+	}
+	for key, value := range state.FormatFloor {
+		clone.FormatFloor[key] = value
+	}
+	return clone
+}
+
+func commitFreshnessState(rulesDir string, next, previous *domrules.FreshnessState) error {
+	if err := domrules.SaveFreshnessState(rulesDir, next); err != nil {
+		if restoreErr := domrules.SaveFreshnessState(rulesDir, previous); restoreErr != nil {
+			return fmt.Errorf("updating and restoring rules freshness state: %w", errors.Join(err, restoreErr))
+		}
+		return fmt.Errorf("updating rules freshness state: %w", err)
+	}
+	return nil
 }
 
 func checkInstalledBundleTier(destDir string, candidate *domrules.Bundle) error {
@@ -974,6 +998,10 @@ func checkExistingInstall(destDir, version, digest string) error {
 // a bundle without matching provenance. If an existing bundle is present, it is
 // moved to a backup before the swap and removed only after success.
 func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte, lf *domrules.LockFile) error {
+	return stageBundleTransaction(rulesDir, bundleName, bundleData, sigData, lf, nil)
+}
+
+func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []byte, lf *domrules.LockFile, commit func() error) error {
 	destDir := filepath.Join(rulesDir, bundleName)
 
 	// Create temp staging directory (MkdirTemp creates 0o700, tighten to 0o750).
@@ -1032,6 +1060,18 @@ func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte, lf *do
 			_ = os.Rename(backupDir, destDir)
 		}
 		return fmt.Errorf("installing bundle (rename): %w", err)
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			rollbackErr := os.RemoveAll(destDir)
+			if rollbackErr == nil && backupDir != "" {
+				rollbackErr = os.Rename(backupDir, destDir)
+			}
+			if rollbackErr != nil {
+				return fmt.Errorf("committing and restoring installed bundle: %w", errors.Join(err, rollbackErr))
+			}
+			return fmt.Errorf("committing bundle: %w", err)
+		}
 	}
 
 	// Remove backup after successful swap.

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -255,6 +256,34 @@ func TestStageRemoteBundleWithFreshnessRejectsCrossTierReplacement(t *testing.T)
 		t.Fatalf("cross-tier stage error = %v, want tier change rejection", err)
 	}
 	assertInstalledBundleBytes(t, rulesDir, testBundleName, communityData)
+}
+
+func TestStageBundleTransactionRestoresInstalledBytesWhenCommitFails(t *testing.T) {
+	rulesDir := t.TempDir()
+	const name = "transaction-test"
+	original := []byte("original bundle bytes")
+	if err := stageBundle(rulesDir, name, original, nil, &domrules.LockFile{InstalledVersion: "1"}); err != nil {
+		t.Fatalf("stage original bundle: %v", err)
+	}
+	state := &domrules.FreshnessState{HighestSeen: map[string]uint64{"community:" + name: 4}, FormatFloor: map[string]int{name: 2}}
+	if err := domrules.SaveFreshnessState(rulesDir, state); err != nil {
+		t.Fatalf("save original freshness state: %v", err)
+	}
+
+	err := stageBundleTransaction(rulesDir, name, []byte("replacement bundle bytes"), nil, &domrules.LockFile{InstalledVersion: "2"}, func() error {
+		return errors.New("forced freshness commit failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "forced freshness commit failure") {
+		t.Fatalf("stageBundleTransaction error = %v, want forced commit failure", err)
+	}
+	assertInstalledBundleBytes(t, rulesDir, name, original)
+	got, loadErr := domrules.LoadFreshnessState(rulesDir)
+	if loadErr != nil {
+		t.Fatalf("load freshness state: %v", loadErr)
+	}
+	if got.HighestSeen["community:"+name] != 4 || got.FormatFloor[name] != 2 {
+		t.Fatalf("freshness state changed after failed commit: %+v", got)
+	}
 }
 
 func TestStageBundleFreshnessRejectsCorruptPersistedState(t *testing.T) {

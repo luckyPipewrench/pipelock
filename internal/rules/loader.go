@@ -40,6 +40,7 @@ type LoadOptions struct {
 	AllowUnversionedLoad bool                // load min_pipelock bundles on a build with no released version
 	AllowStale           bool                // accept expired bundles with warning
 	TierKeyMapping       map[string]string   // tier → expected signing key fingerprint
+	saveFreshnessState   func(string, *FreshnessState) error
 }
 
 // StandardBundleName is the reserved name for the official standard pack.
@@ -255,9 +256,13 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		}
 
 		// Save updated freshness state if any v2+ bundles were loaded.
+		saveFreshness := opts.saveFreshnessState
+		if saveFreshness == nil {
+			saveFreshness = SaveFreshnessState
+		}
 		for _, lb := range result.Loaded {
 			if lb.MonotonicVersion > 0 {
-				persistLoadedFreshness(rulesDir, freshnessState, result, SaveFreshnessState)
+				persistLoadedFreshness(rulesDir, freshnessState, result, saveFreshness)
 				break
 			}
 		}

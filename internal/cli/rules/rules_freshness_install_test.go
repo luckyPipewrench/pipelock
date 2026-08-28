@@ -244,7 +244,7 @@ func TestStageRemoteBundleWithFreshnessRejectsCrossTierReplacement(t *testing.T)
 		t.Fatalf("stage community bundle: %v", err)
 	}
 
-	standardData := []byte(strings.Replace(v2InstallBundleYAML("2026.07.0", 1, signer), "tier: community", "tier: standard", 1))
+	standardData := []byte(v2NamedInstallBundleYAML(testBundleName, "2026.07.0", domrules.TierStandard, 1, signer))
 	standard, err := domrules.ParseBundle(standardData)
 	if err != nil {
 		t.Fatalf("parse standard bundle: %v", err)
@@ -270,8 +270,19 @@ func TestStageBundleTransactionRestoresInstalledBytesWhenCommitFails(t *testing.
 		t.Fatalf("save original freshness state: %v", err)
 	}
 
+	next := &domrules.FreshnessState{HighestSeen: map[string]uint64{"community:" + name: 5}, FormatFloor: map[string]int{name: 2}}
+	saveCalls := 0
 	err := stageBundleTransaction(rulesDir, name, []byte("replacement bundle bytes"), nil, &domrules.LockFile{InstalledVersion: "2"}, func() error {
-		return errors.New("forced freshness commit failure")
+		return commitFreshnessStateWithSave(rulesDir, next, state, func(dir string, candidate *domrules.FreshnessState) error {
+			saveCalls++
+			if saveErr := domrules.SaveFreshnessState(dir, candidate); saveErr != nil {
+				return saveErr
+			}
+			if saveCalls == 1 {
+				return errors.New("forced freshness commit failure")
+			}
+			return nil
+		})
 	})
 	if err == nil || !strings.Contains(err.Error(), "forced freshness commit failure") {
 		t.Fatalf("stageBundleTransaction error = %v, want forced commit failure", err)
@@ -283,6 +294,30 @@ func TestStageBundleTransactionRestoresInstalledBytesWhenCommitFails(t *testing.
 	}
 	if got.HighestSeen["community:"+name] != 4 || got.FormatFloor[name] != 2 {
 		t.Fatalf("freshness state changed after failed commit: %+v", got)
+	}
+	if saveCalls != 2 {
+		t.Fatalf("freshness save calls = %d, want failed commit plus restoration", saveCalls)
+	}
+}
+
+func TestRecoverBundleTransactionPrefersPriorBundle(t *testing.T) {
+	rulesDir := t.TempDir()
+	dest := filepath.Join(rulesDir, "recovery-test")
+	if err := os.MkdirAll(dest+".bak", 0o750); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dest+".bak", "bundle.yaml"), []byte("prior"), 0o600); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+	if err := os.MkdirAll(dest+".failed", 0o750); err != nil {
+		t.Fatalf("create failed candidate: %v", err)
+	}
+	if err := recoverBundleTransaction(dest); err != nil {
+		t.Fatalf("recoverBundleTransaction: %v", err)
+	}
+	assertInstalledBundleBytes(t, rulesDir, "recovery-test", []byte("prior"))
+	if _, err := os.Stat(dest + ".failed"); !os.IsNotExist(err) {
+		t.Fatalf("failed candidate remains after recovery: %v", err)
 	}
 }
 
@@ -321,7 +356,7 @@ func TestStageBundleFreshnessRejectsCorruptPersistedState(t *testing.T) {
 func TestStageLocalBundleWithFormatFloorRejectsV1AfterV2(t *testing.T) {
 	rulesDir := t.TempDir()
 	name := "third-party-rules"
-	original := []byte("v2 installed bytes")
+	original := []byte(v2NamedInstallBundleYAML(name, "2026.08.0", domrules.TierCommunity, 8, "test-signer"))
 	writeInstalledBundleForFreshnessTest(t, rulesDir, name, original)
 	if err := domrules.SaveFreshnessState(rulesDir, &domrules.FreshnessState{
 		HighestSeen: map[string]uint64{"community:" + name: 8},
@@ -337,6 +372,40 @@ func TestStageLocalBundleWithFormatFloorRejectsV1AfterV2(t *testing.T) {
 		t.Fatalf("stageLocalBundleWithFormatFloor error = %v, want format rollback", err)
 	}
 	assertInstalledBundleBytes(t, rulesDir, name, original)
+}
+
+func TestFreshnessStagingRejectsInstalledV2DowngradeWithoutState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stage func(string, *domrules.Bundle, []byte, *domrules.LockFile) error
+	}{
+		{
+			name: "local",
+			stage: func(rulesDir string, bundle *domrules.Bundle, data []byte, lock *domrules.LockFile) error {
+				lock.Unsigned = true
+				return stageLocalBundleWithFormatFloor(rulesDir, bundle, data, lock)
+			},
+		},
+		{
+			name: "remote",
+			stage: func(rulesDir string, bundle *domrules.Bundle, data []byte, lock *domrules.LockFile) error {
+				return stageRemoteBundleWithFreshness(rulesDir, bundle, data, nil, lock, false)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rulesDir := t.TempDir()
+			installed := []byte(v2NamedInstallBundleYAML("third-party-rules", "2026.08.0", domrules.TierCommunity, 8, "test-signer"))
+			writeInstalledBundleForFreshnessTest(t, rulesDir, "third-party-rules", installed)
+			candidate, lock := remoteFreshnessCandidate("third-party-rules", 1, 0)
+			candidate.Version = "2026.07.0"
+			err := tc.stage(rulesDir, candidate, []byte(v1NamedInstallBundleYAML(candidate.Name, candidate.Version)), lock)
+			if err == nil || !strings.Contains(err.Error(), "format rollback") {
+				t.Fatalf("stage error = %v, want installed-format rollback", err)
+			}
+			assertInstalledBundleBytes(t, rulesDir, candidate.Name, installed)
+		})
+	}
 }
 
 func TestInstallLocalRejectsUnsignedV2WithoutRecordingFloor(t *testing.T) {

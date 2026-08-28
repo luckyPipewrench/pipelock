@@ -776,6 +776,9 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 
 func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, data []byte, lf *domrules.LockFile) error {
 	return domrules.WithFreshnessLock(rulesDir, func() error {
+		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
+			return err
+		}
 		state, err := domrules.LoadFreshnessState(rulesDir)
 		if err != nil {
 			return fmt.Errorf("loading rules freshness state: %w", err)
@@ -891,7 +894,7 @@ func installRemote(opts installRemoteOptions) error {
 // the install, while the older installed bundle cannot erase the new floor.
 func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bundleData, sigData []byte, lf *domrules.LockFile, checkInstalled bool) error {
 	return domrules.WithFreshnessLock(rulesDir, func() error {
-		if err := checkInstalledBundleTier(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
+		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
 			return err
 		}
 		if checkInstalled {
@@ -942,8 +945,12 @@ func cloneFreshnessState(state *domrules.FreshnessState) *domrules.FreshnessStat
 }
 
 func commitFreshnessState(rulesDir string, next, previous *domrules.FreshnessState) error {
-	if err := domrules.SaveFreshnessState(rulesDir, next); err != nil {
-		if restoreErr := domrules.SaveFreshnessState(rulesDir, previous); restoreErr != nil {
+	return commitFreshnessStateWithSave(rulesDir, next, previous, domrules.SaveFreshnessState)
+}
+
+func commitFreshnessStateWithSave(rulesDir string, next, previous *domrules.FreshnessState, save func(string, *domrules.FreshnessState) error) error {
+	if err := save(rulesDir, next); err != nil {
+		if restoreErr := save(rulesDir, previous); restoreErr != nil {
 			return fmt.Errorf("updating and restoring rules freshness state: %w", errors.Join(err, restoreErr))
 		}
 		return fmt.Errorf("updating rules freshness state: %w", err)
@@ -951,7 +958,7 @@ func commitFreshnessState(rulesDir string, next, previous *domrules.FreshnessSta
 	return nil
 }
 
-func checkInstalledBundleTier(destDir string, candidate *domrules.Bundle) error {
+func checkInstalledBundleIdentity(destDir string, candidate *domrules.Bundle) error {
 	data, err := os.ReadFile(filepath.Clean(filepath.Join(destDir, "bundle.yaml")))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -968,6 +975,9 @@ func checkInstalledBundleTier(destDir string, candidate *domrules.Bundle) error 
 	}
 	if installed.FormatVersion >= 2 && candidate.FormatVersion >= 2 && installed.Tier != candidate.Tier {
 		return fmt.Errorf("install %s: tier change from %q to %q is not allowed for an installed bundle name", candidate.Name, installed.Tier, candidate.Tier)
+	}
+	if installed.FormatVersion > candidate.FormatVersion {
+		return fmt.Errorf("install %s: format rollback from installed format_version %d to %d", candidate.Name, installed.FormatVersion, candidate.FormatVersion)
 	}
 	return nil
 }
@@ -1003,6 +1013,9 @@ func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte, lf *do
 
 func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []byte, lf *domrules.LockFile, commit func() error) error {
 	destDir := filepath.Join(rulesDir, bundleName)
+	if err := recoverBundleTransaction(destDir); err != nil {
+		return err
+	}
 
 	// Create temp staging directory (MkdirTemp creates 0o700, tighten to 0o750).
 	tmpDir, err := os.MkdirTemp(rulesDir, ".stage-"+bundleName+"-*")
@@ -1063,10 +1076,7 @@ func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []b
 	}
 	if commit != nil {
 		if err := commit(); err != nil {
-			rollbackErr := os.RemoveAll(destDir)
-			if rollbackErr == nil && backupDir != "" {
-				rollbackErr = os.Rename(backupDir, destDir)
-			}
+			rollbackErr := rollbackBundleTransaction(destDir, backupDir)
 			if rollbackErr != nil {
 				return fmt.Errorf("committing and restoring installed bundle: %w", errors.Join(err, rollbackErr))
 			}
@@ -1080,6 +1090,51 @@ func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []b
 	}
 
 	success = true
+	return nil
+}
+
+func rollbackBundleTransaction(destDir, backupDir string) error {
+	failedDir := destDir + ".failed"
+	_ = os.RemoveAll(failedDir)
+	if err := os.Rename(destDir, failedDir); err != nil {
+		return fmt.Errorf("preserving failed candidate: %w", err)
+	}
+	if backupDir == "" {
+		return os.RemoveAll(failedDir)
+	}
+	if err := os.Rename(backupDir, destDir); err != nil {
+		if recoveryErr := os.Rename(failedDir, destDir); recoveryErr != nil {
+			return errors.Join(fmt.Errorf("restoring prior bundle: %w", err), fmt.Errorf("restoring failed candidate: %w", recoveryErr))
+		}
+		return fmt.Errorf("restoring prior bundle: %w", err)
+	}
+	return os.RemoveAll(failedDir)
+}
+
+func recoverBundleTransaction(destDir string) error {
+	if _, err := os.Stat(destDir); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking installed bundle recovery: %w", err)
+	}
+	backupDir := destDir + ".bak"
+	if _, err := os.Stat(backupDir); err == nil {
+		if err := os.Rename(backupDir, destDir); err != nil {
+			return fmt.Errorf("recovering prior installed bundle: %w", err)
+		}
+		_ = os.RemoveAll(destDir + ".failed")
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking prior bundle recovery: %w", err)
+	}
+	failedDir := destDir + ".failed"
+	if _, err := os.Stat(failedDir); err == nil {
+		if err := os.Rename(failedDir, destDir); err != nil {
+			return fmt.Errorf("recovering failed candidate: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking failed candidate recovery: %w", err)
+	}
 	return nil
 }
 

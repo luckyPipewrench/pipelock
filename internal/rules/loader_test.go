@@ -175,9 +175,26 @@ func TestLoadResultErrorHelpers(t *testing.T) {
 }
 
 func TestLoadBundlesFreshnessSaveFailureIsIntegrityError(t *testing.T) {
-	result := &LoadResult{}
-	persistLoadedFreshness(t.TempDir(), &FreshnessState{}, result, func(string, *FreshnessState) error {
-		return errors.New("forced durability failure")
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	bundle := testBundleV2(testBundleName, TierCommunity, 1, []Rule{testDLPRule("dlp-save", confidenceHigh, StatusStable)})
+	bundle.KeyID = KeyFingerprint(pub)
+	writeSignedBundle(t, bundleDir, bundle, pub, priv)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+		TrustedKeys:     []config.TrustedKey{{Name: "test", PublicKey: hex.EncodeToString(pub)}},
+		saveFreshnessState: func(string, *FreshnessState) error {
+			return errors.New("forced durability failure")
+		},
 	})
 	if !result.Degraded {
 		t.Fatal("persistLoadedFreshness Degraded = false, want true")

@@ -1720,7 +1720,7 @@ func TestCheckExistingInstall_DifferentDigest(t *testing.T) {
 		t.Fatalf("writing lock: %v", err)
 	}
 
-	err := checkExistingInstall(bundleDir, "2026.03.1", "bbbb")
+	err := checkExistingInstall(bundleDir, "2026.03.1", "bbbb", false)
 	if err == nil {
 		t.Fatal("expected error for same version different digest")
 	}
@@ -1732,7 +1732,7 @@ func TestCheckExistingInstall_DifferentDigest(t *testing.T) {
 func TestCheckExistingInstall_NotInstalled(t *testing.T) {
 	t.Parallel()
 
-	err := checkExistingInstall(filepath.Join(t.TempDir(), "nonexistent"), "2026.03.1", "abc")
+	err := checkExistingInstall(filepath.Join(t.TempDir(), "nonexistent"), "2026.03.1", "abc", false)
 	if err != nil {
 		t.Errorf("expected nil error for not-installed bundle, got: %v", err)
 	}

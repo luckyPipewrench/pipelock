@@ -17,7 +17,7 @@ func TestCheckFreshness_V1BundleAlwaysOK(t *testing.T) {
 
 	b := &Bundle{FormatVersion: 1, Name: "test-bundle"}
 	state := &FreshnessState{HighestSeen: make(map[string]uint64)}
-	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false)
+	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false, false)
 	if !result.OK {
 		t.Errorf("v1 bundle should always pass freshness check, got: %s", result.Message)
 	}
@@ -79,7 +79,7 @@ func TestCheckFreshness_RollbackRejected(t *testing.T) {
 		KeyID:            "test-key",
 	}
 
-	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false)
+	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false, false)
 	if result.OK {
 		t.Fatal("expected rollback rejection, got OK")
 	}
@@ -106,7 +106,7 @@ func TestCheckFreshness_RollbackAllowed_SameVersion(t *testing.T) {
 		KeyID:            "test-key",
 	}
 
-	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false)
+	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false, false)
 	if !result.OK {
 		t.Errorf("same version should be accepted, got: %s", result.Message)
 	}
@@ -130,7 +130,7 @@ func TestCheckFreshness_NewerVersionAccepted(t *testing.T) {
 		KeyID:            "test-key",
 	}
 
-	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false)
+	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false, false)
 	if !result.OK {
 		t.Errorf("newer version should be accepted, got: %s", result.Message)
 	}
@@ -151,7 +151,7 @@ func TestCheckFreshness_ExpiredRejected(t *testing.T) {
 	}
 
 	now := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	result := CheckFreshness(b, state, now, false)
+	result := CheckFreshness(b, state, now, false, false)
 	if result.OK {
 		t.Fatal("expected expiry rejection, got OK")
 	}
@@ -175,7 +175,7 @@ func TestCheckFreshness_ExpiredAllowedWithStaleFlag(t *testing.T) {
 	}
 
 	now := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	result := CheckFreshness(b, state, now, true) // allowStale=true
+	result := CheckFreshness(b, state, now, true, false) // allowStale=true
 	if !result.OK {
 		t.Errorf("expected stale bundle to be accepted with allowStale, got: %s", result.Message)
 	}
@@ -202,7 +202,7 @@ func TestCheckFreshness_DifferentTiersIndependent(t *testing.T) {
 		KeyID:            "test-key",
 	}
 
-	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false)
+	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false, false)
 	if !result.OK {
 		t.Errorf("different tier should have independent version tracking, got: %s", result.Message)
 	}
@@ -226,7 +226,7 @@ func TestCheckFreshness_SameTierDifferentBundlesIndependent(t *testing.T) {
 		KeyID:            "test-key",
 	}
 
-	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false)
+	result := CheckFreshness(b, state, time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC), false, false)
 	if !result.OK {
 		t.Errorf("different bundle in same tier should not be blocked: %s", result.Message)
 	}
@@ -529,7 +529,7 @@ func TestFreshnessState_DeleteAllWithInstalledV2ContextFailsClosed(t *testing.T)
 		t.Fatalf("reset floor = %d, want 10", got)
 	}
 	rolledBack := testBundleV2("test-bundle", TierCommunity, 4, nil)
-	if result := CheckFreshness(rolledBack, loaded, time.Now().UTC(), false); result.OK || !result.Rollback {
+	if result := CheckFreshness(rolledBack, loaded, time.Now().UTC(), false, false); result.OK || !result.Rollback {
 		t.Fatalf("rolled-back bundle after reset = %+v, want rollback rejection", result)
 	}
 }

@@ -189,7 +189,7 @@ func TestCheckExistingInstall_SameVersionSameDigest(t *testing.T) {
 	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
 
 	bundleDir := filepath.Join(rulesDir, testBundleName)
-	err := checkExistingInstall(bundleDir, testBundleVersion, sha256Hex([]byte(validBundleYAML)))
+	err := checkExistingInstall(bundleDir, testBundleVersion, sha256Hex([]byte(validBundleYAML)), false)
 	if err == nil {
 		t.Error("expected error for same version + same digest")
 	}

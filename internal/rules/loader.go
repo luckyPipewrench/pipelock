@@ -304,6 +304,11 @@ func persistLoadedFreshness(rulesDir string, state *FreshnessState, result *Load
 			Class:  BundleErrorClassIntegrity,
 		})
 		result.Degraded = true
+		// The accepted bundles are not durably protected against rollback after a
+		// failed save, so do not return any of their usable rules to the caller.
+		result.DLP = nil
+		result.Injection = nil
+		result.ToolPoison = nil
 	}
 }
 
@@ -409,7 +414,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		}
 
 		// Freshness: rollback prevention and expiry.
-		fr := CheckFreshness(bundle, ctx.FreshnessState, ctx.Now, opts.AllowStale)
+		fr := CheckFreshness(bundle, ctx.FreshnessState, ctx.Now, opts.AllowStale, false)
 		if !fr.OK {
 			class := BundleErrorClassAvailability
 			if fr.Rollback || fr.Expired {

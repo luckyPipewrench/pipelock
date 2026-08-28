@@ -202,6 +202,9 @@ func TestLoadBundlesFreshnessSaveFailureIsIntegrityError(t *testing.T) {
 	if len(result.IntegrityErrors()) != 1 || !strings.Contains(result.IntegrityErrors()[0].Reason, "forced durability failure") {
 		t.Fatalf("integrity errors = %+v, want freshness durability failure", result.IntegrityErrors())
 	}
+	if len(result.DLP) != 0 || len(result.Injection) != 0 || len(result.ToolPoison) != 0 {
+		t.Fatalf("usable rules after freshness save failure = DLP:%d Injection:%d ToolPoison:%d, want none", len(result.DLP), len(result.Injection), len(result.ToolPoison))
+	}
 }
 
 func TestLoadBundlesRejectsV1AfterAcceptedV2AcrossRestart(t *testing.T) {

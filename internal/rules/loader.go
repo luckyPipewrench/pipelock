@@ -197,34 +197,16 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	if rulesDir == "" {
 		return result
 	}
-
-	entries, err := os.ReadDir(rulesDir)
-	if err != nil {
+	// Preserve the optional-directory and availability semantics before opening
+	// the freshness lock. This reads names only; bundle bytes and freshness state
+	// are read below after interrupted transactions have recovered.
+	if _, err := os.ReadDir(rulesDir); err != nil {
 		if os.IsNotExist(err) {
 			return result
 		}
-		// Permission errors, ENOTDIR, I/O failures: report, don't swallow.
-		result.Errors = append(result.Errors, BundleError{
-			Name:   rulesDir,
-			Reason: fmt.Sprintf("reading rules directory: %v", err),
-			Class:  BundleErrorClassAvailability,
-		})
+		result.Errors = append(result.Errors, BundleError{Name: rulesDir, Reason: fmt.Sprintf("reading rules directory: %v", err), Class: BundleErrorClassAvailability})
 		return result
 	}
-
-	// Collect subdirectory names alphabetically (ReadDir returns sorted).
-	var dirs []os.DirEntry
-	for _, e := range entries {
-		// Skip non-directories, hidden staging dirs (.stage-*), and backup dirs (.bak suffix)
-		// left by interrupted install/update operations.
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") && !strings.HasSuffix(e.Name(), ".bak") {
-			dirs = append(dirs, e)
-		}
-	}
-
-	sort.Slice(dirs, func(i, j int) bool {
-		return dirs[i].Name() < dirs[j].Name()
-	})
 
 	minRank := confidenceRank[opts.MinConfidence]
 	now := time.Now()
@@ -233,12 +215,36 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	// concurrent processes from racing on .freshness.json.
 	freshnessState := &FreshnessState{HighestSeen: make(map[string]uint64)}
 	lockErr := WithFreshnessLock(rulesDir, func() error {
-		var err error
-		freshnessState, err = LoadFreshnessState(rulesDir)
+		if err := RecoverBundleTransactionsLocked(rulesDir); err != nil {
+			result.Errors = append(result.Errors, BundleError{Name: ".pipelock-state/rules-transactions", Reason: err.Error(), Class: BundleErrorClassIntegrity})
+			result.Degraded = true
+			return nil
+		}
+		entries, err := os.ReadDir(rulesDir)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			// Permission errors, ENOTDIR, I/O failures: report, don't swallow.
+			result.Errors = append(result.Errors, BundleError{Name: rulesDir, Reason: fmt.Sprintf("reading rules directory: %v", err), Class: BundleErrorClassAvailability})
+			return nil
+		}
+		// Read the directory only after recovery while holding the same lock that
+		// protects the freshness state, so a loader cannot observe a candidate
+		// between its rename and its redo recovery.
+		var dirs []os.DirEntry
+		for _, entry := range entries {
+			if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && !strings.HasSuffix(entry.Name(), ".bak") {
+				dirs = append(dirs, entry)
+			}
+		}
+		sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name() < dirs[j].Name() })
+		var loadErr error
+		freshnessState, loadErr = LoadFreshnessStateLocked(rulesDir)
+		if loadErr != nil {
 			result.Errors = append(result.Errors, BundleError{
 				Name:   ".freshness.json",
-				Reason: err.Error(),
+				Reason: loadErr.Error(),
 				Class:  BundleErrorClassIntegrity,
 			})
 			result.Degraded = true

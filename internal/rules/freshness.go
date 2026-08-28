@@ -138,12 +138,34 @@ func RecordFormat(state *FreshnessState, name string, format int) {
 	}
 }
 
-// LoadFreshnessState reads the freshness state from the rules directory.
+// LoadFreshnessState recovers an interrupted bundle swap, then reads freshness
+// state from the rules directory. Call LoadFreshnessStateLocked when the caller
+// already owns WithFreshnessLock.
+func LoadFreshnessState(rulesDir string) (*FreshnessState, error) {
+	var state *FreshnessState
+	err := WithFreshnessLock(rulesDir, func() error {
+		if err := RecoverBundleTransactionsLocked(rulesDir); err != nil {
+			return fmt.Errorf("recover bundle transactions: %w", err)
+		}
+		var loadErr error
+		state, loadErr = LoadFreshnessStateLocked(rulesDir)
+		return loadErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+// LoadFreshnessStateLocked reads freshness state while the caller holds
+// WithFreshnessLock. It does not itself recover transactions to avoid a nested
+// lock; callers must recover first.
+//
 // Returns an empty state if the file doesn't exist (first run).
 // Returns an error if the file exists but is unreadable or corrupt - this
 // fails closed to prevent an attacker from bypassing rollback protection
 // by corrupting the state file. Delete the file manually to reset.
-func LoadFreshnessState(rulesDir string) (*FreshnessState, error) {
+func LoadFreshnessStateLocked(rulesDir string) (*FreshnessState, error) {
 	state, found, err := readFreshnessStatePair(rulesDir)
 	if err != nil {
 		return nil, err

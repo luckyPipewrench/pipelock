@@ -776,10 +776,13 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 
 func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, data []byte, lf *domrules.LockFile) error {
 	return domrules.WithFreshnessLock(rulesDir, func() error {
+		if err := domrules.RecoverBundleTransactionsLocked(rulesDir); err != nil {
+			return fmt.Errorf("recovering rules transactions: %w", err)
+		}
 		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
 			return err
 		}
-		state, err := domrules.LoadFreshnessState(rulesDir)
+		state, err := domrules.LoadFreshnessStateLocked(rulesDir)
 		if err != nil {
 			return fmt.Errorf("loading rules freshness state: %w", err)
 		}
@@ -788,7 +791,11 @@ func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, d
 		}
 		previous := cloneFreshnessState(state)
 		domrules.RecordFormat(state, bundle.Name, bundle.FormatVersion)
-		return stageBundleTransaction(rulesDir, bundle.Name, data, nil, lf, func() error {
+		redo, err := domrules.NewBundleTransactionRedo(bundle.Name, data, nil, bundle, lf, state)
+		if err != nil {
+			return fmt.Errorf("prepare rules transaction: %w", err)
+		}
+		return stageBundleTransactionWithRedo(rulesDir, bundle.Name, data, nil, lf, redo, func() error {
 			return commitFreshnessState(rulesDir, state, previous)
 		})
 	})
@@ -894,6 +901,9 @@ func installRemote(opts installRemoteOptions) error {
 // the install, while the older installed bundle cannot erase the new floor.
 func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bundleData, sigData []byte, lf *domrules.LockFile, checkInstalled bool) error {
 	return domrules.WithFreshnessLock(rulesDir, func() error {
+		if err := domrules.RecoverBundleTransactionsLocked(rulesDir); err != nil {
+			return fmt.Errorf("recovering rules transactions: %w", err)
+		}
 		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
 			return err
 		}
@@ -903,7 +913,7 @@ func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bu
 			}
 		}
 
-		state, err := domrules.LoadFreshnessState(rulesDir)
+		state, err := domrules.LoadFreshnessStateLocked(rulesDir)
 		if err != nil {
 			return fmt.Errorf("loading rules freshness state: %w", err)
 		}
@@ -924,7 +934,11 @@ func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bu
 			domrules.RecordVersion(state, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
 		}
 		domrules.RecordFormat(state, bundle.Name, bundle.FormatVersion)
-		return stageBundleTransaction(rulesDir, bundle.Name, bundleData, sigData, lf, func() error {
+		redo, err := domrules.NewBundleTransactionRedo(bundle.Name, bundleData, sigData, bundle, lf, state)
+		if err != nil {
+			return fmt.Errorf("prepare rules transaction: %w", err)
+		}
+		return stageBundleTransactionWithRedo(rulesDir, bundle.Name, bundleData, sigData, lf, redo, func() error {
 			return commitFreshnessState(rulesDir, state, previous)
 		})
 	})
@@ -1012,6 +1026,10 @@ func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte, lf *do
 }
 
 func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []byte, lf *domrules.LockFile, commit func() error) error {
+	return stageBundleTransactionWithRedo(rulesDir, bundleName, bundleData, sigData, lf, nil, commit)
+}
+
+func stageBundleTransactionWithRedo(rulesDir, bundleName string, bundleData, sigData []byte, lf *domrules.LockFile, redo *domrules.BundleTransactionRedo, commit func() error) error {
 	destDir := filepath.Join(rulesDir, bundleName)
 	if err := recoverBundleTransaction(destDir); err != nil {
 		return err
@@ -1054,6 +1072,19 @@ func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []b
 	if err := domrules.WriteLockFile(lockPath, lf); err != nil {
 		return fmt.Errorf("writing staged lock file: %w", err)
 	}
+	// The redo record is the durable link between an active candidate and its
+	// monotonic freshness update. It is intentionally written before either
+	// rename, while the old bundle is still available for identity capture.
+	recordPath, err := domrules.WriteBundleTransactionRedo(rulesDir, redo)
+	if err != nil {
+		return fmt.Errorf("writing bundle transaction redo: %w", err)
+	}
+	removeRedo := func() error {
+		if err := domrules.RemoveBundleTransactionRedo(recordPath); err != nil {
+			return fmt.Errorf("removing bundle transaction redo: %w", err)
+		}
+		return nil
+	}
 
 	// If the destination already exists, move it to a backup instead of deleting.
 	// This preserves the last known-good bundle if the rename fails.
@@ -1080,6 +1111,9 @@ func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []b
 			if rollbackErr != nil {
 				return fmt.Errorf("committing and restoring installed bundle: %w", errors.Join(err, rollbackErr))
 			}
+			if redoErr := removeRedo(); redoErr != nil {
+				return fmt.Errorf("committing bundle and clearing recovered transaction: %w", errors.Join(err, redoErr))
+			}
 			return fmt.Errorf("committing bundle: %w", err)
 		}
 	}
@@ -1088,22 +1122,29 @@ func stageBundleTransaction(rulesDir, bundleName string, bundleData, sigData []b
 	if backupDir != "" {
 		_ = os.RemoveAll(backupDir)
 	}
+	if err := removeRedo(); err != nil {
+		return err
+	}
 
 	success = true
 	return nil
 }
 
 func rollbackBundleTransaction(destDir, backupDir string) error {
+	return rollbackBundleTransactionWithRename(destDir, backupDir, os.Rename)
+}
+
+func rollbackBundleTransactionWithRename(destDir, backupDir string, rename func(string, string) error) error {
 	failedDir := destDir + ".failed"
 	_ = os.RemoveAll(failedDir)
-	if err := os.Rename(destDir, failedDir); err != nil {
+	if err := rename(destDir, failedDir); err != nil {
 		return fmt.Errorf("preserving failed candidate: %w", err)
 	}
 	if backupDir == "" {
 		return os.RemoveAll(failedDir)
 	}
-	if err := os.Rename(backupDir, destDir); err != nil {
-		if recoveryErr := os.Rename(failedDir, destDir); recoveryErr != nil {
+	if err := rename(backupDir, destDir); err != nil {
+		if recoveryErr := rename(failedDir, destDir); recoveryErr != nil {
 			return errors.Join(fmt.Errorf("restoring prior bundle: %w", err), fmt.Errorf("restoring failed candidate: %w", recoveryErr))
 		}
 		return fmt.Errorf("restoring prior bundle: %w", err)
@@ -1112,6 +1153,10 @@ func rollbackBundleTransaction(destDir, backupDir string) error {
 }
 
 func recoverBundleTransaction(destDir string) error {
+	return recoverBundleTransactionWithRename(destDir, os.Rename)
+}
+
+func recoverBundleTransactionWithRename(destDir string, rename func(string, string) error) error {
 	if _, err := os.Stat(destDir); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -1119,7 +1164,7 @@ func recoverBundleTransaction(destDir string) error {
 	}
 	backupDir := destDir + ".bak"
 	if _, err := os.Stat(backupDir); err == nil {
-		if err := os.Rename(backupDir, destDir); err != nil {
+		if err := rename(backupDir, destDir); err != nil {
 			return fmt.Errorf("recovering prior installed bundle: %w", err)
 		}
 		_ = os.RemoveAll(destDir + ".failed")
@@ -1129,7 +1174,7 @@ func recoverBundleTransaction(destDir string) error {
 	}
 	failedDir := destDir + ".failed"
 	if _, err := os.Stat(failedDir); err == nil {
-		if err := os.Rename(failedDir, destDir); err != nil {
+		if err := rename(failedDir, destDir); err != nil {
 			return fmt.Errorf("recovering failed candidate: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -1368,6 +1413,9 @@ func rulesResetFreshnessCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dir := domrules.ResolveRulesDir(rulesDir)
 			if err := domrules.WithFreshnessLock(dir, func() error {
+				if err := domrules.RecoverBundleTransactionsLocked(dir); err != nil {
+					return fmt.Errorf("recovering rules transactions: %w", err)
+				}
 				return domrules.ResetFreshnessStateFromInstalledBundles(dir)
 			}); err != nil {
 				return err

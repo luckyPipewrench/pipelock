@@ -300,6 +300,306 @@ func TestStageBundleTransactionRestoresInstalledBytesWhenCommitFails(t *testing.
 	}
 }
 
+func TestStageBundleTransactionWithRedoRestoresPriorBundleAndClearsRedoOnCommitFailure(t *testing.T) {
+	rulesDir := t.TempDir()
+	const name = "redo-rollback-test"
+	prior := []byte(v1NamedInstallBundleYAML(name, "2026.01.0"))
+	if err := stageBundle(rulesDir, name, prior, nil, &domrules.LockFile{InstalledVersion: "2026.01.0", BundleSHA256: sha256Hex(prior), Unsigned: true}); err != nil {
+		t.Fatalf("stage prior bundle: %v", err)
+	}
+	candidateData := []byte(v2NamedInstallBundleYAML(name, "2026.02.0", domrules.TierCommunity, 5, "test-signer"))
+	candidate, err := domrules.ParseBundle(candidateData)
+	if err != nil {
+		t.Fatalf("parse candidate: %v", err)
+	}
+	lock := &domrules.LockFile{InstalledVersion: candidate.Version, BundleSHA256: sha256Hex(candidateData), SignerFingerprint: "test-signer"}
+	next := &domrules.FreshnessState{HighestSeen: map[string]uint64{"community:" + name: 5}, FormatFloor: map[string]int{name: 2}}
+	redo, err := domrules.NewBundleTransactionRedo(name, candidateData, nil, candidate, lock, next)
+	if err != nil {
+		t.Fatalf("prepare redo: %v", err)
+	}
+	err = stageBundleTransactionWithRedo(rulesDir, name, candidateData, nil, lock, redo, func() error {
+		return errors.New("forced freshness commit failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "forced freshness commit failure") {
+		t.Fatalf("stageBundleTransactionWithRedo error = %v", err)
+	}
+	assertInstalledBundleBytes(t, rulesDir, name, prior)
+	if _, err := os.Stat(filepath.Join(rulesDir, ".pipelock-state", "rules-transactions")); err == nil {
+		entries, readErr := os.ReadDir(filepath.Join(rulesDir, ".pipelock-state", "rules-transactions"))
+		if readErr != nil || len(entries) != 0 {
+			t.Fatalf("redo record remains after rollback: entries=%v err=%v", entries, readErr)
+		}
+	}
+}
+
+func TestFreshnessStagesRejectInterruptedTransactionAndInvalidRedoPreparation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stage func(string, *domrules.Bundle, []byte, *domrules.LockFile) error
+	}{
+		{
+			name: "local",
+			stage: func(dir string, bundle *domrules.Bundle, data []byte, lock *domrules.LockFile) error {
+				return stageLocalBundleWithFormatFloor(dir, bundle, data, lock)
+			},
+		},
+		{
+			name: "remote",
+			stage: func(dir string, bundle *domrules.Bundle, data []byte, lock *domrules.LockFile) error {
+				return stageRemoteBundleWithFreshness(dir, bundle, data, nil, lock, false)
+			},
+		},
+	} {
+		t.Run(tc.name+" interrupted transaction", func(t *testing.T) {
+			rulesDir := t.TempDir()
+			transactionDir := filepath.Join(rulesDir, ".pipelock-state", "rules-transactions")
+			if err := os.MkdirAll(transactionDir, 0o750); err != nil {
+				t.Fatalf("create transaction directory: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(transactionDir, "corrupt.json"), []byte("not json"), 0o600); err != nil {
+				t.Fatalf("write corrupt transaction: %v", err)
+			}
+			data := []byte(v1NamedInstallBundleYAML("transaction-rules", "2026.01.0"))
+			bundle, err := domrules.ParseBundle(data)
+			if err != nil {
+				t.Fatalf("parse candidate: %v", err)
+			}
+			err = tc.stage(rulesDir, bundle, data, &domrules.LockFile{InstalledVersion: bundle.Version, BundleSHA256: sha256Hex(data), Unsigned: true})
+			if err == nil || !strings.Contains(err.Error(), "recovering rules transactions") {
+				t.Fatalf("stage error = %v, want interrupted transaction rejection", err)
+			}
+		})
+
+		t.Run(tc.name+" invalid redo preparation", func(t *testing.T) {
+			data := []byte(v1NamedInstallBundleYAML("transaction-rules", "2026.01.0"))
+			bundle, err := domrules.ParseBundle(data)
+			if err != nil {
+				t.Fatalf("parse candidate: %v", err)
+			}
+			err = tc.stage(t.TempDir(), bundle, data, nil)
+			if err == nil || !strings.Contains(err.Error(), "prepare rules transaction") {
+				t.Fatalf("stage error = %v, want redo preparation failure", err)
+			}
+		})
+	}
+}
+
+func TestStageBundleTransactionWithRedoSurfacesRedoWriteFailure(t *testing.T) {
+	rulesDir := t.TempDir()
+	name := "redo-write-failure"
+	data := []byte(v1NamedInstallBundleYAML(name, "2026.01.0"))
+	bundle, err := domrules.ParseBundle(data)
+	if err != nil {
+		t.Fatalf("parse candidate: %v", err)
+	}
+	lock := &domrules.LockFile{InstalledVersion: bundle.Version, BundleSHA256: sha256Hex(data), Unsigned: true}
+	redo, err := domrules.NewBundleTransactionRedo(name, data, nil, bundle, lock, &domrules.FreshnessState{})
+	if err != nil {
+		t.Fatalf("prepare redo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, ".pipelock-state"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block transaction directory: %v", err)
+	}
+	err = stageBundleTransactionWithRedo(rulesDir, name, data, nil, lock, redo, nil)
+	if err == nil || !strings.Contains(err.Error(), "writing bundle transaction redo") {
+		t.Fatalf("stageBundleTransactionWithRedo error = %v, want redo write failure", err)
+	}
+}
+
+func TestStageBundleTransactionWithRedoSurfacesRollbackAndRedoCleanupFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		commit func(t *testing.T, record string, dest string) error
+		want   string
+	}{
+		{
+			name: "rollback",
+			commit: func(t *testing.T, _ string, dest string) error {
+				t.Helper()
+				if err := os.RemoveAll(dest); err != nil {
+					t.Fatal(err)
+				}
+				return errors.New("commit failed")
+			},
+			want: "committing and restoring installed bundle",
+		},
+		{
+			name: "cleanup after failed commit",
+			commit: func(t *testing.T, record string, _ string) error {
+				t.Helper()
+				if err := os.Remove(record); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(record, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(record, "child"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return errors.New("commit failed")
+			},
+			want: "clearing recovered transaction",
+		},
+		{
+			name: "cleanup after success",
+			commit: func(t *testing.T, record string, _ string) error {
+				t.Helper()
+				if err := os.Remove(record); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(record, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(record, "child"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return nil
+			},
+			want: "removing bundle transaction redo",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rulesDir := t.TempDir()
+			name := "redo-cleanup-" + strings.ReplaceAll(tc.name, " ", "-")
+			data := []byte(v1NamedInstallBundleYAML(name, "2026.01.0"))
+			bundle, err := domrules.ParseBundle(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lock := &domrules.LockFile{InstalledVersion: bundle.Version, BundleSHA256: sha256Hex(data), Unsigned: true}
+			redo, err := domrules.NewBundleTransactionRedo(name, data, nil, bundle, lock, &domrules.FreshnessState{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := domrules.WriteBundleTransactionRedo(rulesDir, redo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = stageBundleTransactionWithRedo(rulesDir, name, data, nil, lock, redo, func() error {
+				return tc.commit(t, record, filepath.Join(rulesDir, name))
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("stageBundleTransactionWithRedo error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestStageAndRecoverySurfacePathErrors(t *testing.T) {
+	badPath := filepath.Join(t.TempDir(), "bad\x00path")
+	if err := stageBundle(t.TempDir(), "bad\x00name", []byte("candidate"), nil, &domrules.LockFile{}); err == nil {
+		t.Fatal("stageBundle accepted invalid path")
+	}
+	if err := rollbackBundleTransaction(badPath, ""); err == nil || !strings.Contains(err.Error(), "preserving failed candidate") {
+		t.Fatalf("rollbackBundleTransaction error = %v, want failed-candidate preservation error", err)
+	}
+	if err := recoverBundleTransaction(badPath); err == nil || !strings.Contains(err.Error(), "checking installed bundle recovery") {
+		t.Fatalf("recoverBundleTransaction error = %v, want stat error", err)
+	}
+	symlinkDest := filepath.Join(t.TempDir(), "missing")
+	if err := os.Symlink(symlinkDest+".bak", symlinkDest+".bak"); err != nil {
+		t.Fatalf("create backup symlink loop: %v", err)
+	}
+	if err := recoverBundleTransaction(symlinkDest); err == nil || !strings.Contains(err.Error(), "checking prior bundle recovery") {
+		t.Fatalf("recoverBundleTransaction backup error = %v, want backup stat error", err)
+	}
+	dest := filepath.Join(t.TempDir(), "candidate")
+	if err := os.Mkdir(dest, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackBundleTransaction(dest, "\x00bad-backup"); err == nil || !strings.Contains(err.Error(), "restoring prior bundle") {
+		t.Fatalf("rollbackBundleTransaction restore error = %v", err)
+	}
+}
+
+func TestRulesResetFreshnessRejectsInterruptedTransaction(t *testing.T) {
+	rulesDir := t.TempDir()
+	transactionDir := filepath.Join(rulesDir, ".pipelock-state", "rules-transactions")
+	if err := os.MkdirAll(transactionDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(transactionDir, "broken.json"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := testRootCmd()
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetArgs([]string{"rules", "reset-freshness", "--rules-dir", rulesDir})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "recovering rules transactions") {
+		t.Fatalf("reset-freshness error = %v, want recovery rejection", err)
+	}
+}
+
+func TestRollbackBundleTransactionWithRenameReportsBothRestoreDirections(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "candidate")
+	backup := filepath.Join(t.TempDir(), "prior")
+	t.Run("prior restore fails but candidate returns", func(t *testing.T) {
+		calls := 0
+		err := rollbackBundleTransactionWithRename(dest, backup, func(_, _ string) error {
+			calls++
+			if calls == 2 {
+				return errors.New("prior restore failed")
+			}
+			return nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "restoring prior bundle") {
+			t.Fatalf("rollback error = %v", err)
+		}
+	})
+	t.Run("both restores fail", func(t *testing.T) {
+		calls := 0
+		err := rollbackBundleTransactionWithRename(dest, backup, func(_, _ string) error {
+			calls++
+			if calls > 1 {
+				return fmt.Errorf("rename failure %d", calls)
+			}
+			return nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "restoring failed candidate") {
+			t.Fatalf("rollback error = %v", err)
+		}
+	})
+}
+
+func TestRecoverBundleTransactionWithRenameReportsBackupAndFailedCandidateFailures(t *testing.T) {
+	t.Run("backup restore", func(t *testing.T) {
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "bundle")
+		backup := dest + ".bak"
+		if err := os.Mkdir(backup, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		err := recoverBundleTransactionWithRename(dest, func(_, _ string) error { return errors.New("backup rename failed") })
+		if err == nil || !strings.Contains(err.Error(), "recovering prior installed bundle") {
+			t.Fatalf("recover error = %v", err)
+		}
+	})
+	t.Run("failed candidate restore", func(t *testing.T) {
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "bundle")
+		failed := dest + ".failed"
+		if err := os.Mkdir(failed, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		err := recoverBundleTransactionWithRename(dest, func(_, _ string) error { return errors.New("failed rename") })
+		if err == nil || !strings.Contains(err.Error(), "recovering failed candidate") {
+			t.Fatalf("recover error = %v", err)
+		}
+	})
+}
+
+func TestCheckInstalledBundleIdentityReadFailure(t *testing.T) {
+	dest := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dest, "bundle.yaml"), 0o750); err != nil {
+		t.Fatalf("create directory in bundle path: %v", err)
+	}
+	bundle, _ := remoteFreshnessCandidate("identity-read-failure", 1, 0)
+	if err := checkInstalledBundleIdentity(dest, bundle); err == nil || !strings.Contains(err.Error(), "reading installed bundle identity") {
+		t.Fatalf("checkInstalledBundleIdentity error = %v, want read failure", err)
+	}
+}
+
 func TestRecoverBundleTransactionPrefersPriorBundle(t *testing.T) {
 	rulesDir := t.TempDir()
 	dest := filepath.Join(rulesDir, "recovery-test")

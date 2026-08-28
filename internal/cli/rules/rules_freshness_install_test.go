@@ -480,6 +480,51 @@ func TestFreshnessStagingRejectsInstalledV2DowngradeWithoutState(t *testing.T) {
 	}
 }
 
+func TestFreshnessStagingRejectsPersistedFormatFloorWithoutInstalledBundle(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stage func(string, *domrules.Bundle, *domrules.LockFile) error
+	}{
+		{
+			name: "local",
+			stage: func(dir string, bundle *domrules.Bundle, lock *domrules.LockFile) error {
+				return stageLocalBundleWithFormatFloor(dir, bundle, []byte("candidate"), lock)
+			},
+		},
+		{
+			name: "remote",
+			stage: func(dir string, bundle *domrules.Bundle, lock *domrules.LockFile) error {
+				return stageRemoteBundleWithFreshness(dir, bundle, []byte("candidate"), nil, lock, false)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rulesDir := t.TempDir()
+			if err := domrules.SaveFreshnessState(rulesDir, &domrules.FreshnessState{FormatFloor: map[string]int{"floor-rules": 2}}); err != nil {
+				t.Fatalf("save freshness state: %v", err)
+			}
+			bundle, lock := remoteFreshnessCandidate("floor-rules", 1, 0)
+			err := tc.stage(rulesDir, bundle, lock)
+			if err == nil || !strings.Contains(err.Error(), "format rollback") {
+				t.Fatalf("stage error = %v, want persisted format rollback", err)
+			}
+		})
+	}
+}
+
+func TestCheckInstalledBundleIdentityRejectsOversizedManifest(t *testing.T) {
+	dest := t.TempDir()
+	oversized := make([]byte, domrules.MaxBundleFileSize+1)
+	if err := os.WriteFile(filepath.Join(dest, "bundle.yaml"), oversized, 0o600); err != nil {
+		t.Fatalf("write oversized bundle: %v", err)
+	}
+	bundle, _ := remoteFreshnessCandidate("oversized", 1, 0)
+	err := checkInstalledBundleIdentity(dest, bundle)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("checkInstalledBundleIdentity error = %v, want size rejection", err)
+	}
+}
+
 func TestInstallLocalRejectsUnsignedV2WithoutRecordingFloor(t *testing.T) {
 	rulesDir := t.TempDir()
 	sourceDir := t.TempDir()

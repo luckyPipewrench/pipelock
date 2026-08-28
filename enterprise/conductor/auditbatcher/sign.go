@@ -42,3 +42,30 @@ func SignEnvelope(envelope conductor.AuditBatchEnvelope, signerKeyID string, pri
 	}
 	return envelope, nil
 }
+
+// SignAppliedStateHeartbeat signs a recorder-independent applied-state
+// heartbeat with the enrolled follower audit key.
+func SignAppliedStateHeartbeat(heartbeat conductor.AppliedStateHeartbeat, signerKeyID string, priv ed25519.PrivateKey) (conductor.AppliedStateHeartbeat, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return conductor.AppliedStateHeartbeat{}, fmt.Errorf("auditbatcher: private key length=%d want=%d", len(priv), ed25519.PrivateKeySize)
+	}
+	heartbeat.Signatures = nil
+	preimage, err := heartbeat.SignablePreimage()
+	if err != nil {
+		return conductor.AppliedStateHeartbeat{}, fmt.Errorf("auditbatcher: heartbeat signable preimage: %w", err)
+	}
+	proof := conductor.SignatureProof{
+		SignerKeyID: signerKeyID,
+		KeyPurpose:  signing.PurposeAuditBatchSigning,
+		Algorithm:   conductor.SignatureAlgorithmEd25519,
+		Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
+	}
+	if err := proof.Validate(signing.PurposeAuditBatchSigning); err != nil {
+		return conductor.AppliedStateHeartbeat{}, fmt.Errorf("auditbatcher: heartbeat signature proof: %w", err)
+	}
+	heartbeat.Signatures = []conductor.SignatureProof{proof}
+	if err := heartbeat.Validate(); err != nil {
+		return conductor.AppliedStateHeartbeat{}, fmt.Errorf("auditbatcher: signed heartbeat: %w", err)
+	}
+	return heartbeat, nil
+}

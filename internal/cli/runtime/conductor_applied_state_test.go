@@ -7,18 +7,24 @@ package runtime
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/enrollmentclient"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/policysync"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func newAppliedStateReporter(t *testing.T) *conductorPolicyStatusReporter {
@@ -112,6 +118,239 @@ func TestAppliedStateProvider_SanitizesErrorMessageStaysValid(t *testing.T) {
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("sanitized applied-state invalid: %v", err)
+	}
+}
+
+func TestAppliedStateHeartbeat_EmitsOnIdlePolicyPollWhenNegotiated(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	var heartbeat conductor.AppliedStateHeartbeat
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case controlplane.FollowerRuntimeStatusPath:
+			return responseWithBody(http.StatusOK, `{"status":"ok"}`), nil
+		case controlplane.AppliedStateHeartbeatPath:
+			body, readErr := io.ReadAll(req.Body)
+			if readErr != nil {
+				t.Fatalf("read heartbeat body: %v", readErr)
+			}
+			if unmarshalErr := json.Unmarshal(body, &heartbeat); unmarshalErr != nil {
+				t.Fatalf("decode heartbeat: %v", unmarshalErr)
+			}
+			return responseWithBody(http.StatusAccepted, `{"status":"accepted"}`), nil
+		default:
+			t.Fatalf("unexpected request path %s", req.URL.Path)
+			return nil, errors.New("unreachable")
+		}
+	}}
+
+	pollAt := time.Now().UTC().Add(-4 * time.Minute)
+	if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{PollAt: pollAt}); err != nil {
+		t.Fatalf("ReportPolicyStatus() error = %v", err)
+	}
+	if heartbeat.HeartbeatID == "" {
+		t.Fatal("signed heartbeat was not emitted")
+	}
+	if !heartbeat.AppliedState.LastPolicyPollAt.Equal(pollAt) {
+		t.Fatalf("LastPolicyPollAt = %v, want %v", heartbeat.AppliedState.LastPolicyPollAt, pollAt)
+	}
+	if time.Since(heartbeat.AppliedState.ObservedAt) > time.Minute {
+		t.Fatalf("ObservedAt = %v, want fresh heartbeat time", heartbeat.AppliedState.ObservedAt)
+	}
+	if err := heartbeat.VerifySignaturesAt(time.Now().UTC(), func(id string) (conductor.SignatureKey, error) {
+		if id != "audit-key-main-1" {
+			return conductor.SignatureKey{}, errors.New("unknown key")
+		}
+		return conductor.SignatureKey{PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
+	}); err != nil {
+		t.Fatalf("VerifySignaturesAt() error = %v", err)
+	}
+}
+
+func TestAppliedStateHeartbeat_FailureDoesNotFailRuntimeStatus(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	statusRequests := 0
+	heartbeatRequests := 0
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case controlplane.FollowerRuntimeStatusPath:
+			statusRequests++
+			return responseWithBody(http.StatusOK, `{"status":"ok"}`), nil
+		case controlplane.AppliedStateHeartbeatPath:
+			heartbeatRequests++
+			return nil, errors.New("heartbeat unavailable")
+		default:
+			t.Fatalf("unexpected request path %s", req.URL.Path)
+			return nil, errors.New("unreachable")
+		}
+	}}
+	if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{PollAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("ReportPolicyStatus() error = %v, want nil after successful runtime status", err)
+	}
+	if statusRequests != 1 || heartbeatRequests != 1 {
+		t.Fatalf("requests = status %d, heartbeat %d; want 1 each", statusRequests, heartbeatRequests)
+	}
+}
+
+func TestAppliedStateHeartbeat_RejectsUnexpectedSuccessStatus(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	reporter.latest.Store(&policysync.StatusEvent{PollAt: time.Now().UTC()})
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != controlplane.AppliedStateHeartbeatPath {
+			t.Fatalf("request path = %s, want %s", req.URL.Path, controlplane.AppliedStateHeartbeatPath)
+		}
+		return responseWithBody(http.StatusOK, `{"status":"ok"}`), nil
+	}}
+	if err := reporter.reportCurrentAppliedStateHeartbeat(context.Background()); err == nil {
+		t.Fatal("reportCurrentAppliedStateHeartbeat() error = nil, want rejection of HTTP 200")
+	}
+}
+
+func TestAppliedStateHeartbeat_RemainsOffWithoutNegotiation(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	// A downgrade/reload must clear a previously negotiated signer, not leave
+	// the old heartbeat capability active in memory.
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	reporter.configureAppliedStateHeartbeat(false, "audit-key-main-1", priv)
+	requests := 0
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Path != controlplane.FollowerRuntimeStatusPath {
+			t.Fatalf("unexpected unnegotiated request path %s", req.URL.Path)
+		}
+		return responseWithBody(http.StatusOK, `{"status":"ok"}`), nil
+	}}
+	if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{PollAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("ReportPolicyStatus() error = %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want only unsigned status", requests)
+	}
+}
+
+func TestAppliedStateHeartbeat_CurrentSnapshot(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	wantPoll := time.Now().UTC().Add(-time.Minute)
+	reporter.latest.Store(&policysync.StatusEvent{PollAt: wantPoll})
+	var got conductor.AppliedStateHeartbeat
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode heartbeat: %v", err)
+		}
+		return responseWithBody(http.StatusAccepted, `{"status":"accepted"}`), nil
+	}}
+	if err := reporter.reportCurrentAppliedStateHeartbeat(context.Background()); err != nil {
+		t.Fatalf("reportCurrentAppliedStateHeartbeat() error = %v", err)
+	}
+	if !got.AppliedState.LastPolicyPollAt.Equal(wantPoll) {
+		t.Fatalf("LastPolicyPollAt = %v, want %v", got.AppliedState.LastPolicyPollAt, wantPoll)
+	}
+}
+
+func TestAppliedStateHeartbeat_CurrentSnapshotCannotPublishAfterNewerStatus(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	olderPoll := time.Now().UTC().Add(-2 * time.Minute)
+	newerPoll := olderPoll.Add(time.Minute)
+	reporter.latest.Store(&policysync.StatusEvent{PollAt: olderPoll})
+	snapshotLoaded := make(chan struct{})
+	releaseSnapshot := make(chan struct{})
+	reporter.afterHeartbeatSnapshot = func() {
+		close(snapshotLoaded)
+		<-releaseSnapshot
+	}
+	primarySent := make(chan struct{})
+	var heartbeatsMu sync.Mutex
+	heartbeatPolls := make([]time.Time, 0, 2)
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case controlplane.FollowerRuntimeStatusPath:
+			close(primarySent)
+			return responseWithBody(http.StatusOK, `{"status":"ok"}`), nil
+		case controlplane.AppliedStateHeartbeatPath:
+			var heartbeat conductor.AppliedStateHeartbeat
+			if err := json.NewDecoder(req.Body).Decode(&heartbeat); err != nil {
+				t.Fatalf("decode heartbeat: %v", err)
+			}
+			heartbeatsMu.Lock()
+			heartbeatPolls = append(heartbeatPolls, heartbeat.AppliedState.LastPolicyPollAt)
+			heartbeatsMu.Unlock()
+			return responseWithBody(http.StatusAccepted, `{"status":"accepted"}`), nil
+		default:
+			t.Fatalf("unexpected request path %s", req.URL.Path)
+			return nil, errors.New("unreachable")
+		}
+	}}
+
+	currentDone := make(chan error, 1)
+	go func() { currentDone <- reporter.reportCurrentAppliedStateHeartbeat(context.Background()) }()
+	<-snapshotLoaded
+	statusDone := make(chan error, 1)
+	go func() {
+		statusDone <- reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{PollAt: newerPoll})
+	}()
+	<-primarySent
+	close(releaseSnapshot)
+	if err := <-currentDone; err != nil {
+		t.Fatalf("reportCurrentAppliedStateHeartbeat() error = %v", err)
+	}
+	if err := <-statusDone; err != nil {
+		t.Fatalf("ReportPolicyStatus() error = %v", err)
+	}
+	heartbeatsMu.Lock()
+	defer heartbeatsMu.Unlock()
+	if len(heartbeatPolls) != 2 {
+		t.Fatalf("heartbeat count = %d, want 2", len(heartbeatPolls))
+	}
+	if !heartbeatPolls[0].Equal(olderPoll) || !heartbeatPolls[1].Equal(newerPoll) {
+		t.Fatalf("heartbeat poll order = %v, want older %v then newer %v", heartbeatPolls, olderPoll, newerPoll)
+	}
+}
+
+func TestAppliedStateHeartbeat_CurrentSnapshotWaitsForFirstPoll(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	requests := 0
+	reporter.client = statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
+		requests++
+		return responseWithBody(http.StatusAccepted, `{"status":"accepted"}`), nil
+	}}
+	if err := reporter.reportCurrentAppliedStateHeartbeat(context.Background()); err != nil {
+		t.Fatalf("reportCurrentAppliedStateHeartbeat() error = %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("heartbeat requests before first policy poll = %d, want 0", requests)
 	}
 }
 

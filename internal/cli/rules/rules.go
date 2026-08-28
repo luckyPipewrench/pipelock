@@ -443,9 +443,19 @@ func fetchOfficialRegistryBundle(ctx context.Context, bundleURL string) ([]byte,
 // policy the install used; otherwise the pin covers only the one-time install
 // and not the commands an operator runs repeatedly afterwards.
 //
-// Routing on the RECORDED source preserves the separation that matters: an
-// operator-supplied --source that happens to spell the official URL stays on
-// the general client and never acquires official-path handling.
+// Routing keys on the RECORDED source string, not on install provenance.
+// LockFile carries no field saying whether the install used the official name
+// (internal/rules/lock.go), so a --source install that spelled the official URL
+// is pinned on later update and diff even though its install was not. That
+// direction is fail-closed, and the reverse is not possible: an official-name
+// install can never fall back to the general client. The cost is narrow and
+// worth stating, because update has no --source override: an operator who
+// installed from an official-looking URL that later redirects off-origin has no
+// in-command way to accept that redirect on update.
+//
+// Install itself does keep the separation. installRemote selects the client
+// from the official-name branch, not from the URL, so a --source install is
+// never pinned at install time however it is spelled.
 func fetchBundleForRecordedSource(ctx context.Context, source string) ([]byte, []byte, error) {
 	if isOfficialRegistryURL(source) {
 		return fetchOfficialRegistryBundle(ctx, source)

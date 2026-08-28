@@ -29,6 +29,8 @@ const reservedBundlePrefix = "pipelock-"
 
 var errBundleFileTooLarge = errors.New("bundle file exceeds maximum size")
 
+var saveFreshnessStateForLoad = SaveFreshnessState
+
 // LoadOptions controls bundle loading behavior.
 type LoadOptions struct {
 	MinConfidence        string              // high, medium, low
@@ -257,8 +259,13 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		// Save updated freshness state if any v2+ bundles were loaded.
 		for _, lb := range result.Loaded {
 			if lb.MonotonicVersion > 0 {
-				if saveErr := SaveFreshnessState(rulesDir, freshnessState); saveErr != nil {
-					result.Warnings = append(result.Warnings, fmt.Sprintf("saving freshness state: %v", saveErr))
+				if saveErr := saveFreshnessStateForLoad(rulesDir, freshnessState); saveErr != nil {
+					result.Errors = append(result.Errors, BundleError{
+						Name:   ".freshness.json",
+						Reason: fmt.Sprintf("saving freshness state: %v", saveErr),
+						Class:  BundleErrorClassIntegrity,
+					})
+					result.Degraded = true
 				}
 				break
 			}
@@ -355,6 +362,13 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		return
 	}
 
+	// Once an identity has loaded v2, accepting its older v1 representation would
+	// bypass every v2 freshness field. Enforce the format floor for all formats.
+	if fr := CheckFormatFloor(bundle, ctx.FreshnessState); !fr.OK {
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: fr.Message, Class: BundleErrorClassIntegrity})
+		return
+	}
+
 	// V2+ freshness checks: rollback prevention, expiry, tier-key binding.
 	if bundle.FormatVersion >= 2 {
 		// V2 bundles MUST be signed. Unsigned v2 bundles could forge any
@@ -398,6 +412,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		// Record version for future rollback prevention.
 		RecordVersion(ctx.FreshnessState, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
 	}
+	RecordFormat(ctx.FreshnessState, bundle.Name, bundle.FormatVersion)
 
 	// Filter and convert rules.
 	loaded := LoadedBundle{

@@ -728,6 +728,9 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 	if err != nil {
 		return fmt.Errorf("parsing bundle: %w", err)
 	}
+	if bundle.FormatVersion >= 2 {
+		return fmt.Errorf("local unsigned installs support only format_version 1; format_version %d bundles must be signed and installed from HTTPS", bundle.FormatVersion)
+	}
 
 	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version, allowUnversioned); err != nil {
 		if !errors.Is(err, domrules.ErrUnverifiableVersion) {
@@ -762,13 +765,30 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 		BundleSHA256:     digest,
 		Unsigned:         true,
 	}
-	if err := stageBundle(rulesDir, bundle.Name, data, nil, lf); err != nil {
+	if err := stageLocalBundleWithFormatFloor(rulesDir, bundle, data, lf); err != nil {
 		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "Installed %s v%s (unsigned, local)\n", bundle.Name, bundle.Version)
 	_, _ = fmt.Fprintf(out, "  %d rules\n", len(bundle.Rules))
 	return nil
+}
+
+func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, data []byte, lf *domrules.LockFile) error {
+	return domrules.WithFreshnessLock(rulesDir, func() error {
+		state, err := domrules.LoadFreshnessState(rulesDir)
+		if err != nil {
+			return fmt.Errorf("loading rules freshness state: %w", err)
+		}
+		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK {
+			return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
+		}
+		domrules.RecordFormat(state, bundle.Name, bundle.FormatVersion)
+		if err := domrules.SaveFreshnessState(rulesDir, state); err != nil {
+			return fmt.Errorf("updating rules freshness state: %w", err)
+		}
+		return stageBundle(rulesDir, bundle.Name, data, nil, lf)
+	})
 }
 
 type installRemoteOptions struct {
@@ -846,12 +866,6 @@ func installRemote(opts installRemoteOptions) error {
 	}
 
 	digest := sha256Hex(bundleData)
-	destDir := filepath.Join(opts.rulesDir, bundle.Name)
-
-	if err := checkExistingInstall(destDir, bundle.Version, digest); err != nil {
-		return err
-	}
-
 	// Build lock file and stage everything atomically.
 	now := timeNowUTC()
 	lf := &domrules.LockFile{
@@ -862,16 +876,52 @@ func installRemote(opts installRemoteOptions) error {
 		BundleSHA256:      digest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	if err := stageBundle(opts.rulesDir, bundle.Name, bundleData, sigData, lf); err != nil {
-		return err
-	}
-	if err := resetFreshnessStateAfterBundleChange(opts.rulesDir); err != nil {
+	if err := stageRemoteBundleWithFreshness(opts.rulesDir, bundle, bundleData, sigData, lf, true); err != nil {
 		return err
 	}
 
 	_, _ = fmt.Fprintf(opts.out, "Installed %s v%s (%s)\n", bundle.Name, bundle.Version, result.Tier)
 	_, _ = fmt.Fprintf(opts.out, "  %d rules, signer: %s\n", len(bundle.Rules), result.SignerFingerprint[:16]+"...")
 	return nil
+}
+
+// stageRemoteBundleWithFreshness validates and advances rollback state before
+// replacing installed bytes. Advancing first is deliberately fail-closed: if
+// staging then fails or the process stops, retrying the same candidate repairs
+// the install, while the older installed bundle cannot erase the new floor.
+func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bundleData, sigData []byte, lf *domrules.LockFile, checkInstalled bool) error {
+	return domrules.WithFreshnessLock(rulesDir, func() error {
+		if checkInstalled {
+			if err := checkExistingInstall(filepath.Join(rulesDir, bundle.Name), bundle.Version, lf.BundleSHA256); err != nil {
+				return err
+			}
+		}
+
+		state, err := domrules.LoadFreshnessState(rulesDir)
+		if err != nil {
+			return fmt.Errorf("loading rules freshness state: %w", err)
+		}
+		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK {
+			return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
+		}
+		if bundle.FormatVersion >= 2 {
+			if err := domrules.CheckTierKeyBinding(bundle, lf.SignerFingerprint, nil); err != nil {
+				return fmt.Errorf("install %s: %w", bundle.Name, err)
+			}
+			if err := domrules.CheckRequiredFeatures(bundle.RequiredFeatures); err != nil {
+				return fmt.Errorf("install %s: %w", bundle.Name, err)
+			}
+			if fr := domrules.CheckFreshness(bundle, state, time.Now().UTC(), false); !fr.OK {
+				return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
+			}
+			domrules.RecordVersion(state, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
+		}
+		domrules.RecordFormat(state, bundle.Name, bundle.FormatVersion)
+		if err := domrules.SaveFreshnessState(rulesDir, state); err != nil {
+			return fmt.Errorf("updating rules freshness state: %w", err)
+		}
+		return stageBundle(rulesDir, bundle.Name, bundleData, sigData, lf)
+	})
 }
 
 // checkExistingInstall checks if a bundle is already installed.
@@ -1182,10 +1232,7 @@ func updateBundle(opts updateBundleOpts) error {
 		BundleSHA256:      newDigest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	if err := stageBundle(opts.RulesDir, opts.Name, bundleData, sigData, newLF); err != nil {
-		return err
-	}
-	if err := resetFreshnessStateAfterBundleChange(opts.RulesDir); err != nil {
+	if err := stageRemoteBundleWithFreshness(opts.RulesDir, bundle, bundleData, sigData, newLF, false); err != nil {
 		return err
 	}
 

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +171,71 @@ func TestLoadResultErrorHelpers(t *testing.T) {
 	}
 	if got := strings.Join(result.DegradedBundleNames(), ","); got != "a-bundle,z-bundle" {
 		t.Fatalf("DegradedBundleNames = %q, want sorted de-duped names", got)
+	}
+}
+
+func TestLoadBundlesFreshnessSaveFailureIsIntegrityError(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	bundle := testBundleV2(testBundleName, TierCommunity, 1, []Rule{testDLPRule("dlp-save", confidenceHigh, StatusStable)})
+	bundle.KeyID = KeyFingerprint(pub)
+	writeSignedBundle(t, bundleDir, bundle, pub, priv)
+
+	originalSave := saveFreshnessStateForLoad
+	saveFreshnessStateForLoad = func(string, *FreshnessState) error { return errors.New("forced durability failure") }
+	t.Cleanup(func() { saveFreshnessStateForLoad = originalSave })
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+		TrustedKeys: []config.TrustedKey{{
+			Name:      "test",
+			PublicKey: hex.EncodeToString(pub),
+		}},
+	})
+	if !result.Degraded {
+		t.Fatal("LoadBundles Degraded = false, want true")
+	}
+	if len(result.IntegrityErrors()) != 1 || !strings.Contains(result.IntegrityErrors()[0].Reason, "forced durability failure") {
+		t.Fatalf("integrity errors = %+v, want freshness durability failure", result.IntegrityErrors())
+	}
+}
+
+func TestLoadBundlesRejectsV1AfterAcceptedV2AcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	trustedKeys := []config.TrustedKey{{Name: "test", PublicKey: hex.EncodeToString(pub)}}
+	v2 := testBundleV2(testBundleName, TierCommunity, 7, []Rule{testDLPRule("dlp-v2", confidenceHigh, StatusStable)})
+	v2.KeyID = KeyFingerprint(pub)
+	writeSignedBundle(t, bundleDir, v2, pub, priv)
+
+	first := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: testPipelockVersion, TrustedKeys: trustedKeys})
+	if len(first.Errors) != 0 || len(first.DLP) != 1 {
+		t.Fatalf("first LoadBundles = errors %v, DLP %d; want accepted v2", first.Errors, len(first.DLP))
+	}
+
+	v1 := testBundle(testBundleName, []Rule{testDLPRule("dlp-v1", confidenceHigh, StatusStable)})
+	writeSignedBundle(t, bundleDir, v1, pub, priv)
+	second := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: testPipelockVersion, TrustedKeys: trustedKeys})
+	if !second.Degraded || len(second.DLP) != 0 {
+		t.Fatalf("second LoadBundles = degraded %v, DLP %d; want rejected v1", second.Degraded, len(second.DLP))
+	}
+	if len(second.IntegrityErrors()) != 1 || !strings.Contains(second.IntegrityErrors()[0].Reason, "format rollback") {
+		t.Fatalf("integrity errors = %+v, want format rollback", second.IntegrityErrors())
 	}
 }
 

@@ -1720,7 +1720,7 @@ func TestCheckExistingInstall_DifferentDigest(t *testing.T) {
 		t.Fatalf("writing lock: %v", err)
 	}
 
-	err := checkExistingInstall(bundleDir, "2026.03.1", "bbbb", false)
+	err := checkExistingInstall(bundleDir, "2026.03.1", "bbbb")
 	if err == nil {
 		t.Fatal("expected error for same version different digest")
 	}
@@ -1732,9 +1732,23 @@ func TestCheckExistingInstall_DifferentDigest(t *testing.T) {
 func TestCheckExistingInstall_NotInstalled(t *testing.T) {
 	t.Parallel()
 
-	err := checkExistingInstall(filepath.Join(t.TempDir(), "nonexistent"), "2026.03.1", "abc", false)
+	err := checkExistingInstall(filepath.Join(t.TempDir(), "nonexistent"), "2026.03.1", "abc")
 	if err != nil {
 		t.Errorf("expected nil error for not-installed bundle, got: %v", err)
+	}
+}
+
+func TestCheckExistingInstall_MalformedLockBlocksReplacement(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("create bundle dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bundle.lock"), []byte("installed_version: ["), 0o600); err != nil {
+		t.Fatalf("write malformed lock: %v", err)
+	}
+	err := checkExistingInstall(dir, "2026.09.0", "digest")
+	if err == nil || !strings.Contains(err.Error(), "reading installed bundle lock") {
+		t.Fatalf("checkExistingInstall error = %v, want malformed lock rejection", err)
 	}
 }
 

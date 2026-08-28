@@ -59,12 +59,10 @@ func freshnessKey(tier, name string) string {
 // Returns OK=true if the bundle passes all checks.
 //
 // Checks (in order):
-//  1. Version >= highest_seen for this bundle identity (rollback prevention),
-//     unless allowRollback is an explicit operator override
+//  1. Version >= highest_seen for this bundle identity (rollback prevention)
 //  2. Not expired (expires_at > now), unless allowStale is true
 //  3. min_pipelock version satisfied (handled separately by caller)
-func CheckFreshness(b *Bundle, state *FreshnessState, now time.Time, allowStale, allowRollback bool) FreshnessResult {
-	rollbackAllowed := allowRollback
+func CheckFreshness(b *Bundle, state *FreshnessState, now time.Time, allowStale bool) FreshnessResult {
 	if b.FormatVersion < 2 {
 		return FreshnessResult{OK: true}
 	}
@@ -72,7 +70,7 @@ func CheckFreshness(b *Bundle, state *FreshnessState, now time.Time, allowStale,
 	// Rollback prevention: reject if version < highest seen for this bundle.
 	key := freshnessKey(b.Tier, b.Name)
 	if highest, ok := state.HighestSeen[key]; ok {
-		if b.MonotonicVersion < highest && !rollbackAllowed {
+		if b.MonotonicVersion < highest {
 			return FreshnessResult{
 				Rollback: true,
 				Message: fmt.Sprintf("version rollback: bundle %q v%d is below highest seen v%d for tier %q",

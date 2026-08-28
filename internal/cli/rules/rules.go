@@ -643,7 +643,6 @@ func rulesInstallCmd() *cobra.Command {
 		sourceURL   string
 		localPath   string
 		allowUnsign bool
-		force       bool
 		rulesDir    string
 		configFile  string
 	)
@@ -675,7 +674,7 @@ Examples:
 			// Determine install mode.
 			switch {
 			case localPath != "":
-				return installLocal(out, dir, localPath, allowUnsign, rulesAllowUnversionedLoad(configFile, cmd.ErrOrStderr()), force)
+				return installLocal(out, dir, localPath, allowUnsign, rulesAllowUnversionedLoad(configFile, cmd.ErrOrStderr()))
 			case sourceURL != "":
 				return installRemote(installRemoteOptions{
 					out:        out,
@@ -683,7 +682,6 @@ Examples:
 					rulesDir:   dir,
 					bundleURL:  sourceURL,
 					configFile: configFile,
-					Force:      force,
 				})
 			case len(args) == 1:
 				name := args[0]
@@ -695,7 +693,6 @@ Examples:
 					bundleURL:    url,
 					configFile:   configFile,
 					expectedName: name,
-					Force:        force,
 				})
 			default:
 				return fmt.Errorf("specify a bundle name, --source URL, or --path DIR")
@@ -706,14 +703,13 @@ Examples:
 	cmd.Flags().StringVar(&sourceURL, "source", "", "third-party bundle URL")
 	cmd.Flags().StringVar(&localPath, "path", "", "local bundle directory")
 	cmd.Flags().BoolVar(&allowUnsign, "allow-unsigned", false, "allow unsigned local bundles")
-	cmd.Flags().BoolVar(&force, "force", false, "allow rollback to an older bundle version or format")
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "override rules directory")
 	cmd.Flags().StringVar(&configFile, "config", "", "config file for trusted keys")
 	return cmd
 }
 
 // installLocal installs a bundle from a local directory.
-func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allowUnversioned, force bool) error {
+func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allowUnversioned bool) error {
 	if !allowUnsigned {
 		return fmt.Errorf("local installs require --allow-unsigned (local bundles cannot be signature-verified)")
 	}
@@ -755,7 +751,7 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 	destDir := filepath.Join(rulesDir, bundle.Name)
 
 	// Check if already installed with same version+digest.
-	if err := checkExistingInstall(destDir, bundle.Version, digest, force); err != nil {
+	if err := checkExistingInstall(destDir, bundle.Version, digest); err != nil {
 		return err
 	}
 
@@ -769,7 +765,7 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 		BundleSHA256:     digest,
 		Unsigned:         true,
 	}
-	if err := stageLocalBundleWithFormatFloor(rulesDir, bundle, data, lf, force); err != nil {
+	if err := stageLocalBundleWithFormatFloor(rulesDir, bundle, data, lf); err != nil {
 		return err
 	}
 
@@ -778,17 +774,16 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 	return nil
 }
 
-func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, data []byte, lf *domrules.LockFile, force bool) error {
-	forceRollback := force
+func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, data []byte, lf *domrules.LockFile) error {
 	return domrules.WithFreshnessLock(rulesDir, func() error {
 		if err := domrules.RecoverBundleTransactionsLocked(rulesDir); err != nil {
 			return fmt.Errorf("recovering rules transactions: %w", err)
 		}
-		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle, forceRollback); err != nil {
+		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
 			return err
 		}
 		if lf != nil {
-			if err := checkExistingInstall(filepath.Join(rulesDir, bundle.Name), bundle.Version, lf.BundleSHA256, forceRollback); err != nil {
+			if err := checkExistingInstall(filepath.Join(rulesDir, bundle.Name), bundle.Version, lf.BundleSHA256); err != nil {
 				return err
 			}
 		}
@@ -796,7 +791,7 @@ func stageLocalBundleWithFormatFloor(rulesDir string, bundle *domrules.Bundle, d
 		if err != nil {
 			return fmt.Errorf("loading rules freshness state: %w", err)
 		}
-		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK && !forceRollback {
+		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK {
 			return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
 		}
 		previous := cloneFreshnessState(state)
@@ -818,7 +813,6 @@ type installRemoteOptions struct {
 	bundleURL    string
 	configFile   string
 	expectedName string
-	Force        bool
 }
 
 // installRemote installs a bundle from a remote URL.
@@ -897,7 +891,7 @@ func installRemote(opts installRemoteOptions) error {
 		BundleSHA256:      digest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	if err := stageRemoteBundleWithFreshness(opts.rulesDir, bundle, bundleData, sigData, lf, true, opts.Force); err != nil {
+	if err := stageRemoteBundleWithFreshness(opts.rulesDir, bundle, bundleData, sigData, lf, true); err != nil {
 		return err
 	}
 
@@ -910,19 +904,16 @@ func installRemote(opts installRemoteOptions) error {
 // replacing installed bytes. Advancing first is deliberately fail-closed: if
 // staging then fails or the process stops, retrying the same candidate repairs
 // the install, while the older installed bundle cannot erase the new floor.
-// force is the explicit operator override for version and format rollbacks; it
-// does not override signature, tier, feature, or expiry validation.
-func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bundleData, sigData []byte, lf *domrules.LockFile, checkInstalled, force bool) error {
-	forceRollback := force
+func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bundleData, sigData []byte, lf *domrules.LockFile, checkInstalled bool) error {
 	return domrules.WithFreshnessLock(rulesDir, func() error {
 		if err := domrules.RecoverBundleTransactionsLocked(rulesDir); err != nil {
 			return fmt.Errorf("recovering rules transactions: %w", err)
 		}
-		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle, forceRollback); err != nil {
+		if err := checkInstalledBundleIdentity(filepath.Join(rulesDir, bundle.Name), bundle); err != nil {
 			return err
 		}
 		if checkInstalled {
-			if err := checkExistingInstall(filepath.Join(rulesDir, bundle.Name), bundle.Version, lf.BundleSHA256, forceRollback); err != nil {
+			if err := checkExistingInstall(filepath.Join(rulesDir, bundle.Name), bundle.Version, lf.BundleSHA256); err != nil {
 				return err
 			}
 		}
@@ -931,7 +922,7 @@ func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bu
 		if err != nil {
 			return fmt.Errorf("loading rules freshness state: %w", err)
 		}
-		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK && !forceRollback {
+		if fr := domrules.CheckFormatFloor(bundle, state); !fr.OK {
 			return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
 		}
 		previous := cloneFreshnessState(state)
@@ -942,7 +933,7 @@ func stageRemoteBundleWithFreshness(rulesDir string, bundle *domrules.Bundle, bu
 			if err := domrules.CheckRequiredFeatures(bundle.RequiredFeatures); err != nil {
 				return fmt.Errorf("install %s: %w", bundle.Name, err)
 			}
-			if fr := domrules.CheckFreshness(bundle, state, time.Now().UTC(), false, forceRollback); !fr.OK {
+			if fr := domrules.CheckFreshness(bundle, state, time.Now().UTC(), false); !fr.OK {
 				return fmt.Errorf("install %s: %s", bundle.Name, fr.Message)
 			}
 			domrules.RecordVersion(state, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
@@ -986,8 +977,7 @@ func commitFreshnessStateWithSave(rulesDir string, next, previous *domrules.Fres
 	return nil
 }
 
-func checkInstalledBundleIdentity(destDir string, candidate *domrules.Bundle, force bool) error {
-	forceRollback := force
+func checkInstalledBundleIdentity(destDir string, candidate *domrules.Bundle) error {
 	data, err := domrules.ReadBundleFile(filepath.Join(destDir, "bundle.yaml"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1002,20 +992,22 @@ func checkInstalledBundleIdentity(destDir string, candidate *domrules.Bundle, fo
 	if installed.FormatVersion >= 2 && candidate.FormatVersion >= 2 && installed.Tier != candidate.Tier {
 		return fmt.Errorf("install %s: tier change from %q to %q is not allowed for an installed bundle name", candidate.Name, installed.Tier, candidate.Tier)
 	}
-	if installed.FormatVersion > candidate.FormatVersion && !forceRollback {
+	if installed.FormatVersion > candidate.FormatVersion {
 		return fmt.Errorf("install %s: format rollback from installed format_version %d to %d", candidate.Name, installed.FormatVersion, candidate.FormatVersion)
 	}
 	return nil
 }
 
-// checkExistingInstall rejects replacement with an older calendar version unless
-// force is the explicit rollback override. Same version + same digest skips the
+// checkExistingInstall rejects replacement with an older calendar version. Same version + same digest skips the
 // install; same version + a different digest rejects a possible republish.
-func checkExistingInstall(destDir, version, digest string, force bool) error {
+func checkExistingInstall(destDir, version, digest string) error {
 	lockPath := filepath.Join(destDir, "bundle.lock")
 	lf, err := domrules.ReadLockFile(lockPath)
 	if err != nil {
-		return nil // not installed
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // not installed
+		}
+		return fmt.Errorf("reading installed bundle lock: %w", err)
 	}
 	newVersion, err := domrules.ParseCalVer(version)
 	if err != nil {
@@ -1025,8 +1017,8 @@ func checkExistingInstall(destDir, version, digest string, force bool) error {
 	if err != nil {
 		return fmt.Errorf("parsing installed version %q: %w", lf.InstalledVersion, err)
 	}
-	if newVersion.Compare(installedVersion) < 0 && !force {
-		return fmt.Errorf("bundle v%s is older than installed v%s (use --force to downgrade)", version, lf.InstalledVersion)
+	if newVersion.Compare(installedVersion) < 0 {
+		return fmt.Errorf("bundle v%s is older than installed v%s", version, lf.InstalledVersion)
 	}
 
 	if lf.InstalledVersion == version {
@@ -1394,8 +1386,8 @@ func updateBundle(opts updateBundleOpts) error {
 
 	cmp := newVer.Compare(oldVer)
 	switch {
-	case cmp < 0 && !opts.Force:
-		return fmt.Errorf("update %s: new version %s is older than installed %s (use --force to downgrade)", opts.Name, bundle.Version, lf.InstalledVersion)
+	case cmp < 0:
+		return fmt.Errorf("update %s: new version %s is older than installed %s", opts.Name, bundle.Version, lf.InstalledVersion)
 
 	case cmp == 0 && newDigest == lf.BundleSHA256:
 		// Same version, same digest: just update last_check.
@@ -1419,7 +1411,7 @@ func updateBundle(opts updateBundleOpts) error {
 		BundleSHA256:      newDigest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	if err := stageRemoteBundleWithFreshness(opts.RulesDir, bundle, bundleData, sigData, newLF, false, opts.Force); err != nil {
+	if err := stageRemoteBundleWithFreshness(opts.RulesDir, bundle, bundleData, sigData, newLF, false); err != nil {
 		return err
 	}
 

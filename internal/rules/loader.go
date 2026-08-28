@@ -414,7 +414,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		}
 
 		// Freshness: rollback prevention and expiry.
-		fr := CheckFreshness(bundle, ctx.FreshnessState, ctx.Now, opts.AllowStale, false)
+		fr := CheckFreshness(bundle, ctx.FreshnessState, ctx.Now, opts.AllowStale)
 		if !fr.OK {
 			class := BundleErrorClassAvailability
 			if fr.Rollback || fr.Expired {

@@ -286,10 +286,10 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		_ = sandboxCmd.Process.Kill()
 	}
 
-	// Finish group signaling before Wait starts. processExit serializes this
-	// numeric-ID window with session teardown; after wait begins it permits only
-	// the stable direct-process handle.
-	processExit.terminate(func() { terminateProcessGroup(childPgid) }, killDirectChild)
+	// Do not signal the process group on the ordinary EOF path. The response
+	// reader can observe EOF just before the direct child finishes exiting; a
+	// teardown here turns that clean exit into SIGTERM. Cancellation and parent
+	// death already own process-group termination through processExit above.
 	// A sandbox child can detach from the process group while retaining the
 	// stderr pipe. Once the direct command has been signalled, it is adopted by
 	// the subreaper; sweep it before Wait so inherited descriptors cannot keep

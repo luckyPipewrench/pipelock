@@ -490,6 +490,25 @@ func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
 	}
 }
 
+// TestRunProxyWithSandbox_ResponseEOFPreservesCleanChildExit reproduces the
+// race where the response reader sees EOF just before the direct child exits.
+// Ordinary EOF must wait for that exit rather than turning it into SIGTERM.
+func TestRunProxyWithSandbox_ResponseEOFPreservesCleanChildExit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "exec 1>&-; sleep 0.2")
+	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+	opts.sessionExitForTest = liveSessionExitHooks()
+
+	var logBuf syncBuffer
+	err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts)
+	if err != nil {
+		t.Fatalf("sandbox proxy converted clean child exit after response EOF into failure: %v (%s, log=%q)",
+			err, describeSandboxLifecycleFailure(ctx, err), logBuf.String())
+	}
+}
+
 // subreaperDirectionDeadline bounds a hang; it is not part of either assertion.
 //
 // Both subtests below pass one context to RunProxyWithSandbox AND to

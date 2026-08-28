@@ -463,6 +463,16 @@ type Proxy struct {
 	probeInflight        atomic.Bool                           // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
 	metricsTargetPtr     atomic.Pointer[metricsDialTarget]     // resolved metrics listener; rebuilt when MetricsListen changes
 	lookupMetricsHost    func(context.Context, string) ([]string, error)
+	// responseBodyLimit is an internal test seam. Production leaves it zero
+	// and uses fetch_proxy.max_response_mb.
+	responseBodyLimit int64
+}
+
+func (p *Proxy) responseScanBodyLimit(cfg *config.Config) int64 {
+	if p != nil && p.responseBodyLimit > 0 {
+		return p.responseBodyLimit
+	}
+	return int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
 }
 
 // Option configures optional Proxy behavior.
@@ -5338,7 +5348,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked
 	// at read time rather than after the full body has been consumed.
-	configMaxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+	configMaxBytes := p.responseScanBodyLimit(cfg)
 	maxBytes := configMaxBytes
 	remaining := resolved.Budget.RemainingBytes()
 	if remaining >= 0 && remaining < maxBytes {

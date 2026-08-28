@@ -2105,7 +2105,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// intercept and reverse proxy paths. Exceeding the data BUDGET is a
 	// deliberate, separately-logged truncation policy and must not turn into a
 	// 403. See the buffered-scan over-limit handling below.
-	configMaxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+	configMaxBytes := p.responseScanBodyLimit(cfg)
 	maxBytes := configMaxBytes
 	budgetRemaining := resolved.Budget.RemainingBytes()
 	budgetLimited := false

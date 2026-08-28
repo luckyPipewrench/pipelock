@@ -634,6 +634,88 @@ func upsertVerifiedAppliedStateTx(ctx context.Context, tx *sql.Tx, batch Accepte
 	return nil
 }
 
+// IngestAppliedStateHeartbeat advances the verified fleet view without adding
+// a synthetic audit event. The observed_at comparison is the replay contract:
+// exact retries of the current heartbeat are idempotent, while older,
+// same-time divergent, or out-of-order statements fail closed.
+func (s *SQLiteAuditStore) IngestAppliedStateHeartbeat(ctx context.Context, accepted AcceptedAppliedStateHeartbeat) (AppliedStateHeartbeatStatus, error) {
+	if s == nil || s.db == nil {
+		return "", ErrAuditSinkRequired
+	}
+	if ctx == nil {
+		return "", fmt.Errorf("%w: context", ErrAuditSinkRequired)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if accepted.Heartbeat.OrgID != accepted.Identity.OrgID || accepted.Heartbeat.FleetID != accepted.Identity.FleetID || accepted.Heartbeat.InstanceID != accepted.Identity.InstanceID {
+		return "", conductor.ErrAudienceMismatch
+	}
+	if accepted.ReceivedAt.IsZero() {
+		accepted.ReceivedAt = time.Now().UTC()
+	}
+	if err := accepted.Heartbeat.ValidateForConductor(accepted.ReceivedAt, conductor.DefaultAuditMaxSkew); err != nil {
+		return "", err
+	}
+	hash, err := accepted.Heartbeat.CanonicalHash()
+	if err != nil {
+		return "", err
+	}
+	if hash != accepted.HeartbeatHash {
+		return "", fmt.Errorf("%w: heartbeat_hash mismatch", ErrInvalidStoreRecord)
+	}
+	appliedJSON, err := json.Marshal(accepted.Heartbeat.AppliedState)
+	if err != nil {
+		return "", fmt.Errorf("marshal conductor heartbeat applied state: %w", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin conductor heartbeat transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO verified_applied_state (
+			org_id, fleet_id, instance_id, applied_state_json,
+			signer_key_id, batch_id, envelope_hash, observed_at, verified_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(org_id, fleet_id, instance_id) DO UPDATE SET
+			applied_state_json = excluded.applied_state_json,
+			signer_key_id      = excluded.signer_key_id,
+			batch_id           = excluded.batch_id,
+			envelope_hash      = excluded.envelope_hash,
+			observed_at        = excluded.observed_at,
+			verified_at        = excluded.verified_at
+		WHERE excluded.observed_at > verified_applied_state.observed_at
+	`, accepted.Heartbeat.OrgID, accepted.Heartbeat.FleetID, accepted.Heartbeat.InstanceID, appliedJSON,
+		firstSignerKeyID(accepted.Heartbeat.Signatures), accepted.Heartbeat.HeartbeatID, accepted.HeartbeatHash,
+		accepted.Heartbeat.AppliedState.ObservedAt.UTC(), accepted.ReceivedAt.UTC())
+	if err != nil {
+		return "", fmt.Errorf("upsert conductor heartbeat applied state: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("count conductor heartbeat upsert: %w", err)
+	}
+	status := AppliedStateHeartbeatAccepted
+	if rows == 0 {
+		var currentHash string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT envelope_hash FROM verified_applied_state
+			WHERE org_id = ? AND fleet_id = ? AND instance_id = ?
+		`, accepted.Heartbeat.OrgID, accepted.Heartbeat.FleetID, accepted.Heartbeat.InstanceID).Scan(&currentHash); err != nil {
+			return "", fmt.Errorf("read conductor heartbeat replay state: %w", err)
+		}
+		if currentHash != accepted.HeartbeatHash {
+			return "", ErrAppliedStateReplay
+		}
+		status = AppliedStateHeartbeatDuplicate
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit conductor heartbeat transaction: %w", err)
+	}
+	return status, nil
+}
+
 // GetVerifiedAppliedState returns the latest verified applied-state for one
 // follower, or ok=false when none is recorded.
 func (s *SQLiteAuditStore) GetVerifiedAppliedState(ctx context.Context, orgID, fleetID, instanceID string) (VerifiedAppliedState, bool, error) {

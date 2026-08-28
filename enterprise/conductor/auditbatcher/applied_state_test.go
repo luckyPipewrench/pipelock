@@ -6,9 +6,11 @@
 package auditbatcher
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,6 +96,51 @@ func TestProducer_EmitsSignedAppliedStateWhenEnabled(t *testing.T) {
 	// applied-state (it is inside SignablePreimage).
 }
 
+func TestSignAppliedStateHeartbeat(t *testing.T) {
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	heartbeat := conductor.AppliedStateHeartbeat{
+		SchemaVersion: conductor.SchemaVersion,
+		HeartbeatID:   "state-1",
+		OrgID:         "org-main",
+		FleetID:       "prod",
+		InstanceID:    "pl-prod-1",
+		EmittedAt:     now,
+		AppliedState: conductor.FollowerAppliedState{
+			PipelockVersion:       "3.1.0",
+			LastPolicyPollAt:      now,
+			LastSuccessfulApplyAt: now,
+			ObservedAt:            now,
+			ProvenanceAt:          now,
+		},
+	}
+	signed, err := SignAppliedStateHeartbeat(heartbeat, "audit-key-1", priv)
+	if err != nil {
+		t.Fatalf("SignAppliedStateHeartbeat: %v", err)
+	}
+	if err := signed.VerifySignaturesAt(now, func(id string) (conductor.SignatureKey, error) {
+		if id != "audit-key-1" {
+			return conductor.SignatureKey{}, errors.New("unknown key")
+		}
+		return conductor.SignatureKey{PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
+	}); err != nil {
+		t.Fatalf("VerifySignaturesAt: %v", err)
+	}
+	if _, err := SignAppliedStateHeartbeat(heartbeat, "audit-key-1", ed25519.PrivateKey("short")); err == nil {
+		t.Fatal("SignAppliedStateHeartbeat(short key) = nil error")
+	}
+	if _, err := SignAppliedStateHeartbeat(heartbeat, "bad key id", priv); err == nil {
+		t.Fatal("SignAppliedStateHeartbeat(bad signer id) = nil error")
+	}
+	heartbeat.AppliedState.ProvenanceAt = time.Time{}
+	if _, err := SignAppliedStateHeartbeat(heartbeat, "audit-key-1", priv); err == nil {
+		t.Fatal("SignAppliedStateHeartbeat(missing provenance) = nil error")
+	}
+}
+
 func TestProducer_StampsObservedAtWhenProviderLeavesZero(t *testing.T) {
 	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
 	producer, q, auditPub := newAppliedStateProducer(t, ProducerConfig{
@@ -146,5 +193,58 @@ func TestProducer_OmitsAppliedStateWhenProviderNil(t *testing.T) {
 	batch := claimOneBatch(t, q, producer, auditPub)
 	if batch.Envelope.AppliedState != nil {
 		t.Fatalf("AppliedState = %+v, want nil (nil provider)", *batch.Envelope.AppliedState)
+	}
+}
+
+func TestProducer_AppliedStateHeartbeatRunsIdleAndStopsOnClose(t *testing.T) {
+	fired := make(chan struct{}, 1)
+	var count atomic.Int64
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		EmitAppliedState:          true,
+		EmitAppliedStateHeartbeat: true,
+		HeartbeatInterval:         10 * time.Millisecond,
+		AppliedStateHeartbeat: func(context.Context) error {
+			count.Add(1)
+			select {
+			case fired <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	})
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("idle applied-state heartbeat did not fire")
+	}
+	if err := producer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	closedCount := count.Load()
+	<-time.After(30 * time.Millisecond)
+	if count.Load() != closedCount {
+		t.Fatalf("applied-state heartbeat count advanced after close: %d -> %d", closedCount, count.Load())
+	}
+}
+
+func TestProducer_AppliedStateHeartbeatDisabledWithoutNegotiation(t *testing.T) {
+	fired := make(chan struct{}, 1)
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		// Audit schema v2 enables batch applied-state, but only v3 enables the
+		// recorder-independent heartbeat.
+		EmitAppliedState:  true,
+		HeartbeatInterval: time.Millisecond,
+		AppliedStateHeartbeat: func(context.Context) error {
+			fired <- struct{}{}
+			return nil
+		},
+	})
+	select {
+	case <-fired:
+		t.Fatal("unnegotiated applied-state heartbeat fired")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := producer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }

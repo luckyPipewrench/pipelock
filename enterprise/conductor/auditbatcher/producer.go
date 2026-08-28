@@ -7,6 +7,7 @@ package auditbatcher
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -25,8 +26,10 @@ import (
 )
 
 const (
-	defaultProducerBuffer       = 4096
-	maxActiveRecorderNamespaces = 1024
+	defaultProducerBuffer                = 4096
+	defaultAppliedStateHeartbeatInterval = time.Minute
+	defaultAppliedStateHeartbeatTimeout  = 5 * time.Second
+	maxActiveRecorderNamespaces          = 1024
 
 	actionReceiptEntryType = "action_receipt"
 	checkpointEntryType    = "checkpoint"
@@ -46,27 +49,32 @@ const (
 // emit.Emitter: enqueue failures need durable drop accounting rather than
 // fire-and-forget sink behavior.
 type Producer struct {
-	queue                *Queue
-	metrics              MetricsSink
-	orgID                string
-	fleetID              string
-	instanceID           string
-	auditSignerKeyID     string
-	recorderKeyID        string
-	followerPubHex       string
-	auditSigner          ed25519.PrivateKey
-	now                  func() time.Time
-	entries              chan recorder.Entry
-	done                 chan struct{}
-	closeOnce            sync.Once
-	sendMu               sync.RWMutex
-	closed               atomic.Bool
-	dropMu               sync.Mutex
-	dropped              map[string]uint64
-	previousSegmentTail  string
-	previousSegmentTails map[string]string
-	emitAppliedState     bool
-	appliedStateProvider func() (conductor.FollowerAppliedState, bool)
+	queue                 *Queue
+	metrics               MetricsSink
+	orgID                 string
+	fleetID               string
+	instanceID            string
+	auditSignerKeyID      string
+	recorderKeyID         string
+	followerPubHex        string
+	auditSigner           ed25519.PrivateKey
+	now                   func() time.Time
+	entries               chan recorder.Entry
+	done                  chan struct{}
+	closeOnce             sync.Once
+	sendMu                sync.RWMutex
+	closed                atomic.Bool
+	dropMu                sync.Mutex
+	dropped               map[string]uint64
+	previousSegmentTail   string
+	previousSegmentTails  map[string]string
+	emitAppliedState      bool
+	emitStateHeartbeat    bool
+	appliedStateProvider  func() (conductor.FollowerAppliedState, bool)
+	appliedStateHeartbeat func(context.Context) error
+	heartbeatInterval     time.Duration
+	heartbeatStop         chan struct{}
+	heartbeatDone         chan struct{}
 }
 
 type ProducerConfig struct {
@@ -89,11 +97,19 @@ type ProducerConfig struct {
 	// false so the wire form is byte-identical to v1 and passes the conductor's
 	// strict unknown-field decoder. Default false = do not emit (fail-safe).
 	EmitAppliedState bool
+	// EmitAppliedStateHeartbeat gates the recorder-independent heartbeat. It
+	// must only be true when capability negotiation confirmed audit schema v3.
+	EmitAppliedStateHeartbeat bool
 	// AppliedStateProvider supplies the current applied-state snapshot when
 	// EmitAppliedState is true. It is a callback so the producer stays decoupled
 	// from applycache/policysync; returning ok=false leaves applied-state off
 	// the batch (best-effort) while the batch itself still flows.
 	AppliedStateProvider func() (conductor.FollowerAppliedState, bool)
+	// AppliedStateHeartbeat sends a recorder-independent signed state update.
+	// It runs periodically only when EmitAppliedState was negotiated. Failures
+	// are best-effort: the next interval retries with a fresh statement.
+	AppliedStateHeartbeat func(context.Context) error
+	HeartbeatInterval     time.Duration
 }
 
 func NewProducer(cfg ProducerConfig) (*Producer, error) {
@@ -126,25 +142,34 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = defaultAppliedStateHeartbeatInterval
+	}
 	p := &Producer{
-		queue:                cfg.Queue,
-		metrics:              cfg.Metrics,
-		orgID:                cfg.OrgID,
-		fleetID:              cfg.FleetID,
-		instanceID:           cfg.InstanceID,
-		auditSignerKeyID:     cfg.AuditSignerKeyID,
-		recorderKeyID:        cfg.RecorderKeyID,
-		followerPubHex:       hex.EncodeToString(cfg.RecorderPublicKey),
-		auditSigner:          append(ed25519.PrivateKey(nil), cfg.AuditSigner...),
-		now:                  cfg.Now,
-		entries:              make(chan recorder.Entry, cfg.BufferSize),
-		done:                 make(chan struct{}),
-		dropped:              map[string]uint64{},
-		previousSegmentTails: map[string]string{},
-		emitAppliedState:     cfg.EmitAppliedState,
-		appliedStateProvider: cfg.AppliedStateProvider,
+		queue:                 cfg.Queue,
+		metrics:               cfg.Metrics,
+		orgID:                 cfg.OrgID,
+		fleetID:               cfg.FleetID,
+		instanceID:            cfg.InstanceID,
+		auditSignerKeyID:      cfg.AuditSignerKeyID,
+		recorderKeyID:         cfg.RecorderKeyID,
+		followerPubHex:        hex.EncodeToString(cfg.RecorderPublicKey),
+		auditSigner:           append(ed25519.PrivateKey(nil), cfg.AuditSigner...),
+		now:                   cfg.Now,
+		entries:               make(chan recorder.Entry, cfg.BufferSize),
+		done:                  make(chan struct{}),
+		dropped:               map[string]uint64{},
+		previousSegmentTails:  map[string]string{},
+		emitAppliedState:      cfg.EmitAppliedState,
+		emitStateHeartbeat:    cfg.EmitAppliedStateHeartbeat,
+		appliedStateProvider:  cfg.AppliedStateProvider,
+		appliedStateHeartbeat: cfg.AppliedStateHeartbeat,
+		heartbeatInterval:     cfg.HeartbeatInterval,
+		heartbeatStop:         make(chan struct{}),
+		heartbeatDone:         make(chan struct{}),
 	}
 	go p.run()
+	go p.runAppliedStateHeartbeat()
 	return p, nil
 }
 
@@ -175,10 +200,31 @@ func (p *Producer) Close() error {
 		p.sendMu.Lock()
 		defer p.sendMu.Unlock()
 		p.closed.Store(true)
+		close(p.heartbeatStop)
 		close(p.entries)
 		<-p.done
+		<-p.heartbeatDone
 	})
 	return nil
+}
+
+func (p *Producer) runAppliedStateHeartbeat() {
+	defer close(p.heartbeatDone)
+	if !p.emitStateHeartbeat || p.appliedStateHeartbeat == nil {
+		return
+	}
+	ticker := time.NewTicker(p.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), defaultAppliedStateHeartbeatTimeout)
+			_ = p.appliedStateHeartbeat(ctx)
+			cancel()
+		case <-p.heartbeatStop:
+			return
+		}
+	}
 }
 
 func (p *Producer) run() {

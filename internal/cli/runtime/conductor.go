@@ -754,23 +754,32 @@ func (s *Server) initConductorProducer(cfg *config.Config, m *metrics.Metrics, r
 	// fail-safe — any handshake failure (or an old v1 conductor) leaves it off,
 	// so batches still flow without applied-state and stay v1-wire-compatible.
 	emitApplied := false
+	emitHeartbeat := false
 	var appliedProvider func() (conductor.FollowerAppliedState, bool)
 	if reporter, ok := s.conductorStatusReporter.(*conductorPolicyStatusReporter); ok && reporter != nil {
 		appliedProvider = reporter.appliedStateProvider()
-		emitApplied = conductorNegotiateEmitAppliedState(cfg.Conductor, stderr)
+		emitApplied, emitHeartbeat = conductorNegotiateAppliedState(cfg.Conductor, stderr)
+		reporter.configureAppliedStateHeartbeat(emitHeartbeat, cfg.Conductor.AuditSigningKeyID, recPrivKey)
 	}
 	producer, err := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
-		Queue:                queue,
-		Metrics:              m,
-		OrgID:                cfg.Conductor.OrgID,
-		FleetID:              cfg.Conductor.FleetID,
-		InstanceID:           cfg.Conductor.InstanceID,
-		AuditSignerKeyID:     cfg.Conductor.AuditSigningKeyID,
-		RecorderKeyID:        cfg.Conductor.RecorderKeyID,
-		AuditSigner:          recPrivKey,
-		RecorderPublicKey:    recPubKey,
-		EmitAppliedState:     emitApplied,
-		AppliedStateProvider: appliedProvider,
+		Queue:                     queue,
+		Metrics:                   m,
+		OrgID:                     cfg.Conductor.OrgID,
+		FleetID:                   cfg.Conductor.FleetID,
+		InstanceID:                cfg.Conductor.InstanceID,
+		AuditSignerKeyID:          cfg.Conductor.AuditSigningKeyID,
+		RecorderKeyID:             cfg.Conductor.RecorderKeyID,
+		AuditSigner:               recPrivKey,
+		RecorderPublicKey:         recPubKey,
+		EmitAppliedState:          emitApplied,
+		EmitAppliedStateHeartbeat: emitHeartbeat,
+		AppliedStateProvider:      appliedProvider,
+		AppliedStateHeartbeat: func(ctx context.Context) error {
+			if reporter, ok := s.conductorStatusReporter.(*conductorPolicyStatusReporter); ok && reporter != nil {
+				return reporter.reportCurrentAppliedStateHeartbeat(ctx)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("creating conductor audit producer: %w", err)
@@ -792,20 +801,20 @@ func conductorRecorderPublicKey(priv ed25519.PrivateKey) (ed25519.PublicKey, err
 	return pub, nil
 }
 
-// conductorNegotiateEmitAppliedState performs a best-effort capabilities
+// conductorNegotiateAppliedState performs a best-effort capabilities
 // handshake and reports whether the conductor accepts audit-envelope schema v2
 // (and therefore the signed applied-state field). It fails safe: any error, or
 // an older v1-only conductor, returns false so the producer omits applied-state
 // and its batches stay byte-identical to v1 past the conductor's strict
 // unknown-field decoder.
-func conductorNegotiateEmitAppliedState(cfg config.Conductor, stderr io.Writer) bool {
+func conductorNegotiateAppliedState(cfg config.Conductor, stderr io.Writer) (bool, bool) {
 	client, err := newConductorMTLSClient(cfg)
 	if err != nil {
-		return false
+		return false, false
 	}
 	capClient, err := conductor.NewCapabilitiesClient(cfg.ConductorURL, client, conductor.LocalFollowerCapabilities{})
 	if err != nil {
-		return false
+		return false, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), conductorAppliedStateHandshakeTimeout)
 	defer cancel()
@@ -814,7 +823,7 @@ func conductorNegotiateEmitAppliedState(cfg config.Conductor, stderr io.Writer) 
 		if stderr != nil {
 			_, _ = fmt.Fprintf(stderr, "  Conductor: applied-state schema negotiation unavailable (%v); omitting signed applied-state\n", err)
 		}
-		return false
+		return false, false
 	}
-	return negotiated.AuditSchemaVersion >= conductor.AuditEnvelopeSchemaVersion
+	return negotiated.AuditSchemaVersion >= conductor.AuditEnvelopeSchemaVersion, negotiated.AppliedStateHeartbeat
 }

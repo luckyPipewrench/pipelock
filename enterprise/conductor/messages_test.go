@@ -1669,6 +1669,100 @@ func TestAuditBatchEnvelope_VerifySignatures(t *testing.T) {
 	}
 }
 
+func TestAppliedStateHeartbeat_CryptoAndValidation(t *testing.T) {
+	now := testNow
+	heartbeat := AppliedStateHeartbeat{
+		SchemaVersion: SchemaVersion,
+		HeartbeatID:   "state-1",
+		OrgID:         "org-main",
+		FleetID:       "prod",
+		InstanceID:    "pl-prod-1",
+		EmittedAt:     now,
+		AppliedState: FollowerAppliedState{
+			PipelockVersion:       "3.1.0",
+			LastPolicyPollAt:      now,
+			LastSuccessfulApplyAt: now,
+			ObservedAt:            now,
+			ProvenanceAt:          now,
+		},
+	}
+	pub, proof := signedProof(t, heartbeat.SignablePreimage, "audit-key-1", signing.PurposeAuditBatchSigning)
+	heartbeat.Signatures = []SignatureProof{proof}
+	resolver := mapResolver(map[string]SignatureKey{
+		"audit-key-1": {PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning},
+	})
+	if err := heartbeat.ValidateForConductor(now, DefaultAuditMaxSkew); err != nil {
+		t.Fatalf("ValidateForConductor: %v", err)
+	}
+	if _, err := heartbeat.CanonicalHash(); err != nil {
+		t.Fatalf("CanonicalHash: %v", err)
+	}
+	if err := heartbeat.VerifySignaturesAt(now, resolver); err != nil {
+		t.Fatalf("VerifySignaturesAt: %v", err)
+	}
+
+	tampered := heartbeat
+	tampered.HeartbeatID = "state-2"
+	if err := tampered.VerifySignaturesAt(now, resolver); !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("VerifySignaturesAt(tampered) = %v, want ErrSignatureVerification", err)
+	}
+	stale := heartbeat
+	stale.EmittedAt = now.Add(-2 * DefaultAuditMaxSkew)
+	if err := stale.ValidateForConductor(now, DefaultAuditMaxSkew); !errors.Is(err, ErrSkewExceeded) {
+		t.Fatalf("ValidateForConductor(stale) = %v, want ErrSkewExceeded", err)
+	}
+	if err := heartbeat.ValidateForConductor(now, MaxAllowedAuditSkew+time.Second); !errors.Is(err, ErrSkewExceeded) {
+		t.Fatalf("ValidateForConductor(over cap) = %v, want ErrSkewExceeded", err)
+	}
+	missing := heartbeat
+	missing.AppliedState.ProvenanceAt = time.Time{}
+	if err := missing.Validate(); !errors.Is(err, ErrMissingField) {
+		t.Fatalf("Validate(missing provenance) = %v, want ErrMissingField", err)
+	}
+
+	invalidCases := []struct {
+		name   string
+		mutate func(*AppliedStateHeartbeat)
+	}{
+		{name: "schema", mutate: func(h *AppliedStateHeartbeat) { h.SchemaVersion = 0 }},
+		{name: "heartbeat_id", mutate: func(h *AppliedStateHeartbeat) { h.HeartbeatID = "bad id" }},
+		{name: "org", mutate: func(h *AppliedStateHeartbeat) { h.OrgID = "" }},
+		{name: "instance", mutate: func(h *AppliedStateHeartbeat) { h.InstanceID = "bad id" }},
+		{name: "emitted_at", mutate: func(h *AppliedStateHeartbeat) { h.EmittedAt = time.Time{} }},
+		{name: "applied_state", mutate: func(h *AppliedStateHeartbeat) { h.AppliedState.ActiveBundleHash = "bad" }},
+	}
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := heartbeat
+			tc.mutate(&invalid)
+			if err := invalid.Validate(); err == nil {
+				t.Fatal("Validate() = nil error")
+			}
+		})
+	}
+	invalidForConductor := heartbeat
+	invalidForConductor.SchemaVersion = 0
+	if err := invalidForConductor.ValidateForConductor(now, DefaultAuditMaxSkew); err == nil {
+		t.Fatal("ValidateForConductor(invalid heartbeat) = nil error")
+	}
+
+	if err := heartbeat.ValidateForConductor(now, 0); err != nil {
+		t.Fatalf("ValidateForConductor(default skew) = %v", err)
+	}
+	future := heartbeat
+	future.EmittedAt = now.Add(DefaultAuditMaxSkew / 2)
+	pub, futureProof := signedProof(t, future.SignablePreimage, "audit-key-2", signing.PurposeAuditBatchSigning)
+	future.Signatures = []SignatureProof{futureProof}
+	if err := future.ValidateForConductor(now, DefaultAuditMaxSkew); err != nil {
+		t.Fatalf("ValidateForConductor(future within skew) = %v", err)
+	}
+	if err := future.VerifySignaturesAt(now, mapResolver(map[string]SignatureKey{
+		"audit-key-2": {PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning},
+	})); err != nil {
+		t.Fatalf("VerifySignaturesAt(future) = %v", err)
+	}
+}
+
 func TestValidationEdgeCases(t *testing.T) {
 	t.Run("signature_proof_missing_signer", func(t *testing.T) {
 		err := (SignatureProof{KeyPurpose: signing.PurposePolicyBundleSigning, Algorithm: SignatureAlgorithmEd25519, Signature: testSignature("aa")}).

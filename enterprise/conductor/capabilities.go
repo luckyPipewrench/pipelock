@@ -42,6 +42,7 @@ type NegotiatedCapabilities struct {
 	AuditSchemaVersion     int
 	CreatedSkew            time.Duration
 	EmergencyStream        bool
+	AppliedStateHeartbeat  bool
 	RemoteKillThreshold    int
 	RollbackThreshold      int
 	TrustRotationThreshold int
@@ -175,6 +176,7 @@ func NegotiateCapabilities(c CapabilitiesResponse, local LocalFollowerCapabiliti
 		// the follower has opted in locally. Either side disabled means polling
 		// fallback only.
 		EmergencyStream:        c.EmergencyStream && local.EmergencyStream,
+		AppliedStateHeartbeat:  c.AuditBatch.Max >= AppliedStateHeartbeatSchemaVersion,
 		RemoteKillThreshold:    c.RemoteKillThreshold,
 		RollbackThreshold:      c.RollbackThreshold,
 		TrustRotationThreshold: c.TrustRotationThreshold,

@@ -212,18 +212,26 @@ func socketConditional() []unix.SockFilter {
 // personality syscall to known-safe values. Unexpected personality values
 // could alter syscall behavior in ways that weaken containment.
 func personalityConditional() []unix.SockFilter {
+	// Values from include/uapi/linux/personality.h. The previous set was
+	// mislabelled and enforced a different policy than its comments described:
+	// 0x00000008 is PER_LINUX32, not ADDR_NO_RANDOMIZE, and 0x00020000 is UNAME26,
+	// not PER_LINUX32. So the filter admitted UNAME26, which nothing here ever
+	// intended to allow and which makes uname report a 2.6 kernel to the contained
+	// process, while refusing the real ADDR_NO_RANDOMIZE that the comments claimed
+	// to permit. Both directions were wrong: one permission too many and one
+	// legitimate request denied.
 	const (
-		personalityQuery      = 0xFFFFFFFF // query current personality
-		addrNoRandomize       = 0x00000008 // ADDR_NO_RANDOMIZE
-		perLinux32            = 0x00020000 // PER_LINUX32
-		perLinux32NoRandomize = 0x00020008 // PER_LINUX32 | ADDR_NO_RANDOMIZE
+		personalityQuery      = 0xFFFFFFFF // query current personality, changes nothing
+		perLinux32            = 0x00000008 // PER_LINUX32
+		addrNoRandomize       = 0x00040000 // ADDR_NO_RANDOMIZE, disables ASLR for this process
+		perLinux32NoRandomize = 0x00040008 // PER_LINUX32 | ADDR_NO_RANDOMIZE
 	)
 	return []unix.SockFilter{
 		bpfJumpEq(unix.SYS_PERSONALITY, 0, 8),               // if personality, check args; else skip 8
 		bpfLoad(offsetArgs0),                                // load personality value
 		bpfJumpEq(0, 5, 0),                                  // 0 (PER_LINUX) → allow
-		bpfJumpEq(addrNoRandomize, 4, 0),                    // ADDR_NO_RANDOMIZE → allow
-		bpfJumpEq(perLinux32, 3, 0),                         // PER_LINUX32 → allow
+		bpfJumpEq(perLinux32, 4, 0),                         // PER_LINUX32 → allow
+		bpfJumpEq(addrNoRandomize, 3, 0),                    // ADDR_NO_RANDOMIZE → allow
 		bpfJumpEq(perLinux32NoRandomize, 2, 0),              // PER_LINUX32 | ADDR_NO_RANDOMIZE → allow
 		bpfJumpEq(personalityQuery, 1, 0),                   // 0xFFFFFFFF (query) → allow
 		bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)), // deny: unexpected personality value

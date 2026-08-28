@@ -65,6 +65,16 @@ func startReceiptHeartbeat(
 	if !emitHeartbeat() {
 		return
 	}
+	// Cancellation can arrive while that first emission is in flight, and there is
+	// no point registering a cadence loop for a lifecycle that is already over.
+	// The loop would select ctx.Done() and exit immediately, so this changes no
+	// observable behavior beyond not scheduling the work at all, which is also why
+	// no test accompanies it: distinguishing the two requires cancelling inside
+	// the emission and then racing the ticker against ctx.Done(), and a test
+	// asserting that either flakes or proves nothing.
+	if ctx.Err() != nil {
+		return
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

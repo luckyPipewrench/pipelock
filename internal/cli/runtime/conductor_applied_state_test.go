@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,6 +248,70 @@ func TestAppliedStateHeartbeat_CurrentSnapshot(t *testing.T) {
 	}
 	if !got.AppliedState.LastPolicyPollAt.Equal(wantPoll) {
 		t.Fatalf("LastPolicyPollAt = %v, want %v", got.AppliedState.LastPolicyPollAt, wantPoll)
+	}
+}
+
+func TestAppliedStateHeartbeat_CurrentSnapshotCannotPublishAfterNewerStatus(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	olderPoll := time.Now().UTC().Add(-2 * time.Minute)
+	newerPoll := olderPoll.Add(time.Minute)
+	reporter.latest.Store(&policysync.StatusEvent{PollAt: olderPoll})
+	snapshotLoaded := make(chan struct{})
+	releaseSnapshot := make(chan struct{})
+	reporter.afterHeartbeatSnapshot = func() {
+		close(snapshotLoaded)
+		<-releaseSnapshot
+	}
+	primarySent := make(chan struct{})
+	var heartbeatsMu sync.Mutex
+	heartbeatPolls := make([]time.Time, 0, 2)
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case controlplane.FollowerRuntimeStatusPath:
+			close(primarySent)
+			return responseWithBody(http.StatusOK, `{"status":"ok"}`), nil
+		case controlplane.AppliedStateHeartbeatPath:
+			var heartbeat conductor.AppliedStateHeartbeat
+			if err := json.NewDecoder(req.Body).Decode(&heartbeat); err != nil {
+				t.Fatalf("decode heartbeat: %v", err)
+			}
+			heartbeatsMu.Lock()
+			heartbeatPolls = append(heartbeatPolls, heartbeat.AppliedState.LastPolicyPollAt)
+			heartbeatsMu.Unlock()
+			return responseWithBody(http.StatusAccepted, `{"status":"accepted"}`), nil
+		default:
+			t.Fatalf("unexpected request path %s", req.URL.Path)
+			return nil, errors.New("unreachable")
+		}
+	}}
+
+	currentDone := make(chan error, 1)
+	go func() { currentDone <- reporter.reportCurrentAppliedStateHeartbeat(context.Background()) }()
+	<-snapshotLoaded
+	statusDone := make(chan error, 1)
+	go func() {
+		statusDone <- reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{PollAt: newerPoll})
+	}()
+	<-primarySent
+	close(releaseSnapshot)
+	if err := <-currentDone; err != nil {
+		t.Fatalf("reportCurrentAppliedStateHeartbeat() error = %v", err)
+	}
+	if err := <-statusDone; err != nil {
+		t.Fatalf("ReportPolicyStatus() error = %v", err)
+	}
+	heartbeatsMu.Lock()
+	defer heartbeatsMu.Unlock()
+	if len(heartbeatPolls) != 2 {
+		t.Fatalf("heartbeat count = %d, want 2", len(heartbeatPolls))
+	}
+	if !heartbeatPolls[0].Equal(olderPoll) || !heartbeatPolls[1].Equal(newerPoll) {
+		t.Fatalf("heartbeat poll order = %v, want older %v then newer %v", heartbeatPolls, olderPoll, newerPoll)
 	}
 }
 

@@ -274,9 +274,45 @@ func TestProducer_CloseCancelsActiveAppliedStateHeartbeat(t *testing.T) {
 	}
 	select {
 	case <-canceled:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("active heartbeat context was not canceled by Close")
 	}
+}
+
+func TestProducer_AppliedStateHeartbeatRetriesAfterTimeout(t *testing.T) {
+	retried := make(chan struct{})
+	var calls atomic.Int64
+	var retriedOnce sync.Once
+	heartbeatContext, heartbeatCancel := context.WithCancel(context.Background())
+	producer := &Producer{
+		emitStateHeartbeat: true,
+		heartbeatInterval:  time.Millisecond,
+		heartbeatTimeout:   10 * time.Millisecond,
+		appliedStateHeartbeat: func(ctx context.Context) error {
+			if calls.Add(1) == 1 {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			retriedOnce.Do(func() { close(retried) })
+			return nil
+		},
+		heartbeatContext: heartbeatContext,
+		heartbeatCancel:  heartbeatCancel,
+		heartbeatStop:    make(chan struct{}),
+		heartbeatDone:    make(chan struct{}),
+	}
+	go producer.runAppliedStateHeartbeat()
+	select {
+	case <-retried:
+	case <-time.After(time.Second):
+		heartbeatCancel()
+		close(producer.heartbeatStop)
+		<-producer.heartbeatDone
+		t.Fatal("applied-state heartbeat did not retry after a per-attempt timeout")
+	}
+	heartbeatCancel()
+	close(producer.heartbeatStop)
+	<-producer.heartbeatDone
 }
 
 func TestProducer_CloseDoesNotWaitForHeartbeatIgnoringCancellation(t *testing.T) {

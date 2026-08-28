@@ -67,6 +67,9 @@ type conductorPolicyStatusReporter struct {
 	heartbeatConfig atomic.Pointer[conductorHeartbeatConfig]
 	heartbeatSeq    atomic.Uint64
 	heartbeatMu     sync.Mutex
+	// afterHeartbeatSnapshot is a deterministic concurrency-test seam. It is
+	// nil in production and runs while heartbeatMu is held.
+	afterHeartbeatSnapshot func()
 }
 
 type conductorHeartbeatConfig struct {
@@ -207,6 +210,10 @@ func (r *conductorPolicyStatusReporter) configureAppliedStateHeartbeat(enabled b
 func (r *conductorPolicyStatusReporter) reportAppliedStateHeartbeat(ctx context.Context, ev policysync.StatusEvent) error {
 	r.heartbeatMu.Lock()
 	defer r.heartbeatMu.Unlock()
+	return r.reportAppliedStateHeartbeatLocked(ctx, ev)
+}
+
+func (r *conductorPolicyStatusReporter) reportAppliedStateHeartbeatLocked(ctx context.Context, ev policysync.StatusEvent) error {
 	cfg := r.heartbeatConfig.Load()
 	if cfg == nil {
 		return nil
@@ -254,11 +261,16 @@ func (r *conductorPolicyStatusReporter) reportAppliedStateHeartbeat(ctx context.
 }
 
 func (r *conductorPolicyStatusReporter) reportCurrentAppliedStateHeartbeat(ctx context.Context) error {
+	r.heartbeatMu.Lock()
+	defer r.heartbeatMu.Unlock()
 	latest := r.latest.Load()
+	if r.afterHeartbeatSnapshot != nil {
+		r.afterHeartbeatSnapshot()
+	}
 	if latest == nil {
 		return nil
 	}
-	return r.reportAppliedStateHeartbeat(ctx, *latest)
+	return r.reportAppliedStateHeartbeatLocked(ctx, *latest)
 }
 
 func (r *conductorPolicyStatusReporter) status(ev policysync.StatusEvent, identity conductorEnrollmentMarker) controlplane.FollowerRuntimeStatus {

@@ -40,8 +40,31 @@ func TestDetectAndPreflightReportSeccompUnavailableWithoutFilter(t *testing.T) {
 	// operator actually feels, and it is the one behaviour change in this
 	// commit, so it gets its own assertion rather than riding on the layer
 	// report.
-	if strict := Preflight(t.TempDir(), []string{"true"}, nil, true); strict.Status != StatusError {
+	//
+	// StatusError alone would NOT prove that, because a runner missing Landlock
+	// or user namespaces produces the same status for an unrelated reason. So
+	// assert the seccomp layer specifically: present, required, and unavailable.
+	// Otherwise this test could pass on a host where strict mode never rejected
+	// the missing seccomp layer at all.
+	strict := Preflight(t.TempDir(), []string{"true"}, nil, true)
+	if strict.Status != StatusError {
 		t.Fatalf("strict preflight status = %q, want %q when the build cannot apply seccomp",
 			strict.Status, StatusError)
+	}
+	found := false
+	for _, layer := range strict.Layers {
+		if layer.Name != LayerSeccomp {
+			continue
+		}
+		found = true
+		if !layer.Required {
+			t.Error("strict preflight did not mark seccomp required, so StatusError cannot be attributed to it")
+		}
+		if layer.Available {
+			t.Error("strict preflight reported seccomp available without Pipelock's filter")
+		}
+	}
+	if !found {
+		t.Fatal("strict preflight did not report a seccomp layer")
 	}
 }

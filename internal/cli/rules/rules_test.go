@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // Test-scoped constants for repeated string literals.
@@ -605,6 +608,118 @@ func TestRulesInstall_RemoteSigned(t *testing.T) {
 	}
 	if !strings.Contains(output, "official") {
 		t.Errorf("expected 'official' tier in output, got %q", output)
+	}
+}
+
+func TestFetchOfficialRegistryBundle_RejectsOffOriginRedirect(t *testing.T) {
+	// NOT parallel: mutates officialRegistryClient.
+	originalClient := officialRegistryClient
+	offOrigin := "https://rules-attacker.example/bundle.yaml"
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "pipelab.org":
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{offOrigin}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			case "rules-attacker.example":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("redirected response")),
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected request %s", req.URL)
+			}
+		}),
+		CheckRedirect: originalClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalClient })
+
+	_, _, err := fetchOfficialRegistryBundle(t.Context(), officialRegistryURL+testBundlePath)
+	if !errors.Is(err, errOfficialRegistryRedirect) {
+		t.Fatalf("error = %v, want typed official registry redirect refusal", err)
+	}
+	if !strings.Contains(err.Error(), "redirects must stay on "+officialRegistryURL) {
+		t.Fatalf("error = %v, want operator-legible registry redirect error", err)
+	}
+}
+
+func TestFetchOfficialRegistryBundle_RejectsNonRegistryOrigin(t *testing.T) {
+	// NOT parallel: mutates officialRegistryClient.
+	originalClient := officialRegistryClient
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("bundle")),
+			}, nil
+		}),
+		CheckRedirect: originalClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalClient })
+
+	_, _, err := fetchOfficialRegistryBundle(t.Context(), "https://source.example/bundle.yaml")
+	if !errors.Is(err, errOfficialRegistryOrigin) {
+		t.Fatalf("error = %v, want typed official registry origin refusal", err)
+	}
+}
+
+func TestRulesInstall_SourceOfficialURLAllowsHTTPSRedirect(t *testing.T) {
+	// NOT parallel: mutates the HTTP clients and the keyring globals.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
+
+	bundleData := []byte(validBundleYAML)
+	sigData := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, bundleData)) + "\n")
+	originalHTTPSClient := httpsOnlyClient
+	httpsOnlyClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "pipelab.org":
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://source.example" + req.URL.Path}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			case "source.example":
+				body := bundleData
+				if strings.HasSuffix(req.URL.Path, signing.SigExtension) {
+					body = sigData
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(string(body))),
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected source request %s", req.URL)
+			}
+		}),
+		CheckRedirect: originalHTTPSClient.CheckRedirect,
+	}
+	t.Cleanup(func() { httpsOnlyClient = originalHTTPSClient })
+
+	originalOfficialClient := officialRegistryClient
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("official registry client must not fetch --source URL %s", req.URL)
+		}),
+		CheckRedirect: originalOfficialClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalOfficialClient })
+
+	cmd := testRootCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"rules", "install", "--source", officialRegistryURL + testBundlePath, "--rules-dir", t.TempDir()})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--source using the official URL should retain generic HTTPS redirect behavior: %v", err)
 	}
 }
 

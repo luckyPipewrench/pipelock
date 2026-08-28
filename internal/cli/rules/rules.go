@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,11 @@ import (
 // Official bundle registry base URL. Bundles are served as static files
 // from the pipelab.org Hugo site via Cloudflare Pages.
 const officialRegistryURL = "https://pipelab.org/rules"
+
+var (
+	errOfficialRegistryOrigin   = errors.New("official rules registry origin refused")
+	errOfficialRegistryRedirect = errors.New("official rules registry redirect refused")
+)
 
 var discoverRulesConfigPath = cliutil.DiscoverConfigPathStrict
 
@@ -418,17 +424,30 @@ func validateBundlePath(rulesDir, name string) (string, error) {
 // fetchRemoteBundle fetches bundle.yaml and bundle.yaml.sig from a remote URL.
 // Requires HTTPS. Returns the bundle data and signature data.
 func fetchRemoteBundle(ctx context.Context, bundleURL string) ([]byte, []byte, error) {
+	return fetchRemoteBundleWithClient(ctx, bundleURL, httpsOnlyClient)
+}
+
+// fetchOfficialRegistryBundle fetches a bundle from the built-in registry URL.
+// It pins both the initial URL and every redirect to the official HTTPS origin.
+func fetchOfficialRegistryBundle(ctx context.Context, bundleURL string) ([]byte, []byte, error) {
+	if !isOfficialRegistryURL(bundleURL) {
+		return nil, nil, fmt.Errorf("%w: expected %s, got %s", errOfficialRegistryOrigin, officialRegistryURL, bundleURL)
+	}
+	return fetchRemoteBundleWithClient(ctx, bundleURL, officialRegistryClient)
+}
+
+func fetchRemoteBundleWithClient(ctx context.Context, bundleURL string, client *http.Client) ([]byte, []byte, error) {
 	if !strings.HasPrefix(bundleURL, "https://") {
 		return nil, nil, fmt.Errorf("remote source must use HTTPS: %s", bundleURL)
 	}
 
-	bundleData, err := httpGet(ctx, bundleURL)
+	bundleData, err := httpGetWithClient(ctx, bundleURL, client)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetching bundle: %w", err)
 	}
 
 	sigURL := bundleURL + signing.SigExtension
-	sigData, err := httpGet(ctx, sigURL)
+	sigData, err := httpGetWithClient(ctx, sigURL, client)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetching signature: %w", err)
 	}
@@ -447,8 +466,35 @@ var httpsOnlyClient = &http.Client{
 	},
 }
 
+// officialRegistryClient allows redirects only when they stay on the exact
+// official registry origin. User-supplied --source URLs never use this client.
+var officialRegistryClient = &http.Client{
+	CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		if !isOfficialRegistryURL(req.URL.String()) {
+			return fmt.Errorf("%w: redirects must stay on %s (got %s)", errOfficialRegistryRedirect, officialRegistryURL, req.URL)
+		}
+		return nil
+	},
+}
+
+func isOfficialRegistryURL(rawURL string) bool {
+	got, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	want, err := url.Parse(officialRegistryURL)
+	if err != nil {
+		return false
+	}
+	return got.Scheme == want.Scheme && got.Host == want.Host && got.User == nil
+}
+
 // httpGet performs an HTTP GET with context and timeout.
 func httpGet(ctx context.Context, url string) ([]byte, error) {
+	return httpGetWithClient(ctx, url, httpsOnlyClient)
+}
+
+func httpGetWithClient(ctx context.Context, url string, client *http.Client) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, httpFetchTimeout)
 	defer cancel()
 
@@ -457,7 +503,7 @@ func httpGet(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := httpsOnlyClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
@@ -693,6 +739,7 @@ Examples:
 					bundleURL:    url,
 					configFile:   configFile,
 					expectedName: name,
+					official:     true,
 				})
 			default:
 				return fmt.Errorf("specify a bundle name, --source URL, or --path DIR")
@@ -813,6 +860,7 @@ type installRemoteOptions struct {
 	bundleURL    string
 	configFile   string
 	expectedName string
+	official     bool
 }
 
 // installRemote installs a bundle from a remote URL.
@@ -845,7 +893,12 @@ func installRemote(opts installRemoteOptions) error {
 		return err
 	}
 
-	bundleData, sigData, err := fetchRemoteBundle(ctx, opts.bundleURL)
+	var bundleData, sigData []byte
+	if opts.official {
+		bundleData, sigData, err = fetchOfficialRegistryBundle(ctx, opts.bundleURL)
+	} else {
+		bundleData, sigData, err = fetchRemoteBundle(ctx, opts.bundleURL)
+	}
 	if err != nil {
 		return err
 	}

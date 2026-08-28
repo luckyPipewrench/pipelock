@@ -108,7 +108,7 @@ type ProducerConfig struct {
 	// the batch (best-effort) while the batch itself still flows.
 	AppliedStateProvider func() (conductor.FollowerAppliedState, bool)
 	// AppliedStateHeartbeat sends a recorder-independent signed state update.
-	// It runs periodically only when EmitAppliedState was negotiated. Failures
+	// It runs periodically only when EmitAppliedStateHeartbeat was negotiated. Failures
 	// are best-effort: the next interval retries with a fresh statement.
 	AppliedStateHeartbeat func(context.Context) error
 	HeartbeatInterval     time.Duration

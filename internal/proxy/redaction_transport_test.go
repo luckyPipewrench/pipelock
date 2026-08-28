@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -30,6 +32,15 @@ const placeholderAWS = "<pl:aws-access-key:1>"
 // triggering DLP on the test source itself.
 func redactionE2ESecret() string {
 	return "AKIA" + "IOSFODNN7EXAMPLE"
+}
+
+// unredactableAWSResourceID builds an AWS IAM resource-ID (AIDA prefix) at
+// runtime. The detector flags it critical, but the ClassAWSAccessKey redact
+// pattern (narrowed to AKIA/ASIA by #1308) cannot rewrite it, so it must fail
+// closed on every request-body transport rather than leak. Split literal keeps
+// gosec G101 quiet.
+func unredactableAWSResourceID() string {
+	return "AIDA" + "IOSFODNN7EXAMPLE"
 }
 
 // applyRedactionTestProfile enables a minimal redaction config matching
@@ -341,6 +352,58 @@ func TestInterceptTunnel_Redaction_NonProviderCriticalDLPStillBlocksWithEnforce(
 	}
 }
 
+// TestInterceptTunnel_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost
+// is the issue #1308 regression: an AWS ID the detector flags as critical but the
+// redactor cannot rewrite (an IAM resource-ID prefix) must hard-block even on a
+// redact-and-forward exempt host, because the post-redaction re-scan still finds
+// it. Contrast ...ProviderCriticalDLPForwardsSanitizedWithEnforce, where a real
+// AKIA access key on the same exempt host redacts-and-forwards.
+func TestInterceptTunnel_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *testing.T) {
+	var upstreamHit atomic.Bool
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	enforceTrue := true
+	cfg.Enforce = &enforceTrue
+	applyRedactionTestProfile(cfg)
+	host, _, err := net.SplitHostPort(upstream.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split upstream addr: %v", err)
+	}
+	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+	proxy := testInterceptRedactProxy(t, cfg)
+
+	// AIDA is an IAM resource-ID prefix: detected as a critical AWS Access ID but
+	// absent from the redact class, so it survives redaction and must fail closed.
+	unredactable := unredactableAWSResourceID()
+	bodyJSON := `{"messages":[{"role":"user","content":"use ` + unredactable + ` to deploy"}]}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+upstream.Listener.Addr().String()+"/v1/chat/completions", strings.NewReader(bodyJSON))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentTypeJSON)
+
+	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("intercept status = %d, want 403 (unredactable AWS ID must fail closed even on an exempt host)", resp.StatusCode)
+	}
+	if upstreamHit.Load() {
+		t.Fatal("unredactable AWS ID reached upstream despite surviving the post-redaction re-scan")
+	}
+}
+
 func TestInterceptTunnel_Redaction_ProviderEnvTokenForwardsSanitizedWithEnforce(t *testing.T) {
 	var receivedBody atomic.Value
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -515,5 +578,189 @@ func TestInterceptTunnel_Redaction_ProviderKnownFileSecretForwardsSanitizedWithE
 				t.Fatalf("provider request did not redact known file secret before forward: %q", got)
 			}
 		})
+	}
+}
+
+// TestForwardProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost is
+// the forward-proxy #1308 regression, made self-validating on one exempt host
+// under enforce. Half one sends a real AKIA key and asserts it redacts-and-
+// forwards (upstream sees the placeholder) to prove the exempt redact-and-
+// forward path is live; half two sends an AIDA resource-ID the detector flags
+// critical but the redactor cannot rewrite, which must hard-block 403 so the
+// block cannot be mistaken for the exemption failing to match. The forward gate
+// sees r.URL.Hostname() (127.0.0.1), so the loopback upstream host is exempt.
+func TestForwardProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *testing.T) {
+	var receivedBody atomic.Value // string
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		receivedBody.Store(string(body))
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	host, _, err := net.SplitHostPort(upstream.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split upstream addr: %v", err)
+	}
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+		enforceTrue := true
+		cfg.Enforce = &enforceTrue
+		applyRedactionTestProfile(cfg)
+		cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+	})
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+
+	// Half 1: a real AKIA key redacts-and-forwards on the exempt host.
+	secret := redactionE2ESecret()
+	akiaReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		upstream.URL+"/api", strings.NewReader(`{"prompt":"use `+secret+` to deploy"}`))
+	if err != nil {
+		t.Fatalf("new AKIA request: %v", err)
+	}
+	akiaReq.Header.Set("Content-Type", contentTypeJSON)
+	akiaResp, err := client.Do(akiaReq)
+	if err != nil {
+		t.Fatalf("forward AKIA request: %v", err)
+	}
+	_ = akiaResp.Body.Close()
+	if akiaResp.StatusCode != http.StatusOK {
+		t.Fatalf("AKIA status = %d, want 200 (redact-and-forward on exempt host)", akiaResp.StatusCode)
+	}
+	got, _ := receivedBody.Load().(string)
+	if strings.Contains(got, secret) {
+		t.Fatalf("forward proxy leaked AWS key to upstream: %q", got)
+	}
+	if !strings.Contains(got, placeholderAWS) {
+		t.Fatalf("forward proxy did not redact AKIA on exempt host; upstream saw %q", got)
+	}
+	hitsAfterAKIA := upstreamHits.Load()
+
+	// Half 2: the unredactable AIDA resource-ID must fail closed even here.
+	unredactable := unredactableAWSResourceID()
+	aidaReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		upstream.URL+"/api", strings.NewReader(`{"prompt":"use `+unredactable+` to deploy"}`))
+	if err != nil {
+		t.Fatalf("new AIDA request: %v", err)
+	}
+	aidaReq.Header.Set("Content-Type", contentTypeJSON)
+	aidaResp, err := client.Do(aidaReq)
+	if err != nil {
+		t.Fatalf("forward AIDA request: %v", err)
+	}
+	_ = aidaResp.Body.Close()
+	if aidaResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("AIDA status = %d, want 403 (unredactable AWS ID must fail closed even on an exempt host)", aidaResp.StatusCode)
+	}
+	if upstreamHits.Load() != hitsAfterAKIA {
+		t.Fatal("unredactable AWS ID reached upstream despite surviving the post-redaction re-scan")
+	}
+}
+
+// TestReverseProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost is
+// the reverse-proxy #1308 regression, self-validating on one exempt host under
+// enforce: an AKIA key redacts-and-forwards while the unredactable AIDA
+// resource-ID hard-blocks 403. reverseTestSetup fronts an IPv4 loopback
+// upstream, so the gate sees 127.0.0.1 as rp.upstream.Hostname().
+func TestReverseProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	enforceTrue := true
+	cfg.Enforce = &enforceTrue
+	applyRedactionTestProfile(cfg)
+	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1")
+
+	var receivedBody atomic.Value // string
+	var upstreamHits atomic.Int32
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		receivedBody.Store(string(body))
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	// Half 1: AKIA redacts-and-forwards on the exempt host.
+	secret := redactionE2ESecret()
+	akiaResp := testPost(t, proxy.URL+"/api/send", contentTypeJSON, `{"prompt":"use `+secret+` to deploy"}`)
+	_ = akiaResp.Body.Close()
+	if akiaResp.StatusCode != http.StatusOK {
+		t.Fatalf("AKIA status = %d, want 200 (redact-and-forward on exempt host)", akiaResp.StatusCode)
+	}
+	got, _ := receivedBody.Load().(string)
+	if strings.Contains(got, secret) {
+		t.Fatalf("reverse proxy leaked AWS key to upstream: %q", got)
+	}
+	if !strings.Contains(got, placeholderAWS) {
+		t.Fatalf("reverse proxy did not redact AKIA on exempt host; upstream saw %q", got)
+	}
+	hitsAfterAKIA := upstreamHits.Load()
+
+	// Half 2: the unredactable AIDA resource-ID must fail closed.
+	unredactable := unredactableAWSResourceID()
+	aidaResp := testPost(t, proxy.URL+"/api/send", contentTypeJSON, `{"prompt":"use `+unredactable+` to deploy"}`)
+	_ = aidaResp.Body.Close()
+	if aidaResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("AIDA status = %d, want 403 (unredactable AWS ID must fail closed even on an exempt host)", aidaResp.StatusCode)
+	}
+	if upstreamHits.Load() != hitsAfterAKIA {
+		t.Fatal("unredactable AWS ID reached upstream despite surviving the post-redaction re-scan")
+	}
+}
+
+// TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost is the
+// WebSocket #1308 regression, self-validating on one exempt host under enforce.
+// A block closes the connection, so the two halves use separate dials: the AKIA
+// message redacts-and-forwards (the echoed reply carries the placeholder), while
+// the unredactable AIDA message closes the connection (ReadServerData errors).
+func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		enforceTrue := true
+		cfg.Enforce = &enforceTrue
+		applyRedactionTestProfile(cfg)
+		cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1", backendAddr)
+	})
+	defer proxyCleanup()
+
+	// Half 1: AKIA redacts-and-forwards; the echo returns the placeholder.
+	secret := redactionE2ESecret()
+	akiaConn := dialWS(t, proxyAddr, backendAddr)
+	defer akiaConn.Close() //nolint:errcheck // test
+	if err := wsutil.WriteClientMessage(akiaConn, ws.OpText, []byte(`{"prompt":"use `+secret+` to deploy"}`)); err != nil {
+		t.Fatalf("write AKIA: %v", err)
+	}
+	reply, _, err := wsutil.ReadServerData(akiaConn)
+	if err != nil {
+		t.Fatalf("read AKIA reply: %v (exempt host should redact-and-forward)", err)
+	}
+	replyStr := string(reply)
+	if strings.Contains(replyStr, secret) {
+		t.Fatalf("echoed reply leaked secret: %q", replyStr)
+	}
+	if !strings.Contains(replyStr, placeholderAWS) {
+		t.Fatalf("echoed reply missing placeholder on exempt host: %q", replyStr)
+	}
+
+	// Half 2: the unredactable AIDA resource-ID must fail closed. A block closes
+	// the connection, so this needs a fresh dial.
+	unredactable := unredactableAWSResourceID()
+	aidaConn := dialWS(t, proxyAddr, backendAddr)
+	defer aidaConn.Close() //nolint:errcheck // test
+	if err := wsutil.WriteClientMessage(aidaConn, ws.OpText, []byte(`{"prompt":"use `+unredactable+` to deploy"}`)); err != nil {
+		t.Fatalf("write AIDA: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(aidaConn); err == nil {
+		t.Fatal("expected proxy to close connection on unredactable AWS ID even on an exempt host")
 	}
 }

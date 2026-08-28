@@ -375,6 +375,16 @@ func TestDefaultMatcher_Negative(t *testing.T) {
 		strings.Repeat("d", 128),                    // bare 128-hex
 		strings.Repeat("e", 40),                     // bare 40-hex
 		strings.Repeat("f", 32),                     // bare 32-hex
+		// Issue #1308: only AKIA/ASIA are redactable AWS access-key IDs.
+		// IAM resource-ID prefixes and obfuscated/overlong forms are still
+		// caught by the detection floor but must NOT be redacted (they fail
+		// closed instead of being rewritten).
+		"AIDA" + "IOSFODNN7EXAMPLE",          // IAM user ID prefix, not an access key
+		"AGPA" + "IOSFODNN7EXAMPLE",          // IAM group ID prefix
+		"AROA" + "IOSFODNN7EXAMPLE",          // IAM role ID prefix
+		"AKIA" + "IOSFODNN7EXAMPLE" + "ABCD", // overlong: no trailing word boundary
+		"akia" + "iosfodnn7example",          // lowercase: class is case-sensitive
+		"AKIA" + " " + "IOSFODNN7EXAMPLE",    // whitespace-split: not a contiguous span
 	}
 	for _, s := range cases {
 		t.Run(s, func(t *testing.T) {

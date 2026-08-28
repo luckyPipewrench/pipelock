@@ -94,7 +94,13 @@ func tokenClasses() []classPattern {
 		// KEY=<placeholder> does not remain shaped like an env-secret leak
 		// after redaction.
 		{class: ClassEnvSecret, pattern: regexp.MustCompile(`\b` + envSecretName + `\b\s*=\s*\S{8,}`), priority: 120},
-		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA|AIDA|AGPA|AROA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope, skipLeading: sigV4CredentialPrefix},
+		// Only AKIA (long-term) and ASIA (STS temporary) are AWS access-key IDs
+		// that can be safely placeholdered. AIDA/AGPA/AROA (and the detection-only
+		// AIPA/ANPA/ANVA) are IAM resource IDs, not secrets — rewriting one would
+		// corrupt a legitimate request. The broad detector (config.AWSAccessIDRegex)
+		// still flags those, plus any overlong or obfuscated form; matches the
+		// redactor cannot map back to raw text stay detection-only and fail closed.
+		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope, skipLeading: sigV4CredentialPrefix},
 		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
 		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}\b`), priority: 100},
 		{class: ClassGitHubToken, pattern: regexp.MustCompile(`(?i)(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{36,})`), priority: 100},

@@ -1711,6 +1711,11 @@ func TestAppliedStateHeartbeat_CryptoAndValidation(t *testing.T) {
 	if err := stale.ValidateForConductor(now, DefaultAuditMaxSkew); !errors.Is(err, ErrSkewExceeded) {
 		t.Fatalf("ValidateForConductor(stale) = %v, want ErrSkewExceeded", err)
 	}
+	extremeFuture := heartbeat
+	extremeFuture.EmittedAt = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+	if err := extremeFuture.ValidateForConductor(now, DefaultAuditMaxSkew); !errors.Is(err, ErrSkewExceeded) {
+		t.Fatalf("ValidateForConductor(extreme future) = %v, want ErrSkewExceeded", err)
+	}
 	if err := heartbeat.ValidateForConductor(now, MaxAllowedAuditSkew+time.Second); !errors.Is(err, ErrSkewExceeded) {
 		t.Fatalf("ValidateForConductor(over cap) = %v, want ErrSkewExceeded", err)
 	}

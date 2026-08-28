@@ -73,6 +73,8 @@ type Producer struct {
 	appliedStateProvider  func() (conductor.FollowerAppliedState, bool)
 	appliedStateHeartbeat func(context.Context) error
 	heartbeatInterval     time.Duration
+	heartbeatContext      context.Context
+	heartbeatCancel       context.CancelFunc
 	heartbeatStop         chan struct{}
 	heartbeatDone         chan struct{}
 }
@@ -145,6 +147,7 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = defaultAppliedStateHeartbeatInterval
 	}
+	heartbeatContext, heartbeatCancel := context.WithCancel(context.Background())
 	p := &Producer{
 		queue:                 cfg.Queue,
 		metrics:               cfg.Metrics,
@@ -165,6 +168,8 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 		appliedStateProvider:  cfg.AppliedStateProvider,
 		appliedStateHeartbeat: cfg.AppliedStateHeartbeat,
 		heartbeatInterval:     cfg.HeartbeatInterval,
+		heartbeatContext:      heartbeatContext,
+		heartbeatCancel:       heartbeatCancel,
 		heartbeatStop:         make(chan struct{}),
 		heartbeatDone:         make(chan struct{}),
 	}
@@ -200,6 +205,7 @@ func (p *Producer) Close() error {
 		p.sendMu.Lock()
 		defer p.sendMu.Unlock()
 		p.closed.Store(true)
+		p.heartbeatCancel()
 		close(p.heartbeatStop)
 		close(p.entries)
 		<-p.done
@@ -218,7 +224,7 @@ func (p *Producer) runAppliedStateHeartbeat() {
 	for {
 		select {
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), defaultAppliedStateHeartbeatTimeout)
+			ctx, cancel := context.WithTimeout(p.heartbeatContext, defaultAppliedStateHeartbeatTimeout)
 			_ = p.appliedStateHeartbeat(ctx)
 			cancel()
 		case <-p.heartbeatStop:

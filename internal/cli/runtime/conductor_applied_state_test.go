@@ -220,6 +220,26 @@ func TestAppliedStateHeartbeat_CurrentSnapshot(t *testing.T) {
 	}
 }
 
+func TestAppliedStateHeartbeat_CurrentSnapshotWaitsForFirstPoll(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	requests := 0
+	reporter.client = statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
+		requests++
+		return responseWithBody(http.StatusAccepted, `{"status":"accepted"}`), nil
+	}}
+	if err := reporter.reportCurrentAppliedStateHeartbeat(context.Background()); err != nil {
+		t.Fatalf("reportCurrentAppliedStateHeartbeat() error = %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("heartbeat requests before first policy poll = %d, want 0", requests)
+	}
+}
+
 // TestAppliedStateProvider_MatchesUnsignedStatus proves the signed applied-state
 // and the unsigned runtime-status POST derive from one source, so the two fleet
 // views never disagree on what the follower is running.

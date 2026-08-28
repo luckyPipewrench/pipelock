@@ -1301,6 +1301,9 @@ func (h AppliedStateHeartbeat) ValidateForConductor(now time.Time, maxSkew time.
 	if maxSkew > MaxAllowedAuditSkew {
 		return fmt.Errorf("%w: max_skew %s exceeds ceiling %s", ErrSkewExceeded, maxSkew, MaxAllowedAuditSkew)
 	}
+	now = now.UTC()
+	minStamp := now.Add(-maxSkew)
+	maxStamp := now.Add(maxSkew)
 	for _, candidate := range []struct {
 		field string
 		stamp time.Time
@@ -1309,13 +1312,9 @@ func (h AppliedStateHeartbeat) ValidateForConductor(now time.Time, maxSkew time.
 		{field: "applied_state.observed_at", stamp: h.AppliedState.ObservedAt},
 		{field: "applied_state.provenance_at", stamp: h.AppliedState.ProvenanceAt},
 	} {
-		field, stamp := candidate.field, candidate.stamp
-		delta := now.UTC().Sub(stamp.UTC())
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta > maxSkew {
-			return fmt.Errorf("%w: |now-%s|=%s max_skew=%s", ErrSkewExceeded, field, delta, maxSkew)
+		field, stamp := candidate.field, candidate.stamp.UTC()
+		if stamp.Before(minStamp) || stamp.After(maxStamp) {
+			return fmt.Errorf("%w: %s outside [%s,%s]", ErrSkewExceeded, field, minStamp.Format(time.RFC3339Nano), maxStamp.Format(time.RFC3339Nano))
 		}
 	}
 	return nil

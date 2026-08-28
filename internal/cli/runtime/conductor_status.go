@@ -253,11 +253,11 @@ func (r *conductorPolicyStatusReporter) reportAppliedStateHeartbeat(ctx context.
 }
 
 func (r *conductorPolicyStatusReporter) reportCurrentAppliedStateHeartbeat(ctx context.Context) error {
-	var ev policysync.StatusEvent
-	if latest := r.latest.Load(); latest != nil {
-		ev = *latest
+	latest := r.latest.Load()
+	if latest == nil {
+		return nil
 	}
-	return r.reportAppliedStateHeartbeat(ctx, ev)
+	return r.reportAppliedStateHeartbeat(ctx, *latest)
 }
 
 func (r *conductorPolicyStatusReporter) status(ev policysync.StatusEvent, identity conductorEnrollmentMarker) controlplane.FollowerRuntimeStatus {

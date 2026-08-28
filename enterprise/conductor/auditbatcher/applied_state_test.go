@@ -221,7 +221,11 @@ func TestProducer_AppliedStateHeartbeatRunsIdleAndStopsOnClose(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 	closedCount := count.Load()
-	<-time.After(30 * time.Millisecond)
+	select {
+	case <-producer.heartbeatDone:
+	default:
+		t.Fatal("heartbeat goroutine still running after Close")
+	}
 	if count.Load() != closedCount {
 		t.Fatalf("applied-state heartbeat count advanced after close: %d -> %d", closedCount, count.Load())
 	}
@@ -239,12 +243,37 @@ func TestProducer_AppliedStateHeartbeatDisabledWithoutNegotiation(t *testing.T) 
 			return nil
 		},
 	})
+	<-producer.heartbeatDone
 	select {
 	case <-fired:
 		t.Fatal("unnegotiated applied-state heartbeat fired")
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 	if err := producer.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestProducer_CloseCancelsActiveAppliedStateHeartbeat(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		EmitAppliedStateHeartbeat: true,
+		HeartbeatInterval:         time.Millisecond,
+		AppliedStateHeartbeat: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			return ctx.Err()
+		},
+	})
+	<-started
+	if err := producer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("active heartbeat context was not canceled by Close")
 	}
 }

@@ -754,12 +754,26 @@ func (s *Server) initConductorProducer(cfg *config.Config, m *metrics.Metrics, r
 	// fail-safe — any handshake failure (or an old v1 conductor) leaves it off,
 	// so batches still flow without applied-state and stay v1-wire-compatible.
 	emitApplied := false
-	emitHeartbeat := false
+	scheduleHeartbeat := false
 	var appliedProvider func() (conductor.FollowerAppliedState, bool)
+	var appliedHeartbeat func(context.Context) error
 	if reporter, ok := s.conductorStatusReporter.(*conductorPolicyStatusReporter); ok && reporter != nil {
 		appliedProvider = reporter.appliedStateProvider()
-		emitApplied, emitHeartbeat = conductorNegotiateAppliedState(cfg.Conductor, stderr)
-		reporter.configureAppliedStateHeartbeat(emitHeartbeat, cfg.Conductor.AuditSigningKeyID, recPrivKey)
+		var initialHeartbeat bool
+		emitApplied, initialHeartbeat = conductorNegotiateAppliedState(context.Background(), cfg.Conductor, stderr)
+		reporter.configureAppliedStateHeartbeat(initialHeartbeat, cfg.Conductor.AuditSigningKeyID, recPrivKey)
+		// Keep the periodic callback alive even when the startup handshake fails.
+		// The callback repeats capability negotiation before emitting, so an old
+		// conductor still receives no v3 request while a temporarily unavailable
+		// upgraded conductor recovers without an operator restart.
+		scheduleHeartbeat = true
+		appliedHeartbeat = conductorAppliedStateHeartbeatCallback(
+			reporter,
+			cfg.Conductor,
+			cfg.Conductor.AuditSigningKeyID,
+			recPrivKey,
+			conductorNegotiateAppliedState,
+		)
 	}
 	producer, err := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
 		Queue:                     queue,
@@ -772,14 +786,9 @@ func (s *Server) initConductorProducer(cfg *config.Config, m *metrics.Metrics, r
 		AuditSigner:               recPrivKey,
 		RecorderPublicKey:         recPubKey,
 		EmitAppliedState:          emitApplied,
-		EmitAppliedStateHeartbeat: emitHeartbeat,
+		EmitAppliedStateHeartbeat: scheduleHeartbeat,
 		AppliedStateProvider:      appliedProvider,
-		AppliedStateHeartbeat: func(ctx context.Context) error {
-			if reporter, ok := s.conductorStatusReporter.(*conductorPolicyStatusReporter); ok && reporter != nil {
-				return reporter.reportCurrentAppliedStateHeartbeat(ctx)
-			}
-			return nil
-		},
+		AppliedStateHeartbeat:     appliedHeartbeat,
 	})
 	if err != nil {
 		return fmt.Errorf("creating conductor audit producer: %w", err)
@@ -807,7 +816,7 @@ func conductorRecorderPublicKey(priv ed25519.PrivateKey) (ed25519.PublicKey, err
 // an older v1-only conductor, returns false so the producer omits applied-state
 // and its batches stay byte-identical to v1 past the conductor's strict
 // unknown-field decoder.
-func conductorNegotiateAppliedState(cfg config.Conductor, stderr io.Writer) (bool, bool) {
+func conductorNegotiateAppliedState(parent context.Context, cfg config.Conductor, stderr io.Writer) (bool, bool) {
 	client, err := newConductorMTLSClient(cfg)
 	if err != nil {
 		return false, false
@@ -816,7 +825,7 @@ func conductorNegotiateAppliedState(cfg config.Conductor, stderr io.Writer) (boo
 	if err != nil {
 		return false, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), conductorAppliedStateHandshakeTimeout)
+	ctx, cancel := context.WithTimeout(parent, conductorAppliedStateHandshakeTimeout)
 	defer cancel()
 	negotiated, err := capClient.Handshake(ctx)
 	if err != nil {
@@ -826,4 +835,28 @@ func conductorNegotiateAppliedState(cfg config.Conductor, stderr io.Writer) (boo
 		return false, false
 	}
 	return negotiated.AuditSchemaVersion >= conductor.AuditEnvelopeSchemaVersion, negotiated.AppliedStateHeartbeat
+}
+
+type conductorAppliedStateNegotiator func(context.Context, config.Conductor, io.Writer) (bool, bool)
+
+func conductorAppliedStateHeartbeatCallback(
+	reporter *conductorPolicyStatusReporter,
+	cfg config.Conductor,
+	signerKeyID string,
+	privateKey ed25519.PrivateKey,
+	negotiate conductorAppliedStateNegotiator,
+) func(context.Context) error {
+	if reporter == nil || negotiate == nil {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		if reporter.heartbeatConfig.Load() == nil {
+			_, heartbeat := negotiate(ctx, cfg, nil)
+			reporter.configureAppliedStateHeartbeat(heartbeat, signerKeyID, privateKey)
+			if !heartbeat {
+				return nil
+			}
+		}
+		return reporter.reportCurrentAppliedStateHeartbeat(ctx)
+	}
 }

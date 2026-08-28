@@ -88,7 +88,12 @@ def format_duration(seconds: float) -> str:
 
 
 def print_summary(
-    results: dict[str, PackageResult], *, label: str, top: int, out: object = sys.stdout
+    results: dict[str, PackageResult],
+    *,
+    label: str,
+    top: int,
+    top_tests: int = 25,
+    out: object = sys.stdout,
 ) -> None:
     packages = [
         (package, result)
@@ -106,6 +111,27 @@ def print_summary(
             f"  {format_duration(result.elapsed):>8}  {result.action:<4}  {package}",
             file=out,
         )
+
+    tests = [
+        (package, test, test_result)
+        for package, result in packages
+        for test, test_result in result.tests.items()
+        if test_result.action in {"pass", "fail", "skip"}
+    ]
+    tests.sort(key=lambda item: item[2].elapsed, reverse=True)
+    if tests:
+        print(f"slowest {min(top_tests, len(tests))} tests:", file=out)
+        print(
+            "  elapsed values can overlap for parallel tests; they are wall-clock "
+            "attribution, not exclusive CPU time",
+            file=out,
+        )
+        for package, test, test_result in tests[:top_tests]:
+            print(
+                f"  {format_duration(test_result.elapsed):>8}  "
+                f"{test_result.action:<4}  {package} {test}",
+                file=out,
+            )
 
     failures = [(package, result) for package, result in packages if result.action == "fail"]
     if not failures:
@@ -148,13 +174,18 @@ def main() -> int:
     )
     parser.add_argument("--label", default="go test", help="label printed in the summary")
     parser.add_argument("--top", type=int, default=20, help="number of slow packages to print")
+    parser.add_argument(
+        "--top-tests", type=int, default=25, help="number of slow tests to print"
+    )
     args = parser.parse_args()
 
     if args.top < 1:
         parser.error("--top must be at least 1")
+    if args.top_tests < 1:
+        parser.error("--top-tests must be at least 1")
 
     results = parse_events(sys.stdin.readlines())
-    print_summary(results, label=args.label, top=args.top)
+    print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
     if has_failed_packages(results):
         return 1
     return 0

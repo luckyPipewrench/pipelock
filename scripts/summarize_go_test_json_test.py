@@ -187,6 +187,45 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
 
         self.assertEqual(results["example.com/pkg"].action, "pass")
 
+    def test_summarizes_slowest_tests_with_parallelism_caveat(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFast",
+                    "Elapsed": 1.0,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/proxy",
+                    "Test": "TestSlow",
+                    "Elapsed": 12.5,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/proxy",
+                    "Elapsed": 13.0,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(
+            results, label="unit", top=1, top_tests=1, out=out
+        )
+
+        summary = out.getvalue()
+        self.assertIn("slowest 1 tests:", summary)
+        self.assertIn("12.5s  pass  example.com/proxy TestSlow", summary)
+        self.assertNotIn("example.com/proxy TestFast", summary)
+        self.assertIn("wall-clock attribution, not exclusive CPU time", summary)
+
     def test_main_returns_nonzero_when_final_package_action_fails(self):
         lines = "\n".join(
             [
@@ -255,6 +294,19 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("--top must be at least 1", stderr.getvalue())
+
+    def test_main_rejects_non_positive_top_tests(self):
+        with (
+            mock.patch.object(
+                sys, "argv", ["summarize_go_test_json.py", "--top-tests", "0"]
+            ),
+            mock.patch.object(sys, "stderr", io.StringIO()) as stderr,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            summarize_go_test_json.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--top-tests must be at least 1", stderr.getvalue())
 
 
 if __name__ == "__main__":

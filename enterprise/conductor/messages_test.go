@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -325,6 +326,15 @@ func TestCapabilitiesResponse_RequiresMTLSAndThresholds(t *testing.T) {
 	err = caps.Validate()
 	if !errors.Is(err, ErrSkewExceeded) {
 		t.Fatalf("Validate() over skew cap = %v, want ErrSkewExceeded", err)
+	}
+
+	if strconv.IntSize == 64 {
+		caps = validCapabilitiesResponse()
+		caps.MaxCreatedSkewSeconds = int(int64(math.MaxInt64)/int64(time.Second) + 1)
+		err = caps.Validate()
+		if !errors.Is(err, ErrSkewExceeded) {
+			t.Fatalf("Validate() overflowing skew = %v, want ErrSkewExceeded", err)
+		}
 	}
 
 	caps = validCapabilitiesResponse()

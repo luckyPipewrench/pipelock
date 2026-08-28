@@ -1500,7 +1500,7 @@ func (c CapabilitiesResponse) ValidateWithLocalThresholdCap(maxThreshold int) er
 	if !slices.Contains(c.ReceiptEntryVersions, recorder.CurrentWriteEntryVersion) {
 		return fmt.Errorf("%w: receipt_entry_versions must include recorder write version %d", ErrInvalidState, recorder.CurrentWriteEntryVersion)
 	}
-	if c.MaxCreatedSkewSeconds <= 0 || time.Duration(c.MaxCreatedSkewSeconds)*time.Second > MaxAllowedAuditSkew {
+	if c.MaxCreatedSkewSeconds <= 0 || c.MaxCreatedSkewSeconds > int(MaxAllowedAuditSkew/time.Second) {
 		return fmt.Errorf("%w: max_created_skew_seconds=%d", ErrSkewExceeded, c.MaxCreatedSkewSeconds)
 	}
 	for name, value := range map[string]int{

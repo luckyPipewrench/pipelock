@@ -186,7 +186,8 @@ func (r *conductorPolicyStatusReporter) ReportPolicyStatus(ctx context.Context, 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("conductor runtime status rejected HTTP %d: %s", resp.StatusCode, statusSnippet(respBody))
 	}
-	return r.reportAppliedStateHeartbeat(ctx, ev)
+	_ = r.reportAppliedStateHeartbeat(ctx, ev)
+	return nil
 }
 
 func (r *conductorPolicyStatusReporter) configureAppliedStateHeartbeat(enabled bool, signerKeyID string, privateKey ed25519.PrivateKey) {

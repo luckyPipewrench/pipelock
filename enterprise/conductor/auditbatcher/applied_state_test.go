@@ -10,6 +10,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -276,4 +277,32 @@ func TestProducer_CloseCancelsActiveAppliedStateHeartbeat(t *testing.T) {
 	default:
 		t.Fatal("active heartbeat context was not canceled by Close")
 	}
+}
+
+func TestProducer_CloseDoesNotWaitForHeartbeatIgnoringCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		EmitAppliedStateHeartbeat: true,
+		HeartbeatInterval:         time.Millisecond,
+		AppliedStateHeartbeat: func(context.Context) error {
+			startedOnce.Do(func() { close(started) })
+			<-release
+			return nil
+		},
+	})
+	<-started
+	closed := make(chan struct{})
+	go func() {
+		_ = producer.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("Close blocked on heartbeat callback that ignored cancellation")
+	}
+	close(release)
 }

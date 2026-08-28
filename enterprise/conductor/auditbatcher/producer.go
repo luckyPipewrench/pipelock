@@ -225,8 +225,17 @@ func (p *Producer) runAppliedStateHeartbeat() {
 		select {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(p.heartbeatContext, defaultAppliedStateHeartbeatTimeout)
-			_ = p.appliedStateHeartbeat(ctx)
-			cancel()
+			result := make(chan error, 1)
+			go func() {
+				result <- p.appliedStateHeartbeat(ctx)
+			}()
+			select {
+			case <-result:
+				cancel()
+			case <-ctx.Done():
+				cancel()
+				return
+			}
 		case <-p.heartbeatStop:
 			return
 		}

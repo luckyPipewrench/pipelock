@@ -61,6 +61,34 @@ class StreamGoTestJSONTest(unittest.TestCase):
             out.getvalue(),
         )
 
+    def test_ignores_non_string_action_and_escapes_terminal_controls(self):
+        readings = iter([1.0, 2.0, 3.0, 4.0])
+        lines = [
+            json.dumps({"Action": [], "Package": "example.com/ignored"}) + "\n",
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/\x1b[2Jproxy",
+                    "Elapsed": 1.0,
+                }
+            )
+            + "\n",
+        ]
+        out = io.StringIO()
+
+        stream_go_test_json.stream_events(
+            lines,
+            raw=io.StringIO(),
+            label="proxy\x1b[0m",
+            out=out,
+            clock=lambda: next(readings),
+        )
+
+        output = out.getvalue()
+        self.assertNotIn("\x1b", output)
+        self.assertIn("[proxy\\u001b[0m] pass", output)
+        self.assertIn("example.com/\\u001b[2Jproxy", output)
+
 
 if __name__ == "__main__":
     unittest.main()

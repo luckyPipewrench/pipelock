@@ -227,6 +227,36 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertNotIn("example.com/proxy TestFast", summary)
         self.assertIn("wall-clock attribution, not exclusive CPU time", summary)
 
+    def test_escapes_terminal_controls_in_report_names(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/\x1b[2Jproxy",
+                    "Test": "TestSlow\nspoof",
+                    "Elapsed": 1.0,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/\x1b[2Jproxy",
+                    "Elapsed": 1.0,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(
+            results, label="unit\x1b[0m", top=1, top_tests=1, out=out
+        )
+
+        summary = out.getvalue()
+        self.assertNotIn("\x1b", summary)
+        self.assertIn("unit\\u001b[0m", summary)
+        self.assertIn("example.com/\\u001b[2Jproxy TestSlow\\u000aspoof", summary)
+
     def test_main_returns_nonzero_when_final_package_action_fails(self):
         lines = "\n".join(
             [

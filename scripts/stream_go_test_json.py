@@ -14,6 +14,13 @@ from collections.abc import Callable, Iterable
 from typing import TextIO
 
 
+def escape_terminal_text(value: str) -> str:
+    return "".join(
+        character if character.isprintable() else f"\\u{ord(character):04x}"
+        for character in value
+    )
+
+
 def format_duration(seconds: float) -> str:
     if seconds >= 60:
         minutes, remainder = divmod(seconds, 60)
@@ -54,7 +61,11 @@ def stream_events(
 
         action = event.get("Action")
         package = event.get("Package")
-        if action not in {"pass", "fail", "skip"} or not isinstance(package, str):
+        if (
+            not isinstance(action, str)
+            or action not in {"pass", "fail", "skip"}
+            or not isinstance(package, str)
+        ):
             continue
 
         elapsed = event.get("Elapsed", 0.0)
@@ -62,7 +73,8 @@ def stream_events(
             elapsed = 0.0
 
         print(
-            f"[{label}] {action:<4} {format_duration(float(elapsed)):>8} {package}",
+            f"[{escape_terminal_text(label)}] {action:<4} "
+            f"{format_duration(float(elapsed)):>8} {escape_terminal_text(package)}",
             file=out,
             flush=True,
         )
@@ -72,7 +84,7 @@ def stream_events(
     span = 0.0 if last_event_at is None else last_event_at - first_event_at
     trailing = 0.0 if last_event_at is None else finished - last_event_at
     print(
-        f"[{label}] first JSON lead: {format_duration(lead)}; "
+        f"[{escape_terminal_text(label)}] first JSON lead: {format_duration(lead)}; "
         f"JSON stream span: {format_duration(span)}; "
         f"post-stream tail: {format_duration(trailing)}",
         file=out,

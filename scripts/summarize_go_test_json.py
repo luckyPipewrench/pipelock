@@ -16,6 +16,13 @@ from dataclasses import dataclass, field
 FAILED_OUTPUT_LIMIT = 80
 
 
+def escape_terminal_text(value: str) -> str:
+    return "".join(
+        character if character.isprintable() else f"\\u{ord(character):04x}"
+        for character in value
+    )
+
+
 @dataclass
 class _ActionResult:
     action: str = ""
@@ -105,12 +112,13 @@ def print_summary(
     packages.sort(key=lambda item: item[1].elapsed, reverse=True)
 
     total = sum(result.elapsed for _, result in packages)
-    print(f"Go test package timing ({label})", file=out)
+    print(f"Go test package timing ({escape_terminal_text(label)})", file=out)
     print(f"packages: {len(packages)}; summed package time: {format_duration(total)}", file=out)
     print(f"slowest {min(top, len(packages))} packages:", file=out)
     for package, result in packages[:top]:
         print(
-            f"  {format_duration(result.elapsed):>8}  {result.action:<4}  {package}",
+            f"  {format_duration(result.elapsed):>8}  {result.action:<4}  "
+            f"{escape_terminal_text(package)}",
             file=out,
         )
 
@@ -131,7 +139,8 @@ def print_summary(
         for package, test, test_result in tests[:top_tests]:
             print(
                 f"  {format_duration(test_result.elapsed):>8}  "
-                f"{test_result.action:<4}  {package} {test}",
+                f"{test_result.action:<4}  {escape_terminal_text(package)} "
+                f"{escape_terminal_text(test)}",
                 file=out,
             )
 
@@ -149,7 +158,8 @@ def print_summary(
         print("failed tests:", file=out)
         for package, test, test_result in all_failed_tests:
             print(
-                f"--- {package} {test} ({format_duration(test_result.elapsed)}) ---",
+                f"--- {escape_terminal_text(package)} {escape_terminal_text(test)} "
+                f"({format_duration(test_result.elapsed)}) ---",
                 file=out,
             )
             for line in test_result.output:
@@ -161,7 +171,7 @@ def print_summary(
     if package_output_failures:
         print("failed package output tails:", file=out)
         for package, result in package_output_failures:
-            print(f"--- {package} ---", file=out)
+            print(f"--- {escape_terminal_text(package)} ---", file=out)
             for line in result.output:
                 print(line, file=out)
 

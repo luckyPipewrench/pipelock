@@ -760,7 +760,7 @@ func (s *Server) initConductorProducer(cfg *config.Config, m *metrics.Metrics, r
 	if reporter, ok := s.conductorStatusReporter.(*conductorPolicyStatusReporter); ok && reporter != nil {
 		appliedProvider = reporter.appliedStateProvider()
 		var initialHeartbeat bool
-		emitApplied, initialHeartbeat = conductorNegotiateAppliedState(cfg.Conductor, stderr)
+		emitApplied, initialHeartbeat = conductorNegotiateAppliedState(context.Background(), cfg.Conductor, stderr)
 		reporter.configureAppliedStateHeartbeat(initialHeartbeat, cfg.Conductor.AuditSigningKeyID, recPrivKey)
 		// Keep the periodic callback alive even when the startup handshake fails.
 		// The callback repeats capability negotiation before emitting, so an old
@@ -816,7 +816,7 @@ func conductorRecorderPublicKey(priv ed25519.PrivateKey) (ed25519.PublicKey, err
 // an older v1-only conductor, returns false so the producer omits applied-state
 // and its batches stay byte-identical to v1 past the conductor's strict
 // unknown-field decoder.
-func conductorNegotiateAppliedState(cfg config.Conductor, stderr io.Writer) (bool, bool) {
+func conductorNegotiateAppliedState(parent context.Context, cfg config.Conductor, stderr io.Writer) (bool, bool) {
 	client, err := newConductorMTLSClient(cfg)
 	if err != nil {
 		return false, false
@@ -825,7 +825,7 @@ func conductorNegotiateAppliedState(cfg config.Conductor, stderr io.Writer) (boo
 	if err != nil {
 		return false, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), conductorAppliedStateHandshakeTimeout)
+	ctx, cancel := context.WithTimeout(parent, conductorAppliedStateHandshakeTimeout)
 	defer cancel()
 	negotiated, err := capClient.Handshake(ctx)
 	if err != nil {
@@ -837,7 +837,7 @@ func conductorNegotiateAppliedState(cfg config.Conductor, stderr io.Writer) (boo
 	return negotiated.AuditSchemaVersion >= conductor.AuditEnvelopeSchemaVersion, negotiated.AppliedStateHeartbeat
 }
 
-type conductorAppliedStateNegotiator func(config.Conductor, io.Writer) (bool, bool)
+type conductorAppliedStateNegotiator func(context.Context, config.Conductor, io.Writer) (bool, bool)
 
 func conductorAppliedStateHeartbeatCallback(
 	reporter *conductorPolicyStatusReporter,
@@ -851,7 +851,7 @@ func conductorAppliedStateHeartbeatCallback(
 	}
 	return func(ctx context.Context) error {
 		if reporter.heartbeatConfig.Load() == nil {
-			_, heartbeat := negotiate(cfg, nil)
+			_, heartbeat := negotiate(ctx, cfg, nil)
 			reporter.configureAppliedStateHeartbeat(heartbeat, signerKeyID, privateKey)
 			if !heartbeat {
 				return nil

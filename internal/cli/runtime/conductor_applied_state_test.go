@@ -267,7 +267,7 @@ func TestAppliedStateHeartbeat_RetriesNegotiationAfterStartupOutage(t *testing.T
 		reporter.cfg,
 		"audit-key-main-1",
 		priv,
-		func(config.Conductor, io.Writer) (bool, bool) {
+		func(context.Context, config.Conductor, io.Writer) (bool, bool) {
 			negotiations++
 			return true, negotiations > 1
 		},
@@ -286,6 +286,41 @@ func TestAppliedStateHeartbeat_RetriesNegotiationAfterStartupOutage(t *testing.T
 	}
 	if negotiations != 2 || heartbeatRequests != 1 {
 		t.Fatalf("negotiations = %d, heartbeat requests = %d; want 2, 1", negotiations, heartbeatRequests)
+	}
+}
+
+func TestAppliedStateHeartbeat_CancelsBlockedNegotiation(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	started := make(chan struct{})
+	callback := conductorAppliedStateHeartbeatCallback(
+		reporter,
+		reporter.cfg,
+		"audit-key-main-1",
+		priv,
+		func(ctx context.Context, _ config.Conductor, _ io.Writer) (bool, bool) {
+			close(started)
+			<-ctx.Done()
+			return false, false
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- callback(ctx)
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("callback error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("callback did not return after cancellation")
 	}
 }
 

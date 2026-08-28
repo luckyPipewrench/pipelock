@@ -65,6 +65,7 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
         self.examples = (WORKFLOWS / "example-verification.yaml").read_text(encoding="utf-8")
         self.fuzz = (WORKFLOWS / "clusterfuzzlite.yaml").read_text(encoding="utf-8")
         self.hardening = (WORKFLOWS / "hardening.yaml").read_text(encoding="utf-8")
+        self.hardening_report = (WORKFLOWS / "hardening-report.yaml").read_text(encoding="utf-8")
 
     def test_verifier_push_and_pr_inputs_are_identical_and_conservative(self):
         push_paths = event_paths(self.verifiers, "push")
@@ -136,15 +137,27 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
         for unrelated in ("README.md", "docs/specs/receipt-v2.md", "examples/quickstart/README.md"):
             self.assertFalse(is_selected(paths, unrelated), unrelated)
 
-    def test_only_warning_only_hardening_report_leaves_prs(self):
+    def test_warning_only_hardening_report_never_creates_a_pr_check(self):
         trigger = self.hardening[self.hardening.index("on:\n") : self.hardening.index("concurrency:")]
         self.assertIn("workflow_dispatch:", trigger)
         self.assertIn("schedule:", trigger)
         self.assertIn("push:", trigger)
         self.assertIn("pull_request:", trigger)
+        self.assertNotIn("hardening-report:", self.hardening)
 
-        report = job_block(self.hardening, "hardening-report")
-        self.assertIn("if: ${{ github.event_name != 'pull_request' }}", report)
+        report_trigger = self.hardening_report[
+            self.hardening_report.index("on:\n") : self.hardening_report.index("concurrency:")
+        ]
+        self.assertIn("workflow_dispatch:", report_trigger)
+        self.assertIn("schedule:", report_trigger)
+        self.assertIn("push:", report_trigger)
+        self.assertNotIn("pull_request:", report_trigger)
+        # A push scoped to main keeps the report off PR head commits. A
+        # broadened branch filter would run on the PR's head SHA and post a
+        # hardening-report check back onto the PR, which is the check this
+        # split exists to suppress.
+        self.assertIn("branches: [main]", report_trigger)
+        self.assertIn("hardening-report:", self.hardening_report)
         for job in ("workflow-audit", "runtime-policy"):
             self.assertNotIn(
                 "github.event_name != 'pull_request'",

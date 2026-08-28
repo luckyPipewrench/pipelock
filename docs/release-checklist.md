@@ -71,7 +71,7 @@ make debt-check
   comment together.
 - Confirm `Hardening / workflow-audit` and `Hardening / runtime-policy` are
   green on the candidate commit.
-- Review the `Hardening / hardening-report` summary for policy-drift or debt
+- Review the `Hardening debt report / hardening-report` summary for policy-drift or debt
   warnings.
 - Confirm no runtime package is directly mutating policy-relevant config.
 - Confirm receipt and envelope hash call sites still match their intended

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -28,14 +29,19 @@ def write_command(directory: Path, name: str, body: str) -> None:
 class DocsCheckTest(unittest.TestCase):
     def run_with_path(self, commands: dict[str, str]) -> subprocess.CompletedProcess[str]:
         """Run the real docs check with only the named commands available."""
+        bash = shutil.which("bash")
+        dirname = shutil.which("dirname")
+        if bash is None or dirname is None:
+            self.skipTest("bash and dirname are required to run docs-check.sh")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             command_dir = Path(temp_dir)
-            os.symlink("/usr/bin/bash", command_dir / "bash")
-            os.symlink("/usr/bin/dirname", command_dir / "dirname")
+            os.symlink(bash, command_dir / "bash")
+            os.symlink(dirname, command_dir / "dirname")
             for name, body in commands.items():
                 write_command(command_dir, name, body)
             return subprocess.run(
-                ["/usr/bin/bash", str(DOCS_CHECK)],
+                [bash, str(DOCS_CHECK)],
                 cwd=ROOT,
                 env=os.environ | {"PATH": str(command_dir)},
                 check=False,

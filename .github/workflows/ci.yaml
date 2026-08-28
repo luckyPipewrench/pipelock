@@ -554,11 +554,24 @@ jobs:
       # Preflight and diagnose are what tell an operator which layers they are
       # actually getting. On arm64 they must report seccomp as unavailable
       # rather than claiming it.
+      # `go test -run NAME` exits 0 when the filter matches NOTHING, including
+      # when a build tag excludes the file entirely. Both guards below are tagged
+      # `linux && !amd64`, so a tag drift, a rename, or a package move would leave
+      # this lane green while proving nothing: the exact failure this job exists to
+      # catch, relocated into the check. Assert the named test actually ran.
       - name: Preflight reports the real arm64 layer set
-        run: go test -race -count=1 -run "TestPreflight|TestDetect" ./internal/sandbox/...
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -v -run TestDetectAndPreflightReportSeccompUnavailableWithoutFilter \
+            ./internal/sandbox/... | tee /tmp/arm64-preflight.log
+          grep -q '^--- PASS: TestDetectAndPreflightReportSeccompUnavailableWithoutFilter' /tmp/arm64-preflight.log
 
       - name: Diagnose reports the real arm64 layer set
-        run: go test -race -count=1 -run TestDiagnoseReportsSeccompUnavailableWithoutFilter ./internal/cli/diag/...
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -v -run TestDiagnoseReportsSeccompUnavailableWithoutFilter \
+            ./internal/cli/diag/... | tee /tmp/arm64-diagnose.log
+          grep -q '^--- PASS: TestDiagnoseReportsSeccompUnavailableWithoutFilter' /tmp/arm64-diagnose.log
 
   # Exercise the browser target's concrete fail-closed filesystem fallbacks,
   # then compile the same contracts for WASI and AIX so build-tag gaps cannot

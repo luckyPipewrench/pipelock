@@ -36,7 +36,7 @@ jobs:
         with:
           version: v2.12.2
           skip-cache: true
-          args: --default none --enable dupl --enable gocyclo --enable gocognit --enable maintidx ./...
+          args: --default none --enable dupl --enable gocyclo --enable gocognit --enable maintidx --output.json.path=hardening-debt.json ./...
 
       - name: Summarize hardening report
         if: always()
@@ -45,13 +45,29 @@ jobs:
         run: |
           {
             echo "## Hardening Report"
-            if [ "$DEBT_OUTCOME" = "failure" ]; then
-              echo "- debt report: complexity/duplication debt findings present; review the job log before release"
-            else
-              echo "- debt report: clean for configured linters"
-            fi
+            case "$DEBT_OUTCOME" in
+              success)
+                echo "- debt report: clean for configured linters"
+                ;;
+              failure)
+                if jq -e '.Issues | type == "array" and length > 0' hardening-debt.json >/dev/null 2>&1; then
+                  echo "- debt report: complexity/duplication debt findings present; review the job log before release"
+                else
+                  echo "- debt report: incomplete because the lint action failed without producing findings"
+                fi
+                ;;
+              *)
+                echo "- debt report: incomplete because the lint action ended with outcome $DEBT_OUTCOME"
+                ;;
+            esac
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$DEBT_OUTCOME" = "failure" ]; then
-            echo "::warning::Debt report flagged follow-up work. See the workflow summary and logs."
+            if jq -e '.Issues | type == "array" and length > 0' hardening-debt.json >/dev/null 2>&1; then
+              echo "::warning::Debt report flagged follow-up work. See the workflow summary and logs."
+            else
+              echo "::warning::Debt report was incomplete. See the workflow logs."
+            fi
+          elif [ "$DEBT_OUTCOME" != "success" ]; then
+            echo "::warning::Debt report was incomplete. See the workflow logs."
           fi

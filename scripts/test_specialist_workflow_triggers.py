@@ -9,7 +9,10 @@ means the workflow never starts, so a missing input would otherwise silently
 remove an advisory signal rather than fail a job.
 """
 
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -44,6 +47,21 @@ def job_block(workflow: str, job: str) -> str:
     next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\n", workflow[start + len(marker) :])
     end = len(workflow) if next_job is None else start + len(marker) + next_job.start()
     return workflow[start:end]
+
+
+def step_run_script(workflow: str, job: str, step: str) -> str:
+    """Return the shell body for one named workflow step."""
+    block = job_block(workflow, job)
+    step_marker = f"      - name: {step}\n"
+    step_start = block.index(step_marker) + len(step_marker)
+    run_marker = "        run: |\n"
+    run_start = block.index(run_marker, step_start) + len(run_marker)
+    lines = []
+    for line in block[run_start:].splitlines():
+        if line and not line.startswith("          "):
+            break
+        lines.append(line[10:] if line else "")
+    return "\n".join(lines)
 
 
 def matches(pattern: str, path: str) -> bool:
@@ -158,12 +176,51 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
         # split exists to suppress.
         self.assertIn("branches: [main]", report_trigger)
         self.assertIn("hardening-report:", self.hardening_report)
+        report_job = job_block(self.hardening_report, "hardening-report")
+        self.assertIn("continue-on-error: true", report_job)
+        self.assertIn("if: always()", report_job)
+        self.assertIn("--output.json.path=hardening-debt.json", report_job)
+        self.assertIn('case "$DEBT_OUTCOME" in', report_job)
+        self.assertIn("incomplete because the lint action failed without producing findings", report_job)
+        self.assertIn("incomplete because the lint action ended with outcome", report_job)
         for job in ("workflow-audit", "runtime-policy"):
             self.assertNotIn(
                 "github.event_name != 'pull_request'",
                 job_block(self.hardening, job),
                 job,
             )
+
+    def test_hardening_report_distinguishes_findings_from_incomplete_audits(self):
+        script = step_run_script(self.hardening_report, "hardening-report", "Summarize hardening report")
+        cases = (
+            ("success", None, "clean for configured linters", "incomplete"),
+            ("failure", '{"Issues":[{"Text":"duplicate"}]}', "debt findings present", "incomplete"),
+            ("failure", None, "incomplete because the lint action failed", "debt findings present"),
+            ("cancelled", None, "incomplete because the lint action ended", "clean for configured linters"),
+        )
+        for outcome, report, expected, forbidden in cases:
+            with self.subTest(outcome=outcome, report=report):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir)
+                    if report is not None:
+                        (temp_path / "hardening-debt.json").write_text(report, encoding="utf-8")
+                    summary = temp_path / "summary.md"
+                    env = os.environ | {
+                        "DEBT_OUTCOME": outcome,
+                        "GITHUB_STEP_SUMMARY": str(summary),
+                    }
+                    subprocess.run(
+                        ["bash", "-eu", "-o", "pipefail", "-c", script],
+                        cwd=temp_path,
+                        env=env,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    summary_text = summary.read_text(encoding="utf-8")
+                    self.assertIn(expected, summary_text)
+                    self.assertNotIn(forbidden, summary_text)
 
     def test_job_block_includes_conditions_after_runs_on(self):
         workflow = """jobs:

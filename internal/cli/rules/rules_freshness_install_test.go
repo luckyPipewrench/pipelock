@@ -321,6 +321,78 @@ func TestRecoverBundleTransactionPrefersPriorBundle(t *testing.T) {
 	}
 }
 
+func TestRecoverBundleTransactionRestoresFailedCandidateWithoutBackup(t *testing.T) {
+	rulesDir := t.TempDir()
+	dest := filepath.Join(rulesDir, "recovery-test")
+	if err := os.MkdirAll(dest+".failed", 0o750); err != nil {
+		t.Fatalf("create failed candidate: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dest+".failed", "bundle.yaml"), []byte("candidate"), 0o600); err != nil {
+		t.Fatalf("write failed candidate: %v", err)
+	}
+	if err := recoverBundleTransaction(dest); err != nil {
+		t.Fatalf("recoverBundleTransaction: %v", err)
+	}
+	assertInstalledBundleBytes(t, rulesDir, "recovery-test", []byte("candidate"))
+	if err := recoverBundleTransaction(dest); err != nil {
+		t.Fatalf("recoverBundleTransaction existing destination: %v", err)
+	}
+}
+
+func TestStageBundleTransactionFailedFirstInstallLeavesNoBundle(t *testing.T) {
+	rulesDir := t.TempDir()
+	err := stageBundleTransaction(rulesDir, "first-install", []byte("candidate"), nil, &domrules.LockFile{}, func() error {
+		return errors.New("forced commit failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "forced commit failure") {
+		t.Fatalf("stageBundleTransaction error = %v, want commit failure", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rulesDir, "first-install")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed first install remains: %v", statErr)
+	}
+}
+
+func TestCommitFreshnessStateReportsFailedRestoration(t *testing.T) {
+	calls := 0
+	err := commitFreshnessStateWithSave(t.TempDir(), &domrules.FreshnessState{}, &domrules.FreshnessState{}, func(string, *domrules.FreshnessState) error {
+		calls++
+		return fmt.Errorf("save failure %d", calls)
+	})
+	if err == nil || !strings.Contains(err.Error(), "save failure 1") || !strings.Contains(err.Error(), "save failure 2") {
+		t.Fatalf("commitFreshnessStateWithSave error = %v, want commit and restoration failures", err)
+	}
+}
+
+func TestFreshnessStagingRejectsCorruptInstalledIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stage func(string, *domrules.Bundle, *domrules.LockFile) error
+	}{
+		{
+			name: "local",
+			stage: func(dir string, bundle *domrules.Bundle, lock *domrules.LockFile) error {
+				return stageLocalBundleWithFormatFloor(dir, bundle, []byte("candidate"), lock)
+			},
+		},
+		{
+			name: "remote",
+			stage: func(dir string, bundle *domrules.Bundle, lock *domrules.LockFile) error {
+				return stageRemoteBundleWithFreshness(dir, bundle, []byte("candidate"), nil, lock, false)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rulesDir := t.TempDir()
+			writeInstalledBundleForFreshnessTest(t, rulesDir, "corrupt-rules", []byte("not a bundle"))
+			bundle, lock := remoteFreshnessCandidate("corrupt-rules", 1, 0)
+			err := tc.stage(rulesDir, bundle, lock)
+			if err == nil || !strings.Contains(err.Error(), "parsing installed bundle identity") {
+				t.Fatalf("stage error = %v, want installed identity failure", err)
+			}
+		})
+	}
+}
+
 func TestStageBundleFreshnessRejectsCorruptPersistedState(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

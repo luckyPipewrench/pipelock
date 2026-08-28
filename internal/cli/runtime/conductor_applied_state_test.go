@@ -201,6 +201,25 @@ func TestAppliedStateHeartbeat_FailureDoesNotFailRuntimeStatus(t *testing.T) {
 	}
 }
 
+func TestAppliedStateHeartbeat_RejectsUnexpectedSuccessStatus(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	reporter.configureAppliedStateHeartbeat(true, "audit-key-main-1", priv)
+	reporter.latest.Store(&policysync.StatusEvent{PollAt: time.Now().UTC()})
+	reporter.client = statusReporterDoer{fn: func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != controlplane.AppliedStateHeartbeatPath {
+			t.Fatalf("request path = %s, want %s", req.URL.Path, controlplane.AppliedStateHeartbeatPath)
+		}
+		return responseWithBody(http.StatusOK, `{"status":"ok"}`), nil
+	}}
+	if err := reporter.reportCurrentAppliedStateHeartbeat(context.Background()); err == nil {
+		t.Fatal("reportCurrentAppliedStateHeartbeat() error = nil, want rejection of HTTP 200")
+	}
+}
+
 func TestAppliedStateHeartbeat_RemainsOffWithoutNegotiation(t *testing.T) {
 	reporter := newAppliedStateReporter(t)
 	_, priv, err := ed25519.GenerateKey(nil)

@@ -198,37 +198,43 @@ func TestProducer_OmitsAppliedStateWhenProviderNil(t *testing.T) {
 }
 
 func TestProducer_AppliedStateHeartbeatRunsIdleAndStopsOnClose(t *testing.T) {
-	fired := make(chan struct{}, 1)
-	var count atomic.Int64
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	finished := make(chan struct{})
 	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
 		EmitAppliedState:          true,
 		EmitAppliedStateHeartbeat: true,
 		HeartbeatInterval:         10 * time.Millisecond,
 		AppliedStateHeartbeat: func(context.Context) error {
-			count.Add(1)
-			select {
-			case fired <- struct{}{}:
-			default:
-			}
+			started <- struct{}{}
+			<-release
+			close(finished)
 			return nil
 		},
 	})
 	select {
-	case <-fired:
+	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("idle applied-state heartbeat did not fire")
 	}
 	if err := producer.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	closedCount := count.Load()
 	select {
 	case <-producer.heartbeatDone:
 	default:
 		t.Fatal("heartbeat goroutine still running after Close")
 	}
-	if count.Load() != closedCount {
-		t.Fatalf("applied-state heartbeat count advanced after close: %d -> %d", closedCount, count.Load())
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight heartbeat callback did not finish after release")
+	}
+	select {
+	case <-started:
+		t.Fatal("applied-state heartbeat started again after close")
+	default:
 	}
 }
 
@@ -258,13 +264,15 @@ func TestProducer_AppliedStateHeartbeatDisabledWithoutNegotiation(t *testing.T) 
 func TestProducer_CloseCancelsActiveAppliedStateHeartbeat(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
+	var startedOnce sync.Once
+	var canceledOnce sync.Once
 	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
 		EmitAppliedStateHeartbeat: true,
 		HeartbeatInterval:         time.Millisecond,
 		AppliedStateHeartbeat: func(ctx context.Context) error {
-			close(started)
+			startedOnce.Do(func() { close(started) })
 			<-ctx.Done()
-			close(canceled)
+			canceledOnce.Do(func() { close(canceled) })
 			return ctx.Err()
 		},
 	})

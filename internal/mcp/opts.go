@@ -395,6 +395,10 @@ type MCPProxyOpts struct {
 	// outputForwardStartedForTest signals that RunProxy has entered its
 	// server-output forwarding loop. Production wiring leaves it nil.
 	outputForwardStartedForTest func()
+	// outputForwardDoneForTest signals that server-output forwarding returned.
+	// Tests use it to release a child held after closing stdout; production
+	// wiring leaves it nil.
+	outputForwardDoneForTest func()
 	// sessionExit marks Pipelock-initiated descriptor closes during a
 	// session-bound teardown. It is wired only by proxy entry points.
 	sessionExit *sessionExitState

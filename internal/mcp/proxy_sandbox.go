@@ -272,6 +272,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	// hung sandboxed upstream fails closed instead of hanging the agent.
 	serverReader := fwdOpts.withResponseTimeout(transport.NewStdioReader(serverOut))
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
+	if opts.outputForwardDoneForTest != nil {
+		opts.outputForwardDoneForTest()
+	}
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 
 	// On an upstream response timeout the sandboxed child is still alive; kill
@@ -286,18 +289,20 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		_ = sandboxCmd.Process.Kill()
 	}
 
-	// Do not signal the process group on the ordinary EOF path. The response
-	// reader can observe EOF just before the direct child finishes exiting; a
-	// teardown here turns that clean exit into SIGTERM. Cancellation and parent
-	// death already own process-group termination through processExit above.
-	// A sandbox child can detach from the process group while retaining the
-	// stderr pipe. Once the direct command has been signalled, it is adopted by
-	// the subreaper; sweep it before Wait so inherited descriptors cannot keep
-	// the direct command's pipe copy loop alive forever.
+	// Do not signal the process group until the direct child has exited. Response
+	// EOF can arrive while that child is still finishing, and an earlier teardown
+	// turns its clean exit into SIGTERM. Linux observes the exit without reaping,
+	// cleans up the still-owned process group, then lets exec.Cmd reap the child.
+	// That preserves the direct exit status without leaking group descendants
+	// when subreaper setup is unavailable.
+	//
+	// A sandbox child can also detach from the process group. Sweep adopted
+	// descendants on both sides of Wait so inherited descriptors and narrow
+	// reparenting races cannot keep the proxy alive.
 	if subreaperEnabled {
 		killAdoptedDescendants()
 	}
-	waitErr := processExit.wait(sandboxCmd.Wait)
+	waitErr := waitForCommandWithProcessGroup(ctx, sandboxCmd, childPgid, processExit)
 	close(waitDone)
 
 	// Clean up the sandbox temp dir. No kill belongs here: Wait has already

@@ -367,63 +367,73 @@ jobs:
           files: ./coverage-subprocess.out
           fail_ci_if_error: false
 
+  test-replay-go125:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25'
+      - name: Replay harness (deterministic regression)
+        run: make test-replay-harness
+
+  test-replay-go126:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+      - name: Replay harness (deterministic regression)
+        run: make test-replay-harness
+
   test-go125:
-    needs: [security-scan, test-oss-go125, test-enterprise-go125, test-subprocess-coverage]
+    needs: [security-scan, test-oss-go125, test-enterprise-go125, test-subprocess-coverage, test-replay-go125]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: test (1.25)
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        if: ${{ needs.security-scan.result == 'success' }}
-        with:
-          persist-credentials: false
-      - name: Set up Go
-        if: ${{ needs.security-scan.result == 'success' }}
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: '1.25'
-      - name: Replay harness (deterministic regression)
-        if: ${{ needs.security-scan.result == 'success' }}
-        run: make test-replay-harness
       - name: Required check compatibility gate
         run: |
           echo "security-scan result: ${{ needs.security-scan.result }}"
           echo "test-oss-go125 result: ${{ needs.test-oss-go125.result }}"
           echo "test-enterprise-go125 result: ${{ needs.test-enterprise-go125.result }}"
           echo "test-subprocess-coverage result: ${{ needs.test-subprocess-coverage.result }}"
+          echo "test-replay-go125 result: ${{ needs.test-replay-go125.result }}"
           test "${{ needs.security-scan.result }}" = "success"
           test "${{ needs.test-oss-go125.result }}" = "success"
           test "${{ needs.test-enterprise-go125.result }}" = "success"
           test "${{ needs.test-subprocess-coverage.result }}" = "success"
+          test "${{ needs.test-replay-go125.result }}" = "success"
 
   test-go126:
-    needs: [security-scan, test-oss-go126, test-enterprise-go126]
+    needs: [security-scan, test-oss-go126, test-enterprise-go126, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: test (1.26)
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        if: ${{ needs.security-scan.result == 'success' }}
-        with:
-          persist-credentials: false
-      - name: Set up Go
-        if: ${{ needs.security-scan.result == 'success' }}
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: '1.26'
-      - name: Replay harness (deterministic regression)
-        if: ${{ needs.security-scan.result == 'success' }}
-        run: make test-replay-harness
       - name: Required check compatibility gate
         run: |
           echo "security-scan result: ${{ needs.security-scan.result }}"
           echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
           echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
+          echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
           test "${{ needs.security-scan.result }}" = "success"
           test "${{ needs.test-oss-go126.result }}" = "success"
           test "${{ needs.test-enterprise-go126.result }}" = "success"
+          test "${{ needs.test-replay-go126.result }}" = "success"
 
   test-macos:
     needs: [security-scan]

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import sys
 from dataclasses import dataclass, field
 
@@ -21,6 +22,16 @@ def escape_terminal_text(value: str) -> str:
         character if character.isprintable() else f"\\u{ord(character):04x}"
         for character in value
     )
+
+
+def normalize_elapsed(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    try:
+        elapsed = float(value)
+    except OverflowError:
+        return 0.0
+    return elapsed if math.isfinite(elapsed) and elapsed > 0 else 0.0
 
 
 @dataclass
@@ -75,16 +86,14 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
             continue
 
         if action in {"pass", "fail", "skip"}:
-            elapsed = event.get("Elapsed", 0.0)
+            elapsed = normalize_elapsed(event.get("Elapsed", 0.0))
             if test_result is not None:
                 test_result.action = action
-                if isinstance(elapsed, (int, float)):
-                    test_result.elapsed = float(elapsed)
+                test_result.elapsed = elapsed
                 continue
 
             result.action = action
-            if isinstance(elapsed, (int, float)):
-                result.elapsed = float(elapsed)
+            result.elapsed = elapsed
 
     return results
 

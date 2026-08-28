@@ -89,6 +89,44 @@ class StreamGoTestJSONTest(unittest.TestCase):
         self.assertIn("[proxy\\u001b[0m] pass", output)
         self.assertIn("example.com/\\u001b[2Jproxy", output)
 
+    def test_invalid_elapsed_values_fall_back_without_stopping_summary(self):
+        readings = iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        lines = [
+            json.dumps(
+                {"Action": "pass", "Package": "example.com/bool", "Elapsed": True}
+            )
+            + "\n",
+            '{"Action":"pass","Package":"example.com/infinite","Elapsed":1e400}\n',
+            json.dumps(
+                {"Action": "pass", "Package": "example.com/negative", "Elapsed": -1}
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/valid",
+                    "Elapsed": 1.5,
+                }
+            )
+            + "\n",
+        ]
+        out = io.StringIO()
+
+        stream_go_test_json.stream_events(
+            lines,
+            raw=io.StringIO(),
+            label="proxy",
+            out=out,
+            clock=lambda: next(readings),
+        )
+
+        output = out.getvalue()
+        self.assertIn("0.0s example.com/bool", output)
+        self.assertIn("0.0s example.com/infinite", output)
+        self.assertIn("0.0s example.com/negative", output)
+        self.assertIn("1.5s example.com/valid", output)
+        self.assertIn("first JSON lead:", output)
+
 
 if __name__ == "__main__":
     unittest.main()

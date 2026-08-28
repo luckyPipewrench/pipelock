@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from collections.abc import Callable, Iterable
@@ -19,6 +20,16 @@ def escape_terminal_text(value: str) -> str:
         character if character.isprintable() else f"\\u{ord(character):04x}"
         for character in value
     )
+
+
+def normalize_elapsed(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    try:
+        elapsed = float(value)
+    except OverflowError:
+        return 0.0
+    return elapsed if math.isfinite(elapsed) and elapsed > 0 else 0.0
 
 
 def format_duration(seconds: float) -> str:
@@ -68,13 +79,11 @@ def stream_events(
         ):
             continue
 
-        elapsed = event.get("Elapsed", 0.0)
-        if not isinstance(elapsed, (int, float)):
-            elapsed = 0.0
+        elapsed = normalize_elapsed(event.get("Elapsed", 0.0))
 
         print(
             f"[{escape_terminal_text(label)}] {action:<4} "
-            f"{format_duration(float(elapsed)):>8} {escape_terminal_text(package)}",
+            f"{format_duration(elapsed):>8} {escape_terminal_text(package)}",
             file=out,
             flush=True,
         )

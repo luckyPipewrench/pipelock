@@ -257,6 +257,34 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertIn("unit\\u001b[0m", summary)
         self.assertIn("example.com/\\u001b[2Jproxy TestSlow\\u000aspoof", summary)
 
+    def test_invalid_elapsed_values_fall_back_without_stopping_summary(self):
+        lines = [
+            json.dumps(
+                {"Action": "pass", "Package": "example.com/bool", "Elapsed": True}
+            ),
+            '{"Action":"pass","Package":"example.com/infinite","Elapsed":1e400}',
+            json.dumps(
+                {"Action": "pass", "Package": "example.com/negative", "Elapsed": -1}
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/valid",
+                    "Elapsed": 1.5,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=4, out=out)
+
+        summary = out.getvalue()
+        self.assertIn("0.0s  pass  example.com/bool", summary)
+        self.assertIn("0.0s  pass  example.com/infinite", summary)
+        self.assertIn("0.0s  pass  example.com/negative", summary)
+        self.assertIn("1.5s  pass  example.com/valid", summary)
+
     def test_main_returns_nonzero_when_final_package_action_fails(self):
         lines = "\n".join(
             [

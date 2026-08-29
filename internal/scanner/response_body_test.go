@@ -199,7 +199,13 @@ func TestJPEGHeaderValidationRejectsMalformedFields(t *testing.T) {
 }
 
 func TestJPEGMetadataHelpersHandleStandaloneMarkersAndSeparators(t *testing.T) {
-	if got := jpegResponseMetadata([]byte{0xff, 0xd8, 0xff, 0xd8, 0xff, 0xd9}); len(got) != 0 {
+	base := jpegWithIsolatedDANTable(t)
+	body := append([]byte{0xff, 0xd8, 0xff, 0xd8}, base[2:]...)
+	got, err := jpegResponseMetadata(body)
+	if err != nil {
+		t.Fatalf("valid JPEG metadata parse failed: %v", err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("standalone markers produced metadata: %q", got)
 	}
 
@@ -209,6 +215,26 @@ func TestJPEGMetadataHelpersHandleStandaloneMarkersAndSeparators(t *testing.T) {
 	appendImageMetadata(&metadata, []byte("two"))
 	if got := metadata.String(); got != "one\ntwo" {
 		t.Fatalf("metadata separator result = %q, want %q", got, "one\\ntwo")
+	}
+}
+
+func TestJPEGResponseMetadataRejectsMalformedInput(t *testing.T) {
+	tests := map[string][]byte{
+		"missing start":       {0x00, 0x00},
+		"missing marker":      {0xff, 0xd8, 0x00},
+		"truncated marker":    {0xff, 0xd8, 0xff},
+		"end before scan":     {0xff, 0xd8, 0xff, 0xd9},
+		"truncated length":    {0xff, 0xd8, 0xff, 0xe1, 0x00},
+		"short length":        {0xff, 0xd8, 0xff, 0xe1, 0x00, 0x01},
+		"oversized length":    {0xff, 0xd8, 0xff, 0xe1, 0x00, 0x05, 0x00},
+		"missing scan marker": {0xff, 0xd8, 0xff, 0xe1, 0x00, 0x02},
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := jpegResponseMetadata(body); err == nil {
+				t.Fatal("malformed JPEG metadata input was accepted")
+			}
+		})
 	}
 }
 

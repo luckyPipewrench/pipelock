@@ -23,7 +23,8 @@ func responseImageMetadata(body []byte) ([]byte, bool, error) {
 		metadata, err := pngResponseMetadata(body)
 		return metadata, true, err
 	case isCompleteJPEG(body):
-		return jpegResponseMetadata(body), true, nil
+		metadata, err := jpegResponseMetadata(body)
+		return metadata, true, err
 	default:
 		return nil, false, nil
 	}
@@ -139,11 +140,20 @@ func boundedZlibText(compressed []byte, limit int) ([]byte, error) {
 	return decoded, nil
 }
 
-func jpegResponseMetadata(body []byte) []byte {
+func jpegResponseMetadata(body []byte) ([]byte, error) {
+	if len(body) < 2 || body[0] != 0xff || body[1] != 0xd8 {
+		return nil, fmt.Errorf("missing JPEG start marker")
+	}
 	var metadata bytes.Buffer
 	for pos := 2; pos < len(body); {
+		if body[pos] != 0xff {
+			return nil, fmt.Errorf("JPEG marker missing at offset %d", pos)
+		}
 		for pos < len(body) && body[pos] == 0xff {
 			pos++
+		}
+		if pos >= len(body) {
+			return nil, fmt.Errorf("truncated JPEG marker")
 		}
 		marker := body[pos]
 		pos++
@@ -151,9 +161,15 @@ func jpegResponseMetadata(body []byte) []byte {
 			continue
 		}
 		if marker == 0xd9 {
-			break
+			return nil, fmt.Errorf("JPEG ended before scan data")
+		}
+		if len(body)-pos < 2 {
+			return nil, fmt.Errorf("truncated JPEG segment length")
 		}
 		segmentLength := int(binary.BigEndian.Uint16(body[pos : pos+2]))
+		if segmentLength < 2 || segmentLength > len(body)-pos {
+			return nil, fmt.Errorf("invalid JPEG segment length %d", segmentLength)
+		}
 		segmentEnd := pos + segmentLength
 		payload := body[pos+2 : segmentEnd]
 		switch marker {
@@ -161,11 +177,11 @@ func jpegResponseMetadata(body []byte) []byte {
 			appendImageMetadata(&metadata, payload)
 		}
 		if marker == 0xda {
-			break
+			return metadata.Bytes(), nil
 		}
 		pos = segmentEnd
 	}
-	return metadata.Bytes()
+	return nil, fmt.Errorf("JPEG scan marker missing")
 }
 
 func appendImageMetadata(dst *bytes.Buffer, value []byte) {

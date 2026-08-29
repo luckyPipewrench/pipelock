@@ -1327,6 +1327,9 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		if lineHasAgentProxyLoopbackAllow(line, uids.agentUID, proxyPort) {
 			return false
 		}
+		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {
+			return false
+		}
 		if lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "udp", 53, "drop") ||
 			lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "tcp", 53, "drop") {
 			return false
@@ -1338,6 +1341,46 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		}
 		return true
 	})
+}
+
+// lineHasAgentEstablishedReplyAllow recognizes a narrow server reply path.
+// Established TCP replies cannot admit the NEW outbound connection used by the
+// direct-egress canary. The explicit conntrack direction prevents an
+// established original-direction flow from being mistaken for a reply.
+func lineHasAgentEstablishedReplyAllow(line string, agentUID int) bool {
+	fields := nftLineFields(line)
+	const predicatesLen = 17
+	if len(fields) <= predicatesLen {
+		return false
+	}
+	interfaceOK := fields[3] == "oifname" && isQuotedNFTName(fields[4]) ||
+		fields[3] == "oif" && isPositiveInteger(fields[4])
+	if fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) ||
+		!interfaceOK ||
+		fields[5] != "ip" || (fields[6] != "saddr" && fields[6] != "daddr") || net.ParseIP(fields[7]).To4() == nil ||
+		fields[8] != "tcp" || fields[9] != "sport" || !isTCPPort(fields[10]) ||
+		fields[11] != "ct" || fields[12] != "state" || (fields[13] != "established" && fields[13] != "0x2") ||
+		fields[14] != "ct" || fields[15] != "direction" || (fields[16] != "reply" && fields[16] != "1") {
+		return false
+	}
+	acceptAt := indexTokenAfter(fields, "accept", predicatesLen)
+	return acceptAt != -1 &&
+		fieldsAreNFTBookkeeping(fields[predicatesLen:acceptAt]) &&
+		nftRuleTailIsCommentOnly(fields[acceptAt+1:])
+}
+
+func isQuotedNFTName(value string) bool {
+	return len(value) >= 3 && strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`)
+}
+
+func isTCPPort(value string) bool {
+	port, err := strconv.Atoi(value)
+	return err == nil && port >= 1 && port <= 65535
+}
+
+func isPositiveInteger(value string) bool {
+	n, err := strconv.Atoi(value)
+	return err == nil && n > 0
 }
 
 // terminalSkuidUIDVerdict extracts the UID from an exact skuid verdict rule.

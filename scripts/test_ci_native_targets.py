@@ -45,10 +45,14 @@ def expected_proof_lines(shell: str, runner_arch: str, go_target: str) -> list[s
             'Write-Output "runner architecture: $env:RUNNER_ARCH"',
             '$goTarget = "$(go env GOOS)/$(go env GOARCH)"',
             'Write-Output "Go target: $goTarget"',
-            f'if ($env:RUNNER_ARCH -ne "{runner_arch}") '
-            f'{{ throw "expected {runner_arch} runner, got $env:RUNNER_ARCH" }}',
-            f'if ($goTarget -ne "{go_target}") '
-            f'{{ throw "expected {go_target} Go target, got $goTarget" }}',
+            (
+                f'if ($env:RUNNER_ARCH -ne "{runner_arch}") '
+                f'{{ throw "expected {runner_arch} runner, got $env:RUNNER_ARCH" }}'
+            ),
+            (
+                f'if ($goTarget -ne "{go_target}") '
+                f'{{ throw "expected {go_target} Go target, got $goTarget" }}'
+            ),
         ]
     return [
         "set -euo pipefail",

@@ -3,51 +3,63 @@
   "gate_coverage": [
     {
       "feature": "agents",
-      "prefix": "enterprise/config.go"
+      "prefix": "enterprise/config.go",
+      "capability": "named-agent-profiles"
     },
     {
       "feature": "agents",
-      "prefix": "enterprise/cli/dashboard.go"
+      "prefix": "enterprise/cli/dashboard.go",
+      "capability": "operator-dashboard"
     },
     {
       "feature": "agents",
-      "prefix": "enterprise/cli/dashboard_coveragecert.go"
+      "prefix": "enterprise/cli/dashboard_coveragecert.go",
+      "capability": "coverage-certificates"
     },
     {
       "feature": "agents",
-      "prefix": "enterprise/cli/dashboard_exemption.go"
+      "prefix": "enterprise/cli/dashboard_exemption.go",
+      "capability": "exemption-lifecycle-records"
     },
     {
       "feature": "agents",
-      "prefix": "enterprise/cli/dashboard_legal_hold.go"
+      "prefix": "enterprise/cli/dashboard_legal_hold.go",
+      "capability": "legal-hold-metadata"
     },
     {
       "feature": "fleet",
-      "prefix": "enterprise/cli/dashboard.go"
+      "prefix": "enterprise/cli/dashboard.go",
+      "capability": "operator-dashboard"
     },
     {
       "feature": "fleet",
-      "prefix": "enterprise/cli/conductor/"
+      "prefix": "enterprise/cli/conductor/",
+      "capability": "conductor-fleet-coordination"
     },
     {
       "feature": "fleet",
-      "prefix": "enterprise/cli/fleet/"
+      "prefix": "enterprise/cli/fleet/",
+      "capability": "fleet-audit-sink"
     },
     {
       "feature": "fleet",
-      "prefix": "enterprise/conductor/"
+      "prefix": "enterprise/conductor/",
+      "capability": "conductor-fleet-coordination"
     },
     {
       "feature": "fleet",
-      "prefix": "internal/cli/runtime/"
+      "prefix": "internal/cli/runtime/",
+      "capability": "conductor-fleet-coordination"
     },
     {
       "feature": "fleet",
-      "prefix": "internal/cli/diag/"
+      "prefix": "internal/cli/diag/",
+      "capability": "conductor-fleet-coordination"
     },
     {
       "feature": "assess",
-      "prefix": "internal/cli/assess/"
+      "prefix": "internal/cli/assess/",
+      "capability": "assessment-artifacts"
     }
   ],
   "gate_exclusions": [

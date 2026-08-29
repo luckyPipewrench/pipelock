@@ -98,6 +98,11 @@ type GateFeature struct {
 type GateSourceScope struct {
 	Feature string `json:"feature"`
 	Prefix  string `json:"prefix"`
+	// Capability is the manifest entry this scope covers gates on behalf of.
+	// Without it a scope answers for no one: a license gate counts as covered
+	// while no capability records the behaviour being gated, which is the
+	// single-source contract failing quietly rather than loudly.
+	Capability string `json:"capability"`
 }
 
 // GateExclusion records a runtime license check that is deliberately outside
@@ -168,6 +173,7 @@ func (m Manifest) Validate() error {
 	}
 
 	ids := make(map[string]struct{}, len(m.Capabilities))
+	byID := make(map[string]Capability, len(m.Capabilities))
 	for _, capability := range m.Capabilities {
 		if err := capability.Validate(); err != nil {
 			return fmt.Errorf("capability %q: %w", capability.ID, err)
@@ -176,10 +182,19 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("capability %q is duplicated", capability.ID)
 		}
 		ids[capability.ID] = struct{}{}
+		byID[capability.ID] = capability
 	}
 	for _, scope := range m.GateCoverage {
 		if err := scope.Validate(); err != nil {
 			return err
+		}
+		owner, ok := byID[scope.Capability]
+		if !ok {
+			return fmt.Errorf("gate source scope %q names unknown capability %q", scope.Prefix, scope.Capability)
+		}
+		if !owner.grants(scope.Feature) {
+			return fmt.Errorf("gate source scope %q is covered by capability %q, which does not declare the %q feature",
+				scope.Prefix, scope.Capability, scope.Feature)
 		}
 	}
 	for _, exclusion := range m.GateExclusions {
@@ -374,18 +389,43 @@ func withinScope(path, prefix string) bool {
 	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
-func (s GateSourceScope) Validate() error {
-	if featureConstant(s.Feature) == "" {
-		return fmt.Errorf("gate source feature %q is unsupported", s.Feature)
+// grants reports whether this capability's gate carries the named license
+// feature, which is what makes a scope's claim to cover it truthful.
+func (c Capability) grants(feature string) bool {
+	for _, declared := range c.Gate.Features {
+		if declared.Name == feature {
+			return true
+		}
 	}
-	if strings.TrimSpace(s.Prefix) == "" || filepath.IsAbs(s.Prefix) || escapesRepository(s.Prefix) {
-		return fmt.Errorf("gate source prefix %q must be repository relative", s.Prefix)
+	return false
+}
+
+// validateFeatureAndPrefix checks the part a coverage scope and an exclusion
+// share. It is deliberately separate from Validate: an exclusion declares that
+// gates under a prefix belong to NO capability, so requiring it to name one
+// would be incoherent.
+func validateFeatureAndPrefix(feature, prefix string) error {
+	if featureConstant(feature) == "" {
+		return fmt.Errorf("gate source feature %q is unsupported", feature)
+	}
+	if strings.TrimSpace(prefix) == "" || filepath.IsAbs(prefix) || escapesRepository(prefix) {
+		return fmt.Errorf("gate source prefix %q must be repository relative", prefix)
+	}
+	return nil
+}
+
+func (s GateSourceScope) Validate() error {
+	if err := validateFeatureAndPrefix(s.Feature, s.Prefix); err != nil {
+		return err
+	}
+	if !capabilityIDPattern.MatchString(s.Capability) {
+		return fmt.Errorf("gate source scope %q must name the capability it covers", s.Prefix)
 	}
 	return nil
 }
 
 func (s GateExclusion) Validate() error {
-	if err := (GateSourceScope{Feature: s.Feature, Prefix: s.Prefix}).Validate(); err != nil {
+	if err := validateFeatureAndPrefix(s.Feature, s.Prefix); err != nil {
 		return err
 	}
 	if strings.TrimSpace(s.Reason) == "" {

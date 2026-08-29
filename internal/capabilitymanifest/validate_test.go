@@ -184,10 +184,22 @@ func TestOperatorEntryPointValidateRejects(t *testing.T) {
 }
 
 func TestManifestValidateRejects(t *testing.T) {
+	// The scope claims to cover "agents" gates, so the capability it names has
+	// to actually be gated on that feature. A free capability cannot answer for
+	// a licensed gate, and the manifest now says so.
+	licensed := validCapability()
+	licensed.ID = "example-paid-capability"
+	licensed.Tier = "Pro"
+	licensed.Gate = Gate{Kind: GateLicense, Features: []GateFeature{{
+		Name:        "agents",
+		Enforcement: EnforcementCheck{Source: validSourceReference(), Call: "license.HasFeature"},
+		Proof:       validSourceReference(),
+	}}}
+
 	valid := Manifest{
 		SchemaVersion: SchemaVersion,
-		Capabilities:  []Capability{validCapability()},
-		GateCoverage:  []GateSourceScope{{Feature: "agents", Prefix: "enterprise/"}},
+		Capabilities:  []Capability{licensed},
+		GateCoverage:  []GateSourceScope{{Feature: "agents", Prefix: "enterprise/", Capability: "example-paid-capability"}},
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("the valid fixture must pass, otherwise every case below is vacuous: %v", err)
@@ -212,9 +224,25 @@ func TestManifestValidateRejects(t *testing.T) {
 	}
 
 	duplicate := valid
-	duplicate.Capabilities = []Capability{validCapability(), validCapability()}
+	duplicate.Capabilities = []Capability{licensed, licensed}
 	if err := duplicate.Validate(); err == nil {
 		t.Fatal("a manifest with a duplicated capability id was accepted")
+	}
+
+	unknownOwner := valid
+	unknownOwner.GateCoverage = []GateSourceScope{{Feature: "agents", Prefix: "enterprise/", Capability: "no-such-capability"}}
+	if err := unknownOwner.Validate(); err == nil {
+		t.Fatal("a gate scope naming a capability that does not exist was accepted")
+	}
+
+	// The point of the capability field: a scope cannot cover gates on behalf
+	// of an entry that is not gated on the feature it claims.
+	freeOwner := valid
+	free := validCapability()
+	freeOwner.Capabilities = []Capability{licensed, free}
+	freeOwner.GateCoverage = []GateSourceScope{{Feature: "agents", Prefix: "enterprise/", Capability: free.ID}}
+	if err := freeOwner.Validate(); err == nil {
+		t.Fatal("a gate scope covered by a free capability was accepted")
 	}
 }
 
@@ -248,17 +276,17 @@ func TestGateFeatureValidateRejects(t *testing.T) {
 }
 
 func TestGateSourceScopeValidateRejects(t *testing.T) {
-	if err := (GateSourceScope{Feature: "agents", Prefix: "enterprise/"}).Validate(); err != nil {
+	if err := (GateSourceScope{Feature: "agents", Prefix: "enterprise/", Capability: "named-agent-profiles"}).Validate(); err != nil {
 		t.Fatalf("valid scope rejected: %v", err)
 	}
 	for _, tc := range []struct {
 		name  string
 		scope GateSourceScope
 	}{
-		{"unsupported feature", GateSourceScope{Feature: "telepathy", Prefix: "enterprise/"}},
-		{"empty prefix", GateSourceScope{Feature: "agents", Prefix: "  "}},
-		{"absolute prefix", GateSourceScope{Feature: "agents", Prefix: "/etc/"}},
-		{"escaping prefix", GateSourceScope{Feature: "agents", Prefix: "../elsewhere/"}},
+		{"unsupported feature", GateSourceScope{Feature: "telepathy", Prefix: "enterprise/", Capability: "named-agent-profiles"}},
+		{"empty prefix", GateSourceScope{Feature: "agents", Prefix: "  ", Capability: "named-agent-profiles"}},
+		{"absolute prefix", GateSourceScope{Feature: "agents", Prefix: "/etc/", Capability: "named-agent-profiles"}},
+		{"escaping prefix", GateSourceScope{Feature: "agents", Prefix: "../elsewhere/", Capability: "named-agent-profiles"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.scope.Validate(); err == nil {
@@ -394,7 +422,7 @@ func TestGateValidateRejectsDuplicateFeaturesAndTierMismatch(t *testing.T) {
 func TestRepositoryEscapeRejectsBareParent(t *testing.T) {
 	// ".." cleans to itself and carries no separator, so a prefix-only check
 	// accepts it as a root-parent scope.
-	if err := (GateSourceScope{Feature: "agents", Prefix: ".."}).Validate(); err == nil {
+	if err := (GateSourceScope{Feature: "agents", Prefix: "..", Capability: "named-agent-profiles"}).Validate(); err == nil {
 		t.Fatal("a gate source prefix of \"..\" was accepted")
 	}
 	if err := (SourceReference{File: "../outside.go", Symbol: "X"}).Validate(); err == nil {

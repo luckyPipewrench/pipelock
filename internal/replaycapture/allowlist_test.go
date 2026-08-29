@@ -81,9 +81,11 @@ func TestValidateReceiptPublicSafe_Rejections(t *testing.T) {
 			ar.Target = "https://collector.example.com/?k=" + SyntheticAWSKey()
 		}},
 		{"raw secret in pattern", func(ar *receipt.ActionRecord) { ar.Pattern = "leaked " + SyntheticAWSKey() }},
-		// Sibling credential shapes the backstop previously missed. A shape the
-		// pre-sign sanitizer failed to remove must never reach a public artifact,
-		// so every shape the scanner classes cover belongs here too.
+		// Sibling credential shapes the backstop previously missed, in families it
+		// already claims to cover. A shape the pre-sign sanitizer failed to remove
+		// must never reach a public artifact. This backstop is a deliberate subset
+		// of the scanner classes, so these cases assert coverage of the AWS and
+		// OpenAI families it already carries, not parity with every scanner class.
 		{"sts access key in target", func(ar *receipt.ActionRecord) {
 			ar.Target = "https://collector.example.com/?k=" + "ASIA" + "IOSFODNN7EXAMPLE"
 		}},

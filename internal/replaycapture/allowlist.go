@@ -77,10 +77,20 @@ var safeSignerEpochRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // secretShapeRE is a backstop: if any of these shapes survive into a target or
 // pattern, redaction-before-sign failed and the artifact must not publish. This
 // is defense-in-depth behind the emitter's pre-sign sanitizer.
+//
+// The suffix floors match the canonical DLP classes rather than being set here.
+// A shorter floor is not stricter in any useful sense: the scanner false-positive
+// corpus asserts that a provider prefix with a ten-character suffix is benign, so
+// a shorter floor here only refuses legitimate artifacts, and a refused receipt is
+// unpublishable with no operator control to resolve it.
+//
+// This list is deliberately a SUBSET of the scanner secret classes, not a mirror.
+// Widening it to every class needs a classified mapping decided on purpose,
+// because the scanner also carries detection-only and non-secret categories.
 var secretShapeRE = regexp.MustCompile(
 	`(?:AKIA|ASIA)[0-9A-Z]{16}` + // AWS access key id, long-term and STS
-		`|sk-ant-[A-Za-z0-9\-_]{10,}` + // Anthropic
-		`|sk-(?:proj|svcacct)-[A-Za-z0-9\-_]{10,}` + // OpenAI project and service
+		`|sk-ant-[A-Za-z0-9\-_]{20,}` + // Anthropic
+		`|sk-(?:proj|svcacct)-[A-Za-z0-9\-_]{20,}` + // OpenAI project and service
 		`|gh[pousr]_[A-Za-z0-9_]{20,}` + // GitHub
 		`|xox[baprs]-[A-Za-z0-9-]{10,}`, // Slack
 )

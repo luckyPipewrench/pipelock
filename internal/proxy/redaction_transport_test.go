@@ -737,7 +737,7 @@ func wsCountingEchoServer(t *testing.T) (addr string, delivered <-chan []byte, c
 			if upgradeErr != nil {
 				return
 			}
-			defer conn.Close() //nolint:errcheck // test
+			defer func() { _ = conn.Close() }()
 			for {
 				msg, op, readErr := wsutil.ReadClientData(conn)
 				if readErr != nil {
@@ -778,7 +778,7 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 	// and the backend reports the delivered frame as the redacted form.
 	secret := redactionE2ESecret()
 	akiaConn := dialWS(t, proxyAddr, backendAddr)
-	defer akiaConn.Close() //nolint:errcheck // test
+	defer func() { _ = akiaConn.Close() }()
 	if err := wsutil.WriteClientMessage(akiaConn, ws.OpText, []byte(`{"prompt":"use `+secret+` to deploy"}`)); err != nil {
 		t.Fatalf("write AKIA: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 	// instead of blocking until the outer test timeout.
 	unredactable := unredactableAWSResourceID()
 	aidaConn := dialWS(t, proxyAddr, backendAddr)
-	defer aidaConn.Close() //nolint:errcheck // test
+	defer func() { _ = aidaConn.Close() }()
 	if err := wsutil.WriteClientMessage(aidaConn, ws.OpText, []byte(`{"prompt":"use `+unredactable+` to deploy"}`)); err != nil {
 		t.Fatalf("write AIDA: %v", err)
 	}

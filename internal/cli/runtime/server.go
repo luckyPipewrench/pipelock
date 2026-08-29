@@ -561,7 +561,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		runFlightRecorderExpiryOnce(rec, opts.Stderr, opts.expiry())
 		s.recorder = rec
 		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
-		postureBinding, bindErr := posturebinding.LoadRuntime()
+		postureBinding, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
+			ReceiptSigningEnabled: cfg.FlightRecorder.SigningKeyPath != "",
+			Stderr:                opts.Stderr,
+		})
 		if bindErr != nil {
 			s.cleanup()
 			return nil, fmt.Errorf("loading posture binding: %w", bindErr)

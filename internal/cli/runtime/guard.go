@@ -337,7 +337,10 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	evidence.recorder = rec
 	evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithRecorder(rec))
 
-	binding, err := posturebinding.LoadRuntime()
+	binding, err := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
+		ReceiptSigningEnabled: cfg.FlightRecorder.SigningKeyPath != "",
+		Stderr:                stderr,
+	})
 	if err != nil {
 		evidence.close()
 		return nil, fmt.Errorf("loading Guard posture binding: %w", err)

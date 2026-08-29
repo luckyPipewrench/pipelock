@@ -158,7 +158,8 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// changes would leave the live config disagreeing with the running
 		// recorder. require_receipts is the exception: it changes only whether
 		// an emit failure escalates an otherwise-allowed request to a block, so
-		// it is safe and intentionally reloadable.
+		// it is safe and intentionally reloadable. Containment evidence is read
+		// while the emitter starts, so its requirement remains restart-only.
 		//
 		// This also keeps Conductor policy-bundle apply working: a signed bundle
 		// carries enforcement-only config (flight_recorder is not an allowlisted

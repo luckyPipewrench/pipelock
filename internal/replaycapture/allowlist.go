@@ -78,9 +78,9 @@ var safeSignerEpochRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // pattern, redaction-before-sign failed and the artifact must not publish. This
 // is defense-in-depth behind the emitter's pre-sign sanitizer.
 var secretShapeRE = regexp.MustCompile(
-	`AKIA[0-9A-Z]{16}` + // AWS access key id
+	`(?:AKIA|ASIA)[0-9A-Z]{16}` + // AWS access key id, long-term and STS
 		`|sk-ant-[A-Za-z0-9\-_]{10,}` + // Anthropic
-		`|sk-proj-[A-Za-z0-9\-_]{10,}` + // OpenAI
+		`|sk-(?:proj|svcacct)-[A-Za-z0-9\-_]{10,}` + // OpenAI project and service
 		`|gh[pousr]_[A-Za-z0-9_]{20,}` + // GitHub
 		`|xox[baprs]-[A-Za-z0-9-]{10,}`, // Slack
 )

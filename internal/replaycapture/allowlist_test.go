@@ -81,6 +81,18 @@ func TestValidateReceiptPublicSafe_Rejections(t *testing.T) {
 			ar.Target = "https://collector.example.com/?k=" + SyntheticAWSKey()
 		}},
 		{"raw secret in pattern", func(ar *receipt.ActionRecord) { ar.Pattern = "leaked " + SyntheticAWSKey() }},
+		// Sibling credential shapes the backstop previously missed. A shape the
+		// pre-sign sanitizer failed to remove must never reach a public artifact,
+		// so every shape the scanner classes cover belongs here too.
+		{"sts access key in target", func(ar *receipt.ActionRecord) {
+			ar.Target = "https://collector.example.com/?k=" + "ASIA" + "IOSFODNN7EXAMPLE"
+		}},
+		{"openai service key in target", func(ar *receipt.ActionRecord) {
+			ar.Target = "https://collector.example.com/?k=" + "sk-" + "svcacct-" + "AAAAAAAAAA_BBBBBBBBBB"
+		}},
+		{"openai service key in pattern", func(ar *receipt.ActionRecord) {
+			ar.Pattern = "leaked " + "sk-" + "svcacct-" + "AAAAAAAAAA_BBBBBBBBBB"
+		}},
 		{"populated request_id", func(ar *receipt.ActionRecord) { ar.RequestID = "req-provider-9c4ad1" }},
 		{"bad run nonce", func(ar *receipt.ActionRecord) { ar.RunNonce = "not-a-nonce" }},
 		{"populated session task", func(ar *receipt.ActionRecord) { ar.SessionTaskLabel = "internal-task" }},

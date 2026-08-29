@@ -83,7 +83,7 @@ dlp:
       severity: critical
 ```
 
-**Why it works:** Two layers catch this. First, subdomain entropy analysis flags high-entropy labels (the `AABBCCDD` and `EEFFGGHH` parts). Second, pipelock strips dots from the hostname and re-runs DLP on the concatenated result, catching `sk-ant-api03AABBCCDDEEFFGGHH`. Both checks run before DNS resolution, so the query never reaches a DNS server.
+**Why it works:** Pipelock strips dots from the hostname and re-runs DLP on the concatenated result, catching `sk-ant-api03AABBCCDDEEFFGGHH`. That happens before DNS resolution, so the query never reaches a DNS server. The subdomain entropy check is a second, independent layer, but it is not what catches this example: `AABBCCDD` and `EEFFGGHH` repeat only four distinct characters each and sit well below the configured threshold. Entropy analysis catches the variant that uses genuinely random labels, where there is no known prefix for DLP to match on.
 
 ---
 

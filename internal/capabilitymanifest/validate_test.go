@@ -223,26 +223,38 @@ func TestManifestValidateRejects(t *testing.T) {
 		t.Fatal("a manifest with no gate coverage scopes was accepted")
 	}
 
-	duplicate := valid
-	duplicate.Capabilities = []Capability{licensed, licensed}
-	if err := duplicate.Validate(); err == nil {
-		t.Fatal("a manifest with a duplicated capability id was accepted")
-	}
-
-	unknownOwner := valid
-	unknownOwner.GateCoverage = []GateSourceScope{{Feature: "agents", Prefix: "enterprise/", Capability: "no-such-capability"}}
-	if err := unknownOwner.Validate(); err == nil {
-		t.Fatal("a gate scope naming a capability that does not exist was accepted")
-	}
-
-	// The point of the capability field: a scope cannot cover gates on behalf
-	// of an entry that is not gated on the feature it claims.
-	freeOwner := valid
 	free := validCapability()
-	freeOwner.Capabilities = []Capability{licensed, free}
-	freeOwner.GateCoverage = []GateSourceScope{{Feature: "agents", Prefix: "enterprise/", Capability: free.ID}}
-	if err := freeOwner.Validate(); err == nil {
-		t.Fatal("a gate scope covered by a free capability was accepted")
+	for _, testCase := range []struct {
+		name    string
+		mutate  func(*Manifest)
+		wantErr string
+	}{
+		{"duplicated capability id", func(m *Manifest) {
+			m.Capabilities = []Capability{licensed, licensed}
+		}, "duplicated"},
+		{"scope names a capability that does not exist", func(m *Manifest) {
+			m.GateCoverage = []GateSourceScope{{Feature: "agents", Prefix: "enterprise/", Capability: "no-such-capability"}}
+		}, "unknown capability"},
+		// The point of the capability field: a scope cannot cover gates on
+		// behalf of an entry that is not gated on the feature it claims.
+		{"scope covered by a free capability", func(m *Manifest) {
+			m.Capabilities = []Capability{licensed, free}
+			m.GateCoverage = []GateSourceScope{{Feature: "agents", Prefix: "enterprise/", Capability: free.ID}}
+		}, "does not declare"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			mutated := valid
+			testCase.mutate(&mutated)
+			err := mutated.Validate()
+			if err == nil {
+				t.Fatalf("Validate accepted a manifest whose %s", testCase.name)
+			}
+			// Asserting the message keeps a case from passing because some
+			// unrelated rule rejected the mutation first.
+			if !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("Validate error = %q, want it to mention %q", err, testCase.wantErr)
+			}
+		})
 	}
 }
 
@@ -287,6 +299,10 @@ func TestGateSourceScopeValidateRejects(t *testing.T) {
 		{"empty prefix", GateSourceScope{Feature: "agents", Prefix: "  ", Capability: "named-agent-profiles"}},
 		{"absolute prefix", GateSourceScope{Feature: "agents", Prefix: "/etc/", Capability: "named-agent-profiles"}},
 		{"escaping prefix", GateSourceScope{Feature: "agents", Prefix: "../elsewhere/", Capability: "named-agent-profiles"}},
+		// Every case above names a valid capability, so the pattern check
+		// that makes a scope answer for someone was never reached here.
+		{"missing capability", GateSourceScope{Feature: "agents", Prefix: "enterprise/"}},
+		{"malformed capability", GateSourceScope{Feature: "agents", Prefix: "enterprise/", Capability: "Named_Agent"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.scope.Validate(); err == nil {
@@ -456,7 +472,7 @@ func TestEscapesRepositoryRejectsPlatformSpecificPaths(t *testing.T) {
 	// Manifest paths are repository-relative and slash separated, so a
 	// backslash form and a Windows drive-relative form must be rejected on
 	// every platform, not only on the one that happens to run the test.
-	for _, path := range []string{"..", "../outside.go", `..\outside.go`, `C:..\outside.go`, `C:\outside.go`, "."} {
+	for _, path := range []string{"..", "../outside.go", `..\outside.go`, `C:..\outside.go`, `C:\outside.go`, ".", "/outside.go", ""} {
 		t.Run(path, func(t *testing.T) {
 			if !escapesRepository(path) {
 				t.Fatalf("escapesRepository(%q) = false, want true", path)

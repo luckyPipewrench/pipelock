@@ -219,11 +219,18 @@ func (c Capability) Validate() error {
 	// break in one silently corrupts the generated section, which would make
 	// the documented capability surface misstate itself: the failure this
 	// manifest exists to prevent, arriving through its own renderer.
-	for label, value := range map[string]string{
+	rendered := map[string]string{
 		"name":    c.Name,
 		"summary": c.Summary,
 		"tier":    c.Tier,
-	} {
+	}
+	if c.OperatorEntryPoint != nil {
+		rendered["operator_entry_point value"] = c.OperatorEntryPoint.Value
+	}
+	if c.Availability != nil {
+		rendered["availability qualifier"] = c.Availability.Qualifier
+	}
+	for label, value := range rendered {
 		if strings.ContainsAny(value, "|\n\r") {
 			return fmt.Errorf("%s must not contain a pipe or a line break; it is rendered into a Markdown table", label)
 		}

@@ -1106,8 +1106,8 @@
         }
       ],
       "implementation": {
-        "file": "internal/cli/diag/doctor.go",
-        "symbol": "checkDoctorTLSInterception"
+        "file": "internal/proxy/forward.go",
+        "symbol": "handleConnect"
       },
       "operator_entry_point": {
         "kind": "config",
@@ -1160,8 +1160,8 @@
         "qualifier": "Applies only to supported browser response traffic that flows through Pipelock."
       },
       "implementation": {
-        "file": "internal/cli/diag/doctor.go",
-        "symbol": "checkDoctorBrowserShield"
+        "file": "internal/shield/shield.go",
+        "symbol": "Rewrite"
       },
       "operator_entry_point": {
         "kind": "config",

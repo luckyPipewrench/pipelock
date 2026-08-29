@@ -663,29 +663,6 @@ jobs:
       - name: golangci-lint (enterprise)
         run: golangci-lint run --build-tags enterprise ./...
 
-      # Test files are compiled by `go test`, never by `go build`, so a test file
-      # that references a symbol guarded to one architecture makes an entire test
-      # package uncompilable there while every build job stays green. That is not
-      # hypothetical: internal/sandbox's test package could not compile on
-      # linux/arm64 at all, because coverage_deep_test.go was tagged plain linux
-      # while the seccomp filter builder and BPF helpers it calls exist only under
-      # linux && amd64. A published target therefore had zero sandbox test
-      # coverage and nothing said so. The same shape hit internal/config on
-      # Windows previously via syscall.Mkfifo.
-      #
-      # `go vet` compiles test files, so cross-targeting it catches the class on
-      # this amd64 runner without needing hardware for every target. It runs here
-      # rather than in each native lane so a target with no lane is still covered.
-      #
-      - name: Test code compiles for every published target
-        run: |
-          set -euo pipefail
-          for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            printf '==> %s\n' "$target"
-            GOOS="${target%%/*}" GOARCH="${target##*/}" go vet ./...
-            GOOS="${target%%/*}" GOARCH="${target##*/}" go vet -tags enterprise ./...
-          done
-
       - name: Python pin policy
         run: bash scripts/check-python-pins.sh
 
@@ -725,6 +702,43 @@ jobs:
 
       - name: Reproducible OSS build
         run: make reproducible-build-check
+
+  # Test files are compiled by `go test`, never by `go build`, so a test file
+  # that references a symbol guarded to one architecture makes an entire test
+  # package uncompilable there while every build job stays green. That is not
+  # hypothetical: internal/sandbox's test package could not compile on
+  # linux/arm64 at all, because coverage_deep_test.go was tagged plain linux
+  # while the seccomp filter builder and BPF helpers it calls exist only under
+  # linux && amd64. A published target therefore had zero sandbox test coverage
+  # and nothing said so. The same shape hit internal/config on Windows via
+  # syscall.Mkfifo.
+  #
+  # `go vet` compiles test files, so cross-targeting it catches the class on this
+  # amd64 runner without needing hardware for every target. Keep the expensive
+  # cross-target pass separate from lint so neither job consumes the other's
+  # timeout budget.
+  test-cross-target:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25'
+
+      - name: Test code compiles for every published target
+        run: |
+          set -euo pipefail
+          for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            printf '==> %s\n' "$target"
+            GOOS="${target%%/*}" GOARCH="${target##*/}" go vet ./...
+            GOOS="${target%%/*}" GOARCH="${target##*/}" go vet -tags enterprise ./...
+          done
 
   helm:
     needs: [security-scan]
@@ -862,10 +876,10 @@ jobs:
   # Helm remains a separate diagnostic job, but the required `build` context
   # intentionally carries its result through `needs`. Keep that dependency
   # until a separately approved ruleset change makes `helm` required itself.
-  # The parallel build-binaries producer also flows through this gate, so a
-  # compilation failure cannot present as a successful required build check.
+  # The parallel binary and cross-target producers also flow through this gate,
+  # so a compilation failure cannot present as a successful required build check.
   build:
-    needs: [security-scan, test-go125, test-go126, lint, helm, build-binaries]
+    needs: [security-scan, test-go125, test-go126, lint, test-cross-target, helm, build-binaries]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -876,6 +890,7 @@ jobs:
           TEST_GO125_RESULT: ${{ needs.test-go125.result }}
           TEST_GO126_RESULT: ${{ needs.test-go126.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          CROSS_TARGET_RESULT: ${{ needs.test-cross-target.result }}
           HELM_RESULT: ${{ needs.helm.result }}
           BUILD_BINARIES_RESULT: ${{ needs.build-binaries.result }}
         run: |
@@ -885,6 +900,7 @@ jobs:
             "$TEST_GO125_RESULT" \
             "$TEST_GO126_RESULT" \
             "$LINT_RESULT" \
+            "$CROSS_TARGET_RESULT" \
             "$HELM_RESULT" \
             "$BUILD_BINARIES_RESULT"; do
             if [ "$result" != success ]; then

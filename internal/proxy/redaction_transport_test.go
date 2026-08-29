@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -716,13 +717,51 @@ func TestReverseProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost
 	}
 }
 
+// wsCountingEchoServer is wsEchoServer plus a counter of how many client
+// messages actually reach the backend. The counter lets a test assert that a
+// blocked frame produced no upstream delivery, not merely that the client
+// connection closed.
+func wsCountingEchoServer(t *testing.T) (addr string, delivered *atomic.Int32, cleanup func()) {
+	t.Helper()
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var count atomic.Int32
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer conn.Close() //nolint:errcheck // test
+			for {
+				msg, op, readErr := wsutil.ReadClientData(conn)
+				if readErr != nil {
+					return
+				}
+				count.Add(1)
+				if writeErr := wsutil.WriteServerMessage(conn, op, msg); writeErr != nil {
+					return
+				}
+			}
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(ln) }()
+	return ln.Addr().String(), &count, func() { _ = srv.Close() }
+}
+
 // TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost is the
 // WebSocket #1308 regression, self-validating on one exempt host under enforce.
 // A block closes the connection, so the two halves use separate dials: the AKIA
-// message redacts-and-forwards (the echoed reply carries the placeholder), while
-// the unredactable AIDA message closes the connection (ReadServerData errors).
+// message redacts-and-forwards (the echoed reply carries the placeholder, and the
+// backend records the delivery), while the unredactable AIDA message both closes
+// the client connection AND reaches the backend zero times — the same
+// no-upstream-leak invariant the forward/reverse tests assert via a hit counter.
 func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *testing.T) {
-	backendAddr, backendCleanup := wsEchoServer(t)
+	backendAddr, backendDeliveries, backendCleanup := wsCountingEchoServer(t)
 	defer backendCleanup()
 
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
@@ -733,7 +772,8 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 	})
 	defer proxyCleanup()
 
-	// Half 1: AKIA redacts-and-forwards; the echo returns the placeholder.
+	// Half 1: AKIA redacts-and-forwards; the echo returns the placeholder, which
+	// also confirms the (redacted) frame reached the backend.
 	secret := redactionE2ESecret()
 	akiaConn := dialWS(t, proxyAddr, backendAddr)
 	defer akiaConn.Close() //nolint:errcheck // test
@@ -751,9 +791,12 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 	if !strings.Contains(replyStr, placeholderAWS) {
 		t.Fatalf("echoed reply missing placeholder on exempt host: %q", replyStr)
 	}
+	deliveriesAfterAKIA := backendDeliveries.Load()
 
 	// Half 2: the unredactable AIDA resource-ID must fail closed. A block closes
-	// the connection, so this needs a fresh dial.
+	// the connection, so this needs a fresh dial. The client-side close plus zero
+	// additional backend deliveries together prove the frame was blocked before
+	// reaching the upstream.
 	unredactable := unredactableAWSResourceID()
 	aidaConn := dialWS(t, proxyAddr, backendAddr)
 	defer aidaConn.Close() //nolint:errcheck // test
@@ -762,5 +805,8 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 	}
 	if _, _, err := wsutil.ReadServerData(aidaConn); err == nil {
 		t.Fatal("expected proxy to close connection on unredactable AWS ID even on an exempt host")
+	}
+	if backendDeliveries.Load() != deliveriesAfterAKIA {
+		t.Fatal("unredactable AWS ID reached the backend despite surviving the post-redaction re-scan")
 	}
 }

@@ -54,19 +54,19 @@ func TestCapabilityValidateRejects(t *testing.T) {
 			c.OperatorEntryPoint.Value = "pipelock run | Enterprise"
 		}, "pipe or a line break"},
 		{"newline in entry point value", func(c *Capability) {
-			c.OperatorEntryPoint.Value = "pipelock run\n| forged | row |"
+			c.OperatorEntryPoint.Value = "pipelock run\nsecond line"
 		}, "pipe or a line break"},
 		{"carriage return in entry point value", func(c *Capability) {
-			c.OperatorEntryPoint.Value = "pipelock run\r| forged | row |"
+			c.OperatorEntryPoint.Value = "pipelock run\rsecond line"
 		}, "pipe or a line break"},
 		{"pipe in availability qualifier", func(c *Capability) {
 			c.Availability = &Availability{Qualifier: "Linux only | Enterprise"}
 		}, "pipe or a line break"},
 		{"newline in availability qualifier", func(c *Capability) {
-			c.Availability = &Availability{Qualifier: "Linux only\n| forged | row |"}
+			c.Availability = &Availability{Qualifier: "Linux only\nsecond line"}
 		}, "pipe or a line break"},
 		{"carriage return in availability qualifier", func(c *Capability) {
-			c.Availability = &Availability{Qualifier: "Linux only\r| forged | row |"}
+			c.Availability = &Availability{Qualifier: "Linux only\rsecond line"}
 		}, "pipe or a line break"},
 		{"upper case id", func(c *Capability) { c.ID = "Example" }, "kebab-case"},
 		{"empty id", func(c *Capability) { c.ID = "" }, "kebab-case"},

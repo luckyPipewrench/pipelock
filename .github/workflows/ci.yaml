@@ -677,15 +677,10 @@ jobs:
       # this amd64 runner without needing hardware for every target. It runs here
       # rather than in each native lane so a target with no lane is still covered.
       #
-      # windows/amd64 and windows/arm64 are deliberately NOT in this list yet:
-      # internal/cli/contain and internal/emit have test files with this exact
-      # defect on Windows today, tracked separately. Adding them here before that
-      # is fixed would land a knowingly-red required check, and a check people
-      # expect to be red stops being read. Add both the moment that lands.
-      - name: Test code compiles for every published non-Windows target
+      - name: Test code compiles for every published target
         run: |
           set -euo pipefail
-          for target in linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             printf '==> %s\n' "$target"
             GOOS="${target%%/*}" GOARCH="${target##*/}" go vet ./...
           done

@@ -1539,7 +1539,7 @@ type AgentProfile struct {
 	SessionProfiling *AgentSessionProf     `yaml:"session_profiling,omitempty"`
 	MCPToolPolicy    *MCPToolPolicy        `yaml:"mcp_tool_policy,omitempty"`
 	Budget           BudgetConfig          `yaml:"budget,omitempty"`
-	AllowedAddresses []string              `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (enterprise, additive with global)
+	AllowedAddresses []string              `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (Pro, gated by FeatureAgents; additive with global)
 	Sandbox          *AgentSandboxOverride `yaml:"sandbox,omitempty"`           // per-agent sandbox overrides (Pro, gated by FeatureAgents)
 	TrustedDomains   []string              `yaml:"trusted_domains,omitempty"`   // per-agent SSRF-exempt domains (replace, not merge)
 }

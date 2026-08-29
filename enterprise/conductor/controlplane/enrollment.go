@@ -927,7 +927,8 @@ func (h *Handler) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
 		return
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
@@ -939,6 +940,10 @@ func (h *Handler) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Req
 			return
 		}
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !admin.Allows(req.OrgID, req.FleetID) {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
 	now := h.now()
@@ -985,13 +990,24 @@ func (h *Handler) handleListEnrollmentTokens(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
 		return
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
 	query, err := parseEnrollmentTokenListQuery(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if query.OrgID == "" {
+		query.OrgID = admin.OrgID
+	}
+	if query.FleetID == "" && admin.FleetID != "" {
+		query.FleetID = admin.FleetID
+	}
+	if !admin.Allows(query.OrgID, query.FleetID) {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
 	query.Now = h.now()
@@ -1020,7 +1036,8 @@ func (h *Handler) handleRevokeEnrollmentToken(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
 		return
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
@@ -1032,6 +1049,19 @@ func (h *Handler) handleRevokeEnrollmentToken(w http.ResponseWriter, r *http.Req
 			return
 		}
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	matches, err := h.enrollments.ListEnrollmentTokens(r.Context(), EnrollmentTokenListQuery{
+		TokenID: req.TokenID,
+		Limit:   1,
+		Now:     h.now(),
+	})
+	if err != nil {
+		writeEnrollmentError(w, err)
+		return
+	}
+	if len(matches) != 1 || !admin.Allows(matches[0].OrgID, matches[0].FleetID) {
+		writeEnrollmentError(w, ErrEnrollmentTokenNotFound)
 		return
 	}
 	summary, err := h.enrollments.RevokeEnrollmentToken(r.Context(), RevokeEnrollmentTokenRequest{

@@ -524,6 +524,17 @@ func (v *verifiedEmergencyStore) ClearRollbackAuthorization(ctx context.Context,
 	return clearer.ClearRollbackAuthorization(ctx, authorizationID)
 }
 
+// RollbackAuthorizationByID resolves scope from the underlying stored record,
+// including a quarantined record that an authorized operator still needs to
+// clear. Signature validity controls serving, not which tenant owns the row.
+func (v *verifiedEmergencyStore) RollbackAuthorizationByID(ctx context.Context, authorizationID string) (StoredRollbackAuthorization, bool, error) {
+	reader, ok := v.inner.(rollbackAuthorizationByIDReader)
+	if !ok {
+		return StoredRollbackAuthorization{}, false, ErrEmergencyClearUnsupported
+	}
+	return reader.RollbackAuthorizationByID(ctx, authorizationID)
+}
+
 // PreviewRemoteKill forwards a remote-kill dry-run preview to the underlying
 // store if it supports previewing. Signature verification already happens at the
 // handler ingress before the preview is reached (same as PublishRemoteKill), so

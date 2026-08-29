@@ -157,12 +157,14 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScopedBearerAuditQueryAuthorizer() error = %v", err)
 	}
-	admin, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{{
-		Token: "admin-token",
-		Role:  RoleAdmin,
+	admin, err := ScopedBearerAdminAuthenticator([]ScopedBearerCredential{{
+		Token:   "admin-token",
+		Role:    RoleAdmin,
+		OrgID:   "org-main",
+		FleetID: "prod",
 	}})
 	if err != nil {
-		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+		t.Fatalf("ScopedBearerAdminAuthenticator() error = %v", err)
 	}
 
 	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
@@ -193,11 +195,15 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	if err := auditor(bearerRequest(t, AuditBatchesPath, "admin-token"), query); err != nil {
 		t.Fatalf("auditor(admin override) error = %v", err)
 	}
-	if err := admin(bearerRequest(t, EnrollmentTokensPath, "publish-token")); !errors.Is(err, ErrPublisherForbidden) {
+	if _, err := admin(bearerRequest(t, EnrollmentTokensPath, "publish-token")); !errors.Is(err, ErrPublisherForbidden) {
 		t.Fatalf("admin(publisher token) error = %v, want ErrPublisherForbidden", err)
 	}
-	if err := admin(bearerRequest(t, EnrollmentTokensPath, "admin-token")); err != nil {
+	identity, err := admin(bearerRequest(t, EnrollmentTokensPath, "admin-token"))
+	if err != nil {
 		t.Fatalf("admin(valid) error = %v", err)
+	}
+	if identity.OrgID != "org-main" || identity.FleetID != "prod" || !identity.Allows("org-main", "prod") || identity.Allows("org-other", "prod") {
+		t.Fatalf("admin identity = %+v, want org-main/prod-only scope", identity)
 	}
 }
 
@@ -263,27 +269,28 @@ func TestScopedBearerAuthorizersRejectInvalidConfigAndHeaders(t *testing.T) {
 		{name: "empty"},
 		{name: "empty token", creds: []ScopedBearerCredential{{Role: RoleAdmin}}},
 		{name: "bad role", creds: []ScopedBearerCredential{{Token: "token", Role: PrincipalRole("owner")}}},
+		{name: "unscoped admin", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAdmin}}},
 		{name: "bad org", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, OrgID: "-org"}}},
 		{name: "bad fleet", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, FleetID: "fleet/prod"}}},
 		{name: "fleet without org", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, FleetID: "prod"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ScopedBearerAdminAuthorizer(tc.creds); !errors.Is(err, ErrPublisherForbidden) {
-				t.Fatalf("ScopedBearerAdminAuthorizer() error = %v, want ErrPublisherForbidden", err)
+			if _, err := ScopedBearerAdminAuthenticator(tc.creds); !errors.Is(err, ErrPublisherForbidden) {
+				t.Fatalf("ScopedBearerAdminAuthenticator() error = %v, want ErrPublisherForbidden", err)
 			}
 		})
 	}
 
-	admin, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{{Token: "admin-token", Role: RoleAdmin}})
+	admin, err := ScopedBearerAdminAuthenticator([]ScopedBearerCredential{{Token: "admin-token", Role: RoleAdmin, OrgID: "org-main"}})
 	if err != nil {
-		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+		t.Fatalf("ScopedBearerAdminAuthenticator() error = %v", err)
 	}
 	for _, req := range []*http.Request{
 		nil,
 		bearerRequestWithRawAuthorization(t, ""),
 		bearerRequestWithRawAuthorization(t, "Basic admin-token"),
 	} {
-		if err := admin(req); !errors.Is(err, ErrPublisherForbidden) {
+		if _, err := admin(req); !errors.Is(err, ErrPublisherForbidden) {
 			t.Fatalf("admin(%v) error = %v, want ErrPublisherForbidden", req, err)
 		}
 	}

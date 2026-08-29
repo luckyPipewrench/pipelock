@@ -39,15 +39,10 @@ func TestHandlerEnrollmentTokenIssuesEnrollsAndAuthenticatesAuditKey(t *testing.
 			return defaultFollowerIdentity(), nil
 		},
 		AuthorizePublisher: func(*http.Request) error { return nil },
-		AuthorizeAdmin: func(r *http.Request) error {
-			if r.Header.Get("Authorization") != "Bearer admin-token" {
-				return ErrPublisherForbidden
-			}
-			return nil
-		},
-		AuditSink:   sink,
-		AuditKeys:   CompositeAuditKeyResolver(enrollments, nil),
-		Enrollments: enrollments,
+		AuthenticateAdmin:  testAdminAuthenticator("Authorization", "Bearer admin-token"),
+		AuditSink:          sink,
+		AuditKeys:          CompositeAuditKeyResolver(enrollments, nil),
+		Enrollments:        enrollments,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -756,15 +751,10 @@ func newEnrollmentTestHandler(t *testing.T, enrollments EnrollmentStore) *Handle
 			return defaultFollowerIdentity(), nil
 		},
 		AuthorizePublisher: func(*http.Request) error { return nil },
-		AuthorizeAdmin: func(r *http.Request) error {
-			if r.Header.Get("Authorization") == "Bearer admin-token" {
-				return nil
-			}
-			return ErrPublisherForbidden
-		},
-		AuditSink:   discardAuditSink{},
-		AuditKeys:   rejectingAuditKeyResolver,
-		Enrollments: enrollments,
+		AuthenticateAdmin:  testAdminAuthenticator("Authorization", "Bearer admin-token"),
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
+		Enrollments:        enrollments,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)

@@ -170,12 +170,14 @@ func newTestServer(t *testing.T, opts testServerOptions) *testServer {
 	if adminToken == "" {
 		adminToken = testAdminToken
 	}
-	adminAuth, err := controlplane.ScopedBearerAdminAuthorizer([]controlplane.ScopedBearerCredential{{
-		Token: adminToken,
-		Role:  controlplane.RoleAdmin,
+	adminAuth, err := controlplane.ScopedBearerAdminAuthenticator([]controlplane.ScopedBearerCredential{{
+		Token:   adminToken,
+		Role:    controlplane.RoleAdmin,
+		OrgID:   testOrgID,
+		FleetID: testFleetID,
 	}})
 	if err != nil {
-		t.Fatalf("ScopedBearerAdminAuthorizer: %v", err)
+		t.Fatalf("ScopedBearerAdminAuthenticator: %v", err)
 	}
 	// A permissive publisher authorizer satisfies NewHandler's required hook;
 	// the emergency endpoints under test gate on adminAuth, not this.
@@ -196,7 +198,7 @@ func newTestServer(t *testing.T, opts testServerOptions) *testServer {
 			}, nil
 		},
 		AuthorizePublisher: publisherAuth,
-		AuthorizeAdmin:     adminAuth,
+		AuthenticateAdmin:  adminAuth,
 		AuditSink:          auditStore,
 		AuditKeys: func(controlplane.FollowerIdentity, string) (conductorcore.SignatureKey, error) {
 			return conductorcore.SignatureKey{}, conductorcore.ErrSignatureVerification

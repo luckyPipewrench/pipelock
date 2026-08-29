@@ -28,6 +28,12 @@ func (erroringClearer) ClearRollbackAuthorization(context.Context, string) (bool
 	return false, errors.New("clear failed")
 }
 
+func (erroringClearer) RollbackAuthorizationByID(context.Context, string) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{Authorization: conductor.RollbackAuthorization{
+		OrgID: "org-main", FleetID: "prod",
+	}}, true, nil
+}
+
 func clearRollbackRequest(body string, admin bool) *http.Request {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, RollbackAuthorizationsPath, strings.NewReader(body))
 	if admin {
@@ -66,6 +72,23 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"rollback-clear-ok"}`, true))
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("second clear status=%d body=%s, want 404", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("cross-org authorization is hidden and not cleared", func(t *testing.T) {
+		handler := newTestHandler(t, mustStore(t), nil)
+		auth := signedTestRollback(t, "rollback-other-org", testNow, 100)
+		if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
+			t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"rollback-other-org"}`, true))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("cross-org clear status=%d body=%s, want 404", w.Code, w.Body.String())
+		}
+		reader := handler.emergencyControls.(rollbackAuthorizationByIDReader)
+		if _, found, err := reader.RollbackAuthorizationByID(t.Context(), "rollback-other-org"); err != nil || !found {
+			t.Fatalf("cross-org rollback missing after denied clear: found=%v err=%v", found, err)
 		}
 	})
 
@@ -143,7 +166,7 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 			Now:                func() time.Time { return testNow },
 			FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
 			AuthorizePublisher: func(*http.Request) error { return nil },
-			AuthorizeAdmin:     func(*http.Request) error { return nil },
+			AuthenticateAdmin:  allowTestAdmin,
 			AuditSink:          discardAuditSink{},
 			AuditKeys:          rejectingAuditKeyResolver,
 			EmergencyControls:  failingEmergencyStore{},

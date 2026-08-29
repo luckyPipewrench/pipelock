@@ -569,6 +569,25 @@ func (s *FileEmergencyStore) ClearRollbackAuthorization(_ context.Context, autho
 	return true, nil
 }
 
+// RollbackAuthorizationByID returns the stored record whose signed org/fleet
+// scope controls whether an administrator may clear it.
+func (s *FileEmergencyStore) RollbackAuthorizationByID(_ context.Context, authorizationID string) (StoredRollbackAuthorization, bool, error) {
+	if s == nil {
+		return StoredRollbackAuthorization{}, false, ErrEmergencyStoreRequired
+	}
+	if strings.TrimSpace(authorizationID) == "" {
+		return StoredRollbackAuthorization{}, false, fmt.Errorf("%w: authorization_id required", conductor.ErrMissingField)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	hash, ok := s.rollbackAuthIDMap[authorizationID]
+	if !ok {
+		return StoredRollbackAuthorization{}, false, nil
+	}
+	record, ok := s.rollbackHashes[hash]
+	return record, ok, nil
+}
+
 // remoteKillDecisionLocked runs the read-only remote-kill conflict decision under
 // the caller's lock and performs NO writes. It returns (existing, true, nil) for
 // an idempotent re-publish of an identical stored message, (zero, false, err) for

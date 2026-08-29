@@ -72,13 +72,13 @@ func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler
 	if err != nil {
 		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
 	}
-	adminAuth, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{
+	adminAuth, err := ScopedBearerAdminAuthenticator([]ScopedBearerCredential{
 		{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"},
 		{Token: followerOrgEmptyAdmin, Role: RoleAdmin, OrgID: "org-empty"},
 		{Token: followerAuditorToken, Role: RoleAuditor, OrgID: "org-main"},
 	})
 	if err != nil {
-		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+		t.Fatalf("ScopedBearerAdminAuthenticator() error = %v", err)
 	}
 	handler, err := NewHandler(HandlerOptions{
 		Store:              mustStore(t),
@@ -87,7 +87,7 @@ func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler
 		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
 		AuthorizePublisher: func(*http.Request) error { return nil },
 		AuthorizeFollowers: followerAuth,
-		AuthorizeAdmin:     adminAuth,
+		AuthenticateAdmin:  adminAuth,
 		AuditSink:          discardAuditSink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		Enrollments:        enrollments,
@@ -393,6 +393,9 @@ func TestHandlerRemoveFollowerRequiresAdminAndExactIdentity(t *testing.T) {
 	}
 	if w := deleteFollower(t, handler, followerAdminToken, `{"org_id":"bad/id","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("invalid identity remove status = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+	if w := deleteFollower(t, handler, followerAdminToken, `{"org_id":"org-other","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-org remove status = %d body=%s, want 403", w.Code, w.Body.String())
 	}
 }
 

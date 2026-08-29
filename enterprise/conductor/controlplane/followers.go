@@ -203,7 +203,8 @@ func (h *Handler) handleRemoveFollower(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
 		return
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
@@ -225,6 +226,10 @@ func (h *Handler) handleRemoveFollower(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := identity.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !admin.Allows(identity.OrgID, identity.FleetID) {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
 	summary, err := h.enrollments.RemoveEnrolledFollower(r.Context(), RemoveEnrolledFollowerRequest{

@@ -78,6 +78,12 @@ func TestManifestCoversDirectRuntimeLicenseGates(t *testing.T) {
 		t.Fatalf("load manifest: %v", err)
 	}
 
+	// Counterparty verification is intentionally not an operator product. It
+	// must stay out of the public manifest and generated contributor guide until
+	// it has a supported operator entry point.
+	knownUnreachable := []GateSourceScope{
+		{Feature: "fleet", Prefix: "enterprise/counterparty/"},
+	}
 	usedCoverage := make([]bool, len(manifest.GateCoverage))
 	var unknown []string
 	for _, sourceRoot := range []string{"internal", "enterprise"} {
@@ -113,7 +119,7 @@ func TestManifestCoversDirectRuntimeLicenseGates(t *testing.T) {
 						return true
 					}
 				}
-				for _, scope := range manifest.UnreachableGateScopes {
+				for _, scope := range knownUnreachable {
 					if scope.Feature == feature && strings.HasPrefix(relative, scope.Prefix) {
 						return true
 					}

@@ -29,10 +29,9 @@ var capabilityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // Manifest is the machine-readable product capability contract. It is kept in
 // docs/security so external consumers can read it without importing Go code.
 type Manifest struct {
-	SchemaVersion         int               `json:"schema_version"`
-	Capabilities          []Capability      `json:"capabilities"`
-	GateCoverage          []GateSourceScope `json:"gate_coverage"`
-	UnreachableGateScopes []GateSourceScope `json:"unreachable_gate_scopes"`
+	SchemaVersion int               `json:"schema_version"`
+	Capabilities  []Capability      `json:"capabilities"`
+	GateCoverage  []GateSourceScope `json:"gate_coverage"`
 }
 
 // Capability describes one operator-visible product capability.
@@ -138,7 +137,7 @@ func (m Manifest) Validate() error {
 		}
 		ids[capability.ID] = struct{}{}
 	}
-	for _, scope := range append(append([]GateSourceScope{}, m.GateCoverage...), m.UnreachableGateScopes...) {
+	for _, scope := range m.GateCoverage {
 		if err := scope.Validate(); err != nil {
 			return err
 		}

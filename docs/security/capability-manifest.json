@@ -11,9 +11,6 @@
     { "feature": "fleet", "prefix": "internal/cli/diag/" },
     { "feature": "assess", "prefix": "internal/cli/assess/" }
   ],
-  "unreachable_gate_scopes": [
-    { "feature": "fleet", "prefix": "enterprise/counterparty/" }
-  ],
   "capabilities": [
     {
       "id": "network-mediation",

@@ -160,8 +160,35 @@ func TestManifestCoversEnumeratedOperatorSurfaces(t *testing.T) {
 		commands = append(commands, "pipelock "+name)
 	}
 
+	commands = append(commands, verifierCommands(t, root)...)
+	sort.Strings(commands)
+
+	// A silent inventory is indistinguishable from a covered one, so anchor
+	// both against surfaces that certainly exist. mode and enforce decide
+	// whether the product enforces at all; run and mcp are the two entry
+	// points the product is normally used through.
+	requireInventoried(t, "config section", configSections, "mode", "enforce", "dlp")
+	requireInventoried(t, "command", commands, "pipelock run", "pipelock mcp", "pipelock-verifier receipt")
+
 	assertSurfaceCoverage(t, manifest, SurfaceConfigSection, configSections)
 	assertSurfaceCoverage(t, manifest, SurfaceCommand, commands)
+}
+
+// requireInventoried fails when an enumeration lost a surface known to ship.
+// It guards the enumerators themselves: a filter or parser that stops matching
+// produces a short or empty list, and every downstream coverage check then
+// passes by having nothing left to check.
+func requireInventoried(t *testing.T, kind string, enumerated []string, expected ...string) {
+	t.Helper()
+	present := make(map[string]struct{}, len(enumerated))
+	for _, value := range enumerated {
+		present[value] = struct{}{}
+	}
+	for _, value := range expected {
+		if _, ok := present[value]; !ok {
+			t.Fatalf("%s inventory is missing %q, so the enumerator stopped matching and coverage below proves nothing", kind, value)
+		}
+	}
 }
 
 func rootConfigSections(t *testing.T, root string) []string {
@@ -178,7 +205,7 @@ func rootConfigSections(t *testing.T, root string) []string {
 
 	sections := make([]string, 0)
 	for _, field := range structType.Fields.List {
-		if field.Tag == nil || !isConfigSectionType(field.Type) {
+		if field.Tag == nil {
 			continue
 		}
 		tag, err := strconv.Unquote(field.Tag.Value)
@@ -194,22 +221,77 @@ func rootConfigSections(t *testing.T, root string) []string {
 	return sections
 }
 
-func isConfigSectionType(expr ast.Expr) bool {
-	switch value := expr.(type) {
-	case *ast.Ident:
-		switch value.Name {
-		case "bool", "int", "int64", "string":
-			return false
-		default:
-			return true
-		}
-	case *ast.SelectorExpr, *ast.MapType:
-		return true
-	case *ast.ArrayType:
-		return isConfigSectionType(value.Elt)
-	default:
-		return false
+// verifierCommands returns the command tree of the separately shipped
+// pipelock-verifier binary, read from its cobra declarations.
+//
+// It is parsed rather than imported because the verifier is package main and
+// cannot be linked into a test. That parsing is the reason it was invisible:
+// the inventory only ever asked the pipelock binary what it registered, so a
+// second shipped executable with nine subcommands had no row, no exclusion,
+// and nothing that failed.
+func verifierCommands(t *testing.T, root string) []string {
+	t.Helper()
+	dir := filepath.Join(root, "cmd/pipelock-verifier")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read verifier command directory: %v", err)
 	}
+
+	commands := make([]string, 0)
+	fileSet := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(fileSet, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			selector, ok := literal.Type.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Command" {
+				return true
+			}
+			for _, element := range literal.Elts {
+				pair, ok := element.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := pair.Key.(*ast.Ident)
+				if !ok || key.Name != "Use" {
+					continue
+				}
+				value, ok := pair.Value.(*ast.BasicLit)
+				if !ok || value.Kind != token.STRING {
+					continue
+				}
+				use, err := strconv.Unquote(value.Value)
+				if err != nil {
+					t.Fatalf("unquote Use in %s: %v", name, err)
+				}
+				// Use carries an argument spec such as "receipt PATH";
+				// the command is its first word. The root command names
+				// the binary itself, which is not a subcommand.
+				verb := strings.Fields(use)[0]
+				if verb == "pipelock-verifier" {
+					continue
+				}
+				commands = append(commands, "pipelock-verifier "+verb)
+			}
+			return true
+		})
+	}
+
+	if len(commands) == 0 {
+		t.Fatal("no pipelock-verifier commands found; the parser stopped matching its declarations")
+	}
+	sort.Strings(commands)
+	return commands
 }
 
 func assertSurfaceCoverage(t *testing.T, manifest Manifest, kind string, enumerated []string) {

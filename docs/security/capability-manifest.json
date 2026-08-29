@@ -85,8 +85,64 @@
       },
       "surface_coverage": [
         {
+          "kind": "command",
+          "value": "pipelock audit"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock check"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock demo"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock diagnose"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock discover"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock git"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock healthcheck"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock preflight"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock scan"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock simulate"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock skill-scan"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock test"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock verify-install"
+        },
+        {
           "kind": "config_section",
           "value": "address_protection"
+        },
+        {
+          "kind": "config_section",
+          "value": "api_allowlist"
         },
         {
           "kind": "config_section",
@@ -102,6 +158,10 @@
         },
         {
           "kind": "config_section",
+          "value": "enforce"
+        },
+        {
+          "kind": "config_section",
           "value": "fetch_proxy"
         },
         {
@@ -114,7 +174,15 @@
         },
         {
           "kind": "config_section",
+          "value": "internal"
+        },
+        {
+          "kind": "config_section",
           "value": "logging"
+        },
+        {
+          "kind": "config_section",
+          "value": "mode"
         },
         {
           "kind": "config_section",
@@ -154,59 +222,11 @@
         },
         {
           "kind": "config_section",
+          "value": "trusted_domains"
+        },
+        {
+          "kind": "config_section",
           "value": "websocket_proxy"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock audit"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock check"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock demo"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock diagnose"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock discover"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock git"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock healthcheck"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock preflight"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock scan"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock skill-scan"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock simulate"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock test"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock verify-install"
         }
       ],
       "implementation": {
@@ -236,6 +256,30 @@
         "qualifier": "Applies only to MCP transports that run through the Pipelock proxy."
       },
       "surface_coverage": [
+        {
+          "kind": "command",
+          "value": "pipelock baseline"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock envelope"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock integrity"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock learn"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock mcp"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock session"
+        },
         {
           "kind": "config_section",
           "value": "airlock"
@@ -311,30 +355,6 @@
         {
           "kind": "config_section",
           "value": "tool_chain_detection"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock baseline"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock envelope"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock integrity"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock learn"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock mcp"
-        },
-        {
-          "kind": "command",
-          "value": "pipelock session"
         }
       ],
       "implementation": {
@@ -551,7 +571,17 @@
           "file": "internal/config/schema.go",
           "symbol": "Config"
         }
-      }
+      },
+      "surface_coverage": [
+        {
+          "kind": "config_section",
+          "value": "bind_default_agent_identity"
+        },
+        {
+          "kind": "config_section",
+          "value": "default_agent_identity"
+        }
+      ]
     },
     {
       "id": "per-agent-sandbox-overrides",
@@ -672,12 +702,12 @@
       },
       "surface_coverage": [
         {
-          "kind": "config_section",
-          "value": "dashboard_snapshot"
-        },
-        {
           "kind": "command",
           "value": "pipelock dashboard"
+        },
+        {
+          "kind": "config_section",
+          "value": "dashboard_snapshot"
         }
       ],
       "implementation": {
@@ -764,12 +794,12 @@
       },
       "surface_coverage": [
         {
-          "kind": "config_section",
-          "value": "conductor"
-        },
-        {
           "kind": "command",
           "value": "pipelock conductor"
+        },
+        {
+          "kind": "config_section",
+          "value": "conductor"
         }
       ],
       "implementation": {
@@ -1163,7 +1193,45 @@
           "file": "internal/cli/signing/receipt.go",
           "symbol": "VerifyReceiptCmd"
         }
-      }
+      },
+      "surface_coverage": [
+        {
+          "kind": "command",
+          "value": "pipelock-verifier aarp"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier audit-packet"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier chain"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier completeness"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier independent"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier provenance"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier receipt"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier replay"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock-verifier verify-run"
+        }
+      ]
     },
     {
       "id": "verdict-explanations",
@@ -1185,7 +1253,13 @@
           "file": "internal/cli/explain.go",
           "symbol": "explainCmd"
         }
-      }
+      },
+      "surface_coverage": [
+        {
+          "kind": "config_section",
+          "value": "explain_blocks"
+        }
+      ]
     },
     {
       "id": "deployment-diagnostics",
@@ -1207,6 +1281,10 @@
         },
         {
           "kind": "config_section",
+          "value": "metrics_listen"
+        },
+        {
+          "kind": "config_section",
           "value": "sentry"
         }
       ],
@@ -1225,16 +1303,6 @@
     }
   ],
   "surface_exclusions": [
-    {
-      "kind": "config_section",
-      "value": "evidence_provenance",
-      "reason": "Startup-only commitment-keyring storage has no runtime producer yet, so it is not an operator capability."
-    },
-    {
-      "kind": "config_section",
-      "value": "guard",
-      "reason": "The Linux egress-guard declaration is a preview interface, not a released capability."
-    },
     {
       "kind": "command",
       "value": "pipelock claude",
@@ -1277,18 +1345,28 @@
     },
     {
       "kind": "command",
+      "value": "pipelock install",
+      "reason": "Hidden installer step invoked by the packaging scripts, not an operator-facing capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock internal-redirect",
+      "reason": "Hidden helper the containment layer execs to route a redirected connection; it is not run directly."
+    },
+    {
+      "kind": "command",
       "value": "pipelock jetbrains",
       "reason": "IDE integration installer, not a separate protection capability."
     },
     {
       "kind": "command",
-      "value": "pipelock logs",
-      "reason": "Operational log reader, not a separate protection capability."
+      "value": "pipelock license",
+      "reason": "License-token administration, not a separately licensed product capability."
     },
     {
       "kind": "command",
-      "value": "pipelock license",
-      "reason": "License-token administration, not a separately licensed product capability."
+      "value": "pipelock logs",
+      "reason": "Operational log reader, not a separate protection capability."
     },
     {
       "kind": "command",
@@ -1334,6 +1412,56 @@
       "kind": "command",
       "value": "pipelock zed",
       "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "evidence_provenance",
+      "reason": "Startup-only commitment-keyring storage has no runtime producer yet, so it is not an operator capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "guard",
+      "reason": "The Linux egress-guard declaration is a preview interface, not a released capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "license_crl_file",
+      "reason": "License revocation material location. Entitlement plumbing, not a protection capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "license_crl_max_age",
+      "reason": "Staleness bound on license revocation material. Entitlement plumbing, not a protection capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "license_file",
+      "reason": "License material location. Entitlement plumbing that selects which capabilities apply; it is not itself one."
+    },
+    {
+      "kind": "config_section",
+      "value": "license_intermediate_file",
+      "reason": "License intermediate certificate location. Entitlement plumbing, not a protection capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "license_key",
+      "reason": "License material location. Entitlement plumbing that selects which capabilities apply; it is not itself one."
+    },
+    {
+      "kind": "config_section",
+      "value": "license_public_key",
+      "reason": "Overrides the embedded license verification key for development builds. Entitlement plumbing, not a protection capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "license_require_intermediate",
+      "reason": "Whether license verification demands an intermediate. Entitlement plumbing, not a protection capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "version",
+      "reason": "Config schema version marker read by the loader, not an operator control over behaviour."
     }
   ]
 }

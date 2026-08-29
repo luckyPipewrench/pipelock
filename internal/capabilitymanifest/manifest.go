@@ -273,8 +273,8 @@ func (s SurfaceReference) Validate() error {
 	if strings.ContainsAny(s.Value, "*?") {
 		return fmt.Errorf("value must be exact, not a wildcard")
 	}
-	if s.Kind == SurfaceCommand && !strings.HasPrefix(s.Value, "pipelock ") {
-		return fmt.Errorf("command value must start with pipelock followed by a space")
+	if s.Kind == SurfaceCommand && !isShippedCommand(s.Value) {
+		return fmt.Errorf("command value must name a subcommand of a shipped binary (%s)", shippedBinaryList())
 	}
 	return nil
 }
@@ -414,6 +414,24 @@ func validateFeatureAndPrefix(feature, prefix string) error {
 	return nil
 }
 
+// shippedBinaries are the executables a release publishes. A command surface
+// belongs to exactly one of them. This is a list rather than a prefix test
+// because "starts with pipelock" would also accept a binary we do not ship.
+var shippedBinaries = []string{"pipelock", "pipelock-verifier"}
+
+func isShippedCommand(value string) bool {
+	for _, binary := range shippedBinaries {
+		if strings.HasPrefix(value, binary+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func shippedBinaryList() string {
+	return strings.Join(shippedBinaries, ", ")
+}
+
 func (s GateSourceScope) Validate() error {
 	if err := validateFeatureAndPrefix(s.Feature, s.Prefix); err != nil {
 		return err
@@ -463,8 +481,8 @@ func (o OperatorEntryPoint) Validate() error {
 	}
 	switch o.Kind {
 	case "command":
-		if !strings.HasPrefix(o.Value, "pipelock ") || o.Field != "" {
-			return fmt.Errorf("command must start with \"pipelock \" and not set field")
+		if !isShippedCommand(o.Value) || o.Field != "" {
+			return fmt.Errorf("command must name a subcommand of a shipped binary (%s) and not set field", shippedBinaryList())
 		}
 	case "config":
 		if strings.TrimSpace(o.Field) == "" || strings.HasPrefix(o.Value, ".") {

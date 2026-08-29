@@ -19,8 +19,16 @@ func TestEnterpriseManifestCommandsAreRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load manifest: %v", err)
 	}
+	// Reachability is per binary. The cobra tree assembled here belongs to
+	// pipelock, so it can neither confirm nor refute a command of the
+	// separately shipped pipelock-verifier; those are proven reachable from
+	// their own declarations instead. Checking one binary's commands against
+	// another's tree would report every one of them missing.
 	registered := make(map[string]struct{})
 	for _, path := range cli.RegisteredCommandPaths() {
+		registered[path] = struct{}{}
+	}
+	for _, path := range verifierCommands(t, repositoryRoot(t)) {
 		registered[path] = struct{}{}
 	}
 	for _, capability := range manifest.Capabilities {

@@ -12,6 +12,34 @@ Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent H
 | Binary | Single Go binary; size varies by OS, build tags, and release flags |
 | Dependencies | See `go.mod`. Run `make stats` before citing the current direct-dependency count. |
 
+<!-- BEGIN capability-manifest (generated; run go generate ./internal/capabilitymanifest) -->
+
+## Capability surface
+
+The code-checked capability manifest is docs/security/capability-manifest.json. It lists the operator entry point and license gate for each surface below. Free means no license feature is required.
+
+| Capability | Access | Operator entry point |
+|---|---|---|
+| HTTP, WebSocket, and proxy mediation | Free | pipelock run |
+| MCP proxy scanning | Free | pipelock mcp proxy |
+| Signed action receipts | Free | flight_recorder |
+| Host containment for agent processes | Free | pipelock contain |
+| Single-agent process sandbox | Free | pipelock sandbox |
+| Global canary tokens | Free | canary_tokens |
+| Named agent profiles | Pro | agents.<profile> |
+| Per-agent sandbox overrides | Pro | agents.<profile>.sandbox |
+| Per-agent crypto address allowlists | Pro | agents.<profile>.allowed_addresses |
+| Read-only operator dashboard | Pro or Enterprise | pipelock dashboard serve |
+| Full assessment artifacts | Assess | pipelock assess finalize |
+| Conductor fleet coordination | Enterprise | pipelock conductor serve |
+| Per-agent coverage certificates | Pro | pipelock dashboard coverage-cert generate |
+| Exemption lifecycle records | Pro | pipelock dashboard exemption list |
+| Legal-hold metadata | Pro | pipelock dashboard legal-hold list |
+| Fleet audit sink | Enterprise | pipelock fleet-sink |
+| Fleet receipt reports | Enterprise | pipelock conductor fleet report |
+
+<!-- END capability-manifest -->
+
 ## Build, Test, Lint
 
 ```bash

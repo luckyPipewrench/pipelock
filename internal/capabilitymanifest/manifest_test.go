@@ -1,0 +1,402 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package capabilitymanifest
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestManifestParity(t *testing.T) {
+	root := repositoryRoot(t)
+	manifestPath := filepath.Join(root, "docs/security/capability-manifest.json")
+	manifest, err := Load(manifestPath)
+	if err != nil {
+		t.Fatalf("Load(%q): %v", manifestPath, err)
+	}
+
+	for _, capability := range manifest.Capabilities {
+		t.Run(capability.ID, func(t *testing.T) {
+			implementation := declaration(t, root, capability.Implementation)
+			entryPoint := *capability.OperatorEntryPoint
+			switch entryPoint.Kind {
+			case "command":
+				assertCommandEntryPoint(t, root, entryPoint)
+			case "config":
+				assertConfigEntryPoint(t, root, entryPoint)
+			default:
+				t.Fatalf("unsupported operator entry point kind %q", entryPoint.Kind)
+			}
+
+			switch capability.Gate.Kind {
+			case GateFree:
+				assertNoLicenseGate(t, implementation)
+			case GateLicense:
+				for _, feature := range capability.Gate.Features {
+					enforcement := declaration(t, root, feature.Enforcement.Source)
+					assertSelector(t, enforcement, feature.Enforcement.Call)
+					proof := declaration(t, root, feature.Proof)
+					assertFeatureConstant(t, proof, feature.Name)
+				}
+			default:
+				t.Fatalf("unsupported gate kind %q", capability.Gate.Kind)
+			}
+		})
+	}
+
+	agentsPath := filepath.Join(root, "AGENTS.md")
+	agents, err := os.ReadFile(filepath.Clean(agentsPath))
+	if err != nil {
+		t.Fatalf("read %q: %v", agentsPath, err)
+	}
+	updated, err := ReplaceAgentsSection(string(agents), RenderAgentsSection(manifest))
+	if err != nil {
+		t.Fatalf("ReplaceAgentsSection(%q): %v", agentsPath, err)
+	}
+	if updated != string(agents) {
+		t.Fatalf("AGENTS.md capability section is stale; run go generate ./internal/capabilitymanifest")
+	}
+}
+
+func TestManifestCoversDirectRuntimeLicenseGates(t *testing.T) {
+	root := repositoryRoot(t)
+	manifest, err := Load(filepath.Join(root, "docs/security/capability-manifest.json"))
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+
+	usedCoverage := make([]bool, len(manifest.GateCoverage))
+	var unknown []string
+	for _, sourceRoot := range []string{"internal", "enterprise"} {
+		err := filepath.WalkDir(filepath.Join(root, sourceRoot), func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				return nil
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			relative = filepath.ToSlash(relative)
+			fileSet := token.NewFileSet()
+			file, err := parser.ParseFile(fileSet, path, nil, 0)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", relative, err)
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				feature := directLicenseGateFeature(call)
+				if feature == "" {
+					return true
+				}
+				for i, scope := range manifest.GateCoverage {
+					if scope.Feature == feature && strings.HasPrefix(relative, scope.Prefix) {
+						usedCoverage[i] = true
+						return true
+					}
+				}
+				for _, scope := range manifest.UnreachableGateScopes {
+					if scope.Feature == feature && strings.HasPrefix(relative, scope.Prefix) {
+						return true
+					}
+				}
+				unknown = append(unknown, fmt.Sprintf("%s:%d (%s)", relative, fileSet.Position(call.Pos()).Line, feature))
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", sourceRoot, err)
+		}
+	}
+	if len(unknown) > 0 {
+		t.Fatalf("direct runtime license gates are not represented by the capability manifest: %s", strings.Join(unknown, ", "))
+	}
+	for i, used := range usedCoverage {
+		if !used {
+			t.Fatalf("gate_coverage scope %q for %q matches no direct runtime license gate", manifest.GateCoverage[i].Prefix, manifest.GateCoverage[i].Feature)
+		}
+	}
+}
+
+func TestLoadRejectsUnknownFieldsAndTrailingDocuments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	for _, content := range []string{
+		"{\"schema_version\":1,\"capabilities\":[],\"unexpected\":true}",
+		"{\"schema_version\":1,\"capabilities\":[]} {}",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write malformed manifest: %v", err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("Load(%q) succeeded for malformed manifest %q", path, content)
+		}
+	}
+}
+
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stat repository root candidate %q: %v", dir, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not locate repository root")
+		}
+		dir = parent
+	}
+}
+
+func declaration(t *testing.T, root string, ref SourceReference) ast.Node {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(ref.File))
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse source %q for %s: %v", ref.File, ref.Symbol, err)
+	}
+	for _, decl := range file.Decls {
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			if decl.Name.Name == ref.Symbol {
+				return decl
+			}
+		case *ast.GenDecl:
+			for _, spec := range decl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if ok && typeSpec.Name.Name == ref.Symbol {
+					return typeSpec
+				}
+			}
+		}
+	}
+	t.Fatalf("source %q does not declare symbol %q", ref.File, ref.Symbol)
+	return nil
+}
+
+func assertCommandEntryPoint(t *testing.T, root string, entry OperatorEntryPoint) {
+	t.Helper()
+	decl, ok := declaration(t, root, entry.Source).(*ast.FuncDecl)
+	if !ok {
+		t.Fatalf("command entry point %q source %s must be a function", entry.Value, entry.Source.Symbol)
+	}
+	want := lastCommandWord(entry.Value)
+	var found bool
+	ast.Inspect(decl.Body, func(node ast.Node) bool {
+		keyValue, ok := node.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		key, ok := keyValue.Key.(*ast.Ident)
+		if !ok || key.Name != "Use" {
+			return true
+		}
+		value, ok := keyValue.Value.(*ast.BasicLit)
+		if !ok || value.Kind != token.STRING {
+			return true
+		}
+		use, err := strconv.Unquote(value.Value)
+		if err != nil {
+			t.Fatalf("unquote Use value for %q: %v", entry.Value, err)
+		}
+		words := strings.Fields(use)
+		if len(words) > 0 && words[0] == want {
+			found = true
+		}
+		return true
+	})
+	if !found {
+		t.Fatalf("command %q is not declared by %s:%s", entry.Value, entry.Source.File, entry.Source.Symbol)
+	}
+}
+
+func assertConfigEntryPoint(t *testing.T, root string, entry OperatorEntryPoint) {
+	t.Helper()
+	typeSpec, ok := declaration(t, root, entry.Source).(*ast.TypeSpec)
+	if !ok {
+		t.Fatalf("config entry point %q source %s must be a type", entry.Value, entry.Source.Symbol)
+	}
+	structType, ok := typeSpec.Type.(*ast.StructType)
+	if !ok {
+		t.Fatalf("config entry point %q source %s is not a struct", entry.Value, entry.Source.Symbol)
+	}
+	for _, field := range structType.Fields.List {
+		if field.Tag == nil {
+			continue
+		}
+		tag, err := strconv.Unquote(field.Tag.Value)
+		if err != nil {
+			t.Fatalf("unquote struct tag for %q: %v", entry.Value, err)
+		}
+		yamlField := strings.Split(reflect.StructTag(tag).Get("yaml"), ",")[0]
+		if yamlField == entry.Field {
+			return
+		}
+	}
+	t.Fatalf("config field %q for %q is not declared by %s:%s", entry.Field, entry.Value, entry.Source.File, entry.Source.Symbol)
+}
+
+func assertNoLicenseGate(t *testing.T, declaration ast.Node) {
+	t.Helper()
+	var found []string
+	ast.Inspect(declaration, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		switch ident.Name {
+		case "FeatureAgents", "FeatureAssess", "FeatureFleet", "HasFeature", "VerifyAgents", "VerifyFleet", "VerifyAgentsWithOptions", "VerifyFleetWithOptions":
+			found = append(found, ident.Name)
+		}
+		return true
+	})
+	if len(found) > 0 {
+		t.Fatalf("free capability implementation declares license gate symbols: %s", strings.Join(found, ", "))
+	}
+}
+
+func assertSelector(t *testing.T, declaration ast.Node, want string) {
+	t.Helper()
+	parts := strings.Split(want, ".")
+	if len(parts) != 2 {
+		t.Fatalf("invalid selector %q", want)
+	}
+	var found bool
+	ast.Inspect(declaration, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		prefix, ok := selector.X.(*ast.Ident)
+		if ok && prefix.Name == parts[0] && selector.Sel.Name == parts[1] {
+			found = true
+		}
+		return true
+	})
+	if !found {
+		t.Fatalf("declared gate call %q is absent", want)
+	}
+}
+
+func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string) {
+	t.Helper()
+	want := featureConstant(feature)
+	var found bool
+	ast.Inspect(declaration, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if ok && ident.Name == want {
+			found = true
+		}
+		return true
+	})
+	if !found {
+		t.Fatalf("proof declaration does not reference license.%s", want)
+	}
+}
+
+func directLicenseGateFeature(call *ast.CallExpr) string {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	switch selector.Sel.Name {
+	case "VerifyAgents", "VerifyAgentsWithOptions":
+		return "agents"
+	case "VerifyFleet", "VerifyFleetWithOptions":
+		return "fleet"
+	case "HasFeature":
+		if len(call.Args) == 1 {
+			return featureNameFromExpression(call.Args[0])
+		}
+	}
+	return ""
+}
+
+func featureNameFromExpression(expression ast.Expr) string {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		switch expression.Name {
+		case "FeatureAgents":
+			return "agents"
+		case "FeatureAssess":
+			return "assess"
+		case "FeatureFleet":
+			return "fleet"
+		}
+	case *ast.SelectorExpr:
+		switch expression.Sel.Name {
+		case "FeatureAgents":
+			return "agents"
+		case "FeatureAssess":
+			return "assess"
+		case "FeatureFleet":
+			return "fleet"
+		}
+	}
+	return ""
+}
+
+func lastCommandWord(command string) string {
+	words := strings.Fields(command)
+	if len(words) < 2 {
+		panic(fmt.Sprintf("invalid manifest command %q", command))
+	}
+	return words[len(words)-1]
+}
+
+func TestLoadRejectsUnreadableManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load succeeded for missing manifest")
+	}
+}
+
+func TestLoadRejectsMalformedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, []byte("{\"schema_version\":"), 0o600); err != nil {
+		t.Fatalf("write malformed manifest: %v", err)
+	}
+	if _, err := Load(path); err == nil || errors.Is(err, io.EOF) {
+		t.Fatalf("Load(%q) error = %v, want malformed JSON error", path, err)
+	}
+}
+
+func TestManifestJSONCanBeDecodedByExternalConsumers(t *testing.T) {
+	root := repositoryRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "docs/security/capability-manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("external JSON decode: %v", err)
+	}
+	if document["schema_version"] != float64(SchemaVersion) {
+		t.Fatalf("schema_version = %v, want %d", document["schema_version"], SchemaVersion)
+	}
+}

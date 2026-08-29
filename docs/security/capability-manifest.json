@@ -1,0 +1,402 @@
+{
+  "schema_version": 1,
+  "gate_coverage": [
+    { "feature": "agents", "prefix": "enterprise/config.go" },
+    { "feature": "agents", "prefix": "enterprise/cli/dashboard" },
+    { "feature": "fleet", "prefix": "enterprise/cli/dashboard" },
+    { "feature": "fleet", "prefix": "enterprise/cli/conductor/" },
+    { "feature": "fleet", "prefix": "enterprise/cli/fleet/" },
+    { "feature": "fleet", "prefix": "enterprise/conductor/" },
+    { "feature": "fleet", "prefix": "internal/cli/runtime/" },
+    { "feature": "fleet", "prefix": "internal/cli/diag/" },
+    { "feature": "assess", "prefix": "internal/cli/assess/" }
+  ],
+  "unreachable_gate_scopes": [
+    { "feature": "fleet", "prefix": "enterprise/counterparty/" }
+  ],
+  "capabilities": [
+    {
+      "id": "network-mediation",
+      "name": "HTTP, WebSocket, and proxy mediation",
+      "summary": "Mediates agent traffic and applies URL, DLP, injection, and SSRF controls.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/cli/runtime/run.go", "symbol": "RunCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock run",
+        "source": { "file": "internal/cli/runtime/run.go", "symbol": "RunCmd" }
+      }
+    },
+    {
+      "id": "mcp-proxy-scanning",
+      "name": "MCP proxy scanning",
+      "summary": "Scans MCP traffic and applies configured tool, chain, and session controls.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/cli/runtime/mcp.go", "symbol": "mcpProxyCmdWithAuditLoggerFactory" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock mcp proxy",
+        "source": { "file": "internal/cli/runtime/mcp.go", "symbol": "mcpProxyCmdWithAuditLoggerFactory" }
+      }
+    },
+    {
+      "id": "signed-action-receipts",
+      "name": "Signed action receipts",
+      "summary": "Writes signed, hash-chained mediation evidence and verifies it offline.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/cli/signing/receipt.go", "symbol": "VerifyReceiptCmd" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "flight_recorder",
+        "field": "flight_recorder",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "agent-containment",
+      "name": "Host containment for agent processes",
+      "summary": "Installs, verifies, and rolls back nftables-backed host containment.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/cli/contain/cmd.go", "symbol": "Cmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock contain",
+        "source": { "file": "internal/cli/contain/cmd.go", "symbol": "Cmd" }
+      }
+    },
+    {
+      "id": "single-agent-sandbox",
+      "name": "Single-agent process sandbox",
+      "summary": "Runs one command with unprivileged process and filesystem restrictions.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/cli/runtime/sandbox.go", "symbol": "SandboxCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock sandbox",
+        "source": { "file": "internal/cli/runtime/sandbox.go", "symbol": "SandboxCmd" }
+      }
+    },
+    {
+      "id": "global-canary-tokens",
+      "name": "Global canary tokens",
+      "summary": "Detects configured synthetic secrets without a license gate.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/config/canary.go", "symbol": "validateCanaryTokens" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "canary_tokens",
+        "field": "canary_tokens",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "named-agent-profiles",
+      "name": "Named agent profiles",
+      "summary": "Applies separate listeners and policy profiles for named agents.",
+      "tier": "Pro",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "agents",
+            "enforcement": {
+              "source": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+              "call": "license.FeatureAgents"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "agents.<profile>",
+        "field": "agents",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "per-agent-sandbox-overrides",
+      "name": "Per-agent sandbox overrides",
+      "summary": "Overrides sandbox settings for a named agent profile.",
+      "tier": "Pro",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "agents",
+            "enforcement": {
+              "source": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+              "call": "license.FeatureAgents"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "internal/config/schema.go", "symbol": "AgentProfile" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "agents.<profile>.sandbox",
+        "field": "sandbox",
+        "source": { "file": "internal/config/schema.go", "symbol": "AgentProfile" }
+      }
+    },
+    {
+      "id": "per-agent-address-allowlists",
+      "name": "Per-agent crypto address allowlists",
+      "summary": "Adds a named agent's address allowlist to the global baseline.",
+      "tier": "Pro",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "agents",
+            "enforcement": {
+              "source": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+              "call": "license.FeatureAgents"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "internal/config/schema.go", "symbol": "AgentProfile" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "agents.<profile>.allowed_addresses",
+        "field": "allowed_addresses",
+        "source": { "file": "internal/config/schema.go", "symbol": "AgentProfile" }
+      }
+    },
+    {
+      "id": "operator-dashboard",
+      "name": "Read-only operator dashboard",
+      "summary": "Serves authenticated evidence and operator views from local receipt data.",
+      "tier": "Pro or Enterprise",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "agents",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/dashboard.go", "symbol": "verifyDashboardLicenseWithOptions" },
+              "call": "license.VerifyAgentsWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+          },
+          {
+            "name": "fleet",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/dashboard.go", "symbol": "verifyDashboardLicenseWithOptions" },
+              "call": "license.VerifyFleetWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/cli/dashboard.go", "symbol": "dashboardServeCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock dashboard serve",
+        "source": { "file": "enterprise/cli/dashboard.go", "symbol": "dashboardServeCmd" }
+      }
+    },
+    {
+      "id": "assessment-artifacts",
+      "name": "Full assessment artifacts",
+      "summary": "Produces the full assessment report, attestation, and badge artifacts.",
+      "tier": "Assess",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "assess",
+            "enforcement": {
+              "source": { "file": "internal/cli/assess/finalize.go", "symbol": "checkAssessLicense" },
+              "call": "license.FeatureAssess"
+            },
+            "proof": { "file": "internal/cli/assess/finalize.go", "symbol": "checkAssessLicense" }
+          }
+        ]
+      },
+      "implementation": { "file": "internal/cli/assess/finalize.go", "symbol": "runAssessFinalize" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock assess finalize",
+        "source": { "file": "internal/cli/assess/finalize.go", "symbol": "assessFinalizeCmd" }
+      }
+    },
+    {
+      "id": "conductor-fleet-coordination",
+      "name": "Conductor fleet coordination",
+      "summary": "Coordinates signed policy distribution and fleet audit ingestion.",
+      "tier": "Enterprise",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "fleet",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/conductor/cmd.go", "symbol": "serveCmd" },
+              "call": "license.VerifyFleetWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/cli/conductor/cmd.go", "symbol": "serveCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock conductor serve",
+        "source": { "file": "enterprise/cli/conductor/cmd.go", "symbol": "serveCmd" }
+      }
+    },
+    {
+      "id": "coverage-certificates",
+      "name": "Per-agent coverage certificates",
+      "summary": "Generates a signed receipt-coverage certificate for one agent.",
+      "tier": "Pro",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "agents",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/dashboard_coveragecert.go", "symbol": "coverageCertGenerateCmd" },
+              "call": "license.VerifyAgentsWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/cli/dashboard_coveragecert.go", "symbol": "coverageCertGenerateCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock dashboard coverage-cert generate",
+        "source": { "file": "enterprise/cli/dashboard_coveragecert.go", "symbol": "coverageCertGenerateCmd" }
+      }
+    },
+    {
+      "id": "exemption-lifecycle-records",
+      "name": "Exemption lifecycle records",
+      "summary": "Lists and manages exemption records used by the operator dashboard.",
+      "tier": "Pro",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "agents",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/dashboard_exemption.go", "symbol": "exemptionListCmd" },
+              "call": "license.VerifyAgentsWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/cli/dashboard_exemption.go", "symbol": "exemptionCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock dashboard exemption list",
+        "source": { "file": "enterprise/cli/dashboard_exemption.go", "symbol": "exemptionListCmd" }
+      }
+    },
+    {
+      "id": "legal-hold-metadata",
+      "name": "Legal-hold metadata",
+      "summary": "Lists and manages legal-hold metadata outside dashboard HTTP authority.",
+      "tier": "Pro",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "agents",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/dashboard_legal_hold.go", "symbol": "legalHoldListCmd" },
+              "call": "license.VerifyAgentsWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/cli/dashboard_legal_hold.go", "symbol": "legalHoldCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock dashboard legal-hold list",
+        "source": { "file": "enterprise/cli/dashboard_legal_hold.go", "symbol": "legalHoldListCmd" }
+      }
+    },
+    {
+      "id": "fleet-audit-sink",
+      "name": "Fleet audit sink",
+      "summary": "Receives signed Conductor audit batches on a dedicated listener.",
+      "tier": "Enterprise",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "fleet",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/fleet/sink.go", "symbol": "SinkCmd" },
+              "call": "license.VerifyFleetWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/cli/fleet/sink.go", "symbol": "SinkCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock fleet-sink",
+        "source": { "file": "enterprise/cli/fleet/sink.go", "symbol": "SinkCmd" }
+      }
+    },
+    {
+      "id": "fleet-receipt-reports",
+      "name": "Fleet receipt reports",
+      "summary": "Mints a signed report from Conductor audit evidence for offline verification.",
+      "tier": "Enterprise",
+      "visibility": "operator",
+      "gate": {
+        "kind": "license_feature",
+        "features": [
+          {
+            "name": "fleet",
+            "enforcement": {
+              "source": { "file": "enterprise/cli/conductor/fleet_report.go", "symbol": "fleetReportCmd" },
+              "call": "license.VerifyFleetWithOptions"
+            },
+            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+          }
+        ]
+      },
+      "implementation": { "file": "enterprise/cli/conductor/fleet_report.go", "symbol": "fleetReportCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock conductor fleet report",
+        "source": { "file": "enterprise/cli/conductor/fleet_report.go", "symbol": "fleetReportCmd" }
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -717,18 +718,19 @@ func TestReverseProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost
 	}
 }
 
-// wsCountingEchoServer is wsEchoServer plus a counter of how many client
-// messages actually reach the backend. The counter lets a test assert that a
-// blocked frame produced no upstream delivery, not merely that the client
-// connection closed.
-func wsCountingEchoServer(t *testing.T) (addr string, delivered *atomic.Int32, cleanup func()) {
+// wsCountingEchoServer is wsEchoServer plus a channel that reports every client
+// message that actually reaches the backend. A test can then wait on the channel
+// with a bounded deadline to assert that a blocked frame produced no upstream
+// delivery — not merely that the client connection closed. The channel is
+// buffered so the backend handler never blocks.
+func wsCountingEchoServer(t *testing.T) (addr string, delivered <-chan []byte, cleanup func()) {
 	t.Helper()
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	var count atomic.Int32
+	ch := make(chan []byte, 8)
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
@@ -741,7 +743,7 @@ func wsCountingEchoServer(t *testing.T) (addr string, delivered *atomic.Int32, c
 				if readErr != nil {
 					return
 				}
-				count.Add(1)
+				ch <- append([]byte(nil), msg...)
 				if writeErr := wsutil.WriteServerMessage(conn, op, msg); writeErr != nil {
 					return
 				}
@@ -750,18 +752,18 @@ func wsCountingEchoServer(t *testing.T) (addr string, delivered *atomic.Int32, c
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
-	return ln.Addr().String(), &count, func() { _ = srv.Close() }
+	return ln.Addr().String(), ch, func() { _ = srv.Close() }
 }
 
 // TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost is the
 // WebSocket #1308 regression, self-validating on one exempt host under enforce.
 // A block closes the connection, so the two halves use separate dials: the AKIA
 // message redacts-and-forwards (the echoed reply carries the placeholder, and the
-// backend records the delivery), while the unredactable AIDA message both closes
-// the client connection AND reaches the backend zero times — the same
-// no-upstream-leak invariant the forward/reverse tests assert via a hit counter.
+// backend reports the delivered redacted frame), while the unredactable AIDA
+// message both closes the client connection AND reaches the backend zero times —
+// the same no-upstream-leak invariant the forward/reverse tests assert.
 func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *testing.T) {
-	backendAddr, backendDeliveries, backendCleanup := wsCountingEchoServer(t)
+	backendAddr, delivered, backendCleanup := wsCountingEchoServer(t)
 	defer backendCleanup()
 
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
@@ -772,8 +774,8 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 	})
 	defer proxyCleanup()
 
-	// Half 1: AKIA redacts-and-forwards; the echo returns the placeholder, which
-	// also confirms the (redacted) frame reached the backend.
+	// Half 1: AKIA redacts-and-forwards; the echoed reply carries the placeholder,
+	// and the backend reports the delivered frame as the redacted form.
 	secret := redactionE2ESecret()
 	akiaConn := dialWS(t, proxyAddr, backendAddr)
 	defer akiaConn.Close() //nolint:errcheck // test
@@ -784,29 +786,43 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 	if err != nil {
 		t.Fatalf("read AKIA reply: %v (exempt host should redact-and-forward)", err)
 	}
-	replyStr := string(reply)
-	if strings.Contains(replyStr, secret) {
-		t.Fatalf("echoed reply leaked secret: %q", replyStr)
+	if replyStr := string(reply); strings.Contains(replyStr, secret) || !strings.Contains(replyStr, placeholderAWS) {
+		t.Fatalf("AKIA reply not redacted on exempt host: %q", replyStr)
 	}
-	if !strings.Contains(replyStr, placeholderAWS) {
-		t.Fatalf("echoed reply missing placeholder on exempt host: %q", replyStr)
+	select {
+	case got := <-delivered:
+		if strings.Contains(string(got), secret) {
+			t.Fatalf("backend received the raw AWS key: %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("AKIA frame was never delivered to the backend")
 	}
-	deliveriesAfterAKIA := backendDeliveries.Load()
 
-	// Half 2: the unredactable AIDA resource-ID must fail closed. A block closes
-	// the connection, so this needs a fresh dial. The client-side close plus zero
-	// additional backend deliveries together prove the frame was blocked before
-	// reaching the upstream.
+	// Half 2: the unredactable AIDA resource-ID must fail closed. A bounded read
+	// deadline turns a regression (proxy fails to close) into a fast failure
+	// instead of blocking until the outer test timeout.
 	unredactable := unredactableAWSResourceID()
 	aidaConn := dialWS(t, proxyAddr, backendAddr)
 	defer aidaConn.Close() //nolint:errcheck // test
 	if err := wsutil.WriteClientMessage(aidaConn, ws.OpText, []byte(`{"prompt":"use `+unredactable+` to deploy"}`)); err != nil {
 		t.Fatalf("write AIDA: %v", err)
 	}
-	if _, _, err := wsutil.ReadServerData(aidaConn); err == nil {
-		t.Fatal("expected proxy to close connection on unredactable AWS ID even on an exempt host")
+	_ = aidaConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, aidaErr := wsutil.ReadServerData(aidaConn)
+	if aidaErr == nil {
+		t.Fatal("AIDA: expected the proxy to close the connection, got a reply")
 	}
-	if backendDeliveries.Load() != deliveriesAfterAKIA {
-		t.Fatal("unredactable AWS ID reached the backend despite surviving the post-redaction re-scan")
+	var netErr net.Error
+	if errors.As(aidaErr, &netErr) && netErr.Timeout() {
+		t.Fatal("AIDA: connection stayed open past the read deadline — proxy did not block")
+	}
+
+	// It must also never reach the backend: wait a bounded window for any stray
+	// forwarded frame; none should arrive.
+	select {
+	case leaked := <-delivered:
+		t.Fatalf("unredactable AWS ID reached the backend: %q", leaked)
+	case <-time.After(2 * time.Second):
+		// No delivery within the window — correct: the frame was blocked upstream.
 	}
 }

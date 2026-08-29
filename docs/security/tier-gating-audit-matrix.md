@@ -5,6 +5,13 @@ surfaces. Originally audited at `521cdbbd`; the follower-side Conductor
 revocation parity gap described in "v2.7 update: Conductor live revocation"
 (below) was closed during the 2026-06-07 v2.7 release-hardening pass.
 
+## Status
+
+This is a historical audit record, not the current product capability contract.
+For current tiers, gates, implementation anchors, and operator entry points, use
+[`capability-manifest.json`](capability-manifest.json). Its source-parity test
+also checks the generated capability section in `AGENTS.md`.
+
 Rule: detection, blocking, scanning, verification, and single-agent enforcement
 stay free. Paid code must fail closed at runtime with `License.HasFeature`, not
 only by living behind the `enterprise` build tag.

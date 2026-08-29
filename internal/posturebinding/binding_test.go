@@ -10,12 +10,11 @@
 package posturebinding
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/posture"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // mintContainmentCapsule emits a valid, signed posture capsule carrying
@@ -52,6 +52,13 @@ func mintContainmentCapsule(t *testing.T) (*posture.Capsule, []byte) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	return capsule, data
+}
+
+func requireAvailability(t *testing.T, got Result, want Availability) {
+	t.Helper()
+	if got.Availability != want {
+		t.Fatalf("availability = %q, want %q (result = %+v)", got.Availability, want, got)
+	}
 }
 
 // writeMutatedCapsule rewrites one or more top-level capsule fields in the
@@ -90,9 +97,11 @@ func TestLoadFileTamperedBodyRejected(t *testing.T) {
 	path := writeMutatedCapsule(t, data, map[string]string{
 		"config_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 	})
-	if _, err := LoadFile(path); err == nil {
+	got, err := LoadFile(path)
+	if err == nil {
 		t.Fatal("LoadFile error = nil, want signature verification failure on tampered body")
 	}
+	requireAvailability(t, got, AvailabilityInvalid)
 }
 
 func TestLoadFileExpiredCapsuleRejected(t *testing.T) {
@@ -105,7 +114,7 @@ func TestLoadFileExpiredCapsuleRejected(t *testing.T) {
 		"generated_at": now.Add(-48 * time.Hour).Format(time.RFC3339Nano),
 		"expires_at":   now.Add(-24 * time.Hour).Format(time.RFC3339Nano),
 	})
-	_, err := LoadFile(path)
+	got, err := LoadFile(path)
 	if err == nil {
 		t.Fatal("LoadFile error = nil, want expiry rejection")
 	}
@@ -115,6 +124,7 @@ func TestLoadFileExpiredCapsuleRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("LoadFile error = %v, want an expiry rejection", err)
 	}
+	requireAvailability(t, got, AvailabilityInvalid)
 }
 
 func TestLoadFileNonHexSignerKeyRejected(t *testing.T) {
@@ -122,9 +132,11 @@ func TestLoadFileNonHexSignerKeyRejected(t *testing.T) {
 	// A signer_key_id that is not valid hex must fail closed at the key-decode
 	// step, before any signature verification.
 	path := writeMutatedCapsule(t, data, map[string]string{"signer_key_id": "not-hex-zz"})
-	if _, err := LoadFile(path); err == nil {
+	got, err := LoadFile(path)
+	if err == nil {
 		t.Fatal("LoadFile error = nil, want signer-key decode rejection")
 	}
+	requireAvailability(t, got, AvailabilityInvalid)
 }
 
 func TestLoadFileValidContainmentCapsuleStillBinds(t *testing.T) {
@@ -133,10 +145,12 @@ func TestLoadFileValidContainmentCapsuleStillBinds(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	got, err := LoadFile(path)
+	result, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
+	requireAvailability(t, result, AvailabilityAttested)
+	got := result.Binding
 	sum := sha256.Sum256(data)
 	if got.CapsuleSHA256 != hex.EncodeToString(sum[:]) ||
 		got.SignerKeyID != capsule.SignerKeyID ||
@@ -157,9 +171,11 @@ func TestLoadFileRejectsGroupWritableProof(t *testing.T) {
 		t.Fatalf("Chmod() error = %v", err)
 	}
 
-	if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), "permissions") {
+	got, err := LoadFile(path)
+	if err == nil || !strings.Contains(err.Error(), "permissions") {
 		t.Fatalf("LoadFile(group-writable proof) error = %v, want permission rejection", err)
 	}
+	requireAvailability(t, got, AvailabilityInvalid)
 }
 
 func TestLoadRuntimeRelativeOverrideRejected(t *testing.T) {
@@ -176,57 +192,27 @@ func TestLoadRuntimeAbsoluteOverrideWorks(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	t.Setenv(RuntimeProofEnv, path)
-	got, err := LoadRuntime()
+	result, err := LoadRuntime()
 	if err != nil {
 		t.Fatalf("LoadRuntime: %v", err)
 	}
+	requireAvailability(t, result, AvailabilityAttested)
+	got := result.Binding
 	if got.SignerKeyID != capsule.SignerKeyID || got.ContainedUID != "966" {
 		t.Fatalf("binding = %+v, want fields from capsule at absolute override", got)
 	}
 }
 
-func TestLoadRuntimeUnsetUsesDefaultPath(t *testing.T) {
-	// With no override, LoadRuntime reads DefaultContainRunProofPath, so this
-	// assertion is only meaningful when that path is provably absent.
-	//
-	// Skipping on `err == nil` alone was not that check. It treats every error
-	// as absence, and the error a containment host actually returns is
-	// permission denied: `pipelock contain install` creates the posture
-	// directory 0o750 owned by pipelock-proxy, so an ordinary user's stat fails
-	// without the file being missing. The guard then declined to skip,
-	// LoadRuntime surfaced that refusal, and the test failed for a reason that
-	// has nothing to do with the missing-default behavior it asserts.
-	//
-	// A machine with containment installed is a production state, not an exotic
-	// one, so this must distinguish absence from refusal rather than collapse
-	// them.
-	_, statErr := os.Stat(DefaultContainRunProofPath)
-	switch {
-	case statErr == nil:
-		t.Skipf("default proof path %s exists; skipping missing-default assertion",
-			DefaultContainRunProofPath)
-	case errors.Is(statErr, fs.ErrNotExist):
-		// Provably absent, which is the state this assertion is about.
-	case errors.Is(statErr, fs.ErrPermission):
-		// `pipelock contain install` creates the posture directory 0o750 owned
-		// by pipelock-proxy, so an ordinary user cannot tell whether the proof
-		// is there. Absence is unprovable, so the assertion is skipped rather
-		// than failed: a machine with containment installed is a production
-		// state, and failing here would be the defect this test was fixed for.
-		t.Skipf("default proof path %s is unreadable (%v); absence cannot be established",
-			DefaultContainRunProofPath, statErr)
-	default:
-		// Anything else is a genuine filesystem fault and must not be hidden
-		// behind a skip.
-		t.Fatalf("stat default proof path %s: %v", DefaultContainRunProofPath, statErr)
-	}
-	t.Setenv(RuntimeProofEnv, "")
+func TestLoadRuntimeAbsentOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-proof.json")
+	t.Setenv(RuntimeProofEnv, path)
 	got, err := LoadRuntime()
 	if err != nil {
 		t.Fatalf("LoadRuntime: %v", err)
 	}
-	if got.CapsuleSHA256 != "" || got.SignerKeyID != "" || got.ContainmentNonce != "" || got.ContainedUID != "" {
-		t.Fatalf("binding = %+v, want zero from missing default proof", got)
+	requireAvailability(t, got, AvailabilityAbsent)
+	if got.Binding.CapsuleSHA256 != "" || got.Binding.SignerKeyID != "" || got.Binding.ContainmentNonce != "" || got.Binding.ContainedUID != "" {
+		t.Fatalf("binding = %+v, want zero from missing proof", got.Binding)
 	}
 }
 
@@ -235,8 +221,81 @@ func TestLoadFileMissingReturnsZeroBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
-	if got.CapsuleSHA256 != "" || got.SignerKeyID != "" || got.ContainmentNonce != "" || got.ContainedUID != "" {
+	requireAvailability(t, got, AvailabilityAbsent)
+	if got.Binding.CapsuleSHA256 != "" || got.Binding.SignerKeyID != "" || got.Binding.ContainmentNonce != "" || got.Binding.ContainedUID != "" {
 		t.Fatalf("binding = %+v, want zero", got)
+	}
+}
+
+func TestLoadRuntimeForReceiptsAbsentPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-proof.json")
+	t.Setenv(RuntimeProofEnv, path)
+
+	binding, err := LoadRuntimeForReceipts(RuntimeReceiptOptions{ReceiptSigningEnabled: true})
+	if err != nil {
+		t.Fatalf("ordinary receipt policy: %v", err)
+	}
+	if binding != (receipt.PostureBinding{}) {
+		t.Fatalf("absent proof binding = %+v, want zero", binding)
+	}
+}
+
+func TestLoadRuntimeForReceiptsSkipsProofWithoutSigning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-proof.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv(RuntimeProofEnv, path)
+
+	binding, err := LoadRuntimeForReceipts(RuntimeReceiptOptions{})
+	if err != nil {
+		t.Fatalf("recorder-only runtime loaded posture proof: %v", err)
+	}
+	if binding != (receipt.PostureBinding{}) {
+		t.Fatalf("recorder-only posture binding = %+v, want zero", binding)
+	}
+}
+
+func TestLoadRuntimeForReceiptsBindsAttestedContainment(t *testing.T) {
+	_, data := mintContainmentCapsule(t)
+	path := filepath.Join(t.TempDir(), "proof.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv(RuntimeProofEnv, path)
+	binding, err := LoadRuntimeForReceipts(RuntimeReceiptOptions{ReceiptSigningEnabled: true})
+	if err != nil {
+		t.Fatalf("ordinary receipt policy: %v", err)
+	}
+	if binding.CapsuleSHA256 == "" || binding.ContainmentNonce == "" {
+		t.Fatalf("attested binding = %+v, want containment fields", binding)
+	}
+}
+
+func TestLoadRuntimeForReceiptsBindsNothingWithoutContainment(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	capsule, err := posture.Emit(config.Defaults(), posture.Options{SigningKey: priv})
+	if err != nil {
+		t.Fatalf("posture.Emit: %v", err)
+	}
+	data, err := json.Marshal(capsule)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "proof.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv(RuntimeProofEnv, path)
+	binding, err := LoadRuntimeForReceipts(RuntimeReceiptOptions{ReceiptSigningEnabled: true})
+	if err != nil {
+		t.Fatalf("proof without containment: %v", err)
+	}
+	if binding != (receipt.PostureBinding{}) {
+		t.Fatalf("binding without containment evidence = %+v, want zero", binding)
 	}
 }
 
@@ -247,10 +306,12 @@ func TestLoadFileDerivesContainmentBinding(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	got, err := LoadFile(path)
+	result, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
+	requireAvailability(t, result, AvailabilityAttested)
+	got := result.Binding
 	canonicalSum := sha256.Sum256(data)
 	if got.CapsuleSHA256 != hex.EncodeToString(canonicalSum[:]) {
 		t.Fatalf("CapsuleSHA256 = %q, want canonical capsule hash", got.CapsuleSHA256)
@@ -292,9 +353,26 @@ func TestLoadFileNoContainmentReturnsZeroBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
-	if got.CapsuleSHA256 != "" || got.SignerKeyID != "" || got.ContainmentNonce != "" || got.ContainedUID != "" {
+	requireAvailability(t, got, AvailabilityAttested)
+	if got.Binding.CapsuleSHA256 != "" || got.Binding.SignerKeyID != "" || got.Binding.ContainmentNonce != "" || got.Binding.ContainedUID != "" {
 		t.Fatalf("binding = %+v, want zero (no containment evidence)", got)
 	}
+}
+
+func TestLoadFileUnsignedNoContainmentIsInvalid(t *testing.T) {
+	// A readable capsule that carries no containment evidence AND cannot be
+	// verified must be invalid, not attested. Before the fix, this exact file
+	// produced posture_availability "attested" in a signed session_open.
+	path := filepath.Join(t.TempDir(), "proof.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := LoadFile(path)
+	if err == nil {
+		t.Fatalf("LoadFile: want error for unverifiable capsule, got nil (availability=%q)", got.Availability)
+	}
+	requireAvailability(t, got, AvailabilityInvalid)
 }
 
 func TestLoadFileMalformedReturnsError(t *testing.T) {
@@ -302,9 +380,11 @@ func TestLoadFileMalformedReturnsError(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if _, err := LoadFile(path); err == nil {
+	got, err := LoadFile(path)
+	if err == nil {
 		t.Fatal("LoadFile error = nil, want parse error")
 	}
+	requireAvailability(t, got, AvailabilityInvalid)
 }
 
 func TestLoadFileRejectsOversizedAndEscapingSymlink(t *testing.T) {
@@ -331,4 +411,35 @@ func TestLoadFileRejectsOversizedAndEscapingSymlink(t *testing.T) {
 			t.Fatal("LoadFile accepted symlink escaping the proof directory")
 		}
 	})
+}
+
+func TestLoadFileEmptyPathIsAbsent(t *testing.T) {
+	got, err := LoadFile("   ")
+	if err != nil {
+		t.Fatalf("LoadFile with a blank path: %v", err)
+	}
+	requireAvailability(t, got, AvailabilityAbsent)
+	if got.Binding != (receipt.PostureBinding{}) {
+		t.Fatalf("blank-path binding = %+v, want zero", got.Binding)
+	}
+}
+
+func TestLoadRuntimeForReceiptsPropagatesInvalidProof(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proof.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv(RuntimeProofEnv, path)
+
+	var warning bytes.Buffer
+	binding, err := LoadRuntimeForReceipts(RuntimeReceiptOptions{ReceiptSigningEnabled: true, Stderr: &warning})
+	if err == nil || !strings.Contains(err.Error(), "parse posture proof") {
+		t.Fatalf("malformed proof error = %v, want a parse failure", err)
+	}
+	if binding != (receipt.PostureBinding{}) {
+		t.Fatalf("malformed proof binding = %+v, want zero", binding)
+	}
+	if warning.Len() != 0 {
+		t.Fatalf("malformed proof wrote an unreadable warning: %q", warning.String())
+	}
 }

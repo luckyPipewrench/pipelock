@@ -43,12 +43,15 @@ func TestPinAbsentIsolatesFromHostPosture(t *testing.T) {
 
 	// An absent proof yields the zero binding rather than an error, which is what
 	// makes callers take their no-attested-containment path.
-	binding, loadErr := posturebinding.LoadRuntime()
+	result, loadErr := posturebinding.LoadRuntime()
 	if loadErr != nil {
 		t.Fatalf("LoadRuntime with an absent pinned proof: %v", loadErr)
 	}
-	if binding != (receipt.PostureBinding{}) {
-		t.Fatalf("expected the zero binding, got %+v", binding)
+	if result.Availability != posturebinding.AvailabilityAbsent {
+		t.Fatalf("availability = %q, want %q", result.Availability, posturebinding.AvailabilityAbsent)
+	}
+	if result.Binding != (receipt.PostureBinding{}) {
+		t.Fatalf("expected the zero binding, got %+v", result.Binding)
 	}
 
 	dir := filepath.Dir(got)

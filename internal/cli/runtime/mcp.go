@@ -1121,7 +1121,10 @@ Key-free evidence capture:
 					retentionCancel()
 					retentionWG.Wait()
 				}()
-				postureBinding, bindErr := posturebinding.LoadRuntime()
+				postureBinding, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
+					ReceiptSigningEnabled: cfg.FlightRecorder.SigningKeyPath != "",
+					Stderr:                cmd.ErrOrStderr(),
+				})
 				if bindErr != nil {
 					return fmt.Errorf("loading posture binding: %w", bindErr)
 				}

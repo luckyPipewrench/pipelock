@@ -1529,7 +1529,10 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		}, nil
 	}
 
-	postureBinding, bindErr := posturebinding.LoadRuntime()
+	postureBinding, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
+		ReceiptSigningEnabled: keyPath != "",
+		Stderr:                os.Stderr,
+	})
 	if bindErr != nil {
 		return receiptEmitterStage{}, fmt.Errorf("loading posture binding: %w", bindErr)
 	}

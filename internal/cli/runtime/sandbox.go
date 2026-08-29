@@ -40,18 +40,19 @@ func SandboxCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sandbox [flags] -- COMMAND [ARGS...]",
 		Short: "Run a command in an unprivileged sandbox (Linux only)",
-		Long: `Runs a command with three layers of unprivileged containment:
+		Long: `Runs a command with up to three layers of unprivileged containment:
 
   - Landlock: restricts filesystem access (read, write, exec)
-  - seccomp: blocks dangerous syscalls (ptrace, mount, io_uring)
+  - seccomp (linux/amd64): blocks dangerous syscalls (ptrace, mount, io_uring)
   - Network namespace: isolates network (traffic routed through pipelock scanner)
 
 Agent HTTP/HTTPS traffic is routed through pipelock's full scanner pipeline
 (DLP, SSRF, blocklist, rate limiting, entropy analysis) via a bridge proxy.
 
 Use --best-effort inside containers where user namespace creation is blocked
-(e.g. Kubernetes with default seccomp). Landlock and seccomp are still applied;
-network scanning uses proxy-based routing instead of kernel-enforced isolation.
+(e.g. Kubernetes with default seccomp). Landlock remains mandatory. On
+linux/amd64, seccomp is also applied. Network scanning uses proxy-based routing
+instead of kernel-enforced isolation and may be bypassed by direct egress.
 
 Examples:
   pipelock sandbox -- python agent.py

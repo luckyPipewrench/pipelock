@@ -1175,11 +1175,16 @@ func TestPreflight_ValidBestEffort(t *testing.T) {
 	if result.Workspace != workspace {
 		t.Errorf("workspace = %q, want %q", result.Workspace, workspace)
 	}
-	if result.Mode != "best-effort" {
-		t.Errorf("mode = %q, want best-effort", result.Mode)
+	if result.Mode != "required" {
+		t.Errorf("mode = %q, want required", result.Mode)
 	}
 	if len(result.Layers) != 3 {
 		t.Errorf("expected 3 layers, got %d", len(result.Layers))
+	}
+	for _, layer := range result.Layers {
+		if layer.Name == LayerLandlock && !layer.Required {
+			t.Error("normal sandbox preflight did not mark Landlock required")
+		}
 	}
 }
 

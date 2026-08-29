@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -123,6 +124,13 @@ func TestRunReportsFailures(t *testing.T) {
 }
 
 func TestRunReportsAnUnwritableTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// os.Chmod on Windows only toggles a read-only attribute, and Windows
+		// does not honour that attribute on directories, so the write would
+		// succeed and this assertion would fail for a reason unrelated to the
+		// behaviour under test.
+		t.Skip("directory write permission is not enforceable through os.Chmod on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the write-permission bit")
 	}

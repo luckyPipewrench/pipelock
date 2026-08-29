@@ -1,15 +1,54 @@
 {
   "schema_version": 1,
   "gate_coverage": [
-    { "feature": "agents", "prefix": "enterprise/config.go" },
-    { "feature": "agents", "prefix": "enterprise/cli/dashboard" },
-    { "feature": "fleet", "prefix": "enterprise/cli/dashboard" },
-    { "feature": "fleet", "prefix": "enterprise/cli/conductor/" },
-    { "feature": "fleet", "prefix": "enterprise/cli/fleet/" },
-    { "feature": "fleet", "prefix": "enterprise/conductor/" },
-    { "feature": "fleet", "prefix": "internal/cli/runtime/" },
-    { "feature": "fleet", "prefix": "internal/cli/diag/" },
-    { "feature": "assess", "prefix": "internal/cli/assess/" }
+    {
+      "feature": "agents",
+      "prefix": "enterprise/config.go"
+    },
+    {
+      "feature": "agents",
+      "prefix": "enterprise/cli/dashboard.go"
+    },
+    {
+      "feature": "agents",
+      "prefix": "enterprise/cli/dashboard_coveragecert.go"
+    },
+    {
+      "feature": "agents",
+      "prefix": "enterprise/cli/dashboard_exemption.go"
+    },
+    {
+      "feature": "agents",
+      "prefix": "enterprise/cli/dashboard_legal_hold.go"
+    },
+    {
+      "feature": "fleet",
+      "prefix": "enterprise/cli/dashboard.go"
+    },
+    {
+      "feature": "fleet",
+      "prefix": "enterprise/cli/conductor/"
+    },
+    {
+      "feature": "fleet",
+      "prefix": "enterprise/cli/fleet/"
+    },
+    {
+      "feature": "fleet",
+      "prefix": "enterprise/conductor/"
+    },
+    {
+      "feature": "fleet",
+      "prefix": "internal/cli/runtime/"
+    },
+    {
+      "feature": "fleet",
+      "prefix": "internal/cli/diag/"
+    },
+    {
+      "feature": "assess",
+      "prefix": "internal/cli/assess/"
+    }
   ],
   "gate_exclusions": [
     {
@@ -25,49 +64,150 @@
       "summary": "Mediates agent traffic and applies URL, DLP, injection, and SSRF controls.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "availability": {
         "scope": "mediated_traffic",
         "qualifier": "Applies only to traffic routed through Pipelock; direct agent egress needs containment or network policy."
       },
       "surface_coverage": [
-        { "kind": "config_section", "value": "address_protection" },
-        { "kind": "config_section", "value": "cross_request_detection" },
-        { "kind": "config_section", "value": "dlp" },
-        { "kind": "config_section", "value": "dns" },
-        { "kind": "config_section", "value": "fetch_proxy" },
-        { "kind": "config_section", "value": "forward_proxy" },
-        { "kind": "config_section", "value": "git_protection" },
-        { "kind": "config_section", "value": "logging" },
-        { "kind": "config_section", "value": "request_body_scanning" },
-        { "kind": "config_section", "value": "request_policy" },
-        { "kind": "config_section", "value": "response_scanning" },
-        { "kind": "config_section", "value": "reverse_proxy" },
-        { "kind": "config_section", "value": "scan_api" },
-        { "kind": "config_section", "value": "seed_phrase_detection" },
-        { "kind": "config_section", "value": "session_profiling" },
-        { "kind": "config_section", "value": "ssrf" },
-        { "kind": "config_section", "value": "suppress" },
-        { "kind": "config_section", "value": "websocket_proxy" },
-        { "kind": "command", "value": "pipelock audit" },
-        { "kind": "command", "value": "pipelock check" },
-        { "kind": "command", "value": "pipelock demo" },
-        { "kind": "command", "value": "pipelock diagnose" },
-        { "kind": "command", "value": "pipelock discover" },
-        { "kind": "command", "value": "pipelock git" },
-        { "kind": "command", "value": "pipelock healthcheck" },
-        { "kind": "command", "value": "pipelock preflight" },
-        { "kind": "command", "value": "pipelock scan" },
-        { "kind": "command", "value": "pipelock skill-scan" },
-        { "kind": "command", "value": "pipelock simulate" },
-        { "kind": "command", "value": "pipelock test" },
-        { "kind": "command", "value": "pipelock verify-install" }
+        {
+          "kind": "config_section",
+          "value": "address_protection"
+        },
+        {
+          "kind": "config_section",
+          "value": "cross_request_detection"
+        },
+        {
+          "kind": "config_section",
+          "value": "dlp"
+        },
+        {
+          "kind": "config_section",
+          "value": "dns"
+        },
+        {
+          "kind": "config_section",
+          "value": "fetch_proxy"
+        },
+        {
+          "kind": "config_section",
+          "value": "forward_proxy"
+        },
+        {
+          "kind": "config_section",
+          "value": "git_protection"
+        },
+        {
+          "kind": "config_section",
+          "value": "logging"
+        },
+        {
+          "kind": "config_section",
+          "value": "request_body_scanning"
+        },
+        {
+          "kind": "config_section",
+          "value": "request_policy"
+        },
+        {
+          "kind": "config_section",
+          "value": "response_scanning"
+        },
+        {
+          "kind": "config_section",
+          "value": "reverse_proxy"
+        },
+        {
+          "kind": "config_section",
+          "value": "scan_api"
+        },
+        {
+          "kind": "config_section",
+          "value": "seed_phrase_detection"
+        },
+        {
+          "kind": "config_section",
+          "value": "session_profiling"
+        },
+        {
+          "kind": "config_section",
+          "value": "ssrf"
+        },
+        {
+          "kind": "config_section",
+          "value": "suppress"
+        },
+        {
+          "kind": "config_section",
+          "value": "websocket_proxy"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock audit"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock check"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock demo"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock diagnose"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock discover"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock git"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock healthcheck"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock preflight"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock scan"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock skill-scan"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock simulate"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock test"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock verify-install"
+        }
       ],
-      "implementation": { "file": "internal/cli/runtime/run.go", "symbol": "RunCmd" },
+      "implementation": {
+        "file": "internal/cli/runtime/run.go",
+        "symbol": "RunCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock run",
-        "source": { "file": "internal/cli/runtime/run.go", "symbol": "RunCmd" }
+        "source": {
+          "file": "internal/cli/runtime/run.go",
+          "symbol": "RunCmd"
+        }
       }
     },
     {
@@ -76,43 +216,126 @@
       "summary": "Scans MCP traffic and applies configured tool, chain, and session controls.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "availability": {
         "scope": "mediated_traffic",
         "qualifier": "Applies only to MCP transports that run through the Pipelock proxy."
       },
       "surface_coverage": [
-        { "kind": "config_section", "value": "airlock" },
-        { "kind": "config_section", "value": "behavioral_baseline" },
-        { "kind": "config_section", "value": "defer" },
-        { "kind": "config_section", "value": "file_sentry" },
-        { "kind": "config_section", "value": "learn" },
-        { "kind": "config_section", "value": "learn_lock" },
-        { "kind": "config_section", "value": "mcp_binary_integrity" },
-        { "kind": "config_section", "value": "mcp_data_class_labels" },
-        { "kind": "config_section", "value": "mcp_input_scanning" },
-        { "kind": "config_section", "value": "mcp_session_binding" },
-        { "kind": "config_section", "value": "mcp_tool_policy" },
-        { "kind": "config_section", "value": "mcp_tool_provenance" },
-        { "kind": "config_section", "value": "mcp_tool_scanning" },
-        { "kind": "config_section", "value": "mcp_ws_listener" },
-        { "kind": "config_section", "value": "media_policy" },
-        { "kind": "config_section", "value": "mediation_envelope" },
-        { "kind": "config_section", "value": "redaction" },
-        { "kind": "config_section", "value": "taint" },
-        { "kind": "config_section", "value": "tool_chain_detection" },
-        { "kind": "command", "value": "pipelock baseline" },
-        { "kind": "command", "value": "pipelock envelope" },
-        { "kind": "command", "value": "pipelock integrity" },
-        { "kind": "command", "value": "pipelock learn" },
-        { "kind": "command", "value": "pipelock mcp" },
-        { "kind": "command", "value": "pipelock session" }
+        {
+          "kind": "config_section",
+          "value": "airlock"
+        },
+        {
+          "kind": "config_section",
+          "value": "behavioral_baseline"
+        },
+        {
+          "kind": "config_section",
+          "value": "defer"
+        },
+        {
+          "kind": "config_section",
+          "value": "file_sentry"
+        },
+        {
+          "kind": "config_section",
+          "value": "learn"
+        },
+        {
+          "kind": "config_section",
+          "value": "learn_lock"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_binary_integrity"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_data_class_labels"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_input_scanning"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_session_binding"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_tool_policy"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_tool_provenance"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_tool_scanning"
+        },
+        {
+          "kind": "config_section",
+          "value": "mcp_ws_listener"
+        },
+        {
+          "kind": "config_section",
+          "value": "media_policy"
+        },
+        {
+          "kind": "config_section",
+          "value": "mediation_envelope"
+        },
+        {
+          "kind": "config_section",
+          "value": "redaction"
+        },
+        {
+          "kind": "config_section",
+          "value": "taint"
+        },
+        {
+          "kind": "config_section",
+          "value": "tool_chain_detection"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock baseline"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock envelope"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock integrity"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock learn"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock mcp"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock session"
+        }
       ],
-      "implementation": { "file": "internal/cli/runtime/mcp.go", "symbol": "mcpProxyCmdWithAuditLoggerFactory" },
+      "implementation": {
+        "file": "internal/cli/runtime/mcp.go",
+        "symbol": "mcpProxyCmdWithAuditLoggerFactory"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock mcp proxy",
-        "source": { "file": "internal/cli/runtime/mcp.go", "symbol": "mcpProxyCmdWithAuditLoggerFactory" }
+        "source": {
+          "file": "internal/cli/runtime/mcp.go",
+          "symbol": "mcpProxyCmdWithAuditLoggerFactory"
+        }
       }
     },
     {
@@ -121,28 +344,75 @@
       "summary": "Writes signed, hash-chained mediation evidence and verifies it offline.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "surface_coverage": [
-        { "kind": "command", "value": "pipelock anchor" },
-        { "kind": "command", "value": "pipelock commitment-key" },
-        { "kind": "command", "value": "pipelock evidence" },
-        { "kind": "command", "value": "pipelock keygen" },
-        { "kind": "command", "value": "pipelock keys" },
-        { "kind": "command", "value": "pipelock policy" },
-        { "kind": "command", "value": "pipelock posture" },
-        { "kind": "command", "value": "pipelock report" },
-        { "kind": "command", "value": "pipelock sign" },
-        { "kind": "command", "value": "pipelock signing" },
-        { "kind": "command", "value": "pipelock transcript-root" },
-        { "kind": "command", "value": "pipelock trust" },
-        { "kind": "command", "value": "pipelock verify" }
+        {
+          "kind": "command",
+          "value": "pipelock anchor"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock commitment-key"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock evidence"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock keygen"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock keys"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock policy"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock posture"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock report"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock sign"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock signing"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock transcript-root"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock trust"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock verify"
+        }
       ],
-      "implementation": { "file": "internal/cli/signing/receipt.go", "symbol": "VerifyReceiptCmd" },
+      "implementation": {
+        "file": "internal/cli/signing/receipt.go",
+        "symbol": "VerifyReceiptCmd"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "flight_recorder",
         "field": "flight_recorder",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -151,19 +421,30 @@
       "summary": "Installs, verifies, and rolls back nftables-backed host containment.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "availability": {
         "scope": "platform_dependent",
         "qualifier": "Kernel-enforced containment requires Linux, nftables, and the managed identities; other targets cannot provide this containment path."
       },
       "surface_coverage": [
-        { "kind": "config_section", "value": "containment" }
+        {
+          "kind": "config_section",
+          "value": "containment"
+        }
       ],
-      "implementation": { "file": "internal/cli/contain/cmd.go", "symbol": "Cmd" },
+      "implementation": {
+        "file": "internal/cli/contain/cmd.go",
+        "symbol": "Cmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock contain",
-        "source": { "file": "internal/cli/contain/cmd.go", "symbol": "Cmd" }
+        "source": {
+          "file": "internal/cli/contain/cmd.go",
+          "symbol": "Cmd"
+        }
       }
     },
     {
@@ -172,16 +453,24 @@
       "summary": "Runs one command with unprivileged process and filesystem restrictions.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "availability": {
         "scope": "platform_dependent",
         "qualifier": "Kernel isolation requires Linux user namespaces. Without them, best-effort network isolation only sets HTTP(S)_PROXY; seccomp adds restrictions only on linux/amd64."
       },
-      "implementation": { "file": "internal/cli/runtime/sandbox.go", "symbol": "SandboxCmd" },
+      "implementation": {
+        "file": "internal/cli/runtime/sandbox.go",
+        "symbol": "SandboxCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock sandbox",
-        "source": { "file": "internal/cli/runtime/sandbox.go", "symbol": "SandboxCmd" }
+        "source": {
+          "file": "internal/cli/runtime/sandbox.go",
+          "symbol": "SandboxCmd"
+        }
       }
     },
     {
@@ -190,16 +479,27 @@
       "summary": "Detects configured synthetic secrets without a license gate.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "surface_coverage": [
-        { "kind": "command", "value": "pipelock canary" }
+        {
+          "kind": "command",
+          "value": "pipelock canary"
+        }
       ],
-      "implementation": { "file": "internal/config/canary.go", "symbol": "validateCanaryTokens" },
+      "implementation": {
+        "file": "internal/config/canary.go",
+        "symbol": "validateCanaryTokens"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "canary_tokens",
         "field": "canary_tokens",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -214,19 +514,31 @@
           {
             "name": "agents",
             "enforcement": {
-              "source": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+              "source": {
+                "file": "enterprise/config.go",
+                "symbol": "EnforceLicenseGate"
+              },
               "call": "license.FeatureAgents"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyAgentsWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+      "implementation": {
+        "file": "enterprise/config.go",
+        "symbol": "EnforceLicenseGate"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "agents.<profile>",
         "field": "agents",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -241,19 +553,31 @@
           {
             "name": "agents",
             "enforcement": {
-              "source": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+              "source": {
+                "file": "enterprise/config.go",
+                "symbol": "EnforceLicenseGate"
+              },
               "call": "license.FeatureAgents"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyAgentsWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "internal/config/schema.go", "symbol": "AgentProfile" },
+      "implementation": {
+        "file": "internal/config/schema.go",
+        "symbol": "AgentProfile"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "agents.<profile>.sandbox",
         "field": "sandbox",
-        "source": { "file": "internal/config/schema.go", "symbol": "AgentProfile" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "AgentProfile"
+        }
       }
     },
     {
@@ -268,19 +592,31 @@
           {
             "name": "agents",
             "enforcement": {
-              "source": { "file": "enterprise/config.go", "symbol": "EnforceLicenseGate" },
+              "source": {
+                "file": "enterprise/config.go",
+                "symbol": "EnforceLicenseGate"
+              },
               "call": "license.FeatureAgents"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyAgentsWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "internal/config/schema.go", "symbol": "AgentProfile" },
+      "implementation": {
+        "file": "internal/config/schema.go",
+        "symbol": "AgentProfile"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "agents.<profile>.allowed_addresses",
         "field": "allowed_addresses",
-        "source": { "file": "internal/config/schema.go", "symbol": "AgentProfile" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "AgentProfile"
+        }
       }
     },
     {
@@ -295,30 +631,54 @@
           {
             "name": "agents",
             "enforcement": {
-              "source": { "file": "enterprise/cli/dashboard.go", "symbol": "verifyDashboardLicenseWithOptions" },
+              "source": {
+                "file": "enterprise/cli/dashboard.go",
+                "symbol": "verifyDashboardLicenseWithOptions"
+              },
               "call": "license.VerifyAgentsWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyAgentsWithOptions"
+            }
           },
           {
             "name": "fleet",
             "enforcement": {
-              "source": { "file": "enterprise/cli/dashboard.go", "symbol": "verifyDashboardLicenseWithOptions" },
+              "source": {
+                "file": "enterprise/cli/dashboard.go",
+                "symbol": "verifyDashboardLicenseWithOptions"
+              },
               "call": "license.VerifyFleetWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyFleetWithOptions"
+            }
           }
         ]
       },
       "surface_coverage": [
-        { "kind": "config_section", "value": "dashboard_snapshot" },
-        { "kind": "command", "value": "pipelock dashboard" }
+        {
+          "kind": "config_section",
+          "value": "dashboard_snapshot"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock dashboard"
+        }
       ],
-      "implementation": { "file": "enterprise/cli/dashboard.go", "symbol": "dashboardServeCmd" },
+      "implementation": {
+        "file": "enterprise/cli/dashboard.go",
+        "symbol": "dashboardServeCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock dashboard serve",
-        "source": { "file": "enterprise/cli/dashboard.go", "symbol": "dashboardServeCmd" }
+        "source": {
+          "file": "enterprise/cli/dashboard.go",
+          "symbol": "dashboardServeCmd"
+        }
       }
     },
     {
@@ -333,21 +693,36 @@
           {
             "name": "assess",
             "enforcement": {
-              "source": { "file": "internal/cli/assess/finalize.go", "symbol": "checkAssessLicense" },
+              "source": {
+                "file": "internal/cli/assess/finalize.go",
+                "symbol": "checkAssessLicense"
+              },
               "call": "license.FeatureAssess"
             },
-            "proof": { "file": "internal/cli/assess/finalize.go", "symbol": "checkAssessLicense" }
+            "proof": {
+              "file": "internal/cli/assess/finalize.go",
+              "symbol": "checkAssessLicense"
+            }
           }
         ]
       },
       "surface_coverage": [
-        { "kind": "command", "value": "pipelock assess" }
+        {
+          "kind": "command",
+          "value": "pipelock assess"
+        }
       ],
-      "implementation": { "file": "internal/cli/assess/finalize.go", "symbol": "runAssessFinalize" },
+      "implementation": {
+        "file": "internal/cli/assess/finalize.go",
+        "symbol": "runAssessFinalize"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock assess finalize",
-        "source": { "file": "internal/cli/assess/finalize.go", "symbol": "assessFinalizeCmd" }
+        "source": {
+          "file": "internal/cli/assess/finalize.go",
+          "symbol": "assessFinalizeCmd"
+        }
       }
     },
     {
@@ -362,22 +737,40 @@
           {
             "name": "fleet",
             "enforcement": {
-              "source": { "file": "enterprise/cli/conductor/cmd.go", "symbol": "serveCmd" },
+              "source": {
+                "file": "enterprise/cli/conductor/cmd.go",
+                "symbol": "serveCmd"
+              },
               "call": "license.VerifyFleetWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyFleetWithOptions"
+            }
           }
         ]
       },
       "surface_coverage": [
-        { "kind": "config_section", "value": "conductor" },
-        { "kind": "command", "value": "pipelock conductor" }
+        {
+          "kind": "config_section",
+          "value": "conductor"
+        },
+        {
+          "kind": "command",
+          "value": "pipelock conductor"
+        }
       ],
-      "implementation": { "file": "enterprise/cli/conductor/cmd.go", "symbol": "serveCmd" },
+      "implementation": {
+        "file": "enterprise/cli/conductor/cmd.go",
+        "symbol": "serveCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock conductor serve",
-        "source": { "file": "enterprise/cli/conductor/cmd.go", "symbol": "serveCmd" }
+        "source": {
+          "file": "enterprise/cli/conductor/cmd.go",
+          "symbol": "serveCmd"
+        }
       }
     },
     {
@@ -392,18 +785,30 @@
           {
             "name": "agents",
             "enforcement": {
-              "source": { "file": "enterprise/cli/dashboard_coveragecert.go", "symbol": "coverageCertGenerateCmd" },
+              "source": {
+                "file": "enterprise/cli/dashboard_coveragecert.go",
+                "symbol": "coverageCertGenerateCmd"
+              },
               "call": "license.VerifyAgentsWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyAgentsWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "enterprise/cli/dashboard_coveragecert.go", "symbol": "coverageCertGenerateCmd" },
+      "implementation": {
+        "file": "enterprise/cli/dashboard_coveragecert.go",
+        "symbol": "coverageCertGenerateCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock dashboard coverage-cert generate",
-        "source": { "file": "enterprise/cli/dashboard_coveragecert.go", "symbol": "coverageCertGenerateCmd" }
+        "source": {
+          "file": "enterprise/cli/dashboard_coveragecert.go",
+          "symbol": "coverageCertGenerateCmd"
+        }
       }
     },
     {
@@ -418,18 +823,30 @@
           {
             "name": "agents",
             "enforcement": {
-              "source": { "file": "enterprise/cli/dashboard_exemption.go", "symbol": "exemptionListCmd" },
+              "source": {
+                "file": "enterprise/cli/dashboard_exemption.go",
+                "symbol": "exemptionListCmd"
+              },
               "call": "license.VerifyAgentsWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyAgentsWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "enterprise/cli/dashboard_exemption.go", "symbol": "exemptionCmd" },
+      "implementation": {
+        "file": "enterprise/cli/dashboard_exemption.go",
+        "symbol": "exemptionCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock dashboard exemption list",
-        "source": { "file": "enterprise/cli/dashboard_exemption.go", "symbol": "exemptionListCmd" }
+        "source": {
+          "file": "enterprise/cli/dashboard_exemption.go",
+          "symbol": "exemptionListCmd"
+        }
       }
     },
     {
@@ -444,18 +861,30 @@
           {
             "name": "agents",
             "enforcement": {
-              "source": { "file": "enterprise/cli/dashboard_legal_hold.go", "symbol": "legalHoldListCmd" },
+              "source": {
+                "file": "enterprise/cli/dashboard_legal_hold.go",
+                "symbol": "legalHoldListCmd"
+              },
               "call": "license.VerifyAgentsWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyAgentsWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyAgentsWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "enterprise/cli/dashboard_legal_hold.go", "symbol": "legalHoldCmd" },
+      "implementation": {
+        "file": "enterprise/cli/dashboard_legal_hold.go",
+        "symbol": "legalHoldCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock dashboard legal-hold list",
-        "source": { "file": "enterprise/cli/dashboard_legal_hold.go", "symbol": "legalHoldListCmd" }
+        "source": {
+          "file": "enterprise/cli/dashboard_legal_hold.go",
+          "symbol": "legalHoldListCmd"
+        }
       }
     },
     {
@@ -470,18 +899,30 @@
           {
             "name": "fleet",
             "enforcement": {
-              "source": { "file": "enterprise/cli/fleet/sink.go", "symbol": "SinkCmd" },
+              "source": {
+                "file": "enterprise/cli/fleet/sink.go",
+                "symbol": "SinkCmd"
+              },
               "call": "license.VerifyFleetWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyFleetWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "enterprise/cli/fleet/sink.go", "symbol": "SinkCmd" },
+      "implementation": {
+        "file": "enterprise/cli/fleet/sink.go",
+        "symbol": "SinkCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock fleet-sink",
-        "source": { "file": "enterprise/cli/fleet/sink.go", "symbol": "SinkCmd" }
+        "source": {
+          "file": "enterprise/cli/fleet/sink.go",
+          "symbol": "SinkCmd"
+        }
       }
     },
     {
@@ -496,18 +937,30 @@
           {
             "name": "fleet",
             "enforcement": {
-              "source": { "file": "enterprise/cli/conductor/fleet_report.go", "symbol": "fleetReportCmd" },
+              "source": {
+                "file": "enterprise/cli/conductor/fleet_report.go",
+                "symbol": "fleetReportCmd"
+              },
               "call": "license.VerifyFleetWithOptions"
             },
-            "proof": { "file": "internal/license/fleet_gate.go", "symbol": "VerifyFleetWithOptions" }
+            "proof": {
+              "file": "internal/license/fleet_gate.go",
+              "symbol": "VerifyFleetWithOptions"
+            }
           }
         ]
       },
-      "implementation": { "file": "enterprise/cli/conductor/fleet_report.go", "symbol": "fleetReportCmd" },
+      "implementation": {
+        "file": "enterprise/cli/conductor/fleet_report.go",
+        "symbol": "fleetReportCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock conductor fleet report",
-        "source": { "file": "enterprise/cli/conductor/fleet_report.go", "symbol": "fleetReportCmd" }
+        "source": {
+          "file": "enterprise/cli/conductor/fleet_report.go",
+          "symbol": "fleetReportCmd"
+        }
       }
     },
     {
@@ -516,13 +969,21 @@
       "summary": "Denies mediated traffic when any configured, local, or fleet kill source is active.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
-      "implementation": { "file": "internal/killswitch/killswitch.go", "symbol": "buildRuntime" },
+      "gate": {
+        "kind": "free"
+      },
+      "implementation": {
+        "file": "internal/killswitch/killswitch.go",
+        "symbol": "buildRuntime"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "kill_switch",
         "field": "kill_switch",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -531,16 +992,27 @@
       "summary": "Loads signed rule bundles and applies their configured detection coverage.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "surface_coverage": [
-        { "kind": "command", "value": "pipelock rules" }
+        {
+          "kind": "command",
+          "value": "pipelock rules"
+        }
       ],
-      "implementation": { "file": "internal/cli/runtime/server_rule_bundles.go", "symbol": "reportStartupRuleBundleResult" },
+      "implementation": {
+        "file": "internal/cli/runtime/server_rule_bundles.go",
+        "symbol": "reportStartupRuleBundleResult"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "rules",
         "field": "rules",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -549,16 +1021,27 @@
       "summary": "Escalates a risky session's enforcement level from accumulated security signals.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "surface_coverage": [
-        { "kind": "command", "value": "pipelock adaptive" }
+        {
+          "kind": "command",
+          "value": "pipelock adaptive"
+        }
       ],
-      "implementation": { "file": "internal/proxy/session.go", "symbol": "NewSessionManager" },
+      "implementation": {
+        "file": "internal/proxy/session.go",
+        "symbol": "NewSessionManager"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "adaptive_enforcement",
         "field": "adaptive_enforcement",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -567,20 +1050,31 @@
       "summary": "Decrypts configured CONNECT tunnels so Pipelock can inspect HTTP bodies and headers.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "availability": {
         "scope": "deployment_dependent",
         "qualifier": "Requires a configured local CA that the intercepted client trusts; passthrough traffic remains encrypted and cannot be body-scanned."
       },
       "surface_coverage": [
-        { "kind": "command", "value": "pipelock tls" }
+        {
+          "kind": "command",
+          "value": "pipelock tls"
+        }
       ],
-      "implementation": { "file": "internal/cli/diag/doctor.go", "symbol": "checkDoctorTLSInterception" },
+      "implementation": {
+        "file": "internal/cli/diag/doctor.go",
+        "symbol": "checkDoctorTLSInterception"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "tls_interception",
         "field": "tls_interception",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -589,17 +1083,25 @@
       "summary": "Scans Agent-to-Agent messages and Agent Cards for poisoning, drift, and session smuggling.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "availability": {
         "scope": "mediated_traffic",
         "qualifier": "Applies to A2A traffic carried on Pipelock's supported forward-proxy and MCP HTTP paths."
       },
-      "implementation": { "file": "internal/cli/runtime/mcp.go", "symbol": "applyMCPA2AOpts" },
+      "implementation": {
+        "file": "internal/cli/runtime/mcp.go",
+        "symbol": "applyMCPA2AOpts"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "a2a_scanning",
         "field": "a2a_scanning",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -608,17 +1110,25 @@
       "summary": "Rewrites proxied HTML and JavaScript to remove configured browser traps and tracking code.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "availability": {
         "scope": "mediated_traffic",
         "qualifier": "Applies only to supported browser response traffic that flows through Pipelock."
       },
-      "implementation": { "file": "internal/cli/diag/doctor.go", "symbol": "checkDoctorBrowserShield" },
+      "implementation": {
+        "file": "internal/cli/diag/doctor.go",
+        "symbol": "checkDoctorBrowserShield"
+      },
       "operator_entry_point": {
         "kind": "config",
         "value": "browser_shield",
         "field": "browser_shield",
-        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+        "source": {
+          "file": "internal/config/schema.go",
+          "symbol": "Config"
+        }
       }
     },
     {
@@ -627,12 +1137,20 @@
       "summary": "Verifies signed action receipts and receipt chains without contacting a Pipelock server.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
-      "implementation": { "file": "internal/cli/signing/receipt.go", "symbol": "VerifyReceiptCmd" },
+      "gate": {
+        "kind": "free"
+      },
+      "implementation": {
+        "file": "internal/cli/signing/receipt.go",
+        "symbol": "VerifyReceiptCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock verify-receipt",
-        "source": { "file": "internal/cli/signing/receipt.go", "symbol": "VerifyReceiptCmd" }
+        "source": {
+          "file": "internal/cli/signing/receipt.go",
+          "symbol": "VerifyReceiptCmd"
+        }
       }
     },
     {
@@ -641,12 +1159,20 @@
       "summary": "Explains a URL, command, tool, or file verdict and names the configuration that controls it.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
-      "implementation": { "file": "internal/cli/explain.go", "symbol": "explainCmd" },
+      "gate": {
+        "kind": "free"
+      },
+      "implementation": {
+        "file": "internal/cli/explain.go",
+        "symbol": "explainCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock explain",
-        "source": { "file": "internal/cli/explain.go", "symbol": "explainCmd" }
+        "source": {
+          "file": "internal/cli/explain.go",
+          "symbol": "explainCmd"
+        }
       }
     },
     {
@@ -655,17 +1181,34 @@
       "summary": "Reports whether configured protections can enforce in the current host and network topology.",
       "tier": "Free",
       "visibility": "operator",
-      "gate": { "kind": "free" },
+      "gate": {
+        "kind": "free"
+      },
       "surface_coverage": [
-        { "kind": "config_section", "value": "emit" },
-        { "kind": "config_section", "value": "health_watchdog" },
-        { "kind": "config_section", "value": "sentry" }
+        {
+          "kind": "config_section",
+          "value": "emit"
+        },
+        {
+          "kind": "config_section",
+          "value": "health_watchdog"
+        },
+        {
+          "kind": "config_section",
+          "value": "sentry"
+        }
       ],
-      "implementation": { "file": "internal/cli/diag/doctor.go", "symbol": "DoctorCmd" },
+      "implementation": {
+        "file": "internal/cli/diag/doctor.go",
+        "symbol": "DoctorCmd"
+      },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock doctor",
-        "source": { "file": "internal/cli/diag/doctor.go", "symbol": "DoctorCmd" }
+        "source": {
+          "file": "internal/cli/diag/doctor.go",
+          "symbol": "DoctorCmd"
+        }
       }
     }
   ],

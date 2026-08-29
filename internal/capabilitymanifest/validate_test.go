@@ -401,3 +401,66 @@ func TestRepositoryEscapeRejectsBareParent(t *testing.T) {
 		t.Fatal("a source file escaping the repository was accepted")
 	}
 }
+
+func TestCapabilityRejectsMarkdownBreakingValues(t *testing.T) {
+	// The rendered table is the surface a session reads, so a value that breaks
+	// it misstates the capability surface through the manifest's own renderer.
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Capability)
+	}{
+		{"pipe in name", func(c *Capability) { c.Name = "Dashboard | free" }},
+		{"newline in summary", func(c *Capability) { c.Summary = "First line\nSecond line" }},
+		{"carriage return in summary", func(c *Capability) { c.Summary = "First\rSecond" }},
+		{"pipe in tier", func(c *Capability) { c.Tier = "Pro | Enterprise" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validCapability()
+			tc.mutate(&c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("Validate accepted a value that would corrupt the generated table (%s)", tc.name)
+			}
+		})
+	}
+}
+
+func TestEscapesRepositoryRejectsPlatformSpecificPaths(t *testing.T) {
+	// Manifest paths are repository-relative and slash separated, so a
+	// backslash form and a Windows drive-relative form must be rejected on
+	// every platform, not only on the one that happens to run the test.
+	for _, path := range []string{"..", "../outside.go", `..\outside.go`, `C:..\outside.go`, `C:\outside.go`, "."} {
+		t.Run(path, func(t *testing.T) {
+			if !escapesRepository(path) {
+				t.Fatalf("escapesRepository(%q) = false, want true", path)
+			}
+		})
+	}
+	for _, path := range []string{"internal/config/schema.go", "enterprise/cli/dashboard.go"} {
+		if escapesRepository(path) {
+			t.Fatalf("escapesRepository(%q) = true, want false", path)
+		}
+	}
+}
+
+func TestWithinScopeComparesWholeComponents(t *testing.T) {
+	// A raw prefix test lets the scope "internal/foo" claim "internal/foobar",
+	// silently widening coverage to a directory nobody declared.
+	if withinScope("internal/foobar/x.go", "internal/foo") {
+		t.Fatal("scope \"internal/foo\" matched \"internal/foobar/x.go\"")
+	}
+	if withinScope("enterprise/cli/dashboard_exemption.go", "enterprise/cli/dashboard.go") {
+		t.Fatal("a file scope matched a sibling whose name merely starts the same")
+	}
+	if !withinScope("internal/foo/x.go", "internal/foo") {
+		t.Fatal("scope did not match a path genuinely inside it")
+	}
+	if !withinScope("internal/foo/x.go", "internal/foo/") {
+		t.Fatal("a trailing separator on the scope changed the result")
+	}
+	if !withinScope("enterprise/cli/dashboard.go", "enterprise/cli/dashboard.go") {
+		t.Fatal("an exact file scope did not match its own file")
+	}
+	if withinScope("internal/foo/x.go", "") {
+		t.Fatal("an empty scope matched everything")
+	}
+}

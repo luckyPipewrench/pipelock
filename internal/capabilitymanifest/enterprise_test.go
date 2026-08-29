@@ -51,4 +51,19 @@ func TestEnterpriseManifestCommandsAreRegistered(t *testing.T) {
 			t.Errorf("surface exclusion names unreachable command %q; a stale exclusion silently widens the gap it documents", exclusion.Value)
 		}
 	}
+
+	// The checks above run declared-to-registered. This runs the other
+	// direction, which is the one that catches a NEW enterprise command
+	// arriving with no manifest row: the default build cannot see enterprise
+	// commands at all, so it can never enforce their coverage.
+	//
+	// Scoped to top-level commands deliberately. Requiring every registered
+	// path would mean declaring several hundred subcommands, nearly all of them
+	// implementation detail of a capability already named, and a check that
+	// noisy stops being run rather than being satisfied.
+	roots := make([]string, 0)
+	for _, name := range cli.RegisteredTopLevelCommandNames() {
+		roots = append(roots, "pipelock "+name)
+	}
+	assertSurfaceCoverage(t, manifest, SurfaceCommand, roots)
 }

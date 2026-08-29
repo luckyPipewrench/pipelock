@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	gopath "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -199,6 +200,19 @@ func (c Capability) Validate() error {
 	if !capabilityIDPattern.MatchString(c.ID) {
 		return fmt.Errorf("id must be lowercase kebab-case")
 	}
+	// Every rendered value lands in a Markdown table cell. A pipe or a line
+	// break in one silently corrupts the generated section, which would make
+	// the documented capability surface misstate itself: the failure this
+	// manifest exists to prevent, arriving through its own renderer.
+	for label, value := range map[string]string{
+		"name":    c.Name,
+		"summary": c.Summary,
+		"tier":    c.Tier,
+	} {
+		if strings.ContainsAny(value, "|\n\r") {
+			return fmt.Errorf("%s must not contain a pipe or a line break; it is rendered into a Markdown table", label)
+		}
+	}
 	for label, value := range map[string]string{
 		"name": c.Name, "summary": c.Summary, "tier": c.Tier, "visibility": c.Visibility,
 	} {
@@ -318,11 +332,46 @@ func (g GateFeature) Validate() error {
 }
 
 // escapesRepository reports whether a declared path leaves the repository.
-// The exact value ".." cleans to itself and carries no separator, so a prefix
-// check alone accepts it as an ambiguous root-parent scope.
+//
+// Manifest paths are documented as repository-relative and slash separated, so
+// this decides on the string itself rather than on host path semantics. That
+// matters: filepath.VolumeName returns empty on Unix, so a Windows
+// drive-relative path such as `C:..\outside.go` would be accepted by a Linux
+// test run and rejected only on Windows, which is the platform-dependent
+// validation this replaces.
+//
+// Rejected: a volume or drive prefix, a backslash in any position, a leading
+// separator, and any path that climbs out with a ".." component. The bare
+// values ".." and "." are rejected too; ".." cleans to itself and carries no
+// separator, so a prefix check alone reads it as an ordinary relative path.
 func escapesRepository(path string) bool {
-	cleaned := filepath.Clean(path)
-	return cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator))
+	if strings.ContainsRune(path, '\\') {
+		return true
+	}
+	if len(path) >= 2 && path[1] == ':' {
+		return true
+	}
+	if strings.HasPrefix(path, "/") {
+		return true
+	}
+	cleaned := gopath.Clean(path)
+	if cleaned == ".." || cleaned == "." {
+		return true
+	}
+	return strings.HasPrefix(cleaned, "../")
+}
+
+// withinScope reports whether a repository-relative path lies inside a declared
+// prefix, comparing whole path components. A raw prefix test would let the scope
+// "internal/foo" also claim "internal/foobar", which silently widens coverage to
+// a directory nobody declared.
+func withinScope(path, prefix string) bool {
+	path = filepath.ToSlash(path)
+	prefix = strings.TrimSuffix(filepath.ToSlash(prefix), "/")
+	if prefix == "" {
+		return false
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 func (s GateSourceScope) Validate() error {

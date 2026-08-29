@@ -112,13 +112,13 @@ func TestManifestCoversDirectRuntimeLicenseGates(t *testing.T) {
 					return true
 				}
 				for i, scope := range manifest.GateCoverage {
-					if scope.Feature == feature && strings.HasPrefix(relative, scope.Prefix) {
+					if scope.Feature == feature && withinScope(relative, scope.Prefix) {
 						usedCoverage[i] = true
 						return true
 					}
 				}
 				for i, scope := range manifest.GateExclusions {
-					if scope.Feature == feature && strings.HasPrefix(relative, scope.Prefix) {
+					if scope.Feature == feature && withinScope(relative, scope.Prefix) {
 						usedExclusions[i] = true
 						return true
 					}

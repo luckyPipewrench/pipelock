@@ -46,6 +46,28 @@ func TestCapabilityValidateRejects(t *testing.T) {
 		mutate func(*Capability)
 		want   string
 	}{
+		// The entry point value and the availability qualifier are rendered
+		// into table cells alongside name and tier, so they carry the same
+		// delimiter rule. Both were unchecked until the renderer's own list
+		// became the validator's list, and neither had a case here.
+		{"pipe in entry point value", func(c *Capability) {
+			c.OperatorEntryPoint.Value = "pipelock run | Enterprise"
+		}, "pipe or a line break"},
+		{"newline in entry point value", func(c *Capability) {
+			c.OperatorEntryPoint.Value = "pipelock run\n| forged | row |"
+		}, "pipe or a line break"},
+		{"carriage return in entry point value", func(c *Capability) {
+			c.OperatorEntryPoint.Value = "pipelock run\r| forged | row |"
+		}, "pipe or a line break"},
+		{"pipe in availability qualifier", func(c *Capability) {
+			c.Availability = &Availability{Qualifier: "Linux only | Enterprise"}
+		}, "pipe or a line break"},
+		{"newline in availability qualifier", func(c *Capability) {
+			c.Availability = &Availability{Qualifier: "Linux only\n| forged | row |"}
+		}, "pipe or a line break"},
+		{"carriage return in availability qualifier", func(c *Capability) {
+			c.Availability = &Availability{Qualifier: "Linux only\r| forged | row |"}
+		}, "pipe or a line break"},
 		{"upper case id", func(c *Capability) { c.ID = "Example" }, "kebab-case"},
 		{"empty id", func(c *Capability) { c.ID = "" }, "kebab-case"},
 		{"missing name", func(c *Capability) { c.Name = "" }, "is required"},

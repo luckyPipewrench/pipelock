@@ -6,9 +6,10 @@
 package capabilitymanifest
 
 import (
-	_ "github.com/luckyPipewrench/pipelock/enterprise/cli"
 	"path/filepath"
 	"testing"
+
+	_ "github.com/luckyPipewrench/pipelock/enterprise/cli"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli"
 )

@@ -539,19 +539,43 @@ func assertSelector(t *testing.T, declaration ast.Node, want string) {
 	}
 }
 
+// assertFeatureConstant requires the proof declaration to PASS the feature
+// constant to a call, not merely to mention it somewhere.
+//
+// Mentioning it anywhere was the earlier bar, and it let a proof reference point
+// at a declaration that names the constant incidentally, in an unrelated switch
+// arm or a neighbouring branch, while gating on nothing. Both real shapes pass
+// the constant as an argument: lic.HasFeature(license.FeatureAssess), and
+// verifyFeatureWithOptions(FeatureAgents, ...) inside the license package. This
+// still does not prove the RESULT is acted on, which no AST check can establish
+// cheaply; it does rule out a declaration that only happens to contain the name.
 func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string) {
 	t.Helper()
 	want := featureConstant(feature)
-	var found bool
+	var mentioned, passed bool
 	ast.Inspect(declaration, func(node ast.Node) bool {
-		ident, ok := node.(*ast.Ident)
-		if ok && ident.Name == want {
-			found = true
+		if ident, ok := node.(*ast.Ident); ok && ident.Name == want {
+			mentioned = true
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, arg := range call.Args {
+			ast.Inspect(arg, func(inner ast.Node) bool {
+				if ident, ok := inner.(*ast.Ident); ok && ident.Name == want {
+					passed = true
+				}
+				return true
+			})
 		}
 		return true
 	})
-	if !found {
+	if !mentioned {
 		t.Fatalf("proof declaration does not reference license.%s", want)
+	}
+	if !passed {
+		t.Fatalf("proof declaration mentions license.%s but never passes it to a call, so it does not gate on that feature", want)
 	}
 }
 

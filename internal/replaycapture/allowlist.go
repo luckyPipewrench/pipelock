@@ -105,6 +105,17 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	if _, ok := allowedActors[ar.Actor]; !ok {
 		return fmt.Errorf("%w: actor %q not in lab allowlist", errAllowlist, ar.Actor)
 	}
+	// Secret-shape backstop on the free-text fields. This runs BEFORE the
+	// SessionControl branch: that path has its own field validation which does
+	// not inspect Pattern, so returning into it first would let a record carry
+	// a raw credential into a published artifact. The backstop is the last gate
+	// before publication, so it applies to every record shape without exception.
+	for label, val := range map[string]string{"target": ar.Target, "pattern": ar.Pattern} {
+		if secretShapeRE.MatchString(val) {
+			return fmt.Errorf("%w: %s carries a raw secret shape (redaction-before-sign failed)", errAllowlist, label)
+		}
+	}
+
 	if ar.SessionControl != nil {
 		return validatePublicSessionOpen(ar)
 	}
@@ -112,13 +123,6 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	// Target host must be synthetic / reserved / documentation-space.
 	if err := validateSafeTarget(ar.Target); err != nil {
 		return err
-	}
-
-	// Secret-shape backstop on the free-text fields.
-	for label, val := range map[string]string{"target": ar.Target, "pattern": ar.Pattern} {
-		if secretShapeRE.MatchString(val) {
-			return fmt.Errorf("%w: %s carries a raw secret shape (redaction-before-sign failed)", errAllowlist, label)
-		}
 	}
 
 	// request_id, when present, must be pipelock's own internal counter shape.

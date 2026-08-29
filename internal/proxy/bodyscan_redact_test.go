@@ -81,24 +81,33 @@ func TestScanRequestBody_Redaction_ProviderKeyProsePassesUnmodified(t *testing.T
 				sc := scanner.MustNew(cfg)
 				defer sc.Close()
 
-				prose := prosePrefix + "-" + provider.prefix + strings.Repeat("a", 20)
-				body := `{"message":"` + prose + `"}`
-				buf, result := scanRequestBody(context.Background(), BodyScanRequest{
-					Body:          strings.NewReader(body),
-					ContentType:   contentTypeJSON,
-					MaxBytes:      cfg.RequestBodyScanning.MaxBodyBytes,
-					Scanner:       sc,
-					RedactMatcher: redact.NewDefaultMatcher(),
-				})
+				// Two glue shapes, both benign. The first is the reported false
+				// positive, where the prose word itself ends in "sk" and supplies
+				// the prefix. The second glues a complete "sk-" onto that word, so
+				// the case cannot pass merely because the credential prefix was
+				// never fully present in the input.
+				for _, prose := range []string{
+					prosePrefix + "-" + provider.prefix + strings.Repeat("a", 20),
+					prosePrefix + "sk-" + provider.prefix + strings.Repeat("a", 20),
+				} {
+					body := `{"message":"` + prose + `"}`
+					buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+						Body:          strings.NewReader(body),
+						ContentType:   contentTypeJSON,
+						MaxBytes:      cfg.RequestBodyScanning.MaxBodyBytes,
+						Scanner:       sc,
+						RedactMatcher: redact.NewDefaultMatcher(),
+					})
 
-				if string(buf) != body {
-					t.Fatalf("benign body was rewritten: got %q, want %q", buf, body)
-				}
-				if !result.Clean || len(result.DLPMatches) != 0 {
-					t.Fatalf("benign body was flagged: %+v", result)
-				}
-				if result.RedactionReport == nil || result.RedactionReport.TotalRedactions != 0 {
-					t.Fatalf("benign body was redacted: %+v", result.RedactionReport)
+					if string(buf) != body {
+						t.Fatalf("benign body was rewritten: got %q, want %q", buf, body)
+					}
+					if !result.Clean || len(result.DLPMatches) != 0 {
+						t.Fatalf("benign body was flagged: %+v", result)
+					}
+					if result.RedactionReport == nil || result.RedactionReport.TotalRedactions != 0 {
+						t.Fatalf("benign body was redacted: %+v", result.RedactionReport)
+					}
 				}
 			})
 		}

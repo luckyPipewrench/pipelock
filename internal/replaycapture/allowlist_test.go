@@ -6,6 +6,7 @@ package replaycapture
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -61,6 +62,27 @@ func TestValidateReceiptPublicSafe_MCPRequestIDIsTransportScoped(t *testing.T) {
 		if err := ValidateReceiptPublicSafe(ar); err == nil {
 			t.Fatalf("invalid MCP request id %q was accepted", requestID)
 		}
+	}
+}
+
+// A session-open control record takes an earlier return than an ordinary
+// record, and its own field validation pins Target but never inspects Pattern.
+// The secret backstop must therefore run before that branch: it is the last
+// gate before publication, so no record shape may route around it.
+func TestValidateReceiptPublicSafe_SessionOpenPatternIsSecretScanned(t *testing.T) {
+	t.Parallel()
+
+	ar := safeBaseRecord()
+	ar.Target = "pipelock://session/open"
+	ar.Pattern = "leaked " + "sk-" + "svcacct-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10)
+	ar.SessionControl = &receipt.SessionControl{Kind: receipt.SessionControlOpen}
+
+	err := ValidateReceiptPublicSafe(ar)
+	if err == nil {
+		t.Fatal("session_open record published a raw provider key in Pattern")
+	}
+	if !strings.Contains(err.Error(), "raw secret shape") {
+		t.Fatalf("rejected for the wrong reason, want the secret backstop: %v", err)
 	}
 }
 

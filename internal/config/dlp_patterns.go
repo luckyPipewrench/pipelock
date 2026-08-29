@@ -23,7 +23,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Do not add a length floor: these provider formats are opaque.
 	{Name: "Anthropic API Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Anthropic API Key")},
 	{Name: "OpenAI API Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI API Key")},
-	{Name: "OpenAI Service Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
+	{Name: "OpenAI Service Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
 	// Fireworks API keys use an "fw_" prefix with a 22-character
 	// alphanumeric suffix. Keep the trailing word boundary so longer
 	// opaque base64-ish IDs do not match a 22-character prefix.

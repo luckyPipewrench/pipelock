@@ -196,13 +196,20 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 
 	matcher := redact.NewDefaultMatcher()
 	tests := []struct {
-		name  string
-		value string
-		class redact.Class
+		name    string
+		variant string
+		value   string
+		class   redact.Class
 	}{
 		{name: "Anthropic API Key", value: "sk-" + "ant-" + strings.Repeat("A", 20), class: redact.ClassAnthropicKey},
 		{name: "OpenAI API Key", value: "sk-" + "proj-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
 		{name: "OpenAI Service Key", value: "sk-" + "svcacct-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
+		// Underscore suffixes: the scanner and redactor alphabets must agree.
+		// A scanner class narrower than the redactor is a fail-open, because the
+		// value is rewritten in a JSON body but sails through URL and text DLP.
+		{name: "Anthropic API Key", variant: " underscore", value: "sk-" + "ant-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10), class: redact.ClassAnthropicKey},
+		{name: "OpenAI API Key", variant: " underscore", value: "sk-" + "proj-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10), class: redact.ClassOpenAIAPIKey},
+		{name: "OpenAI Service Key", variant: " underscore", value: "sk-" + "svcacct-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10), class: redact.ClassOpenAIAPIKey},
 		{name: "Fireworks API Key", value: "fw_" + strings.Repeat("A", 22), class: redact.ClassFireworksAPIKey},
 		{name: "LLM Router API Key", value: "sk-" + "or-v1-" + strings.Repeat("a", 20), class: redact.ClassAIProviderKey},
 		{name: "Answer Engine API Key", value: "pplx-" + strings.Repeat("A", 20), class: redact.ClassAIProviderKey},
@@ -239,7 +246,7 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name+tt.variant, func(t *testing.T) {
 			t.Parallel()
 
 			pattern, ok := dlpPatternByName(DefaultDLPPatterns(), tt.name)

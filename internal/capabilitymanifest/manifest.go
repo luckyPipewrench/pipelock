@@ -85,14 +85,15 @@ type Gate struct {
 	Features []GateFeature `json:"features,omitempty"`
 }
 
-// GateFeature points at the enforcing call and at a declaration that names the
-// feature constant.
+// GateFeature points at the enforcement selector and at a declaration that
+// names the feature constant.
 //
 // The two references are checked INDEPENDENTLY: the parity test looks for the
 // enforcement selector in one declaration and the feature constant in the
-// other, and nothing connects them. So proof shows the feature is named in real
-// verification code; it does not establish that this enforcement call is bound
-// to that feature.
+// other, and nothing connects them. So proof shows the feature constant is
+// passed to a call in the referenced declaration; it does not establish that
+// this selector is bound to that feature, or that the declaration verifies
+// anything.
 //
 // Proof is often a dedicated license helper such as VerifyAgentsWithOptions,
 // but it does NOT have to be a separate declaration, and a feature whose

@@ -52,7 +52,7 @@ func TestManifestParity(t *testing.T) {
 					enforcement := declaration(t, root, feature.Enforcement.Source)
 					assertSelector(t, enforcement, feature.Enforcement.Call)
 					proof := declaration(t, root, feature.Proof)
-					assertFeatureConstant(t, proof, feature.Name)
+					assertFeatureConstant(t, proof, feature.Name, packageNameOf(t, root, feature.Proof.File))
 				}
 			default:
 				t.Fatalf("unsupported gate kind %q", capability.Gate.Kind)
@@ -549,12 +549,46 @@ func assertSelector(t *testing.T, declaration ast.Node, want string) {
 // verifyFeatureWithOptions(FeatureAgents, ...) inside the license package. This
 // still does not prove the RESULT is acted on, which no AST check can establish
 // cheaply; it does rule out a declaration that only happens to contain the name.
-func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string) {
+// packageNameOf reports the package clause of a parsed source file. The
+// constant may be written bare inside the license package and qualified
+// everywhere else, so the accepted spelling depends on where the proof lives.
+func packageNameOf(t *testing.T, root string, file string) string {
+	t.Helper()
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, filepath.Join(root, filepath.FromSlash(file)), nil, parser.PackageClauseOnly)
+	if err != nil {
+		t.Fatalf("parse package clause of %q: %v", file, err)
+	}
+	return parsed.Name.Name
+}
+
+// namesFeatureConstant reports whether an expression is the license package's
+// feature constant, written the way that file is entitled to write it.
+//
+// Matching a bare identifier name anywhere was not enough: a local parameter
+// called FeatureAssess, or an unrelated package's other.FeatureAssess, would
+// both satisfy it while gating on nothing. Requiring the license qualifier
+// outside that package, and a bare identifier only inside it, rejects both
+// without loading a type checker. It is a spelling check rather than a binding
+// resolution, so a parameter shadowing the constant INSIDE the license package
+// would still pass; resolving that needs go/types and is tracked separately.
+func namesFeatureConstant(expr ast.Expr, want string, pkg string) bool {
+	switch value := expr.(type) {
+	case *ast.SelectorExpr:
+		qualifier, ok := value.X.(*ast.Ident)
+		return ok && qualifier.Name == "license" && value.Sel.Name == want
+	case *ast.Ident:
+		return pkg == "license" && value.Name == want
+	}
+	return false
+}
+
+func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string, pkg string) {
 	t.Helper()
 	want := featureConstant(feature)
 	var mentioned, passed bool
 	ast.Inspect(declaration, func(node ast.Node) bool {
-		if ident, ok := node.(*ast.Ident); ok && ident.Name == want {
+		if expr, ok := node.(ast.Expr); ok && namesFeatureConstant(expr, want, pkg) {
 			mentioned = true
 		}
 		call, ok := node.(*ast.CallExpr)
@@ -563,7 +597,7 @@ func assertFeatureConstant(t *testing.T, declaration ast.Node, feature string) {
 		}
 		for _, arg := range call.Args {
 			ast.Inspect(arg, func(inner ast.Node) bool {
-				if ident, ok := inner.(*ast.Ident); ok && ident.Name == want {
+				if expr, ok := inner.(ast.Expr); ok && namesFeatureConstant(expr, want, pkg) {
 					passed = true
 				}
 				return true

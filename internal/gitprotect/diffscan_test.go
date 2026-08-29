@@ -507,6 +507,45 @@ func TestCompileDLPPatterns_SkipsInvalid(t *testing.T) {
 	}
 }
 
+func TestCompileDLPPatterns_ProviderKeyProsePrefixes(t *testing.T) {
+	t.Parallel()
+	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
+
+	type providerCase struct {
+		name        string
+		patternName string
+		prefix      string
+	}
+	providers := []providerCase{
+		{name: "anthropic", patternName: "Anthropic API Key", prefix: "ant-"},
+		{name: "openai-project", patternName: "OpenAI API Key", prefix: "proj-"},
+		{name: "openai-service", patternName: "OpenAI Service Key", prefix: "svcacct-"},
+	}
+	prosePrefixes := []string{"desk", "kiosk", "risk", "task"}
+
+	for _, provider := range providers {
+		provider := provider
+		t.Run(provider.name, func(t *testing.T) {
+			t.Parallel()
+			key := "sk-" + provider.prefix + strings.Repeat("A", 20)
+			lines := make([]string, 0, len(prosePrefixes)+1)
+			for _, prosePrefix := range prosePrefixes {
+				lines = append(lines, `+note = "`+prosePrefix+`-`+provider.prefix+strings.Repeat("a", 20)+`"`)
+			}
+			lines = append(lines, `+key = "`+key+`"`)
+			diff := "diff --git a/keys.go b/keys.go\n--- a/keys.go\n+++ b/keys.go\n@@ -0,0 +1," + fmt.Sprint(len(lines)) + " @@\n" + strings.Join(lines, "\n") + "\n"
+
+			result, err := ScanDiff(diff, patterns)
+			if err != nil {
+				t.Fatalf("ScanDiff: %v", err)
+			}
+			if len(result.Findings) != 1 || result.Findings[0].Pattern != provider.patternName {
+				t.Fatalf("findings = %+v, want only %q for the real key", result.Findings, provider.patternName)
+			}
+		})
+	}
+}
+
 func TestFormatFindings_NoFindings(t *testing.T) {
 	result := FormatFindings(nil)
 	if result != "No secrets found in diff." {

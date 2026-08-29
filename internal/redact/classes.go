@@ -51,6 +51,18 @@ var sigV4CredentialScope = regexp.MustCompile(
 // merely appears in arbitrary text is still redacted.
 var sigV4CredentialPrefix = regexp.MustCompile(`(?i)x-amz-credential(?:=|%3d)$`)
 
+// Provider-key prefixes must not match after a token-alphabet character: a
+// word ending in "sk" followed by "-ant-..." is prose, not a credential. RE2
+// has no lookbehind, so the matcher uses its existing skip guards: the
+// start-anchored trailing guard always matches and the leading guard rejects
+// only candidates immediately preceded by [A-Za-z0-9_-]. This intentionally
+// loses detection of a real key glued to such a character to avoid rewriting
+// ordinary request text. Do not add a length floor; these formats are opaque.
+var (
+	providerKeySkipTrailing   = regexp.MustCompile(`^`)
+	providerKeyInvalidLeading = regexp.MustCompile(`[A-Za-z0-9_-]$`)
+)
+
 // Shared regex fragments reused across category-specific registries.
 const (
 	hex32         = `[a-fA-F0-9]{32}`
@@ -134,8 +146,11 @@ func tokenClasses() []classPattern {
 		{class: ClassVercelToken, pattern: regexp.MustCompile(`(?i)(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
 		{class: ClassSupabaseKey, pattern: regexp.MustCompile(`(?i)sb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`), priority: 100},
 		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)dapi[0-9a-f]{32,}\b`), priority: 100},
-		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b`), priority: 100},
-		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}\b`), priority: 100},
+		// Keep the pattern span to the credential so redaction preserves the
+		// surrounding JSON/text delimiter. The skip guards above express the
+		// RE2-unavailable left lookbehind without consuming that delimiter.
+		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
+		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
 		{class: ClassNPMToken, pattern: regexp.MustCompile(`(?i)npm_[A-Za-z0-9]{36,}\b`), priority: 100},
 		// PyPI API tokens use the stable "pypi-AgE" prefix for v2 macaroons
 		// with empty location. Update this if PyPI rotates token format.

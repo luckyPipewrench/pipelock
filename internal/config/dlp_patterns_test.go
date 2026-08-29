@@ -43,6 +43,48 @@ func TestDefaultDLPPatternsReturnsDeepCopy(t *testing.T) {
 	}
 }
 
+func TestProviderKeyPatternsRejectProsePrefixes(t *testing.T) {
+	t.Parallel()
+
+	type providerPattern struct {
+		name   string
+		prefix string
+	}
+	patterns := []providerPattern{
+		{name: "Anthropic API Key", prefix: "ant-"},
+		{name: "OpenAI API Key", prefix: "proj-"},
+		{name: "OpenAI Service Key", prefix: "svcacct-"},
+	}
+	prosePrefixes := []string{"desk", "kiosk", "risk", "task"}
+
+	for _, pattern := range patterns {
+		pattern := pattern
+		t.Run(pattern.name, func(t *testing.T) {
+			t.Parallel()
+			re := regexpMustCompile(t, mustDLPPatternRegex(t, pattern.name))
+			key := "sk-" + pattern.prefix + strings.Repeat("A", 20)
+			if !re.MatchString(key) {
+				t.Fatalf("real-shaped key %q no longer matches", key)
+			}
+			for _, prosePrefix := range prosePrefixes {
+				prose := prosePrefix + "-" + pattern.prefix + strings.Repeat("a", 20)
+				if re.MatchString(prose) {
+					t.Fatalf("ordinary prose %q matched", prose)
+				}
+			}
+		})
+	}
+}
+
+func mustDLPPatternRegex(t *testing.T, name string) string {
+	t.Helper()
+	pattern, ok := dlpPatternByName(DefaultDLPPatterns(), name)
+	if !ok {
+		t.Fatalf("default DLP pattern %q not found", name)
+	}
+	return pattern.Regex
+}
+
 func TestPresetDLPPatternsProfiles(t *testing.T) {
 	t.Parallel()
 

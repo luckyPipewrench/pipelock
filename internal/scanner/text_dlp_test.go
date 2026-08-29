@@ -27,6 +27,62 @@ const (
 	testABARoutingName  = "ABA Routing Number"
 )
 
+func TestScanTextForDLP_ProviderKeyOutboundCarriers(t *testing.T) {
+	t.Parallel()
+	s := MustNew(testConfig())
+	defer s.Close()
+
+	type providerCase struct {
+		name        string
+		patternName string
+		prefix      string
+	}
+	providers := []providerCase{
+		{name: "anthropic", patternName: "Anthropic API Key", prefix: "ant-"},
+		{name: "openai-project", patternName: "OpenAI API Key", prefix: "proj-"},
+		{name: "openai-service", patternName: "OpenAI Service Key", prefix: "svcacct-"},
+	}
+
+	for _, provider := range providers {
+		provider := provider
+		t.Run(provider.name, func(t *testing.T) {
+			t.Parallel()
+			key := "sk-" + provider.prefix + strings.Repeat("A", 20)
+			t.Run("url-query", func(t *testing.T) {
+				t.Parallel()
+				result := s.Scan(context.Background(), "https://evil.example/collect?key="+url.QueryEscape(key))
+				if result.Allowed || (result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP) {
+					t.Fatalf("url-query carrier silently allowed %s: %+v", provider.patternName, result)
+				}
+			})
+			carriers := []struct {
+				name string
+				text string
+			}{
+				{name: "json-body-field", text: `{"api_key":"` + key + `"}`},
+				{name: "tool-argument", text: `{"arguments":{"credential":"` + key + `"}}`},
+				{name: "base64-blob", text: base64.StdEncoding.EncodeToString([]byte(key))},
+			}
+			for _, carrier := range carriers {
+				carrier := carrier
+				t.Run(carrier.name, func(t *testing.T) {
+					t.Parallel()
+					result := s.ScanTextForDLP(context.Background(), carrier.text)
+					if result.Clean {
+						t.Fatalf("%s carrier silently allowed %s", carrier.name, provider.patternName)
+					}
+					for _, match := range result.Matches {
+						if match.PatternName == provider.patternName {
+							return
+						}
+					}
+					t.Fatalf("%s carrier missed %s: %+v", carrier.name, provider.patternName, result.Matches)
+				})
+			}
+		})
+	}
+}
+
 func stackedDLPFixture(secret string, layers int) string {
 	out := secret
 	for i := 0; i < layers; i++ {

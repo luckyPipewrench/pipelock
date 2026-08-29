@@ -60,6 +60,51 @@ func TestCompileDLPPatterns_InvalidRegexErrors(t *testing.T) {
 	}
 }
 
+func TestCompileDLPPatterns_ProviderKeyProsePrefixes(t *testing.T) {
+	t.Parallel()
+	patterns := mustCompileDLPPatterns(t)
+
+	type providerCase struct {
+		name        string
+		patternName string
+		prefix      string
+	}
+	providers := []providerCase{
+		{name: "anthropic", patternName: "Anthropic API Key", prefix: "ant-"},
+		{name: "openai-project", patternName: "OpenAI API Key", prefix: "proj-"},
+		{name: "openai-service", patternName: "OpenAI Service Key", prefix: "svcacct-"},
+	}
+	prosePrefixes := []string{"desk", "kiosk", "risk", "task"}
+
+	for _, provider := range providers {
+		provider := provider
+		t.Run(provider.name, func(t *testing.T) {
+			t.Parallel()
+			var compiled *compiledDLP
+			for i := range patterns {
+				if patterns[i].name == provider.patternName {
+					compiled = &patterns[i]
+					break
+				}
+			}
+			if compiled == nil {
+				t.Fatalf("compiled pattern %q not found", provider.patternName)
+			}
+
+			key := "sk-" + provider.prefix + strings.Repeat("A", 20)
+			if !compiled.matches(key) {
+				t.Fatalf("real-shaped key %q did not match", key)
+			}
+			for _, prosePrefix := range prosePrefixes {
+				prose := prosePrefix + "-" + provider.prefix + strings.Repeat("a", 20)
+				if compiled.matches(prose) {
+					t.Fatalf("ordinary prose %q matched", prose)
+				}
+			}
+		})
+	}
+}
+
 func TestScan_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	report, err := Scan(dir)

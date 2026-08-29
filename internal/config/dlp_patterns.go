@@ -15,9 +15,15 @@ import (
 // carrying separate name/regex/severity copies.
 var defaultDLPPatternSet = []DLPPattern{
 	// Provider API keys
-	{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Anthropic API Key")},
-	{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI API Key")},
-	{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
+	// Provider key suffixes are opaque and may contain '-' or '_', so \b is
+	// not a safe boundary. The explicit left delimiter rejects prose words
+	// ending in "sk" (for example, "desk-ant-..."). This deliberately no
+	// longer catches a real key glued to a preceding token-alphabet character;
+	// accepting that detection loss avoids rewriting or blocking ordinary prose.
+	// Do not add a length floor: these provider formats are opaque.
+	{Name: "Anthropic API Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Anthropic API Key")},
+	{Name: "OpenAI API Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI API Key")},
+	{Name: "OpenAI Service Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
 	// Fireworks API keys use an "fw_" prefix with a 22-character
 	// alphanumeric suffix. Keep the trailing word boundary so longer
 	// opaque base64-ish IDs do not match a 22-character prefix.

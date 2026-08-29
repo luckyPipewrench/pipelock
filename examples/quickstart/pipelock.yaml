@@ -73,17 +73,17 @@ dlp:
   include_defaults: false  # Preset defines the complete pattern set
   patterns:
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       exempt_domains:
         - "*.anthropic.com"
     - name: "OpenAI API Key"
-      regex: 'sk-proj-[a-zA-Z0-9\-_]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       exempt_domains:
         - "*.openai.com"
     - name: "OpenAI Service Key"
-      regex: 'sk-svcacct-[a-zA-Z0-9\-]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-]{20,}'
       severity: critical
       exempt_domains:
         - "*.openai.com"

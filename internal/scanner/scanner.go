@@ -324,6 +324,8 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 type compiledPattern struct {
 	name                string
 	re                  *regexp.Regexp
+	withoutLeftBoundary *regexp.Regexp
+	providerKeyPrefix   string
 	severity            string
 	validate            func(string) bool // post-match checksum (nil = regex-only)
 	exemptDomains       []string          // domains where this pattern is skipped (wildcard supported)
@@ -418,6 +420,26 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 			bundle:        p.Bundle,
 			bundleVersion: p.BundleVersion,
 			warn:          p.Action == config.ActionWarn,
+		}
+		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
+		if hasProviderBoundary {
+			switch body {
+			case config.AnthropicKeyBodyRegex:
+				cp.providerKeyPrefix = "sk-ant-"
+			case config.OpenAIKeyBodyRegex:
+				cp.providerKeyPrefix = "sk-proj-"
+			case config.OpenAIServiceKeyBodyRegex:
+				cp.providerKeyPrefix = "sk-svcacct-"
+			}
+		}
+		if cp.providerKeyPrefix != "" {
+			if !strings.HasPrefix(body, "(?i)") {
+				body = "(?i)" + body
+			}
+			cp.withoutLeftBoundary, err = regexp.Compile(body)
+			if err != nil {
+				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
+			}
 		}
 		if p.Validator != "" {
 			fn, ok := DLPValidators[p.Validator]
@@ -1584,15 +1606,18 @@ func removeHostnameDots(value string) string {
 // (e.g., "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
 // Uses RawQuery instead of url.Values to preserve parameter order.
 //
-// dlpTarget is one view of a request that DLP patterns are matched against,
-// carrying the text and the label that tells an operator which view matched.
+// dlpTarget is one view of a request that DLP patterns are matched against.
+// proseSource retains the pre-transform separators for contextual false-positive
+// classification; an empty value means text itself is the source. viewLabel
+// tells an operator which exact view the retained byte span indexes.
 // Package level rather than local to each scan function so the views can be
 // built in one place: two identical local types were what forced the ordered
 // query-concatenation block to be duplicated between the core floor and the
 // configured scanner.
 type dlpTarget struct {
-	text      string
-	viewLabel string
+	text        string
+	viewLabel   string
+	proseSource string
 }
 
 // appendQueryConcatTargets adds the ordered query-value concatenation views a
@@ -1611,15 +1636,16 @@ func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []dlpT
 		return targets
 	}
 	concat := orderedQueryConcat(rawQuery)
-	targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat")})
+	proseSource := orderedQueryProseSource(rawQuery)
+	targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat"), proseSource})
 	for _, d := range decodeEncodingsRecursive(concat) {
-		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), proseSource})
 	}
 	if stripped := stripURLNoise(concat); stripped != concat {
-		targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped"), proseSource})
 	}
 	if stripped := stripToAlphanumeric(concat); stripped != concat {
-		targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped_alnum")})
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped_alnum"), proseSource})
 	}
 	return targets
 }
@@ -1674,7 +1700,7 @@ func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []
 			continue
 		}
 		seen[concat] = struct{}{}
-		targets = appendPathQueryConcatViews(targets, concat)
+		targets = appendPathQueryConcatViews(targets, concat, p+"\x00"+orderedQueryProseSource(rawQuery))
 	}
 	return targets
 }
@@ -1687,25 +1713,36 @@ func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []
 // allocating another copy of a very large URL. The plain concatenation is still
 // scanned, so the bound trims amplification without creating a length above
 // which detection quietly stops.
-func appendPathQueryConcatViews(targets []dlpTarget, concat string) []dlpTarget {
-	targets = append(targets, dlpTarget{concat, dlpViewLabel("path_query_concat")})
+func appendPathQueryConcatViews(targets []dlpTarget, concat, proseSource string) []dlpTarget {
+	targets = append(targets, dlpTarget{concat, dlpViewLabel("path_query_concat"), proseSource})
 	if len(concat) > maxDecodeTotalBytes {
 		return targets
 	}
 	for _, d := range decodeEncodingsRecursive(concat) {
-		targets = append(targets, dlpTarget{d.text, dlpViewLabel("path_query_concat_" + d.encoding)})
+		targets = append(targets, dlpTarget{d.text, dlpViewLabel("path_query_concat_" + d.encoding), proseSource})
 	}
 	if stripped := stripToAlphanumeric(concat); stripped != concat {
-		targets = append(targets, dlpTarget{stripped, dlpViewLabel("path_query_concat_noise_stripped_alnum")})
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("path_query_concat_noise_stripped_alnum"), proseSource})
 	}
 	return targets
 }
 
 func orderedQueryConcat(rawQuery string) string {
+	return orderedQueryJoin(rawQuery, "")
+}
+
+func orderedQueryProseSource(rawQuery string) string {
+	return orderedQueryJoin(rawQuery, "\x00")
+}
+
+func orderedQueryJoin(rawQuery, separator string) string {
 	var b strings.Builder
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
 		if value != "" {
+			if separator != "" && b.Len() > 0 {
+				b.WriteString(separator)
+			}
 			b.WriteString(IterativeDecode(value))
 		}
 	}
@@ -2077,8 +2114,8 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	decodedQuery := IterativeDecode(parsed.RawQuery)
 
 	targets := []dlpTarget{
-		{parsed.Path, dlpViewLabel("url_path")},
-		{decodedQuery, dlpViewLabel("url_query")},
+		{parsed.Path, dlpViewLabel("url_path"), ""},
+		{decodedQuery, dlpViewLabel("url_query"), ""},
 	}
 
 	// Also check decoded query keys and values individually.
@@ -2087,21 +2124,21 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// (e.g. ?key=736b2d616e742d... is hex-encoded sk-ant-...).
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
-		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key")})
+		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
 		for _, d := range decodeEncodingsRecursive(decodedKey) {
-			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
-			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decodedKey})
 		}
 		for _, v := range values {
 			decoded := IterativeDecode(v)
-			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value")})
+			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
 			for _, d := range decodeEncodingsRecursive(decoded) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 			if stripped := stripURLNoise(decoded); stripped != decoded {
-				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
+				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
 		}
 	}
@@ -2113,7 +2150,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	}
 	decodedPath := IterativeDecode(rawPath)
 	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded")})
+		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
 	}
 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
@@ -2122,7 +2159,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodeEncodingsRecursive(segment) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 		}
 	}
@@ -2131,14 +2168,14 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// (e.g. "sk-ant-api03-.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03-AABBCCDDEEFFGGHHevilcom").
 	// Dots break regex character classes, so individual labels pass DLP checks.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain")})
+		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
 	}
 
 	// Strip URL noise from path to catch secrets split by dots, slashes, and
 	// other separators (e.g., "/sk-ant-api03-AAAA.AAAA/AAAA" → "sk-ant-api03-AAAAAAAAAAAA").
 	// Covers both dot-split and encoded-slash attacks (%2f splitting path segments).
 	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
-		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), parsed.Path})
 	}
 
 	// Concatenate all query values in URL order to catch secrets split across
@@ -2150,7 +2187,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.
-	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url")})
+	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url"), ""})
 
 	for _, target := range targets {
 		if target.text == "" {
@@ -2161,9 +2198,13 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 		// Must match response scanning depth - otherwise attackers use homoglyphs
 		// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 		cleaned := normalize.ForDLP(target.text)
+		proseSource := target.proseSource
+		if proseSource == "" {
+			proseSource = target.text
+		}
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
-			if start, end, ok := p.matchSpan(cleaned); ok {
+			if start, end, ok := p.matchSpanInView(cleaned, proseSource); ok {
 				// Skip pattern if the destination domain is explicitly exempted.
 				if len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
 					continue
@@ -2203,16 +2244,16 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// Covers: query values, path, hostname labels (pre-DNS exfil), path segments.
 	if s.seedEnabled {
 		seedTargets := []dlpTarget{
-			{parsed.Path, "url_path"},
-			{decodedQuery, spanViewLabel("url_decoded", "url_query")},
+			{parsed.Path, "url_path", ""},
+			{decodedQuery, spanViewLabel("url_decoded", "url_query"), ""},
 		}
 		// Individual query values: raw decoded + encoding variants (base64/hex/base32).
 		for _, values := range parsed.Query() {
 			for _, v := range values {
 				decoded := IterativeDecode(v)
-				seedTargets = append(seedTargets, dlpTarget{decoded, spanViewLabel("url_decoded", "url_query_value")})
+				seedTargets = append(seedTargets, dlpTarget{decoded, spanViewLabel("url_decoded", "url_query_value"), ""})
 				for _, d := range decodeEncodingsRecursive(decoded) {
-					seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_query_value")})
+					seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_query_value"), ""})
 				}
 			}
 		}
@@ -2231,7 +2272,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 					seedConcat.WriteString(IterativeDecode(value))
 				}
 			}
-			seedTargets = append(seedTargets, dlpTarget{seedConcat.String(), "query_concat:url_decoded"})
+			seedTargets = append(seedTargets, dlpTarget{seedConcat.String(), "query_concat:url_decoded", ""})
 		}
 		// Decoded path segments: base64/hex/base32 encoded seed phrases in path.
 		for _, seg := range strings.Split(parsed.Path, "/") {
@@ -2239,7 +2280,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 				continue
 			}
 			for _, d := range decodeEncodingsRecursive(IterativeDecode(seg)) {
-				seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_path_segment")})
+				seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_path_segment"), ""})
 			}
 		}
 		// Hostname labels: catch seed words as subdomain labels
@@ -2247,12 +2288,12 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 		// Join labels with spaces so the tokenizer sees them as words.
 		hostname := parsed.Hostname()
 		if strings.Contains(hostname, ".") {
-			seedTargets = append(seedTargets, dlpTarget{strings.ReplaceAll(hostname, ".", " "), "hostname_labels_joined"})
+			seedTargets = append(seedTargets, dlpTarget{strings.ReplaceAll(hostname, ".", " "), "hostname_labels_joined", ""})
 		}
 		// Path segments: catch seed words as path components
 		// (e.g., "/abandon/abandon/abandon/.../about").
 		if strings.Contains(parsed.Path, "/") {
-			seedTargets = append(seedTargets, dlpTarget{strings.ReplaceAll(parsed.Path, "/", " "), spanViewLabel("slash_joined", "url_path")})
+			seedTargets = append(seedTargets, dlpTarget{strings.ReplaceAll(parsed.Path, "/", " "), spanViewLabel("slash_joined", "url_path"), ""})
 		}
 		for _, target := range seedTargets {
 			if target.text == "" {
@@ -2364,22 +2405,22 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 
 	for {
 		var b strings.Builder
-		for _, idx := range indices {
+		var proseSource strings.Builder
+		for i, idx := range indices {
 			b.WriteString(values[idx])
+			if i > 0 {
+				proseSource.WriteByte(0)
+			}
+			proseSource.WriteString(values[idx])
 		}
 		concat := b.String()
+		source := proseSource.String()
 
-		candidates := []struct {
-			text      string
-			viewLabel string
-		}{
-			{concat, dlpViewLabel("query_subsequence")},
+		candidates := []dlpTarget{
+			{concat, dlpViewLabel("query_subsequence"), source},
 		}
 		for _, d := range decodeEncodingsRecursive(concat) {
-			candidates = append(candidates, struct {
-				text      string
-				viewLabel string
-			}{d.text, dlpViewLabel(d.encoding)})
+			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), source})
 		}
 
 		for _, candidate := range candidates {
@@ -2387,7 +2428,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 				p := s.dlpPatterns[idx]
-				if start, end, ok := p.matchSpan(cleaned); ok {
+				if start, end, ok := p.matchSpanInView(cleaned, candidate.proseSource); ok {
 					if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
 						continue
 					}

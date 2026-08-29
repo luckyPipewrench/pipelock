@@ -709,40 +709,40 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 
 	decodedQuery := IterativeDecode(parsed.RawQuery)
 	targets := []dlpTarget{
-		{parsed.Path, dlpViewLabel("url_path")},
-		{decodedQuery, dlpViewLabel("url_query")},
+		{parsed.Path, dlpViewLabel("url_path"), ""},
+		{decodedQuery, dlpViewLabel("url_query"), ""},
 	}
 
 	// Individual query keys and values (decoded + encoding variants).
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
-		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key")})
+		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
 		for _, d := range decodeEncodingsRecursive(decodedKey) {
-			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
-			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decodedKey})
 		}
 		for _, v := range values {
 			decoded := IterativeDecode(v)
-			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value")})
+			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
 			for _, d := range decodeEncodingsRecursive(decoded) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 			if stripped := stripURLNoise(decoded); stripped != decoded {
-				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
+				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
 		}
 	}
 
 	// Dot-collapse hostname.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain")})
+		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
 	}
 
 	// Noise-stripped path.
 	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
-		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), parsed.Path})
 	}
 
 	// Double-encoded escaped path.
@@ -752,14 +752,14 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	}
 	decodedPath := IterativeDecode(rawPath)
 	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded")})
+		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
 	}
 
 	// Path segment decoding (hex/base64/base32).
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 {
 			for _, d := range decodeEncodingsRecursive(segment) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 		}
 	}
@@ -769,7 +769,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.
-	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url")})
+	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url"), ""})
 
 	for _, target := range targets {
 		if target.text == "" {

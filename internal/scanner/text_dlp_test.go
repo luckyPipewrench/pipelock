@@ -83,6 +83,116 @@ func TestScanTextForDLP_ProviderKeyOutboundCarriers(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_ProviderKeyBoundaryFollowsView(t *testing.T) {
+	t.Parallel()
+	s := MustNew(testConfig())
+	defer s.Close()
+
+	providers := []struct {
+		name        string
+		patternName string
+		prefix      string
+	}{
+		{name: "anthropic", patternName: "Anthropic API Key", prefix: "ant-"},
+		{name: "openai-project", patternName: "OpenAI API Key", prefix: "proj-"},
+		{name: "openai-service", patternName: "OpenAI Service Key", prefix: "svcacct-"},
+	}
+
+	for _, provider := range providers {
+		provider := provider
+		t.Run(provider.name, func(t *testing.T) {
+			t.Parallel()
+			key := "sk-" + provider.prefix + strings.Repeat("A", 20)
+			split := len(key) - 10
+
+			for _, tc := range []struct {
+				name     string
+				text     string
+				encoding string
+			}{
+				{name: "dot-collapsed", text: "carrier." + key[:split] + "." + key[split:], encoding: "subdomain"},
+				{name: "whitespace-collapsed", text: "carrier " + key[:split] + " " + key[split:], encoding: "whitespace"},
+				{name: "control-before-prefix", text: "carrier\u200b" + key, encoding: ""},
+				{name: "control-inside-prefix", text: "carrier" + key[:1] + "\u200b" + key[1:], encoding: ""},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					result := s.ScanTextForDLP(context.Background(), tc.text)
+					if result.Clean || !hasTextDLPMatch(result.Matches, provider.patternName, tc.encoding) {
+						t.Fatalf("manufactured-adjacency view missed %s: %+v", provider.patternName, result.Matches)
+					}
+				})
+			}
+
+			prose := "the de" + "sk-" + provider.prefix + strings.Repeat("a", 20)
+			encodedProse := []struct {
+				name string
+				text string
+			}{
+				{name: "base64", text: base64.StdEncoding.EncodeToString([]byte(prose))},
+				{name: "hex", text: hex.EncodeToString([]byte(prose))},
+				{name: "url", text: strings.Replace(prose, "s", "%73", 1)},
+				{name: "html", text: strings.Replace(prose, "s", "&#115;", 1)},
+				{name: "unrelated-control", text: "\u200b" + prose},
+			}
+			for _, tc := range encodedProse {
+				t.Run("prose/"+tc.name, func(t *testing.T) {
+					if result := s.ScanTextForDLP(context.Background(), tc.text); !result.Clean {
+						t.Fatalf("semantic decoded prose was flagged: %+v", result.Matches)
+					}
+				})
+			}
+			t.Run("prose/url-path", func(t *testing.T) {
+				parsed, err := url.Parse("https://example.com/" + url.PathEscape(prose))
+				if err != nil {
+					t.Fatalf("parse URL: %v", err)
+				}
+				result, _ := s.checkDLP(parsed)
+				if !result.Allowed {
+					t.Fatalf("URL path prose was flagged: %s", result.Reason)
+				}
+			})
+			t.Run("prose/url-query", func(t *testing.T) {
+				for _, rawQuery := range []string{
+					"q=" + url.QueryEscape(prose) + "&page=1",
+					"q=" + strings.Replace(url.QueryEscape(prose), "s", "%73", 1) + "&page=1",
+				} {
+					parsed, err := url.Parse("https://example.com/?" + rawQuery)
+					if err != nil {
+						t.Fatalf("parse URL: %v", err)
+					}
+					result, _ := s.checkDLP(parsed)
+					if !result.Allowed {
+						t.Fatalf("URL query prose was flagged: %s", result.Reason)
+					}
+				}
+			})
+			t.Run("prose/nested-provider-prefix", func(t *testing.T) {
+				nested := prose + "sk-" + provider.prefix + strings.Repeat("b", 20)
+				parsed, err := url.Parse("https://example.com/" + url.PathEscape(nested))
+				if err != nil {
+					t.Fatalf("parse URL: %v", err)
+				}
+				result, _ := s.checkDLP(parsed)
+				if !result.Allowed {
+					t.Fatalf("nested provider-prefix prose was flagged: %s", result.Reason)
+				}
+			})
+			t.Run("prose-decoy-before-split-key", func(t *testing.T) {
+				decoy := "de" + "sk-" + provider.prefix + strings.Repeat("a", 20)
+				path := "/" + decoy + "/carrier." + key[:split] + "." + key[split:]
+				parsed, err := url.Parse("https://example.com" + path)
+				if err != nil {
+					t.Fatalf("parse URL: %v", err)
+				}
+				result, _ := s.checkDLP(parsed)
+				if result.Allowed {
+					t.Fatal("prose decoy masked a later separator-split key")
+				}
+			})
+		})
+	}
+}
+
 func stackedDLPFixture(secret string, layers int) string {
 	out := secret
 	for i := 0; i < layers; i++ {

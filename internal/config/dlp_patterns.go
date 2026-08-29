@@ -10,20 +10,31 @@ import (
 
 //go:generate go run ./gen_dlp_presets.go
 
+// ProviderKeyLeftBoundaryRegex is the raw-text false-positive boundary shared
+// by the shipped Anthropic and OpenAI key patterns. Scanner views that remove
+// separators derive a credential-only matcher by removing this exact prefix;
+// keep it separate from the credential body so that derivation cannot drift.
+const (
+	ProviderKeyLeftBoundaryRegex = `(?:^|[^A-Za-z0-9_-])`
+	AnthropicKeyBodyRegex        = `sk-ant-[a-zA-Z0-9\-_]{20,}`
+	OpenAIKeyBodyRegex           = `sk-proj-[a-zA-Z0-9\-_]{20,}`
+	OpenAIServiceKeyBodyRegex    = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
+)
+
 // defaultDLPPatternSet is the canonical shipped DLP pattern registry.
 // Defaults, generated presets, and drift tests read from this list instead of
 // carrying separate name/regex/severity copies.
 var defaultDLPPatternSet = []DLPPattern{
 	// Provider API keys
 	// Provider key suffixes are opaque and may contain '-' or '_', so \b is
-	// not a safe boundary. The explicit left delimiter rejects prose words
-	// ending in "sk" (for example, "desk-ant-..."). This deliberately no
-	// longer catches a real key glued to a preceding token-alphabet character;
-	// accepting that detection loss avoids rewriting or blocking ordinary prose.
+	// not a safe boundary. The explicit raw-text delimiter rejects prose words
+	// ending in "sk" (for example, "desk-ant-..."). Scanner views that remove
+	// separators match the credential body without this boundary because their
+	// adjacency is manufactured rather than present in the source text.
 	// Do not add a length floor: these provider formats are opaque.
-	{Name: "Anthropic API Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Anthropic API Key")},
-	{Name: "OpenAI API Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI API Key")},
-	{Name: "OpenAI Service Key", Regex: `(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
+	{Name: "Anthropic API Key", Regex: ProviderKeyLeftBoundaryRegex + AnthropicKeyBodyRegex, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Anthropic API Key")},
+	{Name: "OpenAI API Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIKeyBodyRegex, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI API Key")},
+	{Name: "OpenAI Service Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIServiceKeyBodyRegex, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
 	// Fireworks API keys use an "fw_" prefix with a 22-character
 	// alphanumeric suffix. Keep the trailing word boundary so longer
 	// opaque base64-ish IDs do not match a 22-character prefix.

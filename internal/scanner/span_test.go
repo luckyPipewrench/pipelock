@@ -126,6 +126,63 @@ func TestURLRegexDLPComponentSpansBeatFullURLFallback(t *testing.T) {
 	assertSpanSlice(t, normalize.ForDLP("/"+secret), span, secret)
 }
 
+func TestURLRegexDLPManufacturedAdjacencySpanExcludesCarrier(t *testing.T) {
+	s := MustNew(testConfig())
+	secret := testAnthropicPrefix + strings.Repeat("d", 25)
+	split := len(secret) - 10
+	rawURL := "https://example.com/carrier." + secret[:split] + "." + secret[split:]
+
+	result := s.Scan(context.Background(), rawURL)
+	if result.Allowed {
+		t.Fatal("expected separator-stripped URL path secret to be blocked")
+	}
+	span := onlyResultSpan(t, result)
+	if span.ViewLabel != dlpViewLabel("url_noise_stripped") {
+		t.Fatalf("view label = %q, want %q", span.ViewLabel, dlpViewLabel("url_noise_stripped"))
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	assertSpanSlice(t, normalize.ForDLP(stripURLNoise(parsed.Path)), span, secret)
+}
+
+func TestProviderBoundarySourceClassificationDoesNotMaskNormalizedMatch(t *testing.T) {
+	s := MustNew(testConfig())
+	var pattern *compiledPattern
+	for _, candidate := range s.dlpPatterns {
+		if candidate.name == testAnthropicName {
+			pattern = candidate
+			break
+		}
+	}
+	if pattern == nil {
+		t.Fatalf("compiled pattern %q not found", testAnthropicName)
+	}
+
+	prose := "de" + testAnthropicPrefix + strings.Repeat("a", 25)
+	obfuscatedKey := "s\u200bk-ant-" + strings.Repeat("b", 25)
+	key := normalize.ForDLP(obfuscatedKey)
+	for _, tc := range []struct {
+		name   string
+		source string
+	}{
+		{name: "prose-before-key", source: prose + " " + obfuscatedKey},
+		{name: "key-before-prose", source: obfuscatedKey + " " + prose},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := normalize.ForDLP(tc.source)
+			start, end, ok := pattern.matchSpanInView(view, tc.source)
+			if !ok {
+				t.Fatal("normalized real-shaped key was masked by the prose candidate")
+			}
+			if got := view[start:end]; got != key {
+				t.Fatalf("span indexes %q, want normalized key %q", got, key)
+			}
+		})
+	}
+}
+
 func TestURLRegexDLPDecodedPathSpanLabel(t *testing.T) {
 	s := MustNew(testConfig())
 	secret := testAnthropicPrefix + strings.Repeat("c", 25)

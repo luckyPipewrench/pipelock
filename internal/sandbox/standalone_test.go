@@ -360,8 +360,10 @@ func TestPreflightWithRequirements_IndependentlyReportsNetworkAndHandler(t *test
 	}
 
 	required := make(map[LayerName]bool, len(result.Layers))
+	available := make(map[LayerName]bool, len(result.Layers))
 	for _, layer := range result.Layers {
 		required[layer.Name] = layer.Required
+		available[layer.Name] = layer.Available
 	}
 	if !required[LayerNetNS] {
 		t.Fatal("network namespace was not reported as required")
@@ -369,7 +371,7 @@ func TestPreflightWithRequirements_IndependentlyReportsNetworkAndHandler(t *test
 	if required[LayerLandlock] || required[LayerSeccomp] {
 		t.Fatalf("optional layers reported as required: %#v", required)
 	}
-	if !Detect().UserNamespaces && result.Status != StatusError {
+	if !available[LayerNetNS] && result.Status != StatusError {
 		t.Fatalf("required unavailable network namespace status = %q, want error", result.Status)
 	}
 }

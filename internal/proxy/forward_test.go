@@ -6,6 +6,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,9 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
 	"net"
 	"net/http"
@@ -5150,26 +5148,38 @@ func TestConnectTLSInterceptBinaryDANAllowed(t *testing.T) {
 
 func proxyTestPNGWithIsolatedDAN(t *testing.T) []byte {
 	t.Helper()
-	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
-	img.Set(0, 0, color.NRGBA{R: 0x24, G: 0x42, B: 0x66, A: 0xff})
-	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, img); err != nil {
-		t.Fatalf("encode PNG fixture: %v", err)
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 1)
+	binary.BigEndian.PutUint32(ihdr[4:8], 1)
+	ihdr[8] = 8
+	ihdr[9] = 6
+
+	var compressed bytes.Buffer
+	writer, err := zlib.NewWriterLevel(&compressed, zlib.NoCompression)
+	if err != nil {
+		t.Fatalf("create PNG compressor: %v", err)
 	}
-	body := encoded.Bytes()
-	chunkType := []byte("vpAg")
-	const chunkDataLength = 5
-	chunkData := [chunkDataLength]byte{'\xda', 'D', 'A', 'N', '\xc9'}
-	chunk := make([]byte, 12+len(chunkData))
-	binary.BigEndian.PutUint32(chunk[:4], chunkDataLength)
-	copy(chunk[4:8], chunkType)
-	copy(chunk[8:8+len(chunkData)], chunkData[:])
-	binary.BigEndian.PutUint32(chunk[8+len(chunkData):], crc32.ChecksumIEEE(chunk[4:8+len(chunkData)]))
-	result := make([]byte, 0, len(body)+len(chunk))
-	result = append(result, body[:len(body)-12]...)
-	result = append(result, chunk...)
-	result = append(result, body[len(body)-12:]...)
+	if _, err := writer.Write([]byte{0, 'D', 'A', 'N', 0xff}); err != nil {
+		t.Fatalf("compress PNG pixels: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close PNG compressor: %v", err)
+	}
+
+	result := append([]byte(nil), []byte("\x89PNG\r\n\x1a\n")...)
+	result = append(result, proxyTestPNGChunk("IHDR", ihdr)...)
+	result = append(result, proxyTestPNGChunk("IDAT", compressed.Bytes())...)
+	result = append(result, proxyTestPNGChunk("IEND", nil)...)
 	return result
+}
+
+func proxyTestPNGChunk(chunkType string, data []byte) []byte {
+	chunk := make([]byte, 12+len(data))
+	binary.BigEndian.PutUint32(chunk[:4], uint32(len(data))) // #nosec G115 -- test chunks are bounded literals
+	copy(chunk[4:8], chunkType)
+	copy(chunk[8:8+len(data)], data)
+	binary.BigEndian.PutUint32(chunk[8+len(data):], crc32.ChecksumIEEE(chunk[4:8+len(data)]))
+	return chunk
 }
 
 // TestConnectHeaderDLPBlocked verifies that CONNECT request headers are scanned

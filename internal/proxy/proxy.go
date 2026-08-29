@@ -5508,6 +5508,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 		body = mediaVerdict.Body
 	}
+	scanAsHTML := isHTML && !scanner.IsVerifiedImageResponseBody(body)
 	content := string(body)
 
 	// Extract text from HTML hiding spots (comments, script/style bodies)
@@ -5523,7 +5524,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportFetch)
 	}
 	var hiddenInjectionFound bool
-	if sc.ResponseScanningEnabled() && isHTML {
+	if sc.ResponseScanningEnabled() && scanAsHTML {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, finalResponseURL, cfg.Suppress)
@@ -5563,7 +5564,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Use go-readability for HTML content extraction.
 	readabilityOK := false
-	if isHTML {
+	if scanAsHTML {
 		article, err := readability.FromReader(strings.NewReader(content), parsed)
 		if err != nil {
 			log.LogAnomaly(actx, "", fmt.Sprintf("readability extraction failed: %v", err), 0.3)
@@ -5610,7 +5611,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
 		var scanResult scanner.ResponseScanResult
-		if isHTML {
+		if scanAsHTML {
 			scanResult = sc.ScanResponseWithSuppress(r.Context(), content, finalResponseURL, cfg.Suppress)
 		} else {
 			scanResult = sc.ScanResponseBodyWithSuppress(r.Context(), []byte(content), finalResponseURL, cfg.Suppress)

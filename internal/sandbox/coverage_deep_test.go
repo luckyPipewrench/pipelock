@@ -1238,13 +1238,13 @@ func TestPreflight_InvalidPolicy(t *testing.T) {
 
 func TestPreflight_AllLayersAvailable(t *testing.T) {
 	workspace := t.TempDir()
-	caps := Detect()
-
-	if caps.LandlockABI <= 0 || !caps.UserNamespaces || !caps.Seccomp {
-		t.Skip("not all layers available on this system")
-	}
-
 	result := Preflight(workspace, []string{echoCmd}, nil, false)
+	requireExpectedPreflightLayers(t, result.Layers)
+	for _, layer := range result.Layers {
+		if !layer.Available {
+			t.Skipf("layer %s unavailable on this system: %s", layer.Name, layer.Reason)
+		}
+	}
 	if result.Status != StatusReady {
 		t.Errorf("status = %q, want %q with all layers available", result.Status, StatusReady)
 	}
@@ -1252,15 +1252,37 @@ func TestPreflight_AllLayersAvailable(t *testing.T) {
 
 func TestPreflight_StrictAllAvailable(t *testing.T) {
 	workspace := t.TempDir()
-	caps := Detect()
-
-	if caps.LandlockABI <= 0 || !caps.UserNamespaces || !caps.Seccomp {
-		t.Skip("not all layers available on this system")
-	}
-
 	result := Preflight(workspace, []string{echoCmd}, nil, true)
+	requireExpectedPreflightLayers(t, result.Layers)
+	for _, layer := range result.Layers {
+		if !layer.Available {
+			t.Skipf("layer %s unavailable on this system: %s", layer.Name, layer.Reason)
+		}
+	}
 	if result.Status != StatusReady {
 		t.Errorf("strict with all layers: status = %q, want %q", result.Status, StatusReady)
+	}
+}
+
+func requireExpectedPreflightLayers(t *testing.T, layers []LayerProbe) {
+	t.Helper()
+
+	expected := map[LayerName]struct{}{
+		LayerLandlock: {},
+		LayerNetNS:    {},
+		LayerSeccomp:  {},
+	}
+	if len(layers) != len(expected) {
+		t.Fatalf("preflight layers = %d, want %d", len(layers), len(expected))
+	}
+	for _, layer := range layers {
+		if _, ok := expected[layer.Name]; !ok {
+			t.Fatalf("unexpected or duplicate preflight layer %q", layer.Name)
+		}
+		delete(expected, layer.Name)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("preflight omitted layers: %#v", expected)
 	}
 }
 
@@ -1274,9 +1296,18 @@ func TestPreflight_PrivateShm(t *testing.T) {
 		t.Error("best-effort should not have private SHM")
 	}
 
-	caps := Detect()
-	if caps.UserNamespaces && !strict.PrivateShm {
-		t.Error("strict with user namespaces should have private SHM")
+	var netNS *LayerProbe
+	for i := range strict.Layers {
+		if strict.Layers[i].Name == LayerNetNS {
+			netNS = &strict.Layers[i]
+			break
+		}
+	}
+	if netNS == nil {
+		t.Fatal("strict preflight omitted network namespace layer")
+	}
+	if strict.PrivateShm != netNS.Available {
+		t.Errorf("strict private SHM = %v, want network namespace availability %v", strict.PrivateShm, netNS.Available)
 	}
 }
 

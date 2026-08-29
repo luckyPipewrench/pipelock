@@ -53,7 +53,9 @@ func TestRegisteredCommandPaths(t *testing.T) {
 	// A nested path proves the walk descends rather than listing only the roots.
 	nested := false
 	for _, p := range paths {
-		if strings.Contains(p, " ") {
+		// "pipelock run" already contains a space, so requiring three words is
+		// what actually proves the walk descended past the first level.
+		if len(strings.Fields(p)) >= 3 {
 			nested = true
 			break
 		}

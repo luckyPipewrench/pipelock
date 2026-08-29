@@ -362,3 +362,42 @@ func TestReplaceAgentsSectionRejectsBadMarkers(t *testing.T) {
 		t.Fatalf("surrounding content was not preserved: %q", out)
 	}
 }
+
+func TestGateValidateRejectsDuplicateFeaturesAndTierMismatch(t *testing.T) {
+	// A licence gate must be built from real features for these branches to be
+	// reachable at all; the earlier cases only exercised the empty-gate paths.
+	feature := func(name string) GateFeature {
+		return GateFeature{
+			Name:        name,
+			Enforcement: EnforcementCheck{Source: validSourceReference(), Call: "license.HasFeature"},
+			Proof:       validSourceReference(),
+		}
+	}
+
+	good := Gate{Kind: GateLicense, Features: []GateFeature{feature("agents")}}
+	if err := good.Validate("Pro"); err != nil {
+		t.Fatalf("the valid fixture must pass, otherwise every case below is vacuous: %v", err)
+	}
+
+	duplicate := Gate{Kind: GateLicense, Features: []GateFeature{feature("agents"), feature("agents")}}
+	if err := duplicate.Validate("Pro"); err == nil {
+		t.Fatal("a gate listing the same feature twice was accepted")
+	}
+
+	// The tier a manifest entry claims has to agree with what its features
+	// actually unlock, or the generated documentation misstates the price.
+	if err := good.Validate("Enterprise"); err == nil {
+		t.Fatal("a gate whose declared tier disagrees with its features was accepted")
+	}
+}
+
+func TestRepositoryEscapeRejectsBareParent(t *testing.T) {
+	// ".." cleans to itself and carries no separator, so a prefix-only check
+	// accepts it as a root-parent scope.
+	if err := (GateSourceScope{Feature: "agents", Prefix: ".."}).Validate(); err == nil {
+		t.Fatal("a gate source prefix of \"..\" was accepted")
+	}
+	if err := (SourceReference{File: "../outside.go", Symbol: "X"}).Validate(); err == nil {
+		t.Fatal("a source file escaping the repository was accepted")
+	}
+}

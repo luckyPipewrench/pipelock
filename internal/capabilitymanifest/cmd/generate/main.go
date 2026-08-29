@@ -37,11 +37,46 @@ func run(manifestPath, agentsPath string, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "render AGENTS.md: %v\n", err)
 		return 1
 	}
-	if err := os.WriteFile(filepath.Clean(agentsPath), []byte(updated), 0o600); err != nil {
+	if err := writeAtomically(filepath.Clean(agentsPath), []byte(updated)); err != nil {
 		_, _ = fmt.Fprintf(stderr, "write AGENTS.md: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// writeAtomically replaces a file through a temporary file in the same
+// directory followed by a rename, so an interrupted run cannot leave the
+// contributor guidance truncated or empty. A direct write truncates first,
+// which means a crash between truncate and write destroys the file.
+func writeAtomically(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	mode := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+
+	tmp, err := os.CreateTemp(dir, ".agents-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func main() {

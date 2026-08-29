@@ -317,11 +317,19 @@ func (g GateFeature) Validate() error {
 	return nil
 }
 
+// escapesRepository reports whether a declared path leaves the repository.
+// The exact value ".." cleans to itself and carries no separator, so a prefix
+// check alone accepts it as an ambiguous root-parent scope.
+func escapesRepository(path string) bool {
+	cleaned := filepath.Clean(path)
+	return cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator))
+}
+
 func (s GateSourceScope) Validate() error {
 	if featureConstant(s.Feature) == "" {
 		return fmt.Errorf("gate source feature %q is unsupported", s.Feature)
 	}
-	if strings.TrimSpace(s.Prefix) == "" || filepath.IsAbs(s.Prefix) || strings.HasPrefix(filepath.Clean(s.Prefix), ".."+string(filepath.Separator)) {
+	if strings.TrimSpace(s.Prefix) == "" || filepath.IsAbs(s.Prefix) || escapesRepository(s.Prefix) {
 		return fmt.Errorf("gate source prefix %q must be repository relative", s.Prefix)
 	}
 	return nil
@@ -351,7 +359,7 @@ func (s SourceReference) Validate() error {
 	if strings.TrimSpace(s.File) == "" || strings.TrimSpace(s.Symbol) == "" {
 		return fmt.Errorf("file and symbol are required")
 	}
-	if filepath.IsAbs(s.File) || strings.HasPrefix(filepath.Clean(s.File), ".."+string(filepath.Separator)) || filepath.Ext(s.File) != ".go" {
+	if filepath.IsAbs(s.File) || escapesRepository(s.File) || filepath.Ext(s.File) != ".go" {
 		return fmt.Errorf("file %q must be a repository-relative Go file", s.File)
 	}
 	return nil

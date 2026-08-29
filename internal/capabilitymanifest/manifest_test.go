@@ -394,7 +394,8 @@ func TestLoadRejectsMalformedJSON(t *testing.T) {
 
 func TestManifestJSONCanBeDecodedByExternalConsumers(t *testing.T) {
 	root := repositoryRoot(t)
-	data, err := os.ReadFile(filepath.Join(root, "docs/security/capability-manifest.json"))
+	path := filepath.Clean(filepath.Join(root, "docs/security/capability-manifest.json"))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}

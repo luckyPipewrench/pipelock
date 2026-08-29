@@ -576,12 +576,23 @@ func TestREADMEFreeTierClaim(t *testing.T) {
 		t.Fatalf("coverage certificate tier = %q, want Pro", coverageCertificate.Tier)
 	}
 
-	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	readmePath := filepath.Clean(filepath.Join(root, "README.md"))
+	readme, err := os.ReadFile(readmePath)
 	if err != nil {
 		t.Fatalf("read README: %v", err)
 	}
 	const freeTierClaim = "All detection, enforcement, containment, receipt verification, and the free single-agent evidence viewer are free forever under Apache 2.0. Pro adds named-agent operations, including per-agent coverage certificates; Enterprise adds fleet governance and compliance."
 	if !strings.Contains(string(readme), freeTierClaim) {
 		t.Fatalf("README.md free-tier claim is stale or omits the Pro coverage-certificate limit")
+	}
+
+	keyGeneratePath := filepath.Clean(filepath.Join(root, "internal/cli/signing/key_generate.go"))
+	keyGenerate, err := os.ReadFile(keyGeneratePath)
+	if err != nil {
+		t.Fatalf("read signing key generator help: %v", err)
+	}
+	const coverageCertTierClaim = "coverage-cert-signing          Coverage Certificate signing (verify is free; mint is Pro)"
+	if !strings.Contains(string(keyGenerate), coverageCertTierClaim) {
+		t.Fatalf("coverage certificate signing help is stale or disagrees with the Pro manifest tier")
 	}
 }

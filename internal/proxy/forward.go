@@ -2651,7 +2651,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// is enabled. Media policy above always runs when MediaPolicy
 		// is enabled, even if response scanning is off.
 		if sc.ResponseScanningEnabled() {
-			scanResult := sc.ScanResponseWithSuppress(r.Context(), string(respBody), resp.Request.URL.String(), cfg.Suppress)
+			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			if !scanResult.Clean {
 				responsePromptHit = true

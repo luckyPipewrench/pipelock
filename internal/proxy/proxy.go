@@ -5609,7 +5609,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Exempt domains are still scanned for visibility (findings logged as warn)
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
-		scanResult := sc.ScanResponseWithSuppress(r.Context(), content, finalResponseURL, cfg.Suppress)
+		var scanResult scanner.ResponseScanResult
+		if isHTML {
+			scanResult = sc.ScanResponseWithSuppress(r.Context(), content, finalResponseURL, cfg.Suppress)
+		} else {
+			scanResult = sc.ScanResponseBodyWithSuppress(r.Context(), []byte(content), finalResponseURL, cfg.Suppress)
+		}
 		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
 		if !scanResult.Clean {
 			responsePromptHit = true

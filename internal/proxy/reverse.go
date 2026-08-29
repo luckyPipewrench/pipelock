@@ -2361,8 +2361,7 @@ responseScanning:
 	}
 
 	// Scan the response text for injection patterns.
-	text := string(body)
-	result := sc.ScanResponseWithSuppress(resp.Request.Context(), text, resp.Request.URL.String(), cfg.Suppress)
+	result := sc.ScanResponseBodyWithSuppress(resp.Request.Context(), body, resp.Request.URL.String(), cfg.Suppress)
 	recordSuppressedResponseScanExempts(rp.metrics, result.SuppressedMatches, TransportReverse)
 
 	// Capture observer: record reverse proxy response scan verdict for policy replay.

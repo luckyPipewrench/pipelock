@@ -66,6 +66,21 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	return s.ScanResponseWithSuppress(ctx, content, "", nil)
 }
 
+// ScanResponseBodyWithSuppress scans a raw HTTP response body. Structurally
+// verified PNG and JPEG bodies are opaque to the text scanner; prompt injection
+// inside rendered pixels needs a vision-aware scanner, while treating compressed
+// bytes as text creates deterministic false positives. Declared Content-Type is
+// not consulted, so mislabeled text still takes the ordinary fail-closed path.
+func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	if ctx != nil && ctx.Err() != nil {
+		return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
+	}
+	if isCompletePNG(body) || isCompleteJPEG(body) {
+		return ResponseScanResult{Clean: true}
+	}
+	return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
+}
+
 // ScanResponseWithSuppress checks fetched content like ScanResponse, but applies
 // destination-scoped suppressions inside each normalization pass. This prevents
 // a suppressed first-pass hit from masking a later unsuppressed encoded or

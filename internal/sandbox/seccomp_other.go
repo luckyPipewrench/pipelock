@@ -7,6 +7,12 @@ package sandbox
 
 import "fmt"
 
+// seccompFilterSupportedByBuild reports whether this binary contains
+// Pipelock's seccomp filter implementation.
+func seccompFilterSupportedByBuild() bool {
+	return false
+}
+
 // ApplySeccomp is a no-op on non-Linux/amd64 platforms.
 func ApplySeccomp(_ ...bool) (LayerStatus, error) {
 	return LayerStatus{

@@ -27,6 +27,12 @@ const cloneNewMask = 0x7E020000 // CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWUTS|CLON
 // communication. Blocked because it could bypass network namespace isolation.
 const afVSOCK = 40
 
+// seccompFilterSupportedByBuild reports whether this binary contains
+// Pipelock's seccomp filter implementation.
+func seccompFilterSupportedByBuild() bool {
+	return true
+}
+
 // ApplySeccomp installs a seccomp BPF filter that restricts the calling
 // process to a safe set of syscalls. Dangerous syscalls (ptrace, mount,
 // io_uring, kernel module loading, etc.) are blocked.

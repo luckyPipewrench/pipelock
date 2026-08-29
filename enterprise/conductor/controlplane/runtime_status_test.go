@@ -1463,6 +1463,14 @@ func TestClassifySignedAppliedState_DualFreshnessGate(t *testing.T) {
 			wantDrift:  "",
 		},
 		{
+			name:       "fresh heartbeat with stale policy poll is stale",
+			verifiedAt: testNow.Add(-30 * time.Second),
+			provenance: testNow.Add(-30 * time.Second),
+			observed:   testNow.Add(-2 * staleAfter),
+			wantHealth: FleetHealthStale,
+			wantDrift:  "policy_poll_stale",
+		},
+		{
 			name:       "fresh verified but stale provenance is stale",
 			verifiedAt: testNow.Add(-30 * time.Second),
 			provenance: testNow.Add(-2 * staleAfter),

@@ -873,6 +873,99 @@ func TestCheckMinPipelock_InvalidVersions(t *testing.T) {
 	}
 }
 
+func TestTestedThroughPipelockWarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		testedThrough string
+		current       string
+		wantWarning   bool
+		wantErr       bool
+	}{
+		{name: "omitted", current: "1.3.0"},
+		{name: "exact ceiling", testedThrough: "1.3.0", current: "1.3.0"},
+		{name: "newer binary warns", testedThrough: "1.3.0", current: "1.4.0", wantWarning: true},
+		{name: "development build is not ordered", testedThrough: "1.3.0", current: "devel"},
+		{name: "malformed current version is not ordered", testedThrough: "1.3.0", current: "not-a-version"},
+		{name: "arbitrary-size release exact ceiling", testedThrough: "18446744073709551616.0.0", current: "18446744073709551616.0.0+build.7"},
+		{name: "arbitrary-size prerelease current warns", testedThrough: "1.0.0-99999999999999999999", current: "1.0.0-100000000000000000000", wantWarning: true},
+		{name: "arbitrary-size prerelease build metadata does not change ordering", testedThrough: "1.0.0-100000000000000000000", current: "1.0.0-99999999999999999999+build.7"},
+		{name: "malformed ceiling fails", testedThrough: "01.3.0", current: "1.4.0", wantErr: true},
+		{name: "leading zero prerelease fails", testedThrough: "1.3.0-01", current: "1.4.0", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warning, err := TestedThroughPipelockWarning(tc.testedThrough, tc.current)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("TestedThroughPipelockWarning(%q, %q) error = %v, wantErr = %v", tc.testedThrough, tc.current, err, tc.wantErr)
+			}
+			if (warning != "") != tc.wantWarning {
+				t.Fatalf("TestedThroughPipelockWarning(%q, %q) warning = %q, wantWarning = %v", tc.testedThrough, tc.current, warning, tc.wantWarning)
+			}
+		})
+	}
+}
+
+func TestCompareStrictSemverVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want int
+	}{
+		{name: "major", a: "2.0.0", b: "1.99.99", want: 1},
+		{name: "minor", a: "1.2.0", b: "1.1.99", want: 1},
+		{name: "patch", a: "1.1.2", b: "1.1.1", want: 1},
+		{name: "release follows prerelease", a: "1.0.0", b: "1.0.0-preview.1", want: 1},
+		{name: "prerelease precedes release", a: "1.0.0-preview.1", b: "1.0.0", want: -1},
+		{name: "equal identifier continues", a: "1.0.0-preview.1", b: "1.0.0-preview.2", want: -1},
+		{name: "numeric prerelease", a: "1.0.0-2", b: "1.0.0-10", want: -1},
+		{name: "numeric precedes text", a: "1.0.0-1", b: "1.0.0-alpha", want: -1},
+		{name: "text follows numeric", a: "1.0.0-alpha", b: "1.0.0-1", want: 1},
+		{name: "text lexical", a: "1.0.0-beta", b: "1.0.0-alpha", want: 1},
+		{name: "longer prerelease wins after shared prefix", a: "1.0.0-alpha.1", b: "1.0.0-alpha", want: 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := parseStrictSemverVersion(tc.a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := parseStrictSemverVersion(tc.b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := compareStrictSemverVersion(a, b); got != tc.want {
+				t.Fatalf("compareStrictSemverVersion(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidate_TestedThroughPipelockMalformed(t *testing.T) {
+	t.Parallel()
+
+	b := &Bundle{
+		FormatVersion:         1,
+		Name:                  testValidBundleName,
+		Version:               testValidVersion,
+		Author:                testValidAuthor,
+		Description:           testValidDesc,
+		TestedThroughPipelock: "1.2",
+		Rules:                 []Rule{testDLPRule("tested-through-001", confidenceHigh, StatusStable)},
+	}
+	if err := b.Validate(); err == nil || !strings.Contains(err.Error(), "tested_through_pipelock") {
+		t.Fatalf("Validate() error = %v, want tested_through_pipelock validation error", err)
+	}
+}
+
 func TestValidate_AllSeverities(t *testing.T) {
 	t.Parallel()
 

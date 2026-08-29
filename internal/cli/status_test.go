@@ -97,6 +97,47 @@ func TestStatusCmd_TextIncludesLicenseAndSources(t *testing.T) {
 	}
 }
 
+func TestStatusReportPrintsLicenseWarning(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.LicenseKey = "tok"
+	cfg.LicenseID = "lic-1"
+	cfg.LicenseTier = "trial"
+	now := time.Now().UTC()
+	cfg.LicenseIssuedAt = now.Add(-30 * 24 * time.Hour).Unix()
+	cfg.LicenseExpiresAt = now.Add(7 * 24 * time.Hour).Unix()
+
+	report := buildStatusReport(cfg, "test-config.yaml")
+	if report.License.Warning == "" {
+		t.Fatal("expected active expiry warning")
+	}
+	var text bytes.Buffer
+	printStatusReport(&text, report)
+	if !strings.Contains(text.String(), "License warning: "+report.License.Warning) {
+		t.Fatalf("status text missing license warning:\n%s", text.String())
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal warning report: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode warning report: %v", err)
+	}
+	licenseJSON, ok := decoded["license"].(map[string]any)
+	if !ok || licenseJSON["warning"] != report.License.Warning {
+		t.Fatalf("license JSON = %#v, want warning %q", decoded["license"], report.License.Warning)
+	}
+
+	noWarning := buildStatusReport(config.Defaults(), "test-config.yaml")
+	encoded, err = json.Marshal(noWarning)
+	if err != nil {
+		t.Fatalf("marshal no-warning report: %v", err)
+	}
+	if strings.Contains(string(encoded), `"warning"`) {
+		t.Fatalf("no-warning JSON includes warning field: %s", encoded)
+	}
+}
+
 func TestStatusCmd_InvalidConfigReturnsExitConfig(t *testing.T) {
 	missingConfig := filepath.Join(t.TempDir(), "missing.yaml")
 	out, err := runStatusCmd(t, "--config", missingConfig)

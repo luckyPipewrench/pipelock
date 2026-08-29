@@ -23,7 +23,8 @@ import (
 // rollback prevention. Stored at ~/.local/share/pipelock/rules/.freshness.json.
 // Concurrent access is protected by WithFreshnessLock (flock on Unix, no-op on Windows).
 type FreshnessState struct {
-	HighestSeen map[string]uint64 `json:"highest_seen"` // "tier:name" → monotonic_version
+	HighestSeen map[string]uint64 `json:"highest_seen"`           // "tier:name" → monotonic_version
+	FormatFloor map[string]int    `json:"format_floor,omitempty"` // bundle name → highest accepted format
 	Context     string            `json:"context,omitempty"`
 	Digest      string            `json:"digest,omitempty"`
 }
@@ -101,6 +102,20 @@ func CheckFreshness(b *Bundle, state *FreshnessState, now time.Time, allowStale 
 	return FreshnessResult{OK: true}
 }
 
+// CheckFormatFloor rejects a bundle whose format is older than a format already
+// accepted for the same installed identity. Bundle names are the filesystem and
+// install identity for both v1 and v2, while v1 has no tier field to key on.
+func CheckFormatFloor(b *Bundle, state *FreshnessState) FreshnessResult {
+	if floor := state.FormatFloor[b.Name]; floor > b.FormatVersion {
+		return FreshnessResult{
+			Rollback: true,
+			Message: fmt.Sprintf("format rollback: bundle %q format_version %d is below highest accepted format %d",
+				b.Name, b.FormatVersion, floor),
+		}
+	}
+	return FreshnessResult{OK: true}
+}
+
 // RecordVersion updates the freshness state with the bundle's version.
 // Should be called after a bundle passes all validation checks.
 func RecordVersion(state *FreshnessState, tier, name string, version uint64) {
@@ -113,12 +128,44 @@ func RecordVersion(state *FreshnessState, tier, name string, version uint64) {
 	}
 }
 
-// LoadFreshnessState reads the freshness state from the rules directory.
+// RecordFormat advances, but never lowers, the accepted format floor.
+func RecordFormat(state *FreshnessState, name string, format int) {
+	if state.FormatFloor == nil {
+		state.FormatFloor = make(map[string]int)
+	}
+	if format > state.FormatFloor[name] {
+		state.FormatFloor[name] = format
+	}
+}
+
+// LoadFreshnessState recovers an interrupted bundle swap, then reads freshness
+// state from the rules directory. Call LoadFreshnessStateLocked when the caller
+// already owns WithFreshnessLock.
+func LoadFreshnessState(rulesDir string) (*FreshnessState, error) {
+	var state *FreshnessState
+	err := WithFreshnessLock(rulesDir, func() error {
+		if err := RecoverBundleTransactionsLocked(rulesDir); err != nil {
+			return fmt.Errorf("recover bundle transactions: %w", err)
+		}
+		var loadErr error
+		state, loadErr = LoadFreshnessStateLocked(rulesDir)
+		return loadErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+// LoadFreshnessStateLocked reads freshness state while the caller holds
+// WithFreshnessLock. It does not itself recover transactions to avoid a nested
+// lock; callers must recover first.
+//
 // Returns an empty state if the file doesn't exist (first run).
 // Returns an error if the file exists but is unreadable or corrupt - this
 // fails closed to prevent an attacker from bypassing rollback protection
 // by corrupting the state file. Delete the file manually to reset.
-func LoadFreshnessState(rulesDir string) (*FreshnessState, error) {
+func LoadFreshnessStateLocked(rulesDir string) (*FreshnessState, error) {
 	state, found, err := readFreshnessStatePair(rulesDir)
 	if err != nil {
 		return nil, err
@@ -126,7 +173,7 @@ func LoadFreshnessState(rulesDir string) (*FreshnessState, error) {
 	if found {
 		return state, nil
 	}
-	return &FreshnessState{HighestSeen: make(map[string]uint64)}, nil
+	return &FreshnessState{HighestSeen: make(map[string]uint64), FormatFloor: make(map[string]int)}, nil
 }
 
 func readFreshnessStatePair(rulesDir string) (*FreshnessState, bool, error) {
@@ -197,10 +244,13 @@ func readFreshnessStateFile(path, rulesDir, label string) (*FreshnessState, bool
 	if state.HighestSeen == nil {
 		state.HighestSeen = make(map[string]uint64)
 	}
+	if state.FormatFloor == nil {
+		state.FormatFloor = make(map[string]int)
+	}
 	if state.Context != "" && state.Context != freshnessContextID(rulesDir) {
 		return nil, false, fmt.Errorf("%s context mismatch", label)
 	}
-	if state.Digest != "" && state.Digest != freshnessDigest(rulesDir, state.HighestSeen) {
+	if state.Digest != "" && state.Digest != freshnessDigest(rulesDir, state.HighestSeen, state.FormatFloor) {
 		return nil, false, fmt.Errorf("%s digest mismatch", label)
 	}
 	return &state, true, nil
@@ -225,12 +275,18 @@ func writeFreshnessStateFile(path, rulesDir string, state *FreshnessState) error
 	if err := os.MkdirAll(filepath.Dir(filepath.Clean(path)), 0o750); err != nil {
 		return fmt.Errorf("create freshness state dir: %w", err)
 	}
-	copyState := &FreshnessState{HighestSeen: make(map[string]uint64, len(state.HighestSeen))}
+	copyState := &FreshnessState{
+		HighestSeen: make(map[string]uint64, len(state.HighestSeen)),
+		FormatFloor: make(map[string]int, len(state.FormatFloor)),
+	}
 	for key, value := range state.HighestSeen {
 		copyState.HighestSeen[key] = value
 	}
+	for key, value := range state.FormatFloor {
+		copyState.FormatFloor[key] = value
+	}
 	copyState.Context = freshnessContextID(rulesDir)
-	copyState.Digest = freshnessDigest(rulesDir, copyState.HighestSeen)
+	copyState.Digest = freshnessDigest(rulesDir, copyState.HighestSeen, copyState.FormatFloor)
 	data, err := json.MarshalIndent(copyState, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal freshness state: %w", err)
@@ -255,7 +311,7 @@ func freshnessContextID(rulesDir string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func freshnessDigest(rulesDir string, highest map[string]uint64) string {
+func freshnessDigest(rulesDir string, highest map[string]uint64, formats map[string]int) string {
 	keys := make([]string, 0, len(highest))
 	for key := range highest {
 		keys = append(keys, key)
@@ -266,6 +322,14 @@ func freshnessDigest(rulesDir string, highest map[string]uint64) string {
 	b.WriteString(freshnessContextID(rulesDir))
 	for _, key := range keys {
 		_, _ = fmt.Fprintf(&b, "\n%s=%d", key, highest[key])
+	}
+	formatKeys := make([]string, 0, len(formats))
+	for key := range formats {
+		formatKeys = append(formatKeys, key)
+	}
+	sort.Strings(formatKeys)
+	for _, key := range formatKeys {
+		_, _ = fmt.Fprintf(&b, "\nformat:%s=%d", key, formats[key])
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
@@ -318,6 +382,14 @@ func freshnessStatesEqual(a, b *FreshnessState) bool {
 			return false
 		}
 	}
+	if len(a.FormatFloor) != len(b.FormatFloor) {
+		return false
+	}
+	for key, value := range a.FormatFloor {
+		if b.FormatFloor[key] != value {
+			return false
+		}
+	}
 	return true
 }
 
@@ -359,7 +431,7 @@ func installedFreshnessContextPresent(rulesDir string) (bool, error) {
 // currently installed v2+ bundles. It is the operator recovery path after a
 // legitimate state migration or wipe.
 func ResetFreshnessStateFromInstalledBundles(rulesDir string) error {
-	state := &FreshnessState{HighestSeen: make(map[string]uint64)}
+	state := &FreshnessState{HighestSeen: make(map[string]uint64), FormatFloor: make(map[string]int)}
 	contextPresent, err := installedFreshnessContextPresent(rulesDir)
 	if err != nil {
 		return err
@@ -393,6 +465,7 @@ func ResetFreshnessStateFromInstalledBundles(rulesDir string) error {
 		if err != nil {
 			return fmt.Errorf("parse bundle for freshness reset: %w", err)
 		}
+		RecordFormat(state, bundle.Name, bundle.FormatVersion)
 		if bundle.FormatVersion >= 2 {
 			RecordVersion(state, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
 		}

@@ -10,6 +10,11 @@ cd "$repo_root"
 
 scope=(README.md CLAUDE.md CONTRIBUTING.md GOVERNANCE.md SECURITY.md docs examples)
 
+if ! command -v rg >/dev/null 2>&1; then
+	echo "docs-check: failed: rg is required" >&2
+	exit 1
+fi
+
 check_no_match() {
 	local pattern="$1"
 	local label="$2"
@@ -18,6 +23,12 @@ check_no_match() {
 		echo
 		echo "docs-check: failed: found stale ${label}"
 		exit 1
+	else
+		local status=$?
+		if ((status != 1)); then
+			echo "docs-check: failed: rg could not check ${label} (exit ${status})" >&2
+			exit "$status"
+		fi
 	fi
 }
 

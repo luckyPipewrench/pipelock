@@ -2572,11 +2572,15 @@ pipelock sandbox --dry-run --json -- python agent.py
 
 | Environment | Layers | Notes |
 |-------------|--------|-------|
-| Bare metal / VM (Linux) | 3/3 | Full containment: Landlock + seccomp + network namespace |
-| Containers (`--best-effort`) | 2/3 | Landlock + seccomp. Network via HTTP_PROXY + NetworkPolicy. |
+| Bare metal / VM (Linux, amd64) | 3/3 | Full containment: Landlock + seccomp + network namespace |
+| Bare metal / VM (Linux, non-amd64) | 2/3 | Landlock + network namespace. Seccomp reports unavailable; see below. |
+| Containers, amd64 (`--best-effort`) | 2/3 | Landlock + seccomp. Network via HTTP_PROXY + NetworkPolicy. |
+| Containers, non-amd64 (`--best-effort`) | 1/3 | Landlock only. Seccomp reports unavailable; network via HTTP_PROXY + NetworkPolicy. |
 | macOS | sandbox-exec | Apple SBPL profiles for filesystem + network restriction |
 
 **Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged on bare metal. macOS 13+ for sandbox-exec. Containers may need `--best-effort` if default seccomp blocks `CLONE_NEWUSER`.
+
+**Seccomp is built for `linux/amd64` only.** On other Linux architectures, including the published `linux/arm64` binaries, Pipelock does not contain a seccomp filter to install, so the layer reports unavailable and containment is 2/3 rather than 3/3. This is reported rather than silently absent: `pipelock diagnose` shows the seccomp check as `FAIL … unavailable`, and under `--strict`, preflight refuses the launch instead of starting with fewer layers than strict promises. Landlock and the network namespace, which carry the filesystem and egress guarantees, are unaffected.
 
 **`--best-effort` is a degraded mode with a known bypass vector.** When user namespaces are unavailable — either the container runtime's seccomp profile blocks `CLONE_NEWUSER` or the host has `kernel.unprivileged_userns_clone=0` (default on some Debian-derivative kernels) — pipelock cannot create a network namespace for the child, so outbound traffic is enforced only by `HTTP_PROXY` / `HTTPS_PROXY` environment variables. A process inside the sandbox that explicitly `unset`s those vars, or makes a raw socket call without consulting the proxy env, will connect directly to the network and bypass pipelock's scanning pipeline. Pipelock emits a loud startup `WARNING` line alongside the `DEGRADED` status whenever this path is taken, on both `pipelock sandbox` and `pipelock mcp proxy --sandbox-best-effort`. For deployments that need kernel-level enforcement, either (1) make `CLONE_NEWUSER` available (adjust the runtime's seccomp profile or set `kernel.unprivileged_userns_clone=1`) so pipelock can run full 3/3 containment, or (2) use the companion-proxy topology from `pipelock init sidecar` — putting pipelock in a separate pod with a NetworkPolicy that restricts the agent pod's egress to the pipelock Service IP is the kernel-enforced equivalent of a network namespace. That equivalence depends on your CNI enforcing the policy, so verify it rather than assuming it; see [NetworkPolicy Semantics](cli/init-sidecar.md#networkpolicy-semantics).
 

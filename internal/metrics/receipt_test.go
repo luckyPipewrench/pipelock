@@ -19,6 +19,7 @@ func TestRecordEmitFailure_CanonicalReasons(t *testing.T) {
 	m.RecordEmitFailure("chain_init")
 	m.RecordEmitFailure("chain_init")
 	m.RecordEmitFailure("record")
+	m.RecordEmitFailure("ael")
 	m.RecordEmitFailure("sync")
 	m.RecordEmitFailure("unavailable")
 
@@ -27,6 +28,9 @@ func TestRecordEmitFailure_CanonicalReasons(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("record")); got != 1 {
 		t.Errorf("record = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("ael")); got != 1 {
+		t.Errorf("ael = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("sync")); got != 1 {
 		t.Errorf("sync = %v, want 1", got)

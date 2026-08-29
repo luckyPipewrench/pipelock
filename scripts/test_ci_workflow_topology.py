@@ -51,17 +51,15 @@ def workflow_jobs():
 def topology_errors(jobs: dict) -> list[str]:
     """Return every broken topology invariant for useful negative fixtures."""
     errors = []
-    standalone_replay_jobs = [job for job in jobs if job.startswith("test-replay-go")]
-    if standalone_replay_jobs:
-        errors.append(f"standalone replay jobs remain: {sorted(standalone_replay_jobs)}")
     for minor in MINORS:
         oss = f"test-oss-go{minor}"
         enterprise = f"test-enterprise-go{minor}"
+        replay = f"test-replay-go{minor}"
         aggregate = f"test-go{minor}"
-        for producer in (oss, enterprise, aggregate):
+        for producer in (oss, enterprise, replay, aggregate):
             if producer not in jobs:
                 errors.append(f"missing {producer}")
-        if any(producer not in jobs for producer in (oss, enterprise, aggregate)):
+        if any(producer not in jobs for producer in (oss, enterprise, replay, aggregate)):
             continue
 
         if set(jobs[oss]["strategy"]["matrix"]["shard"]) != SHARDS:
@@ -70,7 +68,7 @@ def topology_errors(jobs: dict) -> list[str]:
             errors.append(f"{enterprise} does not preserve six shards")
 
         aggregate_needs = set(jobs[aggregate].get("needs", []))
-        expected = {"security-scan", oss, enterprise}
+        expected = {"security-scan", oss, enterprise, replay}
         if minor == "125":
             expected.add("test-subprocess-coverage")
         if aggregate_needs != expected:
@@ -83,22 +81,18 @@ def topology_errors(jobs: dict) -> list[str]:
         if jobs[aggregate].get("if") != ALWAYS_CONDITION:
             errors.append(f"{aggregate} is skipped instead of failing when a dependency fails")
 
-        aggregate_steps = jobs[aggregate].get("steps", [])
-        if sum(step.get("run") == "make test-replay-harness" for step in aggregate_steps) != 1:
-            errors.append(f"{aggregate} is not a singleton replay producer")
-        setup_steps = [step for step in aggregate_steps if step.get("name") == "Set up Go"]
+        replay_needs = set(jobs[replay].get("needs", []))
+        if replay_needs != {"security-scan"}:
+            errors.append(f"{replay} can execute PR code before a successful security scan")
+        replay_steps = jobs[replay].get("steps", [])
+        if sum(step.get("run") == "make test-replay-harness" for step in replay_steps) != 1:
+            errors.append(f"{replay} is not a singleton replay producer")
+        setup_steps = [step for step in replay_steps if step.get("name") == "Set up Go"]
         if len(setup_steps) != 1 or setup_steps[0].get("with", {}).get("go-version") != f"1.{minor[1:]}":
-            errors.append(f"{aggregate} does not run replay under Go 1.{minor[1:]}")
-        execution_steps = [
-            step
-            for step in aggregate_steps
-            if step.get("name") in {"Set up Go", "Replay harness (deterministic regression)"}
-            or "uses" in step
-        ]
-        if len(execution_steps) != 3 or any(
-            step.get("if") != SCAN_SUCCESS_CONDITION for step in execution_steps
-        ):
-            errors.append(f"{aggregate} can execute PR code after a failed security scan")
+            errors.append(f"{replay} does not run replay under Go 1.{minor[1:]}")
+        aggregate_steps = jobs[aggregate].get("steps", [])
+        if any("uses" in step or step.get("run") == "make test-replay-harness" for step in aggregate_steps):
+            errors.append(f"{aggregate} still executes replay after matrix completion")
         gate_steps = [
             step for step in aggregate_steps if step.get("name") == "Required check compatibility gate"
         ]
@@ -106,6 +100,14 @@ def topology_errors(jobs: dict) -> list[str]:
             errors.append(f"{aggregate} does not red on a failed security scan")
         elif not step_runs_unconditionally(gate_steps[0]):
             errors.append(f"{aggregate} compatibility gate can skip and green after failed evidence")
+        # Under `if: always()` a failed dependency does NOT fail this job; only
+        # an explicit `= "success"` test in the gate does. The `needs` entry
+        # alone is inert, so every evidence dependency (the replay job included)
+        # must be consumed by the gate or its regression silently merges green.
+        gate_run = gate_steps[0].get("run", "") if len(gate_steps) == 1 else ""
+        for dependency in sorted(expected):
+            if f'test "${{{{ needs.{dependency}.result }}}}" = "success"' not in gate_run:
+                errors.append(f"{aggregate} gate does not fail closed on {dependency}")
         for producer in (oss, enterprise):
             if any(step.get("run") == "make test-replay-harness" for step in jobs[producer].get("steps", [])):
                 errors.append(f"{producer} runs replay inside every shard")
@@ -172,13 +174,13 @@ class CIWorkflowTopologyTest(unittest.TestCase):
 
     def test_missing_replay_step_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        broken["test-go126"]["steps"] = [
+        broken["test-replay-go126"]["steps"] = [
             step
-            for step in broken["test-go126"]["steps"]
+            for step in broken["test-replay-go126"]["steps"]
             if step.get("run") != "make test-replay-harness"
         ]
         errors = topology_errors(broken)
-        self.assertIn("test-go126 is not a singleton replay producer", errors)
+        self.assertIn("test-replay-go126 is not a singleton replay producer", errors)
 
     def test_replay_inside_a_shard_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
@@ -189,11 +191,9 @@ class CIWorkflowTopologyTest(unittest.TestCase):
 
     def test_unguarded_replay_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        for step in broken["test-go126"]["steps"]:
-            if step.get("run") == "make test-replay-harness":
-                del step["if"]
+        del broken["test-replay-go126"]["needs"]
         self.assertIn(
-            "test-go126 can execute PR code after a failed security scan",
+            "test-replay-go126 can execute PR code before a successful security scan",
             topology_errors(broken),
         )
 
@@ -212,6 +212,23 @@ class CIWorkflowTopologyTest(unittest.TestCase):
                 step["if"] = SCAN_SUCCESS_CONDITION
         self.assertIn(
             "test-go126 compatibility gate can skip and green after failed evidence",
+            topology_errors(broken),
+        )
+
+    def test_aggregate_gate_dropping_replay_result_fails_the_contract(self):
+        broken = copy.deepcopy(self.jobs)
+        gate = next(
+            step
+            for step in broken["test-go126"]["steps"]
+            if step.get("name") == "Required check compatibility gate"
+        )
+        gate["run"] = "\n".join(
+            line
+            for line in gate["run"].splitlines()
+            if "needs.test-replay-go126.result" not in line
+        )
+        self.assertIn(
+            "test-go126 gate does not fail closed on test-replay-go126",
             topology_errors(broken),
         )
 

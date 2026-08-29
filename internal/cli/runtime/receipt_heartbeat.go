@@ -33,6 +33,48 @@ func startReceiptHeartbeat(
 	if interval <= 0 {
 		interval = time.Minute
 	}
+	emitHeartbeat := func() bool {
+		// receipt.Emitter.EmitHeartbeat is nil-safe, so this needs no nil guard of
+		// its own and adding one would create a branch nothing can exercise.
+		e := emitterFn()
+		if err := e.EmitHeartbeat(); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
+			if logW != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: receipt heartbeat emit failed: %v\n", err)
+			}
+			if requireReceipts {
+				e.MarkUnhealthy(err)
+				if onRequiredFailure != nil {
+					onRequiredFailure(err)
+				}
+				return false
+			}
+		}
+		return true
+	}
+
+	// Emit a first non-durable heartbeat before waiting for the cadence ticker.
+	// Every production caller starts this only after its durable session_open
+	// succeeds, so the paired native AEL stream is necessarily open first. This
+	// makes hmax truthful even for a run that ends before one full interval.
+	// Failures retain the existing heartbeat failure direction: optional
+	// recording logs and continues; required recording marks the emitter
+	// unhealthy and asks the owning runtime to stop.
+	if ctx.Err() != nil {
+		return
+	}
+	if !emitHeartbeat() {
+		return
+	}
+	// Cancellation can arrive while that first emission is in flight, and there is
+	// no point registering a cadence loop for a lifecycle that is already over.
+	// The loop would select ctx.Done() and exit immediately, so this changes no
+	// observable behavior beyond not scheduling the work at all, which is also why
+	// no test accompanies it: distinguishing the two requires cancelling inside
+	// the emission and then racing the ticker against ctx.Done(), and a test
+	// asserting that either flakes or proves nothing.
+	if ctx.Err() != nil {
+		return
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -41,21 +83,8 @@ func startReceiptHeartbeat(
 		for {
 			select {
 			case <-ticker.C:
-				e := emitterFn()
-				if e == nil {
-					continue
-				}
-				if err := e.EmitHeartbeat(); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
-					if logW != nil {
-						_, _ = fmt.Fprintf(logW, "pipelock: receipt heartbeat emit failed: %v\n", err)
-					}
-					if requireReceipts {
-						e.MarkUnhealthy(err)
-						if onRequiredFailure != nil {
-							onRequiredFailure(err)
-						}
-						return
-					}
+				if !emitHeartbeat() {
+					return
 				}
 			case <-ctx.Done():
 				return

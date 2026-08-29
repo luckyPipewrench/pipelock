@@ -46,14 +46,17 @@ func Detect() Capabilities {
 		}
 	}
 
-	// Seccomp: check /proc/self/status for Seccomp line.
-	if data, err := os.ReadFile("/proc/self/status"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "Seccomp:") {
-				// Value 0 = disabled, 1 = strict, 2 = filter
-				// If the field exists at all, seccomp is supported.
-				c.Seccomp = true
-				break
+	// Seccomp is available only when this binary includes Pipelock's filter
+	// and the kernel exposes seccomp support.
+	if seccompFilterSupportedByBuild() {
+		if data, err := os.ReadFile("/proc/self/status"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "Seccomp:") {
+					// Value 0 = disabled, 1 = strict, 2 = filter. The field
+					// existing means the kernel supports seccomp.
+					c.Seccomp = true
+					break
+				}
 			}
 		}
 	}

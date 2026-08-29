@@ -1,0 +1,73 @@
+name: Hardening debt report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
+  push:
+    branches: [main]
+    tags-ignore: ['v*']
+
+concurrency:
+  group: hardening-report-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  hardening-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25'
+
+      - name: Debt report (warning-only)
+        id: debt
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        with:
+          version: v2.12.2
+          skip-cache: true
+          args: --default none --enable dupl --enable gocyclo --enable gocognit --enable maintidx --output.json.path=hardening-debt.json ./...
+
+      - name: Summarize hardening report
+        if: always()
+        env:
+          DEBT_OUTCOME: ${{ steps.debt.outcome }}
+        run: |
+          {
+            echo "## Hardening Report"
+            case "$DEBT_OUTCOME" in
+              success)
+                echo "- debt report: clean for configured linters"
+                ;;
+              failure)
+                if jq -e '.Issues | type == "array" and length > 0' hardening-debt.json >/dev/null 2>&1; then
+                  echo "- debt report: complexity/duplication debt findings present; review the job log before release"
+                else
+                  echo "- debt report: incomplete because the lint action failed without producing findings"
+                fi
+                ;;
+              *)
+                echo "- debt report: incomplete because the lint action ended with outcome $DEBT_OUTCOME"
+                ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DEBT_OUTCOME" = "failure" ]; then
+            if jq -e '.Issues | type == "array" and length > 0' hardening-debt.json >/dev/null 2>&1; then
+              echo "::warning::Debt report flagged follow-up work. See the workflow summary and logs."
+            else
+              echo "::warning::Debt report was incomplete. See the workflow logs."
+            fi
+          elif [ "$DEBT_OUTCOME" != "success" ]; then
+            echo "::warning::Debt report was incomplete. See the workflow logs."
+          fi

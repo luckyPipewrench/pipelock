@@ -23,6 +23,44 @@ func TestCheckFreshness_V1BundleAlwaysOK(t *testing.T) {
 	}
 }
 
+func TestCheckFormatFloorRejectsV1AfterV2(t *testing.T) {
+	t.Parallel()
+
+	state := &FreshnessState{FormatFloor: map[string]int{"test-bundle": 2}}
+	result := CheckFormatFloor(&Bundle{FormatVersion: 1, Name: "test-bundle"}, state)
+	if result.OK || !result.Rollback {
+		t.Fatalf("CheckFormatFloor = %+v, want format rollback", result)
+	}
+}
+
+func TestRecordFormatNeverLowersFloorAndKeepsIdentitiesSeparate(t *testing.T) {
+	t.Parallel()
+
+	state := &FreshnessState{}
+	RecordFormat(state, "bundle-a", 2)
+	RecordFormat(state, "bundle-a", 1)
+	RecordFormat(state, "bundle-b", 1)
+	if got := state.FormatFloor["bundle-a"]; got != 2 {
+		t.Fatalf("bundle-a format floor = %d, want 2", got)
+	}
+	if got := state.FormatFloor["bundle-b"]; got != 1 {
+		t.Fatalf("bundle-b format floor = %d, want 1", got)
+	}
+}
+
+func TestFreshnessStatesEqualIncludesFormatFloor(t *testing.T) {
+	base := &FreshnessState{HighestSeen: map[string]uint64{"community:test": 2}, FormatFloor: map[string]int{"test": 2}}
+	if freshnessStatesEqual(base, &FreshnessState{HighestSeen: map[string]uint64{"community:test": 2}}) {
+		t.Fatal("states with different format-floor sizes compared equal")
+	}
+	if freshnessStatesEqual(base, &FreshnessState{HighestSeen: map[string]uint64{"community:test": 2}, FormatFloor: map[string]int{"test": 1}}) {
+		t.Fatal("states with different format floors compared equal")
+	}
+	if !freshnessStatesEqual(base, &FreshnessState{HighestSeen: map[string]uint64{"community:test": 2}, FormatFloor: map[string]int{"test": 2}}) {
+		t.Fatal("identical freshness states compared unequal")
+	}
+}
+
 func TestCheckFreshness_RollbackRejected(t *testing.T) {
 	t.Parallel()
 
@@ -490,9 +528,15 @@ func TestFreshnessState_DeleteAllWithInstalledV2ContextFailsClosed(t *testing.T)
 	if got := loaded.HighestSeen["community:test-bundle"]; got != 10 {
 		t.Fatalf("reset floor = %d, want 10", got)
 	}
+	if got := loaded.FormatFloor["test-bundle"]; got != 2 {
+		t.Fatalf("reset format floor = %d, want 2", got)
+	}
 	rolledBack := testBundleV2("test-bundle", TierCommunity, 4, nil)
 	if result := CheckFreshness(rolledBack, loaded, time.Now().UTC(), false); result.OK || !result.Rollback {
 		t.Fatalf("rolled-back bundle after reset = %+v, want rollback rejection", result)
+	}
+	if result := CheckFormatFloor(&Bundle{Name: "test-bundle", FormatVersion: 1}, loaded); result.OK || !result.Rollback {
+		t.Fatalf("v1 bundle after reset = %+v, want format rollback rejection", result)
 	}
 }
 

@@ -136,6 +136,8 @@ Bundles are Ed25519-signed YAML files. Pipelock verifies signatures against a ke
 
 Official bundles (like `pipelock-community`) are signed with the production key compiled into the source and also embedded in release binaries at build time. No additional configuration is needed.
 
+The first successful install is trust on first use for freshness. The signature proves who published the bundle and that its bytes are intact, but a machine with no saved history can't prove that the first valid bundle it sees is the newest one. Pipelock records that accepted bundle's monotonic version and format. Later installs and updates can't move either value backward. Removing or explicitly resetting the freshness state also removes that local rollback history, so verify the installed bundles before running `pipelock rules reset-freshness`.
+
 Private-root-only operators can set `rules.trust_embedded_keys: false` to remove the compiled official keyring from bundle verification. In that mode, bundles must be signed by `rules.trusted_keys`; unsigned local bundles are rejected, and strict mode treats non-matching installed bundles as integrity failures unless the operator explicitly enables `rules.allow_degraded`.
 
 ### Third-party bundles

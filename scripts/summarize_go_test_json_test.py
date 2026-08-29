@@ -175,6 +175,7 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         results = summarize_go_test_json.parse_events(
             [
                 "not json",
+                "null",
                 json.dumps(
                     {
                         "Action": "pass",
@@ -186,6 +187,147 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         )
 
         self.assertEqual(results["example.com/pkg"].action, "pass")
+
+    def test_summarizes_slowest_tests_with_parallelism_caveat(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFast",
+                    "Elapsed": 1.0,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/proxy",
+                    "Test": "TestSlow",
+                    "Elapsed": 12.5,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/proxy",
+                    "Elapsed": 13.0,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(
+            results, label="unit", top=1, top_tests=1, out=out
+        )
+
+        summary = out.getvalue()
+        self.assertIn("slowest 1 tests:", summary)
+        self.assertIn("12.5s  pass  example.com/proxy TestSlow", summary)
+        self.assertNotIn("example.com/proxy TestFast", summary)
+        self.assertIn("wall-clock attribution, not exclusive CPU time", summary)
+
+    def test_escapes_terminal_controls_in_report_names(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/\x1b[2Jproxy",
+                    "Test": "TestSlow\nspoof",
+                    "Elapsed": 1.0,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/\x1b[2Jproxy",
+                    "Elapsed": 1.0,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(
+            results, label="unit\x1b[0m", top=1, top_tests=1, out=out
+        )
+
+        summary = out.getvalue()
+        self.assertNotIn("\x1b", summary)
+        self.assertIn("unit\\u001b[0m", summary)
+        self.assertIn("example.com/\\u001b[2Jproxy TestSlow\\u000aspoof", summary)
+
+    def test_escapes_terminal_controls_in_failure_output(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFailure",
+                    "Output": "test output\x1b[2J\rspoof\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFailure",
+                    "Elapsed": 1.0,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/proxy",
+                    "Output": "package output\x1b[0m\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Elapsed": 1.0,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+
+        summary = out.getvalue()
+        self.assertNotIn("\x1b", summary)
+        self.assertNotIn("\r", summary)
+        self.assertIn("test output\\u001b[2J\\u000dspoof", summary)
+        self.assertIn("package output\\u001b[0m", summary)
+
+    def test_invalid_elapsed_values_fall_back_without_stopping_summary(self):
+        lines = [
+            json.dumps(
+                {"Action": "pass", "Package": "example.com/bool", "Elapsed": True}
+            ),
+            '{"Action":"pass","Package":"example.com/infinite","Elapsed":1e400}',
+            json.dumps(
+                {"Action": "pass", "Package": "example.com/negative", "Elapsed": -1}
+            ),
+            json.dumps(
+                {
+                    "Action": "pass",
+                    "Package": "example.com/valid",
+                    "Elapsed": 1.5,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=4, out=out)
+
+        summary = out.getvalue()
+        self.assertIn("0.0s  pass  example.com/bool", summary)
+        self.assertIn("0.0s  pass  example.com/infinite", summary)
+        self.assertIn("0.0s  pass  example.com/negative", summary)
+        self.assertIn("1.5s  pass  example.com/valid", summary)
 
     def test_main_returns_nonzero_when_final_package_action_fails(self):
         lines = "\n".join(
@@ -255,6 +397,19 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("--top must be at least 1", stderr.getvalue())
+
+    def test_main_rejects_non_positive_top_tests(self):
+        with (
+            mock.patch.object(
+                sys, "argv", ["summarize_go_test_json.py", "--top-tests", "0"]
+            ),
+            mock.patch.object(sys, "stderr", io.StringIO()) as stderr,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            summarize_go_test_json.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--top-tests must be at least 1", stderr.getvalue())
 
 
 if __name__ == "__main__":

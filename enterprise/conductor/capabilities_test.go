@@ -21,6 +21,7 @@ import (
 
 func TestNegotiateCapabilities(t *testing.T) {
 	resp := validHandshakeCapabilitiesResponse()
+	resp.AuditBatch.Max = AppliedStateHeartbeatSchemaVersion
 	resp.MaxCreatedSkewSeconds = 120
 
 	got, err := NegotiateCapabilities(resp, LocalFollowerCapabilities{
@@ -37,14 +38,29 @@ func TestNegotiateCapabilities(t *testing.T) {
 	if got.SchemaVersion != SchemaVersion {
 		t.Fatalf("SchemaVersion = %d, want %d", got.SchemaVersion, SchemaVersion)
 	}
-	if got.AuditSchemaVersion != SchemaVersion {
-		t.Fatalf("AuditSchemaVersion = %d, want %d", got.AuditSchemaVersion, SchemaVersion)
+	if got.AuditSchemaVersion != AuditEnvelopeSchemaVersion {
+		t.Fatalf("AuditSchemaVersion = %d, want %d", got.AuditSchemaVersion, AuditEnvelopeSchemaVersion)
 	}
 	if got.CreatedSkew != 60*time.Second {
 		t.Fatalf("CreatedSkew = %s, want 60s", got.CreatedSkew)
 	}
 	if !got.EmergencyStream {
 		t.Fatal("EmergencyStream = false, want true")
+	}
+	if !got.AppliedStateHeartbeat {
+		t.Fatal("AppliedStateHeartbeat = false, want negotiated support")
+	}
+}
+
+func TestNegotiateCapabilities_OldConductorDoesNotEnableHeartbeat(t *testing.T) {
+	resp := validHandshakeCapabilitiesResponse()
+	resp.AuditBatch.Max = AuditEnvelopeSchemaVersion
+	got, err := NegotiateCapabilities(resp, LocalFollowerCapabilities{})
+	if err != nil {
+		t.Fatalf("NegotiateCapabilities() error = %v", err)
+	}
+	if got.AppliedStateHeartbeat {
+		t.Fatal("AppliedStateHeartbeat = true against an old conductor")
 	}
 }
 

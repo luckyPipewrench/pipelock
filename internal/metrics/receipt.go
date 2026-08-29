@@ -18,6 +18,7 @@ var receiptEmitFailureReasons = map[string]bool{
 	"hash":        true,
 	"marshal":     true,
 	"record":      true,
+	"ael":         true,
 	"sync":        true,
 	"sealed":      true,
 	"unavailable": true,

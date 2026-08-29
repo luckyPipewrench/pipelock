@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // Test-scoped constants for repeated string literals.
@@ -150,6 +153,39 @@ func setupUnsignedBundle(t *testing.T, rulesDir, bundleName string, bundleData [
 	}
 }
 
+// setupSignedBundle creates a bundle.yaml, detached signature, and lock file.
+func setupSignedBundle(t *testing.T, rulesDir, bundleName string, bundleData []byte, pub ed25519.PublicKey, priv ed25519.PrivateKey) {
+	t.Helper()
+
+	bundleDir := filepath.Join(rulesDir, bundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating bundle dir: %v", err)
+	}
+
+	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, bundleData, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	sig := ed25519.Sign(priv, bundleData)
+	if err := os.WriteFile(bundlePath+".sig", []byte(base64.StdEncoding.EncodeToString(sig)+"\n"), 0o600); err != nil {
+		t.Fatalf("writing signature: %v", err)
+	}
+
+	hash := sha256.Sum256(bundleData)
+	lf := &domrules.LockFile{
+		InstalledVersion:  testBundleVersion,
+		InstalledAt:       "2026-03-15T10:00:00Z",
+		Source:            "https://rules.example/test-bundle/bundle.yaml",
+		LastCheck:         "2026-03-15T10:00:00Z",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: hex.EncodeToString(pub),
+	}
+	if err := domrules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock file: %v", err)
+	}
+}
+
 // Tests in this file that call testRootCmd() are intentionally NOT parallel
 // because cobra commands share global state during execution.
 // Tests that mutate domrules keyring globals or httpsOnlyClient are also
@@ -228,7 +264,8 @@ func TestRulesList_WithBundle(t *testing.T) {
 
 func TestRulesList_JSON(t *testing.T) {
 	rulesDir := t.TempDir()
-	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
+	bundleYAML := strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1)
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(bundleYAML))
 
 	cmd := testRootCmd()
 	buf := &strings.Builder{}
@@ -253,6 +290,140 @@ func TestRulesList_JSON(t *testing.T) {
 	}
 	if entries[0].Signed {
 		t.Error("expected Signed = false for unsigned bundle")
+	}
+	if entries[0].TestedThroughPipelock != "1.2.0" {
+		t.Errorf("TestedThroughPipelock = %q, want 1.2.0", entries[0].TestedThroughPipelock)
+	}
+	if entries[0].CompatibilityStatus != "verified" {
+		t.Errorf("CompatibilityStatus = %q, want verified", entries[0].CompatibilityStatus)
+	}
+}
+
+func TestWarnTestedThroughPipelock(t *testing.T) {
+	var out strings.Builder
+	if err := warnTestedThroughPipelock(&out, "1.2.0", "1.3.0"); err != nil {
+		t.Fatalf("warnTestedThroughPipelock() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "warning:") || !strings.Contains(out.String(), "tested_through_pipelock is advisory") {
+		t.Fatalf("warnTestedThroughPipelock() output = %q, want advisory warning", out.String())
+	}
+}
+
+func TestWarnTestedThroughPipelockMalformedCeiling(t *testing.T) {
+	var out strings.Builder
+	err := warnTestedThroughPipelock(&out, "1.2", "1.3.0")
+	if err == nil || !strings.Contains(err.Error(), "tested_through_pipelock") {
+		t.Fatalf("warnTestedThroughPipelock() error = %v, want malformed ceiling error", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("warnTestedThroughPipelock() wrote %q before returning an error", out.String())
+	}
+}
+
+func TestRulesList_TextShowsTestedThroughWarning(t *testing.T) {
+	originalVersion := cliutil.Version
+	cliutil.Version = "1.3.0"
+	t.Cleanup(func() { cliutil.Version = originalVersion })
+
+	rulesDir := t.TempDir()
+	bundleYAML := strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1)
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(bundleYAML))
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "compatibility metadata: verified") || !strings.Contains(output, "tested through Pipelock: 1.2.0") || !strings.Contains(output, "warning: bundle tested through") {
+		t.Fatalf("rules list output = %q, want tested-through ceiling and warning", output)
+	}
+}
+
+func TestRulesList_DoesNotReportCompatibilityFromTamperedBundle(t *testing.T) {
+	originalVersion := cliutil.Version
+	cliutil.Version = "10.0.0"
+	t.Cleanup(func() { cliutil.Version = originalVersion })
+
+	rulesDir := t.TempDir()
+	bundleData := []byte(strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1))
+	setupUnsignedBundle(t, rulesDir, testBundleName, bundleData)
+
+	tamperedData := []byte(strings.Replace(string(bundleData), "1.2.0", "9.9.9", 1))
+	bundlePath := filepath.Join(rulesDir, testBundleName, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, tamperedData, 0o600); err != nil {
+		t.Fatalf("tampering bundle: %v", err)
+	}
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list must remain available when a bundle fails verification: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "compatibility metadata: unverified: integrity check: SHA-256 mismatch") {
+		t.Fatalf("rules list output = %q, want unverified compatibility status", output)
+	}
+	if strings.Contains(output, "9.9.9") || strings.Contains(output, "tested through Pipelock:") || strings.Contains(output, "warning: bundle tested through") {
+		t.Fatalf("rules list output = %q, must not report tampered compatibility metadata", output)
+	}
+}
+
+func TestRulesList_UnavailableTrustPolicySuppressesCompatibility(t *testing.T) {
+	rulesDir := t.TempDir()
+	bundleData := []byte(strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1))
+	setupUnsignedBundle(t, rulesDir, testBundleName, bundleData)
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir, "--config", filepath.Join(t.TempDir(), "missing.yaml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list must remain available when the trust policy cannot load: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "compatibility metadata: unverified: loading trust policy:") {
+		t.Fatalf("rules list output = %q, want unverified compatibility status", output)
+	}
+	if strings.Contains(output, "tested through Pipelock:") || strings.Contains(output, "warning: bundle tested through") {
+		t.Fatalf("rules list output = %q, must not report compatibility metadata without a trust policy", output)
+	}
+}
+
+func TestRulesList_UsesConfiguredTrustPolicyForCompatibility(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating signing key: %v", err)
+	}
+	setRulesKeyringHexForTest(t, "")
+
+	rulesDir := t.TempDir()
+	bundleData := []byte(strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1))
+	setupSignedBundle(t, rulesDir, testBundleName, bundleData, pub, priv)
+
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configData := []byte("rules:\n  trust_embedded_keys: false\n  trusted_keys:\n    - name: test-signer\n      public_key: " + hex.EncodeToString(pub) + "\n")
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	cmd := testRootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "list", "--rules-dir", rulesDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rules list: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "compatibility metadata: verified") || !strings.Contains(output, "tested through Pipelock: 1.2.0") {
+		t.Fatalf("rules list output = %q, want compatibility metadata verified under configured trust policy", output)
 	}
 }
 
@@ -437,6 +608,118 @@ func TestRulesInstall_RemoteSigned(t *testing.T) {
 	}
 	if !strings.Contains(output, "official") {
 		t.Errorf("expected 'official' tier in output, got %q", output)
+	}
+}
+
+func TestFetchOfficialRegistryBundle_RejectsOffOriginRedirect(t *testing.T) {
+	// NOT parallel: mutates officialRegistryClient.
+	originalClient := officialRegistryClient
+	offOrigin := "https://rules-attacker.example/bundle.yaml"
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "pipelab.org":
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{offOrigin}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			case "rules-attacker.example":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("redirected response")),
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected request %s", req.URL)
+			}
+		}),
+		CheckRedirect: originalClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalClient })
+
+	_, _, err := fetchOfficialRegistryBundle(t.Context(), officialRegistryURL+testBundlePath)
+	if !errors.Is(err, errOfficialRegistryRedirect) {
+		t.Fatalf("error = %v, want typed official registry redirect refusal", err)
+	}
+	if !strings.Contains(err.Error(), "redirects must stay on "+officialRegistryURL) {
+		t.Fatalf("error = %v, want operator-legible registry redirect error", err)
+	}
+}
+
+func TestFetchOfficialRegistryBundle_RejectsNonRegistryOrigin(t *testing.T) {
+	// NOT parallel: mutates officialRegistryClient.
+	originalClient := officialRegistryClient
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("bundle")),
+			}, nil
+		}),
+		CheckRedirect: originalClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalClient })
+
+	_, _, err := fetchOfficialRegistryBundle(t.Context(), "https://source.example/bundle.yaml")
+	if !errors.Is(err, errOfficialRegistryOrigin) {
+		t.Fatalf("error = %v, want typed official registry origin refusal", err)
+	}
+}
+
+func TestRulesInstall_SourceOfficialURLAllowsHTTPSRedirect(t *testing.T) {
+	// NOT parallel: mutates the HTTP clients and the keyring globals.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
+
+	bundleData := []byte(validBundleYAML)
+	sigData := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, bundleData)) + "\n")
+	originalHTTPSClient := httpsOnlyClient
+	httpsOnlyClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "pipelab.org":
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://source.example" + req.URL.Path}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			case "source.example":
+				body := bundleData
+				if strings.HasSuffix(req.URL.Path, signing.SigExtension) {
+					body = sigData
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(string(body))),
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected source request %s", req.URL)
+			}
+		}),
+		CheckRedirect: originalHTTPSClient.CheckRedirect,
+	}
+	t.Cleanup(func() { httpsOnlyClient = originalHTTPSClient })
+
+	originalOfficialClient := officialRegistryClient
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("official registry client must not fetch --source URL %s", req.URL)
+		}),
+		CheckRedirect: originalOfficialClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalOfficialClient })
+
+	cmd := testRootCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"rules", "install", "--source", officialRegistryURL + testBundlePath, "--rules-dir", t.TempDir()})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--source using the official URL should retain generic HTTPS redirect behavior: %v", err)
 	}
 }
 
@@ -691,7 +974,12 @@ func TestRulesUpdate_NotInstalled(t *testing.T) {
 }
 
 func TestRulesUpdate_RemoteUpToDate(t *testing.T) {
-	bundleData := []byte(validBundleYAML)
+	originalVersion := cliutil.Version
+	cliutil.Version = "1.3.0"
+	t.Cleanup(func() { cliutil.Version = originalVersion })
+
+	bundleYAML := strings.Replace(validBundleYAML, "min_pipelock: \"0.1.0\"", "min_pipelock: \"0.1.0\"\ntested_through_pipelock: \"1.2.0\"", 1)
+	bundleData := []byte(bundleYAML)
 
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -765,6 +1053,9 @@ func TestRulesUpdate_RemoteUpToDate(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "already up to date") {
 		t.Errorf("expected 'already up to date', got %q", output)
+	}
+	if !strings.Contains(output, "tested through Pipelock") {
+		t.Errorf("expected tested-through warning, got %q", output)
 	}
 
 	// Verify last_check was updated.
@@ -1559,6 +1850,56 @@ func TestCheckExistingInstall_NotInstalled(t *testing.T) {
 	err := checkExistingInstall(filepath.Join(t.TempDir(), "nonexistent"), "2026.03.1", "abc")
 	if err != nil {
 		t.Errorf("expected nil error for not-installed bundle, got: %v", err)
+	}
+}
+
+func TestCheckExistingInstall_MalformedLockBlocksReplacement(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("create bundle dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bundle.lock"), []byte("installed_version: ["), 0o600); err != nil {
+		t.Fatalf("write malformed lock: %v", err)
+	}
+	err := checkExistingInstall(dir, "2026.09.0", "digest")
+	if err == nil || !strings.Contains(err.Error(), "reading installed bundle lock") {
+		t.Fatalf("checkExistingInstall error = %v, want malformed lock rejection", err)
+	}
+}
+
+func TestCheckExistingInstallRejectsMalformedVersions(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		candidateVersion string
+		installedVersion string
+		want             string
+	}{
+		{
+			name:             "candidate",
+			candidateVersion: "not-a-calver",
+			installedVersion: "2026.08.0",
+			want:             "parsing candidate version",
+		},
+		{
+			name:             "installed",
+			candidateVersion: "2026.09.0",
+			installedVersion: "not-a-calver",
+			want:             "parsing installed version",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "bundle")
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatalf("create bundle dir: %v", err)
+			}
+			if err := domrules.WriteLockFile(filepath.Join(dir, "bundle.lock"), &domrules.LockFile{InstalledVersion: tc.installedVersion}); err != nil {
+				t.Fatalf("write lock: %v", err)
+			}
+			err := checkExistingInstall(dir, tc.candidateVersion, "digest")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("checkExistingInstall error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -2754,5 +3095,139 @@ func TestRulesStatus_IncludeDefaultsFalse(t *testing.T) {
 	out := output.stdout
 	if !strings.Contains(out, "disabled") {
 		t.Error("expected 'disabled' when include_defaults: false")
+	}
+}
+
+// TestFetchBundleForRecordedSource_PinsOfficialSource proves the routing that
+// update and diff depend on. A bundle installed by official name records the
+// official registry URL as its source, so re-fetching that recorded source must
+// use the pinned client. Before this routing existed the pin covered only the
+// one-time install, leaving update and diff, the commands an operator runs
+// repeatedly, on the client that accepts a redirect to any HTTPS host.
+func TestFetchBundleForRecordedSource_PinsOfficialSource(t *testing.T) {
+	// NOT parallel: mutates the shared clients.
+	originalOfficial := officialRegistryClient
+	originalHTTPS := httpsOnlyClient
+	t.Cleanup(func() {
+		officialRegistryClient = originalOfficial
+		httpsOnlyClient = originalHTTPS
+	})
+
+	// The general client must never be reached for a recorded official source.
+	httpsOnlyClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("recorded official source was fetched with the unpinned client: %s", req.URL)
+		}),
+		CheckRedirect: originalHTTPS.CheckRedirect,
+	}
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "pipelab.org":
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://rules-attacker.example/bundle.yaml"}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			default:
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("redirected response")),
+				}, nil
+			}
+		}),
+		CheckRedirect: originalOfficial.CheckRedirect,
+	}
+
+	_, _, err := fetchBundleForRecordedSource(t.Context(), officialRegistryURL+testBundlePath)
+	if !errors.Is(err, errOfficialRegistryRedirect) {
+		t.Fatalf("error = %v, want the recorded official source to be fetched under the pinned redirect policy", err)
+	}
+}
+
+// TestFetchBundleForRecordedSource_LeavesThirdPartySourceUnpinned is the other
+// direction: a recorded third-party source must stay on the general client, so
+// the pin does not quietly become a global redirect policy.
+func TestFetchBundleForRecordedSource_LeavesThirdPartySourceUnpinned(t *testing.T) {
+	// NOT parallel: mutates the shared clients.
+	originalOfficial := officialRegistryClient
+	originalHTTPS := httpsOnlyClient
+	t.Cleanup(func() {
+		officialRegistryClient = originalOfficial
+		httpsOnlyClient = originalHTTPS
+	})
+
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("third-party source was fetched with the pinned client: %s", req.URL)
+		}),
+		CheckRedirect: originalOfficial.CheckRedirect,
+	}
+	reached := false
+	httpsOnlyClient = &http.Client{
+		Transport: rulesRoundTripper(func(*http.Request) (*http.Response, error) {
+			reached = true
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+		CheckRedirect: originalHTTPS.CheckRedirect,
+	}
+
+	_, _, _ = fetchBundleForRecordedSource(t.Context(), "https://source.example/bundle.yaml")
+	if !reached {
+		t.Fatal("third-party recorded source did not use the general client")
+	}
+}
+
+// TestFetchOfficialRegistryBundle_AllowsSameOriginRedirect covers the
+// AVAILABILITY half of the design. Same-origin redirects are permitted on
+// purpose so a future registry path move does not break the documented install
+// command. Without this test, a later tightening that refused every redirect
+// would keep all the refusal tests green while breaking that command in
+// production.
+func TestFetchOfficialRegistryBundle_AllowsSameOriginRedirect(t *testing.T) {
+	// NOT parallel: mutates officialRegistryClient.
+	originalClient := officialRegistryClient
+	moved := "/rules-moved/community-rules/bundle.yaml"
+	officialRegistryClient = &http.Client{
+		Transport: rulesRoundTripper(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Host != "pipelab.org" {
+				return nil, fmt.Errorf("left the official origin: %s", req.URL)
+			}
+			if !strings.HasPrefix(req.URL.Path, "/rules-moved/") {
+				target := moved
+				if strings.HasSuffix(req.URL.Path, signing.SigExtension) {
+					target += signing.SigExtension
+				}
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://pipelab.org" + target}},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}
+			body := "moved-bundle"
+			if strings.HasSuffix(req.URL.Path, signing.SigExtension) {
+				body = "moved-signature"
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+		CheckRedirect: originalClient.CheckRedirect,
+	}
+	t.Cleanup(func() { officialRegistryClient = originalClient })
+
+	bundleData, sigData, err := fetchOfficialRegistryBundle(t.Context(), officialRegistryURL+testBundlePath)
+	if err != nil {
+		t.Fatalf("same-origin redirect refused: %v; a registry path move must not break the documented install", err)
+	}
+	if string(bundleData) != "moved-bundle" || string(sigData) != "moved-signature" {
+		t.Fatalf("bundle=%q sig=%q, want the redirected artifacts", bundleData, sigData)
 	}
 }

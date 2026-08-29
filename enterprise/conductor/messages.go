@@ -69,6 +69,11 @@ const (
 	// follower talking to an old (v1-only) conductor omits applied_state and
 	// stays wire-identical to v1.
 	AuditEnvelopeSchemaVersion = 2
+	// AppliedStateHeartbeatSchemaVersion is advertised through the existing
+	// audit-batch capability range rather than a new top-level capability field.
+	// Older followers strictly reject unknown JSON fields, but safely cap a
+	// larger known range at their local v2 maximum during rolling upgrades.
+	AppliedStateHeartbeatSchemaVersion = 3
 
 	// MaxRuntimeStringBytes bounds each short applied-state / runtime-status
 	// string field (versions, bundle ids, error code). MaxApplyErrorMessageRunes
@@ -445,6 +450,26 @@ type FollowerAppliedState struct {
 	LastApplyErrorMessage          string    `json:"last_apply_error_message,omitempty"`
 	ObservedAt                     time.Time `json:"observed_at"`
 	ProvenanceAt                   time.Time `json:"provenance_at,omitempty"`
+}
+
+// AppliedStateHeartbeat is a follower-signed, recorder-independent statement
+// of the policy and binary state the follower is currently running. It exists
+// so an idle follower can keep its verified fleet state fresh without
+// manufacturing recorder entries or weakening the fleet view to trust the
+// unsigned runtime-status channel.
+//
+// The enclosing identity is bound to the authenticated mTLS follower at
+// ingest. ObservedAt is also the monotonic replay key: a conductor accepts only
+// a statement newer than the verified state it already holds for that follower.
+type AppliedStateHeartbeat struct {
+	SchemaVersion int                  `json:"schema_version"`
+	HeartbeatID   string               `json:"heartbeat_id"`
+	OrgID         string               `json:"org_id"`
+	FleetID       string               `json:"fleet_id"`
+	InstanceID    string               `json:"instance_id"`
+	EmittedAt     time.Time            `json:"emitted_at"`
+	AppliedState  FollowerAppliedState `json:"applied_state"`
+	Signatures    []SignatureProof     `json:"signatures,omitempty"`
 }
 
 type AuditBatchEnvelope struct {
@@ -1226,6 +1251,83 @@ func (a AuditBatchEnvelope) SignablePreimage() ([]byte, error) {
 	return canonicalPreimage(unsigned, "audit_batch")
 }
 
+func (h AppliedStateHeartbeat) SignablePreimage() ([]byte, error) {
+	unsigned := h
+	unsigned.Signatures = nil
+	unsigned.EmittedAt = unsigned.EmittedAt.UTC()
+	unsigned.AppliedState.LastPolicyPollAt = unsigned.AppliedState.LastPolicyPollAt.UTC()
+	unsigned.AppliedState.LastSuccessfulApplyAt = unsigned.AppliedState.LastSuccessfulApplyAt.UTC()
+	unsigned.AppliedState.ObservedAt = unsigned.AppliedState.ObservedAt.UTC()
+	unsigned.AppliedState.ProvenanceAt = unsigned.AppliedState.ProvenanceAt.UTC()
+	return canonicalPreimage(unsigned, "applied_state_heartbeat")
+}
+
+func (h AppliedStateHeartbeat) CanonicalHash() (string, error) {
+	return canonicalHash(h.SignablePreimage)
+}
+
+func (h AppliedStateHeartbeat) Validate() error {
+	if err := validateSchemaVersion(h.SchemaVersion); err != nil {
+		return err
+	}
+	if err := validateIdentifier("heartbeat_id", h.HeartbeatID); err != nil {
+		return err
+	}
+	if err := validateOrgFleet(h.OrgID, h.FleetID); err != nil {
+		return err
+	}
+	if err := validateIdentifier("instance_id", h.InstanceID); err != nil {
+		return err
+	}
+	if h.EmittedAt.IsZero() {
+		return fmt.Errorf("%w: emitted_at", ErrMissingField)
+	}
+	if err := h.AppliedState.Validate(); err != nil {
+		return err
+	}
+	if h.AppliedState.ProvenanceAt.IsZero() {
+		return fmt.Errorf("%w: applied_state.provenance_at", ErrMissingField)
+	}
+	return validateSignatureThreshold(h.Signatures, signing.PurposeAuditBatchSigning, RequiredStandardSigners)
+}
+
+func (h AppliedStateHeartbeat) ValidateForConductor(now time.Time, maxSkew time.Duration) error {
+	if err := h.Validate(); err != nil {
+		return err
+	}
+	if maxSkew <= 0 {
+		maxSkew = DefaultAuditMaxSkew
+	}
+	if maxSkew > MaxAllowedAuditSkew {
+		return fmt.Errorf("%w: max_skew %s exceeds ceiling %s", ErrSkewExceeded, maxSkew, MaxAllowedAuditSkew)
+	}
+	now = now.UTC()
+	minStamp := now.Add(-maxSkew)
+	maxStamp := now.Add(maxSkew)
+	for _, candidate := range []struct {
+		field string
+		stamp time.Time
+	}{
+		{field: "emitted_at", stamp: h.EmittedAt},
+		{field: "applied_state.observed_at", stamp: h.AppliedState.ObservedAt},
+		{field: "applied_state.provenance_at", stamp: h.AppliedState.ProvenanceAt},
+	} {
+		field, stamp := candidate.field, candidate.stamp.UTC()
+		if stamp.Before(minStamp) || stamp.After(maxStamp) {
+			return fmt.Errorf("%w: %s outside [%s,%s]", ErrSkewExceeded, field, minStamp.Format(time.RFC3339Nano), maxStamp.Format(time.RFC3339Nano))
+		}
+	}
+	return nil
+}
+
+func (h AppliedStateHeartbeat) VerifySignaturesAt(now time.Time, resolve SignatureKeyResolver) error {
+	preimage, err := h.SignablePreimage()
+	if err != nil {
+		return err
+	}
+	return verifySignatureThreshold(now, preimage, h.Signatures, signing.PurposeAuditBatchSigning, RequiredStandardSigners, resolve)
+}
+
 func (a AuditBatchEnvelope) CanonicalHash() (string, error) {
 	return canonicalHash(a.SignablePreimage)
 }
@@ -1500,7 +1602,7 @@ func (c CapabilitiesResponse) ValidateWithLocalThresholdCap(maxThreshold int) er
 	if !slices.Contains(c.ReceiptEntryVersions, recorder.CurrentWriteEntryVersion) {
 		return fmt.Errorf("%w: receipt_entry_versions must include recorder write version %d", ErrInvalidState, recorder.CurrentWriteEntryVersion)
 	}
-	if c.MaxCreatedSkewSeconds <= 0 || time.Duration(c.MaxCreatedSkewSeconds)*time.Second > MaxAllowedAuditSkew {
+	if c.MaxCreatedSkewSeconds <= 0 || c.MaxCreatedSkewSeconds > int(MaxAllowedAuditSkew/time.Second) {
 		return fmt.Errorf("%w: max_created_skew_seconds=%d", ErrSkewExceeded, c.MaxCreatedSkewSeconds)
 	}
 	for name, value := range map[string]int{

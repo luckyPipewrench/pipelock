@@ -490,6 +490,65 @@ func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
 	}
 }
 
+// TestRunProxyWithSandbox_ResponseEOFPreservesCleanChildExit reproduces the
+// race where the response reader sees EOF just before the direct child exits.
+// Ordinary EOF must wait for that exit rather than turning it into SIGTERM,
+// then clean up group descendants even when subreaper setup is unavailable.
+func TestRunProxyWithSandbox_ResponseEOFPreservesCleanChildExit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dir := t.TempDir()
+	releaseFIFO := filepath.Join(dir, "release")
+	descendantPIDFile := filepath.Join(dir, "descendant.pid")
+	if err := syscall.Mkfifo(releaseFIFO, 0o600); err != nil {
+		t.Fatalf("create release FIFO: %v", err)
+	}
+	release, err := os.OpenFile(filepath.Clean(releaseFIFO), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open release FIFO: %v", err)
+	}
+	defer func() { _ = release.Close() }()
+
+	const script = "sleep 300 >/dev/null 2>&1 & echo $! > \"$MCP_TEST_DESCENDANT_PID_FILE\"; " +
+		"exec 1>&-; IFS= read -r _ < \"$MCP_TEST_RELEASE_FIFO\""
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(),
+		"MCP_TEST_RELEASE_FIFO="+releaseFIFO,
+		"MCP_TEST_DESCENDANT_PID_FILE="+descendantPIDFile,
+	)
+	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+	opts.sessionExitForTest = liveSessionExitHooks()
+	opts.enableSubreaperForTest = func() error { return errors.New("forced subreaper setup failure") }
+	opts.outputForwardDoneForTest = func() {
+		if _, err := release.WriteString("exit\n"); err != nil {
+			t.Fatalf("release child after response EOF: %v", err)
+		}
+	}
+
+	var logBuf syncBuffer
+	err = RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), io.Discard, &logBuf, opts)
+	if err != nil {
+		t.Fatalf("sandbox proxy converted clean child exit after response EOF into failure: %v (%s, log=%q)",
+			err, describeSandboxLifecycleFailure(ctx, err), logBuf.String())
+	}
+
+	pidBytes, err := os.ReadFile(filepath.Clean(descendantPIDFile))
+	if err != nil {
+		t.Fatalf("read descendant PID: %v", err)
+	}
+	descendantPID, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil || descendantPID <= 0 {
+		t.Fatalf("descendant PID = %q, want positive integer", pidBytes)
+	}
+	t.Cleanup(func() {
+		if processAlive(descendantPID) {
+			_ = syscall.Kill(descendantPID, syscall.SIGKILL)
+		}
+	})
+	waitForGone(t, map[string]int{"ordinary-EOF descendant": descendantPID}, 5*time.Second)
+}
+
 // subreaperDirectionDeadline bounds a hang; it is not part of either assertion.
 //
 // Both subtests below pass one context to RunProxyWithSandbox AND to

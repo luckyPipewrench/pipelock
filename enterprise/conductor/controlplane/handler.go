@@ -463,7 +463,7 @@ func DefaultCapabilities(conductorID string) conductor.CapabilitiesResponse {
 		ConductorBundle:        conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.SchemaVersion},
 		RemoteKill:             conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.SchemaVersion},
 		RollbackAuthorization:  conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.SchemaVersion},
-		AuditBatch:             conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.AuditEnvelopeSchemaVersion},
+		AuditBatch:             conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.AppliedStateHeartbeatSchemaVersion},
 		ReceiptEntryVersions:   conductor.SupportedAuditEntryVersions(),
 		MaxCreatedSkewSeconds:  int(conductor.DefaultAuditMaxSkew / time.Second),
 		EmergencyStream:        false,
@@ -525,6 +525,8 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleListFollowers(w, r)
 	case FollowerRuntimeStatusPath:
 		h.handleFollowerRuntimeStatus(w, r)
+	case AppliedStateHeartbeatPath:
+		h.handleAppliedStateHeartbeat(w, r)
 	case StreamStatusPath:
 		h.handleStreamStatus(w, r)
 	default:
@@ -585,7 +587,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RemoteKillEvaluatePath, RollbackAuthorizationsPath, RollbackEvaluatePath, DecisionReplayPath, PublishPolicyBundlePath, PublishPolicyEvaluatePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, StreamStatusPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RemoteKillEvaluatePath, RollbackAuthorizationsPath, RollbackEvaluatePath, DecisionReplayPath, PublishPolicyBundlePath, PublishPolicyEvaluatePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, AppliedStateHeartbeatPath, StreamStatusPath:
 		return path
 	default:
 		return "unknown"

@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 type statusReport struct {
@@ -44,9 +45,10 @@ type statusScanner struct {
 }
 
 type statusLicense struct {
-	State  string `json:"state"`
-	ID     string `json:"id,omitempty"`
-	Detail string `json:"detail,omitempty"`
+	State   string `json:"state"`
+	ID      string `json:"id,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 type statusKillSwitchReport struct {
@@ -164,17 +166,23 @@ func modeAction(cfg *config.Config) string {
 }
 
 func statusLicenseState(cfg *config.Config, now time.Time) statusLicense {
+	warning := license.ExpiryStatus(license.License{
+		ID:        cfg.LicenseID,
+		IssuedAt:  cfg.LicenseIssuedAt,
+		ExpiresAt: cfg.LicenseExpiresAt,
+		Tier:      cfg.LicenseTier,
+	}, now).Message()
 	switch {
 	case cfg.LicenseKey == "":
 		return statusLicense{State: "not_configured", Detail: "no enterprise license configured"}
 	case cfg.LicenseRevoked:
 		return statusLicense{State: "revoked", ID: cfg.LicenseID, Detail: cfg.LicenseRevocationReason}
-	case cfg.LicenseExpiresAt > 0 && now.Unix() > cfg.LicenseExpiresAt:
+	case cfg.LicenseExpiresAt > 0 && now.Unix() >= cfg.LicenseExpiresAt:
 		return statusLicense{State: "expired", ID: cfg.LicenseID, Detail: time.Unix(cfg.LicenseExpiresAt, 0).UTC().Format(time.DateOnly)}
 	case cfg.LicenseAgentsFeature:
-		return statusLicense{State: "active", ID: cfg.LicenseID, Detail: "agents feature enabled"}
+		return statusLicense{State: "active", ID: cfg.LicenseID, Detail: "agents feature enabled", Warning: warning}
 	case cfg.LicenseID != "":
-		return statusLicense{State: "configured", ID: cfg.LicenseID, Detail: "license token loaded"}
+		return statusLicense{State: "configured", ID: cfg.LicenseID, Detail: "license token loaded", Warning: warning}
 	default:
 		return statusLicense{State: "configured", Detail: "license token configured; verification status unavailable in this build"}
 	}
@@ -234,6 +242,9 @@ func printStatusReport(w io.Writer, report statusReport) {
 		_, _ = fmt.Fprintf(w, " - %s", terminalDisplay(report.License.Detail))
 	}
 	_, _ = fmt.Fprintln(w)
+	if report.License.Warning != "" {
+		_, _ = fmt.Fprintf(w, "License warning: %s\n", terminalDisplay(report.License.Warning))
+	}
 	_, _ = fmt.Fprintf(w, "Kill switch: active=%t", report.KillSwitch.Active)
 	if report.KillSwitch.Detail != "" {
 		_, _ = fmt.Fprintf(w, " (%s)", terminalDisplay(report.KillSwitch.Detail))

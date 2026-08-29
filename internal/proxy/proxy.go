@@ -463,6 +463,16 @@ type Proxy struct {
 	probeInflight        atomic.Bool                           // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
 	metricsTargetPtr     atomic.Pointer[metricsDialTarget]     // resolved metrics listener; rebuilt when MetricsListen changes
 	lookupMetricsHost    func(context.Context, string) ([]string, error)
+	// responseBodyLimit is an internal test seam. Production leaves it zero
+	// and uses fetch_proxy.max_response_mb.
+	responseBodyLimit int64
+}
+
+func (p *Proxy) responseScanBodyLimit(cfg *config.Config) int64 {
+	if p != nil && p.responseBodyLimit > 0 {
+		return p.responseBodyLimit
+	}
+	return int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
 }
 
 // Option configures optional Proxy behavior.
@@ -1856,6 +1866,15 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		}
 		return false
 	}
+	receiptStagePublished := receiptStage.reuseExisting || receiptStage.emitter == nil
+	defer func() {
+		if receiptStagePublished {
+			return
+		}
+		if err := receiptStage.emitter.AbortNativeAEL(); err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("close unpublished native AEL emitter: %w", err))
+		}
+	}()
 	contractLoader, contractErr := buildContractLoader(cfg)
 	if contractErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
@@ -1935,18 +1954,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			}
 		}
 	}
-	if cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil && !receiptStage.reuseExisting && receiptStage.emitter != nil {
-		if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
-			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-				fmt.Errorf("session_open receipt emit failed, keeping old config: %w", err))
-			sc.Close()
-			if newEd != nil {
-				newEd.Close()
-			}
-			return false
-		}
-	}
-
 	// Staging above may load keys and build evidence components. Keep that I/O
 	// off the request snapshot lock; only publication and in-place state changes
 	// need to exclude CEE admissions.
@@ -1954,6 +1961,42 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	defer p.reloadMu.Unlock()
 	if p.reloadLocked != nil {
 		p.reloadLocked()
+	}
+
+	// A signer rotation gives native AEL a new key-scoped run. Close the old
+	// run while admissions are excluded and before publishing any new runtime
+	// state, so every replaced emitter has an explicit terminal record. The
+	// replacement open is persisted only after this close succeeds, so aborting
+	// here cannot leave the current receipt chain behind a staged record.
+	currentReceiptEmitter := p.receiptEmitterPtr.Load()
+	if current := currentReceiptEmitter; current != nil && !receiptStage.reuseExisting && current != receiptStage.emitter {
+		if err := current.RetireNativeAEL(); err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("native AEL rotation close failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
+	}
+	if cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil && !receiptStage.reuseExisting && receiptStage.emitter != nil {
+		if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
+			// The old AEL run is already terminal. If the replacement receipt was
+			// written before its paired AEL open failed, the old emitter's chain
+			// head is stale. Brick it explicitly so no later request can fork the
+			// signed receipt chain while the reload remains uncommitted.
+			if currentReceiptEmitter != nil {
+				currentReceiptEmitter.MarkUnhealthy(err)
+			}
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("session_open receipt emit failed, keeping old config fail-closed: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
 	}
 
 	// Publish both emitters now that staging has fully succeeded. The
@@ -1987,6 +2030,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.receiptEmitterPtr.Store(receiptStage.emitter)
 		p.v2EmitterPtr.Store(receiptStage.v2)
 		p.receiptKeyPath = receiptStage.keyPath
+		receiptStagePublished = true
 	}
 
 	// Apply enabled CEE components before publishing their config. A stricter
@@ -5304,7 +5348,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked
 	// at read time rather than after the full body has been consumed.
-	configMaxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+	configMaxBytes := p.responseScanBodyLimit(cfg)
 	maxBytes := configMaxBytes
 	remaining := resolved.Budget.RemainingBytes()
 	if remaining >= 0 && remaining < maxBytes {

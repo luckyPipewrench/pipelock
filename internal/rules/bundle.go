@@ -18,21 +18,22 @@ import (
 
 // Bundle represents a parsed and validated rule bundle.
 type Bundle struct {
-	FormatVersion    int      `yaml:"format_version"`
-	Name             string   `yaml:"name"`
-	Version          string   `yaml:"version"`
-	Author           string   `yaml:"author"`
-	Description      string   `yaml:"description"`
-	Homepage         string   `yaml:"homepage"`
-	MinPipelock      string   `yaml:"min_pipelock"`
-	License          string   `yaml:"license"`
-	Tier             string   `yaml:"tier"`              // standard, community, pro (v2+)
-	MonotonicVersion uint64   `yaml:"monotonic_version"` // rollback-prevention counter (v2+)
-	PublishedAt      string   `yaml:"published_at"`      // RFC 3339 timestamp (v2+)
-	ExpiresAt        string   `yaml:"expires_at"`        // RFC 3339 timestamp (v2+)
-	RequiredFeatures []string `yaml:"required_features"` // engine features needed (v2+, enforced at load time)
-	KeyID            string   `yaml:"key_id"`            // signing key fingerprint (v2+)
-	Rules            []Rule   `yaml:"rules"`
+	FormatVersion         int      `yaml:"format_version"`
+	Name                  string   `yaml:"name"`
+	Version               string   `yaml:"version"`
+	Author                string   `yaml:"author"`
+	Description           string   `yaml:"description"`
+	Homepage              string   `yaml:"homepage"`
+	MinPipelock           string   `yaml:"min_pipelock"`
+	TestedThroughPipelock string   `yaml:"tested_through_pipelock"`
+	License               string   `yaml:"license"`
+	Tier                  string   `yaml:"tier"`              // standard, community, pro (v2+)
+	MonotonicVersion      uint64   `yaml:"monotonic_version"` // rollback-prevention counter (v2+)
+	PublishedAt           string   `yaml:"published_at"`      // RFC 3339 timestamp (v2+)
+	ExpiresAt             string   `yaml:"expires_at"`        // RFC 3339 timestamp (v2+)
+	RequiredFeatures      []string `yaml:"required_features"` // engine features needed (v2+, enforced at load time)
+	KeyID                 string   `yaml:"key_id"`            // signing key fingerprint (v2+)
+	Rules                 []Rule   `yaml:"rules"`
 }
 
 // Rule represents a single detection rule within a bundle.
@@ -122,6 +123,8 @@ var KnownFeatures = map[string]bool{
 // featureNameRegex validates required_features entries: 1-64 chars,
 // lowercase alphanumeric + underscores.
 var featureNameRegex = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+var strictSemverRegex = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 
 // CheckRequiredFeatures verifies that every feature in required is well-formed
 // and is a known engine feature. Returns an error naming the first invalid or
@@ -238,6 +241,12 @@ func (b *Bundle) Validate() error {
 
 	if b.Description == "" {
 		return fmt.Errorf("validate bundle: description must not be empty")
+	}
+
+	if b.TestedThroughPipelock != "" {
+		if _, err := parseStrictSemverVersion(b.TestedThroughPipelock); err != nil {
+			return fmt.Errorf("validate bundle: invalid tested_through_pipelock %q: %w", b.TestedThroughPipelock, err)
+		}
 	}
 
 	// V2+ fields are required when format_version >= 2.
@@ -465,6 +474,34 @@ func CheckMinPipelock(minVersion, currentVersion string, allowUnversioned bool) 
 	return nil
 }
 
+// TestedThroughPipelockWarning reports when a released Pipelock binary is
+// newer than the bundle's advisory tested ceiling. It never rejects a bundle:
+// min_pipelock remains the fail-closed compatibility requirement.
+func TestedThroughPipelockWarning(testedThrough, currentVersion string) (string, error) {
+	if testedThrough == "" {
+		return "", nil
+	}
+
+	ceiling, err := parseStrictSemverVersion(testedThrough)
+	if err != nil {
+		return "", fmt.Errorf("check tested through pipelock: invalid tested_through_pipelock %q: %w", testedThrough, err)
+	}
+
+	effectiveVersion := stripDirtyMarker(currentVersion)
+	if isDevelopmentCurrentVersion(effectiveVersion) {
+		return "", nil
+	}
+	current, err := parseTestedThroughCurrentVersion(effectiveVersion)
+	if err != nil {
+		return "", nil
+	}
+	if compareStrictSemverVersion(current, ceiling) <= 0 {
+		return "", nil
+	}
+
+	return fmt.Sprintf("bundle tested through Pipelock %q, but running %q; tested_through_pipelock is advisory", testedThrough, currentVersion), nil
+}
+
 type semverVersion struct {
 	major      int
 	minor      int
@@ -515,6 +552,41 @@ func parseSemverVersion(s string) (semverVersion, error) {
 	}
 
 	return semverVersion{major: major, minor: minor, patch: patch, prerelease: prerelease}, nil
+}
+
+func parseStrictSemverVersion(s string) (strictSemverVersion, error) {
+	return parseStrictSemverParts(s)
+}
+
+type strictSemverVersion struct {
+	major      string
+	minor      string
+	patch      string
+	prerelease string
+}
+
+func parseTestedThroughCurrentVersion(s string) (strictSemverVersion, error) {
+	return parseStrictSemverParts(strings.TrimPrefix(s, "v"))
+}
+
+func parseStrictSemverParts(s string) (strictSemverVersion, error) {
+	if !strictSemverRegex.MatchString(s) {
+		return strictSemverVersion{}, fmt.Errorf("must be SemVer 2.0.0")
+	}
+	releaseAndPrerelease := strings.SplitN(strings.SplitN(s, "+", 2)[0], "-", 2)
+	if len(releaseAndPrerelease) == 2 {
+		for _, identifier := range strings.Split(releaseAndPrerelease[1], ".") {
+			if len(identifier) > 1 && identifier[0] == '0' && isDigits(identifier) {
+				return strictSemverVersion{}, fmt.Errorf("numeric prerelease identifier %q must not contain leading zeroes", identifier)
+			}
+		}
+	}
+	release := strings.Split(releaseAndPrerelease[0], ".")
+	prerelease := ""
+	if len(releaseAndPrerelease) == 2 {
+		prerelease = releaseAndPrerelease[1]
+	}
+	return strictSemverVersion{major: release[0], minor: release[1], patch: release[2], prerelease: prerelease}, nil
 }
 
 // stripDirtyMarker removes a trailing git-describe dirty marker so the rest of
@@ -651,6 +723,54 @@ func comparePrerelease(a, b string) int {
 		}
 	}
 	return cmpInt(len(aParts), len(bParts))
+}
+
+func compareStrictSemverVersion(a, b strictSemverVersion) int {
+	for _, versions := range [][2]string{{a.major, b.major}, {a.minor, b.minor}, {a.patch, b.patch}} {
+		if cmp := compareDecimalStrings(versions[0], versions[1]); cmp != 0 {
+			return cmp
+		}
+	}
+	if a.prerelease == b.prerelease {
+		return 0
+	}
+	if a.prerelease == "" {
+		return 1
+	}
+	if b.prerelease == "" {
+		return -1
+	}
+	return compareStrictPrerelease(a.prerelease, b.prerelease)
+}
+
+func compareStrictPrerelease(a, b string) int {
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	for i := 0; i < len(aParts) && i < len(bParts); i++ {
+		if aParts[i] == bParts[i] {
+			continue
+		}
+		aNumeric := isDigits(aParts[i])
+		bNumeric := isDigits(bParts[i])
+		switch {
+		case aNumeric && bNumeric:
+			return compareDecimalStrings(aParts[i], bParts[i])
+		case aNumeric:
+			return -1
+		case bNumeric:
+			return 1
+		default:
+			return strings.Compare(aParts[i], bParts[i])
+		}
+	}
+	return cmpInt(len(aParts), len(bParts))
+}
+
+func compareDecimalStrings(a, b string) int {
+	if len(a) != len(b) {
+		return cmpInt(len(a), len(b))
+	}
+	return strings.Compare(a, b)
 }
 
 // compareSemver returns -1 if a < b, 0 if equal, 1 if a > b.

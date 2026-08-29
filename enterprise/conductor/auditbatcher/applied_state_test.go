@@ -6,9 +6,12 @@
 package auditbatcher
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,6 +97,51 @@ func TestProducer_EmitsSignedAppliedStateWhenEnabled(t *testing.T) {
 	// applied-state (it is inside SignablePreimage).
 }
 
+func TestSignAppliedStateHeartbeat(t *testing.T) {
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	heartbeat := conductor.AppliedStateHeartbeat{
+		SchemaVersion: conductor.SchemaVersion,
+		HeartbeatID:   "state-1",
+		OrgID:         "org-main",
+		FleetID:       "prod",
+		InstanceID:    "pl-prod-1",
+		EmittedAt:     now,
+		AppliedState: conductor.FollowerAppliedState{
+			PipelockVersion:       "3.1.0",
+			LastPolicyPollAt:      now,
+			LastSuccessfulApplyAt: now,
+			ObservedAt:            now,
+			ProvenanceAt:          now,
+		},
+	}
+	signed, err := SignAppliedStateHeartbeat(heartbeat, "audit-key-1", priv)
+	if err != nil {
+		t.Fatalf("SignAppliedStateHeartbeat: %v", err)
+	}
+	if err := signed.VerifySignaturesAt(now, func(id string) (conductor.SignatureKey, error) {
+		if id != "audit-key-1" {
+			return conductor.SignatureKey{}, errors.New("unknown key")
+		}
+		return conductor.SignatureKey{PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
+	}); err != nil {
+		t.Fatalf("VerifySignaturesAt: %v", err)
+	}
+	if _, err := SignAppliedStateHeartbeat(heartbeat, "audit-key-1", ed25519.PrivateKey("short")); err == nil {
+		t.Fatal("SignAppliedStateHeartbeat(short key) = nil error")
+	}
+	if _, err := SignAppliedStateHeartbeat(heartbeat, "bad key id", priv); err == nil {
+		t.Fatal("SignAppliedStateHeartbeat(bad signer id) = nil error")
+	}
+	heartbeat.AppliedState.ProvenanceAt = time.Time{}
+	if _, err := SignAppliedStateHeartbeat(heartbeat, "audit-key-1", priv); err == nil {
+		t.Fatal("SignAppliedStateHeartbeat(missing provenance) = nil error")
+	}
+}
+
 func TestProducer_StampsObservedAtWhenProviderLeavesZero(t *testing.T) {
 	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
 	producer, q, auditPub := newAppliedStateProducer(t, ProducerConfig{
@@ -147,4 +195,158 @@ func TestProducer_OmitsAppliedStateWhenProviderNil(t *testing.T) {
 	if batch.Envelope.AppliedState != nil {
 		t.Fatalf("AppliedState = %+v, want nil (nil provider)", *batch.Envelope.AppliedState)
 	}
+}
+
+func TestProducer_AppliedStateHeartbeatRunsIdleAndStopsOnClose(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		EmitAppliedState:          true,
+		EmitAppliedStateHeartbeat: true,
+		HeartbeatInterval:         10 * time.Millisecond,
+		AppliedStateHeartbeat: func(context.Context) error {
+			started <- struct{}{}
+			<-release
+			close(finished)
+			return nil
+		},
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("idle applied-state heartbeat did not fire")
+	}
+	if err := producer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	select {
+	case <-producer.heartbeatDone:
+	default:
+		t.Fatal("heartbeat goroutine still running after Close")
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight heartbeat callback did not finish after release")
+	}
+	select {
+	case <-started:
+		t.Fatal("applied-state heartbeat started again after close")
+	default:
+	}
+}
+
+func TestProducer_AppliedStateHeartbeatDisabledWithoutNegotiation(t *testing.T) {
+	fired := make(chan struct{}, 1)
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		// Audit schema v2 enables batch applied-state, but only v3 enables the
+		// recorder-independent heartbeat.
+		EmitAppliedState:  true,
+		HeartbeatInterval: time.Millisecond,
+		AppliedStateHeartbeat: func(context.Context) error {
+			fired <- struct{}{}
+			return nil
+		},
+	})
+	<-producer.heartbeatDone
+	select {
+	case <-fired:
+		t.Fatal("unnegotiated applied-state heartbeat fired")
+	default:
+	}
+	if err := producer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestProducer_CloseCancelsActiveAppliedStateHeartbeat(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	var startedOnce sync.Once
+	var canceledOnce sync.Once
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		EmitAppliedStateHeartbeat: true,
+		HeartbeatInterval:         time.Millisecond,
+		AppliedStateHeartbeat: func(ctx context.Context) error {
+			startedOnce.Do(func() { close(started) })
+			<-ctx.Done()
+			canceledOnce.Do(func() { close(canceled) })
+			return ctx.Err()
+		},
+	})
+	<-started
+	if err := producer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("active heartbeat context was not canceled by Close")
+	}
+}
+
+func TestProducer_AppliedStateHeartbeatRetriesAfterTimeout(t *testing.T) {
+	retried := make(chan struct{})
+	var calls atomic.Int64
+	var retriedOnce sync.Once
+	heartbeatContext, heartbeatCancel := context.WithCancel(context.Background())
+	producer := &Producer{
+		emitStateHeartbeat: true,
+		heartbeatInterval:  time.Millisecond,
+		heartbeatTimeout:   10 * time.Millisecond,
+		appliedStateHeartbeat: func(ctx context.Context) error {
+			if calls.Add(1) == 1 {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			retriedOnce.Do(func() { close(retried) })
+			return nil
+		},
+		heartbeatContext: heartbeatContext,
+		heartbeatCancel:  heartbeatCancel,
+		heartbeatStop:    make(chan struct{}),
+		heartbeatDone:    make(chan struct{}),
+	}
+	go producer.runAppliedStateHeartbeat()
+	select {
+	case <-retried:
+	case <-time.After(time.Second):
+		heartbeatCancel()
+		close(producer.heartbeatStop)
+		<-producer.heartbeatDone
+		t.Fatal("applied-state heartbeat did not retry after a per-attempt timeout")
+	}
+	heartbeatCancel()
+	close(producer.heartbeatStop)
+	<-producer.heartbeatDone
+}
+
+func TestProducer_CloseDoesNotWaitForHeartbeatIgnoringCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	producer, _, _ := newAppliedStateProducer(t, ProducerConfig{
+		EmitAppliedStateHeartbeat: true,
+		HeartbeatInterval:         time.Millisecond,
+		AppliedStateHeartbeat: func(context.Context) error {
+			startedOnce.Do(func() { close(started) })
+			<-release
+			return nil
+		},
+	})
+	<-started
+	closed := make(chan struct{})
+	go func() {
+		_ = producer.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("Close blocked on heartbeat callback that ignored cancellation")
+	}
+	close(release)
 }

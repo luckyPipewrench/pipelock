@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -158,6 +159,67 @@ func todayUTC() time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
+// Integer duration bounds leave room for runtime consumers that add a fixed
+// grace period or multiply the configured interval. Each bound is still more
+// than 97 years, so rejecting larger values cannot affect a useful timeout.
+const (
+	maxConfigDurationSeconds = int64((1<<63 - 1) / time.Second / 3)
+	maxConfigDurationMinutes = int64((1<<63 - 1) / time.Minute / 3)
+	maxConfigDurationDays    = int64((1<<63 - 1) / (24 * time.Hour) / 3)
+)
+
+type integerDurationBound struct {
+	name  string
+	value int
+	max   int64
+}
+
+func (c *Config) validateIntegerDurationBounds() error {
+	fields := []integerDurationBound{
+		{name: "conductor.created_skew_seconds", value: c.Conductor.CreatedSkewSeconds, max: maxConfigDurationSeconds},
+		{name: "mcp_input_scanning.response_timeout_seconds", value: c.MCPInputScanning.ResponseTimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "fetch_proxy.timeout_seconds", value: c.FetchProxy.TimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "response_scanning.ask_timeout_seconds", value: c.ResponseScanning.AskTimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "forward_proxy.max_tunnel_seconds", value: c.ForwardProxy.MaxTunnelSeconds, max: maxConfigDurationSeconds},
+		{name: "forward_proxy.idle_timeout_seconds", value: c.ForwardProxy.IdleTimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "websocket_proxy.max_connection_seconds", value: c.WebSocketProxy.MaxConnectionSeconds, max: maxConfigDurationSeconds},
+		{name: "websocket_proxy.idle_timeout_seconds", value: c.WebSocketProxy.IdleTimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "reverse_proxy.request_timeout_seconds", value: c.ReverseProxy.RequestTimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "defer.timeout_seconds", value: c.Defer.TimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "session_profiling.cleanup_interval_seconds", value: c.SessionProfiling.CleanupIntervalSeconds, max: maxConfigDurationSeconds},
+		{name: "adaptive_enforcement.level_duration_seconds", value: c.AdaptiveEnforcement.LevelDurationSeconds, max: maxConfigDurationSeconds},
+		{name: "adaptive_enforcement.deescalation_check_seconds", value: c.AdaptiveEnforcement.DeescalationCheckSeconds, max: maxConfigDurationSeconds},
+		{name: "health_watchdog.interval_seconds", value: c.HealthWatchdog.IntervalSeconds, max: maxConfigDurationSeconds},
+		{name: "emit.otlp.timeout_seconds", value: c.Emit.OTLP.TimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "emit.forwarder.timeout_seconds", value: c.Emit.Forwarder.TimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "emit.webhook.timeout_seconds", value: c.Emit.Webhook.TimeoutSecs, max: maxConfigDurationSeconds},
+		{name: "tool_chain_detection.window_seconds", value: c.ToolChainDetection.WindowSeconds, max: maxConfigDurationSeconds},
+		{name: "mediation_envelope.created_skew_seconds", value: c.MediationEnvelope.CreatedSkewSeconds, max: maxConfigDurationSeconds},
+		{name: "airlock.timers.drain_timeout_seconds", value: c.Airlock.Timers.DrainTimeoutSeconds, max: maxConfigDurationSeconds},
+		{name: "session_profiling.window_minutes", value: c.SessionProfiling.WindowMinutes, max: maxConfigDurationMinutes},
+		{name: "session_profiling.session_ttl_minutes", value: c.SessionProfiling.SessionTTLMinutes, max: maxConfigDurationMinutes},
+		{name: "cross_request_detection.entropy_budget.window_minutes", value: c.CrossRequestDetection.EntropyBudget.WindowMinutes, max: maxConfigDurationMinutes},
+		{name: "cross_request_detection.fragment_reassembly.window_minutes", value: c.CrossRequestDetection.FragmentReassembly.WindowMinutes, max: maxConfigDurationMinutes},
+		{name: "airlock.timers.soft_minutes", value: c.Airlock.Timers.SoftMinutes, max: maxConfigDurationMinutes},
+		{name: "airlock.timers.hard_minutes", value: c.Airlock.Timers.HardMinutes, max: maxConfigDurationMinutes},
+		{name: "airlock.timers.drain_minutes", value: c.Airlock.Timers.DrainMinutes, max: maxConfigDurationMinutes},
+		{name: "flight_recorder.retention_days", value: c.FlightRecorder.RetentionDays, max: maxConfigDurationDays},
+	}
+	for agentName, profile := range c.Agents {
+		fields = append(fields,
+			integerDurationBound{name: fmt.Sprintf("agents.%s.budget.window_minutes", agentName), value: profile.Budget.WindowMinutes, max: maxConfigDurationMinutes},
+			integerDurationBound{name: fmt.Sprintf("agents.%s.budget.max_wall_clock_minutes", agentName), value: profile.Budget.MaxWallClockMinutes, max: maxConfigDurationMinutes},
+		)
+	}
+	sort.Slice(fields, func(i, j int) bool { return fields[i].name < fields[j].name })
+	for _, field := range fields {
+		if int64(field.value) > field.max {
+			return fmt.Errorf("%s is too large: must be at most %d", field.name, field.max)
+		}
+	}
+	return nil
+}
+
 func isTextualUnscannablePassthroughType(mediaType string) bool {
 	if strings.HasPrefix(mediaType, "text/") {
 		return true
@@ -202,6 +264,9 @@ func (c *Config) Validate() error {
 // callers can surface every advisory emitted before the failing validator.
 func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	var warnings []Warning
+	if err := c.validateIntegerDurationBounds(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateMode(); err != nil {
 		return warnings, err
 	}

@@ -59,6 +59,63 @@ func TestStatusLicenseStateRoutes(t *testing.T) {
 	}
 }
 
+func TestStatusLicenseStateExpiryWarning(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	base := &config.Config{
+		LicenseKey:      "tok",
+		LicenseID:       "lic-1",
+		LicenseIssuedAt: now.Add(-30 * 24 * time.Hour).Unix(),
+		LicenseTier:     "trial",
+	}
+
+	t.Run("outside warning band", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Add(31 * 24 * time.Hour).Unix()
+		if got := statusLicenseState(&cfg, now).Warning; got != "" {
+			t.Fatalf("warning = %q, want empty", got)
+		}
+	})
+
+	t.Run("warning band", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Add(7 * 24 * time.Hour).Unix()
+		got := statusLicenseState(&cfg, now).Warning
+		if !strings.Contains(got, "trial ends in 7 day(s) on 2026-08-23") || !strings.Contains(got, "Pro features stop at expiry") {
+			t.Fatalf("warning = %q, want stable expiry guidance", got)
+		}
+	})
+
+	t.Run("active warning band", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseAgentsFeature = true
+		cfg.LicenseExpiresAt = now.Add(7 * 24 * time.Hour).Unix()
+		got := statusLicenseState(&cfg, now)
+		if got.State != "active" || got.ID != "lic-1" || !strings.Contains(got.Warning, "trial ends in 7 day(s)") {
+			t.Fatalf("active license = %+v, want active with expiry warning", got)
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Add(-time.Hour).Unix()
+		got := statusLicenseState(&cfg, now)
+		if got.State != "expired" || got.Warning != "" {
+			t.Fatalf("expired license = %+v, want expired without renewal warning", got)
+		}
+	})
+
+	t.Run("exact expiry second", func(t *testing.T) {
+		cfg := *base
+		cfg.LicenseExpiresAt = now.Unix()
+		got := statusLicenseState(&cfg, now)
+		if got.State != "expired" || got.Warning != "" {
+			t.Fatalf("license at expiry second = %+v, want expired without renewal warning", got)
+		}
+	})
+}
+
 func TestModeActionAuditWarns(t *testing.T) {
 	t.Parallel()
 

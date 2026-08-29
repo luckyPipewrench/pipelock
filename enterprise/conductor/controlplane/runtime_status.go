@@ -21,6 +21,7 @@ import (
 
 const (
 	FollowerRuntimeStatusPath = "/api/v1/conductor/follower/status"
+	AppliedStateHeartbeatPath = "/api/v1/conductor/follower/applied-state"
 
 	defaultRuntimeStatusStaleAfter  = 5 * time.Minute
 	maxFollowerRuntimeStatusRecords = 10000
@@ -397,6 +398,12 @@ func classifySignedAppliedState(follower FollowerSummary, signed VerifiedApplied
 	}
 	if provenance.IsZero() || now.Sub(provenance) > staleAfter || provenance.After(now.Add(staleAfter)) {
 		return FleetHealthStale, "signed_state_stale"
+	}
+	// A heartbeat proves the follower is alive, not that policy polling is
+	// advancing. Require the signed policy-poll timestamp to stay fresh so a
+	// live process with a dead policy channel cannot present as healthy.
+	if applied.LastPolicyPollAt.IsZero() || now.Sub(applied.LastPolicyPollAt) > staleAfter || applied.LastPolicyPollAt.After(now.Add(staleAfter)) {
+		return FleetHealthStale, "policy_poll_stale"
 	}
 	if applied.LastApplyErrorCode != "" || applied.LastApplyErrorMessage != "" {
 		return FleetHealthApplyFailed, "last_apply_failed"

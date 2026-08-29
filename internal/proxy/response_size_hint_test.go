@@ -6,6 +6,8 @@ package proxy
 import (
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // TestResponseSizeBlockReasonOnlyNamesConsultedKnobs guards the operator-UX
@@ -105,6 +107,29 @@ func TestReverseProxyResponseScanBodyLimit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tc.rp.responseScanBodyLimit(); got != tc.want {
+				t.Fatalf("responseScanBodyLimit() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProxyResponseScanBodyLimit(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	wantDefault := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+
+	for _, tc := range []struct {
+		name string
+		p    *Proxy
+		want int64
+	}{
+		{name: "nil proxy uses configured limit", want: wantDefault},
+		{name: "zero value uses configured limit", p: &Proxy{}, want: wantDefault},
+		{name: "test override", p: &Proxy{responseBodyLimit: 4096}, want: 4096},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.p.responseScanBodyLimit(cfg); got != tc.want {
 				t.Fatalf("responseScanBodyLimit() = %d, want %d", got, tc.want)
 			}
 		})

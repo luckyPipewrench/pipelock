@@ -423,7 +423,7 @@ pipelock contain run -- claude-code
 
 ## Free, Pro, and Enterprise
 
-All detection, enforcement, containment, and single-agent evidence is free forever under Apache 2.0. Paid tiers add multi-agent coordination (Pro) and fleet governance plus compliance (Enterprise).
+All detection, enforcement, containment, receipt verification, and the free single-agent evidence viewer are free forever under Apache 2.0. Pro adds named-agent operations, including per-agent coverage certificates; Enterprise adds fleet governance and compliance.
 
 | Capability | Free | Pro | Enterprise |
 |---|:--:|:--:|:--:|

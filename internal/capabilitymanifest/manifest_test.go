@@ -555,3 +555,33 @@ func TestManifestJSONCanBeDecodedByExternalConsumers(t *testing.T) {
 		t.Fatalf("schema_version = %v, want %d", document["schema_version"], SchemaVersion)
 	}
 }
+
+func TestREADMEFreeTierClaim(t *testing.T) {
+	root := repositoryRoot(t)
+	manifest, err := Load(filepath.Join(root, "docs/security/capability-manifest.json"))
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	var coverageCertificate *Capability
+	for i := range manifest.Capabilities {
+		if manifest.Capabilities[i].ID == "coverage-certificates" {
+			coverageCertificate = &manifest.Capabilities[i]
+			break
+		}
+	}
+	if coverageCertificate == nil {
+		t.Fatal("coverage certificate capability is missing from the manifest")
+	}
+	if coverageCertificate.Tier != "Pro" {
+		t.Fatalf("coverage certificate tier = %q, want Pro", coverageCertificate.Tier)
+	}
+
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	const freeTierClaim = "All detection, enforcement, containment, receipt verification, and the free single-agent evidence viewer are free forever under Apache 2.0. Pro adds named-agent operations, including per-agent coverage certificates; Enterprise adds fleet governance and compliance."
+	if !strings.Contains(string(readme), freeTierClaim) {
+		t.Fatalf("README.md free-tier claim is stale or omits the Pro coverage-certificate limit")
+	}
+}

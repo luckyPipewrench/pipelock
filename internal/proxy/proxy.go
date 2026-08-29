@@ -5808,6 +5808,9 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		sessionKey := sessionKeyFor(agent, clientIP)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: "response_scan", ClientIP: clientIP, RequestID: requestID})
 	}
+	if action == config.ActionStrip && result.TransformedContent == "" {
+		action = config.ActionBlock
+	}
 
 	// recordResponseSignal records an adaptive enforcement signal for the
 	// response scan result. Exempt domains skip scoring - their findings
@@ -5892,6 +5895,20 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		case hitl.DecisionAllow:
 			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
+			if result.TransformedContent == "" {
+				recordResponseSignal(session.SignalBlock)
+				reason := fmt.Sprintf("response contains prompt injection: %s (strip failed)", strings.Join(patternNames, ", "))
+				log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
+				emitResponseReceipt(receipt.EmitOpts{
+					ActionID: actionID, Verdict: config.ActionBlock, Layer: "response_scan", Pattern: reason,
+					Transport: "fetch", Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
+				})
+				writeBlockedJSON(w,
+					blockInfoFor(blockreason.PromptInjection, "response_scan"),
+					http.StatusForbidden,
+					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
+				return true, "", true
+			}
 			out = result.TransformedContent
 			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:

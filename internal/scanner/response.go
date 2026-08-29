@@ -90,7 +90,14 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	if len(metadata) == 0 {
 		return ResponseScanResult{Clean: true}
 	}
-	return s.ScanResponseWithSuppress(ctx, string(metadata), suppressTarget, suppress)
+	result := s.ScanResponseWithSuppress(ctx, string(metadata), suppressTarget, suppress)
+	if !result.Clean {
+		// A metadata-only scan cannot safely transform the complete image body.
+		// Leave this empty so strip callers fail closed instead of replacing the
+		// image with redacted metadata bytes.
+		result.TransformedContent = ""
+	}
+	return result
 }
 
 // ScanResponseWithSuppress checks fetched content like ScanResponse, but applies

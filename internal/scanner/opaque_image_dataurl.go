@@ -266,6 +266,7 @@ func isCompleteJPEG(data []byte) bool {
 	}
 	pos := 2
 	seenSOF := false
+	var frameComponents [256]bool
 	for pos < len(data) {
 		if data[pos] != 0xff {
 			return false
@@ -300,9 +301,15 @@ func isCompleteJPEG(data []byte) bool {
 			return false
 		}
 		if isJPEGSOFMarker(marker) {
+			if seenSOF || !parseJPEGFrameHeader(data[pos:segmentEnd], &frameComponents) {
+				return false
+			}
 			seenSOF = true
 		}
 		if marker == 0xda {
+			if !seenSOF || !validJPEGScanHeader(data[pos:segmentEnd], &frameComponents) {
+				return false
+			}
 			pos = segmentEnd
 			for pos < len(data) {
 				if data[pos] != 0xff {
@@ -330,6 +337,47 @@ func isCompleteJPEG(data []byte) bool {
 		pos = segmentEnd
 	}
 	return false
+}
+
+func parseJPEGFrameHeader(segment []byte, components *[256]bool) bool {
+	if len(segment) < 11 {
+		return false
+	}
+	componentCount := int(segment[7])
+	if componentCount == 0 || len(segment) != 8+3*componentCount {
+		return false
+	}
+	for i := range componentCount {
+		offset := 8 + 3*i
+		id := segment[offset]
+		sampling := segment[offset+1]
+		if components[id] || sampling>>4 == 0 || sampling&0x0f == 0 {
+			return false
+		}
+		components[id] = true
+	}
+	return true
+}
+
+func validJPEGScanHeader(segment []byte, components *[256]bool) bool {
+	if len(segment) < 8 {
+		return false
+	}
+	componentCount := int(segment[2])
+	if componentCount == 0 || len(segment) != 6+2*componentCount {
+		return false
+	}
+	var seen [256]bool
+	for i := range componentCount {
+		offset := 3 + 2*i
+		id := segment[offset]
+		tables := segment[offset+1]
+		if !components[id] || seen[id] || tables>>4 > 3 || tables&0x0f > 3 {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
 }
 
 func isJPEGSOFMarker(marker byte) bool {

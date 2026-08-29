@@ -2264,6 +2264,10 @@ func newInterceptHandler(
 				}
 				bundleRules := responseBundleRules(scanResult.Matches)
 				reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
+				if action == config.ActionStrip && scanResult.TransformedContent == "" {
+					action = config.ActionBlock
+					reason += " (strip failed)"
+				}
 
 				switch action {
 				case config.ActionBlock, config.ActionAsk:

@@ -18,25 +18,34 @@ Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent H
 
 The code-checked capability manifest is docs/security/capability-manifest.json. It lists the operator entry point and license gate for each surface below. Free means no license feature is required.
 
-| Capability | Access | Operator entry point |
-|---|---|---|
-| HTTP, WebSocket, and proxy mediation | Free | pipelock run |
-| MCP proxy scanning | Free | pipelock mcp proxy |
-| Signed action receipts | Free | flight_recorder |
-| Host containment for agent processes | Free | pipelock contain |
-| Single-agent process sandbox | Free | pipelock sandbox |
-| Global canary tokens | Free | canary_tokens |
-| Named agent profiles | Pro | agents.<profile> |
-| Per-agent sandbox overrides | Pro | agents.<profile>.sandbox |
-| Per-agent crypto address allowlists | Pro | agents.<profile>.allowed_addresses |
-| Read-only operator dashboard | Pro or Enterprise | pipelock dashboard serve |
-| Full assessment artifacts | Assess | pipelock assess finalize |
-| Conductor fleet coordination | Enterprise | pipelock conductor serve |
-| Per-agent coverage certificates | Pro | pipelock dashboard coverage-cert generate |
-| Exemption lifecycle records | Pro | pipelock dashboard exemption list |
-| Legal-hold metadata | Pro | pipelock dashboard legal-hold list |
-| Fleet audit sink | Enterprise | pipelock fleet-sink |
-| Fleet receipt reports | Enterprise | pipelock conductor fleet report |
+| Capability | Access | Operator entry point | Platform or deployment qualifier |
+|---|---|---|---|
+| HTTP, WebSocket, and proxy mediation | Free | pipelock run | Applies only to traffic routed through Pipelock; direct agent egress needs containment or network policy. |
+| MCP proxy scanning | Free | pipelock mcp proxy | Applies only to MCP transports that run through the Pipelock proxy. |
+| Signed action receipts | Free | flight_recorder |  |
+| Host containment for agent processes | Free | pipelock contain | Kernel-enforced containment requires Linux, nftables, and the managed identities; other targets cannot provide this containment path. |
+| Single-agent process sandbox | Free | pipelock sandbox | Kernel isolation requires Linux user namespaces. Without them, best-effort network isolation only sets HTTP(S)_PROXY; seccomp adds restrictions only on linux/amd64. |
+| Global canary tokens | Free | canary_tokens |  |
+| Named agent profiles | Pro | agents.<profile> |  |
+| Per-agent sandbox overrides | Pro | agents.<profile>.sandbox |  |
+| Per-agent crypto address allowlists | Pro | agents.<profile>.allowed_addresses |  |
+| Read-only operator dashboard | Pro or Enterprise | pipelock dashboard serve |  |
+| Full assessment artifacts | Assess | pipelock assess finalize |  |
+| Conductor fleet coordination | Enterprise | pipelock conductor serve |  |
+| Per-agent coverage certificates | Pro | pipelock dashboard coverage-cert generate |  |
+| Exemption lifecycle records | Pro | pipelock dashboard exemption list |  |
+| Legal-hold metadata | Pro | pipelock dashboard legal-hold list |  |
+| Fleet audit sink | Enterprise | pipelock fleet-sink |  |
+| Fleet receipt reports | Enterprise | pipelock conductor fleet report |  |
+| Emergency kill switch | Free | kill_switch |  |
+| Rule bundles | Free | rules |  |
+| Adaptive enforcement | Free | adaptive_enforcement |  |
+| TLS interception | Free | tls_interception | Requires a configured local CA that the intercepted client trusts; passthrough traffic remains encrypted and cannot be body-scanned. |
+| A2A protocol scanning | Free | a2a_scanning | Applies to A2A traffic carried on Pipelock's supported forward-proxy and MCP HTTP paths. |
+| Browser shield | Free | browser_shield | Applies only to supported browser response traffic that flows through Pipelock. |
+| Offline receipt verification | Free | pipelock verify-receipt |  |
+| Verdict explanations | Free | pipelock explain |  |
+| Deployment diagnostics | Free | pipelock doctor |  |
 
 <!-- END capability-manifest -->
 

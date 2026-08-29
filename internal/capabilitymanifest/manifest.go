@@ -22,6 +22,9 @@ const (
 
 	GateFree    = "free"
 	GateLicense = "license_feature"
+
+	SurfaceConfigSection = "config_section"
+	SurfaceCommand       = "command"
 )
 
 var capabilityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -29,9 +32,11 @@ var capabilityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // Manifest is the machine-readable product capability contract. It is kept in
 // docs/security so external consumers can read it without importing Go code.
 type Manifest struct {
-	SchemaVersion int               `json:"schema_version"`
-	Capabilities  []Capability      `json:"capabilities"`
-	GateCoverage  []GateSourceScope `json:"gate_coverage"`
+	SchemaVersion     int                `json:"schema_version"`
+	Capabilities      []Capability       `json:"capabilities"`
+	GateCoverage      []GateSourceScope  `json:"gate_coverage"`
+	GateExclusions    []GateExclusion    `json:"gate_exclusions"`
+	SurfaceExclusions []SurfaceExclusion `json:"surface_exclusions"`
 }
 
 // Capability describes one operator-visible product capability.
@@ -44,6 +49,32 @@ type Capability struct {
 	Gate               Gate                `json:"gate"`
 	Implementation     SourceReference     `json:"implementation"`
 	OperatorEntryPoint *OperatorEntryPoint `json:"operator_entry_point"`
+	SurfaceCoverage    []SurfaceReference  `json:"surface_coverage,omitempty"`
+	Availability       *Availability       `json:"availability,omitempty"`
+}
+
+// SurfaceReference maps a code-enumerated operator surface to the capability
+// that owns it. It is separate from operator_entry_point because one
+// capability can be configured or operated through more than one root surface.
+type SurfaceReference struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// SurfaceExclusion records a code-enumerated surface that is deliberately not
+// a separately documented capability. Exclusions are exact, never wildcards,
+// and require a public reason.
+type SurfaceExclusion struct {
+	Kind   string `json:"kind"`
+	Value  string `json:"value"`
+	Reason string `json:"reason"`
+}
+
+// Availability records a platform or deployment condition that changes the
+// strength or reachability of a capability claim.
+type Availability struct {
+	Scope     string `json:"scope"`
+	Qualifier string `json:"qualifier"`
 }
 
 // Gate records the entitlement used by a capability. A capability may accept
@@ -66,6 +97,14 @@ type GateFeature struct {
 type GateSourceScope struct {
 	Feature string `json:"feature"`
 	Prefix  string `json:"prefix"`
+}
+
+// GateExclusion records a runtime license check that is deliberately outside
+// the operator capability surface and therefore has no public manifest row.
+type GateExclusion struct {
+	Feature string `json:"feature"`
+	Prefix  string `json:"prefix"`
+	Reason  string `json:"reason"`
 }
 
 // EnforcementCheck identifies the concrete call that denies the feature.
@@ -142,6 +181,16 @@ func (m Manifest) Validate() error {
 			return err
 		}
 	}
+	for _, exclusion := range m.GateExclusions {
+		if err := exclusion.Validate(); err != nil {
+			return fmt.Errorf("gate exclusion %q: %w", exclusion.Prefix, err)
+		}
+	}
+	for _, exclusion := range m.SurfaceExclusions {
+		if err := exclusion.Validate(); err != nil {
+			return fmt.Errorf("surface exclusion %q: %w", exclusion.Value, err)
+		}
+	}
 	return nil
 }
 
@@ -171,6 +220,54 @@ func (c Capability) Validate() error {
 	}
 	if err := c.Gate.Validate(c.Tier); err != nil {
 		return err
+	}
+	for _, surface := range c.SurfaceCoverage {
+		if err := surface.Validate(); err != nil {
+			return fmt.Errorf("surface coverage %q: %w", surface.Value, err)
+		}
+	}
+	if c.Availability != nil {
+		if err := c.Availability.Validate(); err != nil {
+			return fmt.Errorf("availability: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s SurfaceReference) Validate() error {
+	if s.Kind != SurfaceConfigSection && s.Kind != SurfaceCommand {
+		return fmt.Errorf("kind %q is unsupported", s.Kind)
+	}
+	if strings.TrimSpace(s.Value) == "" || strings.TrimSpace(s.Value) != s.Value {
+		return fmt.Errorf("value is required and must not have surrounding whitespace")
+	}
+	if strings.ContainsAny(s.Value, "*?") {
+		return fmt.Errorf("value must be exact, not a wildcard")
+	}
+	if s.Kind == SurfaceCommand && !strings.HasPrefix(s.Value, "pipelock ") {
+		return fmt.Errorf("command value must start with pipelock followed by a space")
+	}
+	return nil
+}
+
+func (s SurfaceExclusion) Validate() error {
+	if err := (SurfaceReference{Kind: s.Kind, Value: s.Value}).Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.Reason) == "" {
+		return fmt.Errorf("reason is required")
+	}
+	return nil
+}
+
+func (a Availability) Validate() error {
+	switch a.Scope {
+	case "mediated_traffic", "deployment_dependent", "platform_dependent":
+	default:
+		return fmt.Errorf("scope %q is unsupported", a.Scope)
+	}
+	if strings.TrimSpace(a.Qualifier) == "" {
+		return fmt.Errorf("qualifier is required")
 	}
 	return nil
 }
@@ -226,6 +323,16 @@ func (s GateSourceScope) Validate() error {
 	}
 	if strings.TrimSpace(s.Prefix) == "" || filepath.IsAbs(s.Prefix) || strings.HasPrefix(filepath.Clean(s.Prefix), ".."+string(filepath.Separator)) {
 		return fmt.Errorf("gate source prefix %q must be repository relative", s.Prefix)
+	}
+	return nil
+}
+
+func (s GateExclusion) Validate() error {
+	if err := (GateSourceScope{Feature: s.Feature, Prefix: s.Prefix}).Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.Reason) == "" {
+		return fmt.Errorf("reason is required")
 	}
 	return nil
 }

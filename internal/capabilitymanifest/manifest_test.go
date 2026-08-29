@@ -15,9 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cli"
 )
 
 func TestManifestParity(t *testing.T) {
@@ -78,13 +81,8 @@ func TestManifestCoversDirectRuntimeLicenseGates(t *testing.T) {
 		t.Fatalf("load manifest: %v", err)
 	}
 
-	// Counterparty verification is intentionally not an operator product. It
-	// must stay out of the public manifest and generated contributor guide until
-	// it has a supported operator entry point.
-	knownUnreachable := []GateSourceScope{
-		{Feature: "fleet", Prefix: "enterprise/counterparty/"},
-	}
 	usedCoverage := make([]bool, len(manifest.GateCoverage))
+	usedExclusions := make([]bool, len(manifest.GateExclusions))
 	var unknown []string
 	for _, sourceRoot := range []string{"internal", "enterprise"} {
 		err := filepath.WalkDir(filepath.Join(root, sourceRoot), func(path string, entry fs.DirEntry, walkErr error) error {
@@ -119,8 +117,9 @@ func TestManifestCoversDirectRuntimeLicenseGates(t *testing.T) {
 						return true
 					}
 				}
-				for _, scope := range knownUnreachable {
+				for i, scope := range manifest.GateExclusions {
 					if scope.Feature == feature && strings.HasPrefix(relative, scope.Prefix) {
+						usedExclusions[i] = true
 						return true
 					}
 				}
@@ -140,6 +139,155 @@ func TestManifestCoversDirectRuntimeLicenseGates(t *testing.T) {
 		if !used {
 			t.Fatalf("gate_coverage scope %q for %q matches no direct runtime license gate", manifest.GateCoverage[i].Prefix, manifest.GateCoverage[i].Feature)
 		}
+	}
+	for i, used := range usedExclusions {
+		if !used {
+			t.Fatalf("gate exclusion %q for %q matches no direct runtime license gate", manifest.GateExclusions[i].Prefix, manifest.GateExclusions[i].Feature)
+		}
+	}
+}
+
+func TestManifestCoversEnumeratedOperatorSurfaces(t *testing.T) {
+	root := repositoryRoot(t)
+	manifest, err := Load(filepath.Join(root, "docs/security/capability-manifest.json"))
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+
+	configSections := rootConfigSections(t, root)
+	commands := make([]string, 0)
+	for _, name := range cli.RegisteredTopLevelCommandNames() {
+		commands = append(commands, "pipelock "+name)
+	}
+
+	assertSurfaceCoverage(t, manifest, SurfaceConfigSection, configSections)
+	assertSurfaceCoverage(t, manifest, SurfaceCommand, commands)
+}
+
+func rootConfigSections(t *testing.T, root string) []string {
+	t.Helper()
+	config := declaration(t, root, SourceReference{File: "internal/config/schema.go", Symbol: "Config"})
+	typeSpec, ok := config.(*ast.TypeSpec)
+	if !ok {
+		t.Fatal("Config declaration is not a type")
+	}
+	structType, ok := typeSpec.Type.(*ast.StructType)
+	if !ok {
+		t.Fatal("Config declaration is not a struct")
+	}
+
+	sections := make([]string, 0)
+	for _, field := range structType.Fields.List {
+		if field.Tag == nil || !isConfigSectionType(field.Type) {
+			continue
+		}
+		tag, err := strconv.Unquote(field.Tag.Value)
+		if err != nil {
+			t.Fatalf("unquote Config tag: %v", err)
+		}
+		yamlField := strings.Split(reflect.StructTag(tag).Get("yaml"), ",")[0]
+		if yamlField != "" && yamlField != "-" {
+			sections = append(sections, yamlField)
+		}
+	}
+	sort.Strings(sections)
+	return sections
+}
+
+func isConfigSectionType(expr ast.Expr) bool {
+	switch value := expr.(type) {
+	case *ast.Ident:
+		switch value.Name {
+		case "bool", "int", "int64", "string":
+			return false
+		default:
+			return true
+		}
+	case *ast.SelectorExpr, *ast.MapType:
+		return true
+	case *ast.ArrayType:
+		return isConfigSectionType(value.Elt)
+	default:
+		return false
+	}
+}
+
+func assertSurfaceCoverage(t *testing.T, manifest Manifest, kind string, enumerated []string) {
+	t.Helper()
+	known := make(map[string]struct{}, len(enumerated))
+	for _, value := range enumerated {
+		known[value] = struct{}{}
+	}
+
+	covered := make(map[string]string)
+	for _, capability := range manifest.Capabilities {
+		entry := *capability.OperatorEntryPoint
+		if entry.Kind == "config" && kind == SurfaceConfigSection {
+			if _, ok := known[entry.Field]; ok {
+				covered[entry.Field] = capability.ID
+			}
+		}
+		if entry.Kind == "command" && kind == SurfaceCommand {
+			if _, ok := known[entry.Value]; ok {
+				covered[entry.Value] = capability.ID
+			}
+		}
+		for _, surface := range capability.SurfaceCoverage {
+			if surface.Kind != kind {
+				continue
+			}
+			if _, ok := known[surface.Value]; !ok {
+				// Enterprise-only root commands are absent from the default build.
+				// The enterprise-tagged run enumerates the superset and rejects a
+				// genuinely stale command coverage record.
+				if kind == SurfaceCommand {
+					continue
+				}
+				t.Errorf("capability %q maps stale %s %q", capability.ID, kind, surface.Value)
+				continue
+			}
+			if owner, exists := covered[surface.Value]; exists && owner != capability.ID {
+				t.Errorf("%s %q is mapped by both %q and %q", kind, surface.Value, owner, capability.ID)
+				continue
+			}
+			covered[surface.Value] = capability.ID
+		}
+	}
+
+	excluded := make(map[string]string)
+	for _, exclusion := range manifest.SurfaceExclusions {
+		if exclusion.Kind != kind {
+			continue
+		}
+		if _, ok := known[exclusion.Value]; !ok {
+			if kind == SurfaceCommand {
+				continue
+			}
+			t.Errorf("surface exclusion %q names no enumerated %s", exclusion.Value, kind)
+			continue
+		}
+		if owner, exists := covered[exclusion.Value]; exists {
+			t.Errorf("%s %q is both mapped by %q and excluded", kind, exclusion.Value, owner)
+			continue
+		}
+		if reason, exists := excluded[exclusion.Value]; exists {
+			t.Errorf("%s %q is excluded twice (%q and %q)", kind, exclusion.Value, reason, exclusion.Reason)
+			continue
+		}
+		excluded[exclusion.Value] = exclusion.Reason
+	}
+
+	for _, value := range enumerated {
+		if _, ok := covered[value]; ok {
+			continue
+		}
+		if _, ok := excluded[value]; ok {
+			continue
+		}
+		t.Errorf("%s %q has no manifest capability or documented exclusion", kind, value)
+	}
+	if len(enumerated) > 0 && len(covered)*4 < len(enumerated) {
+		t.Errorf("%s coverage is diluted: %d of %d surfaces map to capabilities; at least 25%% must be mapped rather than excluded", kind, len(covered), len(enumerated))
 	}
 }
 

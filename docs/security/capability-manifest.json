@@ -11,6 +11,13 @@
     { "feature": "fleet", "prefix": "internal/cli/diag/" },
     { "feature": "assess", "prefix": "internal/cli/assess/" }
   ],
+  "gate_exclusions": [
+    {
+      "feature": "fleet",
+      "prefix": "enterprise/counterparty/",
+      "reason": "Counterparty verification is shipped and gated, but has no operator entry point."
+    }
+  ],
   "capabilities": [
     {
       "id": "network-mediation",
@@ -19,6 +26,43 @@
       "tier": "Free",
       "visibility": "operator",
       "gate": { "kind": "free" },
+      "availability": {
+        "scope": "mediated_traffic",
+        "qualifier": "Applies only to traffic routed through Pipelock; direct agent egress needs containment or network policy."
+      },
+      "surface_coverage": [
+        { "kind": "config_section", "value": "address_protection" },
+        { "kind": "config_section", "value": "cross_request_detection" },
+        { "kind": "config_section", "value": "dlp" },
+        { "kind": "config_section", "value": "dns" },
+        { "kind": "config_section", "value": "fetch_proxy" },
+        { "kind": "config_section", "value": "forward_proxy" },
+        { "kind": "config_section", "value": "git_protection" },
+        { "kind": "config_section", "value": "logging" },
+        { "kind": "config_section", "value": "request_body_scanning" },
+        { "kind": "config_section", "value": "request_policy" },
+        { "kind": "config_section", "value": "response_scanning" },
+        { "kind": "config_section", "value": "reverse_proxy" },
+        { "kind": "config_section", "value": "scan_api" },
+        { "kind": "config_section", "value": "seed_phrase_detection" },
+        { "kind": "config_section", "value": "session_profiling" },
+        { "kind": "config_section", "value": "ssrf" },
+        { "kind": "config_section", "value": "suppress" },
+        { "kind": "config_section", "value": "websocket_proxy" },
+        { "kind": "command", "value": "pipelock audit" },
+        { "kind": "command", "value": "pipelock check" },
+        { "kind": "command", "value": "pipelock demo" },
+        { "kind": "command", "value": "pipelock diagnose" },
+        { "kind": "command", "value": "pipelock discover" },
+        { "kind": "command", "value": "pipelock git" },
+        { "kind": "command", "value": "pipelock healthcheck" },
+        { "kind": "command", "value": "pipelock preflight" },
+        { "kind": "command", "value": "pipelock scan" },
+        { "kind": "command", "value": "pipelock skill-scan" },
+        { "kind": "command", "value": "pipelock simulate" },
+        { "kind": "command", "value": "pipelock test" },
+        { "kind": "command", "value": "pipelock verify-install" }
+      ],
       "implementation": { "file": "internal/cli/runtime/run.go", "symbol": "RunCmd" },
       "operator_entry_point": {
         "kind": "command",
@@ -33,6 +77,37 @@
       "tier": "Free",
       "visibility": "operator",
       "gate": { "kind": "free" },
+      "availability": {
+        "scope": "mediated_traffic",
+        "qualifier": "Applies only to MCP transports that run through the Pipelock proxy."
+      },
+      "surface_coverage": [
+        { "kind": "config_section", "value": "airlock" },
+        { "kind": "config_section", "value": "behavioral_baseline" },
+        { "kind": "config_section", "value": "defer" },
+        { "kind": "config_section", "value": "file_sentry" },
+        { "kind": "config_section", "value": "learn" },
+        { "kind": "config_section", "value": "learn_lock" },
+        { "kind": "config_section", "value": "mcp_binary_integrity" },
+        { "kind": "config_section", "value": "mcp_data_class_labels" },
+        { "kind": "config_section", "value": "mcp_input_scanning" },
+        { "kind": "config_section", "value": "mcp_session_binding" },
+        { "kind": "config_section", "value": "mcp_tool_policy" },
+        { "kind": "config_section", "value": "mcp_tool_provenance" },
+        { "kind": "config_section", "value": "mcp_tool_scanning" },
+        { "kind": "config_section", "value": "mcp_ws_listener" },
+        { "kind": "config_section", "value": "media_policy" },
+        { "kind": "config_section", "value": "mediation_envelope" },
+        { "kind": "config_section", "value": "redaction" },
+        { "kind": "config_section", "value": "taint" },
+        { "kind": "config_section", "value": "tool_chain_detection" },
+        { "kind": "command", "value": "pipelock baseline" },
+        { "kind": "command", "value": "pipelock envelope" },
+        { "kind": "command", "value": "pipelock integrity" },
+        { "kind": "command", "value": "pipelock learn" },
+        { "kind": "command", "value": "pipelock mcp" },
+        { "kind": "command", "value": "pipelock session" }
+      ],
       "implementation": { "file": "internal/cli/runtime/mcp.go", "symbol": "mcpProxyCmdWithAuditLoggerFactory" },
       "operator_entry_point": {
         "kind": "command",
@@ -47,6 +122,21 @@
       "tier": "Free",
       "visibility": "operator",
       "gate": { "kind": "free" },
+      "surface_coverage": [
+        { "kind": "command", "value": "pipelock anchor" },
+        { "kind": "command", "value": "pipelock commitment-key" },
+        { "kind": "command", "value": "pipelock evidence" },
+        { "kind": "command", "value": "pipelock keygen" },
+        { "kind": "command", "value": "pipelock keys" },
+        { "kind": "command", "value": "pipelock policy" },
+        { "kind": "command", "value": "pipelock posture" },
+        { "kind": "command", "value": "pipelock report" },
+        { "kind": "command", "value": "pipelock sign" },
+        { "kind": "command", "value": "pipelock signing" },
+        { "kind": "command", "value": "pipelock transcript-root" },
+        { "kind": "command", "value": "pipelock trust" },
+        { "kind": "command", "value": "pipelock verify" }
+      ],
       "implementation": { "file": "internal/cli/signing/receipt.go", "symbol": "VerifyReceiptCmd" },
       "operator_entry_point": {
         "kind": "config",
@@ -62,6 +152,13 @@
       "tier": "Free",
       "visibility": "operator",
       "gate": { "kind": "free" },
+      "availability": {
+        "scope": "platform_dependent",
+        "qualifier": "Kernel-enforced containment requires Linux, nftables, and the managed identities; other targets cannot provide this containment path."
+      },
+      "surface_coverage": [
+        { "kind": "config_section", "value": "containment" }
+      ],
       "implementation": { "file": "internal/cli/contain/cmd.go", "symbol": "Cmd" },
       "operator_entry_point": {
         "kind": "command",
@@ -76,6 +173,10 @@
       "tier": "Free",
       "visibility": "operator",
       "gate": { "kind": "free" },
+      "availability": {
+        "scope": "platform_dependent",
+        "qualifier": "Kernel isolation requires Linux user namespaces. Without them, best-effort network isolation only sets HTTP(S)_PROXY; seccomp adds restrictions only on linux/amd64."
+      },
       "implementation": { "file": "internal/cli/runtime/sandbox.go", "symbol": "SandboxCmd" },
       "operator_entry_point": {
         "kind": "command",
@@ -90,6 +191,9 @@
       "tier": "Free",
       "visibility": "operator",
       "gate": { "kind": "free" },
+      "surface_coverage": [
+        { "kind": "command", "value": "pipelock canary" }
+      ],
       "implementation": { "file": "internal/config/canary.go", "symbol": "validateCanaryTokens" },
       "operator_entry_point": {
         "kind": "config",
@@ -206,6 +310,10 @@
           }
         ]
       },
+      "surface_coverage": [
+        { "kind": "config_section", "value": "dashboard_snapshot" },
+        { "kind": "command", "value": "pipelock dashboard" }
+      ],
       "implementation": { "file": "enterprise/cli/dashboard.go", "symbol": "dashboardServeCmd" },
       "operator_entry_point": {
         "kind": "command",
@@ -232,6 +340,9 @@
           }
         ]
       },
+      "surface_coverage": [
+        { "kind": "command", "value": "pipelock assess" }
+      ],
       "implementation": { "file": "internal/cli/assess/finalize.go", "symbol": "runAssessFinalize" },
       "operator_entry_point": {
         "kind": "command",
@@ -258,6 +369,10 @@
           }
         ]
       },
+      "surface_coverage": [
+        { "kind": "config_section", "value": "conductor" },
+        { "kind": "command", "value": "pipelock conductor" }
+      ],
       "implementation": { "file": "enterprise/cli/conductor/cmd.go", "symbol": "serveCmd" },
       "operator_entry_point": {
         "kind": "command",
@@ -394,6 +509,276 @@
         "value": "pipelock conductor fleet report",
         "source": { "file": "enterprise/cli/conductor/fleet_report.go", "symbol": "fleetReportCmd" }
       }
+    },
+    {
+      "id": "emergency-kill-switch",
+      "name": "Emergency kill switch",
+      "summary": "Denies mediated traffic when any configured, local, or fleet kill source is active.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/killswitch/killswitch.go", "symbol": "buildRuntime" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "kill_switch",
+        "field": "kill_switch",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "rule-bundles",
+      "name": "Rule bundles",
+      "summary": "Loads signed rule bundles and applies their configured detection coverage.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "surface_coverage": [
+        { "kind": "command", "value": "pipelock rules" }
+      ],
+      "implementation": { "file": "internal/cli/runtime/server_rule_bundles.go", "symbol": "reportStartupRuleBundleResult" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "rules",
+        "field": "rules",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "adaptive-enforcement",
+      "name": "Adaptive enforcement",
+      "summary": "Escalates a risky session's enforcement level from accumulated security signals.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "surface_coverage": [
+        { "kind": "command", "value": "pipelock adaptive" }
+      ],
+      "implementation": { "file": "internal/proxy/session.go", "symbol": "NewSessionManager" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "adaptive_enforcement",
+        "field": "adaptive_enforcement",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "tls-interception",
+      "name": "TLS interception",
+      "summary": "Decrypts configured CONNECT tunnels so Pipelock can inspect HTTP bodies and headers.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "availability": {
+        "scope": "deployment_dependent",
+        "qualifier": "Requires a configured local CA that the intercepted client trusts; passthrough traffic remains encrypted and cannot be body-scanned."
+      },
+      "surface_coverage": [
+        { "kind": "command", "value": "pipelock tls" }
+      ],
+      "implementation": { "file": "internal/cli/diag/doctor.go", "symbol": "checkDoctorTLSInterception" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "tls_interception",
+        "field": "tls_interception",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "a2a-scanning",
+      "name": "A2A protocol scanning",
+      "summary": "Scans Agent-to-Agent messages and Agent Cards for poisoning, drift, and session smuggling.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "availability": {
+        "scope": "mediated_traffic",
+        "qualifier": "Applies to A2A traffic carried on Pipelock's supported forward-proxy and MCP HTTP paths."
+      },
+      "implementation": { "file": "internal/cli/runtime/mcp.go", "symbol": "applyMCPA2AOpts" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "a2a_scanning",
+        "field": "a2a_scanning",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "browser-shield",
+      "name": "Browser shield",
+      "summary": "Rewrites proxied HTML and JavaScript to remove configured browser traps and tracking code.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "availability": {
+        "scope": "mediated_traffic",
+        "qualifier": "Applies only to supported browser response traffic that flows through Pipelock."
+      },
+      "implementation": { "file": "internal/cli/diag/doctor.go", "symbol": "checkDoctorBrowserShield" },
+      "operator_entry_point": {
+        "kind": "config",
+        "value": "browser_shield",
+        "field": "browser_shield",
+        "source": { "file": "internal/config/schema.go", "symbol": "Config" }
+      }
+    },
+    {
+      "id": "offline-receipt-verification",
+      "name": "Offline receipt verification",
+      "summary": "Verifies signed action receipts and receipt chains without contacting a Pipelock server.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/cli/signing/receipt.go", "symbol": "VerifyReceiptCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock verify-receipt",
+        "source": { "file": "internal/cli/signing/receipt.go", "symbol": "VerifyReceiptCmd" }
+      }
+    },
+    {
+      "id": "verdict-explanations",
+      "name": "Verdict explanations",
+      "summary": "Explains a URL, command, tool, or file verdict and names the configuration that controls it.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "implementation": { "file": "internal/cli/explain.go", "symbol": "explainCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock explain",
+        "source": { "file": "internal/cli/explain.go", "symbol": "explainCmd" }
+      }
+    },
+    {
+      "id": "deployment-diagnostics",
+      "name": "Deployment diagnostics",
+      "summary": "Reports whether configured protections can enforce in the current host and network topology.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": { "kind": "free" },
+      "surface_coverage": [
+        { "kind": "config_section", "value": "emit" },
+        { "kind": "config_section", "value": "health_watchdog" },
+        { "kind": "config_section", "value": "sentry" }
+      ],
+      "implementation": { "file": "internal/cli/diag/doctor.go", "symbol": "DoctorCmd" },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock doctor",
+        "source": { "file": "internal/cli/diag/doctor.go", "symbol": "DoctorCmd" }
+      }
+    }
+  ],
+  "surface_exclusions": [
+    {
+      "kind": "config_section",
+      "value": "evidence_provenance",
+      "reason": "Startup-only commitment-keyring storage has no runtime producer yet, so it is not an operator capability."
+    },
+    {
+      "kind": "config_section",
+      "value": "guard",
+      "reason": "The Linux egress-guard declaration is a preview interface, not a released capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock claude",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock cline",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock codex",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock cursor",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock generate",
+      "reason": "Configuration and deployment-manifest generator, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock guard",
+      "reason": "Linux egress-guard preview, not a released capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock hermes",
+      "reason": "Agent integration manager, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock init",
+      "reason": "Installation helper that configures other Pipelock capabilities."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock jetbrains",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock logs",
+      "reason": "Operational log reader, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock license",
+      "reason": "License-token administration, not a separately licensed product capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock opencode",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock presets",
+      "reason": "Preset catalog, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock quickstart",
+      "reason": "Getting-started guidance, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock status",
+      "reason": "Read-only status reader for configured capabilities."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock support",
+      "reason": "Support utility bundle, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock update",
+      "reason": "Verified binary update helper, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock version",
+      "reason": "Build metadata reader, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock vscode",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
+      "value": "pipelock zed",
+      "reason": "IDE integration installer, not a separate protection capability."
     }
   ]
 }

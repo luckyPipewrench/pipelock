@@ -19,10 +19,14 @@ func RenderAgentsSection(manifest Manifest) string {
 	out.WriteString(AgentsSectionStart)
 	out.WriteString("\n\n## Capability surface\n\n")
 	out.WriteString("The code-checked capability manifest is docs/security/capability-manifest.json. It lists the operator entry point and license gate for each surface below. Free means no license feature is required.\n\n")
-	out.WriteString("| Capability | Access | Operator entry point |\n")
-	out.WriteString("|---|---|---|\n")
+	out.WriteString("| Capability | Access | Operator entry point | Platform or deployment qualifier |\n")
+	out.WriteString("|---|---|---|---|\n")
 	for _, capability := range manifest.Capabilities {
-		fmt.Fprintf(&out, "| %s | %s | %s |\n", capability.Name, capability.Tier, capability.OperatorEntryPoint.Value)
+		qualifier := ""
+		if capability.Availability != nil {
+			qualifier = capability.Availability.Qualifier
+		}
+		fmt.Fprintf(&out, "| %s | %s | %s | %s |\n", capability.Name, capability.Tier, capability.OperatorEntryPoint.Value, qualifier)
 	}
 	out.WriteString("\n")
 	out.WriteString(AgentsSectionEnd)

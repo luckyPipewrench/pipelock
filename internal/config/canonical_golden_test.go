@@ -336,7 +336,10 @@ const (
 	// must shift ph. Listen and Upstream on the same struct stay excluded,
 	// which the ops-field invariance test confirms by landing on this same
 	// hash.
-	goldenHashDefaults = "39b0e9ee2b528bb0831b2e69e8435c24e853643270984dd12d1c9ecf5c57e7ec"
+	// Re-bumped for provider-key left-boundary precision. The change prevents
+	// ordinary prose from being redacted or blocked, while deliberately losing
+	// detection for a key glued to a preceding token-alphabet character.
+	goldenHashDefaults = "372a8ac8fc647317f2878b78e019c94021dcaf30359d9149691d51a1083b4ff2"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -506,7 +509,8 @@ const (
 	// must shift ph. Listen and Upstream on the same struct stay excluded,
 	// which the ops-field invariance test confirms by landing on this same
 	// hash.
-	goldenHashRichConfig = "bd8ed545b6de3fa3d0f8d5a379bac5e99cac589f7a7fb0a39d59d5adaf80d2a6"
+	// Re-bumped for provider-key left-boundary precision; see goldenHashDefaults.
+	goldenHashRichConfig = "ccc3ae30a36df4a01fb355913a60e438937edb693694d4e393836bccebab0128"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

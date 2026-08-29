@@ -43,6 +43,48 @@ func TestDefaultDLPPatternsReturnsDeepCopy(t *testing.T) {
 	}
 }
 
+func TestProviderKeyPatternsRejectProsePrefixes(t *testing.T) {
+	t.Parallel()
+
+	type providerPattern struct {
+		name   string
+		prefix string
+	}
+	patterns := []providerPattern{
+		{name: "Anthropic API Key", prefix: "ant-"},
+		{name: "OpenAI API Key", prefix: "proj-"},
+		{name: "OpenAI Service Key", prefix: "svcacct-"},
+	}
+	prosePrefixes := []string{"desk", "kiosk", "risk", "task"}
+
+	for _, pattern := range patterns {
+		pattern := pattern
+		t.Run(pattern.name, func(t *testing.T) {
+			t.Parallel()
+			re := regexpMustCompile(t, mustDLPPatternRegex(t, pattern.name))
+			key := "sk-" + pattern.prefix + strings.Repeat("A", 20)
+			if !re.MatchString(key) {
+				t.Fatalf("real-shaped key %q no longer matches", key)
+			}
+			for _, prosePrefix := range prosePrefixes {
+				prose := prosePrefix + "-" + pattern.prefix + strings.Repeat("a", 20)
+				if re.MatchString(prose) {
+					t.Fatalf("ordinary prose %q matched", prose)
+				}
+			}
+		})
+	}
+}
+
+func mustDLPPatternRegex(t *testing.T, name string) string {
+	t.Helper()
+	pattern, ok := dlpPatternByName(DefaultDLPPatterns(), name)
+	if !ok {
+		t.Fatalf("default DLP pattern %q not found", name)
+	}
+	return pattern.Regex
+}
+
 func TestPresetDLPPatternsProfiles(t *testing.T) {
 	t.Parallel()
 
@@ -154,13 +196,20 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 
 	matcher := redact.NewDefaultMatcher()
 	tests := []struct {
-		name  string
-		value string
-		class redact.Class
+		name    string
+		variant string
+		value   string
+		class   redact.Class
 	}{
 		{name: "Anthropic API Key", value: "sk-" + "ant-" + strings.Repeat("A", 20), class: redact.ClassAnthropicKey},
 		{name: "OpenAI API Key", value: "sk-" + "proj-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
 		{name: "OpenAI Service Key", value: "sk-" + "svcacct-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
+		// Underscore suffixes: the scanner and redactor alphabets must agree.
+		// A scanner class narrower than the redactor is a fail-open, because the
+		// value is rewritten in a JSON body but sails through URL and text DLP.
+		{name: "Anthropic API Key", variant: " underscore", value: "sk-" + "ant-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10), class: redact.ClassAnthropicKey},
+		{name: "OpenAI API Key", variant: " underscore", value: "sk-" + "proj-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10), class: redact.ClassOpenAIAPIKey},
+		{name: "OpenAI Service Key", variant: " underscore", value: "sk-" + "svcacct-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10), class: redact.ClassOpenAIAPIKey},
 		{name: "Fireworks API Key", value: "fw_" + strings.Repeat("A", 22), class: redact.ClassFireworksAPIKey},
 		{name: "LLM Router API Key", value: "sk-" + "or-v1-" + strings.Repeat("a", 20), class: redact.ClassAIProviderKey},
 		{name: "Answer Engine API Key", value: "pplx-" + strings.Repeat("A", 20), class: redact.ClassAIProviderKey},
@@ -197,7 +246,7 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name+tt.variant, func(t *testing.T) {
 			t.Parallel()
 
 			pattern, ok := dlpPatternByName(DefaultDLPPatterns(), tt.name)

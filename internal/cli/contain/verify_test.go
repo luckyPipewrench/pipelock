@@ -574,6 +574,25 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "skuid drop rule",
 		},
 		{
+			name: "established server reply remains compatible",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			type filter hook output priority filter; policy accept;
+			meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state 0x2 ct direction reply counter packets 3 bytes 180 accept
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 counter packets 0 bytes 0 drop
+			meta skuid 987 tcp dport 53 counter packets 0 bytes 0 drop
+			meta skuid 987 counter packets 9 bytes 540 drop
+		}
+	}
+`,
+			code:       0,
+			wantStatus: statusPass,
+			wantDetail: "skuid drop rule",
+		},
+		{
 			name: "otherwise canonical regular chain is not containment",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
@@ -1122,6 +1141,38 @@ func TestProbeNFTContainment(t *testing.T) {
 			}
 			if !strings.Contains(gotDetail, tc.wantDetail) {
 				t.Fatalf("detail: got %q, want substring %q", gotDetail, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestLineHasAgentEstablishedReplyAllow(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "loopback numeric state", line: `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state 0x2 ct direction reply accept # handle 18`, want: true},
+		{name: "numeric state and direction", line: `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state 0x2 ct direction 1 accept # handle 18`, want: true},
+		{name: "tailnet named state", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state established ct direction reply accept`, want: true},
+		{name: "bookkeeping", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state 0x2 ct direction reply counter packets 3 bytes 180 log prefix "reply path " accept`, want: true},
+		{name: "interface index", line: `meta skuid 987 oif 7 ip saddr 100.100.47.101 tcp sport 8642 ct state established ct direction reply accept`, want: true},
+		{name: "missing reply direction", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state established accept`},
+		{name: "original direction", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state established ct direction original accept`},
+		{name: "numeric original direction", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state 0x2 ct direction 0 accept`},
+		{name: "new connection", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state new ct direction reply accept`},
+		{name: "state set includes new", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state { established, new } ct direction reply accept`},
+		{name: "destination port", line: `meta skuid 987 oifname "tailscale0" ip saddr 100.100.47.101 tcp dport 8642 ct state established ct direction reply accept`},
+		{name: "missing interface", line: `meta skuid 987 ip saddr 100.100.47.101 tcp sport 8642 ct state established ct direction reply accept`},
+		{name: "wrong uid", line: `meta skuid 986 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept`},
+		{name: "port zero", line: `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp sport 0 ct state established ct direction reply accept`},
+		{name: "IPv6 under IPv4 family", line: `meta skuid 987 oifname "lo" ip daddr ::1 tcp sport 9119 ct state established ct direction reply accept`},
+		{name: "extra verdict", line: `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept return`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := lineHasAgentEstablishedReplyAllow(tt.line, 987); got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
 	}

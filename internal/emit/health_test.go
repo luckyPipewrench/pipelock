@@ -17,10 +17,7 @@ func TestEmitterSinkHealthIncludesAllBuiltInSinks(t *testing.T) {
 	webhook.degraded.Store(true)
 	webhook.lastErr = "HTTP 500"
 
-	syslog := &SyslogSink{queue: make(chan syslogMessage, 5)}
-	syslog.dropped.Store(3)
-	syslog.degraded.Store(true)
-	syslog.lastErr = "queue_full"
+	syslog, wantSyslog := syslogHealthTestSink()
 
 	otlp := &OTLPSink{queue: make(chan Event, 7)}
 	otlp.abandoned.Store(4)
@@ -40,7 +37,7 @@ func TestEmitterSinkHealthIncludesAllBuiltInSinks(t *testing.T) {
 	if health := byName[SinkWebhook]; health.Delivered != 2 || health.Failed != 1 || !health.Degraded || !health.LastErrorPresent || health.QueueCap != 3 {
 		t.Errorf("webhook health = %+v", health)
 	}
-	if health := byName[SinkSyslog]; health.Dropped != 3 || !health.Degraded || !health.LastErrorPresent || health.QueueCap != 5 {
+	if health := byName[SinkSyslog]; health != wantSyslog {
 		t.Errorf("syslog health = %+v", health)
 	}
 	if health := byName[SinkOTLP]; health.Abandoned != 4 || !health.Degraded || !health.LastErrorPresent || health.QueueCap != 7 {

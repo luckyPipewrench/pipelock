@@ -46,6 +46,7 @@ class CISecurityWorkflowTest(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
         self.govulncheck = job_block(self.workflow, "govulncheck")
+        self.cross_target = job_block(self.workflow, "test-cross-target")
         self.build_binaries = job_block(self.workflow, "build-binaries")
         self.build = job_block(self.workflow, "build")
 
@@ -149,7 +150,15 @@ exit "$DEFAULT_STATUS"
         gate_needs = re.search(r"(?m)^\s+needs:\s*\[([^]]+)\]$", self.build)
         self.assertIsNotNone(gate_needs, "build needs list not found")
         self.assertEqual(
-            {"security-scan", "test-go125", "test-go126", "lint", "helm", "build-binaries"},
+            {
+                "security-scan",
+                "test-go125",
+                "test-go126",
+                "lint",
+                "test-cross-target",
+                "helm",
+                "build-binaries",
+            },
             {dependency.strip() for dependency in gate_needs.group(1).split(",")},
         )
         self.assertIn("if: ${{ always() }}", self.build)
@@ -158,6 +167,7 @@ exit "$DEFAULT_STATUS"
             "TEST_GO125_RESULT",
             "TEST_GO126_RESULT",
             "LINT_RESULT",
+            "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
         ):
@@ -170,6 +180,7 @@ exit "$DEFAULT_STATUS"
             "TEST_GO125_RESULT",
             "TEST_GO126_RESULT",
             "LINT_RESULT",
+            "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
         )
@@ -197,6 +208,16 @@ exit "$DEFAULT_STATUS"
                         capture_output=True,
                     )
                     self.assertNotEqual(0, result.returncode)
+
+    def test_cross_target_compile_has_an_independent_timeout_and_required_gate(self) -> None:
+        self.assertIn("timeout-minutes: 15", self.cross_target)
+        self.assertIn(
+            "linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64",
+            self.cross_target,
+        )
+        self.assertIn('go vet ./...', self.cross_target)
+        self.assertIn('go vet -tags enterprise ./...', self.cross_target)
+        self.assertNotIn("Test code compiles for every published target", job_block(self.workflow, "lint"))
 
     def test_helm_transitive_gate_contract_rejects_removed_dependency(self) -> None:
         needs_match = re.search(r"(?m)^(\s+needs:\s*\[)([^]]+)(\])$", self.build)

@@ -114,19 +114,18 @@ dlp:
   scan_env: true
   include_defaults: false  # Preset defines the complete pattern set
   patterns:
-    # Provider API keys
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       exempt_domains:
         - "*.anthropic.com"
     - name: "OpenAI API Key"
-      regex: 'sk-proj-[a-zA-Z0-9\-_]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       exempt_domains:
         - "*.openai.com"
     - name: "OpenAI Service Key"
-      regex: 'sk-svcacct-[a-zA-Z0-9\-]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       exempt_domains:
         - "*.openai.com"
@@ -164,7 +163,6 @@ dlp:
     - name: "Stripe Webhook Secret"
       regex: 'whsec_[a-zA-Z0-9_\-]{20,}'
       severity: critical
-    # Source control tokens
     - name: "GitHub Token"
       regex: 'gh[pousr]_[A-Za-z0-9_]{36,}'
       severity: critical
@@ -174,8 +172,6 @@ dlp:
     - name: "GitLab PAT"
       regex: 'glpat-[a-zA-Z0-9\-_]{20,}'
       severity: critical
-    # Remaining GitLab token families (token overview docs); optional suffix
-    # chars use (?:x)? so the DLP pre-filter extracts the shorter prefix.
     - name: "GitLab Deploy Token"
       regex: 'gldt-[a-zA-Z0-9\-_]{20,}'
       severity: critical
@@ -197,9 +193,6 @@ dlp:
     - name: "GitLab Service Token"
       regex: 'gl(?:ft|imt|agent|wt|ffct)-[a-zA-Z0-9\-_]{20,}'
       severity: critical
-    # Database connection strings with embedded credentials (password between
-    # ':' and '@'); scheme-locked, requires ':pass@' so credential-less URIs
-    # are ignored.
     - name: "PostgreSQL Connection String"
       regex: 'postgres(?:ql)?://[^:/?#\s]*:[^@/?#\s]+@'
       severity: critical
@@ -212,7 +205,6 @@ dlp:
     - name: "Redis Connection String"
       regex: 'redis(?:s)?://[^:/?#\s]*:[^@/?#\s]+@'
       severity: critical
-    # Cloud provider credentials
     - name: "AWS Access ID"
       regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
       severity: critical
@@ -222,20 +214,15 @@ dlp:
     - name: "Google OAuth Token"
       regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
       severity: critical
-    # GCP service-account private_key_id (the "service_account" type marker is
-    # an always-on core pattern, not duplicated here; the private_key PEM body
-    # is caught by "Private Key Header").
     - name: "GCP Service Account Private Key ID"
       regex: '"private_key_id"\s*:\s*"[a-f0-9]{40}"'
       severity: high
-    # Azure: 88-char storage account key in AccountKey=, and SAS sig= signature.
     - name: "Azure Storage Account Key"
       regex: 'AccountKey=[A-Za-z0-9+/]{86}=='
       severity: critical
     - name: "Azure SAS Token"
       regex: '\bsig=[A-Za-z0-9%]{43,}%3d\b'
       severity: high
-    # Messaging platform tokens
     - name: "Slack Token"
       regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'
       severity: critical
@@ -245,7 +232,6 @@ dlp:
     - name: "Discord Bot Token"
       regex: '(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})'
       severity: critical
-    # Communication service keys
     - name: "Twilio API Key"
       regex: '\bSK[a-f0-9]{32}\b'
       severity: high
@@ -255,11 +241,9 @@ dlp:
     - name: "Mailgun API Key"
       regex: '\bkey-[a-zA-Z0-9]{32}\b'
       severity: high
-    # Observability / monitoring
     - name: "New Relic API Key"
       regex: 'NRAK-[A-Z0-9]{27,}'
       severity: critical
-    # AI/ML provider keys
     - name: "Hugging Face Token"
       regex: 'hf_[A-Za-z0-9]{34,37}\b'
       severity: critical
@@ -295,7 +279,6 @@ dlp:
       severity: critical
       exempt_domains:
         - "*.x.ai"
-    # Infrastructure and platform tokens
     - name: "DigitalOcean Token"
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
@@ -308,14 +291,12 @@ dlp:
     - name: "Supabase Service Key"
       regex: 'sb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)'
       severity: critical
-    # Package registry tokens
     - name: "npm Token"
       regex: 'npm_[A-Za-z0-9]{36,}\b'
       severity: critical
     - name: "PyPI Token"
       regex: 'pypi-AgE[A-Za-z0-9_-]{90,}'
       severity: critical
-    # Developer platform tokens
     - name: "Linear API Key"
       regex: 'lin_api_[A-Za-z0-9]{40,}\b'
       severity: high
@@ -325,14 +306,12 @@ dlp:
     - name: "Sentry Auth Token"
       regex: 'sntrys_[A-Za-z0-9]{40,}\b'
       severity: high
-    # Cryptographic material
     - name: "Private Key Header"
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----'
       severity: critical
     - name: "JWT Token"
       regex: '(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}'
       severity: high
-    # Cryptocurrency private keys
     - name: "Bitcoin WIF Private Key"
       regex: '(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})'
       severity: critical
@@ -349,18 +328,15 @@ dlp:
     - name: "Social Security Number"
       regex: '\b\d{3}-\d{2}-\d{4}\b'
       severity: low
-    # Identity / PII
     - name: "Google OAuth Client ID"
       regex: '[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
       severity: medium
-    # Generic credential patterns
     - name: "Credential in URL"
       regex: '(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}'
       severity: high
     - name: "Environment Variable Secret"
       regex: '(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*[A-Za-z0-9_+/=~.-]\S{7,}'
       severity: high
-    # Financial identifiers (validated with post-match checksums)
     - name: "Credit Card Number"
       regex: '\b\d{4}(?:[- ]?\d){11,15}\b'
       severity: medium
@@ -369,7 +345,6 @@ dlp:
       regex: '\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b'
       severity: medium
       validator: mod97
-
 response_scanning:
   enabled: true
   action: block

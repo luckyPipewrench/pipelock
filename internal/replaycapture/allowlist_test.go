@@ -6,6 +6,7 @@ package replaycapture
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -64,6 +65,27 @@ func TestValidateReceiptPublicSafe_MCPRequestIDIsTransportScoped(t *testing.T) {
 	}
 }
 
+// A session-open control record takes an earlier return than an ordinary
+// record, and its own field validation pins Target but never inspects Pattern.
+// The secret backstop must therefore run before that branch: it is the last
+// gate before publication, so no record shape may route around it.
+func TestValidateReceiptPublicSafe_SessionOpenPatternIsSecretScanned(t *testing.T) {
+	t.Parallel()
+
+	ar := safeBaseRecord()
+	ar.Target = "pipelock://session/open"
+	ar.Pattern = "leaked " + "sk-" + "svcacct-" + strings.Repeat("A", 10) + "_" + strings.Repeat("B", 10)
+	ar.SessionControl = &receipt.SessionControl{Kind: receipt.SessionControlOpen}
+
+	err := ValidateReceiptPublicSafe(ar)
+	if err == nil {
+		t.Fatal("session_open record published a raw provider key in Pattern")
+	}
+	if !strings.Contains(err.Error(), "raw secret shape") {
+		t.Fatalf("rejected for the wrong reason, want the secret backstop: %v", err)
+	}
+}
+
 func TestValidateReceiptPublicSafe_Rejections(t *testing.T) {
 	t.Parallel()
 
@@ -81,6 +103,20 @@ func TestValidateReceiptPublicSafe_Rejections(t *testing.T) {
 			ar.Target = "https://collector.example.com/?k=" + SyntheticAWSKey()
 		}},
 		{"raw secret in pattern", func(ar *receipt.ActionRecord) { ar.Pattern = "leaked " + SyntheticAWSKey() }},
+		// Sibling credential shapes the backstop previously missed, in families it
+		// already claims to cover. A shape the pre-sign sanitizer failed to remove
+		// must never reach a public artifact. This backstop is a deliberate subset
+		// of the scanner classes, so these cases assert coverage of the AWS and
+		// OpenAI families it already carries, not parity with every scanner class.
+		{"sts access key in target", func(ar *receipt.ActionRecord) {
+			ar.Target = "https://collector.example.com/?k=" + "ASIA" + "IOSFODNN7EXAMPLE"
+		}},
+		{"openai service key in target", func(ar *receipt.ActionRecord) {
+			ar.Target = "https://collector.example.com/?k=" + "sk-" + "svcacct-" + "AAAAAAAAAA_BBBBBBBBBB"
+		}},
+		{"openai service key in pattern", func(ar *receipt.ActionRecord) {
+			ar.Pattern = "leaked " + "sk-" + "svcacct-" + "AAAAAAAAAA_BBBBBBBBBB"
+		}},
 		{"populated request_id", func(ar *receipt.ActionRecord) { ar.RequestID = "req-provider-9c4ad1" }},
 		{"bad run nonce", func(ar *receipt.ActionRecord) { ar.RunNonce = "not-a-nonce" }},
 		{"populated session task", func(ar *receipt.ActionRecord) { ar.SessionTaskLabel = "internal-task" }},

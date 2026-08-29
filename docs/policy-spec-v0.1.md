@@ -90,7 +90,7 @@ dlp:
     # A per-pattern action may only DOWNGRADE to warn; block comes from the
     # global dlp action, which these patterns inherit by omitting action.
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
 
     - name: "AWS Access Key"

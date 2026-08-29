@@ -482,7 +482,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 	// This catches secrets that aren't URL-encoded.
 	for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 		p := s.dlpPatterns[idx]
-		if start, end, ok := p.matchSpan(cleaned); ok {
+		if start, end, ok := p.matchSpanInView(cleaned, text); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:   p.name,
 				Severity:      p.severity,
@@ -513,12 +513,12 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 	if strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
-			matches = append(matches, s.matchDLPPatterns(dotless, "subdomain")...)
+			matches = append(matches, s.matchDLPPatternsInView(dotless, "subdomain", cleaned)...)
 		}
 	}
 
 	if len(segmentViews) > 1 {
-		matches = append(matches, s.matchDLPPatterns(segmentViews[1].text, "whitespace")...)
+		matches = append(matches, s.matchDLPPatternsInView(segmentViews[1].text, "whitespace", cleaned)...)
 	}
 
 	// Hostname exfiltration: extract URL hostnames from the text and run the
@@ -634,11 +634,15 @@ func (s *Scanner) decodeAndMatchRecursive(text string, _ int) []TextDLPMatch {
 // Applies full normalization to decoded text, since URL/base64/hex decoding can
 // reintroduce control chars and confusable characters after the initial pass.
 func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
+	return s.matchDLPPatternsInView(text, encoding, text)
+}
+
+func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []TextDLPMatch {
 	text = normalize.ForDLP(text)
 	var matches []TextDLPMatch
 	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
 		p := s.dlpPatterns[idx]
-		if start, end, ok := p.matchSpan(text); ok {
+		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:   p.name,
 				Severity:      p.severity,

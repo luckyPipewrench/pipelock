@@ -220,6 +220,49 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 	}
 }
 
+func TestDefaultMatcher_ProviderKeyProsePrefixesDoNotMatch(t *testing.T) {
+	t.Parallel()
+	m := NewDefaultMatcher()
+
+	type providerCase struct {
+		name   string
+		prefix string
+		class  Class
+	}
+	providers := []providerCase{
+		{name: "anthropic", prefix: "ant-", class: ClassAnthropicKey},
+		{name: "openai-project", prefix: "proj-", class: ClassOpenAIAPIKey},
+		{name: "openai-service", prefix: "svcacct-", class: ClassOpenAIAPIKey},
+	}
+	prosePrefixes := []string{"desk", "kiosk", "risk", "task"}
+
+	for _, provider := range providers {
+		provider := provider
+		t.Run(provider.name+"/real-key", func(t *testing.T) {
+			t.Parallel()
+			key := "sk-" + provider.prefix + strings.Repeat("A", 20)
+			for _, match := range m.Scan(key) {
+				if match.Class == provider.class && match.Original == key {
+					return
+				}
+			}
+			t.Fatalf("real-shaped key %q did not match %s", key, provider.class)
+		})
+		for _, prosePrefix := range prosePrefixes {
+			prosePrefix := prosePrefix
+			t.Run(provider.name+"/"+prosePrefix, func(t *testing.T) {
+				t.Parallel()
+				prose := prosePrefix + "-" + provider.prefix + strings.Repeat("a", 20)
+				for _, match := range m.Scan(prose) {
+					if match.Class == provider.class {
+						t.Fatalf("ordinary prose %q matched %s: %+v", prose, provider.class, match)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestDefaultMatcher_GitHubTokenInOpaqueRunStillMatches(t *testing.T) {
 	t.Parallel()
 	m := NewDefaultMatcher()

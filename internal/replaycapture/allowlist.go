@@ -77,10 +77,20 @@ var safeSignerEpochRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // secretShapeRE is a backstop: if any of these shapes survive into a target or
 // pattern, redaction-before-sign failed and the artifact must not publish. This
 // is defense-in-depth behind the emitter's pre-sign sanitizer.
+//
+// The suffix floors match the canonical DLP classes rather than being set here.
+// A shorter floor is not stricter in any useful sense: the scanner false-positive
+// corpus asserts that a provider prefix with a ten-character suffix is benign, so
+// a shorter floor here only refuses legitimate artifacts, and a refused receipt is
+// unpublishable with no operator control to resolve it.
+//
+// This list is deliberately a SUBSET of the scanner secret classes, not a mirror.
+// Widening it to every class needs a classified mapping decided on purpose,
+// because the scanner also carries detection-only and non-secret categories.
 var secretShapeRE = regexp.MustCompile(
-	`AKIA[0-9A-Z]{16}` + // AWS access key id
-		`|sk-ant-[A-Za-z0-9\-_]{10,}` + // Anthropic
-		`|sk-proj-[A-Za-z0-9\-_]{10,}` + // OpenAI
+	`(?:AKIA|ASIA)[0-9A-Z]{16}` + // AWS access key id, long-term and STS
+		`|sk-ant-[A-Za-z0-9\-_]{20,}` + // Anthropic
+		`|sk-(?:proj|svcacct)-[A-Za-z0-9\-_]{20,}` + // OpenAI project and service
 		`|gh[pousr]_[A-Za-z0-9_]{20,}` + // GitHub
 		`|xox[baprs]-[A-Za-z0-9-]{10,}`, // Slack
 )
@@ -95,6 +105,17 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	if _, ok := allowedActors[ar.Actor]; !ok {
 		return fmt.Errorf("%w: actor %q not in lab allowlist", errAllowlist, ar.Actor)
 	}
+	// Secret-shape backstop on the free-text fields. This runs BEFORE the
+	// SessionControl branch: that path has its own field validation which does
+	// not inspect Pattern, so returning into it first would let a record carry
+	// a raw credential into a published artifact. The backstop is the last gate
+	// before publication, so it applies to every record shape without exception.
+	for label, val := range map[string]string{"target": ar.Target, "pattern": ar.Pattern} {
+		if secretShapeRE.MatchString(val) {
+			return fmt.Errorf("%w: %s carries a raw secret shape (redaction-before-sign failed)", errAllowlist, label)
+		}
+	}
+
 	if ar.SessionControl != nil {
 		return validatePublicSessionOpen(ar)
 	}
@@ -102,13 +123,6 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	// Target host must be synthetic / reserved / documentation-space.
 	if err := validateSafeTarget(ar.Target); err != nil {
 		return err
-	}
-
-	// Secret-shape backstop on the free-text fields.
-	for label, val := range map[string]string{"target": ar.Target, "pattern": ar.Pattern} {
-		if secretShapeRE.MatchString(val) {
-			return fmt.Errorf("%w: %s carries a raw secret shape (redaction-before-sign failed)", errAllowlist, label)
-		}
 	}
 
 	// request_id, when present, must be pipelock's own internal counter shape.

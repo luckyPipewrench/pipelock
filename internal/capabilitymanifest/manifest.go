@@ -85,8 +85,27 @@ type Gate struct {
 	Features []GateFeature `json:"features,omitempty"`
 }
 
-// GateFeature points both at the enforcing call and the license helper that
-// binds that call to a concrete feature constant.
+// GateFeature points at the enforcing call and at a declaration that names the
+// feature constant.
+//
+// The two references are checked INDEPENDENTLY: the parity test looks for the
+// enforcement selector in one declaration and the feature constant in the
+// other, and nothing connects them. So proof shows the feature is named in real
+// verification code; it does not establish that this enforcement call is bound
+// to that feature.
+//
+// Proof is often a dedicated license helper such as VerifyAgentsWithOptions,
+// but it does NOT have to be a separate declaration, and a feature whose
+// enforcing function names the constant directly is correctly recorded with the
+// same reference in both fields. Those helpers exist so require-intermediate
+// mode is honoured in env-only commands that take no config file, which a
+// config-driven gate resolving those options for itself does not need. A
+// wrapper could still be wanted for other reasons, such as centralising
+// feature-gate behaviour; it is simply not required to preserve those options.
+// Reading this field as "there must be a helper" is what makes a same-reference
+// row look like a defect, and the remedy then looks like adding a wrapper whose
+// stated purpose would be false of its only caller. Record the asymmetry
+// instead of writing code to erase it.
 type GateFeature struct {
 	Name        string           `json:"name"`
 	Enforcement EnforcementCheck `json:"enforcement"`
@@ -113,7 +132,16 @@ type GateExclusion struct {
 	Reason  string `json:"reason"`
 }
 
-// EnforcementCheck identifies the concrete call that denies the feature.
+// EnforcementCheck identifies the gating selector inside the enforcing
+// declaration.
+//
+// Call is a selector that must APPEAR in that declaration, and the parity check
+// proves presence, not invocation. It cannot show the selector is reached, that
+// its result is tested, or that the guarded work is refused when it fails, so a
+// row here is a pointer for an auditor rather than proof of enforcement. Some
+// rows name a constant rather than a function for that reason. Treating a
+// present selector as a verified deny is the over-reading this field invites,
+// and it is why the value is described as a selector and not as a call.
 type EnforcementCheck struct {
 	Source SourceReference `json:"source"`
 	Call   string          `json:"call"`

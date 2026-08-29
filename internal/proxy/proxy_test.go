@@ -718,6 +718,9 @@ func TestFetchEndpoint_ResponseScan_ImageMetadataAskStripFailsClosed(t *testing.
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.ServeHTTP(w, req)
 
+	if !strings.Contains(approverOutput.String(), "Stripped") {
+		t.Fatalf("HITL decision was not strip: %q", approverOutput.String())
+	}
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("image metadata ask-strip status = %d, want 403; body=%s", w.Code, w.Body.String())
 	}

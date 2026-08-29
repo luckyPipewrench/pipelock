@@ -720,7 +720,7 @@ To exempt a built-in pattern, override it by name and add `exempt_domains`:
 dlp:
   patterns:
     - name: "Anthropic API Key"    # same name as built-in — overrides it
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       exempt_domains:
         - "*.anthropic.com"

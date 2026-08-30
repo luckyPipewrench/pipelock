@@ -66,7 +66,6 @@ func TestWebhookSink_DoesNotFollowRedirect(t *testing.T) {
 	defer front.Close()
 
 	sink := NewWebhookSink(front.URL)
-	defer func() { _ = sink.Close() }()
 
 	if err := sink.Emit(context.Background(), Event{
 		Severity:  SeverityWarn,
@@ -81,10 +80,13 @@ func TestWebhookSink_DoesNotFollowRedirect(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for configured webhook URL")
 	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 	select {
 	case <-reached:
 		t.Fatal("webhook client followed a redirect to an unvalidated destination")
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 }
 

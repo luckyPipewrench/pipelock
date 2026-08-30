@@ -46,7 +46,6 @@ func TestOTLPSink_DoesNotFollowRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
-	defer func() { _ = sink.Close() }()
 
 	if err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
@@ -63,10 +62,13 @@ func TestOTLPSink_DoesNotFollowRedirect(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for configured OTLP URL")
 	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 	select {
 	case <-reached:
 		t.Fatal("OTLP client followed a redirect to an unvalidated destination")
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 }
 

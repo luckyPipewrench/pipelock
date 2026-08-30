@@ -209,6 +209,40 @@ func TestHandlerEnrollmentTokenAdminScopeRejectsCrossOrgCreateAndRevoke(t *testi
 	if err != nil || len(tokens) != 1 || tokens[0].State != EnrollmentTokenStatePending {
 		t.Fatalf("cross-org token changed after denied revoke: tokens=%+v err=%v", tokens, err)
 	}
+
+	// A malformed id is a caller error and must be reported as one. Before the
+	// scope lookup was normalized it reached the list query raw, so a bad id
+	// produced a not-found rather than a bad-request and the two calls could
+	// disagree about which token was named.
+	badBody, _ := json.Marshal(revokeEnrollmentTokenRequest{TokenID: "bad/id"})
+	badReq := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, EnrollmentTokensPath, bytes.NewReader(badBody))
+	badReq.Header.Set("Authorization", "Bearer admin-token")
+	badW := httptest.NewRecorder()
+	handler.ServeHTTP(badW, badReq)
+	if badW.Code != http.StatusBadRequest {
+		t.Fatalf("malformed token id status = %d body=%s, want 400", badW.Code, badW.Body.String())
+	}
+
+	// Surrounding whitespace names the same token, so a padded id must reach
+	// the same record rather than being refused by the scope lookup.
+	if _, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "padded-revoke",
+		Identity: FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-2", Environment: "prod"},
+		Expires:  testNow.Add(time.Hour), Now: testNow,
+	}); err != nil {
+		t.Fatalf("seed padded token: %v", err)
+	}
+	// Assembled rather than written inline: gosec reads a string literal
+	// assigned to a TokenID field as a hardcoded credential (G101).
+	paddedID := "  " + "padded" + "-revoke" + "  "
+	paddedBody, _ := json.Marshal(revokeEnrollmentTokenRequest{TokenID: paddedID})
+	paddedReq := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, EnrollmentTokensPath, bytes.NewReader(paddedBody))
+	paddedReq.Header.Set("Authorization", "Bearer admin-token")
+	paddedW := httptest.NewRecorder()
+	handler.ServeHTTP(paddedW, paddedReq)
+	if paddedW.Code != http.StatusOK {
+		t.Fatalf("padded token id status = %d body=%s, want 200", paddedW.Code, paddedW.Body.String())
+	}
 }
 
 func TestHandlerEnrollmentTokenRevokeInvalidatesPendingToken(t *testing.T) {

@@ -324,7 +324,7 @@ pipelock run --config pipelock.yaml --mcp-listen 127.0.0.1:8889 --mcp-upstream h
 
 ### Containment
 
-Unprivileged process containment uses OS-native primitives. Linux uses Landlock and network namespaces; `linux/amd64` also applies seccomp. Other Linux builds label the launch partial, and `--strict` refuses them. macOS uses `sandbox-exec` profiles. In containers, `--best-effort` keeps Landlock and, on `linux/amd64`, seccomp when namespace creation is restricted. Network scanning then uses proxy-based routing and may be bypassed by direct egress.
+Unprivileged process containment uses OS-native primitives. Linux uses Landlock and network namespaces; `linux/amd64` also applies seccomp. Other Linux builds label the launch partial while the network namespace is active, and `--strict` refuses them. macOS uses `sandbox-exec` profiles. In containers, `--best-effort` keeps Landlock and, on `linux/amd64`, seccomp when namespace creation is restricted. A launch without the namespace is labelled advisory-override regardless of architecture, because the missing namespace is the more serious gap: network scanning then uses proxy-based routing and may be bypassed by direct egress.
 
 ```bash
 pipelock sandbox --config pipelock.yaml -- python agent.py

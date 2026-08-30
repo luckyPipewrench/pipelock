@@ -1,0 +1,5 @@
+# YAMLField RuntimeField
+# Source fields listed here are decoded or normalized once during validation.
+# The consumption gate verifies that validation reads the source and production
+# code outside internal/config consumes the derived field.
+PostureSignerKey PostureSignerPublicKey # decoded Ed25519 trust anchor; runtime must not reopen the configured path

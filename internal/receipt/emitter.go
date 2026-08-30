@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -23,13 +24,17 @@ import (
 	aelpkg "github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // recorderEntryType is the recorder entry type for action receipts.
-const recorderEntryType = "action_receipt"
+const (
+	recorderEntryType               = "action_receipt"
+	postureAvailabilityExtensionKey = "posture_proof_availability"
+)
 
 // recorderSessionID is the session ID used for all recorder entries from the emitter.
 // The recorder pins to the first session ID it sees, so all entries must use the same value.
@@ -650,7 +655,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		return fmt.Errorf("signing receipt: %w", err)
 	}
 	if isSessionOpenControl(sessionControl) && e.postureAvailability != "" {
-		rcpt.Ext, err = json.Marshal(map[string]string{"posture_proof_availability": e.postureAvailability})
+		rcpt.Ext, err = mergePostureAvailabilityExtension(rcpt.Ext, e.postureAvailability)
 		if err != nil {
 			e.recordFailure(FailReasonMarshal)
 			return fmt.Errorf("marshaling posture availability extension: %w", err)
@@ -771,6 +776,43 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	}
 
 	return nil
+}
+
+func mergePostureAvailabilityExtension(ext json.RawMessage, value string) (json.RawMessage, error) {
+	fields := make(map[string]json.RawMessage)
+	if len(bytes.TrimSpace(ext)) != 0 {
+		if err := jsonscan.RejectDuplicateKeys(ext); err != nil {
+			return nil, fmt.Errorf("invalid existing extension: %w", err)
+		}
+		if err := json.Unmarshal(ext, &fields); err != nil {
+			return nil, fmt.Errorf("decode existing extension: %w", err)
+		}
+		if fields == nil {
+			return nil, errors.New("existing extension must be a JSON object")
+		}
+	}
+
+	if current, ok := fields[postureAvailabilityExtensionKey]; ok {
+		var currentValue string
+		if err := json.Unmarshal(current, &currentValue); err != nil {
+			return nil, fmt.Errorf("existing extension key %q must be a string: %w", postureAvailabilityExtensionKey, err)
+		}
+		if currentValue != value {
+			return nil, fmt.Errorf("existing extension key %q conflicts with value %q", postureAvailabilityExtensionKey, value)
+		}
+		return ext, nil
+	}
+
+	encodedValue, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode extension value: %w", err)
+	}
+	fields[postureAvailabilityExtensionKey] = encodedValue
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode merged extension: %w", err)
+	}
+	return merged, nil
 }
 
 func (e *Emitter) emitNativeAEL(ar ActionRecord, control *SessionControl, durable bool) error {

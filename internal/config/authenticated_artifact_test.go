@@ -60,4 +60,23 @@ func TestAuthenticatedArtifactsCloneAndCanonicalOrder(t *testing.T) {
 	if cfg.CanonicalPolicyHash() != other.CanonicalPolicyHash() {
 		t.Fatal("entry order changed canonical policy hash")
 	}
+	pathA := AuthenticatedArtifactEntry{Host: "rules.example", Path: "/rules/a/bundle.yaml", BundleName: "bundle-a"}
+	pathB := AuthenticatedArtifactEntry{Host: "rules.example", Path: "/rules/b/bundle.yaml", BundleName: "bundle-b"}
+	nameA := AuthenticatedArtifactEntry{Host: "same.example", Path: "/rules/bundle.yaml", BundleName: "bundle-a"}
+	nameB := AuthenticatedArtifactEntry{Host: "same.example", Path: "/rules/bundle.yaml", BundleName: "bundle-b"}
+	for _, tc := range []struct {
+		name    string
+		entries []AuthenticatedArtifactEntry
+		want    []AuthenticatedArtifactEntry
+	}{
+		{name: "path", entries: []AuthenticatedArtifactEntry{pathB, pathA}, want: []AuthenticatedArtifactEntry{pathA, pathB}},
+		{name: "bundle name", entries: []AuthenticatedArtifactEntry{nameB, nameA}, want: []AuthenticatedArtifactEntry{nameA, nameB}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := canonicalAuthenticatedArtifacts(tc.entries)
+			if got[0] != tc.want[0] || got[1] != tc.want[1] {
+				t.Fatalf("canonical order=%v want=%v", got, tc.want)
+			}
+		})
+	}
 }

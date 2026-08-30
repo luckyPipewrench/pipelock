@@ -79,7 +79,7 @@ func newArtifactIntegrationProxy(t *testing.T, cfg *config.Config, logger *audit
 }
 
 func artifactResponse(req *http.Request, status int, body []byte) *http.Response {
-	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(bytes.NewReader(body)), Request: req}
+	return &http.Response{StatusCode: status, Header: http.Header{headerContentType: {"text/plain"}}, Body: io.NopCloser(bytes.NewReader(body)), Request: req}
 }
 
 // TestForwardHTTPAuthenticatedArtifact_HandlerPath covers the actual forward
@@ -128,7 +128,7 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 				if contentType == "" {
 					contentType = "text/plain"
 				}
-				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: originalBody, Request: req}, nil
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{headerContentType: {contentType}}, Body: originalBody, Request: req}, nil
 			})
 			logger := audit.NewNop()
 			p := newArtifactIntegrationProxy(t, cfg, logger, rt)
@@ -194,7 +194,7 @@ func TestInterceptAuthenticatedArtifact_HandlerPath(t *testing.T) {
 				if contentType == "" {
 					contentType = "text/plain"
 				}
-				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: originalBody, Request: req}, nil
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{headerContentType: {contentType}}, Body: originalBody, Request: req}, nil
 			})
 			rec := &artifactCleanRecorder{}
 			handler := newInterceptHandler(&InterceptContext{TargetHost: "rules.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), ClientIP: testLoopbackIP, RequestID: "artifact-intercept", Agent: "test-agent", Recorder: rec}, rt)
@@ -290,5 +290,47 @@ func TestForwardHTTPAuthenticatedArtifact_DoesNotDecayAdaptiveScore(t *testing.T
 	}
 	if got := rec.ThreatScore(); got != before {
 		t.Fatalf("verified artifact decayed adaptive score from %v to %v despite skipped injection scan", before, got)
+	}
+}
+
+func TestForwardHTTPAdaptiveCleanRecordsOnlyScannedResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{name: "buffered response", contentType: "text/plain", body: []byte("clean response")},
+		{name: "SSE response", contentType: "text/event-stream", body: []byte("data: clean response\n\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := artifactConfig()
+			cfg.ResponseScanning.AuthenticatedArtifacts = nil
+			cfg.SessionProfiling.Enabled = true
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = 100
+			cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+			p := newArtifactIntegrationProxy(t, cfg, audit.NewNop(), roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{headerContentType: {tc.contentType}}, Body: io.NopCloser(bytes.NewReader(tc.body)), Request: req}, nil
+			}))
+			sm := p.sessionMgrPtr.Load()
+			if sm == nil {
+				t.Fatal("session manager not initialized")
+			}
+			clientIP := "192.0.2.1"
+			rec := sm.GetOrCreate(clientIP)
+			rec.RecordSignal(session.SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
+			before := rec.ThreatScore()
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://clean.example/response", nil)
+			req.RemoteAddr = clientIP + ":1234"
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+			}
+			if got := rec.ThreatScore(); got >= before {
+				t.Fatalf("clean scanned response did not reduce adaptive score: before=%v after=%v", before, got)
+			}
+		})
 	}
 }

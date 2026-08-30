@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"regexp/syntax"
 	"sort"
 	"strings"
 )
@@ -35,17 +36,278 @@ func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
 	}
 
 	for i, p := range patterns {
-		prefix := extractLiteralPrefix(p.re.String())
-		if prefix == "" {
+		anchors := extractRequiredLiteralAnchors(p.re.String())
+		if len(anchors) == 0 {
 			pf.alwaysRun = append(pf.alwaysRun, i)
 			continue
 		}
-		// Store lowercased: the input will also be lowercased before checking.
-		lower := strings.ToLower(prefix)
-		pf.prefixes[lower] = append(pf.prefixes[lower], i)
+		for _, anchor := range anchors {
+			// Store lowercased: the input will also be lowercased before checking.
+			lower := strings.ToLower(anchor)
+			pf.prefixes[lower] = append(pf.prefixes[lower], i)
+		}
 	}
 
 	return pf
+}
+
+const minDLPAnchorLength = 3
+
+// extractRequiredLiteralAnchors returns literal alternatives where every match
+// of the regex must contain at least one returned string. The full syntax tree
+// is always analyzed: a textual prefix is not necessarily required when a bare
+// top-level alternation follows it. If any branch cannot prove an anchor, the
+// pattern stays in alwaysRun.
+func extractRequiredLiteralAnchors(regex string) []string {
+	re, err := syntax.Parse(regex, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	anchors := requiredLiteralAnchors(re)
+	if leading, _ := leadingLiteralAnchors(re); betterAnchorSet(leading, anchors) {
+		anchors = leading
+	}
+	if len(anchors) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(anchors))
+	result := make([]string, 0, len(anchors))
+	for _, anchor := range anchors {
+		anchor = strings.ToLower(anchor)
+		if len(anchor) < minDLPAnchorLength || !isASCIIString(anchor) {
+			return nil
+		}
+		if _, ok := seen[anchor]; ok {
+			continue
+		}
+		seen[anchor] = struct{}{}
+		result = append(result, anchor)
+	}
+	sort.Strings(result)
+	if isGenericCredentialAnchorSet(result) {
+		return nil
+	}
+	return result
+}
+
+// leadingLiteralAnchors enumerates a bounded set of literal starts. The bool
+// reports whether the expression is fully literal and callers may continue
+// concatenating the next expression. A false bool can still carry valid
+// prefixes collected before the first variable-width construct.
+func leadingLiteralAnchors(re *syntax.Regexp) ([]string, bool) {
+	switch re.Op {
+	case syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine,
+		syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary,
+		syntax.OpNoWordBoundary:
+		return []string{""}, true
+	case syntax.OpLiteral:
+		if len(re.Rune) == 0 {
+			return []string{""}, true
+		}
+		return []string{string(re.Rune)}, true
+	case syntax.OpCharClass:
+		return smallCharClassAlternatives(re.Rune)
+	case syntax.OpCapture:
+		if len(re.Sub) != 1 {
+			return nil, false
+		}
+		return leadingLiteralAnchors(re.Sub[0])
+	case syntax.OpConcat:
+		prefixes := []string{""}
+		for _, sub := range re.Sub {
+			parts, complete := leadingLiteralAnchors(sub)
+			if len(parts) == 0 {
+				return allNonEmptyStrings(prefixes), false
+			}
+			prefixes = combineLiteralAlternatives(prefixes, parts)
+			if len(prefixes) == 0 {
+				return nil, false
+			}
+			if !complete {
+				return allNonEmptyStrings(prefixes), false
+			}
+		}
+		return allNonEmptyStrings(prefixes), true
+	case syntax.OpAlternate:
+		var combined []string
+		complete := true
+		for _, sub := range re.Sub {
+			parts, branchComplete := leadingLiteralAnchors(sub)
+			if len(parts) == 0 {
+				return nil, false
+			}
+			combined = append(combined, parts...)
+			complete = complete && branchComplete
+		}
+		return combined, complete
+	case syntax.OpPlus:
+		if len(re.Sub) != 1 {
+			return nil, false
+		}
+		parts, _ := leadingLiteralAnchors(re.Sub[0])
+		return parts, false
+	case syntax.OpRepeat:
+		if re.Min == 0 || len(re.Sub) != 1 {
+			return nil, false
+		}
+		parts, complete := leadingLiteralAnchors(re.Sub[0])
+		if len(parts) == 0 {
+			return nil, false
+		}
+		if re.Min != re.Max || !complete {
+			return parts, false
+		}
+		result := []string{""}
+		for range re.Min {
+			result = combineLiteralAlternatives(result, parts)
+			if len(result) == 0 {
+				return nil, false
+			}
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func smallCharClassAlternatives(ranges []rune) ([]string, bool) {
+	const maxAlternatives = 8
+	var result []string
+	for i := 0; i+1 < len(ranges); i += 2 {
+		for r := ranges[i]; r <= ranges[i+1]; r++ {
+			if len(result) == maxAlternatives {
+				return nil, false
+			}
+			result = append(result, string(r))
+			if r == ranges[i+1] {
+				break
+			}
+		}
+	}
+	return result, len(result) > 0
+}
+
+func combineLiteralAlternatives(left, right []string) []string {
+	const maxAlternatives = 64
+	if len(left) == 0 || len(right) == 0 || len(left) > maxAlternatives/len(right) {
+		return nil
+	}
+	result := make([]string, 0, len(left)*len(right))
+	for _, prefix := range left {
+		for _, suffix := range right {
+			result = append(result, prefix+suffix)
+		}
+	}
+	return result
+}
+
+func allNonEmptyStrings(values []string) []string {
+	for _, value := range values {
+		if value == "" {
+			return nil
+		}
+	}
+	return values
+}
+
+func isASCIIString(value string) bool {
+	for i := range len(value) {
+		if value[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// Generic credential-field words are common in benign URLs. They are safe as
+// gates but not selective enough to pay for candidate-slice allocation on the
+// query reconstruction hot path, so those patterns remain in alwaysRun.
+func isGenericCredentialAnchorSet(anchors []string) bool {
+	if len(anchors) == 0 {
+		return false
+	}
+	for _, anchor := range anchors {
+		switch anchor {
+		case "api", "key", "passw", "password", "secret", "token":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// requiredLiteralAnchors finds one conservative required-literal set for re.
+// For concatenation, any mandatory child can prove the gate; prefer the set
+// with the longest shortest anchor. For alternation, every branch must prove an
+// anchor, because a missing branch would turn the optimization into a bypass.
+func requiredLiteralAnchors(re *syntax.Regexp) []string {
+	switch re.Op {
+	case syntax.OpLiteral:
+		if len(re.Rune) == 0 {
+			return nil
+		}
+		return []string{string(re.Rune)}
+	case syntax.OpCapture:
+		if len(re.Sub) != 1 {
+			return nil
+		}
+		return requiredLiteralAnchors(re.Sub[0])
+	case syntax.OpConcat:
+		var best []string
+		for _, sub := range re.Sub {
+			candidate := requiredLiteralAnchors(sub)
+			if betterAnchorSet(candidate, best) {
+				best = candidate
+			}
+		}
+		return best
+	case syntax.OpAlternate:
+		var combined []string
+		for _, sub := range re.Sub {
+			candidate := requiredLiteralAnchors(sub)
+			if len(candidate) == 0 {
+				return nil
+			}
+			combined = append(combined, candidate...)
+		}
+		return combined
+	case syntax.OpPlus:
+		if len(re.Sub) != 1 {
+			return nil
+		}
+		return requiredLiteralAnchors(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min == 0 || len(re.Sub) != 1 {
+			return nil
+		}
+		return requiredLiteralAnchors(re.Sub[0])
+	default:
+		return nil
+	}
+}
+
+func betterAnchorSet(candidate, current []string) bool {
+	if len(candidate) == 0 {
+		return false
+	}
+	if len(current) == 0 {
+		return true
+	}
+	return shortestStringLength(candidate) > shortestStringLength(current)
+}
+
+func shortestStringLength(values []string) int {
+	shortest := -1
+	for _, value := range values {
+		if shortest < 0 || len(value) < shortest {
+			shortest = len(value)
+		}
+	}
+	if shortest < 0 {
+		return 0
+	}
+	return shortest
 }
 
 // candidates returns the pattern indices that might match the given text.
@@ -76,7 +338,13 @@ func (pf *dlpPreFilter) patternsToCheck(text string) []int {
 	}
 	result := append(hits, pf.alwaysRun...)
 	sort.Ints(result)
-	return result
+	unique := result[:1]
+	for _, idx := range result[1:] {
+		if idx != unique[len(unique)-1] {
+			unique = append(unique, idx)
+		}
+	}
+	return unique
 }
 
 // extractLiteralPrefix extracts the longest leading literal string from a regex.

@@ -126,7 +126,7 @@ func TestDLPPreFilter_Candidates(t *testing.T) {
 	}
 
 	t.Run("clean text returns no candidates", func(t *testing.T) {
-		hits := pf.candidates("this is a normal url with no secret prefixes at all")
+		hits := pf.candidates("ordinary weather forecast")
 		if len(hits) != 0 {
 			t.Errorf("expected 0 candidates for clean text, got %d", len(hits))
 		}
@@ -194,24 +194,38 @@ func TestDLPPreFilter_AlwaysRunPatterns(t *testing.T) {
 
 	pf := newDLPPreFilter(s.dlpPatterns)
 
-	// Check that patterns without literal prefixes end up in alwaysRun.
-	// AWS (alternation), Stripe (char class), SSN (\b\d), Discord ([MN]),
-	// credential URL (\b) should all be in alwaysRun.
+	// Check that patterns without a provable selective literal anchor remain in
+	// alwaysRun. SSNs and Discord's first alternative do not have one. Generic
+	// credential-field anchors are deliberately kept here
+	// because their common words are not selective enough for a useful gate.
 	alwaysRunNames := make(map[string]bool)
+	configuredNames := make(map[string]bool)
+	for _, pattern := range s.dlpPatterns {
+		configuredNames[pattern.name] = true
+	}
 	for _, idx := range pf.alwaysRun {
 		alwaysRunNames[s.dlpPatterns[idx].name] = true
 	}
 
 	expectedAlways := []string{
-		"AWS Access ID",
-		"Stripe Key",
 		"Social Security Number",
 		"Discord Bot Token",
+		"Credential in URL",
+		"Environment Variable Secret",
 	}
 
 	for _, name := range expectedAlways {
 		if !alwaysRunNames[name] {
 			t.Errorf("expected %q in alwaysRun, but it was not found", name)
+		}
+	}
+
+	for _, name := range []string{"Anthropic API Key", "GitHub Fine-Grained PAT"} {
+		if !configuredNames[name] {
+			t.Fatalf("expected anchored default pattern %q to exist", name)
+		}
+		if alwaysRunNames[name] {
+			t.Errorf("expected %q to be anchor-gated, but it is in alwaysRun", name)
 		}
 	}
 }

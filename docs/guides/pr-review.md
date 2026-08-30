@@ -49,12 +49,18 @@ ceiling and an unbounded full-history fetch. If it can't produce the exact diff,
 or the diff exceeds the runner's bounded size, the review fails instead of
 inspecting a subset.
 
-The runner uses deterministic token budgeting instead of character slicing: Go
+The runner uses deterministic token budgeting instead of character slicing. Go
 source and additions rank above tests, configuration, and documentation. The
-final comment contains an omission manifest and never reports `clean` when a
-unit was omitted, unparseable, or left without a valid structured result. A
-candidate the judge can't settle appears under a separate manual-verification
-heading and makes the review partial. It doesn't count as an actionable finding.
+final comment includes an omission manifest. If the reviewer omits a unit, can't
+parse it, or gets unusable provider output, it reports `partial` instead of
+`clean`.
+
+The judge gets one bounded follow-up with only the candidates it didn't settle.
+When a candidate depends on external evidence or evidence the run couldn't
+include, the comment reports `inconclusive` and shows the candidate under a
+manual-verification heading. The candidate doesn't count as an actionable
+finding, and the completeness check stays red until the review reaches `clean`
+or `findings`.
 A finding the judge does keep can still show `(needs verification)` when the
 reviewer marked it.
 Default-mode deletion compression is disclosed separately; deep mode reads
@@ -128,8 +134,10 @@ and selected model cannot reach a different answer, so running it again would
 spend a full review,
 twenty minutes on a large diff, to reproduce what is already posted. Depth is
 part of that comparison, so `/review deep` still runs after `/review`. Only a
-review that covered the whole diff counts; a `partial` or `failed` one is worth
-retrying because it may have been short for a transient reason. There is no way
+review that covered the whole diff and settled its candidates counts. Retry a
+`partial` or `failed` review because the run may have stopped short. Retry an
+`inconclusive` review after supplying the missing evidence or making the human
+decision it names. There is no way
 to force a second review of an unchanged head in the same mode. The manual
 dispatch that once did that was removed, because a manual run chooses the branch
 that supplies the reviewer code. Run the other mode, or push a change.
@@ -197,12 +205,12 @@ only inside a review cannot gate a change to the reviewer, because a review runs
 the default-branch copy.
 
 **Two signals, and they mean different things.** The `review` job reports
-whether the runner published a verdict, so a published `partial` is a successful
-run. The `completeness` job reports whether the review covered the whole pull
-request, and fails when it did not. Do not make a red `completeness` green; read
-the review comment, which names what was not covered. One signal cannot carry
-both without either making a working review look crashed or showing a green
-check on a review that read part of the diff.
+whether the runner published a verdict, so `partial` and `inconclusive` are
+successful runner outcomes. The `completeness` job reports whether the reviewer
+settled the whole pull request. It fails when the reviewer missed work or a
+candidate still needs human verification. Read the comment for the exact cause.
+Combining these signals would make a working review look crashed or give an
+unsettled review a green check.
 
 **Deletions are a security change.** Removing a guard reads as a deletion hunk.
 Deep mode reads deletion hunks in full and splits an oversized one into bounded

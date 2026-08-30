@@ -358,13 +358,33 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(pr_review.derive_state(clean), "clean")
         self.assertEqual(pr_review.derive_state(finding), "findings")
 
+    def test_full_review_with_external_evidence_gap_is_inconclusive(self) -> None:
+        candidate = pr_review.Finding("medium", "internal/a.go", 4, "title", "why", "fix")
+        progress = pr_review.ReviewProgress(
+            expected_units=1,
+            reviewed_units=1,
+            inconclusive_reasons=["outside evidence required"],
+            unverified_candidates=[candidate],
+        )
+        self.assertEqual(pr_review.derive_state(progress), "inconclusive")
+
+    def test_missing_coverage_stays_partial_even_with_an_unresolved_candidate(self) -> None:
+        candidate = pr_review.Finding("medium", "internal/a.go", 4, "title", "why", "fix")
+        progress = pr_review.ReviewProgress(
+            expected_units=2,
+            reviewed_units=1,
+            inconclusive_reasons=["outside evidence required"],
+            unverified_candidates=[candidate],
+        )
+        self.assertEqual(pr_review.derive_state(progress), "partial")
+
 
 class ExitSemanticsTest(unittest.TestCase):
     def test_every_published_outcome_is_green_but_an_unknown_state_is_red(self) -> None:
         # A terminal verdict is useful even when it is partial, superseded, or
         # failed. The status comment is its authoritative surface; the runner
         # goes red only if it cannot publish a known verdict.
-        expected = {"already-running", "clean", "failed", "findings", "partial", "superseded"}
+        expected = {"already-running", "clean", "failed", "findings", "inconclusive", "partial", "superseded"}
         self.assertEqual(pr_review.PUBLISHED_REVIEW_STATES, expected)
         for state in expected:
             self.assertEqual(pr_review.exit_code_for_state(state), 0, state)
@@ -380,7 +400,7 @@ class ExitSemanticsTest(unittest.TestCase):
             self.assertNotIn(state, pr_review.COMPLETE_REVIEW_STATES, state)
         # partial and superseded both publish a verdict and both left work
         # undone, so they are green to run and not complete.
-        for state in ("partial", "superseded", "failed", "already-running"):
+        for state in ("inconclusive", "partial", "superseded", "failed", "already-running"):
             self.assertEqual(pr_review.exit_code_for_state(state), 0, state)
             self.assertNotIn(state, pr_review.COMPLETE_REVIEW_STATES, state)
 
@@ -551,24 +571,16 @@ class CompressionAndClassificationTest(unittest.TestCase):
         self.assertIn("material security and correctness", system)
         self.assertIn("For tests", system)
 
-    def test_deep_mode_adds_the_adversarial_rubric_to_each_review_chunk(self) -> None:
+    def test_deep_chunks_use_a_compact_adversarial_rubric(self) -> None:
         units = [unit(1, "internal/enforce.go", "source:go")]
         default_system, _ = pr_review.build_review_prompt(["source:go"], units, "default")
         deep_system, _ = pr_review.build_review_prompt(["source:go"], units, "deep")
-        for required in (
-            "production states",
-            "allow and deny",
-            "every consumer and duplicate",
-            "whether the change should exist",
-            "sibling instances",
-            "neutralized",
-            "newest repair",
-            "evidence produced by the same code",
-            "availability and operability",
-            "Do not pad the result",
-        ):
+        for required in ("production and error states", "allow and deny", "sibling instances", "newest repair", "vacuous"):
             self.assertIn(required, deep_system)
             self.assertNotIn(required, default_system)
+        self.assertNotIn("1. Check production states", deep_system)
+        self.assertNotIn("10. Return no finding", deep_system)
+        self.assertLess(len(deep_system), 2_000)
 
     def test_deep_mode_keeps_the_adversarial_rubric_during_synthesis(self) -> None:
         system, _ = pr_review.build_synthesis_prompt(
@@ -579,6 +591,10 @@ class CompressionAndClassificationTest(unittest.TestCase):
         )
         self.assertIn("production states", system)
         self.assertIn("every consumer and duplicate", system)
+        self.assertIn("path manifest and change summaries", system)
+        self.assertIn("negative tests for changed guards", system)
+        self.assertNotIn("Search the supplied diff", system)
+        self.assertIn("10. Return no finding", system)
 
 
 class ImmutableBindingTest(unittest.TestCase):
@@ -1212,8 +1228,16 @@ class JudgeContextBoundTest(unittest.TestCase):
             _mode: str,
             candidates: list[pr_review.Finding],
             _changes: list[dict[str, str]],
-        ) -> tuple[list[pr_review.Finding], bool, list[pr_review.Finding], list[pr_review.Finding], list[pr_review.Finding]]:
-            return [], False, list(candidates), [], []
+            _deadline: float,
+        ) -> tuple[
+            list[pr_review.Finding],
+            bool,
+            list[pr_review.Finding],
+            list[pr_review.Finding],
+            list[pr_review.Finding],
+            list[pr_review.Finding],
+        ]:
+            return [], False, list(candidates), [], [], []
 
         with mock.patch.object(pr_review, "provider_configuration", return_value=("https://provider.example", "key")), mock.patch.object(
             pr_review, "fetch_bound_diff", return_value="ignored"
@@ -1234,6 +1258,45 @@ class JudgeContextBoundTest(unittest.TestCase):
         self.assertEqual(len(progress.unverified_candidates), 1)
         self.assertEqual(progress.unverified_candidates[0].path, candidate.path)
         self.assertIn("actual-code judge did not reach a decision", progress.incomplete_reasons)
+
+    def test_unresolved_reason_does_not_claim_a_recheck_ran(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "internal/a.go", 1, "title", "why", "fix")
+        review_payload = {
+            "findings": [
+                {
+                    "severity": candidate.severity,
+                    "path": candidate.path,
+                    "line": candidate.line,
+                    "title": candidate.title,
+                    "why": candidate.why,
+                    "fix": candidate.fix,
+                    "needs_verification": False,
+                }
+            ],
+            "changes": [{"path": candidate.path, "summary": "changes enforcement"}],
+        }
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("https://provider.example", "key")), mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value="ignored"
+        ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None), mock.patch.object(
+            pr_review, "parse_diff", return_value=([unit(1, candidate.path, "source:go")], [])
+        ), mock.patch.object(pr_review, "head_has_moved", return_value=False), mock.patch.object(
+            pr_review, "get_pull_binding", return_value=binding
+        ), mock.patch.object(pr_review, "budget_allows", return_value=True), mock.patch.object(
+            pr_review, "call_model", side_effect=[review_payload, {"findings": []}]
+        ), mock.patch.object(
+            pr_review, "judge_findings", return_value=([], True, [], [], [candidate], [])
+        ), mock.patch.object(pr_review, "update_comment"):
+            state, progress = pr_review.run_review(
+                "owner/repo", "42", "token", "default", "c" * 40, binding=binding, status_comment_id=7
+            )
+        self.assertEqual(state, "inconclusive")
+        self.assertEqual(progress.unverified_candidates, [candidate])
+        self.assertEqual(
+            progress.inconclusive_reasons,
+            ["1 candidate finding(s) still required outside or omitted evidence"],
+        )
+        self.assertNotIn("targeted recheck", " ".join(progress.inconclusive_reasons))
 
     def test_context_fetches_are_bounded_not_only_the_payload(self) -> None:
         # Context was fetched for every distinct path before the budget excluded
@@ -1262,7 +1325,9 @@ class JudgeContextBoundTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 10) as fetch, mock.patch.object(
             pr_review, "build_judge_prompt", side_effect=record
         ), mock.patch.object(pr_review, "call_model", side_effect=decide):
-            _, judged, over_budget, over_files, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, over_budget, over_files, _unresolved, _invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "deep", candidates
+            )
         self.assertTrue(judged)
         self.assertLessEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
         # Either limit may be the one that bites here; what matters is that
@@ -1280,7 +1345,9 @@ class JudgeFetchCapTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="x" * 200_000) as fetch, mock.patch.object(
             pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
         ):
-            _, judged, over_budget, over_files, _undecided = pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
+            _, judged, over_budget, over_files, _unresolved, _invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "deep", candidates
+            )
         self.assertFalse(judged)
         self.assertEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
         # The two limits are now reported apart, because naming the wrong one
@@ -1306,12 +1373,85 @@ class JudgeEvidenceTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="12: uniqueItems: true"), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", False)
         ), mock.patch.object(pr_review, "call_model", return_value=decision):
-            verified, judged, _budget, _files, undecided = pr_review.judge_findings(
+            verified, judged, _budget, _files, unresolved, invalid = pr_review.judge_findings(
                 "owner/repo", "token", binding, "default", [candidate]
             )
         self.assertTrue(judged)
         self.assertEqual(verified, [])
-        self.assertEqual(undecided, [candidate])
+        self.assertEqual(unresolved, [candidate])
+        self.assertEqual(invalid, [])
+
+    def test_unresolved_candidate_gets_one_targeted_recheck(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny")
+        first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer not located"}]}
+        repaired = {"findings": [{"index": 0, "verdict": "keep", "reason": "caller skips denial"}]}
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="12: return nil"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("caller.go:8 invokes guard", False)
+        ), mock.patch.object(pr_review, "call_model", side_effect=[first, repaired]) as model:
+            verified, judged, _budget, _files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "default", [candidate]
+            )
+        self.assertTrue(judged)
+        self.assertEqual(verified, [candidate])
+        self.assertEqual(unresolved, [])
+        self.assertEqual(invalid, [])
+        self.assertEqual([call.args[3] for call in model.call_args_list], ["judge", "judge-repair"])
+        self.assertIn("final targeted recheck", model.call_args_list[1].args[0])
+
+    def test_default_targeted_recheck_keeps_the_strong_judge_profile(self) -> None:
+        self.assertEqual(pr_review.model_for_phase("default", "judge-repair"), pr_review.model_for_mode("deep"))
+        self.assertEqual(pr_review.reasoning_for_phase("default", "judge-repair"), pr_review.JUDGE_REASONING_EFFORT)
+
+    def test_targeted_recheck_is_skipped_when_it_cannot_finish_before_deadline(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny")
+        first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "outside state required"}]}
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="12: return nil"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("", False)
+        ), mock.patch.object(pr_review, "budget_allows", return_value=False) as budget, mock.patch.object(
+            pr_review, "call_model", return_value=first
+        ) as model:
+            verified, judged, _payload, _files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "deep", [candidate], deadline=1.0
+            )
+        self.assertTrue(judged)
+        self.assertEqual(verified, [])
+        self.assertEqual(unresolved, [candidate])
+        self.assertEqual(invalid, [])
+        budget.assert_called_once_with(1.0, "deep", "judge-repair")
+        model.assert_called_once()
+
+    def test_deep_recheck_uses_its_real_phase_budget_at_the_call_site(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny")
+        first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "outside state required"}]}
+        repaired = {"findings": [{"index": 0, "verdict": "drop", "reason": "caller closes premise"}]}
+        remaining = pr_review.llm_call_budget_for("deep", "judge-repair")
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="12: return nil"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("", False)
+        ), mock.patch.object(pr_review.time, "monotonic", return_value=1_000.0), mock.patch.object(
+            pr_review, "call_model", side_effect=[first, repaired]
+        ) as model:
+            verified, judged, _payload, _files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "deep", [candidate], deadline=1_000.0 + remaining
+            )
+        self.assertTrue(judged)
+        self.assertEqual(verified, [])
+        self.assertEqual(unresolved, [])
+        self.assertEqual(invalid, [])
+        self.assertEqual([call.args[3] for call in model.call_args_list], ["judge", "judge-repair"])
+
+    def test_judge_repair_has_small_output_and_timeout_bounds(self) -> None:
+        payload = pr_review.build_llm_payload("gpt-5.6-terra", "system", "user", "deep", "judge-repair")
+        self.assertEqual(payload["max_completion_tokens"], pr_review.JUDGE_REPAIR_MAX_COMPLETION_TOKENS)
+        self.assertEqual(pr_review.llm_timeout_for("deep", "judge-repair"), pr_review.JUDGE_REPAIR_TIMEOUT_SECONDS)
+        self.assertEqual(
+            pr_review.llm_call_budget_for("deep", "judge-repair"),
+            pr_review.JUDGE_REPAIR_TIMEOUT_SECONDS * pr_review.MODEL_CONNECTION_ATTEMPTS,
+        )
+        self.assertLess(payload["max_completion_tokens"], pr_review.DEEP_MAX_COMPLETION_TOKENS)
+        self.assertLess(pr_review.llm_timeout_for("deep", "judge-repair"), pr_review.DEEP_LLM_TIMEOUT_SECONDS)
 
     def test_evidence_terms_search_context_identifiers(self) -> None:
         finding = pr_review.Finding(
@@ -1450,14 +1590,15 @@ class JudgeEvidenceTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 10), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", True)
         ), mock.patch.object(pr_review, "call_model") as model:
-            verified, judged, _over_budget, over_files, undecided = pr_review.judge_findings(
+            verified, judged, _over_budget, over_files, unresolved, invalid = pr_review.judge_findings(
                 "owner/repo", "token", binding, "deep", candidates
             )
         model.assert_not_called()
         self.assertFalse(judged)
         self.assertEqual(verified, [])
         self.assertEqual(len(over_files), extra)
-        self.assertEqual(len(undecided), pr_review.MAX_JUDGE_CONTEXT_FETCHES)
+        self.assertEqual(unresolved, [])
+        self.assertEqual(len(invalid), pr_review.MAX_JUDGE_CONTEXT_FETCHES)
 
     def test_truncated_repository_evidence_is_still_judged(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
@@ -1468,13 +1609,14 @@ class JudgeEvidenceTest(unittest.TestCase):
         ), mock.patch.object(
             pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "keep", "reason": "closed"}]}
         ) as model:
-            verified, judged, _budget, _files, undecided = pr_review.judge_findings(
+            verified, judged, _budget, _files, unresolved, invalid = pr_review.judge_findings(
                 "owner/repo", "token", binding, "default", [candidate]
             )
         model.assert_called_once()
         self.assertTrue(judged)
         self.assertEqual(verified, [candidate])
-        self.assertEqual(undecided, [])
+        self.assertEqual(unresolved, [])
+        self.assertEqual(invalid, [])
 
     def test_cross_file_evidence_reads_consumers_and_tests_from_exact_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1523,7 +1665,7 @@ class JudgeEvidenceTest(unittest.TestCase):
         ), mock.patch.object(
             pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "drop", "reason": "closed"}]}
         ) as model:
-            _verified, judged, _budget, _files, _undecided = pr_review.judge_findings(
+            _verified, judged, _budget, _files, _unresolved, _invalid = pr_review.judge_findings(
                 "owner/repo", "token", binding, "default", [candidate], summaries
             )
         self.assertTrue(judged)
@@ -1633,7 +1775,7 @@ class WallClockBudgetTest(unittest.TestCase):
     def test_budget_refuses_a_call_that_cannot_finish_before_the_job_timeout(self) -> None:
         now = 1_000.0
         with mock.patch.object(pr_review.time, "monotonic", return_value=now):
-            deep = pr_review.llm_timeout_for("deep")
+            deep = pr_review.llm_call_budget_for("deep")
             self.assertTrue(pr_review.budget_allows(now + deep, "deep"))
             self.assertFalse(pr_review.budget_allows(now + deep - 1, "deep"))
 
@@ -2221,7 +2363,7 @@ class StatusPresentationTest(unittest.TestCase):
         self.assertIn("<summary>Review details: binding and coverage</summary>", status)
         self.assertLess(len(status.encode("utf-8")), 2_000)
 
-    def test_partial_status_shows_unverified_candidates_without_counting_them_as_findings(self) -> None:
+    def test_inconclusive_status_shows_unverified_candidates_without_counting_them_as_findings(self) -> None:
         candidate = pr_review.Finding(
             "medium",
             "internal/enforce.go",
@@ -2233,15 +2375,19 @@ class StatusPresentationTest(unittest.TestCase):
         progress = pr_review.ReviewProgress(
             expected_units=1,
             reviewed_units=1,
-            incomplete_reasons=["1 candidate finding(s) received no usable judge decision and were not published as findings"],
+            inconclusive_reasons=["1 candidate finding still required outside evidence"],
             unverified_candidates=[candidate],
         )
-        status = pr_review.render_status(self._binding(), "deep", ["source:go"], progress, "partial", [])
+        status = pr_review.render_status(self._binding(), "deep", ["source:go"], progress, "inconclusive", [])
         self.assertIn("Review profile:** `deep`", status)
+        self.assertIn("Verdict:** `inconclusive`", status)
+        self.assertIn("whole diff was reviewed", status)
         self.assertIn("Findings:** high 0, medium 0, low 0.", status)
         self.assertIn("### Candidates requiring manual verification", status)
         self.assertIn("`internal/enforce.go:42`: error path may allow", status)
         self.assertIn("They aren't verified findings.", status)
+        self.assertIn("Why manual verification is required", status)
+        self.assertNotIn("Why this review is incomplete", status)
 
     def test_running_status_keeps_binding_out_of_the_open_body(self) -> None:
         status = pr_review._initial_status(self._binding(), "deep")
@@ -2586,7 +2732,7 @@ class RepeatReviewTest(unittest.TestCase):
     def test_a_partial_review_is_not_treated_as_done(self) -> None:
         # A partial run may have been short for a transient reason, so a rerun
         # can genuinely do better and is worth the spend.
-        for state in ("partial", "failed", "superseded", "already-running"):
+        for state in ("inconclusive", "partial", "failed", "superseded", "already-running"):
             with self.subTest(state=state):
                 markers = [self.marker(state, self.IDENTITY, "deep")]
                 self.assertIsNone(pr_review.completed_identical_review(markers, self.IDENTITY, "deep"))
@@ -2742,7 +2888,7 @@ class RepeatReviewTest(unittest.TestCase):
     def _judge(self, payload: dict, candidates: list) -> tuple:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 40), mock.patch.object(
-            pr_review, "call_model", return_value=payload
+            pr_review, "call_model", side_effect=[payload, {"findings": []}]
         ):
             return pr_review.judge_findings("owner/repo", "token", binding, "deep", candidates)
 
@@ -2763,10 +2909,11 @@ class RepeatReviewTest(unittest.TestCase):
             ],
             "summary": "an extra top-level key",
         }
-        verified, judged, excluded, _over_files, undecided = self._judge(payload, candidates)
+        verified, judged, excluded, _over_files, unresolved, invalid = self._judge(payload, candidates)
         self.assertTrue(judged)
         self.assertEqual([f.title for f in verified], ["T0"])
-        self.assertEqual(undecided, [])
+        self.assertEqual(unresolved, [])
+        self.assertEqual(invalid, [])
         self.assertEqual(excluded, [])
 
     def test_one_unusable_decision_does_not_take_the_others_down(self) -> None:
@@ -2781,27 +2928,30 @@ class RepeatReviewTest(unittest.TestCase):
                 {"index": 2, "verdict": "keep", "reason": "also real"},
             ]
         }
-        verified, judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
+        verified, judged, _excluded, _over_files, unresolved, invalid = self._judge(payload, candidates)
         self.assertTrue(judged)
         self.assertEqual(sorted(f.title for f in verified), ["T0", "T2"])
-        self.assertEqual([f.title for f in undecided], ["T1"])
+        self.assertEqual(unresolved, [])
+        self.assertEqual([f.title for f in invalid], ["T1"])
 
     def test_a_partial_answer_publishes_what_was_decided(self) -> None:
         # Deciding 2 of 3 used to discard all three.
         candidates = self._cands(3)
         payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}, {"index": 1, "verdict": "drop", "reason": "r"}]}
-        verified, judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
+        verified, judged, _excluded, _over_files, unresolved, invalid = self._judge(payload, candidates)
         self.assertTrue(judged)
         self.assertEqual([f.title for f in verified], ["T0"])
-        self.assertEqual([f.title for f in undecided], ["T2"])
+        self.assertEqual(unresolved, [])
+        self.assertEqual([f.title for f in invalid], ["T2"])
 
     def test_an_unjudged_candidate_is_never_published(self) -> None:
         # The security invariant this change must not weaken.
         candidates = self._cands(2)
         payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
-        verified, _judged, _excluded, _over_files, undecided = self._judge(payload, candidates)
+        verified, _judged, _excluded, _over_files, unresolved, invalid = self._judge(payload, candidates)
         self.assertNotIn("T1", [f.title for f in verified])
-        self.assertEqual([f.title for f in undecided], ["T1"])
+        self.assertEqual(unresolved, [])
+        self.assertEqual([f.title for f in invalid], ["T1"])
 
     def test_a_judge_that_decides_nothing_still_fails(self) -> None:
         # A response with no usable decision at all is a failed judge pass, not
@@ -2823,7 +2973,7 @@ class RepeatReviewTest(unittest.TestCase):
     def test_a_duplicate_index_cannot_overwrite_a_decision(self) -> None:
         candidates = self._cands(1)
         payload = {"findings": [{"index": 0, "verdict": "drop", "reason": "r"}, {"index": 0, "verdict": "keep", "reason": "r"}]}
-        verified, _judged, _excluded, _over_files, _undecided = self._judge(payload, candidates)
+        verified, _judged, _excluded, _over_files, _unresolved, _invalid = self._judge(payload, candidates)
         self.assertEqual(verified, [], "the first decision for an index wins")
 
     def test_an_unhashable_verdict_does_not_crash_the_run(self) -> None:
@@ -2845,10 +2995,13 @@ class RepeatReviewTest(unittest.TestCase):
                         {"index": 1, "verdict": "keep", "reason": "r"},
                     ]
                 }
-                verified, judged, _excluded, _over_files, undecided = self._judge(payload, self._cands(2))
+                verified, judged, _excluded, _over_files, unresolved, invalid = self._judge(
+                    payload, self._cands(2)
+                )
                 self.assertTrue(judged)
                 self.assertEqual([f.title for f in verified], ["T1"])
-                self.assertEqual([f.title for f in undecided], ["T0"])
+                self.assertEqual(unresolved, [])
+                self.assertEqual([f.title for f in invalid], ["T0"])
 
     def test_an_unhashable_severity_or_path_is_a_model_output_error(self) -> None:
         # The sibling of the same class in the chunk-finding parser. Found by
@@ -3157,7 +3310,7 @@ class DeltaScopeTest(unittest.TestCase):
             self.assertNotEqual(before, pr_review.model_binding("default"))
 
     def test_an_incomplete_review_is_not_a_baseline(self) -> None:
-        for state in ("partial", "failed", "superseded"):
+        for state in ("inconclusive", "partial", "failed", "superseded"):
             with self.subTest(state=state):
                 markers = [self.marker(state=state)]
                 self.assertIsNone(pr_review.previous_review_for_mode(markers, "deep", self.HEAD))
@@ -3313,7 +3466,7 @@ class LedgerTest(unittest.TestCase):
         ), mock.patch.object(
             pr_review, "get_pull_binding", return_value=current
         ), mock.patch.object(
-            pr_review, "judge_findings", return_value=([], True, [], [], [])
+            pr_review, "judge_findings", return_value=([], True, [], [], [], [])
         ), mock.patch.object(pr_review, "update_comment"):
             _state, progress = pr_review.run_review(
                 "owner/repo", "42", "token", "deep", "e" * 40, binding=current, status_comment_id=7
@@ -3339,7 +3492,7 @@ class LedgerTest(unittest.TestCase):
         ), mock.patch.object(
             pr_review, "get_pull_binding", return_value=current
         ), mock.patch.object(
-            pr_review, "judge_findings", return_value=([], True, [], [], [])
+            pr_review, "judge_findings", return_value=([], True, [], [], [], [])
         ), mock.patch.object(pr_review, "update_comment"):
             _state, progress = pr_review.run_review(
                 "owner/repo", "42", "token", "deep", "e" * 40, binding=current, status_comment_id=7
@@ -3371,7 +3524,7 @@ class LedgerTest(unittest.TestCase):
         ), mock.patch.object(
             pr_review, "get_pull_binding", return_value=current
         ), mock.patch.object(
-            pr_review, "judge_findings", return_value=([], True, [], [], [])
+            pr_review, "judge_findings", return_value=([], True, [], [], [], [])
         ) as judge, mock.patch.object(pr_review, "update_comment"):
             _state, progress = pr_review.run_review(
                 "owner/repo", "42", "token", "deep", "e" * 40, binding=current, status_comment_id=7

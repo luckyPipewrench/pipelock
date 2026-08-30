@@ -55,10 +55,10 @@ final comment includes an omission manifest. If the reviewer omits a unit, can't
 parse it, or gets unusable provider output, it reports `partial` instead of
 `clean`.
 
-The judge gets one bounded follow-up with only the candidates it didn't settle.
+The judge gets one bounded follow-up with only the candidates it didn't settle. The first pass can request a specific repository path or literal search; the runner fetches that evidence from the immutable reviewed checkout before the follow-up. The review job never executes pull-request code to settle a candidate.
 When a candidate depends on external evidence or evidence the run couldn't
-include, the comment reports `inconclusive` and shows the candidate under a
-manual-verification heading. The candidate doesn't count as an actionable
+include, the comment reports `inconclusive` and keeps the candidate in a
+collapsed unverified-candidates section. The candidate doesn't count as an actionable
 finding, and the completeness check stays red until the review reaches `clean`
 or `findings`.
 A finding the judge does keep can still show `(needs verification)` when the

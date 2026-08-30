@@ -1357,12 +1357,13 @@ class JudgeFetchCapTest(unittest.TestCase):
             _, judged, over_budget, over_files, _unresolved, _invalid = pr_review.judge_findings(
                 "owner/repo", "token", binding, "deep", candidates
             )
-        self.assertFalse(judged)
+        self.assertTrue(judged)
         self.assertEqual(fetch.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
-        # The two limits are now reported apart, because naming the wrong one
-        # sends an operator to shrink the wrong thing. The total held back is
-        # unchanged, which is what this test has always been about.
-        self.assertEqual(len(over_budget) + len(over_files), len(candidates))
+        # The context window is now bounded, so the first twenty paths still
+        # reach the judge instead of one giant source line excluding all of
+        # them. Only the candidates beyond the file-fetch cap are held back.
+        self.assertEqual(over_budget, [])
+        self.assertEqual(len(over_files), len(candidates) - pr_review.MAX_JUDGE_CONTEXT_FETCHES)
         self.assertTrue(over_files, "the file cap is what bites with 60 distinct paths")
 
 
@@ -1407,6 +1408,266 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertEqual(invalid, [])
         self.assertEqual([call.args[3] for call in model.call_args_list], ["judge", "judge-repair"])
         self.assertIn("final targeted recheck", model.call_args_list[1].args[0])
+
+    def test_targeted_recheck_fetches_the_repository_evidence_the_judge_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "go.mod").write_text("module example.test/reviewer\n\ngo 1.25\n")
+            subprocess.run(["git", "-C", str(root), "add", "go.mod"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            candidate = pr_review.Finding("medium", "config.yaml", 12, "syntax may fail", "runtime unclear", "fix")
+            first = {
+                "findings": [{
+                    "index": 0,
+                    "verdict": "unresolved",
+                    "reason": "language version is missing",
+                    "requests": [{"path": "go.mod", "line": 3}],
+                }]
+            }
+            repaired = {"findings": [{"index": 0, "verdict": "drop", "reason": "supported", "requests": []}]}
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}, clear=False), mock.patch.object(
+                pr_review, "fetch_file_context", return_value="12: regex"
+            ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+                pr_review, "call_model", side_effect=[first, repaired]
+            ) as model:
+                verified, judged, over_budget, over_files, unresolved, invalid = pr_review.judge_findings(
+                    "owner/repo", "token", binding, "default", [candidate]
+                )
+        self.assertTrue(judged)
+        self.assertEqual((verified, over_budget, over_files, unresolved, invalid), ([], [], [], [], []))
+        repair_prompt = json.loads(model.call_args_list[1].args[1])
+        self.assertIn("REQUESTED PATH go.mod", repair_prompt["cross_file_repository_evidence"])
+        self.assertIn("go 1.25", repair_prompt["cross_file_repository_evidence"])
+
+    def test_requested_path_reads_the_reviewed_commit_not_dirty_worktree_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "contract.txt").write_text("committed contract\n")
+            subprocess.run(["git", "-C", str(root), "add", "contract.txt"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            (root / "contract.txt").write_text("dirty replacement\n")
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            decisions = {
+                0: pr_review.JudgeDecision(
+                    "unresolved", (pr_review.EvidenceRequest(path="contract.txt"),)
+                )
+            }
+            with mock.patch.dict(
+                pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}, clear=False
+            ):
+                evidence, unavailable = pr_review.requested_repository_evidence(binding, decisions)
+        self.assertFalse(unavailable)
+        self.assertIn("committed contract", evidence)
+        self.assertNotIn("dirty replacement", evidence)
+
+    def test_requested_search_reads_the_reviewed_commit_not_later_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "contract.txt").write_text("reviewed needle\n")
+            subprocess.run(["git", "-C", str(root), "add", "contract.txt"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "reviewed"], check=True)
+            reviewed_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            (root / "contract.txt").write_text("later replacement\n")
+            subprocess.run(["git", "-C", str(root), "commit", "-am", "later", "-q"], check=True)
+            binding = pr_review.PullBinding("a" * 40, reviewed_head, "c" * 40, pr_review.RUBRIC_VERSION)
+            decisions = {
+                0: pr_review.JudgeDecision(
+                    "unresolved", (pr_review.EvidenceRequest(search="reviewed needle"),)
+                )
+            }
+            with mock.patch.object(pr_review, "_local_review_root", return_value=root):
+                evidence, unavailable = pr_review.requested_repository_evidence(binding, decisions)
+        self.assertFalse(unavailable)
+        self.assertIn("reviewed needle", evidence)
+        self.assertNotIn("later replacement", evidence)
+
+    def test_requested_line_outside_file_is_unavailable(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        decisions = {
+            0: pr_review.JudgeDecision(
+                "unresolved", (pr_review.EvidenceRequest(path="contract.txt", line=99),)
+            )
+        }
+        with mock.patch.object(pr_review, "_local_review_root", return_value=pathlib.Path(".")), mock.patch.object(
+            pr_review, "_read_commit_file", return_value="one line\n"
+        ):
+            evidence, unavailable = pr_review.requested_repository_evidence(binding, decisions)
+        self.assertTrue(unavailable)
+        self.assertIn("<file-context-unavailable:", evidence)
+
+    def test_requested_repository_evidence_shares_one_aggregate_deadline(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        decisions = {
+            0: pr_review.JudgeDecision(
+                "unresolved",
+                (
+                    pr_review.EvidenceRequest(search="first"),
+                    pr_review.EvidenceRequest(search="second"),
+                ),
+            )
+        }
+        with mock.patch.object(pr_review.time, "monotonic", return_value=100.0), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path(".")
+        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=([], False, False)) as grep:
+            evidence, unavailable = pr_review.requested_repository_evidence(
+                binding, decisions, deadline=105.0
+            )
+        self.assertFalse(unavailable)
+        self.assertIn("first", evidence)
+        self.assertIn("second", evidence)
+        self.assertEqual([call.kwargs["deadline"] for call in grep.call_args_list], [105.0, 105.0])
+        self.assertEqual([call.kwargs["treeish"] for call in grep.call_args_list], [binding.head_sha] * 2)
+
+    def test_requested_repository_evidence_caps_its_own_aggregate_time(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        decisions = {
+            0: pr_review.JudgeDecision(
+                "unresolved", (pr_review.EvidenceRequest(search="needle"),)
+            )
+        }
+        with mock.patch.object(pr_review.time, "monotonic", return_value=100.0), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path(".")
+        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=([], False, False)) as grep:
+            pr_review.requested_repository_evidence(binding, decisions, deadline=500.0)
+        self.assertEqual(grep.call_args.kwargs["deadline"], 110.0)
+
+    def test_requested_repository_evidence_skips_checkout_at_the_deadline_boundary(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        now = 100.0
+        job_deadline = now + pr_review.llm_call_budget_for("deep", "judge-repair")
+        evidence_deadline = job_deadline - pr_review.llm_call_budget_for("deep", "judge-repair")
+        decisions = {
+            0: pr_review.JudgeDecision(
+                "unresolved", (pr_review.EvidenceRequest(search="needle"),)
+            )
+        }
+        with mock.patch.dict(
+            pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}, clear=False
+        ), mock.patch.object(pr_review.time, "monotonic", return_value=now), mock.patch.object(
+            pr_review.subprocess, "run"
+        ) as run:
+            evidence, unavailable = pr_review.requested_repository_evidence(
+                binding, decisions, deadline=evidence_deadline
+            )
+        self.assertTrue(unavailable)
+        self.assertEqual(evidence, "<requested-repository-evidence-unavailable>")
+        run.assert_not_called()
+
+    def test_requested_repository_evidence_caps_checkout_validation_to_remaining_time(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        decisions = {
+            0: pr_review.JudgeDecision(
+                "unresolved", (pr_review.EvidenceRequest(search="needle"),)
+            )
+        }
+        completed = subprocess.CompletedProcess([], 0, stdout=binding.head_sha + "\n", stderr="")
+        with mock.patch.dict(
+            pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}, clear=False
+        ), mock.patch.object(pr_review.time, "monotonic", return_value=100.0), mock.patch.object(
+            pr_review.subprocess, "run", return_value=completed
+        ) as run, mock.patch.object(
+            pr_review, "_bounded_git_grep", return_value=([], False, False)
+        ):
+            evidence, unavailable = pr_review.requested_repository_evidence(
+                binding, decisions, deadline=102.0
+            )
+        self.assertFalse(unavailable)
+        self.assertIn("needle", evidence)
+        self.assertEqual(run.call_args.kwargs["timeout"], 2.0)
+
+    def test_judge_context_is_shared_instead_of_one_large_file_crowding_out_later_candidates(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidates = [pr_review.Finding("low", f"docs/{index}.md", 80, "title", "why", "fix") for index in range(5)]
+        payload = {
+            "findings": [
+                {"index": index, "verdict": "drop", "reason": "not a defect", "requests": []}
+                for index in range(len(candidates))
+            ]
+        }
+        with mock.patch.object(pr_review, "fetch_file_context", return_value=("long documentation line\n" * 500)), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("", False)
+        ), mock.patch.object(pr_review, "call_model", return_value=payload):
+            verified, judged, over_budget, over_files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "default", candidates
+            )
+        self.assertTrue(judged)
+        self.assertEqual((verified, over_budget, over_files, unresolved, invalid), ([], [], [], [], []))
+
+    def test_evidence_requests_reject_paths_outside_the_review_checkout(self) -> None:
+        parsed = pr_review._parse_judge_decisions(
+            {
+                "findings": [{
+                    "index": 0,
+                    "verdict": "unresolved",
+                    "reason": "need file",
+                    "requests": [{"path": "../../etc/passwd", "line": 1}],
+                }]
+            },
+            1,
+        )
+        self.assertEqual(parsed[0].requests, ())
+
+    def test_evidence_requests_reject_nul_path_without_failing_the_judge_parse(self) -> None:
+        parsed = pr_review._parse_judge_decisions(
+            {
+                "findings": [{
+                    "index": 0,
+                    "verdict": "unresolved",
+                    "reason": "need file",
+                    "requests": [{"path": "docs/bad\x00name.md", "line": 1}],
+                }]
+            },
+            1,
+        )
+        self.assertEqual(parsed[0].requests, ())
+
+    def test_judge_rejects_keep_or_drop_with_an_evidence_request(self) -> None:
+        for verdict in ("keep", "drop"):
+            with self.subTest(verdict=verdict):
+                payload = {
+                    "findings": [{
+                        "index": 0,
+                        "verdict": verdict,
+                        "reason": "another file might confirm this",
+                        "requests": [{"path": "internal/consumer.go", "line": 12}],
+                    }]
+                }
+                self.assertEqual(pr_review._parse_judge_decisions(payload, 1), {})
+                self.assertEqual(
+                    pr_review._parse_judge_decisions(payload, 1, allow_requests=False),
+                    {},
+                )
+
+    def test_evidence_requests_reject_control_characters_for_paths_and_searches(self) -> None:
+        for request in (
+            {"path": "docs/bad\nname.md"},
+            {"path": "docs/bad\x7fname.md"},
+            {"path": "docs/bad\x85name.md"},
+            {"search": "bad\x7fsearch"},
+            {"search": "bad\x85search"},
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(pr_review._parse_evidence_requests([request]), ())
+
+    def test_evidence_requests_reject_lone_surrogates_for_paths_and_searches(self) -> None:
+        for request in (
+            {"path": "docs/bad\ud800name.md"},
+            {"search": "bad\ud800search"},
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(pr_review._parse_evidence_requests([request]), ())
 
     def test_failed_targeted_recheck_marks_pending_candidate_invalid(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
@@ -1472,6 +1733,38 @@ class JudgeEvidenceTest(unittest.TestCase):
         budget.assert_called_once_with(1.0, "deep", "judge-repair")
         model.assert_called_once()
 
+    def test_targeted_recheck_rechecks_budget_after_repository_evidence(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny")
+        first = {
+            "findings": [{
+                "index": 0,
+                "verdict": "unresolved",
+                "reason": "outside state required",
+                "requests": [{"path": "consumer.go"}],
+            }]
+        }
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="12: return nil"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("", False)
+        ), mock.patch.object(
+            pr_review, "requested_repository_evidence", return_value=("", True)
+        ) as requested, mock.patch.object(
+            pr_review, "budget_allows", side_effect=[True, False]
+        ) as budget, mock.patch.object(pr_review, "call_model", return_value=first) as model:
+            verified, judged, _payload, _files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "deep", [candidate], deadline=1_000.0
+            )
+        self.assertTrue(judged)
+        self.assertEqual(verified, [])
+        self.assertEqual(unresolved, [candidate])
+        self.assertEqual(invalid, [])
+        requested.assert_called_once_with(binding, mock.ANY, deadline=mock.ANY)
+        self.assertEqual(budget.call_args_list, [
+            mock.call(1_000.0, "deep", "judge-repair"),
+            mock.call(1_000.0, "deep", "judge-repair"),
+        ])
+        model.assert_called_once()
+
     def test_deep_recheck_uses_its_real_phase_budget_at_the_call_site(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         candidate = pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny")
@@ -1481,6 +1774,8 @@ class JudgeEvidenceTest(unittest.TestCase):
         with mock.patch.object(pr_review, "fetch_file_context", return_value="12: return nil"), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", False)
         ), mock.patch.object(pr_review.time, "monotonic", return_value=1_000.0), mock.patch.object(
+            pr_review, "requested_repository_evidence", return_value=("", False)
+        ) as requested, mock.patch.object(
             pr_review, "call_model", side_effect=[first, repaired]
         ) as model:
             verified, judged, _payload, _files, unresolved, invalid = pr_review.judge_findings(
@@ -1491,6 +1786,7 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertEqual(unresolved, [])
         self.assertEqual(invalid, [])
         self.assertEqual([call.args[3] for call in model.call_args_list], ["judge", "judge-repair"])
+        requested.assert_called_once_with(binding, mock.ANY, deadline=1_000.0)
 
     def test_judge_repair_has_small_output_and_timeout_bounds(self) -> None:
         payload = pr_review.build_llm_payload("gpt-5.6-terra", "system", "user", "deep", "judge-repair")
@@ -1543,7 +1839,7 @@ class JudgeEvidenceTest(unittest.TestCase):
                 return None
 
         with mock.patch.object(pr_review.subprocess, "Popen", return_value=Finished()):
-            lines, truncated, failed = pr_review._bounded_git_grep(pathlib.Path("."), "match")
+            lines, truncated, failed = pr_review._bounded_git_grep(pathlib.Path("."), "match", "HEAD")
         self.assertFalse(failed)
         self.assertFalse(truncated)
         self.assertEqual(lines, ["HEAD:a.go:1:match"])
@@ -1582,7 +1878,7 @@ class JudgeEvidenceTest(unittest.TestCase):
         with mock.patch.object(pr_review.time, "monotonic", side_effect=monotonic), mock.patch.object(
             pr_review.subprocess, "Popen", return_value=child
         ):
-            _lines, _truncated, failed = pr_review._bounded_git_grep(pathlib.Path("."), "match")
+            _lines, _truncated, failed = pr_review._bounded_git_grep(pathlib.Path("."), "match", "HEAD")
         self.assertTrue(failed)
         self.assertTrue(child.killed)
         self.assertTrue(child.waited)
@@ -2462,7 +2758,7 @@ class StatusPresentationTest(unittest.TestCase):
         self.assertIn("Verdict:** `inconclusive`", status)
         self.assertIn("whole diff was reviewed", status)
         self.assertIn("Findings:** high 0, medium 0, low 0.", status)
-        self.assertIn("### Candidates requiring manual verification", status)
+        self.assertIn("<summary>Unverified candidates (1; not findings)</summary>", status)
         self.assertIn("`internal/enforce.go:42`: error path may allow", status)
         self.assertIn("They aren't verified findings.", status)
         self.assertIn("Why manual verification is required", status)

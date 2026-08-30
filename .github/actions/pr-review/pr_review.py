@@ -93,6 +93,17 @@ DEEP_MAX_UNITS_PER_CHUNK = 60
 # Each judge context fetch allows 30 seconds, so an unbounded candidate set
 # could spend longer on requests than the whole job is permitted to run.
 MAX_JUDGE_CONTEXT_FETCHES = 20
+# One file window used to consume most of the default judge payload and leave
+# later candidates entirely unjudged. A focused actual-line window is enough
+# for the first pass; the judge can request a specific path or literal search
+# for its one bounded repair pass when the deciding code lives elsewhere.
+MAX_JUDGE_CONTEXT_TOKENS = 1_200
+MAX_JUDGE_EVIDENCE_REQUESTS = 8
+MAX_REQUESTS_PER_CANDIDATE = 3
+MAX_REQUESTED_EVIDENCE_TOKENS = 2_000
+# Evidence retrieval shares one wall-clock allowance. Per-command timeouts alone
+# let several model-authored requests consume their full timeout serially.
+MAX_REQUESTED_EVIDENCE_SECONDS = 10
 # Each git-grep is itself time-bounded. This is how many we are willing to start
 # for one judge pass; without it, twenty candidates times four terms can spend
 # minutes rescanning HEAD before a partial review is even published.
@@ -103,7 +114,7 @@ REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # @@ -old_start,old_count +new_start,new_count @@ optional section heading.
 # Counts are optional in unified diff when they are 1.
 HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
-RUBRIC_VERSION = "2026-08-30.1"
+RUBRIC_VERSION = "2026-08-30.2"
 STATUS_MARKER = "pr-review-status:v1"
 # A separate marker so the compact record of published findings never has to
 # fit on the status line, and so a parser for one cannot be confused by the
@@ -219,6 +230,19 @@ class Finding:
     why: str
     fix: str
     needs_verification: bool = False
+
+
+@dataclass(frozen=True)
+class EvidenceRequest:
+    path: str | None = None
+    line: int | None = None
+    search: str | None = None
+
+
+@dataclass(frozen=True)
+class JudgeDecision:
+    verdict: str
+    requests: tuple[EvidenceRequest, ...] = ()
 
 
 @dataclass
@@ -722,8 +746,11 @@ def build_judge_prompt(
         + recheck
         + "Choose keep or drop whenever checked-out repository code can decide the premise. "
         "Use unresolved only when the decisive fact is outside the repository or the prompt explicitly says required evidence was omitted or unavailable. "
+        "On the first pass, if repository evidence could decide the premise but was not supplied, return unresolved and request the missing evidence. "
+        "Each request must contain either a repository-relative path (plus an optional positive line) or one literal search string. Do not request commands or tests. "
+        "On the final targeted recheck, requests must be empty: decide from the expanded evidence or name the genuinely external fact still required. "
         "An unresolved reason must name that missing external or omitted evidence. Unresolved candidates are withheld and require human verification rather than becoming actionable findings. "
-        "Return JSON only: {\"findings\":[{\"index\":integer,\"verdict\":\"keep|drop|unresolved\",\"reason\":\"short\"}]}. "
+        "Return JSON only: {\"findings\":[{\"index\":integer,\"verdict\":\"keep|drop|unresolved\",\"reason\":\"short\",\"requests\":[{\"path\":\"relative/path\",\"line\":integer|null}|{\"search\":\"literal\"}]}]}. "
         "Return exactly one result for every candidate and no extra keys."
     )
     user = json.dumps(
@@ -749,11 +776,42 @@ def build_judge_prompt(
     return system, user
 
 
-def _parse_judge_decisions(payload: object, candidate_count: int) -> dict[int, str]:
+def _parse_evidence_requests(value: object) -> tuple[EvidenceRequest, ...]:
+    if not isinstance(value, list):
+        return ()
+    requests_out: list[EvidenceRequest] = []
+    for raw in value[:MAX_REQUESTS_PER_CANDIDATE]:
+        if not isinstance(raw, dict):
+            continue
+        path = raw.get("path")
+        search = raw.get("search")
+        line = raw.get("line")
+        if (
+            isinstance(path, str)
+            and 0 < len(path) <= 300
+            and not path.startswith("/")
+            and ".." not in Path(path).parts
+            and not any(unicodedata.category(char) in {"Cc", "Cs"} for char in path)
+        ):
+            if line is not None and (type(line) is not int or line <= 0):
+                continue
+            requests_out.append(EvidenceRequest(path=path, line=line))
+        elif (
+            isinstance(search, str)
+            and 3 <= len(search) <= 160
+            and not any(unicodedata.category(char) in {"Cc", "Cs"} for char in search)
+        ):
+            requests_out.append(EvidenceRequest(search=search))
+    return tuple(requests_out)
+
+
+def _parse_judge_decisions(
+    payload: object, candidate_count: int, *, allow_requests: bool = True
+) -> dict[int, JudgeDecision]:
     """Return only schema-valid decisions; the caller owns bounded repair."""
     if not isinstance(payload, dict) or not isinstance(payload.get("findings"), list):
         raise ModelOutputError("judge response violated its schema")
-    decisions: dict[int, str] = {}
+    decisions: dict[int, JudgeDecision] = {}
     for item in payload["findings"]:
         if not isinstance(item, dict) or not {"index", "verdict", "reason"} <= set(item):
             continue
@@ -767,7 +825,11 @@ def _parse_judge_decisions(payload: object, candidate_count: int) -> dict[int, s
             _required_string(item["reason"], "judge reason", limit=300)
         except ModelOutputError:
             continue
-        decisions[index] = verdict
+        raw_requests = item.get("requests")
+        if raw_requests not in (None, []) and (not allow_requests or verdict != "unresolved"):
+            continue
+        requests = _parse_evidence_requests(raw_requests)
+        decisions[index] = JudgeDecision(verdict, requests)
     return decisions
 
 
@@ -1773,19 +1835,26 @@ def find_running_comment(repo: str, pr_number: str, token: str, correlation: str
     return found, False
 
 
-def _local_review_root(head_sha: str, correlation: str) -> Path | None:
+def _local_review_root(head_sha: str, correlation: str, deadline: float | None = None) -> Path | None:
     """Return the immutable target checkout only when it is the reviewed head."""
     configured = os.environ.get("REVIEWED_REPOSITORY_PATH", "")
     if not configured:
         return None
     root = Path(configured).resolve()
+    timeout = 10.0
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log_phase("judge-checkout", status="deadline-exhausted", correlation=correlation)
+            return None
+        timeout = min(timeout, remaining)
     try:
         completed = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             text=True,
             capture_output=True,
             check=False,
-            timeout=10,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         log_phase("judge-checkout", status="unreadable", correlation=correlation)
@@ -1808,6 +1877,47 @@ def _read_local_file(root: Path, path: str) -> str | None:
         return candidate.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+
+
+def _read_commit_file(root: Path, head_sha: str, path: str, deadline: float) -> str | None:
+    """Read one bounded tracked blob from the immutable reviewed commit."""
+    object_name = f"{head_sha}:{path}"
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        size = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-s", object_name],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=min(10, remaining),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError):
+        return None
+    if size.returncode:
+        return None
+    try:
+        blob_size = int(size.stdout.strip())
+    except ValueError:
+        return None
+    if blob_size < 0 or blob_size > 2_000_000:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        blob = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", object_name],
+            capture_output=True,
+            check=False,
+            timeout=min(10, remaining),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError):
+        return None
+    if blob.returncode or len(blob.stdout) != blob_size:
+        return None
+    return blob.stdout.decode("utf-8", errors="replace")
 
 
 def fetch_file_context(repo: str, path: str, head_sha: str, token: str, correlation: str) -> str | None:
@@ -1845,14 +1955,39 @@ def fetch_file_context(repo: str, path: str, head_sha: str, token: str, correlat
         return None
 
 
-def _line_context(content: str, line: int | None) -> str:
+def _line_context(content: str, line: int | None, max_tokens: int = MAX_JUDGE_CONTEXT_TOKENS) -> str:
     lines = content.splitlines()
+    if line is not None and (line < 1 or line > len(lines)):
+        return "<file-context-unavailable: requested line is outside the file>"
     if not lines:
         return "<empty file>"
     center = (line - 1) if line is not None else 0
     start = max(0, center - 60)
     end = min(len(lines), center + 60)
-    return "\n".join(f"{number + 1}: {value}" for number, value in enumerate(lines[start:end], start=start))
+    rendered = [
+        f"{number + 1}: {value}"[: max_tokens * 4]
+        for number, value in enumerate(lines[start:end], start=start)
+    ]
+    if estimate_tokens("\n".join(rendered)) <= max_tokens:
+        return "\n".join(rendered)
+    local_center = min(max(center - start, 0), len(rendered) - 1)
+    selected: list[int] = []
+    used = 0
+    for distance in range(len(rendered)):
+        for index in (local_center - distance, local_center + distance):
+            if index < 0 or index >= len(rendered) or index in selected:
+                continue
+            addition = estimate_tokens(rendered[index])
+            if selected and used + addition > max_tokens:
+                continue
+            selected.append(index)
+            used += addition
+        if used >= max_tokens:
+            break
+    selected.sort()
+    output = [rendered[index] for index in selected]
+    output.append("<file-context-truncated: request a path or literal search if more repository evidence is needed>")
+    return "\n".join(output)
 
 
 _EVIDENCE_STOP_WORDS = frozenset(
@@ -1960,12 +2095,14 @@ def cross_file_evidence(
                 break
             searched_terms.add(term)
             searches += 1
-            lines, search_truncated, search_failed = _bounded_git_grep(root, term)
+            lines, search_truncated, search_failed = _bounded_git_grep(
+                root, term, binding.head_sha
+            )
             if search_failed:
                 return "", True
             search_output_truncated = search_output_truncated or search_truncated
             for raw in lines:
-                match = re.match(r"HEAD:([^:]+):(\d+):(.*)", raw)
+                match = re.match(rf"{re.escape(binding.head_sha)}:([^:]+):(\d+):(.*)", raw)
                 if not match:
                     continue
                 path, line_text, text = match.groups()
@@ -2031,11 +2168,13 @@ def _reap_process(process: subprocess.Popen[Any]) -> None:
         process.wait()
 
 
-def _bounded_git_grep(root: Path, term: str) -> tuple[list[str], bool, bool]:
+def _bounded_git_grep(
+    root: Path, term: str, treeish: str, deadline: float | None = None
+) -> tuple[list[str], bool, bool]:
     """Read repository search output with hard time and byte bounds."""
     try:
         process = subprocess.Popen(  # noqa: S603
-            ["git", "-C", str(root), "grep", "-n", "-I", "-i", "-F", "-m", "3", "-e", term, "HEAD", "--"],
+            ["git", "-C", str(root), "grep", "-n", "-I", "-i", "-F", "-m", "3", "-e", term, treeish, "--"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -2047,14 +2186,16 @@ def _bounded_git_grep(root: Path, term: str) -> tuple[list[str], bool, bool]:
         return [], False, True
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
-    deadline = time.monotonic() + 10
+    command_deadline = time.monotonic() + 10
+    if deadline is not None:
+        command_deadline = min(command_deadline, deadline)
     data = bytearray()
     truncated = False
     try:
         # Drain stdout until EOF. poll() is only a deadline/exit check; a child
         # that already exited can still have unread output in the pipe.
         while True:
-            remaining = deadline - time.monotonic()
+            remaining = command_deadline - time.monotonic()
             if remaining <= 0:
                 process.kill()
                 _reap_process(process)
@@ -2108,6 +2249,79 @@ def _bounded_change_summaries(
         retained.append(summary)
         used += addition
     return retained, False
+
+
+def requested_repository_evidence(
+    binding: PullBinding,
+    decisions: dict[int, JudgeDecision],
+    max_tokens: int = MAX_REQUESTED_EVIDENCE_TOKENS,
+    deadline: float | None = None,
+) -> tuple[str, bool]:
+    """Fetch only the repository evidence the first judge says it lacked."""
+    requested: list[EvidenceRequest] = []
+    seen: set[EvidenceRequest] = set()
+    for decision in decisions.values():
+        if decision.verdict != "unresolved":
+            continue
+        for request in decision.requests:
+            if request in seen:
+                continue
+            seen.add(request)
+            requested.append(request)
+            if len(requested) == MAX_JUDGE_EVIDENCE_REQUESTS:
+                break
+        if len(requested) == MAX_JUDGE_EVIDENCE_REQUESTS:
+            break
+    if not requested:
+        return "", False
+    evidence_deadline = time.monotonic() + MAX_REQUESTED_EVIDENCE_SECONDS
+    if deadline is not None:
+        evidence_deadline = min(evidence_deadline, deadline)
+    root = _local_review_root(binding.head_sha, binding.correlation, evidence_deadline)
+    if root is None:
+        return "<requested-repository-evidence-unavailable>", True
+    rendered: list[str] = []
+    used = 0
+    unavailable = False
+    for request in requested:
+        remaining = evidence_deadline - time.monotonic()
+        if remaining <= 0:
+            rendered.append("<requested-repository-evidence-deadline-exhausted>")
+            unavailable = True
+            break
+        if request.path is not None:
+            content = _read_commit_file(root, binding.head_sha, request.path, evidence_deadline)
+            if content is None:
+                piece = f"<requested-path-unavailable: {request.path}>"
+                unavailable = True
+            else:
+                context = _line_context(content, request.line, 700)
+                piece = f"REQUESTED PATH {request.path}\n{context}"
+                if context.startswith("<file-context-unavailable:"):
+                    unavailable = True
+        else:
+            lines, truncated, failed = _bounded_git_grep(
+                root,
+                request.search or "",
+                treeish=binding.head_sha,
+                deadline=evidence_deadline,
+            )
+            if failed:
+                piece = f"<requested-search-unavailable: {request.search}>"
+                unavailable = True
+            else:
+                hits = lines[:12]
+                piece = f"REQUESTED LITERAL SEARCH {request.search!r}\n" + ("\n".join(hits) or "<no matches>")
+                if truncated or len(lines) > len(hits):
+                    piece += "\n<requested-search-truncated>"
+        addition = estimate_tokens(piece)
+        if used + addition > max_tokens:
+            rendered.append("<requested-repository-evidence-truncated>")
+            unavailable = True
+            break
+        rendered.append(piece)
+        used += addition
+    return "\n\n".join(rendered), unavailable
 
 
 def judge_findings(
@@ -2184,7 +2398,10 @@ def judge_findings(
             }
         )
     summary_tokens = estimate_tokens(json.dumps(judge_summaries, separators=(",", ":")))
-    evidence_budget = budget - used - summary_tokens - 1_000
+    # The first pass may ask for evidence that the repair must add. Reserve
+    # that allowance now; otherwise a valid first prompt can leave the repair
+    # above the same provider input limit merely by using its advertised path.
+    evidence_budget = budget - used - summary_tokens - 1_000 - MAX_REQUESTED_EVIDENCE_TOKENS
     if evidence_budget < 1_000:
         return [], False, over_budget, over_files, [], candidates
     evidence, evidence_unavailable = cross_file_evidence(
@@ -2204,40 +2421,59 @@ def judge_findings(
     # review. It gets only candidates the first pass omitted or explicitly
     # marked unresolved, and it cannot recurse.
     pending_indices = [
-        index for index in range(len(candidates)) if decisions.get(index) in {None, "unresolved"}
+        index
+        for index in range(len(candidates))
+        if decisions.get(index) is None or decisions[index].verdict == "unresolved"
     ]
     repair_failed = False
     if pending_indices and (deadline is None or budget_allows(deadline, mode, "judge-repair")):
         pending = [candidates[index] for index in pending_indices]
+        evidence_deadline = None
+        if deadline is not None:
+            # Keep the repair model's advertised connection-and-call budget
+            # intact instead of spending it on model-authored repository reads.
+            evidence_deadline = deadline - llm_call_budget_for(mode, "judge-repair")
+        requested_evidence, requested_unavailable = requested_repository_evidence(
+            binding, decisions, deadline=evidence_deadline
+        )
+        expanded_evidence = evidence
+        if requested_evidence:
+            expanded_evidence += "\n\nFIRST-PASS REQUESTED REPOSITORY EVIDENCE\n" + requested_evidence
+        if requested_unavailable:
+            expanded_evidence += "\n<some-requested-repository-evidence-was-unavailable-or-omitted>"
         recheck_system, recheck_user = build_judge_prompt(
             pending,
             {path: context for path, context in contexts.items() if path in {item.path for item in pending}},
             judge_summaries,
-            evidence,
+            expanded_evidence,
             targeted_recheck=True,
         )
-        try:
-            recheck_payload = call_model(
-                recheck_system, recheck_user, mode, "judge-repair", binding.correlation
-            )
-            recheck = _parse_judge_decisions(recheck_payload, len(pending))
-        except ReviewError:
-            recheck = {}
-            repair_failed = True
-        for recheck_index, original_index in enumerate(pending_indices):
-            if recheck_index in recheck:
-                decisions[original_index] = recheck[recheck_index]
-            else:
-                # Provider failure says nothing about where the decisive fact
-                # lives, and an omitted repair decision violates the repair
-                # contract. Neither may preserve a first-pass unresolved
-                # verdict as outside-evidence uncertainty.
-                decisions.pop(original_index, None)
+        repair_budget_available = deadline is None or budget_allows(deadline, mode, "judge-repair")
+        if repair_budget_available:
+            try:
+                recheck_payload = call_model(
+                    recheck_system, recheck_user, mode, "judge-repair", binding.correlation
+                )
+                recheck = _parse_judge_decisions(
+                    recheck_payload, len(pending), allow_requests=False
+                )
+            except ReviewError:
+                recheck = {}
+                repair_failed = True
+            for recheck_index, original_index in enumerate(pending_indices):
+                if recheck_index in recheck:
+                    decisions[original_index] = recheck[recheck_index]
+                else:
+                    # Provider failure says nothing about where the decisive fact
+                    # lives, and an omitted repair decision violates the repair
+                    # contract. Neither may preserve a first-pass unresolved
+                    # verdict as outside-evidence uncertainty.
+                    decisions.pop(original_index, None)
 
     unresolved = [
         candidates[index]
         for index in range(len(candidates))
-        if decisions.get(index) == "unresolved"
+        if decisions.get(index) is not None and decisions[index].verdict == "unresolved"
     ]
     invalid = [
         candidates[index]
@@ -2248,8 +2484,8 @@ def judge_findings(
         raise ModelOutputError("judge decided no candidate after targeted recheck")
     verified: list[Finding] = []
     for index, finding in enumerate(candidates):
-        verdict = decisions.get(index)
-        if verdict == "keep":
+        decision = decisions.get(index)
+        if decision is not None and decision.verdict == "keep":
             verified.append(finding)
     return verified, True, over_budget, over_files, unresolved, invalid
 
@@ -2518,7 +2754,8 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         lines.extend(
             [
                 "",
-                "### Candidates requiring manual verification",
+                "<details>",
+                f"<summary>Unverified candidates ({len(all_candidates)}; not findings)</summary>",
                 "",
                 "The actual-code judge couldn't settle these candidates. They aren't verified findings.",
             ]
@@ -2531,6 +2768,7 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
             )
         if remaining := len(all_candidates) - len(candidates):
             lines.append(f"- and {remaining} more")
+        lines.extend(["", "</details>"])
     lines.extend(
         [
             "",

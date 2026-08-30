@@ -22,7 +22,7 @@ type authenticatedArtifactResponse struct {
 }
 
 func matchingAuthenticatedArtifact(req *http.Request, entries []config.AuthenticatedArtifactEntry) (config.AuthenticatedArtifactEntry, bool) {
-	if req == nil || req.Method != http.MethodGet || req.URL == nil || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.RawQuery != "" || req.URL.Fragment != "" || req.URL.Port() != "" {
+	if req == nil || req.Method != http.MethodGet || req.URL == nil || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.RawQuery != "" || req.URL.Fragment != "" || (req.URL.Port() != "" && req.URL.Port() != "443") {
 		return config.AuthenticatedArtifactEntry{}, false
 	}
 	for _, entry := range entries {

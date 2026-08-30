@@ -85,6 +85,10 @@ func TestMatchingAuthenticatedArtifact_RejectsMethodQueryAndNonDefaultPort(t *te
 			t.Fatalf("matched unsafe URL %q", raw)
 		}
 	}
+	defaultPort, _ := url.Parse("https://rules.example:443/rules/pipelock-community/bundle.yaml")
+	if _, ok := matchingAuthenticatedArtifact(&http.Request{Method: http.MethodGet, URL: defaultPort}, entries); !ok {
+		t.Fatal("explicit HTTPS default port did not match")
+	}
 	u, _ := url.Parse("https://rules.example/rules/pipelock-community/bundle.yaml")
 	if _, ok := matchingAuthenticatedArtifact(&http.Request{Method: http.MethodPost, URL: u}, entries); ok {
 		t.Fatal("matched non-GET request")

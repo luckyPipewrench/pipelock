@@ -83,6 +83,36 @@ def unit(identifier: int, path: str, category: str, *, additions: int = 1, token
 
 
 class WorkflowPackagingTest(unittest.TestCase):
+    def test_merge_base_resolution_accepts_only_an_immutable_sha(self) -> None:
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        script = next(
+            step["run"] for step in workflow["jobs"]["review"]["steps"] if step.get("id") == "merge-base"
+        )
+        for response, accepted in (("d" * 40, True), ("refs/heads/main", False)):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                fake_gh = root / "gh"
+                fake_gh.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' '{response}'\n", encoding="utf-8")
+                fake_gh.chmod(0o700)
+                output = root / "github-output"
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    env={
+                        **os.environ,
+                        "PATH": f"{root}:{os.environ['PATH']}",
+                        "GH_TOKEN": "fake",
+                        "REPO": "owner/repo",
+                        "BASE_SHA": "a" * 40,
+                        "HEAD_SHA": "b" * 40,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode == 0, accepted)
+                if accepted:
+                    self.assertEqual(output.read_text(encoding="utf-8"), f"sha={response}\n")
+
     def test_caller_authorizes_owner_comments_without_manual_dispatch(self) -> None:
         # Exercise the parsed workflow shape. String searches against a YAML
         # file were bypassed before by a comment or an unrelated scalar with
@@ -155,11 +185,29 @@ class WorkflowPackagingTest(unittest.TestCase):
         self.assertEqual(target_checkout["with"]["ref"], "${{ needs.admit.outputs.head_sha }}")
         self.assertEqual(target_checkout["with"]["persist-credentials"], "false")
         self.assertEqual(target_checkout["with"]["path"], "reviewed-repository")
+        self.assertEqual(target_checkout["with"]["fetch-depth"], "1")
+        merge_step = next(step for step in review["steps"] if step.get("id") == "merge-base")
+        self.assertIn("compare/${BASE_SHA}...${HEAD_SHA}", merge_step["run"])
+        self.assertIn("=~ ^[0-9a-f]{40}$", merge_step["run"])
+        merge_checkout = next(
+            step
+            for step in review["steps"]
+            if step.get("name") == "Check out immutable reviewed repository merge base"
+        )
+        self.assertEqual(merge_checkout["with"]["repository"], "${{ github.repository }}")
+        self.assertEqual(merge_checkout["with"]["ref"], "${{ steps.merge-base.outputs.sha }}")
+        self.assertEqual(merge_checkout["with"]["fetch-depth"], "1")
+        self.assertEqual(merge_checkout["with"]["persist-credentials"], "false")
+        import_step = next(
+            step for step in review["steps"] if step.get("name") == "Import immutable merge base into reviewed checkout"
+        )
+        self.assertIn("timeout 90s git -C reviewed-repository fetch", import_step["run"])
         openai = next(step for step in review["steps"] if step.get("id") == "openai")
         self.assertEqual(
             openai["with"]["reviewed-repository-path"],
             "${{ github.workspace }}/" + target_checkout["with"]["path"],
         )
+        self.assertEqual(openai["with"]["reviewed-merge-base-sha"], "${{ steps.merge-base.outputs.sha }}")
         # Finalization is its own job, not a step inside review. As a step it
         # was skipped in the case it most needs to cover: admission claims the
         # status comment and the review job never starts, leaving the comment
@@ -254,6 +302,7 @@ class WorkflowPackagingTest(unittest.TestCase):
             "model-fast",
             "model-deep",
             "reviewed-repository-path",
+            "reviewed-merge-base-sha",
         ):
             self.assertIn(name, action["inputs"])
         # Either cache key breaks setup for this action and stops every review
@@ -502,6 +551,35 @@ class CompressionAndClassificationTest(unittest.TestCase):
         self.assertIn("material security and correctness", system)
         self.assertIn("For tests", system)
 
+    def test_deep_mode_adds_the_adversarial_rubric_to_each_review_chunk(self) -> None:
+        units = [unit(1, "internal/enforce.go", "source:go")]
+        default_system, _ = pr_review.build_review_prompt(["source:go"], units, "default")
+        deep_system, _ = pr_review.build_review_prompt(["source:go"], units, "deep")
+        for required in (
+            "production states",
+            "allow and deny",
+            "every consumer and duplicate",
+            "whether the change should exist",
+            "sibling instances",
+            "neutralized",
+            "newest repair",
+            "evidence produced by the same code",
+            "availability and operability",
+            "Do not pad the result",
+        ):
+            self.assertIn(required, deep_system)
+            self.assertNotIn(required, default_system)
+
+    def test_deep_mode_keeps_the_adversarial_rubric_during_synthesis(self) -> None:
+        system, _ = pr_review.build_synthesis_prompt(
+            ["source:go"],
+            [{"path": "internal/enforce.go", "summary": "changes a guard"}],
+            [],
+            "deep",
+        )
+        self.assertIn("production states", system)
+        self.assertIn("every consumer and duplicate", system)
+
 
 class ImmutableBindingTest(unittest.TestCase):
     def test_identity_contains_base_head_reviewer_and_rubric_version(self) -> None:
@@ -652,6 +730,251 @@ class CompareCompletenessTest(unittest.TestCase):
         return pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
 
 
+class LocalDiffCompletenessTest(unittest.TestCase):
+    def test_bounded_pipe_stops_and_reaps_before_retaining_excess_output(self) -> None:
+        process = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import os; os.write(1, b'x' * 131072)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        data, returncode, oversized = pr_review._read_bounded_stdout(process, 1024, 10)
+
+        self.assertTrue(oversized)
+        self.assertEqual(len(data), 1024)
+        self.assertIsNotNone(returncode)
+        self.assertIsNotNone(process.poll(), "an oversized producer must be reaped")
+
+    def test_run_uses_the_local_diff_without_the_capped_api_check(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("https://provider.example", "test-key")
+        ), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([], set(), True)
+        ), mock.patch.object(
+            pr_review, "fetch_local_bound_diff", return_value=""
+        ) as local, mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value=""
+        ) as api, mock.patch.object(
+            pr_review, "compare_incompleteness", return_value=None
+        ) as compare, mock.patch.object(
+            pr_review, "get_pull_binding", return_value=binding
+        ), mock.patch.object(pr_review, "update_comment"):
+            state, _progress = pr_review.run_review(
+                "owner/repo", "42", "token", "default", binding.reviewer_sha, binding=binding, status_comment_id=7
+            )
+
+        self.assertEqual(state, "clean")
+        local.assert_called_once_with(binding)
+        api.assert_not_called()
+        compare.assert_not_called()
+
+    def test_local_checkout_produces_the_exact_complete_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "kept.go").write_text("package kept\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "kept.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            (root / "late.go").write_text("package late\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "late.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": directory}, clear=False):
+                diff = pr_review.fetch_local_bound_diff(binding)
+
+        self.assertIsNotNone(diff)
+        self.assertIn("diff --git a/late.go b/late.go", diff)
+        self.assertIn("+package late", diff)
+
+    def test_local_checkout_without_the_bound_base_uses_the_api_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "head.go").write_text("package head\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "head.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            environment = {
+                "REVIEWED_REPOSITORY_PATH": directory,
+                "REVIEWED_MERGE_BASE_SHA": "",
+            }
+            with mock.patch.dict(pr_review.os.environ, environment, clear=False):
+                self.assertIsNone(pr_review.fetch_local_bound_diff(binding))
+
+    def test_divergent_shallow_history_uses_the_api_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            origin = root / "origin"
+            origin.mkdir()
+            init_git_fixture(origin)
+            (origin / "common.go").write_text("package common\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "common.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "root"], check=True)
+            common = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "checkout", "-qb", "base"], check=True)
+            (origin / "base.go").write_text("package base\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "base.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "base"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "checkout", "-qb", "feature", common], check=True)
+            (origin / "head.go").write_text("package head\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "head.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            checkout = root / "checkout"
+            subprocess.run(
+                ["git", "clone", "-q", "--depth=1", "--branch", "feature", f"file://{origin}", str(checkout)],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(checkout), "fetch", "-q", "--depth=1", "origin", "base"], check=True)
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(checkout), "cat-file", "-e", f"{base}^{{commit}}"], check=False
+                ).returncode,
+                0,
+            )
+            self.assertNotEqual(
+                subprocess.run(
+                    ["git", "-C", str(checkout), "merge-base", base, head], check=False
+                ).returncode,
+                0,
+            )
+            binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            environment = {
+                "REVIEWED_REPOSITORY_PATH": str(checkout),
+                "REVIEWED_MERGE_BASE_SHA": "",
+            }
+            with mock.patch.dict(pr_review.os.environ, environment, clear=False):
+                self.assertIsNone(pr_review.fetch_local_bound_diff(binding))
+
+    def test_shallow_snapshot_path_uses_the_authoritative_merge_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            origin = root / "origin"
+            origin.mkdir()
+            init_git_fixture(origin)
+            (origin / "common.go").write_text("package common\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "common.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "common"], check=True)
+            merge_base = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "branch", "feature"], check=True)
+            (origin / "base-only.go").write_text("package baseonly\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "base-only.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "base"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "checkout", "-q", "feature"], check=True)
+            (origin / "feature.go").write_text("package feature\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "feature.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+
+            checkouts: list[pathlib.Path] = []
+            for name, commit in (("reviewed-repository", head), ("reviewed-merge-base", merge_base)):
+                checkout = root / name
+                checkout.mkdir()
+                subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True)
+                subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", str(origin)], check=True)
+                subprocess.run(["git", "-C", str(checkout), "fetch", "-q", "--depth=1", "origin", commit], check=True)
+                subprocess.run(["git", "-C", str(checkout), "checkout", "-q", "--detach", "FETCH_HEAD"], check=True)
+                checkouts.append(checkout)
+            head_checkout, _merge_checkout = checkouts
+            workflow = load_yaml(REUSABLE_WORKFLOW)
+            import_script = next(
+                step["run"]
+                for step in workflow["jobs"]["review"]["steps"]
+                if step.get("name") == "Import immutable merge base into reviewed checkout"
+            )
+            subprocess.run(
+                ["bash", "-c", import_script],
+                check=True,
+                cwd=root,
+                env={**os.environ, "GITHUB_WORKSPACE": str(root), "MERGE_BASE_SHA": merge_base},
+                capture_output=True,
+                text=True,
+            )
+            binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            environment = {
+                "REVIEWED_REPOSITORY_PATH": str(head_checkout),
+                "REVIEWED_MERGE_BASE_SHA": merge_base,
+                "BASE_SHA": base,
+            }
+            with mock.patch.dict(pr_review.os.environ, environment, clear=False):
+                diff = pr_review.fetch_local_bound_diff(binding)
+
+        self.assertIsNotNone(diff)
+        self.assertIn("diff --git a/feature.go b/feature.go", diff)
+        self.assertNotIn("base-only.go", diff)
+
+    def test_delta_uses_the_guarded_api_path_when_only_full_range_snapshots_exist(self) -> None:
+        binding = pr_review.PullBinding("d" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        environment = {
+            "REVIEWED_REPOSITORY_PATH": "/reviewed",
+            "REVIEWED_MERGE_BASE_SHA": "e" * 40,
+            "BASE_SHA": "a" * 40,
+        }
+        with mock.patch.dict(pr_review.os.environ, environment, clear=False), mock.patch.object(
+            pr_review, "_local_review_root"
+        ) as local_root:
+            self.assertIsNone(pr_review.fetch_local_bound_diff(binding))
+        local_root.assert_not_called()
+
+    def test_configured_checkout_must_match_the_captured_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "a.go").write_text("package a\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "a.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+            binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": directory}, clear=False):
+                with self.assertRaises(pr_review.FetchError):
+                    pr_review.fetch_local_bound_diff(binding)
+
+    def test_local_diff_rejects_oversize_while_streaming(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "kept.go").write_text("package kept\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "kept.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            (root / "large.go").write_text("package large\n" + ("var value = 1\n" * 200), encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "large.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            with mock.patch.dict(
+                pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": directory}, clear=False
+            ), mock.patch.object(pr_review, "MAX_LOCAL_DIFF_BYTES", 128):
+                with self.assertRaisesRegex(pr_review.FetchError, "bounded size"):
+                    pr_review.fetch_local_bound_diff(binding)
+
+
 class JudgeContextAddressingTest(unittest.TestCase):
     def test_url_significant_characters_in_a_path_are_encoded(self) -> None:
         captured: dict[str, str] = {}
@@ -682,6 +1005,47 @@ class JudgeContextAddressingTest(unittest.TestCase):
 
 
 class FinalizerIndependenceTest(unittest.TestCase):
+    def _run_finalizer(self, body: str, mode: str) -> str:
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        script = workflow["jobs"]["finalize"]["steps"][0]["run"]
+        identity = "a" * 12 + ":" + "b" * 12 + ":" + "c" * 12 + ":" + pr_review.RUBRIC_VERSION
+        running = f"{body}\n<!-- {pr_review.STATUS_MARKER} state=running identity={identity} -->"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            capture = root / "posted.md"
+            fake_gh = root / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --method PATCH "* ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      body=@*) cp "${arg#body=@}" "$FAKE_CAPTURE" ;;
+    esac
+  done
+  exit 0
+fi
+printf '%s' "$FAKE_BODY"
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o700)
+            environment = {
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "GH_TOKEN": "fake",
+                "REPO": "owner/repo",
+                "COMMENT_ID": "17",
+                "BASE_SHA": "d" * 40,
+                "HEAD_SHA": "e" * 40,
+                "IDENTITY": identity,
+                "REVIEW_MODE": mode,
+                "FAKE_BODY": running,
+                "FAKE_CAPTURE": str(capture),
+            }
+            subprocess.run(["bash", "-c", script], check=True, env=environment, capture_output=True, text=True)
+            return capture.read_text(encoding="utf-8")
+
     def test_finalizer_does_not_depend_on_the_review_checkout(self) -> None:
         # A failed checkout is one of the cases the finalizer exists to survive,
         # so it must not resolve the locally checked-out action.
@@ -709,8 +1073,39 @@ class FinalizerIndependenceTest(unittest.TestCase):
         finalize = workflow.split("Finalize an abandoned review", 1)[1]
         self.assertIn(f"<!-- {pr_review.STATUS_MARKER} state=running", finalize)
         self.assertIn(f"<!-- {pr_review.STATUS_MARKER} state=failed", finalize)
+        self.assertIn("mode=%s findings= reviewed_head=%s scope=full coverage_base=%s", finalize)
         self.assertIn("**Verdict:** `failed`", finalize)
+        self.assertIn("**Review profile:**", finalize)
         self.assertIn("<summary>Review details: binding and identity</summary>", finalize)
+
+    def test_finalizer_terminal_marker_is_accepted_by_the_runner_parser(self) -> None:
+        marker = (
+            f"<!-- {pr_review.STATUS_MARKER} state=failed identity=abc mode=deep findings= "
+            f"reviewed_head={'b' * 40} scope=full coverage_base={'a' * 40} -->"
+        )
+        parsed = pr_review.parse_status_marker(marker)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["state"], "failed")
+        self.assertEqual(parsed["mode"], "deep")
+
+    def test_finalizer_shell_output_round_trips_through_the_runner_parser(self) -> None:
+        profile = "**Review profile:** `deep` with `gpt-5.6-terra` (`xhigh` reasoning)."
+        posted = self._run_finalizer(profile, "deep")
+
+        self.assertIn(profile, posted)
+        parsed = pr_review.parse_status_marker(posted)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["state"], "failed")
+        self.assertEqual(parsed["mode"], "deep")
+        self.assertEqual(parsed["reviewed_head"], "e" * 40)
+        self.assertEqual(parsed["coverage_base"], "d" * 40)
+
+    def test_finalizer_rejects_a_profile_line_outside_the_generated_grammar(self) -> None:
+        forged = "**Review profile:** [forged](https://attacker.example)"
+        posted = self._run_finalizer(forged, "default")
+
+        self.assertNotIn(forged, posted)
+        self.assertIn("`default`; the review job did not publish its effective model", posted)
 
 
 class AdmissionMarkerTest(unittest.TestCase):
@@ -791,6 +1186,55 @@ class AdmissionFailsClosedTest(unittest.TestCase):
 
 
 class JudgeContextBoundTest(unittest.TestCase):
+    def test_no_decision_preserves_each_candidate_once(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "internal/a.go", 1, "title", "why", "fix")
+        review_payload = {
+            "findings": [
+                {
+                    "severity": candidate.severity,
+                    "path": candidate.path,
+                    "line": candidate.line,
+                    "title": candidate.title,
+                    "why": candidate.why,
+                    "fix": candidate.fix,
+                    "needs_verification": False,
+                }
+            ],
+            "changes": [{"path": candidate.path, "summary": "changes enforcement"}],
+        }
+        synthesis_payload = {"findings": []}
+
+        def no_decision(
+            _repo: str,
+            _token: str,
+            _binding: object,
+            _mode: str,
+            candidates: list[pr_review.Finding],
+            _changes: list[dict[str, str]],
+        ) -> tuple[list[pr_review.Finding], bool, list[pr_review.Finding], list[pr_review.Finding], list[pr_review.Finding]]:
+            return [], False, list(candidates), [], []
+
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("https://provider.example", "key")), mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value="ignored"
+        ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None), mock.patch.object(
+            pr_review, "parse_diff", return_value=([unit(1, candidate.path, "source:go")], [])
+        ), mock.patch.object(pr_review, "head_has_moved", return_value=False), mock.patch.object(
+            pr_review, "get_pull_binding", return_value=binding
+        ), mock.patch.object(pr_review, "budget_allows", return_value=True), mock.patch.object(
+            pr_review, "call_model", side_effect=[review_payload, synthesis_payload]
+        ), mock.patch.object(pr_review, "judge_findings", side_effect=no_decision), mock.patch.object(
+            pr_review, "update_comment"
+        ):
+            state, progress = pr_review.run_review(
+                "owner/repo", "42", "token", "default", "c" * 40, binding=binding, status_comment_id=7
+            )
+
+        self.assertEqual(state, "partial")
+        self.assertEqual(len(progress.unverified_candidates), 1)
+        self.assertEqual(progress.unverified_candidates[0].path, candidate.path)
+        self.assertIn("actual-code judge did not reach a decision", progress.incomplete_reasons)
+
     def test_context_fetches_are_bounded_not_only_the_payload(self) -> None:
         # Context was fetched for every distinct path before the budget excluded
         # most of them, so a large candidate set could spend longer on requests
@@ -1225,6 +1669,40 @@ class WallClockBudgetTest(unittest.TestCase):
 
 
 class FailureDirectionTest(unittest.TestCase):
+    def test_default_uses_fast_discovery_and_stronger_candidate_judgment(self) -> None:
+        self.assertEqual(pr_review.model_for_phase("default", "review-chunk-1"), "gpt-5.6-luna")
+        self.assertEqual(pr_review.reasoning_for_phase("default", "review-chunk-1"), "low")
+        self.assertEqual(pr_review.model_for_phase("default", "judge"), "gpt-5.6-terra")
+        self.assertEqual(pr_review.reasoning_for_phase("default", "judge"), "high")
+        self.assertEqual(pr_review.model_for_phase("deep", "judge"), "gpt-5.6-terra")
+        self.assertEqual(pr_review.reasoning_for_phase("deep", "judge"), "xhigh")
+
+    def test_candidate_judge_payload_uses_the_phase_specific_model_and_reasoning(self) -> None:
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json() -> object:
+                return {
+                    "choices": [{"message": {"content": '{"findings":[]}'}}],
+                    "usage": {"prompt_tokens": 123, "completion_tokens": 17},
+                }
+
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", return_value=Response()
+        ) as post, mock.patch.object(pr_review, "log_phase") as log_phase:
+            result = pr_review.call_model("system", "user", "default", "judge", "correlation")
+
+        self.assertEqual(result, {"findings": []})
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-terra")
+        self.assertEqual(post.call_args.kwargs["json"]["reasoning_effort"], "high")
+        self.assertIn(
+            mock.call(
+            "judge-usage", status="prompt-123-completion-17", correlation="correlation"
+            ),
+            log_phase.call_args_list,
+        )
+
     def test_bound_diff_retries_once_then_fails(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
 
@@ -1371,7 +1849,7 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         incomplete = pr_review.ReviewProgress(expected_units=2, reviewed_units=1)
         self.assertEqual(pr_review.derive_state(incomplete), "partial")
 
-    def test_schema_rejects_extra_fields_and_unknown_paths(self) -> None:
+    def test_schema_ignores_extra_fields_but_still_rejects_unknown_paths(self) -> None:
         payload = {
             "findings": [
                 {
@@ -1386,13 +1864,12 @@ class StructuredOutputSafetyTest(unittest.TestCase):
                 }
             ]
         }
-        with self.assertRaisesRegex(pr_review.ModelOutputError, "schema"):
+        with self.assertRaisesRegex(pr_review.ModelOutputError, "invalid severity or path"):
             pr_review.parse_findings(payload, {"internal/a.go"})
 
     def test_schema_rejects_a_finding_outside_the_reviewed_diff(self) -> None:
-        # The extra-field case above trips the key-set check before the path is
-        # ever examined, so the rejection that keeps a finding inside the
-        # reviewed diff needs a payload whose keys are exactly right.
+        # A finding stays bound to the reviewed diff even when its shape is
+        # otherwise valid.
         outside = {
             "findings": [
                 {
@@ -1408,6 +1885,37 @@ class StructuredOutputSafetyTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(pr_review.ModelOutputError, "invalid severity or path"):
             pr_review.parse_findings(outside, {"internal/a.go"})
+
+    def test_schema_accepts_unused_extra_fields(self) -> None:
+        payload = {
+            "findings": [
+                {
+                    "severity": "medium",
+                    "path": "internal/a.go",
+                    "line": 4,
+                    "title": "guard can be skipped",
+                    "why": "the error path returns early",
+                    "fix": "deny on the error path",
+                    "needs_verification": False,
+                    "confidence": 91,
+                }
+            ],
+            "changes": [
+                {
+                    "path": "internal/a.go",
+                    "summary": "changes the guard",
+                    "detail": "unused",
+                }
+            ],
+            "metadata": {"unused": True},
+        }
+        findings, changes = pr_review.parse_findings(
+            payload,
+            {"internal/a.go"},
+            require_changes={"internal/a.go"},
+        )
+        self.assertEqual([finding.title for finding in findings], ["guard can be skipped"])
+        self.assertEqual(changes, [{"path": "internal/a.go", "summary": "changes the guard"}])
 
     def test_publication_sanitizer_redacts_credentials_in_model_prose(self) -> None:
         """A finding may quote the very line it complains about.
@@ -1709,13 +2217,37 @@ class StatusPresentationTest(unittest.TestCase):
         self.assertIn("Verdict:** `clean`", status)
         self.assertIn("Findings:** high 0, medium 0, low 0.", status)
         self.assertIn("No verified material findings were published.", status)
+        self.assertIn("Review profile:** `default`", status)
         self.assertIn("<summary>Review details: binding and coverage</summary>", status)
         self.assertLess(len(status.encode("utf-8")), 2_000)
+
+    def test_partial_status_shows_unverified_candidates_without_counting_them_as_findings(self) -> None:
+        candidate = pr_review.Finding(
+            "medium",
+            "internal/enforce.go",
+            42,
+            "error path may allow",
+            "the judge couldn't locate the caller that decides the fallback",
+            "inspect the caller",
+        )
+        progress = pr_review.ReviewProgress(
+            expected_units=1,
+            reviewed_units=1,
+            incomplete_reasons=["1 candidate finding(s) received no usable judge decision and were not published as findings"],
+            unverified_candidates=[candidate],
+        )
+        status = pr_review.render_status(self._binding(), "deep", ["source:go"], progress, "partial", [])
+        self.assertIn("Review profile:** `deep`", status)
+        self.assertIn("Findings:** high 0, medium 0, low 0.", status)
+        self.assertIn("### Candidates requiring manual verification", status)
+        self.assertIn("`internal/enforce.go:42`: error path may allow", status)
+        self.assertIn("They aren't verified findings.", status)
 
     def test_running_status_keeps_binding_out_of_the_open_body(self) -> None:
         status = pr_review._initial_status(self._binding(), "deep")
         lead = status[:status.index("<details>")]
         self.assertIn("Status:** `running`", lead)
+        self.assertIn("Review profile:** `deep`", lead)
         self.assertNotIn("**Binding:**", lead)
         self.assertNotIn("**Review identity:**", lead)
         self.assertIn("<summary>Review details: binding and planned review</summary>", status)
@@ -2347,7 +2879,7 @@ class RepeatReviewTest(unittest.TestCase):
             pr_review.Finding("high", "a.go", 1, "One", "w", "f"),
             pr_review.Finding("low", "b.go", 2, "Two", "w", "f"),
         ]
-        reason = pr_review.discarded_candidates_reason(candidates)
+        reason = pr_review.unverified_candidates_reason(candidates)
         self.assertIsNotNone(reason)
         self.assertIn("2 candidate", reason)
 
@@ -2357,7 +2889,7 @@ class RepeatReviewTest(unittest.TestCase):
         # clean review. Reporting that as discarded work would make a correct
         # result look broken, which is the failure mode that teaches an
         # operator to ignore the incompleteness section.
-        self.assertIsNone(pr_review.discarded_candidates_reason([]))
+        self.assertIsNone(pr_review.unverified_candidates_reason([]))
 
     def test_an_incomplete_scan_still_labels_through_run_review(self) -> None:
         # The integration half of the asymmetry. Asserting previously_reported
@@ -2607,19 +3139,22 @@ class DeltaScopeTest(unittest.TestCase):
 
     def test_a_default_review_is_not_a_baseline_for_deep(self) -> None:
         # A repository can point both model variables at the SAME model, and
-        # then the model comparison cannot tell the two passes apart. Depth is
-        # still different: default runs low reasoning and deep runs xhigh, so a
-        # deep review continuing from a default one inherits coverage that was
-        # never asked for at that depth. Pinned to one model on purpose, so
-        # this proves the mode check rather than the model check.
+        # model name comparison alone cannot tell the passes apart. The binding
+        # now includes phase-specific reasoning, and the explicit mode check is
+        # still required because mode also changes the rubric and token budget.
         with mock.patch.dict(
             pr_review.os.environ,
             {"PR_REVIEW_MODEL_FAST": "one-model", "PR_REVIEW_MODEL_DEEP": "one-model"},
             clear=False,
         ):
-            self.assertEqual(pr_review.model_binding("default"), pr_review.model_binding("deep"))
+            self.assertNotEqual(pr_review.model_binding("default"), pr_review.model_binding("deep"))
             markers = [self.marker(mode="default", model=pr_review.model_binding("deep"))]
             self.assertIsNone(pr_review.previous_review_for_mode(markers, "deep", self.HEAD))
+
+    def test_default_binding_changes_when_the_candidate_judge_changes(self) -> None:
+        before = pr_review.model_binding("default")
+        with mock.patch.dict(pr_review.os.environ, {"PR_REVIEW_MODEL_DEEP": "replacement-judge"}, clear=False):
+            self.assertNotEqual(before, pr_review.model_binding("default"))
 
     def test_an_incomplete_review_is_not_a_baseline(self) -> None:
         for state in ("partial", "failed", "superseded"):

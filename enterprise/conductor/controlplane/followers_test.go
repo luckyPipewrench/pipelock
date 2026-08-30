@@ -25,6 +25,7 @@ import (
 
 const (
 	followerAdminToken      = "admin-token"
+	followerProdOnlyAdmin   = "prod-only-admin-token"
 	followerAuditorToken    = "auditor-token"
 	followerOrgMainAuditTok = "org-main-auditor-token"
 	followerOrgEmptyAdmin   = "org-empty-admin-token"
@@ -72,13 +73,18 @@ func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler
 	if err != nil {
 		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
 	}
-	adminAuth, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{
+	adminAuth, err := ScopedBearerAdminAuthenticator([]ScopedBearerCredential{
 		{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"},
 		{Token: followerOrgEmptyAdmin, Role: RoleAdmin, OrgID: "org-empty"},
 		{Token: followerAuditorToken, Role: RoleAuditor, OrgID: "org-main"},
+		// Scoped to one fleet, so the fleet half of AdminIdentity.Allows can
+		// be exercised. Every other admin credential here is
+		// organization-wide, which is why a regression dropping fleet scoping
+		// would otherwise pass every removal test.
+		{Token: followerProdOnlyAdmin, Role: RoleAdmin, OrgID: "org-main", FleetID: "prod"},
 	})
 	if err != nil {
-		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+		t.Fatalf("ScopedBearerAdminAuthenticator() error = %v", err)
 	}
 	handler, err := NewHandler(HandlerOptions{
 		Store:              mustStore(t),
@@ -87,7 +93,7 @@ func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler
 		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
 		AuthorizePublisher: func(*http.Request) error { return nil },
 		AuthorizeFollowers: followerAuth,
-		AuthorizeAdmin:     adminAuth,
+		AuthenticateAdmin:  adminAuth,
 		AuditSink:          discardAuditSink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		Enrollments:        enrollments,
@@ -382,6 +388,10 @@ func TestHandlerRemoveFollowerRequiresAdminAndExactIdentity(t *testing.T) {
 		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
 	}
 	mustEnrollFollower(t, store, "tok-main-1", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, "audit-key-main-1")
+	// A follower in another organization, so the cross-org denial below can be
+	// checked by its effect rather than only by its status code.
+	otherIdentity := FollowerIdentity{OrgID: "org-other", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}
+	mustEnrollFollower(t, store, "tok-other-1", otherIdentity, "audit-key-other-1")
 	handler := newFollowersTestHandler(t, store)
 
 	body := `{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`
@@ -393,6 +403,40 @@ func TestHandlerRemoveFollowerRequiresAdminAndExactIdentity(t *testing.T) {
 	}
 	if w := deleteFollower(t, handler, followerAdminToken, `{"org_id":"bad/id","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("invalid identity remove status = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+	if w := deleteFollower(t, handler, followerAdminToken, `{"org_id":"org-other","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-org remove status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	// Refusing and deleting anyway would satisfy the status assertion above.
+	survivors, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{
+		OrgID: otherIdentity.OrgID, FleetID: otherIdentity.FleetID,
+	})
+	if err != nil {
+		t.Fatalf("list the other organization's followers after the denied remove: %v", err)
+	}
+	if len(survivors) != 1 || survivors[0].InstanceID != otherIdentity.InstanceID {
+		t.Fatalf("the denied cross-org remove changed the other organization's roster: %+v", survivors)
+	}
+
+	// Everything above crosses an organization boundary, so a regression that
+	// dropped fleet scoping and kept only the organization check would still
+	// pass. A fleet-scoped admin must also be refused on a sibling fleet of its
+	// own organization.
+	devIdentity := FollowerIdentity{OrgID: "org-main", FleetID: "dev", InstanceID: "pl-dev-1", Environment: "prod"}
+	mustEnrollFollower(t, store, "tok-main-dev-1", devIdentity, "audit-key-main-dev-1")
+	// followerAdminToken is organization-wide and legitimately reaches every
+	// fleet, so the denial has to be driven by the prod-scoped credential.
+	if w := deleteFollower(t, handler, followerProdOnlyAdmin, `{"org_id":"org-main","fleet_id":"dev","instance_id":"pl-dev-1","environment":"prod"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("wrong-fleet remove status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	devSurvivors, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{
+		OrgID: devIdentity.OrgID, FleetID: devIdentity.FleetID,
+	})
+	if err != nil {
+		t.Fatalf("list the dev fleet after the denied remove: %v", err)
+	}
+	if len(devSurvivors) != 1 || devSurvivors[0].InstanceID != devIdentity.InstanceID {
+		t.Fatalf("the denied wrong-fleet remove changed the dev roster: %+v", devSurvivors)
 	}
 }
 

@@ -22,6 +22,65 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+// TestClearRollbackAuthorizationMatching_RefusesAReplacedRecord exercises the
+// security property directly against the real store rather than a double.
+//
+// The handler checks tenant scope against a record it read, then deletes
+// through a separate call. The hash binding is what stops an id remapped in
+// between from having another organization's record deleted by an
+// administrator who was only ever authorized for the original. A double can
+// show the handler passes the hash; only the store can show the hash is
+// honoured.
+func TestClearRollbackAuthorizationMatching_RefusesAReplacedRecord(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	auth := signedTestRollback(t, "clear-mismatch-1", now, 100)
+	stored, created, err := store.PublishRollbackAuthorization(context.Background(), auth, now)
+	if err != nil {
+		t.Fatalf("PublishRollbackAuthorization: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true for first publish")
+	}
+	if stored.AuthorizationHash == "" {
+		t.Fatal("stored record carries no authorization hash, so the binding cannot be expressed")
+	}
+
+	// A caller holding a stale or foreign hash must not remove this record.
+	cleared, err := store.ClearRollbackAuthorizationMatching(context.Background(),
+		auth.AuthorizationID, "hash-from-another-record")
+	if err != nil {
+		t.Fatalf("ClearRollbackAuthorizationMatching with a mismatched hash: %v", err)
+	}
+	if cleared {
+		t.Fatal("a mismatched hash cleared the record, so the binding is not enforced")
+	}
+
+	_, stillPresent, err := store.RollbackAuthorizationByID(context.Background(), auth.AuthorizationID)
+	if err != nil {
+		t.Fatalf("RollbackAuthorizationByID after the refused clear: %v", err)
+	}
+	if !stillPresent {
+		t.Fatal("the record was removed despite the mismatched hash")
+	}
+
+	// The authorised hash still clears it, so the binding is not simply
+	// refusing everything.
+	cleared, err = store.ClearRollbackAuthorizationMatching(context.Background(),
+		auth.AuthorizationID, stored.AuthorizationHash)
+	if err != nil {
+		t.Fatalf("ClearRollbackAuthorizationMatching with the authorised hash: %v", err)
+	}
+	if !cleared {
+		t.Fatal("the authorised hash did not clear the record")
+	}
+}
+
 func TestClearRollbackAuthorization_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenFileEmergencyStore(dir)

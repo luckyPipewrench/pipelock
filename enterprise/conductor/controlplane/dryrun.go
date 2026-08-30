@@ -663,7 +663,8 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
 		return
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil || !admin.Allows(msg.OrgID, msg.FleetID) {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
@@ -789,7 +790,8 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
 		return
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil || !admin.Allows(auth.OrgID, auth.FleetID) {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}

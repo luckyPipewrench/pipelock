@@ -43,6 +43,17 @@ type ScopedBearerCredential struct {
 	FleetID string
 }
 
+// AdminIdentity is the authenticated tenant scope of an administrative
+// credential. The token is deliberately not retained after authentication.
+type AdminIdentity struct {
+	OrgID   string
+	FleetID string
+}
+
+// AdminAuthenticator authenticates an administrator and returns the org/fleet
+// boundary that every subsequent administrative mutation must enforce.
+type AdminAuthenticator func(*http.Request) (AdminIdentity, error)
+
 func MTLSFollowerIdentityResolver(trustDomain string) (FollowerIdentityResolver, error) {
 	trustDomain = strings.TrimSpace(trustDomain)
 	if trustDomain == "" {
@@ -122,18 +133,28 @@ func BearerPublisherAuthorizer(rawCredential string) (PublisherAuthorizer, error
 	}, nil
 }
 
-func ScopedBearerAdminAuthorizer(creds []ScopedBearerCredential) (PublisherAuthorizer, error) {
+func ScopedBearerAdminAuthenticator(creds []ScopedBearerCredential) (AdminAuthenticator, error) {
 	normalized, err := normalizeScopedBearerCredentials(creds)
 	if err != nil {
 		return nil, err
 	}
-	return func(r *http.Request) error {
+	for _, cred := range normalized {
+		if cred.Role == RoleAdmin && cred.OrgID == "" {
+			return nil, fmt.Errorf("%w: org_id required for admin credential", ErrPublisherForbidden)
+		}
+	}
+	return func(r *http.Request) (AdminIdentity, error) {
 		cred, ok := matchBearerCredential(r, normalized)
 		if !ok || cred.Role != RoleAdmin {
-			return ErrPublisherForbidden
+			return AdminIdentity{}, ErrPublisherForbidden
 		}
-		return nil
+		return AdminIdentity{OrgID: cred.OrgID, FleetID: cred.FleetID}, nil
 	}, nil
+}
+
+// Allows reports whether the authenticated admin scope covers orgID/fleetID.
+func (identity AdminIdentity) Allows(orgID, fleetID string) bool {
+	return identity.OrgID == orgID && (identity.FleetID == "" || identity.FleetID == fleetID)
 }
 
 func ScopedBearerBundleAuthorizer(creds []ScopedBearerCredential) (BundleAuthorizer, error) {

@@ -37,13 +37,8 @@ func newLifecycleTestHandler(t *testing.T, maxTTL time.Duration) (*Handler, *Fil
 		FollowerIdentity: func(*http.Request) (FollowerIdentity, error) {
 			return defaultFollowerIdentity(), nil
 		},
-		AuthorizePublisher: func(*http.Request) error { return nil },
-		AuthorizeAdmin: func(r *http.Request) error {
-			if r.Header.Get("Authorization") != "Bearer admin-token" {
-				return ErrPublisherForbidden
-			}
-			return nil
-		},
+		AuthorizePublisher:    func(*http.Request) error { return nil },
+		AuthenticateAdmin:     testAdminAuthenticator("Authorization", "Bearer admin-token"),
 		AuditSink:             &captureAuditSink{},
 		AuditKeys:             CompositeAuditKeyResolver(enrollments, nil),
 		Enrollments:           enrollments,
@@ -169,6 +164,87 @@ func TestHandlerEnrollmentTokenListRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestHandlerEnrollmentTokenAdminScopeRejectsCrossOrgCreateAndRevoke(t *testing.T) {
+	handler, store := newLifecycleTestHandler(t, 0)
+	createBody, err := json.Marshal(createEnrollmentTokenRequest{
+		TokenID: "cross-org-create", OrgID: "org-other", FleetID: "prod",
+		InstanceID: "pl-prod-1", Environment: "prod", ExpiresAt: testNow.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, EnrollmentTokensPath, bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer admin-token")
+	createW := httptest.NewRecorder()
+	handler.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusForbidden {
+		t.Fatalf("cross-org create status = %d body=%s, want 403", createW.Code, createW.Body.String())
+	}
+	// The status code alone would pass for a handler that refuses and creates
+	// the token anyway, which is the outcome that actually matters here.
+	if leaked, err := store.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{
+		TokenID: "cross-org-create", Limit: 1, Now: testNow,
+	}); err != nil {
+		t.Fatalf("list after the denied cross-org create: %v", err)
+	} else if len(leaked) != 0 {
+		t.Fatalf("the denied cross-org create still produced a token: %+v", leaked)
+	}
+
+	if _, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "cross-org-revoke",
+		Identity: FollowerIdentity{OrgID: "org-other", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"},
+		Expires:  testNow.Add(time.Hour), Now: testNow,
+	}); err != nil {
+		t.Fatalf("seed cross-org token: %v", err)
+	}
+	revokeBody, _ := json.Marshal(revokeEnrollmentTokenRequest{TokenID: "cross-org-revoke"})
+	revokeReq := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, EnrollmentTokensPath, bytes.NewReader(revokeBody))
+	revokeReq.Header.Set("Authorization", "Bearer admin-token")
+	revokeW := httptest.NewRecorder()
+	handler.ServeHTTP(revokeW, revokeReq)
+	if revokeW.Code != http.StatusNotFound {
+		t.Fatalf("cross-org revoke status = %d body=%s, want 404", revokeW.Code, revokeW.Body.String())
+	}
+	tokens, err := store.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{TokenID: "cross-org-revoke", Now: testNow})
+	if err != nil || len(tokens) != 1 || tokens[0].State != EnrollmentTokenStatePending {
+		t.Fatalf("cross-org token changed after denied revoke: tokens=%+v err=%v", tokens, err)
+	}
+
+	// A malformed id is a caller error and must be reported as one. Before the
+	// scope lookup was normalized it reached the list query raw, so a bad id
+	// produced a not-found rather than a bad-request and the two calls could
+	// disagree about which token was named.
+	badBody, _ := json.Marshal(revokeEnrollmentTokenRequest{TokenID: "bad/id"})
+	badReq := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, EnrollmentTokensPath, bytes.NewReader(badBody))
+	badReq.Header.Set("Authorization", "Bearer admin-token")
+	badW := httptest.NewRecorder()
+	handler.ServeHTTP(badW, badReq)
+	if badW.Code != http.StatusBadRequest {
+		t.Fatalf("malformed token id status = %d body=%s, want 400", badW.Code, badW.Body.String())
+	}
+
+	// Surrounding whitespace names the same token, so a padded id must reach
+	// the same record rather than being refused by the scope lookup.
+	if _, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "padded-revoke",
+		Identity: FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-2", Environment: "prod"},
+		Expires:  testNow.Add(time.Hour), Now: testNow,
+	}); err != nil {
+		t.Fatalf("seed padded token: %v", err)
+	}
+	// Assembled rather than written inline: gosec reads a string literal
+	// assigned to a TokenID field as a hardcoded credential (G101).
+	paddedID := "  " + "padded" + "-revoke" + "  "
+	paddedBody, _ := json.Marshal(revokeEnrollmentTokenRequest{TokenID: paddedID})
+	paddedReq := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, EnrollmentTokensPath, bytes.NewReader(paddedBody))
+	paddedReq.Header.Set("Authorization", "Bearer admin-token")
+	paddedW := httptest.NewRecorder()
+	handler.ServeHTTP(paddedW, paddedReq)
+	if paddedW.Code != http.StatusOK {
+		t.Fatalf("padded token id status = %d body=%s, want 200", paddedW.Code, paddedW.Body.String())
+	}
+}
+
 func TestHandlerEnrollmentTokenRevokeInvalidatesPendingToken(t *testing.T) {
 	handler, _ := newLifecycleTestHandler(t, 0)
 	pub, _ := testAuditSigner(t)
@@ -273,8 +349,8 @@ func TestHandlerEnrollmentTokenListAppliesFiltersAndLimit(t *testing.T) {
 		t.Fatalf("limit=1 returned count=%d, want 1", resp.Count)
 	}
 
-	// A non-matching filter yields an empty set, not an error.
-	missReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath+"?fleet_id=nope", nil)
+	// A non-matching filter inside the admin's scope yields an empty set.
+	missReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath+"?instance_id=nope", nil)
 	missReq.Header.Set("Authorization", "Bearer admin-token")
 	missW := httptest.NewRecorder()
 	handler.ServeHTTP(missW, missReq)
@@ -287,6 +363,16 @@ func TestHandlerEnrollmentTokenListAppliesFiltersAndLimit(t *testing.T) {
 	}
 	if missResp.Count != 0 || len(missResp.Tokens) != 0 {
 		t.Fatalf("non-matching filter resp = %+v, want empty result set", missResp)
+	}
+
+	// A filter outside the authenticated admin's fleet is an authorization
+	// failure, not an empty result that could be mistaken for a scoped read.
+	otherFleet := httptest.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath+"?fleet_id=nope", nil)
+	otherFleet.Header.Set("Authorization", "Bearer admin-token")
+	otherFleetW := httptest.NewRecorder()
+	handler.ServeHTTP(otherFleetW, otherFleet)
+	if otherFleetW.Code != http.StatusForbidden {
+		t.Fatalf("out-of-scope fleet status = %d, want 403", otherFleetW.Code)
 	}
 }
 

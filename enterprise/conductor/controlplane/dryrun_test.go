@@ -503,14 +503,9 @@ func newSpyHandler(t *testing.T, emergencyKeys conductor.SignatureKeyResolver) s
 		AuditSink:          discardAuditSink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		Enrollments:        enrollments,
-		AuthorizeAdmin: func(r *http.Request) error {
-			if r.Header.Get("X-Pipelock-Admin") != "ok" {
-				return ErrPublisherForbidden
-			}
-			return nil
-		},
-		EmergencyControls: emergencySpy,
-		EmergencyKeys:     emergencyKeys,
+		AuthenticateAdmin:  testAdminAuthenticator("X-Pipelock-Admin", "ok"),
+		EmergencyControls:  emergencySpy,
+		EmergencyKeys:      emergencyKeys,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -543,12 +538,7 @@ func newDryRunTestHandler(t *testing.T, store BundleStore, emergency EmergencySt
 		AuditSink:          discardAuditSink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		Enrollments:        enrollments,
-		AuthorizeAdmin: func(r *http.Request) error {
-			if r.Header.Get("X-Pipelock-Admin") != "ok" {
-				return ErrPublisherForbidden
-			}
-			return nil
-		},
+		AuthenticateAdmin:  testAdminAuthenticator("X-Pipelock-Admin", "ok"),
 		AuthorizeStream: func(r *http.Request, q StreamStatusQuery) error {
 			if r.Header.Get("X-Pipelock-Stream") != "ok" || q.OrgID != "org-main" || q.FleetID != "prod" {
 				return ErrStreamStatusForbidden
@@ -1132,14 +1122,9 @@ func TestRollbackDryRun_Valid_NoWrite(t *testing.T) {
 		AuditSink:          discardAuditSink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		Enrollments:        enrollments,
-		AuthorizeAdmin: func(r *http.Request) error {
-			if r.Header.Get("X-Pipelock-Admin") != "ok" {
-				return ErrPublisherForbidden
-			}
-			return nil
-		},
-		EmergencyControls: emergencySpy,
-		EmergencyKeys:     resolver,
+		AuthenticateAdmin:  testAdminAuthenticator("X-Pipelock-Admin", "ok"),
+		EmergencyControls:  emergencySpy,
+		EmergencyKeys:      resolver,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)

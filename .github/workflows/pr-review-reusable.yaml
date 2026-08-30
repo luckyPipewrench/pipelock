@@ -113,7 +113,43 @@ jobs:
           repository: ${{ github.repository }}
           ref: ${{ needs.admit.outputs.head_sha }}
           path: reviewed-repository
+          fetch-depth: 1
           persist-credentials: false
+
+      - name: Resolve immutable merge base
+        id: merge-base
+        env:
+          GH_TOKEN: ${{ secrets.review_token }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ needs.admit.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          merge_base="$(gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha')"
+          if [[ ! "${merge_base}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "compare response did not contain an immutable merge base" >&2
+            exit 1
+          fi
+          echo "sha=${merge_base}" >> "${GITHUB_OUTPUT}"
+
+      # A second depth-one checkout gives Git the authoritative merge-base
+      # snapshot without downloading every branch, tag, and historical object.
+      - name: Check out immutable reviewed repository merge base
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.merge-base.outputs.sha }}
+          path: reviewed-merge-base
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Import immutable merge base into reviewed checkout
+        env:
+          MERGE_BASE_SHA: ${{ steps.merge-base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          timeout 90s git -C reviewed-repository fetch --no-tags --depth=1 "${GITHUB_WORKSPACE}/reviewed-merge-base" "${MERGE_BASE_SHA}"
+          git -C reviewed-repository cat-file -e "${MERGE_BASE_SHA}^{commit}"
 
       # The runner receives one provider credential, never both. Named secret
       # mappings are required because personal-account repositories cannot use
@@ -136,6 +172,7 @@ jobs:
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
           reviewed-repository-path: ${{ github.workspace }}/reviewed-repository
+          reviewed-merge-base-sha: ${{ steps.merge-base.outputs.sha }}
 
       - name: Report missing provider credential
         id: nocreds
@@ -181,6 +218,7 @@ jobs:
           BASE_SHA: ${{ needs.admit.outputs.base_sha }}
           HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
           IDENTITY: ${{ needs.admit.outputs.correlation }}
+          REVIEW_MODE: ${{ inputs.review_mode }}
         run: |
           set -euo pipefail
           if [ -z "${COMMENT_ID}" ] || [ -z "${IDENTITY}" ]; then
@@ -195,8 +233,22 @@ jobs:
             *"<!-- pr-review-status:v1 state=running identity=${IDENTITY} -->"*) ;;
             *) echo "pr-review phase=finalize status=not-ours-or-already-final"; exit 0 ;;
           esac
-          printf '## AI PR Review\n\n**Verdict:** `failed`\n**Findings:** unavailable because the review job did not publish a final result.\n\n<details>\n<summary>Review details: binding and identity</summary>\n\n**Binding:** base `%s` head `%s`\n**Review identity:** `%s`\n\n</details>\n\n<!-- pr-review-status:v1 state=failed identity=%s -->\n' \
-            "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" > /tmp/pr-review-finalize.md
+          profile=""
+          while IFS= read -r line; do
+            case "${line}" in
+              '**Review profile:** '*) profile="${line}"; break ;;
+            esac
+          done <<< "${body}"
+          case "${REVIEW_MODE}" in
+            default) profile_pattern='^\*\*Review profile:\*\* `default` with `[A-Za-z0-9._:/-]+` \(`low` reasoning\); candidate judge `[A-Za-z0-9._:/-]+` \(`high` reasoning\)\.$' ;;
+            deep) profile_pattern='^\*\*Review profile:\*\* `deep` with `[A-Za-z0-9._:/-]+` \(`xhigh` reasoning\)\.$' ;;
+            *) profile_pattern='a^' ;;
+          esac
+          if [[ ! "${profile}" =~ ${profile_pattern} ]]; then
+            profile="**Review profile:** \`${REVIEW_MODE}\`; the review job did not publish its effective model."
+          fi
+          printf '## AI PR Review\n\n**Verdict:** `failed`\n%s\n**Findings:** unavailable because the review job did not publish a final result.\n\n<details>\n<summary>Review details: binding and identity</summary>\n\n**Binding:** base `%s` head `%s`\n**Review identity:** `%s`\n\n</details>\n\n<!-- pr-review-status:v1 state=failed identity=%s mode=%s findings= reviewed_head=%s scope=full coverage_base=%s -->\n' \
+            "${profile}" "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" "${REVIEW_MODE}" "${HEAD_SHA}" "${BASE_SHA}" > /tmp/pr-review-finalize.md
           gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null
           echo "pr-review phase=finalize status=closed"
 

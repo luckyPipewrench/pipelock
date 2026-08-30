@@ -64,6 +64,9 @@ inputs:
   reviewed-repository-path:
     description: Immutable checkout of the target repository at the captured head.
     required: false
+  reviewed-merge-base-sha:
+    description: Authoritative merge-base commit imported into the reviewed checkout.
+    required: false
 runs:
   using: composite
   steps:
@@ -102,4 +105,5 @@ runs:
         HEAD_SHA: ${{ inputs.head-sha }}
         STATUS_COMMENT_ID: ${{ inputs.status-comment-id }}
         REVIEWED_REPOSITORY_PATH: ${{ inputs.reviewed-repository-path }}
+        REVIEWED_MERGE_BASE_SHA: ${{ inputs.reviewed-merge-base-sha }}
       run: python "$GITHUB_ACTION_PATH/pr_review.py"

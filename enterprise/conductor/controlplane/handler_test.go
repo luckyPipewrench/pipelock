@@ -845,6 +845,42 @@ func TestHandlerPublishesAndServesEmergencyControls(t *testing.T) {
 	}
 }
 
+func TestHandlerAdminScopeRejectsCrossOrgEmergencyControls(t *testing.T) {
+	msg, _ := signedRemoteKillMessageWithResolver(t, "kill-cross-org", 3, conductor.KillSwitchActive, testNow)
+	msg.OrgID = "org-other"
+	msgSignatures, killResolver := signConductorPreimage(t, msg.SignablePreimage, signing.PurposeRemoteKillSigning, "kill-signer-1", "kill-signer-2")
+	msg.Signatures = msgSignatures
+	handler := newTestHandlerWithEmergencyKeys(t, killResolver)
+	body, err := json.Marshal(publishRemoteKillRequest{Message: msg})
+	if err != nil {
+		t.Fatalf("Marshal(remote kill): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RemoteKillPath, bytes.NewReader(body))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-org remote kill status=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	auth, _ := signedRollbackAuthorizationWithResolver(t, "rollback-cross-org", 4, testNow)
+	auth.OrgID = "org-other"
+	authSignatures, rollbackResolver := signConductorPreimage(t, auth.SignablePreimage, signing.PurposePolicyBundleRollback, "rollback-signer-1", "rollback-signer-2")
+	auth.Signatures = authSignatures
+	handler = newTestHandlerWithEmergencyKeys(t, rollbackResolver)
+	body, err = json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, bytes.NewReader(body))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-org rollback status=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+}
+
 func TestHandlerRejectsOverlongEmergencyValidity(t *testing.T) {
 	msg, killResolver := signedRemoteKillMessageWithTTL(t, "kill-long", 3, testNow, DefaultRemoteKillMaxValidity+time.Minute)
 	auth, rollbackResolver := signedRollbackAuthorizationWithTTL(t, "rollback-long", 4, testNow, DefaultRollbackMaxValidity+time.Minute)
@@ -1571,6 +1607,19 @@ type rollbackClearFailureEmergencyStore struct {
 	err error
 }
 
+func testAdminAuthenticator(header, value string) AdminAuthenticator {
+	return func(r *http.Request) (AdminIdentity, error) {
+		if r == nil || r.Header.Get(header) != value {
+			return AdminIdentity{}, ErrPublisherForbidden
+		}
+		return AdminIdentity{OrgID: "org-main", FleetID: "prod"}, nil
+	}
+}
+
+func allowTestAdmin(*http.Request) (AdminIdentity, error) {
+	return AdminIdentity{OrgID: "org-main", FleetID: "prod"}, nil
+}
+
 func (s rollbackClearFailureEmergencyStore) ClearRollbackAuthorization(context.Context, string) (bool, error) {
 	return false, s.err
 }
@@ -1628,15 +1677,10 @@ func newTestHandlerWithOptions(t *testing.T, store BundleStore, identity Followe
 		AuthorizeBundle: func(r *http.Request, _ conductor.PolicyBundle) error {
 			return publisher(r)
 		},
-		AuditSink:   discardAuditSink{},
-		AuditKeys:   rejectingAuditKeyResolver,
-		Enrollments: enrollments,
-		AuthorizeAdmin: func(r *http.Request) error {
-			if r.Header.Get("X-Pipelock-Admin") != "ok" {
-				return ErrPublisherForbidden
-			}
-			return nil
-		},
+		AuditSink:         discardAuditSink{},
+		AuditKeys:         rejectingAuditKeyResolver,
+		Enrollments:       enrollments,
+		AuthenticateAdmin: testAdminAuthenticator("X-Pipelock-Admin", "ok"),
 		EmergencyControls: mustEmergencyStore(t),
 		EmergencyKeys:     emergencyKeys,
 	})

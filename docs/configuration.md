@@ -2666,6 +2666,8 @@ flight_recorder:
   retention_days: 90
   redact: true
   require_receipts: false
+  require_containment_evidence: false
+  posture_signer_key: "/path/to/posture-signer.pub"
   sign_checkpoints: true
   signing_key_path: "/path/to/signing-key"
   max_entries_per_file: 10000
@@ -2701,6 +2703,8 @@ dashboard_snapshot:
 | `retention_days` | `0` | Auto-expire raw-escrow sidecars after N days. JSONL receipt-chain shards are preserved for offline verification. 0 = keep forever. |
 | `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |
 | `require_receipts` | `false` | Require allow-path receipt emission before forwarding traffic. When true, signing/recorder failures block with `receipt_emission_failed`; this includes TLS-intercepted CONNECT inner HTTP requests before their upstream request. Block-path receipts remain best-effort because the action is already denied. |
+| `require_containment_evidence` | `false` | Require a readable containment proof signed by the pinned `posture_signer_key` before signed receipts start. `absent`, `unreadable`, a proof without containment evidence, and a proof signed by another key refuse startup when this is true. Requires `enabled: true`, `dir`, `signing_key_path`, and `posture_signer_key`. It is startup-only; reload changes are ignored until restart. |
+| `posture_signer_key` | (empty) | Pinned Ed25519 public key, as 64 hex characters or a public-key file, used to verify containment proofs when `require_containment_evidence: true`. The runtime reads and pins the key at startup; it is not needed for ordinary receipt operation. `PIPELOCK_POSTURE_PROOF` can select an absolute proof path, but in required mode that proof must verify with this pinned key. |
 | `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
 | `signing_key_path` | (empty) | Ed25519 private key for signed action receipts. When set, blocks produce signed receipts; allow receipts also require `require_receipts: true`, and clean stream frames are summarized. Without a key, the flight recorder can still write non-receipt evidence entries. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file> --key <signer.pub>` (pin the signer key — an unpinned run is structural-only and exits non-zero unless you pass `--allow-unpinned`). In `pipelock run`, changing the configured path requires restart; reload re-reads updated key bytes only when the same path stays configured. |
 | `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |

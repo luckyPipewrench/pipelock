@@ -173,7 +173,9 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		oldFR.EvidenceHealth.MaxAnchorLag = newFR.EvidenceHealth.MaxAnchorLag
 		oldFR.Anchor = newFR.Anchor
 		if !reflect.DeepEqual(oldFR, newFR) {
-			if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
+			if oldCfg.FlightRecorder.RequireContainmentEvidence != newCfg.FlightRecorder.RequireContainmentEvidence {
+				_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_containment_evidence changed, but posture evidence is checked when signed receipts start. Ignoring the change until restart.")
+			} else if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
 					oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
 			} else if !boolPtrEqual(oldCfg.FlightRecorder.EvidenceHealth.Enabled, newCfg.FlightRecorder.EvidenceHealth.Enabled) {

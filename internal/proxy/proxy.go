@@ -1529,22 +1529,25 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		}, nil
 	}
 
-	postureBinding, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
-		ReceiptSigningEnabled: keyPath != "",
-		Stderr:                os.Stderr,
+	postureResult, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
+		ReceiptSigningEnabled:      keyPath != "",
+		RequireContainmentEvidence: cfg.FlightRecorder.RequireContainmentEvidence,
+		PinnedPostureSignerKey:     cfg.FlightRecorder.PostureSignerPublicKey,
+		Stderr:                     os.Stderr,
 	})
 	if bindErr != nil {
 		return receiptEmitterStage{}, fmt.Errorf("loading posture binding: %w", bindErr)
 	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:         p.recorder,
-		PrivKey:          privKey,
-		ConfigHash:       cfg.Hash(),
-		Principal:        "local",
-		Actor:            "pipelock",
-		Metrics:          p.metrics,
-		PostureBinding:   postureBinding,
-		HeartbeatSeconds: cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+		Recorder:            p.recorder,
+		PrivKey:             privKey,
+		ConfigHash:          cfg.Hash(),
+		Principal:           "local",
+		Actor:               "pipelock",
+		Metrics:             p.metrics,
+		PostureBinding:      postureResult.Binding,
+		PostureAvailability: string(postureResult.Availability),
+		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 	})
 	if emitter != nil {
 		if initErr := emitter.InitError(); initErr != nil {

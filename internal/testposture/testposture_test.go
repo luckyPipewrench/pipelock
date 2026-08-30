@@ -51,7 +51,7 @@ func TestPinAbsentIsolatesFromHostPosture(t *testing.T) {
 		t.Fatalf("availability = %q, want %q", result.Availability, posturebinding.AvailabilityAbsent)
 	}
 	if result.Binding != (receipt.PostureBinding{}) {
-		t.Fatalf("expected the zero binding, got %+v", result.Binding)
+		t.Fatalf("expected an absent binding, got %+v", result.Binding)
 	}
 
 	dir := filepath.Dir(got)

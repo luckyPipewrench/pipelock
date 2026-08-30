@@ -1590,21 +1590,24 @@ type BudgetConfig struct {
 
 // FlightRecorder configures the tamper-evident evidence recording system.
 type FlightRecorder struct {
-	Enabled            bool                         `yaml:"enabled"`
-	Dir                string                       `yaml:"dir"`
-	CheckpointInterval int                          `yaml:"checkpoint_interval"`      // entries between signed checkpoints (default 1000)
-	RetentionDays      int                          `yaml:"retention_days"`           // auto-expire raw sidecars after N days (0=forever)
-	Redact             bool                         `yaml:"redact"`                   // DLP on evidence before commit (default true)
-	SignCheckpoints    bool                         `yaml:"sign_checkpoints"`         // Ed25519 sign checkpoints (default true)
-	MaxEntriesPerFile  int                          `yaml:"max_entries_per_file"`     // rotate files (default 10000)
-	FileMode           os.FileMode                  `yaml:"file_mode" json:"-"`       // evidence file permissions: 0600, 0640, or 0660 (default 0600)
-	RawEscrow          bool                         `yaml:"raw_escrow"`               // encrypted raw detail sidecar (default false)
-	EscrowPublicKey    string                       `yaml:"escrow_public_key"`        // X25519 public key for raw escrow encryption
-	SigningKeyPath     string                       `yaml:"signing_key_path"`         // Ed25519 private key for checkpoint signing and action receipts
-	RequireReceipts    bool                         `yaml:"require_receipts"`         // fail closed when a required receipt cannot be emitted (default false)
-	Completeness       FlightRecorderCompleteness   `yaml:"completeness" json:"-"`    // restart-only evidence completeness knobs
-	EvidenceHealth     FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"` // process-local evidence health monitoring
-	Anchor             FlightRecorderAnchor         `yaml:"anchor" json:"-"`          // optional runtime receipt-chain anchoring
+	Enabled                    bool                         `yaml:"enabled"`
+	Dir                        string                       `yaml:"dir"`
+	CheckpointInterval         int                          `yaml:"checkpoint_interval"`                   // entries between signed checkpoints (default 1000)
+	RetentionDays              int                          `yaml:"retention_days"`                        // auto-expire raw sidecars after N days (0=forever)
+	Redact                     bool                         `yaml:"redact"`                                // DLP on evidence before commit (default true)
+	SignCheckpoints            bool                         `yaml:"sign_checkpoints"`                      // Ed25519 sign checkpoints (default true)
+	MaxEntriesPerFile          int                          `yaml:"max_entries_per_file"`                  // rotate files (default 10000)
+	FileMode                   os.FileMode                  `yaml:"file_mode" json:"-"`                    // evidence file permissions: 0600, 0640, or 0660 (default 0600)
+	RawEscrow                  bool                         `yaml:"raw_escrow"`                            // encrypted raw detail sidecar (default false)
+	EscrowPublicKey            string                       `yaml:"escrow_public_key"`                     // X25519 public key for raw escrow encryption
+	SigningKeyPath             string                       `yaml:"signing_key_path"`                      // Ed25519 private key for checkpoint signing and action receipts
+	RequireReceipts            bool                         `yaml:"require_receipts"`                      // fail closed when a required receipt cannot be emitted (default false)
+	RequireContainmentEvidence bool                         `yaml:"require_containment_evidence" json:"-"` // require a verified containment posture binding before signed receipts start (default false; restart-only)
+	PostureSignerKey           string                       `yaml:"posture_signer_key" json:"-"`           // pinned Ed25519 public key or public-key file for required containment evidence
+	PostureSignerPublicKey     ed25519.PublicKey            `yaml:"-" json:"-"`                            // parsed at validation; runtime must not reopen PostureSignerKey
+	Completeness               FlightRecorderCompleteness   `yaml:"completeness" json:"-"`                 // restart-only evidence completeness knobs
+	EvidenceHealth             FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"`              // process-local evidence health monitoring
+	Anchor                     FlightRecorderAnchor         `yaml:"anchor" json:"-"`                       // optional runtime receipt-chain anchoring
 }
 
 // EvidenceProvenance configures the private operator-owned material needed to

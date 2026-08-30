@@ -257,6 +257,9 @@ func (c *Config) Clone() *Config {
 	if c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey != nil {
 		clone.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
 	}
+	if c.FlightRecorder.PostureSignerPublicKey != nil {
+		clone.FlightRecorder.PostureSignerPublicKey = append([]byte(nil), c.FlightRecorder.PostureSignerPublicKey...)
+	}
 
 	clone.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
 	clone.ResponseScanning.Patterns = cloneResponseScanPatterns(c.ResponseScanning.Patterns)

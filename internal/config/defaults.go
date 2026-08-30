@@ -552,12 +552,13 @@ func Defaults() *Config {
 			// silently fill the disk or leak. Evidence, not enforcement by default:
 			// a recorder failure never blocks traffic unless RequireReceipts is
 			// explicitly enabled by the operator.
-			Enabled:            true,
-			RequireReceipts:    false,
-			CheckpointInterval: 1000,  // entries between signed checkpoints
-			Redact:             true,  // DLP-scrub evidence before commit
-			SignCheckpoints:    true,  // Ed25519 sign checkpoints
-			MaxEntriesPerFile:  10000, // rotate files at this count
+			Enabled:                    true,
+			RequireReceipts:            false,
+			RequireContainmentEvidence: false,
+			CheckpointInterval:         1000,  // entries between signed checkpoints
+			Redact:                     true,  // DLP-scrub evidence before commit
+			SignCheckpoints:            true,  // Ed25519 sign checkpoints
+			MaxEntriesPerFile:          10000, // rotate files at this count
 			Completeness: FlightRecorderCompleteness{
 				HeartbeatInterval: "60s",
 			},

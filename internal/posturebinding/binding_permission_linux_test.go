@@ -7,6 +7,7 @@ package posturebinding
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -14,13 +15,12 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-
-	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 const (
 	unreadableCaseEnv = "PIPELOCK_POSTUREBINDING_UNREADABLE_CASE"
 	unreadablePathEnv = "PIPELOCK_POSTUREBINDING_UNREADABLE_PATH"
+	unreadableKeyEnv  = "PIPELOCK_POSTUREBINDING_UNREADABLE_KEY"
 )
 
 func TestLoadFileUnreadableFile(t *testing.T) {
@@ -37,11 +37,11 @@ func testUnreadableProof(t *testing.T, wantCase string) {
 		if childCase != wantCase {
 			t.Fatalf("child case = %q, want %q", childCase, wantCase)
 		}
-		assertUnreadableProof(t, os.Getenv(unreadablePathEnv))
+		assertUnreadableProof(t, os.Getenv(unreadablePathEnv), os.Getenv(unreadableKeyEnv))
 		return
 	}
 
-	path, cleanup := makeUnreadableProof(t, wantCase)
+	path, keyHex, cleanup := makeUnreadableProof(t, wantCase)
 	t.Cleanup(cleanup)
 	if os.Geteuid() == 0 {
 		testName := "^TestLoadFileUnreadableFile$"
@@ -50,7 +50,7 @@ func testUnreadableProof(t *testing.T, wantCase string) {
 		}
 		// #nosec G204,G702 -- this only re-executes the current test binary with a fixed test name.
 		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run="+testName, "-test.v")
-		cmd.Env = append(os.Environ(), unreadableCaseEnv+"="+wantCase, unreadablePathEnv+"="+path)
+		cmd.Env = append(os.Environ(), unreadableCaseEnv+"="+wantCase, unreadablePathEnv+"="+path, unreadableKeyEnv+"="+keyHex)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 65534, Gid: 65534}}
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -58,10 +58,10 @@ func testUnreadableProof(t *testing.T, wantCase string) {
 		}
 		return
 	}
-	assertUnreadableProof(t, path)
+	assertUnreadableProof(t, path, keyHex)
 }
 
-func makeUnreadableProof(t *testing.T, wantCase string) (string, func()) {
+func makeUnreadableProof(t *testing.T, wantCase string) (string, string, func()) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "pipelock-posturebinding-")
 	if err != nil {
@@ -80,7 +80,7 @@ func makeUnreadableProof(t *testing.T, wantCase string) (string, func()) {
 		cleanup()
 		t.Fatalf("Chmod temp dir: %v", err)
 	}
-	_, data := mintContainmentCapsule(t)
+	capsule, data := mintContainmentCapsule(t)
 	path := filepath.Join(dir, "proof.json")
 	if wantCase == "parent" {
 		denied := filepath.Join(dir, "denied")
@@ -103,10 +103,10 @@ func makeUnreadableProof(t *testing.T, wantCase string) (string, func()) {
 		cleanup()
 		t.Fatalf("Chmod proof: %v", err)
 	}
-	return path, cleanup
+	return path, capsule.SignerKeyID, cleanup
 }
 
-func assertUnreadableProof(t *testing.T, path string) {
+func assertUnreadableProof(t *testing.T, path, keyHex string) {
 	t.Helper()
 	result, err := LoadFile(path)
 	if err != nil {
@@ -123,15 +123,8 @@ func assertUnreadableProof(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("ordinary receipt policy: %v", err)
 	}
-	if binding != (receipt.PostureBinding{}) {
-		t.Fatalf("unreadable proof binding = %+v, want zero: an unreadable proof must claim nothing", binding)
-	}
-	result, loadErr := LoadRuntime()
-	if loadErr != nil {
-		t.Fatalf("LoadRuntime on an unreadable proof returned an error: %v", loadErr)
-	}
-	if result.Availability != AvailabilityUnreadable {
-		t.Fatalf("availability = %q, want %q", result.Availability, AvailabilityUnreadable)
+	if binding.Availability != AvailabilityUnreadable {
+		t.Fatalf("ordinary receipt availability = %q, want %q", binding.Availability, AvailabilityUnreadable)
 	}
 	message := warning.String()
 	for _, want := range []string{path, "containment user", "grant this runtime user read access"} {
@@ -141,5 +134,19 @@ func assertUnreadableProof(t *testing.T, path string) {
 	}
 	if !strings.Contains(message, "owner ") || !strings.Contains(message, "group ") {
 		t.Fatalf("file warning %q does not name the proof owner and group", message)
+	}
+
+	pinnedKey, decodeErr := hex.DecodeString(keyHex)
+	if decodeErr != nil {
+		t.Fatalf("decode pinned signer key: %v", decodeErr)
+	}
+	_, err = LoadRuntimeForReceipts(RuntimeReceiptOptions{
+		ReceiptSigningEnabled:      true,
+		RequireContainmentEvidence: true,
+		PinnedPostureSignerKey:     pinnedKey,
+		Stderr:                     &warning,
+	})
+	if err == nil || !strings.Contains(err.Error(), "containment evidence is required") || !strings.Contains(err.Error(), "unreadable") {
+		t.Fatalf("required receipt policy error = %v, want unreadable containment requirement", err)
 	}
 }

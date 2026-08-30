@@ -11705,6 +11705,97 @@ func TestLoad_FlightRecorderRequireReceiptsReloadStates(t *testing.T) {
 	}
 }
 
+func TestLoad_FlightRecorderRequireContainmentEvidenceStates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		section string
+		want    bool
+	}{
+		{name: "omitted_whole_section", section: "", want: false},
+		{name: "key_null", section: "flight_recorder:\n  require_containment_evidence:\n", want: false},
+		{name: "key_blank", section: "flight_recorder:\n  require_containment_evidence: \n", want: false},
+		{name: "explicit_false", section: "flight_recorder:\n  require_containment_evidence: false\n", want: false},
+		{name: "explicit_true", section: "flight_recorder:\n  enabled: true\n  dir: /tmp/recorder\n  signing_key_path: /tmp/recorder.key\n  posture_signer_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  require_containment_evidence: true\n", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfgPath := filepath.Join(t.TempDir(), "fr-require-containment.yaml")
+			if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"+tt.section), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(cfgPath)
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if cfg.FlightRecorder.RequireContainmentEvidence != tt.want {
+				t.Errorf("FlightRecorder.RequireContainmentEvidence = %v, want %v", cfg.FlightRecorder.RequireContainmentEvidence, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad_FlightRecorderRequireContainmentEvidenceReloadStates(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "fr-require-containment-reload.yaml")
+	firstContent := "mode: balanced\nflight_recorder:\n  require_containment_evidence: false\n"
+	if err := os.WriteFile(cfgPath, []byte(firstContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load #1: %v", err)
+	}
+	if first.FlightRecorder.RequireContainmentEvidence {
+		t.Fatal("first load RequireContainmentEvidence = true, want false")
+	}
+
+	changedContent := "mode: balanced\nflight_recorder:\n  enabled: true\n  dir: /tmp/recorder\n  signing_key_path: /tmp/recorder.key\n  posture_signer_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  require_containment_evidence: true\n"
+	if err := os.WriteFile(cfgPath, []byte(changedContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load #2: %v", err)
+	}
+	if !second.FlightRecorder.RequireContainmentEvidence {
+		t.Fatal("reload with change RequireContainmentEvidence = false, want true")
+	}
+
+	third, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load #3: %v", err)
+	}
+	if third.FlightRecorder.RequireContainmentEvidence != second.FlightRecorder.RequireContainmentEvidence {
+		t.Fatalf("reload without change RequireContainmentEvidence = %v, want %v",
+			third.FlightRecorder.RequireContainmentEvidence, second.FlightRecorder.RequireContainmentEvidence)
+	}
+}
+
+func TestValidate_FlightRecorderContainmentPinsPostureSignerKey(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	cfg := Defaults()
+	cfg.FlightRecorder.RequireContainmentEvidence = true
+	cfg.FlightRecorder.Dir = testRecorderDir
+	cfg.FlightRecorder.SigningKeyPath = "/tmp/recorder.key"
+	cfg.FlightRecorder.PostureSignerKey = hex.EncodeToString(publicKey)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if !bytes.Equal(cfg.FlightRecorder.PostureSignerPublicKey, publicKey) {
+		t.Fatal("validated posture signer key did not match configured pin")
+	}
+	clone := cfg.Clone()
+	clone.FlightRecorder.PostureSignerPublicKey[0] ^= 0xff
+	if bytes.Equal(clone.FlightRecorder.PostureSignerPublicKey, cfg.FlightRecorder.PostureSignerPublicKey) {
+		t.Fatal("cloned posture signer key aliases the validated config")
+	}
+}
+
 func TestLoad_MCPToolProvenanceDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "prov.yaml")
@@ -15223,6 +15314,63 @@ func TestValidate_FlightRecorder(t *testing.T) {
 				return c
 			},
 			wantErr: "require_receipts requires flight_recorder.signing_key_path",
+		},
+		{
+			name: "require_containment_evidence_requires_enabled",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = false
+				c.FlightRecorder.RequireContainmentEvidence = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.SigningKeyPath = "/tmp/recorder.key"
+				return c
+			},
+			wantErr: "require_containment_evidence requires flight_recorder.enabled",
+		},
+		{
+			name: "require_containment_evidence_requires_dir",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.RequireContainmentEvidence = true
+				c.FlightRecorder.Dir = ""
+				c.FlightRecorder.SigningKeyPath = "/tmp/recorder.key"
+				return c
+			},
+			wantErr: "require_containment_evidence requires flight_recorder.dir",
+		},
+		{
+			name: "require_containment_evidence_requires_signing_key_path",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.RequireContainmentEvidence = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.SigningKeyPath = ""
+				return c
+			},
+			wantErr: "require_containment_evidence requires flight_recorder.signing_key_path",
+		},
+		{
+			name: "require_containment_evidence_requires_posture_signer_key",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.RequireContainmentEvidence = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.SigningKeyPath = "/tmp/recorder.key"
+				return c
+			},
+			wantErr: "require_containment_evidence requires flight_recorder.posture_signer_key",
+		},
+		{
+			name: "require_containment_evidence_rejects_invalid_posture_signer_key",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.RequireContainmentEvidence = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.SigningKeyPath = "/tmp/recorder.key"
+				c.FlightRecorder.PostureSignerKey = "not-a-public-key"
+				return c
+			},
+			wantErr: "load flight_recorder.posture_signer_key",
 		},
 		{
 			// Enabled is on by default; without a dir the recorder is inert

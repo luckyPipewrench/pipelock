@@ -1121,9 +1121,11 @@ Key-free evidence capture:
 					retentionCancel()
 					retentionWG.Wait()
 				}()
-				postureBinding, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
-					ReceiptSigningEnabled: cfg.FlightRecorder.SigningKeyPath != "",
-					Stderr:                cmd.ErrOrStderr(),
+				postureResult, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
+					ReceiptSigningEnabled:      cfg.FlightRecorder.SigningKeyPath != "",
+					RequireContainmentEvidence: cfg.FlightRecorder.RequireContainmentEvidence,
+					PinnedPostureSignerKey:     cfg.FlightRecorder.PostureSignerPublicKey,
+					Stderr:                     cmd.ErrOrStderr(),
 				})
 				if bindErr != nil {
 					return fmt.Errorf("loading posture binding: %w", bindErr)
@@ -1140,14 +1142,15 @@ Key-free evidence capture:
 				// bundle merge and auto-enable.
 				// The shared MCP registry also captures receipt emission failures.
 				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
-					Recorder:         rec,
-					PrivKey:          recPrivKey,
-					ConfigHash:       cfg.Hash(),
-					Principal:        "local",
-					Actor:            "pipelock",
-					Metrics:          mcpMetrics,
-					PostureBinding:   postureBinding,
-					HeartbeatSeconds: cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+					Recorder:            rec,
+					PrivKey:             recPrivKey,
+					ConfigHash:          cfg.Hash(),
+					Principal:           "local",
+					Actor:               "pipelock",
+					Metrics:             mcpMetrics,
+					PostureBinding:      postureResult.Binding,
+					PostureAvailability: string(postureResult.Availability),
+					HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)

@@ -122,6 +122,10 @@ type Emitter struct {
 	heartbeatSeconds int
 
 	postureBinding PostureBinding
+	// postureAvailability is advisory runtime diagnosis, recorded only in the
+	// unsigned top-level ext bag of session_open. It must never be used by
+	// containment assessment or signature verification.
+	postureAvailability string
 
 	// pendingTransition is set by resumeChain when the on-disk tail was
 	// signed by a DIFFERENT (but self-valid) key, meaning a legitimate key
@@ -164,6 +168,9 @@ type EmitterConfig struct {
 	// containment assessment can bind a receipt chain to a signed posture
 	// capsule and contained UID.
 	PostureBinding PostureBinding
+	// PostureAvailability is an advisory reason attached to the unsigned ext
+	// bag of session_open. Unlike PostureBinding, it is not signed evidence.
+	PostureAvailability string
 	// HeartbeatSeconds is the configured heartbeat cadence in seconds. It is
 	// recorded verbatim in the session_open record so a consumer can read the
 	// expected liveness interval off the run anchor. 0 (the default) means the
@@ -191,17 +198,18 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	}
 	runNonce, nonceErr := newRunNonce()
 	e := &Emitter{
-		recorder:         cfg.Recorder,
-		privKey:          cfg.PrivKey,
-		principal:        cfg.Principal,
-		actor:            cfg.Actor,
-		metrics:          cfg.Metrics,
-		onReceipt:        cfg.OnReceipt,
-		now:              time.Now,
-		runNonce:         runNonce,
-		chainPrevHash:    GenesisHash,
-		postureBinding:   cfg.PostureBinding,
-		heartbeatSeconds: cfg.HeartbeatSeconds,
+		recorder:            cfg.Recorder,
+		privKey:             cfg.PrivKey,
+		principal:           cfg.Principal,
+		actor:               cfg.Actor,
+		metrics:             cfg.Metrics,
+		onReceipt:           cfg.OnReceipt,
+		now:                 time.Now,
+		runNonce:            runNonce,
+		chainPrevHash:       GenesisHash,
+		postureBinding:      cfg.PostureBinding,
+		postureAvailability: cfg.PostureAvailability,
+		heartbeatSeconds:    cfg.HeartbeatSeconds,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	if nonceErr != nil {
@@ -640,6 +648,13 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	if err != nil {
 		e.recordFailure(FailReasonSign)
 		return fmt.Errorf("signing receipt: %w", err)
+	}
+	if isSessionOpenControl(sessionControl) && e.postureAvailability != "" {
+		rcpt.Ext, err = json.Marshal(map[string]string{"posture_proof_availability": e.postureAvailability})
+		if err != nil {
+			e.recordFailure(FailReasonMarshal)
+			return fmt.Errorf("marshaling posture availability extension: %w", err)
+		}
 	}
 
 	receiptHash, err := ReceiptHash(rcpt)

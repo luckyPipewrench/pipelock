@@ -337,9 +337,11 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	evidence.recorder = rec
 	evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithRecorder(rec))
 
-	binding, err := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
-		ReceiptSigningEnabled: cfg.FlightRecorder.SigningKeyPath != "",
-		Stderr:                stderr,
+	postureResult, err := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
+		ReceiptSigningEnabled:      cfg.FlightRecorder.SigningKeyPath != "",
+		RequireContainmentEvidence: cfg.FlightRecorder.RequireContainmentEvidence,
+		PinnedPostureSignerKey:     cfg.FlightRecorder.PostureSignerPublicKey,
+		Stderr:                     stderr,
 	})
 	if err != nil {
 		evidence.close()
@@ -347,8 +349,9 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder: rec, PrivKey: privateKey, ConfigHash: cfg.CanonicalPolicyHash(),
-		Principal: "local", Actor: "pipelock", Metrics: m, PostureBinding: binding,
-		HeartbeatSeconds: cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+		Principal: "local", Actor: "pipelock", Metrics: m, PostureBinding: postureResult.Binding,
+		PostureAvailability: string(postureResult.Availability),
+		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 	})
 	if !receiptEmitterReady(emitter) {
 		if cfg.FlightRecorder.RequireReceipts {

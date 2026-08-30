@@ -57,6 +57,8 @@ flight_recorder:
   retention_days: 90             # auto-expire raw-escrow sidecars older than 90 days (0 = forever)
   redact: true                   # DLP redaction before commit (recommended)
   require_receipts: false        # fail closed before forwarding when allow receipts cannot be emitted
+  require_containment_evidence: false # set true to refuse startup unless a verified containment proof is available
+  posture_signer_key: /etc/pipelock/keys/flight-recorder-signing.key.pub # required when containment evidence is required
   sign_checkpoints: true         # Ed25519 signed checkpoints
   signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key   # `pipelock init` writes this next to your config
   max_entries_per_file: 10000    # rotate to a new file after this many entries
@@ -72,6 +74,8 @@ flight_recorder:
 | `retention_days` | 0 | Auto-expire raw-escrow sidecars after N days. JSONL receipt-chain shards are preserved. 0 = never expire. |
 | `redact` | true | DLP scan each entry before writing. Replaces matched content with a redaction marker. |
 | `require_receipts` | false | Require receipt emission before allow-path traffic is forwarded. When true, missing or failed receipt emission blocks the action with `receipt_emission_failed`; block-path receipts remain best-effort because the action is already denied. |
+| `require_containment_evidence` | false | Refuse signed-receipt startup unless the process can read a containment proof that verifies with `posture_signer_key`. This setting is startup-only. |
+| `posture_signer_key` | (empty) | Pinned Ed25519 public key, as 64 hex characters or a public-key file. Required with `require_containment_evidence: true`; the key is read and pinned at startup. |
 | `sign_checkpoints` | true | Sign each checkpoint with the agent's Ed25519 private key. |
 | `max_entries_per_file` | 10000 | Rotate to a new JSONL file after this many entries. |
 | `raw_escrow` | false | Write an encrypted sidecar with the unredacted detail for each entry. |
@@ -135,6 +139,38 @@ Two operational notes:
   `action_id`**. Under `require_receipts` you will therefore see an allow
   followed by a block for one action — the request did egress, and the response
   was blocked separately.
+
+### Posture proof availability
+
+When a signed receipt session starts, it records `posture_proof_availability`
+in the unsigned top-level `ext` bag of its `session_open` receipt. The field is
+advisory diagnosis for a human reader, not verifier input or containment proof.
+It may be modified or removed without invalidating the individual receipt
+signature, but it is part of the full receipt envelope hash: changing a
+persisted `session_open` extension causes chain verification to fail once a
+successor receipt links to it.
+
+| Status | Runtime behavior | Meaning in the receipt |
+|--------|------------------|------------------------|
+| `attested` | Starts. | The proof was read and verified. A verified proof can still lack containment evidence. |
+| `absent` | Starts by default. | No proof file was present at the configured path. |
+| `unreadable` | Starts by default and writes a warning to stderr. | The process could not read the proof or traverse a parent directory. This does not establish that a proof exists. The warning names the path, filesystem cause, visible owner and group, and the access remedy. |
+| `invalid` | Refuses to start. | A present proof was malformed, unverifiable, or expired. No receipt is emitted from that startup. |
+
+Set `require_containment_evidence: true` when signed receipts must begin only
+with containment evidence signed by an operator-pinned key. Configure
+`posture_signer_key` with the key that signs the capsule; for containment runs
+that use the recorder signing key, its `<signing_key_path>.pub` sidecar is the
+natural value. In that mode `absent`, `unreadable`, an `attested` proof without
+containment evidence, and a proof signed by another key refuse startup.
+`invalid` always refuses startup. The setting requires `enabled`, `dir`,
+`signing_key_path`, and `posture_signer_key`, and changing any of them through a
+reload has no effect until restart.
+
+`PIPELOCK_POSTURE_PROOF` may select an absolute proof path for a process. In
+required mode the selected file still must verify with the pinned
+`posture_signer_key`; setting the variable cannot make a self-signed capsule
+satisfy containment evidence.
 
 ### Default-on footguns (handled)
 

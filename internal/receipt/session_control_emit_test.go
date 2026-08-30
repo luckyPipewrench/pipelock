@@ -289,12 +289,13 @@ func TestEmitter_EmitSessionOpenPopulatesPostureBinding(t *testing.T) {
 		ContainedUID:     "966",
 	}
 	e := NewEmitter(EmitterConfig{
-		Recorder:       rec,
-		PrivKey:        priv,
-		ConfigHash:     testConfigHash,
-		Principal:      testPrincipal,
-		Actor:          testActor,
-		PostureBinding: binding,
+		Recorder:            rec,
+		PrivKey:             priv,
+		ConfigHash:          testConfigHash,
+		Principal:           testPrincipal,
+		Actor:               testActor,
+		PostureBinding:      binding,
+		PostureAvailability: "unreadable",
 	})
 
 	if err := e.EmitSessionOpen(); err != nil {
@@ -318,8 +319,64 @@ func TestEmitter_EmitSessionOpenPopulatesPostureBinding(t *testing.T) {
 		open.ContainedUID != binding.ContainedUID {
 		t.Fatalf("posture binding = %+v, want %+v", open, binding)
 	}
+	var ext map[string]string
+	if err := json.Unmarshal(receipts[0].Ext, &ext); err != nil {
+		t.Fatalf("decode unsigned posture extension: %v", err)
+	}
+	if got := ext["posture_proof_availability"]; got != "unreadable" {
+		t.Fatalf("posture availability extension = %q, want unreadable", got)
+	}
+	// ext is intentionally outside the signature: changing its advisory value
+	// must not turn it into a verified containment claim.
+	receipts[0].Ext = json.RawMessage(`{"posture_proof_availability":"attested"}`)
+	if err := VerifyWithKey(receipts[0], hex.EncodeToString(pub)); err != nil {
+		t.Fatalf("signature unexpectedly covers advisory extension: %v", err)
+	}
 	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
 		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+}
+
+func TestEmitter_PostureAvailabilityExtMutationBreaksSuccessorChain(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{
+		Recorder:            rec,
+		PrivKey:             priv,
+		ConfigHash:          testConfigHash,
+		Principal:           testPrincipal,
+		Actor:               testActor,
+		PostureAvailability: "unreadable",
+	})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Target:    testTarget,
+		Method:    http.MethodGet,
+	}); err != nil {
+		t.Fatalf("Emit successor: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) != 2 {
+		t.Fatalf("receipts = %d, want 2", len(receipts))
+	}
+	receipts[0].Ext = json.RawMessage(`{"posture_proof_availability":"attested"}`)
+	if err := VerifyWithKey(receipts[0], hex.EncodeToString(pub)); err != nil {
+		t.Fatalf("individual signature unexpectedly covers advisory extension: %v", err)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); res.Valid {
+		t.Fatal("mutated session_open extension left successor chain valid")
 	}
 }
 

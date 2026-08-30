@@ -3493,18 +3493,33 @@ func (c *Config) validateSandbox() error {
 }
 
 func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
+	c.FlightRecorder.PostureSignerPublicKey = nil
 	if err := c.validateFlightRecorderAnchor(warnings); err != nil {
 		return err
 	}
-	if c.FlightRecorder.RequireReceipts {
+	if c.FlightRecorder.RequireReceipts || c.FlightRecorder.RequireContainmentEvidence {
+		requirement := "flight_recorder.require_receipts"
+		if c.FlightRecorder.RequireContainmentEvidence {
+			requirement = "flight_recorder.require_containment_evidence"
+		}
 		switch {
 		case !c.FlightRecorder.Enabled:
-			return fmt.Errorf("flight_recorder.require_receipts requires flight_recorder.enabled")
+			return fmt.Errorf("%s requires flight_recorder.enabled", requirement)
 		case c.FlightRecorder.Dir == "":
-			return fmt.Errorf("flight_recorder.require_receipts requires flight_recorder.dir")
+			return fmt.Errorf("%s requires flight_recorder.dir", requirement)
 		case c.FlightRecorder.SigningKeyPath == "":
-			return fmt.Errorf("flight_recorder.require_receipts requires flight_recorder.signing_key_path")
+			return fmt.Errorf("%s requires flight_recorder.signing_key_path", requirement)
 		}
+	}
+	if c.FlightRecorder.RequireContainmentEvidence {
+		if strings.TrimSpace(c.FlightRecorder.PostureSignerKey) == "" {
+			return errors.New("flight_recorder.require_containment_evidence requires flight_recorder.posture_signer_key")
+		}
+		publicKey, err := signing.LoadPublicKey(c.FlightRecorder.PostureSignerKey)
+		if err != nil {
+			return fmt.Errorf("load flight_recorder.posture_signer_key: %w", err)
+		}
+		c.FlightRecorder.PostureSignerPublicKey = append([]byte(nil), publicKey...)
 	}
 	if !c.FlightRecorder.Enabled {
 		return nil

@@ -48,6 +48,25 @@ type Result struct {
 	Availability Availability
 	Path         string
 	Cause        error
+	anchored     bool
+}
+
+// HasContainmentAttestation reports whether this result carries a verified
+// containment binding, rather than merely a verified posture capsule.
+func (r Result) HasContainmentAttestation() bool {
+	return r.Availability == AvailabilityAttested &&
+		strings.TrimSpace(r.Binding.CapsuleSHA256) != "" &&
+		strings.TrimSpace(r.Binding.SignerKeyID) != "" &&
+		strings.TrimSpace(r.Binding.ContainmentNonce) != "" &&
+		strings.TrimSpace(r.Binding.ContainedUID) != ""
+}
+
+// HasAnchoredContainmentAttestation reports whether this result carries a
+// containment binding that was verified with an operator-configured signer.
+// It is deliberately distinct from HasContainmentAttestation, which also
+// describes the ordinary self-consistency-only loading path.
+func (r Result) HasAnchoredContainmentAttestation() bool {
+	return r.anchored && r.HasContainmentAttestation()
 }
 
 // RuntimeReceiptOptions controls the shared receipt-runtime policy applied to
@@ -56,8 +75,13 @@ type RuntimeReceiptOptions struct {
 	// ReceiptSigningEnabled reports whether this runtime will create signed
 	// action receipts. Posture binding is not loaded for a recorder-only
 	// runtime, which has no session_open record to bind.
-	ReceiptSigningEnabled bool
-	Stderr                io.Writer
+	ReceiptSigningEnabled      bool
+	RequireContainmentEvidence bool
+	// PinnedPostureSignerKey is the operator-configured trust anchor used only
+	// when containment evidence is required. It must come from validated config,
+	// never from the proof capsule or environment.
+	PinnedPostureSignerKey ed25519.PublicKey
+	Stderr                 io.Writer
 }
 
 const (
@@ -81,6 +105,10 @@ const (
 // filepath.Abs-resolved (resolving would hide the operator's mistake against an
 // ambiguous cwd). The default DefaultContainRunProofPath is already absolute.
 func LoadRuntime() (Result, error) {
+	return loadRuntime(nil)
+}
+
+func loadRuntime(pinnedSignerKey ed25519.PublicKey) (Result, error) {
 	path := strings.TrimSpace(os.Getenv(RuntimeProofEnv))
 	switch {
 	case path == "":
@@ -91,25 +119,37 @@ func LoadRuntime() (Result, error) {
 		result.Cause = err
 		return result, err
 	}
-	return LoadFile(path)
+	return loadFile(path, pinnedSignerKey)
 }
 
-// LoadRuntimeForReceipts applies the one shared availability policy used by
-// every receipt-enabled runtime. An unreadable proof records an actionable
-// warning and binds nothing, so the runtime starts without claiming
-// containment it could not confirm. A malformed present proof still fails.
-func LoadRuntimeForReceipts(opts RuntimeReceiptOptions) (receipt.PostureBinding, error) {
+// LoadRuntimeForReceipts applies the one shared availability and required-
+// containment policy used by every receipt-enabled runtime. It records an
+// actionable warning for an unreadable proof in ordinary operation. Required
+// containment refuses both absent and unreadable outcomes.
+func LoadRuntimeForReceipts(opts RuntimeReceiptOptions) (Result, error) {
 	if !opts.ReceiptSigningEnabled {
-		return receipt.PostureBinding{}, nil
+		if opts.RequireContainmentEvidence {
+			return Result{}, errors.New("containment evidence requires signed receipts")
+		}
+		return Result{}, nil
 	}
-	result, err := LoadRuntime()
+	if opts.RequireContainmentEvidence && len(opts.PinnedPostureSignerKey) != ed25519.PublicKeySize {
+		return Result{}, errors.New("containment evidence requires a pinned posture signer key; set flight_recorder.posture_signer_key")
+	}
+	result, err := loadRuntime(opts.PinnedPostureSignerKey)
 	if err != nil {
-		return receipt.PostureBinding{}, err
+		if opts.RequireContainmentEvidence {
+			return Result{}, fmt.Errorf("verify containment posture proof against pinned signer key: %w", err)
+		}
+		return Result{}, err
 	}
 	if result.Availability == AvailabilityUnreadable && opts.Stderr != nil {
 		_, _ = fmt.Fprint(opts.Stderr, unreadableProofWarning(result))
 	}
-	return result.Binding, nil
+	if opts.RequireContainmentEvidence && !result.HasAnchoredContainmentAttestation() {
+		return Result{}, fmt.Errorf("containment evidence is required but posture proof %q is %s; set flight_recorder.posture_signer_key and provide a matching signed proof at that path", result.Path, result.Availability)
+	}
+	return result, nil
 }
 
 func resultWithAvailability(path string, availability Availability) Result {
@@ -151,6 +191,10 @@ func unreadableProofWarning(result Result) string {
 // A present-but-invalid capsule returns AvailabilityInvalid and an error so it
 // never binds misleading fields.
 func LoadFile(path string) (Result, error) {
+	return loadFile(path, nil)
+}
+
+func loadFile(path string, pinnedSignerKey ed25519.PublicKey) (Result, error) {
 	result := resultWithAvailability(path, AvailabilityAbsent)
 	if strings.TrimSpace(path) == "" {
 		return result, nil
@@ -175,13 +219,17 @@ func LoadFile(path string) (Result, error) {
 		result.Cause = err
 		return result, fmt.Errorf("parse posture proof: %w", err)
 	}
-	pub, err := hex.DecodeString(capsule.SignerKeyID)
-	if err != nil {
-		result = resultWithAvailability(path, AvailabilityInvalid)
-		result.Cause = err
-		return result, fmt.Errorf("decode posture proof signer key: %w", err)
+	trustedKey := pinnedSignerKey
+	if len(trustedKey) == 0 {
+		pub, err := hex.DecodeString(capsule.SignerKeyID)
+		if err != nil {
+			result = resultWithAvailability(path, AvailabilityInvalid)
+			result.Cause = err
+			return result, fmt.Errorf("decode posture proof signer key: %w", err)
+		}
+		trustedKey = ed25519.PublicKey(pub)
 	}
-	if err := posture.VerifyAt(&capsule, ed25519.PublicKey(pub), time.Now().UTC()); err != nil {
+	if err := posture.VerifyAt(&capsule, trustedKey, time.Now().UTC()); err != nil {
 		result = resultWithAvailability(path, AvailabilityInvalid)
 		result.Cause = err
 		return result, fmt.Errorf("verify posture proof: %w", err)
@@ -189,8 +237,8 @@ func LoadFile(path string) (Result, error) {
 	// Only AFTER verification may a no-containment capsule report attested.
 	// This branch used to sit before VerifyAt, so any readable JSON without
 	// containment evidence, including a bare {}, was labeled attested in the
-	// signed session_open. Assessment never granted containment from it, but
-	// the signed availability value violated its own documented contract:
+	// advisory session_open extension. Assessment never granted containment
+	// from it, but the emitted availability value violated its own contract:
 	// attested means read AND verified. An unverifiable capsule is invalid
 	// and stays fatal, like every other malformed present proof.
 	if capsule.Evidence.Containment == nil {
@@ -217,5 +265,6 @@ func LoadFile(path string) (Result, error) {
 		ContainmentNonce: capsule.Signature,
 		ContainedUID:     capsule.Evidence.Containment.TargetUID,
 	}
+	result.anchored = len(pinnedSignerKey) == ed25519.PublicKeySize
 	return result, nil
 }

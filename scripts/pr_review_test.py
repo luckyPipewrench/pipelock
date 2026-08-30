@@ -810,6 +810,58 @@ class LocalDiffCompletenessTest(unittest.TestCase):
             with mock.patch.dict(pr_review.os.environ, environment, clear=False):
                 self.assertIsNone(pr_review.fetch_local_bound_diff(binding))
 
+    def test_divergent_shallow_history_uses_the_api_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            origin = root / "origin"
+            origin.mkdir()
+            init_git_fixture(origin)
+            (origin / "common.go").write_text("package common\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "common.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "root"], check=True)
+            common = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "checkout", "-qb", "base"], check=True)
+            (origin / "base.go").write_text("package base\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "base.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "base"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "checkout", "-qb", "feature", common], check=True)
+            (origin / "head.go").write_text("package head\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "head.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            checkout = root / "checkout"
+            subprocess.run(
+                ["git", "clone", "-q", "--depth=1", "--branch", "feature", f"file://{origin}", str(checkout)],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(checkout), "fetch", "-q", "--depth=1", "origin", "base"], check=True)
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(checkout), "cat-file", "-e", f"{base}^{{commit}}"], check=False
+                ).returncode,
+                0,
+            )
+            self.assertNotEqual(
+                subprocess.run(
+                    ["git", "-C", str(checkout), "merge-base", base, head], check=False
+                ).returncode,
+                0,
+            )
+            binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            environment = {
+                "REVIEWED_REPOSITORY_PATH": str(checkout),
+                "REVIEWED_MERGE_BASE_SHA": "",
+            }
+            with mock.patch.dict(pr_review.os.environ, environment, clear=False):
+                self.assertIsNone(pr_review.fetch_local_bound_diff(binding))
+
     def test_shallow_snapshot_path_uses_the_authoritative_merge_base(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

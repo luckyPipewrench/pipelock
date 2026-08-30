@@ -1053,18 +1053,21 @@ def fetch_local_bound_diff(binding: PullBinding) -> str | None:
     diff_range = f"{binding.base_sha}...{binding.head_sha}"
     if not merge_base:
         try:
-            base_commit = subprocess.run(
-                ["git", "-C", str(root), "cat-file", "-e", f"{binding.base_sha}^{{commit}}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            common_ancestor = subprocess.run(
+                ["git", "-C", str(root), "merge-base", binding.base_sha, binding.head_sha],
+                text=True,
+                capture_output=True,
+                check=False,
                 timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired):
-            log_phase("local-diff", status="base-unreadable", correlation=binding.correlation)
+            log_phase("local-diff", status="history-unreadable", correlation=binding.correlation)
             return None
-        if base_commit.returncode:
-            log_phase("local-diff", status="base-unavailable", correlation=binding.correlation)
+        ancestor = common_ancestor.stdout.strip()
+        if common_ancestor.returncode or not re.fullmatch(r"[0-9a-f]{40}", ancestor):
+            log_phase("local-diff", status="history-incomplete", correlation=binding.correlation)
             return None
+        diff_range = f"{ancestor}..{binding.head_sha}"
     else:
         if not re.fullmatch(r"[0-9a-f]{40}", merge_base):
             raise FetchError("immutable merge base was invalid")

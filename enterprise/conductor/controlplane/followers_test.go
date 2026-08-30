@@ -382,6 +382,10 @@ func TestHandlerRemoveFollowerRequiresAdminAndExactIdentity(t *testing.T) {
 		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
 	}
 	mustEnrollFollower(t, store, "tok-main-1", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, "audit-key-main-1")
+	// A follower in another organization, so the cross-org denial below can be
+	// checked by its effect rather than only by its status code.
+	otherIdentity := FollowerIdentity{OrgID: "org-other", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}
+	mustEnrollFollower(t, store, "tok-other-1", otherIdentity, "audit-key-other-1")
 	handler := newFollowersTestHandler(t, store)
 
 	body := `{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`
@@ -396,6 +400,16 @@ func TestHandlerRemoveFollowerRequiresAdminAndExactIdentity(t *testing.T) {
 	}
 	if w := deleteFollower(t, handler, followerAdminToken, `{"org_id":"org-other","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`); w.Code != http.StatusForbidden {
 		t.Fatalf("cross-org remove status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	// Refusing and deleting anyway would satisfy the status assertion above.
+	survivors, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{
+		OrgID: otherIdentity.OrgID, FleetID: otherIdentity.FleetID,
+	})
+	if err != nil {
+		t.Fatalf("list the other organization's followers after the denied remove: %v", err)
+	}
+	if len(survivors) != 1 || survivors[0].InstanceID != otherIdentity.InstanceID {
+		t.Fatalf("the denied cross-org remove changed the other organization's roster: %+v", survivors)
 	}
 }
 

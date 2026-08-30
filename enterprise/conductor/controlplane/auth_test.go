@@ -205,6 +205,36 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	if identity.OrgID != "org-main" || identity.FleetID != "prod" || !identity.Allows("org-main", "prod") || identity.Allows("org-other", "prod") {
 		t.Fatalf("admin identity = %+v, want org-main/prod-only scope", identity)
 	}
+	// Allows has two denial branches and the assertion above only exercises
+	// the organization one. A credential scoped to a single fleet must also be
+	// refused on a sibling fleet of the SAME organization, which is the case a
+	// multi-fleet tenant actually relies on.
+	if identity.Allows("org-main", "dev") {
+		t.Fatal("a prod-scoped admin was allowed on the dev fleet of its own organization")
+	}
+
+	// The other half of the rule: an organization-wide credential names no
+	// fleet and must reach every fleet in that organization. Without this a
+	// tightening of Allows could deny org-wide admins and only be noticed in
+	// production.
+	orgWide, err := ScopedBearerAdminAuthenticator([]ScopedBearerCredential{{
+		Token: "org-admin-token",
+		Role:  RoleAdmin,
+		OrgID: "org-main",
+	}})
+	if err != nil {
+		t.Fatalf("ScopedBearerAdminAuthenticator(org-wide) error = %v", err)
+	}
+	wide, err := orgWide(bearerRequest(t, EnrollmentTokensPath, "org-admin-token"))
+	if err != nil {
+		t.Fatalf("org-wide admin authenticate error = %v", err)
+	}
+	if !wide.Allows("org-main", "prod") || !wide.Allows("org-main", "dev") {
+		t.Fatalf("org-wide admin %+v did not reach every fleet in its organization", wide)
+	}
+	if wide.Allows("org-other", "prod") {
+		t.Fatal("org-wide admin reached another organization")
+	}
 }
 
 func TestScopedBearerFollowerListAuthorizerRejectsUnscopedReadCredentials(t *testing.T) {

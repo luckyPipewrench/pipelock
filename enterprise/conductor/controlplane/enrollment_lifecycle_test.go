@@ -180,6 +180,15 @@ func TestHandlerEnrollmentTokenAdminScopeRejectsCrossOrgCreateAndRevoke(t *testi
 	if createW.Code != http.StatusForbidden {
 		t.Fatalf("cross-org create status = %d body=%s, want 403", createW.Code, createW.Body.String())
 	}
+	// The status code alone would pass for a handler that refuses and creates
+	// the token anyway, which is the outcome that actually matters here.
+	if leaked, err := store.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{
+		TokenID: "cross-org-create", Limit: 1, Now: testNow,
+	}); err != nil {
+		t.Fatalf("list after the denied cross-org create: %v", err)
+	} else if len(leaked) != 0 {
+		t.Fatalf("the denied cross-org create still produced a token: %+v", leaked)
+	}
 
 	if _, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
 		TokenID:  "cross-org-revoke",

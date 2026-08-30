@@ -1051,8 +1051,18 @@ func (h *Handler) handleRevokeEnrollmentToken(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// Normalize once and use the same value for the scope lookup and the
+	// revoke. RevokeEnrollmentToken trims and validates its own input, so
+	// looking up the raw value here meant a padded id failed the lookup and
+	// returned not-found for a request the revoke would have accepted, and the
+	// two calls could disagree about which token the caller named.
+	tokenID := strings.TrimSpace(req.TokenID)
+	if err := conductor.ValidateIdentifier("token_id", tokenID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	matches, err := h.enrollments.ListEnrollmentTokens(r.Context(), EnrollmentTokenListQuery{
-		TokenID: req.TokenID,
+		TokenID: tokenID,
 		Limit:   1,
 		Now:     h.now(),
 	})
@@ -1065,7 +1075,7 @@ func (h *Handler) handleRevokeEnrollmentToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 	summary, err := h.enrollments.RevokeEnrollmentToken(r.Context(), RevokeEnrollmentTokenRequest{
-		TokenID: req.TokenID,
+		TokenID: tokenID,
 		Now:     h.now(),
 	})
 	if err != nil {

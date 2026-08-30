@@ -94,6 +94,7 @@ type RuleTypeSchema struct {
 	MergeTarget           string   `json:"merge_target"`
 	RequiredPatternFields []string `json:"required_pattern_fields"`
 	OptionalPatternFields []string `json:"optional_pattern_fields"`
+	RejectedPatternFields []string `json:"rejected_pattern_fields"`
 	IgnoredPatternFields  []string `json:"ignored_pattern_fields"`
 	ScanFieldValues       []string `json:"scan_field_values,omitempty"`
 	DefaultScanField      string   `json:"default_scan_field,omitempty"`
@@ -135,6 +136,8 @@ func buildRuleSchemaContract(version, sourceRevision string, definitions []ruleT
 		formats = append(formats, BundleFormatSchema{FormatVersion: formatVersion, RequiredFields: required})
 	}
 
+	patternFields := yamlFields(reflect.TypeOf(RulePattern{}))
+	requiredPatternFields := []string{"regex"}
 	types := make([]RuleTypeSchema, 0, len(definitions))
 	seenTypes := make(map[string]struct{}, len(definitions))
 	for _, definition := range definitions {
@@ -147,11 +150,16 @@ func buildRuleSchemaContract(version, sourceRevision string, definitions []ruleT
 		seenTypes[definition.ID] = struct{}{}
 		optional := append([]string(nil), definition.OptionalPatternFields...)
 		sort.Strings(optional)
+		rejected, err := rejectedFields(patternFields, requiredPatternFields, optional)
+		if err != nil {
+			return RuleSchemaContract{}, fmt.Errorf("rule schema contract: rule type %q: %w", definition.ID, err)
+		}
 		types = append(types, RuleTypeSchema{
 			ID:                    definition.ID,
 			MergeTarget:           definition.MergeTarget,
-			RequiredPatternFields: []string{"regex"},
+			RequiredPatternFields: append([]string(nil), requiredPatternFields...),
 			OptionalPatternFields: optional,
+			RejectedPatternFields: rejected,
 			IgnoredPatternFields:  []string{"exempt_domains"},
 			ScanFieldValues:       append([]string(nil), definition.ScanFieldValues...),
 			DefaultScanField:      definition.DefaultScanField,
@@ -207,6 +215,34 @@ func yamlFields(t reflect.Type) []string {
 	}
 	sort.Strings(fields)
 	return fields
+}
+
+func rejectedFields(all, required, optional []string) ([]string, error) {
+	known := make(map[string]struct{}, len(all))
+	for _, field := range all {
+		known[field] = struct{}{}
+	}
+
+	accepted := make(map[string]struct{}, len(required)+len(optional))
+	for _, fields := range [][]string{required, optional} {
+		for _, field := range fields {
+			if _, ok := known[field]; !ok {
+				return nil, fmt.Errorf("unknown pattern field %q", field)
+			}
+			if _, duplicate := accepted[field]; duplicate {
+				return nil, fmt.Errorf("pattern field %q has multiple classifications", field)
+			}
+			accepted[field] = struct{}{}
+		}
+	}
+
+	rejected := make([]string, 0, len(all)-len(accepted))
+	for _, field := range all {
+		if _, ok := accepted[field]; !ok {
+			rejected = append(rejected, field)
+		}
+	}
+	return rejected, nil
 }
 
 func sortedTrueKeys(values map[string]bool) []string {

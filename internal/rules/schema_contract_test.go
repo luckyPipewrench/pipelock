@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -98,12 +99,39 @@ func TestSchemaRequiredFieldsMatchValidation(t *testing.T) {
 	}
 }
 
+func TestSchemaPatternFieldsFormExactTypeContract(t *testing.T) {
+	contract, err := BuildRuleSchemaContract("3.5.0", "abcdef0123456789")
+	if err != nil {
+		t.Fatalf("BuildRuleSchemaContract: %v", err)
+	}
+
+	expectedRejected := map[string][]string{
+		RuleTypeDLP:        {"scan_field"},
+		RuleTypeInjection:  {"scan_field", "validator"},
+		RuleTypeToolPoison: {"validator"},
+	}
+	patternFields := yamlFields(reflect.TypeOf(RulePattern{}))
+	for _, schema := range contract.Rule.Types {
+		if !reflect.DeepEqual(schema.RejectedPatternFields, expectedRejected[schema.ID]) {
+			t.Fatalf("type %q rejected fields = %v, want %v", schema.ID, schema.RejectedPatternFields, expectedRejected[schema.ID])
+		}
+
+		classified := append([]string(nil), schema.RequiredPatternFields...)
+		classified = append(classified, schema.OptionalPatternFields...)
+		classified = append(classified, schema.RejectedPatternFields...)
+		sort.Strings(classified)
+		if !reflect.DeepEqual(classified, patternFields) {
+			t.Fatalf("type %q pattern field classifications = %v, want %v", schema.ID, classified, patternFields)
+		}
+	}
+}
+
 func TestBuildRuleSchemaContractSyntheticTypeCannotDisappear(t *testing.T) {
 	definitions := append([]ruleTypeDefinition(nil), ruleTypeDefinitions...)
 	definitions = append(definitions, ruleTypeDefinition{
 		ID:                    "synthetic-fourth",
 		MergeTarget:           "synthetic.target",
-		OptionalPatternFields: []string{"synthetic_field"},
+		OptionalPatternFields: []string{"validator"},
 		Load: func(_ *bundleExecCtx, _ *Bundle, _ *Rule, _, _ string, _ *LoadedBundle) error {
 			return nil
 		},
@@ -114,7 +142,7 @@ func TestBuildRuleSchemaContractSyntheticTypeCannotDisappear(t *testing.T) {
 		t.Fatalf("buildRuleSchemaContract: %v", err)
 	}
 	if !slices.ContainsFunc(contract.Rule.Types, func(schema RuleTypeSchema) bool {
-		return schema.ID == "synthetic-fourth" && slices.Contains(schema.OptionalPatternFields, "synthetic_field")
+		return schema.ID == "synthetic-fourth" && slices.Contains(schema.OptionalPatternFields, "validator")
 	}) {
 		t.Fatal("synthetic reader type disappeared from the exported contract")
 	}
@@ -152,6 +180,8 @@ func TestBuildRuleSchemaContractRejectsAmbiguousTypeRegistry(t *testing.T) {
 		{name: "missing ID", definitions: []ruleTypeDefinition{{MergeTarget: "new.target", Load: loadDLPRule}}},
 		{name: "missing merge target", definitions: []ruleTypeDefinition{{ID: "new-type", Load: loadDLPRule}}},
 		{name: "missing loader", definitions: []ruleTypeDefinition{{ID: "new-type", MergeTarget: "new.target"}}},
+		{name: "unknown pattern field", definitions: []ruleTypeDefinition{{ID: "new-type", MergeTarget: "new.target", OptionalPatternFields: []string{"unknown"}, Load: loadDLPRule}}},
+		{name: "duplicate pattern field classification", definitions: []ruleTypeDefinition{{ID: "new-type", MergeTarget: "new.target", OptionalPatternFields: []string{"regex"}, Load: loadDLPRule}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := buildRuleSchemaContract("3.5.0", "abcdef", test.definitions); err == nil {

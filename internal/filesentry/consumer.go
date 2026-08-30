@@ -27,8 +27,8 @@ type FindingHook func(patternName, severity string, isAgent bool)
 // is attributed to a process in the agent tree (Finding.IsAgent). Non-agent
 // writes (editor saves, build output, other system processes touching the
 // watched directory) never trigger the block path. This matches the rule
-// that file_sentry is a fail-closed boundary on the agent subprocess, not
-// a general filesystem guard.
+// that file_sentry reacts fail-closed to a detected agent finding, not that
+// it acts as a general filesystem enforcement boundary.
 type ConsumerOpts struct {
 	// Watcher is the watcher whose Findings() channel will be drained.
 	// Required.

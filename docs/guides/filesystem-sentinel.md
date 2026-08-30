@@ -13,7 +13,7 @@ This catches a class of exfiltration that the network proxy cannot see: an agent
 
 File sentry applies to **subprocess MCP mode only**. HTTP upstream, WebSocket, and listener modes have no local child process and are out of scope.
 
-File sentry detects writes; it does not intercept them. The write reaches disk before the scan completes. With `action: warn` (default), findings are alerted and the agent keeps running. With `action: block`, the proxy context is cancelled on the first agent-attributed finding, terminating the MCP child so the agent cannot continue acting on the leak. For write-time interception, layer Landlock or the process sandbox (`--sandbox`) on top.
+File sentry detects writes; it doesn't intercept them. With `action: warn` (default), findings are alerted and the agent keeps running. With `action: block`, file sentry fails closed only after it emits a detected, agent-attributed DLP finding. The consumer logs the finding, records the metric, and then cancels the proxy context, terminating the MCP child so the agent cannot continue acting on that detected leak. A skipped, unreadable, ignored, or deleted file doesn't create a finding. If the path is replaced before the scan opens it, the replacement content is scanned and can become a finding. Without a finding, block leaves the child running. Writes before Arm work the same way. A watcher backend failure from `Start()` still cancels the runtime; that is a dead watcher, not a skipped file. For write-time interception, use Landlock or the process sandbox (`--sandbox`).
 
 ## Configuration
 
@@ -39,11 +39,13 @@ file_sentry:
 ### Action
 
 - `warn` (default): every finding is logged to stderr and recorded as a Prometheus metric. The MCP child keeps running.
-- `block`: same logging + metrics, AND on the first finding attributed to a process in the agent tree (`IsAgent=true`), the proxy context is cancelled, which terminates the MCP child. Non-agent writes (editor saves, build output, other system processes touching the watched directory) never trigger the block path. The cancel fires exactly once per session.
+- `block`: same logging + metrics, AND on the first detected finding attributed to a process in the agent tree (`IsAgent=true`), the proxy context is cancelled, which terminates the MCP child. Non-agent writes (editor saves, build output, other system processes touching the watched directory) never trigger the block path. Skipped, unreadable, ignored, deleted, and pre-arm writes don't create a finding, so they don't cancel the child. Replacement content present when the scan opens the path can still become a finding. The cancel fires exactly once per session.
 
 ### Watch Paths
 
 Directories are watched recursively. New subdirectories created after startup are automatically added to the watch. Paths are resolved to absolute paths at startup.
+
+When file sentry observes a runtime directory creation, it recursively adds watches and scans regular, non-ignored files already in that new subtree. `Arm()` only installs watches. It does not scan content that predates the child.
 
 Each entry can be either a bare string or a mapping:
 
@@ -74,10 +76,11 @@ Files larger than the cap are skipped to avoid unbounded memory use, and the ski
 
 ## How It Works
 
-1. On startup, pipelock walks each `watch_paths` directory and adds recursive inotify (Linux) or fsnotify watches
-2. When a file write event fires, pipelock debounces for 50ms (waits for the write to complete)
-3. After the quiet window, pipelock reads the file and runs DLP pattern matching
-4. If a match is found, a finding is reported as:
+1. On startup, pipelock walks each `watch_paths` directory and adds recursive inotify (Linux) or fsnotify watches. Arm does not scan files that already exist.
+2. When a new directory is created at runtime, pipelock adds nested watches and scans regular, non-ignored files already in that subtree.
+3. When a file write event fires, pipelock debounces for 50ms (waits for the write to complete)
+4. After the quiet window, pipelock reads the file and runs DLP pattern matching
+5. If a match is found, a finding is reported as:
    - A stderr log line: `pipelock: [file_sentry] DLP match in /path: Pattern Name (severity=critical)`
    - A Prometheus counter increment: `pipelock_file_sentry_findings_total{pattern, severity, agent}`
 

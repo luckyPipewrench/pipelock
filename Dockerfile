@@ -35,7 +35,8 @@ ARG LICENSE_PUBLIC_KEY=""
 ARG RULES_KEYRING_HEX=""
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags enterprise \
+RUN apk add --no-cache tini-static=0.19.0-r3 && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags enterprise \
     -ldflags "-s -w \
       -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${VERSION} \
       -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate=${BUILD_DATE} \
@@ -50,6 +51,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags enterpris
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /sbin/tini-static /sbin/tini-static
 COPY --from=builder /pipelock /pipelock
 
 EXPOSE 8888
@@ -57,5 +59,5 @@ EXPOSE 8888
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD ["/pipelock", "healthcheck"]
 
-ENTRYPOINT ["/pipelock"]
+ENTRYPOINT ["/sbin/tini-static", "--", "/pipelock"]
 CMD ["run", "--listen", "0.0.0.0:8888"]

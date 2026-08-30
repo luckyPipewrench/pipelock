@@ -25,9 +25,8 @@ import (
 func ptrBool(b bool) *bool { return &b }
 
 const (
-	filesentryPositiveBackstop      = 30 * time.Second
-	filesentryNegativeObservation   = time.Second
-	filesentrySubdirectoryRetryTick = 200 * time.Millisecond
+	filesentryPositiveBackstop    = 30 * time.Second
+	filesentryNegativeObservation = time.Second
 )
 
 func TestReadyBackendErrorPrefersQueuedFailure(t *testing.T) {
@@ -236,14 +235,18 @@ func TestWatcher_IgnoredPatterns(t *testing.T) {
 	}
 }
 
-func TestWatcher_SubdirCreation(t *testing.T) {
+func TestWatcher_ArmDoesNotScanExistingFiles(t *testing.T) {
 	dir := t.TempDir()
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(filepath.Join(dir, "pre-arm.txt"), []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
 	cfg := &config.FileSentry{
 		Enabled:     true,
 		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
-
 	defaults := config.Defaults()
 	defaults.Internal = nil
 	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -258,39 +261,245 @@ func TestWatcher_SubdirCreation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	armAndStart(t, w, ctx)
 
-	// Create a new subdirectory, then write a secret inside it.
-	// Poll: create dir, write secret, wait for finding. If the watch
-	// isn't installed yet the finding won't arrive, so retry.
+	select {
+	case finding := <-w.Findings():
+		t.Fatalf("Arm scanned pre-child content: %+v", finding)
+	case <-time.After(filesentryNegativeObservation):
+	}
+}
+
+func TestWatcher_SubdirCreationReconcilesExistingFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:        true,
+		WatchPaths:     []config.WatchPath{{Path: dir}},
+		ScanContent:    ptrBool(true),
+		IgnorePatterns: []string{"ignored-secret.txt"},
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	// Arm installs only directory watches; it does not scan pre-existing
+	// content. Keep Start paused while the child directory and its first files
+	// appear, so the Create event must reconcile the missed first write.
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm: %v", err)
+	}
 	subDir := filepath.Join(dir, "newdir")
 	if err := os.MkdirAll(subDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-	deadline := time.After(filesentryPositiveBackstop)
-	attempt := 0
-	for {
-		secretFile := filepath.Join(subDir, fmt.Sprintf("secret-%d.txt", attempt))
-		if err := os.WriteFile(secretFile, []byte(secret), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(subDir, "ignored-secret.txt"), []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile ignored: %v", err)
+	}
+	secretPath := filepath.Join(subDir, "first-secret.txt")
+	if err := os.WriteFile(secretPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- w.Start(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = w.Close()
+		if err := <-startErr; err != nil {
+			t.Errorf("Start: %v", err)
+		}
+	})
+
+	select {
+	case finding := <-w.Findings():
+		if finding.PatternName == "" {
+			t.Error("expected DLP pattern match in new subdirectory")
+		}
+		if finding.Path != secretPath {
+			t.Errorf("new-directory reconcile scanned %q, want non-ignored %q", finding.Path, secretPath)
+		}
+	case <-time.After(filesentryPositiveBackstop):
+		t.Fatal("timeout waiting for Create-event reconciliation Finding")
+	}
+}
+
+func TestWatcher_ReconcileNewDirectoryCoverage(t *testing.T) {
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+	newArmedWatcher := func(t *testing.T, dir string, ignore []string, onErr func(error)) *fsWatcher {
+		t.Helper()
+		cfg := &config.FileSentry{
+			Enabled:        true,
+			WatchPaths:     []config.WatchPath{{Path: dir}},
+			ScanContent:    ptrBool(true),
+			IgnorePatterns: ignore,
+		}
+		defaults := config.Defaults()
+		defaults.Internal = nil
+		defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+		sc := scanner.MustNew(defaults)
+		t.Cleanup(sc.Close)
+		w, err := NewWatcher(cfg, sc, nil, onErr)
+		if err != nil {
+			t.Fatalf("NewWatcher: %v", err)
+		}
+		t.Cleanup(func() { _ = w.Close() })
+		if err := w.Arm(); err != nil {
+			t.Fatalf("Arm: %v", err)
+		}
+		fw, ok := w.(*fsWatcher)
+		if !ok {
+			t.Fatalf("NewWatcher returned %T, want *fsWatcher", w)
+		}
+		return fw
+	}
+
+	t.Run("missing root", func(t *testing.T) {
+		dir := t.TempDir()
+		fw := newArmedWatcher(t, dir, nil, nil)
+		err := fw.reconcileNewDirectory(context.Background(), filepath.Join(dir, "missing"))
+		if err == nil {
+			t.Fatal("expected reconcile error for missing root")
+		}
+	})
+
+	t.Run("unreadable child", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("chmod 000 does not restrict root")
+		}
+		dir := t.TempDir()
+		fw := newArmedWatcher(t, dir, nil, nil)
+		child := filepath.Join(dir, "denied")
+		if err := os.MkdirAll(child, 0o750); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.Chmod(child, 0o000); err != nil {
+			t.Skipf("chmod not supported: %v", err)
+		}
+		err := fw.reconcileNewDirectory(context.Background(), dir)
+		_ = os.Chmod(child, 0o600)
+		if err == nil {
+			t.Fatal("expected reconcile error for unreadable child")
+		}
+	})
+
+	t.Run("handleEvent logs reconcile failure", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("chmod 000 does not restrict root")
+		}
+		dir := t.TempDir()
+		var errMu sync.Mutex
+		var logged []error
+		fw := newArmedWatcher(t, dir, nil, func(err error) {
+			errMu.Lock()
+			logged = append(logged, err)
+			errMu.Unlock()
+		})
+		newDir := filepath.Join(dir, "newdir")
+		if err := os.MkdirAll(newDir, 0o750); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.Chmod(newDir, 0o000); err != nil {
+			t.Skipf("chmod not supported: %v", err)
+		}
+		fw.handleEvent(context.Background(), fsnotify.Event{Name: newDir, Op: fsnotify.Create})
+		if err := fw.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		_ = os.Chmod(newDir, 0o600)
+		errMu.Lock()
+		defer errMu.Unlock()
+		for _, err := range logged {
+			if strings.Contains(err.Error(), "failed to reconcile new directory") {
+				return
+			}
+		}
+		t.Fatalf("logged errors = %v, want reconcile failure", logged)
+	})
+
+	t.Run("skips symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		outside := t.TempDir()
+		target := filepath.Join(outside, "secret.txt")
+		if err := os.WriteFile(target, []byte(secret), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
-		attempt++
-
-		select {
-		case f := <-w.Findings():
-			if f.PatternName == "" {
-				t.Error("expected DLP pattern match in new subdirectory")
-			}
-			return // success
-		case <-time.After(filesentrySubdirectoryRetryTick):
-			// Watch may not be installed yet, retry.
-		case <-deadline:
-			t.Fatal("timeout — new subdirectory write was not detected")
+		link := filepath.Join(dir, "alias.txt")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("Symlink: %v", err)
 		}
-	}
+		fw := newArmedWatcher(t, dir, nil, nil)
+		if err := fw.reconcileNewDirectory(context.Background(), dir); err != nil {
+			t.Fatalf("reconcileNewDirectory: %v", err)
+		}
+		select {
+		case finding := <-fw.Findings():
+			t.Fatalf("followed symlink and scanned %q", finding.Path)
+		case <-time.After(filesentryNegativeObservation):
+		}
+	})
+
+	t.Run("skips ignored directory", func(t *testing.T) {
+		dir := t.TempDir()
+		hidden := filepath.Join(dir, "hidden")
+		if err := os.MkdirAll(hidden, 0o750); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(hidden, "secret.txt"), []byte(secret), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		fw := newArmedWatcher(t, dir, []string{"hidden"}, nil)
+		if err := fw.reconcileNewDirectory(context.Background(), dir); err != nil {
+			t.Fatalf("reconcileNewDirectory: %v", err)
+		}
+		select {
+		case finding := <-fw.Findings():
+			t.Fatalf("scanned ignored directory file %q", finding.Path)
+		case <-time.After(filesentryNegativeObservation):
+		}
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte(secret), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		fw := newArmedWatcher(t, dir, nil, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := fw.reconcileNewDirectory(ctx, dir)
+		if err == nil {
+			t.Fatal("expected reconcile error for cancelled context")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("reconcile error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("closed watcher", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte(secret), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		fw := newArmedWatcher(t, dir, nil, nil)
+		if err := fw.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := fw.reconcileNewDirectory(context.Background(), dir); err != nil {
+			t.Fatalf("reconcileNewDirectory after Close: %v", err)
+		}
+	})
 }
 
 func TestWatcher_ScanContentDisabled(t *testing.T) {

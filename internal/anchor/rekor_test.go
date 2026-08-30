@@ -1098,6 +1098,52 @@ func TestRekorLogSubmitRejectsRequestFailures(t *testing.T) {
 	}
 }
 
+func TestRekorLogSubmitDoesNotFollowRedirect(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		client *http.Client
+	}{
+		{name: "default client"},
+		{name: "configured client", client: &http.Client{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reached := make(chan struct{}, 1)
+			private := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				select {
+				case reached <- struct{}{}:
+				default:
+				}
+			}))
+			defer private.Close()
+
+			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, private.URL, http.StatusFound)
+			}))
+			defer front.Close()
+
+			_, submitErr := (RekorLog{URL: front.URL, HTTPClient: tt.client, Signer: priv}).Submit(checkpoint)
+			if submitErr == nil {
+				t.Fatal("Submit followed or accepted a redirect")
+			}
+			select {
+			case <-reached:
+				t.Fatal("rekor client followed a redirect to an unvalidated destination")
+			default:
+			}
+		})
+	}
+}
+
 func TestDecodeRekorEntryAcceptsRealisticUnknownFields(t *testing.T) {
 	body := base64.StdEncoding.EncodeToString([]byte(`{"kind":"hashedrekord"}`))
 	data := []byte(`{

@@ -48,6 +48,46 @@ func TestWebhookSink_BelowMinSeverity(t *testing.T) {
 	}
 }
 
+func TestWebhookSink_DoesNotFollowRedirect(t *testing.T) {
+	reached := make(chan struct{}, 1)
+	private := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
+	}))
+	defer private.Close()
+
+	frontHit := make(chan struct{})
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(frontHit)
+		http.Redirect(w, r, private.URL, http.StatusFound)
+	}))
+	defer front.Close()
+
+	sink := NewWebhookSink(front.URL)
+	defer func() { _ = sink.Close() }()
+
+	if err := sink.Emit(context.Background(), Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Emit returned error: %v", err)
+	}
+
+	select {
+	case <-frontHit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for configured webhook URL")
+	}
+	select {
+	case <-reached:
+		t.Fatal("webhook client followed a redirect to an unvalidated destination")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestWebhookSink_SuccessfulPost(t *testing.T) {
 	var received webhookPayload
 	done := make(chan struct{})

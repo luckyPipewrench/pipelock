@@ -92,7 +92,7 @@ while IFS= read -r match; do
 	if [[ ! "$version" =~ ^[0-9a-f]{40}$ ]]; then
 		fail "${file}:${line} action is not pinned to a full commit SHA (${ref})"
 	fi
-done < <(rg -n '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^[:space:]]+' .github/workflows/*.y*ml || true)
+done < <(rg -n --glob '*.y*ml' '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^[:space:]]+' .github/workflows examples || true)
 
 note "release audit: checking pull_request workflows stay secret-light"
 

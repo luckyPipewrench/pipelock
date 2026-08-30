@@ -6,7 +6,7 @@ Manual-trigger AI security review for pull requests. Comment `/review` on any PR
 
 | Command | Model | Use When |
 |---------|-------|----------|
-| `/review` | Efficient (default: gpt-5.6-luna, low reasoning) | Quick check, most PRs |
+| `/review` | Efficient discovery (default: gpt-5.6-luna, low reasoning) with a balanced candidate judge (default: gpt-5.6-terra, high reasoning) | Quick check, most PRs |
 | `/review deep` | Balanced (default: gpt-5.6-terra, xhigh reasoning) | Adversarial static-diff review (findings-first) |
 
 ## What It Reviews
@@ -28,6 +28,14 @@ vacuity, self-produced artifacts, and availability. The core security and
 correctness rubric always runs, including for test-heavy or documentation-heavy
 diffs.
 
+The result shows the review profile, model, and reasoning level next to the
+verdict. A later default review can't look like another deep pass unless a
+reader ignores that visible profile.
+
+The stronger default-mode judge runs only when discovery produces candidates.
+Provider token usage is recorded by phase in the workflow log so the extra
+cost remains visible without publishing billing details in the review comment.
+
 The runner binds the review to the PR's captured base and head SHAs, reviewer
 source SHA, and rubric version. It fetches the comparison by those exact commits
 and marks the result `superseded` if the head changes before finalization. It
@@ -35,13 +43,19 @@ also checks out the captured head for the judge, then searches that checkout for
 the consumers and tests related to each candidate. A same-file hunk isn't enough
 to verify a cross-file claim.
 
+The reusable workflow builds the comparison from a full local checkout. This
+avoids the GitHub compare API's 300-file ceiling. If it can't produce the exact
+diff, or the diff exceeds the runner's bounded size, the review fails instead
+of inspecting a subset.
+
 The runner uses deterministic token budgeting instead of character slicing: Go
 source and additions rank above tests, configuration, and documentation. The
 final comment contains an omission manifest and never reports `clean` when a
 unit was omitted, unparseable, or left without a valid structured result. A
-candidate the judge can't settle stays unpublished and makes the review partial.
-That unpublished candidate is not an actionable finding. A finding the judge
-does keep can still show `(needs verification)` when the reviewer marked it.
+candidate the judge can't settle appears under a separate manual-verification
+heading and makes the review partial. It doesn't count as an actionable finding.
+A finding the judge does keep can still show `(needs verification)` when the
+reviewer marked it.
 Default-mode deletion compression is disclosed separately; deep mode reads
 deletions in full.
 

@@ -774,13 +774,22 @@ type ResponseScanning struct {
 	AskTimeoutSeconds              int                           `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
 	IncludeDefaults                *bool                         `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns                       []ResponseScanPattern         `yaml:"patterns"`
-	ExemptDomains                  []string                      `yaml:"exempt_domains"`                      // responses from these hosts skip injection scanning (DLP still applies)
-	SizeExemptDomains              []string                      `yaml:"size_exempt_domains"`                 // trusted hosts whose oversized responses get a larger bounded whole-buffer scan
-	SizeExemptScanMaxBytes         int                           `yaml:"size_exempt_scan_max_bytes"`          // per-response in-memory ceiling for over-cap size-exempt responses
-	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"` // per-proxy-instance in-flight memory budget for size-exempt response scans
-	UnscannablePassthrough         []UnscannablePassthroughEntry `yaml:"unscannable_passthrough"`             // explicit audited stream-unscanned allowlist for opaque responses
-	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                       // generic text/event-stream inline scanning (LLM SSE)
-	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                         // per-server MCP response trust overrides
+	ExemptDomains                  []string                      `yaml:"exempt_domains"`                                                   // responses from these hosts skip injection scanning (DLP still applies)
+	SizeExemptDomains              []string                      `yaml:"size_exempt_domains"`                                              // trusted hosts whose oversized responses get a larger bounded whole-buffer scan
+	SizeExemptScanMaxBytes         int                           `yaml:"size_exempt_scan_max_bytes"`                                       // per-response in-memory ceiling for over-cap size-exempt responses
+	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"`                              // per-proxy-instance in-flight memory budget for size-exempt response scans
+	UnscannablePassthrough         []UnscannablePassthroughEntry `yaml:"unscannable_passthrough"`                                          // explicit audited stream-unscanned allowlist for opaque responses
+	AuthenticatedArtifacts         []AuthenticatedArtifactEntry  `yaml:"authenticated_artifacts" json:"authenticated_artifacts,omitempty"` // exact signed artifacts the proxy may release after its own verification
+	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                                                    // generic text/event-stream inline scanning (LLM SSE)
+	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                                                      // per-server MCP response trust overrides
+}
+
+// AuthenticatedArtifactEntry identifies one official signed rule artifact.
+// It is deliberately an exact identity rather than a host or path prefix.
+type AuthenticatedArtifactEntry struct {
+	Host       string `yaml:"host"`
+	Path       string `yaml:"path"`
+	BundleName string `yaml:"bundle_name"`
 }
 
 type UnscannablePassthroughEntry struct {

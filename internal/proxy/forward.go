@@ -2092,6 +2092,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
+	// An authenticated artifact is not a destination exemption. The proxy
+	// buffers and verifies this exact response before allowing only injection
+	// matching to be skipped; all other response controls remain below.
+	fwdAuthenticatedArtifact := false
+	if artifact, artifactErr := verifyAuthenticatedArtifact(r.Context(), outReq, resp, p.client.Transport, cfg.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
+		p.logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
+		p.metrics.RecordBlocked(r.URL.Hostname(), "authenticated_artifact", time.Since(start), agentLabel)
+		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}))
+		writeBlockedError(w, blockInfoFor(blockreason.PromptInjection, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
+		outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), "authenticated_artifact"
+		return
+	} else if artifact != nil {
+		fwdAuthenticatedArtifact = true
+		p.logger.LogAnomaly(actx, "authenticated_artifact", "official signed artifact verified before response release", 0)
+	}
 
 	responsePromptHit := false
 	defer func() {
@@ -2650,7 +2665,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// Response injection scanning: only runs when the scanner feature
 		// is enabled. Media policy above always runs when MediaPolicy
 		// is enabled, even if response scanning is off.
-		if sc.ResponseScanningEnabled() {
+		if sc.ResponseScanningEnabled() && !fwdAuthenticatedArtifact {
 			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			if !scanResult.Clean {

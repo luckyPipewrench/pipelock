@@ -1699,6 +1699,20 @@ func newInterceptHandler(
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
+		// The authenticated-artifact exception is verified at the proxy before
+		// bytes reach the client; it is not a route-level response exemption.
+		interceptAuthenticatedArtifact := false
+		if artifact, artifactErr := verifyAuthenticatedArtifact(r.Context(), r, resp, upstream, ic.Config.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
+			ic.Logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
+			ic.Metrics.RecordTLSResponseBlocked("authenticated_artifact")
+			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}))
+			writeBlockedError(w, blockInfoFor(blockreason.PromptInjection, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "authenticated_artifact")
+			return
+		} else if artifact != nil {
+			interceptAuthenticatedArtifact = true
+			ic.Logger.LogAnomaly(actx, "authenticated_artifact", "official signed artifact verified before response release", 0)
+		}
 
 		// Fail-closed on compressed responses: DLP regex can't match
 		// compressed content. Block rather than forward unscanned data.
@@ -2204,7 +2218,7 @@ func newInterceptHandler(
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 		}
-		if ic.Scanner.ResponseScanningEnabled() {
+		if ic.Scanner.ResponseScanningEnabled() && !interceptAuthenticatedArtifact {
 			scanResult := ic.Scanner.ScanResponseBodyWithSuppress(r.Context(), respBody, r.URL.String(), ic.Config.Suppress)
 			recordSuppressedResponseScanExempts(ic.Metrics, scanResult.SuppressedMatches, TransportConnect)
 

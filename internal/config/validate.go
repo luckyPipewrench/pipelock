@@ -1225,6 +1225,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 			return fmt.Errorf("response_scanning.unscannable_passthrough[%d].host %q must match response_scanning.size_exempt_domains", i, entry.Host)
 		}
 	}
+	if err := validateAuthenticatedArtifacts(c.ResponseScanning.AuthenticatedArtifacts); err != nil {
+		return err
+	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
 		*warnings = append(*warnings, Warning{
 			Field:   "response_scanning.exempt_domains",
@@ -1269,6 +1272,30 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		if sse.MaxEventBytes < 0 {
 			return fmt.Errorf("response_scanning.sse_streaming.max_event_bytes must be >= 0 (0 means use default), got %d", sse.MaxEventBytes)
 		}
+	}
+	return nil
+}
+
+func validateAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) error {
+	seen := make(map[string]struct{}, len(entries))
+	for i := range entries {
+		entry := &entries[i]
+		field := fmt.Sprintf("response_scanning.authenticated_artifacts[%d]", i)
+		entry.Host = strings.ToLower(strings.TrimSpace(entry.Host))
+		if entry.Host == "" || strings.ContainsAny(entry.Host, ":/*@") || net.ParseIP(entry.Host) != nil {
+			return fmt.Errorf("%s.host must be one exact DNS host without port or wildcard", field)
+		}
+		if entry.Path == "" || entry.Path == "/" || !strings.HasPrefix(entry.Path, "/") || path.Clean(entry.Path) != entry.Path || strings.Contains(entry.Path, "?") || strings.Contains(entry.Path, "#") {
+			return fmt.Errorf("%s.path must be one canonical non-root path", field)
+		}
+		if entry.BundleName == "" || strings.TrimSpace(entry.BundleName) != entry.BundleName {
+			return fmt.Errorf("%s.bundle_name is required", field)
+		}
+		key := entry.Host + "\x00" + entry.Path
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("%s duplicates an earlier authenticated artifact", field)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }

@@ -1285,7 +1285,7 @@ func validateAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) error 
 		if entry.Host == "" || strings.ContainsAny(entry.Host, ":/*@") || net.ParseIP(entry.Host) != nil {
 			return fmt.Errorf("%s.host must be one exact DNS host without port or wildcard", field)
 		}
-		if entry.Path == "" || entry.Path == "/" || !strings.HasPrefix(entry.Path, "/") || path.Clean(entry.Path) != entry.Path || strings.Contains(entry.Path, "?") || strings.Contains(entry.Path, "#") {
+		if entry.Path == "" || entry.Path == "/" || !strings.HasPrefix(entry.Path, "/") || path.Clean(entry.Path) != entry.Path || strings.ContainsAny(entry.Path, "%?#;") || strings.ContainsAny(entry.Path, "\r\n\t") {
 			return fmt.Errorf("%s.path must be one canonical non-root path", field)
 		}
 		if entry.BundleName == "" || strings.TrimSpace(entry.BundleName) != entry.BundleName {

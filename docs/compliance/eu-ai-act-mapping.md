@@ -161,7 +161,7 @@ These require other tools or organizational processes:
 | EU database registration | Art. 71 | Administrative requirement |
 | Incident reporting timelines | Art. 73 | Audit logs provide incident data; reporting process is organizational |
 | Bias and fairness evaluation | Art. 10(2) | Pipelock applies rules uniformly but doesn't evaluate model fairness |
-| Full process isolation for the agent runtime | Art. 15(4) | Pipelock ships best-effort sandbox primitives (Landlock, seccomp, network namespace isolation on Linux) but full process isolation for the agent itself depends on OS/container support and deployment policy. For a stricter agent-runtime sandbox see [srt](https://github.com/anthropic-experimental/sandbox-runtime) or [agentsh](https://github.com/canyonroad/agentsh). |
+| Full process isolation for the agent runtime | Art. 15(4) | Pipelock ships best-effort sandbox primitives (Landlock and network namespace isolation on Linux, plus seccomp on amd64) but full process isolation for the agent itself depends on OS/container support and deployment policy. For a stricter agent-runtime sandbox see [srt](https://github.com/anthropic-experimental/sandbox-runtime) or [agentsh](https://github.com/canyonroad/agentsh). |
 
 ---
 

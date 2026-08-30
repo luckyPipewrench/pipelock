@@ -62,7 +62,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **MCP tool scanning:** `tools/list` responses are scanned for poisoned descriptions containing hidden instructions. SHA256 baseline per session detects rug-pull definition changes.
 - **Input validation:** URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
 
-**Gap:** Pipelock controls the HTTP fetch tool, scans MCP traffic bidirectionally (requests, responses, and tool definitions), and with sandbox mode restricts filesystem and network access at the OS level (Landlock + network namespaces + seccomp). Shell command content is inspected via tool policy rules with obfuscation detection. Pipelock does not monitor in-process agent memory or context window manipulation.
+**Gap:** Pipelock controls the HTTP fetch tool, scans MCP traffic bidirectionally (requests, responses, and tool definitions), and with sandbox mode restricts filesystem and network access at the OS level (Landlock + network namespaces, plus seccomp on linux/amd64). Shell command content is inspected via tool policy rules with obfuscation detection. Pipelock does not monitor in-process agent memory or context window manipulation.
 
 ---
 
@@ -104,7 +104,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **Content extraction:** HTML is converted to clean text via go-readability, removing scripts, styles, and other executable content from fetched pages.
 - **DLP pattern matching:** detects API key formats in URLs and request bodies, which can indicate code execution results leaking secrets.
 
-**Gap:** With sandbox mode, pipelock restricts filesystem, network, and syscall access for the agent process (Landlock + network namespaces + seccomp). However, code running inside the allowed filesystem paths with allowed syscalls is not semantically analyzed — pipelock does not interpret what code does, only where it can reach.
+**Gap:** With sandbox mode, pipelock restricts filesystem and network access for the agent process (Landlock + network namespaces), and syscall access on linux/amd64 (seccomp). However, code running inside the allowed filesystem paths with allowed syscalls is not semantically analyzed — pipelock does not interpret what code does, only where it can reach.
 
 ---
 

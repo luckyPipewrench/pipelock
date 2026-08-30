@@ -168,9 +168,9 @@ Both Codex and Pipelock have sandboxing. They work at different layers:
 
 | Layer | Codex sandbox | Pipelock sandbox |
 |-------|--------------|-----------------|
-| Filesystem | bubblewrap/Seatbelt restricts paths | Landlock restricts paths + seccomp filters syscalls |
+| Filesystem | bubblewrap/Seatbelt restricts paths | Landlock restricts paths, and seccomp filters syscalls on linux/amd64 |
 | Network | Sandbox mode controls network access | Network namespace isolates + proxy inspects traffic |
-| Process | Restricted by sandbox policy | Seccomp + subreaper for descendant cleanup |
+| Process | Restricted by sandbox policy | Subreaper for descendant cleanup, plus seccomp on linux/amd64 |
 
 For maximum containment, use both:
 

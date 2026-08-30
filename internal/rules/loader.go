@@ -41,6 +41,7 @@ type LoadOptions struct {
 	AllowStale           bool                // accept expired bundles with warning
 	TierKeyMapping       map[string]string   // tier → expected signing key fingerprint
 	saveFreshnessState   func(string, *FreshnessState) error
+	definitions          []ruleTypeDefinition
 }
 
 // StandardBundleName is the reserved name for the official standard pack.
@@ -257,6 +258,7 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 			Result:         result,
 			FreshnessState: freshnessState,
 			Now:            now,
+			Definitions:    opts.definitions,
 		}
 		for _, d := range dirs {
 			bundleDir := filepath.Join(rulesDir, d.Name())
@@ -322,6 +324,38 @@ type bundleExecCtx struct {
 	Result         *LoadResult
 	FreshnessState *FreshnessState
 	Now            time.Time
+	Definitions    []ruleTypeDefinition
+}
+
+func cloneFreshnessState(state *FreshnessState) *FreshnessState {
+	cloned := &FreshnessState{
+		HighestSeen: make(map[string]uint64),
+		FormatFloor: make(map[string]int),
+	}
+	if state == nil {
+		return cloned
+	}
+	cloned.Context = state.Context
+	cloned.Digest = state.Digest
+	for key, version := range state.HighestSeen {
+		cloned.HighestSeen[key] = version
+	}
+	for name, format := range state.FormatFloor {
+		cloned.FormatFloor[name] = format
+	}
+	return cloned
+}
+
+func (ctx *bundleExecCtx) ruleTypeDefinitionFor(ruleType string) (ruleTypeDefinition, bool) {
+	if ctx.Definitions == nil {
+		return ruleTypeDefinitionFor(ruleType)
+	}
+	for _, definition := range ctx.Definitions {
+		if definition.ID == ruleType {
+			return definition, true
+		}
+	}
+	return ruleTypeDefinition{}, false
 }
 
 // loadOneBundle loads a single bundle directory and appends results or errors.
@@ -429,10 +463,21 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 			ctx.Result.Warnings = append(ctx.Result.Warnings, fr.Message)
 		}
 
-		// Record version for future rollback prevention.
-		RecordVersion(ctx.FreshnessState, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
 	}
-	RecordFormat(ctx.FreshnessState, bundle.Name, bundle.FormatVersion)
+
+	// Stage every rule and freshness mutation so a later loader failure cannot
+	// leak part of this bundle into the shared result or persisted state.
+	stagedCtx := &bundleExecCtx{
+		MinRank:        ctx.MinRank,
+		Result:         &LoadResult{},
+		FreshnessState: cloneFreshnessState(ctx.FreshnessState),
+		Now:            ctx.Now,
+		Definitions:    ctx.Definitions,
+	}
+	if bundle.FormatVersion >= 2 {
+		RecordVersion(stagedCtx.FreshnessState, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
+	}
+	RecordFormat(stagedCtx.FreshnessState, bundle.Name, bundle.FormatVersion)
 
 	// Filter and convert rules.
 	loaded := LoadedBundle{
@@ -479,12 +524,12 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		}
 
 		if len(r.Pattern.ExemptDomains) > 0 {
-			ctx.Result.Warnings = append(ctx.Result.Warnings, fmt.Sprintf(
+			stagedCtx.Result.Warnings = append(stagedCtx.Result.Warnings, fmt.Sprintf(
 				"bundle %q rule %q sets pattern.exempt_domains, which is ignored; exemptions belong in the local pipelock config, not in a deny-only bundle",
 				bundle.Name, r.ID))
 		}
 
-		definition, ok := ruleTypeDefinitionFor(r.Type)
+		definition, ok := stagedCtx.ruleTypeDefinitionFor(r.Type)
 		if !ok || definition.Load == nil {
 			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
 				Name:   dirName,
@@ -493,13 +538,18 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 			})
 			return
 		}
-		if err := definition.Load(ctx, bundle, r, patternName, nsID, &loaded); err != nil {
+		if err := definition.Load(stagedCtx, bundle, r, patternName, nsID, &loaded); err != nil {
 			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassIntegrity})
 			return
 		}
 	}
 
 	loaded.Rules = loaded.DLP + loaded.Injection + loaded.ToolPoison
+	ctx.Result.DLP = append(ctx.Result.DLP, stagedCtx.Result.DLP...)
+	ctx.Result.Injection = append(ctx.Result.Injection, stagedCtx.Result.Injection...)
+	ctx.Result.ToolPoison = append(ctx.Result.ToolPoison, stagedCtx.Result.ToolPoison...)
+	ctx.Result.Warnings = append(ctx.Result.Warnings, stagedCtx.Result.Warnings...)
+	*ctx.FreshnessState = *stagedCtx.FreshnessState
 	ctx.Result.Loaded = append(ctx.Result.Loaded, loaded)
 }
 

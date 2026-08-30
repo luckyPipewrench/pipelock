@@ -144,13 +144,20 @@ func TestBuildRuleSchemaContractRequiresProducerIdentity(t *testing.T) {
 func TestBuildRuleSchemaContractRejectsAmbiguousTypeRegistry(t *testing.T) {
 	duplicate := append([]ruleTypeDefinition(nil), ruleTypeDefinitions...)
 	duplicate = append(duplicate, ruleTypeDefinitions[0])
-	if _, err := buildRuleSchemaContract("3.5.0", "abcdef", duplicate); err == nil {
-		t.Fatal("duplicate rule type registry produced a contract")
-	}
-
-	missingLoader := []ruleTypeDefinition{{ID: "new-type", MergeTarget: "new.target"}}
-	if _, err := buildRuleSchemaContract("3.5.0", "abcdef", missingLoader); err == nil {
-		t.Fatal("rule type without a runtime loader produced a contract")
+	for _, test := range []struct {
+		name        string
+		definitions []ruleTypeDefinition
+	}{
+		{name: "duplicate ID", definitions: duplicate},
+		{name: "missing ID", definitions: []ruleTypeDefinition{{MergeTarget: "new.target", Load: loadDLPRule}}},
+		{name: "missing merge target", definitions: []ruleTypeDefinition{{ID: "new-type", Load: loadDLPRule}}},
+		{name: "missing loader", definitions: []ruleTypeDefinition{{ID: "new-type", MergeTarget: "new.target"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := buildRuleSchemaContract("3.5.0", "abcdef", test.definitions); err == nil {
+				t.Fatal("malformed rule type registry produced a contract")
+			}
+		})
 	}
 }
 

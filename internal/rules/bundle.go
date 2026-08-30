@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -167,12 +167,6 @@ var bundleNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 var ruleIDRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,94}[a-z0-9]$`)
 
 // Valid enum sets for quick membership checks.
-var validRuleTypes = map[string]bool{
-	RuleTypeDLP:        true,
-	RuleTypeInjection:  true,
-	RuleTypeToolPoison: true,
-}
-
 var validStatuses = map[string]bool{
 	StatusExperimental: true,
 	StatusStable:       true,
@@ -190,11 +184,6 @@ var validConfidences = map[string]bool{
 	confidenceHigh:   true,
 	confidenceMedium: true,
 	confidenceLow:    true,
-}
-
-var validScanFields = map[string]bool{
-	scanFieldDescription: true,
-	scanFieldName:        true,
 }
 
 // ParseBundle unmarshals YAML data into a Bundle and validates it.
@@ -319,7 +308,8 @@ func validateRule(r *Rule, seen map[string]bool) error {
 	}
 	seen[r.ID] = true
 
-	if !validRuleTypes[r.Type] {
+	definition, ok := ruleTypeDefinitionFor(r.Type)
+	if !ok {
 		return fmt.Errorf("invalid type %q for rule %q", r.Type, r.ID)
 	}
 
@@ -343,7 +333,7 @@ func validateRule(r *Rule, seen map[string]bool) error {
 		return fmt.Errorf("invalid confidence %q for rule %q", r.Confidence, r.ID)
 	}
 
-	if err := validatePattern(&r.Pattern, r.Type, r.ID); err != nil {
+	if err := validatePattern(&r.Pattern, definition, r.ID); err != nil {
 		return err
 	}
 
@@ -351,7 +341,7 @@ func validateRule(r *Rule, seen map[string]bool) error {
 }
 
 // validatePattern validates a rule's pattern fields based on rule type.
-func validatePattern(p *RulePattern, ruleType, ruleID string) error {
+func validatePattern(p *RulePattern, definition ruleTypeDefinition, ruleID string) error {
 	if p.Regex == "" {
 		return fmt.Errorf("regex must not be empty for rule %q", ruleID)
 	}
@@ -365,22 +355,19 @@ func validatePattern(p *RulePattern, ruleType, ruleID string) error {
 	}
 
 	if p.Validator != "" {
-		if ruleType != RuleTypeDLP {
+		if len(definition.ValidatorValues) == 0 {
 			return fmt.Errorf("validator is only valid for %s rules (rule %q)", RuleTypeDLP, ruleID)
 		}
-		switch p.Validator {
-		case config.ValidatorLuhn, config.ValidatorMod97, config.ValidatorABA, config.ValidatorWIF:
-		default:
+		if !slices.Contains(definition.ValidatorValues, p.Validator) {
 			return fmt.Errorf("invalid validator %q for rule %q", p.Validator, ruleID)
 		}
 	}
 
 	// scan_field validation for tool-poison rules.
-	if ruleType == RuleTypeToolPoison {
+	if len(definition.ScanFieldValues) > 0 {
 		if p.ScanField == "" {
-			// Default to "description" if empty.
-			p.ScanField = scanFieldDescription
-		} else if !validScanFields[p.ScanField] {
+			p.ScanField = definition.DefaultScanField
+		} else if !slices.Contains(definition.ScanFieldValues, p.ScanField) {
 			return fmt.Errorf("invalid scan_field %q for rule %q (must be %q or %q)", p.ScanField, ruleID, scanFieldDescription, scanFieldName)
 		}
 	} else if p.ScanField != "" {

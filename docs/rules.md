@@ -221,6 +221,20 @@ the `pattern.validator` field.
 | Injection pattern | `injection` | `response_scanning.patterns` |
 | Tool poison pattern | `tool-poison` | `mcp_tool_scanning` descriptions |
 
+### Machine-readable reader contract
+
+A release-stamped Pipelock binary can export the rule-bundle contract it enforces:
+
+```bash
+pipelock rules schema > pipelock-rule-schema.json
+```
+
+The JSON records the exact Pipelock version and source revision, accepted bundle formats, YAML fields,
+enum values, rule types, type-specific pattern fields, merge targets, and bundle action semantics. The
+command refuses to produce an unversioned contract when the build can't report its source revision.
+Consumers should pin output from an exact Pipelock artifact by digest instead of fetching a moving
+release during ordinary pull-request checks.
+
 ### Signing your bundle
 
 ```bash

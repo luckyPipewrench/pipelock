@@ -121,6 +121,8 @@ type LoadedBundle struct {
 	Expired               bool // bundle is past expires_at but loaded in stale mode
 }
 
+type loadRuleFunc func(ctx *bundleExecCtx, bundle *Bundle, rule *Rule, patternName, namespacedID string, loaded *LoadedBundle) error
+
 // IntegrityErrors returns load failures that indicate installed-bundle
 // provenance or freshness integrity loss.
 func (r *LoadResult) IntegrityErrors() []BundleError {
@@ -482,49 +484,64 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 				bundle.Name, r.ID))
 		}
 
-		// Convert rule to config-compatible type.
-		switch r.Type {
-		case RuleTypeDLP:
-			ctx.Result.DLP = append(ctx.Result.DLP, config.DLPPattern{
-				Name:          patternName,
-				Regex:         r.Pattern.Regex,
-				Severity:      r.Severity,
-				Validator:     r.Pattern.Validator,
-				Bundle:        bundle.Name,
-				BundleVersion: bundle.Version,
+		definition, ok := ruleTypeDefinitionFor(r.Type)
+		if !ok || definition.Load == nil {
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
+				Name:   dirName,
+				Reason: fmt.Sprintf("rule type %q has no runtime loader", r.Type),
+				Class:  BundleErrorClassIntegrity,
 			})
-			loaded.DLP++
-
-		case RuleTypeInjection:
-			ctx.Result.Injection = append(ctx.Result.Injection, config.ResponseScanPattern{
-				Name:          patternName,
-				Regex:         r.Pattern.Regex,
-				Bundle:        bundle.Name,
-				BundleVersion: bundle.Version,
-			})
-			loaded.Injection++
-
-		case RuleTypeToolPoison:
-			// Tool-poison regexes use case-insensitive matching.
-			compiled, err := regexp.Compile("(?i)" + r.Pattern.Regex)
-			if err != nil {
-				// Pattern was already validated by ParseBundle, but guard anyway.
-				continue
-			}
-			ctx.Result.ToolPoison = append(ctx.Result.ToolPoison, CompiledToolPoisonRule{
-				Name:          nsID,
-				RuleID:        nsID,
-				Re:            compiled,
-				ScanField:     r.Pattern.ScanField,
-				Bundle:        bundle.Name,
-				BundleVersion: bundle.Version,
-			})
-			loaded.ToolPoison++
+			return
+		}
+		if err := definition.Load(ctx, bundle, r, patternName, nsID, &loaded); err != nil {
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassIntegrity})
+			return
 		}
 	}
 
 	loaded.Rules = loaded.DLP + loaded.Injection + loaded.ToolPoison
 	ctx.Result.Loaded = append(ctx.Result.Loaded, loaded)
+}
+
+func loadDLPRule(ctx *bundleExecCtx, bundle *Bundle, rule *Rule, patternName, _ string, loaded *LoadedBundle) error {
+	ctx.Result.DLP = append(ctx.Result.DLP, config.DLPPattern{
+		Name:          patternName,
+		Regex:         rule.Pattern.Regex,
+		Severity:      rule.Severity,
+		Validator:     rule.Pattern.Validator,
+		Bundle:        bundle.Name,
+		BundleVersion: bundle.Version,
+	})
+	loaded.DLP++
+	return nil
+}
+
+func loadInjectionRule(ctx *bundleExecCtx, bundle *Bundle, rule *Rule, patternName, _ string, loaded *LoadedBundle) error {
+	ctx.Result.Injection = append(ctx.Result.Injection, config.ResponseScanPattern{
+		Name:          patternName,
+		Regex:         rule.Pattern.Regex,
+		Bundle:        bundle.Name,
+		BundleVersion: bundle.Version,
+	})
+	loaded.Injection++
+	return nil
+}
+
+func loadToolPoisonRule(ctx *bundleExecCtx, bundle *Bundle, rule *Rule, _ string, namespacedID string, loaded *LoadedBundle) error {
+	compiled, err := regexp.Compile("(?i)" + rule.Pattern.Regex)
+	if err != nil {
+		return fmt.Errorf("compile tool-poison rule %q after validation: %w", rule.ID, err)
+	}
+	ctx.Result.ToolPoison = append(ctx.Result.ToolPoison, CompiledToolPoisonRule{
+		Name:          namespacedID,
+		RuleID:        namespacedID,
+		Re:            compiled,
+		ScanField:     rule.Pattern.ScanField,
+		Bundle:        bundle.Name,
+		BundleVersion: bundle.Version,
+	})
+	loaded.ToolPoison++
+	return nil
 }
 
 // ReadBundleFile reads a bundle artifact with a stat-first size check.

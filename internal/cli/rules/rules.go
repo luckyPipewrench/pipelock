@@ -152,6 +152,7 @@ func Cmd() *cobra.Command {
 		Long:  "Install, update, list, verify, diff, remove, and inspect rule bundles.",
 	}
 	cmd.AddCommand(
+		rulesSchemaCmd(),
 		rulesStatusCmd(),
 		rulesInstallCmd(),
 		rulesUpdateCmd(),

@@ -37,6 +37,21 @@ func IsProductReleaseTag(tag string) bool {
 	return len(tag) <= MaxProductReleaseVersionLength+1 && productReleaseTagRE.MatchString(tag)
 }
 
+// HasExactBuildIdentity reports whether the running binary has both a
+// deliberately stamped version and source revision. Build-derived display
+// versions are useful for diagnostics, but they are not an artifact identity
+// contract when either build stamp is unavailable.
+func HasExactBuildIdentity() bool {
+	version := strings.TrimSpace(Version)
+	revision := strings.TrimSpace(GitCommit)
+	return version != "" &&
+		version != "unknown" &&
+		version != defaultVersion &&
+		!strings.HasPrefix(version, defaultVersion+".") &&
+		revision != "" &&
+		revision != "unknown"
+}
+
 // Build metadata, set at build time via ldflags. Defaults are used when
 // building with plain "go build" (without the Makefile).
 var (

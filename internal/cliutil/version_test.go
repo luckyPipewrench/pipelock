@@ -340,6 +340,41 @@ func TestIsProductReleaseTag(t *testing.T) {
 	}
 }
 
+func TestHasExactBuildIdentity(t *testing.T) {
+	originalVersion, originalCommit := Version, GitCommit
+	t.Cleanup(func() {
+		Version = originalVersion
+		GitCommit = originalCommit
+	})
+
+	tests := []struct {
+		name     string
+		version  string
+		commit   string
+		expected bool
+	}{
+		{name: "release stamps", version: "3.5.0", commit: "abcdef012345", expected: true},
+		{name: "described source stamps", version: "3.5.0-101-gabcdef0", commit: "abcdef0", expected: true},
+		{name: "missing version", commit: "abcdef012345"},
+		{name: "unknown version", version: "unknown", commit: "abcdef012345"},
+		{name: "default version", version: defaultVersion, commit: "abcdef012345"},
+		{name: "dirty default version", version: defaultVersion + ".dirty", commit: "abcdef012345"},
+		{name: "missing revision", version: "3.5.0"},
+		{name: "unknown revision", version: "3.5.0", commit: "unknown"},
+		{name: "whitespace unknown revision", version: "3.5.0", commit: " unknown "},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			Version = test.version
+			GitCommit = test.commit
+			if got := HasExactBuildIdentity(); got != test.expected {
+				t.Fatalf("HasExactBuildIdentity() = %v, want %v", got, test.expected)
+			}
+		})
+	}
+}
+
 // TestProductReleaseTag_PrereleaseAccepted guards the release-policy decision
 // that prerelease tags are valid product releases.
 func TestProductReleaseTag_PrereleaseAccepted(t *testing.T) {

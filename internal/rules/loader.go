@@ -539,7 +539,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 			return
 		}
 		if err := definition.Load(stagedCtx, bundle, r, patternName, nsID, &loaded); err != nil {
-			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassIntegrity})
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error(), Class: BundleErrorClassIntegrity})
 			return
 		}
 	}

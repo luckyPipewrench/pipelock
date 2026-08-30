@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,51 @@ func TestLoadBundlesFailedBundleIsAtomic(t *testing.T) {
 	}
 	if got := state.FormatFloor["z-success"]; got != 2 {
 		t.Fatalf("successful bundle format = %d, want 2", got)
+	}
+}
+
+func TestLoadBundlesOfficialLoaderFailureWarnsDegraded(t *testing.T) {
+	// Non-parallel: mutates keyring globals.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	setupKeyring(t, pub)
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, StandardBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	bundle := testBundle(StandardBundleName, []Rule{
+		testToolPoisonRule("forced-failure", confidenceHigh, StatusStable, scanFieldDescription),
+	})
+	writeSignedBundle(t, bundleDir, bundle, pub, priv)
+
+	definitions := append([]ruleTypeDefinition(nil), ruleTypeDefinitions...)
+	for i := range definitions {
+		if definitions[i].ID == RuleTypeToolPoison {
+			definitions[i].Load = func(_ *bundleExecCtx, _ *Bundle, _ *Rule, _, _ string, _ *LoadedBundle) error {
+				return errors.New("forced official loader failure")
+			}
+		}
+	}
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+		definitions:     definitions,
+	})
+	if len(result.IntegrityErrors()) != 1 {
+		t.Fatalf("integrity errors = %+v, want one forced loader failure", result.IntegrityErrors())
+	}
+	if !result.IntegrityErrors()[0].Official {
+		t.Fatal("official loader failure was not classified as official")
+	}
+	if !slices.ContainsFunc(result.Warnings, func(warning string) bool {
+		return strings.Contains(warning, "DEGRADED: standard pack") && strings.Contains(warning, "forced official loader failure")
+	}) {
+		t.Fatalf("warnings = %q, want degraded standard-pack warning", result.Warnings)
 	}
 }
 

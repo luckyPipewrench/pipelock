@@ -202,8 +202,14 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"auth-victim"}`, true))
 
-		if swapping.clearedHash != "" && swapping.clearedHash != swapping.readHash {
-			t.Fatalf("cleared hash %q differs from the authorised hash %q, so a replacement record was deleted",
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status=%d body=%s, want 404", w.Code, w.Body.String())
+		}
+		// Assert the bound call actually ran with the authorised hash. Checking
+		// only what was NOT deleted would also pass for a handler that skipped
+		// the clear altogether.
+		if swapping.clearedHash != swapping.readHash {
+			t.Fatalf("cleared hash %q differs from the authorised hash %q, so the bound clear did not run against the record the scope check approved",
 				swapping.clearedHash, swapping.readHash)
 		}
 		if swapping.replacementRemoved {

@@ -1243,7 +1243,9 @@ func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
-	clearer, ok := h.emergencyControls.(rollbackClearer)
+	// Only the bound clear is required. Asserting the unbound one first would
+	// refuse a store that implements just the safer capability.
+	matching, ok := h.emergencyControls.(rollbackAuthorizationMatchingClearer)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, ErrEmergencyClearUnsupported)
 		return
@@ -1280,14 +1282,6 @@ func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *htt
 		// Out-of-scope records are indistinguishable from absent records so one
 		// tenant's administrator cannot enumerate another tenant's rollback IDs.
 		writeError(w, http.StatusNotFound, ErrEmergencyNotFound)
-		return
-	}
-	matching, ok := clearer.(rollbackAuthorizationMatchingClearer)
-	if !ok {
-		// Without the binding the scope check above can be defeated by a
-		// concurrent replace, so refuse rather than perform a delete this
-		// administrator was authorised for on a different record.
-		writeError(w, http.StatusNotImplemented, ErrEmergencyClearUnsupported)
 		return
 	}
 	cleared, err := matching.ClearRollbackAuthorizationMatching(r.Context(), req.AuthorizationID, record.AuthorizationHash)

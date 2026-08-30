@@ -151,11 +151,12 @@ func RunInit() {
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] containment: %d/%d layers active\n", active, totalLayers)
 
-	// Strict mode: fail-closed if any layer is inactive.
-	if strict && active < totalLayers {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: strict mode requires all %d layers active, got %d\n", totalLayers, active)
+	outcome, outcomeErr := appliedLaunchOutcome(strict, noNetNS, seccompFilterSupportedByBuild(), llStatus, scStatus)
+	if outcomeErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] launch outcome: REFUSED: %v\n", outcomeErr)
 		exitSandboxProcess(1)
 	}
+	reportAppliedLaunchOutcome(os.Stderr, outcome)
 
 	// Mapped launches remain here until the parent has made itself
 	// non-dumpable. This gate covers both the direct exec below and bridge-mode

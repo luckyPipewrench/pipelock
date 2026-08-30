@@ -1175,11 +1175,35 @@ func TestPreflight_ValidBestEffort(t *testing.T) {
 	if result.Workspace != workspace {
 		t.Errorf("workspace = %q, want %q", result.Workspace, workspace)
 	}
-	if result.Mode != "best-effort" {
-		t.Errorf("mode = %q, want best-effort", result.Mode)
+	if result.Mode != "required" {
+		t.Errorf("mode = %q, want required", result.Mode)
 	}
 	if len(result.Layers) != 3 {
 		t.Errorf("expected 3 layers, got %d", len(result.Layers))
+	}
+	// The loop this replaces would have passed if Landlock were absent from
+	// the result entirely, because it only inspected layers that were present.
+	// Assert each flag by name, and assert the two that must stay optional as
+	// well, so a change that made everything required would also be caught.
+	required := map[LayerName]bool{}
+	for _, layer := range result.Layers {
+		required[layer.Name] = layer.Required
+	}
+	landlock, ok := required[LayerLandlock]
+	if !ok {
+		t.Fatalf("preflight result has no %s layer at all, so its required flag proves nothing", LayerLandlock)
+	}
+	if !landlock {
+		t.Errorf("normal sandbox preflight did not mark %s required", LayerLandlock)
+	}
+	for _, optional := range []LayerName{LayerNetNS, LayerSeccomp} {
+		flag, present := required[optional]
+		if !present {
+			t.Fatalf("preflight result has no %s layer", optional)
+		}
+		if flag {
+			t.Errorf("non-strict preflight marked %s required; only Landlock is mandatory outside strict mode", optional)
+		}
 	}
 }
 

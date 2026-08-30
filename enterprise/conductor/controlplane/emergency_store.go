@@ -524,7 +524,20 @@ func newerRollback(candidate, current StoredRollbackAuthorization) bool {
 // clear an active rollback authorization that is no longer needed (e.g. after a
 // forward publish succeeds) without waiting for the TTL to expire. Returns
 // true when a record was found and removed.
-func (s *FileEmergencyStore) ClearRollbackAuthorization(_ context.Context, authorizationID string) (bool, error) {
+func (s *FileEmergencyStore) ClearRollbackAuthorization(ctx context.Context, authorizationID string) (bool, error) {
+	return s.ClearRollbackAuthorizationMatching(ctx, authorizationID, "")
+}
+
+// ClearRollbackAuthorizationMatching removes a rollback authorization only when
+// the id still resolves to expectedHash.
+//
+// The caller checks tenant scope against a record it read earlier, and that
+// read and this write cannot share a lock across an interface boundary. Without
+// the binding, an id remapped to another organisation's record between the two
+// calls would be cleared by an administrator the scope check had already
+// approved for a different record. Passing an empty expectedHash keeps the
+// unconditional behaviour for callers that never read a record first.
+func (s *FileEmergencyStore) ClearRollbackAuthorizationMatching(_ context.Context, authorizationID string, expectedHash string) (bool, error) {
 	if s == nil {
 		return false, ErrEmergencyStoreRequired
 	}
@@ -535,6 +548,12 @@ func (s *FileEmergencyStore) ClearRollbackAuthorization(_ context.Context, autho
 	defer s.mu.Unlock()
 	hash, ok := s.rollbackAuthIDMap[authorizationID]
 	if !ok {
+		return false, nil
+	}
+	if expectedHash != "" && hash != expectedHash {
+		// The id now names a different record than the one authorised. Report
+		// it the same way as absent so the outcome cannot distinguish a
+		// replaced record from a missing one.
 		return false, nil
 	}
 	// Capture what we are about to remove so we can restore the in-memory

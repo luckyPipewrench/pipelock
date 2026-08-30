@@ -1213,6 +1213,14 @@ type rollbackClearer interface {
 	ClearRollbackAuthorization(ctx context.Context, authorizationID string) (bool, error)
 }
 
+// rollbackAuthorizationMatchingClearer clears only when the id still resolves
+// to the record the caller authorised. A store that cannot express that has no
+// way to close the window between the scope check and the delete, so the
+// handler refuses rather than clearing unconditionally.
+type rollbackAuthorizationMatchingClearer interface {
+	ClearRollbackAuthorizationMatching(ctx context.Context, authorizationID string, expectedHash string) (bool, error)
+}
+
 // rollbackAuthorizationByIDReader resolves the stored, authoritative tenant
 // scope before an administrator can clear a rollback by its opaque ID.
 type rollbackAuthorizationByIDReader interface {
@@ -1274,7 +1282,15 @@ func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusNotFound, ErrEmergencyNotFound)
 		return
 	}
-	cleared, err := clearer.ClearRollbackAuthorization(r.Context(), req.AuthorizationID)
+	matching, ok := clearer.(rollbackAuthorizationMatchingClearer)
+	if !ok {
+		// Without the binding the scope check above can be defeated by a
+		// concurrent replace, so refuse rather than perform a delete this
+		// administrator was authorised for on a different record.
+		writeError(w, http.StatusNotImplemented, ErrEmergencyClearUnsupported)
+		return
+	}
+	cleared, err := matching.ClearRollbackAuthorizationMatching(r.Context(), req.AuthorizationID, record.AuthorizationHash)
 	if err != nil {
 		if errors.Is(err, ErrEmergencyClearUnsupported) {
 			writeError(w, http.StatusNotImplemented, err)

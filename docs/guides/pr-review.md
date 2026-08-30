@@ -43,10 +43,11 @@ also checks out the captured head for the judge, then searches that checkout for
 the consumers and tests related to each candidate. A same-file hunk isn't enough
 to verify a cross-file claim.
 
-The reusable workflow builds the comparison from a full local checkout. This
-avoids the GitHub compare API's 300-file ceiling. If it can't produce the exact
-diff, or the diff exceeds the runner's bounded size, the review fails instead
-of inspecting a subset.
+The reusable workflow builds the comparison from shallow checkouts of the exact
+head and GitHub-reported merge base. This avoids both the compare API's 300-file
+ceiling and an unbounded full-history fetch. If it can't produce the exact diff,
+or the diff exceeds the runner's bounded size, the review fails instead of
+inspecting a subset.
 
 The runner uses deterministic token budgeting instead of character slicing: Go
 source and additions rank above tests, configuration, and documentation. The

@@ -83,6 +83,36 @@ def unit(identifier: int, path: str, category: str, *, additions: int = 1, token
 
 
 class WorkflowPackagingTest(unittest.TestCase):
+    def test_merge_base_resolution_accepts_only_an_immutable_sha(self) -> None:
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        script = next(
+            step["run"] for step in workflow["jobs"]["review"]["steps"] if step.get("id") == "merge-base"
+        )
+        for response, accepted in (("d" * 40, True), ("refs/heads/main", False)):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                fake_gh = root / "gh"
+                fake_gh.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' '{response}'\n", encoding="utf-8")
+                fake_gh.chmod(0o700)
+                output = root / "github-output"
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    env={
+                        **os.environ,
+                        "PATH": f"{root}:{os.environ['PATH']}",
+                        "GH_TOKEN": "fake",
+                        "REPO": "owner/repo",
+                        "BASE_SHA": "a" * 40,
+                        "HEAD_SHA": "b" * 40,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode == 0, accepted)
+                if accepted:
+                    self.assertEqual(output.read_text(encoding="utf-8"), f"sha={response}\n")
+
     def test_caller_authorizes_owner_comments_without_manual_dispatch(self) -> None:
         # Exercise the parsed workflow shape. String searches against a YAML
         # file were bypassed before by a comment or an unrelated scalar with
@@ -155,12 +185,28 @@ class WorkflowPackagingTest(unittest.TestCase):
         self.assertEqual(target_checkout["with"]["ref"], "${{ needs.admit.outputs.head_sha }}")
         self.assertEqual(target_checkout["with"]["persist-credentials"], "false")
         self.assertEqual(target_checkout["with"]["path"], "reviewed-repository")
-        self.assertEqual(target_checkout["with"]["fetch-depth"], "0")
+        self.assertEqual(target_checkout["with"]["fetch-depth"], "1")
+        merge_step = next(step for step in review["steps"] if step.get("id") == "merge-base")
+        self.assertIn("compare/${BASE_SHA}...${HEAD_SHA}", merge_step["run"])
+        self.assertIn("=~ ^[0-9a-f]{40}$", merge_step["run"])
+        merge_checkout = next(
+            step
+            for step in review["steps"]
+            if step.get("name") == "Check out immutable reviewed repository merge base"
+        )
+        self.assertEqual(merge_checkout["with"]["ref"], "${{ steps.merge-base.outputs.sha }}")
+        self.assertEqual(merge_checkout["with"]["fetch-depth"], "1")
+        self.assertEqual(merge_checkout["with"]["persist-credentials"], "false")
+        import_step = next(
+            step for step in review["steps"] if step.get("name") == "Import immutable merge base into reviewed checkout"
+        )
+        self.assertIn("timeout 90s git -C reviewed-repository fetch", import_step["run"])
         openai = next(step for step in review["steps"] if step.get("id") == "openai")
         self.assertEqual(
             openai["with"]["reviewed-repository-path"],
             "${{ github.workspace }}/" + target_checkout["with"]["path"],
         )
+        self.assertEqual(openai["with"]["reviewed-merge-base-sha"], "${{ steps.merge-base.outputs.sha }}")
         # Finalization is its own job, not a step inside review. As a step it
         # was skipped in the case it most needs to cover: admission claims the
         # status comment and the review job never starts, leaving the comment
@@ -255,6 +301,7 @@ class WorkflowPackagingTest(unittest.TestCase):
             "model-fast",
             "model-deep",
             "reviewed-repository-path",
+            "reviewed-merge-base-sha",
         ):
             self.assertIn(name, action["inputs"])
         # Either cache key breaks setup for this action and stops every review
@@ -720,7 +767,7 @@ class LocalDiffCompletenessTest(unittest.TestCase):
         api.assert_not_called()
         compare.assert_not_called()
 
-    def test_full_history_checkout_produces_the_exact_complete_diff(self) -> None:
+    def test_local_checkout_produces_the_exact_complete_diff(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             init_git_fixture(root)
@@ -743,6 +790,83 @@ class LocalDiffCompletenessTest(unittest.TestCase):
         self.assertIsNotNone(diff)
         self.assertIn("diff --git a/late.go b/late.go", diff)
         self.assertIn("+package late", diff)
+
+    def test_shallow_snapshot_path_uses_the_authoritative_merge_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            origin = root / "origin"
+            origin.mkdir()
+            init_git_fixture(origin)
+            (origin / "common.go").write_text("package common\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "common.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "common"], check=True)
+            merge_base = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "branch", "feature"], check=True)
+            (origin / "base-only.go").write_text("package baseonly\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "base-only.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "base"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(origin), "checkout", "-q", "feature"], check=True)
+            (origin / "feature.go").write_text("package feature\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(origin), "add", "feature.go"], check=True)
+            subprocess.run(["git", "-C", str(origin), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+
+            checkouts: list[pathlib.Path] = []
+            for name, commit in (("reviewed-repository", head), ("reviewed-merge-base", merge_base)):
+                checkout = root / name
+                checkout.mkdir()
+                subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True)
+                subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", str(origin)], check=True)
+                subprocess.run(["git", "-C", str(checkout), "fetch", "-q", "--depth=1", "origin", commit], check=True)
+                subprocess.run(["git", "-C", str(checkout), "checkout", "-q", "--detach", "FETCH_HEAD"], check=True)
+                checkouts.append(checkout)
+            head_checkout, _merge_checkout = checkouts
+            workflow = load_yaml(REUSABLE_WORKFLOW)
+            import_script = next(
+                step["run"]
+                for step in workflow["jobs"]["review"]["steps"]
+                if step.get("name") == "Import immutable merge base into reviewed checkout"
+            )
+            subprocess.run(
+                ["bash", "-c", import_script],
+                check=True,
+                cwd=root,
+                env={**os.environ, "GITHUB_WORKSPACE": str(root), "MERGE_BASE_SHA": merge_base},
+                capture_output=True,
+                text=True,
+            )
+            binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            environment = {
+                "REVIEWED_REPOSITORY_PATH": str(head_checkout),
+                "REVIEWED_MERGE_BASE_SHA": merge_base,
+                "BASE_SHA": base,
+            }
+            with mock.patch.dict(pr_review.os.environ, environment, clear=False):
+                diff = pr_review.fetch_local_bound_diff(binding)
+
+        self.assertIsNotNone(diff)
+        self.assertIn("diff --git a/feature.go b/feature.go", diff)
+        self.assertNotIn("base-only.go", diff)
+
+    def test_delta_uses_the_guarded_api_path_when_only_full_range_snapshots_exist(self) -> None:
+        binding = pr_review.PullBinding("d" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        environment = {
+            "REVIEWED_REPOSITORY_PATH": "/reviewed",
+            "REVIEWED_MERGE_BASE_SHA": "e" * 40,
+            "BASE_SHA": "a" * 40,
+        }
+        with mock.patch.dict(pr_review.os.environ, environment, clear=False), mock.patch.object(
+            pr_review, "_local_review_root"
+        ) as local_root:
+            self.assertIsNone(pr_review.fetch_local_bound_diff(binding))
+        local_root.assert_not_called()
 
     def test_configured_checkout_must_match_the_captured_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -810,6 +934,47 @@ class JudgeContextAddressingTest(unittest.TestCase):
 
 
 class FinalizerIndependenceTest(unittest.TestCase):
+    def _run_finalizer(self, body: str, mode: str) -> str:
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        script = workflow["jobs"]["finalize"]["steps"][0]["run"]
+        identity = "a" * 12 + ":" + "b" * 12 + ":" + "c" * 12 + ":" + pr_review.RUBRIC_VERSION
+        running = f"{body}\n<!-- {pr_review.STATUS_MARKER} state=running identity={identity} -->"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            capture = root / "posted.md"
+            fake_gh = root / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --method PATCH "* ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      body=@*) cp "${arg#body=@}" "$FAKE_CAPTURE" ;;
+    esac
+  done
+  exit 0
+fi
+printf '%s' "$FAKE_BODY"
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o700)
+            environment = {
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "GH_TOKEN": "fake",
+                "REPO": "owner/repo",
+                "COMMENT_ID": "17",
+                "BASE_SHA": "d" * 40,
+                "HEAD_SHA": "e" * 40,
+                "IDENTITY": identity,
+                "REVIEW_MODE": mode,
+                "FAKE_BODY": running,
+                "FAKE_CAPTURE": str(capture),
+            }
+            subprocess.run(["bash", "-c", script], check=True, env=environment, capture_output=True, text=True)
+            return capture.read_text(encoding="utf-8")
+
     def test_finalizer_does_not_depend_on_the_review_checkout(self) -> None:
         # A failed checkout is one of the cases the finalizer exists to survive,
         # so it must not resolve the locally checked-out action.
@@ -853,46 +1018,8 @@ class FinalizerIndependenceTest(unittest.TestCase):
         self.assertEqual(parsed["mode"], "deep")
 
     def test_finalizer_shell_output_round_trips_through_the_runner_parser(self) -> None:
-        workflow = load_yaml(REUSABLE_WORKFLOW)
-        script = workflow["jobs"]["finalize"]["steps"][0]["run"]
-        identity = "a" * 12 + ":" + "b" * 12 + ":" + "c" * 12 + ":" + pr_review.RUBRIC_VERSION
         profile = "**Review profile:** `deep` with `gpt-5.6-terra` (`xhigh` reasoning)."
-        running = f"{profile}\n<!-- {pr_review.STATUS_MARKER} state=running identity={identity} -->"
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            capture = root / "posted.md"
-            fake_gh = root / "gh"
-            fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-if [[ " $* " == *" --method PATCH "* ]]; then
-  for arg in "$@"; do
-    case "$arg" in
-      body=@*) cp "${arg#body=@}" "$FAKE_CAPTURE" ;;
-    esac
-  done
-  exit 0
-fi
-printf '%s' "$FAKE_BODY"
-""",
-                encoding="utf-8",
-            )
-            fake_gh.chmod(0o700)
-            environment = {
-                **os.environ,
-                "PATH": f"{root}:{os.environ['PATH']}",
-                "GH_TOKEN": "fake",
-                "REPO": "owner/repo",
-                "COMMENT_ID": "17",
-                "BASE_SHA": "d" * 40,
-                "HEAD_SHA": "e" * 40,
-                "IDENTITY": identity,
-                "REVIEW_MODE": "deep",
-                "FAKE_BODY": running,
-                "FAKE_CAPTURE": str(capture),
-            }
-            subprocess.run(["bash", "-c", script], check=True, env=environment, capture_output=True, text=True)
-            posted = capture.read_text(encoding="utf-8")
+        posted = self._run_finalizer(profile, "deep")
 
         self.assertIn(profile, posted)
         parsed = pr_review.parse_status_marker(posted)
@@ -901,6 +1028,13 @@ printf '%s' "$FAKE_BODY"
         self.assertEqual(parsed["mode"], "deep")
         self.assertEqual(parsed["reviewed_head"], "e" * 40)
         self.assertEqual(parsed["coverage_base"], "d" * 40)
+
+    def test_finalizer_rejects_a_profile_line_outside_the_generated_grammar(self) -> None:
+        forged = "**Review profile:** [forged](https://attacker.example)"
+        posted = self._run_finalizer(forged, "default")
+
+        self.assertNotIn(forged, posted)
+        self.assertIn("`default`; the review job did not publish its effective model", posted)
 
 
 class AdmissionMarkerTest(unittest.TestCase):

@@ -1031,16 +1031,41 @@ def fetch_local_bound_diff(binding: PullBinding) -> str | None:
     """Read the complete immutable diff locally when the reviewed checkout exists.
 
     GitHub's compare response stops at 300 files and does not mark its diff body
-    as truncated. The workflow checks out the reviewed repository with full
-    history so Git can compare the captured commits without that API ceiling.
-    Direct composite-action users without a checkout keep the API path and its
+    as truncated. The reusable workflow imports the authoritative merge-base
+    snapshot into the immutable head checkout so Git can compare the captured
+    commits without that API ceiling or a full-history clone. Direct
+    composite-action users without those snapshots keep the API path and its
     explicit completeness guard.
     """
     if not os.environ.get("REVIEWED_REPOSITORY_PATH"):
         return None
+    merge_base = os.environ.get("REVIEWED_MERGE_BASE_SHA", "")
+    captured_base = os.environ.get("BASE_SHA", "")
+    if merge_base and captured_base and binding.base_sha != captured_base:
+        # A delta baseline is chosen from the prior authenticated review after
+        # the workflow checkouts are complete, so its commit is not one of the
+        # two shallow snapshots available locally. Use the existing immutable
+        # compare path and its explicit completeness guard for that delta.
+        return None
     root = _local_review_root(binding.head_sha, binding.correlation)
     if root is None:
         raise FetchError("immutable reviewed checkout was unavailable")
+    diff_range = f"{binding.base_sha}...{binding.head_sha}"
+    if merge_base:
+        if not re.fullmatch(r"[0-9a-f]{40}", merge_base):
+            raise FetchError("immutable merge base was invalid")
+        try:
+            commit = subprocess.run(
+                ["git", "-C", str(root), "cat-file", "-e", f"{merge_base}^{{commit}}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise FetchError("immutable merge base could not be verified") from exc
+        if commit.returncode:
+            raise FetchError("immutable merge base was unavailable")
+        diff_range = f"{merge_base}..{binding.head_sha}"
     try:
         process = subprocess.Popen(
             [
@@ -1053,7 +1078,7 @@ def fetch_local_bound_diff(binding: PullBinding) -> str | None:
                 "--no-ext-diff",
                 "--no-textconv",
                 "--find-renames",
-                f"{binding.base_sha}...{binding.head_sha}",
+                diff_range,
                 "--",
             ],
             stdout=subprocess.PIPE,

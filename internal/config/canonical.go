@@ -230,6 +230,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.A2AScanning.TrustedAgentCardKeys = canonicalA2ATrustedCardKeys(view.A2AScanning.TrustedAgentCardKeys)
 	view.ResponseScanning.SizeExemptDomains = sortedCopy(view.ResponseScanning.SizeExemptDomains)
 	view.ResponseScanning.UnscannablePassthrough = canonicalUnscannablePassthrough(view.ResponseScanning.UnscannablePassthrough)
+	view.ResponseScanning.AuthenticatedArtifacts = canonicalAuthenticatedArtifacts(view.ResponseScanning.AuthenticatedArtifacts)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	view.RequestBodyScanning.ContentEntropyExclusions = sortedCopy(view.RequestBodyScanning.ContentEntropyExclusions)
@@ -263,6 +264,23 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 		guardView = &guard
 	}
 	return canonicalPolicyView{Config: view, Guard: guardView}
+}
+
+func canonicalAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) []AuthenticatedArtifactEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := append([]AuthenticatedArtifactEntry(nil), entries...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Host != out[j].Host {
+			return out[i].Host < out[j].Host
+		}
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].BundleName < out[j].BundleName
+	})
+	return out
 }
 
 func canonicalGuard(g Guard) Guard {

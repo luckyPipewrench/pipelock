@@ -2092,6 +2092,22 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
+	// An authenticated artifact is not a destination exemption. The proxy
+	// buffers and verifies this exact response before allowing only injection
+	// matching to be skipped; all other response controls remain below.
+	fwdAuthenticatedArtifact := false
+	if artifact, artifactErr := verifyAuthenticatedArtifact(outReq.Context(), outReq, resp, p.client.Transport, time.Duration(cfg.FetchProxy.TimeoutSeconds)*time.Second, cfg.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
+		p.logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
+		p.metrics.RecordBlocked(r.URL.Hostname(), "authenticated_artifact", time.Since(start), agentLabel)
+		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}))
+		writeBlockedError(w, blockInfoFor(blockreason.EnvelopeVerifyFailed, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
+		outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), "authenticated_artifact"
+		return
+	} else if artifact != nil {
+		fwdAuthenticatedArtifact = true
+		p.logger.LogAnomaly(actx, "authenticated_artifact", "official signed artifact verified before response release", 0)
+		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionAllow, Layer: "authenticated_artifact", Pattern: "official signed artifact verified before response release", Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}))
+	}
 
 	responsePromptHit := false
 	defer func() {
@@ -2132,7 +2148,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// pipelock must never forward inspection-resistant bytes through a
 	// security boundary.
 	fwdRespIsSSE := HasSingleSSEContentType(resp.Header)
-	if fwdRespIsSSE {
+	if fwdRespIsSSE && !fwdAuthenticatedArtifact {
 		if sc.ResponseScanningEnabled() && fwdRespExempt {
 			p.logger.LogResponseScanExempt(actx, fwdRespHost)
 			p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
@@ -2253,9 +2269,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeStatus = strconv.Itoa(resp.StatusCode)
 			outcomeBytes = 0
 			outcomeReason = "complete"
-			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 				forwardScope := adaptiveScopeForHost(r.URL.Hostname())
-				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt, adaptiveRecoveryContext{
+				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 					sessionKey: sessionKeyFor(agent, clientIP),
 					scope:      forwardScope,
 					reason:     adaptiveRecoveryClean,
@@ -2325,7 +2341,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
 		outcomeBytes = written
 		outcomeReason = "complete"
-		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 		}
 		return
@@ -2343,13 +2359,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// lose image metadata stripping, audio/video blocks, and exposure
 	// events.
 	//
-	// SSE responses are excluded: the streaming branch above is the
-	// authoritative path for text/event-stream, and the exclusion here
-	// is defense-in-depth that protects SSE TTFB if future refactors
-	// reorder the blocks. MediaPolicy/BrowserShield have no work to do on
-	// text/event-stream payloads - both target images/audio/video/HTML
-	// content types.
-	if !fwdRespIsSSE &&
+	// Ordinary SSE responses are excluded: the streaming branch above is the
+	// authoritative path for text/event-stream. A verified artifact is already
+	// buffered, so it stays on this path for response-size and encoding controls;
+	// only its injection matching is skipped below.
+	if (!fwdRespIsSSE || fwdAuthenticatedArtifact) &&
 		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled()) {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
@@ -2650,7 +2664,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// Response injection scanning: only runs when the scanner feature
 		// is enabled. Media policy above always runs when MediaPolicy
 		// is enabled, even if response scanning is off.
-		if sc.ResponseScanningEnabled() {
+		if sc.ResponseScanningEnabled() && !fwdAuthenticatedArtifact {
 			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			if !scanResult.Clean {
@@ -2809,9 +2823,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
 		}
-		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			forwardScope := adaptiveScopeForHost(r.URL.Hostname())
-			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt, adaptiveRecoveryContext{
+			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				sessionKey: sessionKeyFor(agent, clientIP),
 				scope:      forwardScope,
 				reason:     adaptiveRecoveryClean,
@@ -2858,7 +2872,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if responseBudgetTruncated {
 		outcomeReason = "budget_truncated"
 	}
-	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 }

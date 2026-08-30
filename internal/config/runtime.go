@@ -278,6 +278,9 @@ func (c *Config) Clone() *Config {
 	if c.ResponseScanning.UnscannablePassthrough != nil {
 		clone.ResponseScanning.UnscannablePassthrough = cloneUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough)
 	}
+	if c.ResponseScanning.AuthenticatedArtifacts != nil {
+		clone.ResponseScanning.AuthenticatedArtifacts = append([]AuthenticatedArtifactEntry(nil), c.ResponseScanning.AuthenticatedArtifacts...)
+	}
 	if c.Taint.TrustedMCPServers != nil {
 		clone.Taint.TrustedMCPServers = append([]string(nil), c.Taint.TrustedMCPServers...)
 	}

@@ -216,8 +216,9 @@ Operator lifecycle:
   skip). Preserve the corrupt pair for investigation first.
 - Revoke: remove `emit.forwarder.url` and restart Pipelock. The stopped worker
   leaves its state files for operator-controlled retention or deletion.
-- Approve changes: destination and state-path changes require a restart. Pipelock
-  validates them before the new worker starts.
+- Approve changes: all `emit` settings require a restart, including filters,
+  `instance_id`, webhook, syslog, OTLP, forwarder destinations, and state paths.
+  Pipelock validates the new settings before the replacement workers start.
 
 **Severity filtering:** Events below `min_severity` are silently dropped before
 reaching the sink. Set to `warn` for all security events (recommended), or

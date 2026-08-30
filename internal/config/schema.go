@@ -779,8 +779,17 @@ type ResponseScanning struct {
 	SizeExemptScanMaxBytes         int                           `yaml:"size_exempt_scan_max_bytes"`          // per-response in-memory ceiling for over-cap size-exempt responses
 	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"` // per-proxy-instance in-flight memory budget for size-exempt response scans
 	UnscannablePassthrough         []UnscannablePassthroughEntry `yaml:"unscannable_passthrough"`             // explicit audited stream-unscanned allowlist for opaque responses
+	AuthenticatedArtifacts         []AuthenticatedArtifactEntry  `yaml:"authenticated_artifacts"`             // exact signed artifacts the proxy may release after its own verification
 	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                       // generic text/event-stream inline scanning (LLM SSE)
 	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                         // per-server MCP response trust overrides
+}
+
+// AuthenticatedArtifactEntry identifies one official signed rule artifact.
+// It is deliberately an exact identity rather than a host or path prefix.
+type AuthenticatedArtifactEntry struct {
+	Host       string `yaml:"host"`
+	Path       string `yaml:"path"`
+	BundleName string `yaml:"bundle_name"`
 }
 
 type UnscannablePassthroughEntry struct {

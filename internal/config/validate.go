@@ -1225,6 +1225,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 			return fmt.Errorf("response_scanning.unscannable_passthrough[%d].host %q must match response_scanning.size_exempt_domains", i, entry.Host)
 		}
 	}
+	if err := validateAuthenticatedArtifacts(c.ResponseScanning.AuthenticatedArtifacts); err != nil {
+		return err
+	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
 		*warnings = append(*warnings, Warning{
 			Field:   "response_scanning.exempt_domains",
@@ -1272,6 +1275,37 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	}
 	return nil
 }
+
+func validateAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) error {
+	seen := make(map[string]struct{}, len(entries))
+	for i := range entries {
+		entry := &entries[i]
+		field := fmt.Sprintf("response_scanning.authenticated_artifacts[%d]", i)
+		host, err := normalizeQueryEntropyParamHost(entry.Host)
+		if err != nil {
+			return fmt.Errorf("%s.host must be one exact registrable DNS host: %w", field, err)
+		}
+		pathValue, err := normalizeQueryEntropyParamPath(entry.Path)
+		if err != nil {
+			return fmt.Errorf("%s.path must be one canonical non-root path: %w", field, err)
+		}
+		if !authenticatedArtifactBundleNameRE.MatchString(entry.BundleName) {
+			return fmt.Errorf("%s.bundle_name must be 3-64 lowercase alphanumeric characters or hyphens without edge hyphens", field)
+		}
+		entry.Host, entry.Path = host, pathValue
+		key := entry.Host + "\x00" + entry.Path
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("%s duplicates an earlier authenticated artifact", field)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// Keep this syntax identical to the authoritative bundle-name contract in
+// internal/rules. Config cannot import that package because rules imports
+// config, so an external-package parity test pins the contract boundaries.
+var authenticatedArtifactBundleNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 func hostMatchesResponseSizeExemptDomain(host string, domains []string) bool {
 	return hostMatchesPassthrough(host, domains)

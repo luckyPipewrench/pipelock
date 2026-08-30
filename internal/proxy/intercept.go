@@ -1702,7 +1702,7 @@ func newInterceptHandler(
 		// The authenticated-artifact exception is verified at the proxy before
 		// bytes reach the client; it is not a route-level response exemption.
 		interceptAuthenticatedArtifact := false
-		if artifact, artifactErr := verifyAuthenticatedArtifact(r.Context(), r, resp, upstream, ic.Config.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
+		if artifact, artifactErr := verifyAuthenticatedArtifact(r.Context(), r, resp, upstream, time.Duration(ic.Config.FetchProxy.TimeoutSeconds)*time.Second, ic.Config.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
 			ic.Logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
 			ic.Metrics.RecordTLSResponseBlocked("authenticated_artifact")
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}))

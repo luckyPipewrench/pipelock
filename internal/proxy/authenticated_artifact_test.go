@@ -14,7 +14,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
@@ -24,7 +26,29 @@ type artifactRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f artifactRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+type blockingArtifactBody struct {
+	started chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingArtifactBody) Read([]byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.closed
+	return 0, errors.New("body closed")
+}
+
+func (b *blockingArtifactBody) Close() error {
+	select {
+	case <-b.closed:
+	default:
+		close(b.closed)
+	}
+	return nil
+}
+
 func TestVerifyAuthenticatedArtifact_VerifiesBeforeReleaseAndStripsCallerHeaders(t *testing.T) {
+	const verificationTimeout = 30 * time.Second
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -35,20 +59,69 @@ func TestVerifyAuthenticatedArtifact_VerifiesBeforeReleaseAndStripsCallerHeaders
 	body := []byte("format_version: 1\nname: pipelock-community\nversion: 2026.08.0\nauthor: test\ndescription: test bundle\nrules: []\n")
 	sig := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body)))
 	u, _ := url.Parse("https://rules.example/rules/pipelock-community/bundle.yaml")
-	req := &http.Request{Method: http.MethodGet, URL: u, Header: http.Header{"Authorization": {"Bearer caller"}, "Cookie": {"session=caller"}}}
+	req := &http.Request{Method: http.MethodGet, URL: u, Header: http.Header{"Authorization": {"Bearer caller"}, "Cookie": {"session=caller"}, "Proxy-Authorization": {"Basic caller"}, "X-Api-Key": {"caller"}, "X-Custom": {"caller"}}}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Request: req}
 	rt := artifactRoundTripper(func(got *http.Request) (*http.Response, error) {
-		if got.Header.Get("Authorization") != "" || got.Header.Get("Cookie") != "" {
-			t.Fatalf("sidecar copied caller credentials: %v", got.Header)
+		if got.Method != http.MethodGet || got.URL.String() != u.String()+".sig" || got.URL.Scheme != "https" || got.URL.Host != "rules.example" || got.URL.Path != u.Path+".sig" || got.URL.Port() != "" || got.URL.User != nil || got.URL.RawQuery != "" || got.URL.Fragment != "" {
+			t.Fatalf("sidecar request = %s %v, want exact HTTPS GET %s.sig", got.Method, got.URL, u)
+		}
+		if got.Host != "" || got.RequestURI != "" || got.Body != nil || got.GetBody != nil || len(got.Header) != 0 {
+			t.Fatalf("sidecar retained caller request state: host=%q requestURI=%q body=%v getBodySet=%t headers=%v", got.Host, got.RequestURI, got.Body, got.GetBody != nil, got.Header)
+		}
+		deadline, ok := got.Context().Deadline()
+		if !ok {
+			t.Fatal("sidecar request has no verification deadline")
+		}
+		if remaining := time.Until(deadline); remaining <= 0 || remaining > verificationTimeout {
+			t.Fatalf("sidecar verification deadline remaining=%v", remaining)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(sig)), Request: got}, nil
 	})
-	artifact, err := verifyAuthenticatedArtifact(context.Background(), req, resp, rt, []config.AuthenticatedArtifactEntry{{Host: "rules.example", Path: "/rules/pipelock-community/bundle.yaml", BundleName: "pipelock-community"}})
+	artifact, err := verifyAuthenticatedArtifact(context.Background(), req, resp, rt, verificationTimeout, []config.AuthenticatedArtifactEntry{{Host: "rules.example", Path: "/rules/pipelock-community/bundle.yaml", BundleName: "pipelock-community"}})
 	if err != nil {
 		t.Fatalf("verifyAuthenticatedArtifact() error: %v", err)
 	}
 	if artifact == nil || !bytes.Equal(artifact.body, body) {
 		t.Fatalf("verified artifact = %#v, want original bytes", artifact)
+	}
+}
+
+func TestVerifyAuthenticatedArtifact_HonorsEarlierCancellation(t *testing.T) {
+	u, err := url.Parse("https://rules.example/rules/pipelock-community/bundle.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := &http.Request{Method: http.MethodGet, URL: u}
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(artifactBundle("test"))), Request: req}
+	artifact, err := verifyAuthenticatedArtifact(ctx, req, resp, nil, 30*time.Second, []config.AuthenticatedArtifactEntry{{Host: u.Host, Path: u.Path, BundleName: "pipelock-community"}})
+	if !errors.Is(err, context.Canceled) || artifact != nil {
+		t.Fatalf("artifact=%v err=%v, want context cancellation", artifact, err)
+	}
+}
+
+func TestReadAuthenticatedArtifactBody_DeadlineClosesBlockedRead(t *testing.T) {
+	body := &blockingArtifactBody{started: make(chan struct{}), closed: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := readAuthenticatedArtifactBody(ctx, body, 4097)
+		result <- err
+	}()
+	select {
+	case <-body.started:
+	case <-time.After(time.Second):
+		t.Fatal("body read did not start")
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("read error=%v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deadline did not close blocked artifact body")
 	}
 }
 
@@ -66,7 +139,7 @@ func TestVerifyAuthenticatedArtifact_FailsClosedForTamperAndRedirect(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			artifact, err := verifyAuthenticatedArtifact(context.Background(), req, tc.resp, artifactRoundTripper(func(got *http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader([]byte("bad"))), Request: got}, nil
-			}), entries)
+			}), 30*time.Second, entries)
 			if err == nil || artifact != nil {
 				t.Fatalf("artifact=%v err=%v, want fail closed", artifact, err)
 			}
@@ -194,7 +267,7 @@ func TestVerifyAuthenticatedArtifact_FailsClosedForVerifierErrors(t *testing.T) 
 			if tc.rt == nil && !tc.noSigFetch {
 				t.Fatal("test setup omitted a signature transport")
 			}
-			artifact, err := verifyAuthenticatedArtifact(t.Context(), req, tc.resp, tc.rt, entries)
+			artifact, err := verifyAuthenticatedArtifact(t.Context(), req, tc.resp, tc.rt, 30*time.Second, entries)
 			if err == nil || artifact != nil {
 				t.Fatalf("artifact=%v err=%v, want fail closed", artifact, err)
 			}

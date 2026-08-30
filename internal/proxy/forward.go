@@ -2096,7 +2096,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// buffers and verifies this exact response before allowing only injection
 	// matching to be skipped; all other response controls remain below.
 	fwdAuthenticatedArtifact := false
-	if artifact, artifactErr := verifyAuthenticatedArtifact(outReq.Context(), outReq, resp, p.client.Transport, cfg.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
+	if artifact, artifactErr := verifyAuthenticatedArtifact(outReq.Context(), outReq, resp, p.client.Transport, time.Duration(cfg.FetchProxy.TimeoutSeconds)*time.Second, cfg.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
 		p.logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
 		p.metrics.RecordBlocked(r.URL.Hostname(), "authenticated_artifact", time.Since(start), agentLabel)
 		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}))
@@ -2359,13 +2359,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// lose image metadata stripping, audio/video blocks, and exposure
 	// events.
 	//
-	// SSE responses are excluded: the streaming branch above is the
-	// authoritative path for text/event-stream, and the exclusion here
-	// is defense-in-depth that protects SSE TTFB if future refactors
-	// reorder the blocks. MediaPolicy/BrowserShield have no work to do on
-	// text/event-stream payloads - both target images/audio/video/HTML
-	// content types.
-	if !fwdRespIsSSE &&
+	// Ordinary SSE responses are excluded: the streaming branch above is the
+	// authoritative path for text/event-stream. A verified artifact is already
+	// buffered, so it stays on this path for response-size and encoding controls;
+	// only its injection matching is skipped below.
+	if (!fwdRespIsSSE || fwdAuthenticatedArtifact) &&
 		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled()) {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {

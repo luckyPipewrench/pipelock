@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
@@ -35,11 +36,13 @@ func matchingAuthenticatedArtifact(req *http.Request, entries []config.Authentic
 
 // verifyAuthenticatedArtifact releases only exact operator-configured rule
 // artifacts which the proxy itself has verified against the embedded keyring.
-func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *http.Response, rt http.RoundTripper, entries []config.AuthenticatedArtifactEntry) (*authenticatedArtifactResponse, error) {
+func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *http.Response, rt http.RoundTripper, verificationTimeout time.Duration, entries []config.AuthenticatedArtifactEntry) (*authenticatedArtifactResponse, error) {
 	entry, ok := matchingAuthenticatedArtifact(req, entries)
 	if !ok {
 		return nil, nil
 	}
+	verifyCtx, cancel := context.WithTimeout(ctx, verificationTimeout)
+	defer cancel()
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
@@ -49,7 +52,7 @@ func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *h
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("authenticated artifact refused: upstream status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, domrules.MaxBundleFileSize+1))
+	body, err := readAuthenticatedArtifactBody(verifyCtx, resp.Body, domrules.MaxBundleFileSize+1)
 	if err != nil {
 		return nil, fmt.Errorf("authenticated artifact read: %w", err)
 	}
@@ -59,7 +62,7 @@ func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *h
 	sigURL := *req.URL
 	sigURL.Path += signing.SigExtension
 	sigURL.RawPath = ""
-	sigReq := req.Clone(ctx)
+	sigReq := req.Clone(verifyCtx)
 	sigReq.URL, sigReq.RequestURI, sigReq.Body, sigReq.GetBody = &sigURL, "", nil, nil
 	sigReq.Host = ""
 	sigReq.Header = make(http.Header)
@@ -71,7 +74,7 @@ func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *h
 	if sigResp.Request == nil || sigResp.Request.URL == nil || sigResp.Request.URL.String() != sigURL.String() || sigResp.StatusCode < http.StatusOK || sigResp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("authenticated artifact refused: signature redirect or status")
 	}
-	sigData, err := io.ReadAll(io.LimitReader(sigResp.Body, 4097))
+	sigData, err := readAuthenticatedArtifactBody(verifyCtx, sigResp.Body, 4097)
 	if err != nil {
 		return nil, fmt.Errorf("authenticated artifact signature read: %w", err)
 	}
@@ -101,4 +104,17 @@ func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *h
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return &authenticatedArtifactResponse{body: body}, nil
+}
+
+func readAuthenticatedArtifactBody(ctx context.Context, body io.ReadCloser, limit int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	stopClose := context.AfterFunc(ctx, func() { _ = body.Close() })
+	defer stopClose()
+	data, err := io.ReadAll(io.LimitReader(body, limit))
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	return data, err
 }

@@ -89,6 +89,8 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 	priv := installArtifactOfficialKey(t)
 	goodBody := artifactBundle(testInjectionPayload)
 	goodSig := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, goodBody)))
+	oversizedSSEBody := artifactBundle(strings.Repeat("a", 65*1024))
+	oversizedSSESig := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, oversizedSSEBody)))
 
 	for _, tc := range []struct {
 		name        string
@@ -98,12 +100,16 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 		sigStatus   int
 		sigRedirect bool
 		contentType string
+		encoding    string
+		bodyLimit   int64
 		want        int
 		wantReason  blockreason.Reason
 	}{
 		{name: "no matching policy retains response scan", body: []byte(testInjectionPayload), want: http.StatusForbidden, wantReason: blockreason.PromptInjection},
 		{name: "valid official artifact bypasses only injection scan", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, want: http.StatusOK},
 		{name: "valid official artifact bypasses SSE injection scan", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, contentType: "text/event-stream", want: http.StatusOK},
+		{name: "valid official SSE artifact keeps response size gate", policy: true, body: oversizedSSEBody, signature: oversizedSSESig, sigStatus: http.StatusOK, contentType: "text/event-stream", bodyLimit: 64 * 1024, want: http.StatusForbidden, wantReason: blockreason.ResponseSize},
+		{name: "valid official SSE artifact keeps compressed response gate", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, contentType: "text/event-stream", encoding: "gzip", want: http.StatusForbidden, wantReason: blockreason.CompressedResponse},
 		{name: "tampered body is blocked", policy: true, body: artifactBundle("NEVER_RELEASE tampered"), signature: goodSig, sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
 		{name: "invalid signature is blocked", policy: true, body: goodBody, signature: []byte("not-base64"), sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
 		{name: "missing signature is blocked", policy: true, body: goodBody, sigStatus: http.StatusNotFound, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
@@ -133,10 +139,15 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 				if contentType == "" {
 					contentType = "text/plain"
 				}
-				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{headerContentType: {contentType}}, Body: originalBody, Request: req}, nil
+				header := http.Header{headerContentType: {contentType}}
+				if tc.encoding != "" {
+					header.Set("Content-Encoding", tc.encoding)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: header, Body: originalBody, Request: req}, nil
 			})
 			logger := audit.NewNop()
 			p := newArtifactIntegrationProxy(t, cfg, logger, rt)
+			p.responseBodyLimit = tc.bodyLimit
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://rules.example"+artifactIntegrationPath, nil)
 			w := httptest.NewRecorder()
 			p.handleForwardHTTP(w, req)

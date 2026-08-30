@@ -194,6 +194,7 @@ class WorkflowPackagingTest(unittest.TestCase):
             for step in review["steps"]
             if step.get("name") == "Check out immutable reviewed repository merge base"
         )
+        self.assertEqual(merge_checkout["with"]["repository"], "${{ github.repository }}")
         self.assertEqual(merge_checkout["with"]["ref"], "${{ steps.merge-base.outputs.sha }}")
         self.assertEqual(merge_checkout["with"]["fetch-depth"], "1")
         self.assertEqual(merge_checkout["with"]["persist-credentials"], "false")
@@ -790,6 +791,24 @@ class LocalDiffCompletenessTest(unittest.TestCase):
         self.assertIsNotNone(diff)
         self.assertIn("diff --git a/late.go b/late.go", diff)
         self.assertIn("+package late", diff)
+
+    def test_local_checkout_without_the_bound_base_uses_the_api_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "head.go").write_text("package head\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "head.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            environment = {
+                "REVIEWED_REPOSITORY_PATH": directory,
+                "REVIEWED_MERGE_BASE_SHA": "",
+            }
+            with mock.patch.dict(pr_review.os.environ, environment, clear=False):
+                self.assertIsNone(pr_review.fetch_local_bound_diff(binding))
 
     def test_shallow_snapshot_path_uses_the_authoritative_merge_base(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

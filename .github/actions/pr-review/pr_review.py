@@ -1051,7 +1051,21 @@ def fetch_local_bound_diff(binding: PullBinding) -> str | None:
     if root is None:
         raise FetchError("immutable reviewed checkout was unavailable")
     diff_range = f"{binding.base_sha}...{binding.head_sha}"
-    if merge_base:
+    if not merge_base:
+        try:
+            base_commit = subprocess.run(
+                ["git", "-C", str(root), "cat-file", "-e", f"{binding.base_sha}^{{commit}}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            log_phase("local-diff", status="base-unreadable", correlation=binding.correlation)
+            return None
+        if base_commit.returncode:
+            log_phase("local-diff", status="base-unavailable", correlation=binding.correlation)
+            return None
+    else:
         if not re.fullmatch(r"[0-9a-f]{40}", merge_base):
             raise FetchError("immutable merge base was invalid")
         try:

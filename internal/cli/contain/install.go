@@ -37,6 +37,14 @@ type installOpts struct {
 
 var containUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
+// Test seams keep the command-level host preflight load-bearing: an
+// unsupported host must fail before an install environment is constructed.
+var (
+	requireContainInstallPrivilege = requireContainPrivilege
+	requireContainInstallHost      = requireContainHost
+	newContainInstallEnv           = defaultInstallEnv
+)
+
 // containToolNameRegex is the shared regex that both plk-launch and the plk
 // meta-wrapper enforce on operator-supplied tool names. Keeping a single
 // source of truth prevents the two wrappers from drifting and letting a name
@@ -81,11 +89,14 @@ Exit codes:
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
 			if !opts.dryRun {
-				if err := requireContainPrivilege("install"); err != nil {
+				if err := requireContainInstallPrivilege("install"); err != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				}
+				if err := requireContainInstallHost(); err != nil {
 					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 				}
 			}
-			env := defaultInstallEnv(cmd.OutOrStdout())
+			env := newContainInstallEnv(cmd.OutOrStdout())
 			if opts.operatorUser != "" {
 				env.operatorUser = opts.operatorUser
 			}

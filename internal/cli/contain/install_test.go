@@ -2176,6 +2176,58 @@ func TestInstallCmdRejectsInvalidPortBeforeRootCheck(t *testing.T) {
 	}
 }
 
+func TestInstallCmdUnsupportedHostStopsBeforeInstallEnvironment(t *testing.T) {
+	origPrivilege := requireContainInstallPrivilege
+	origHost := requireContainInstallHost
+	origEnv := newContainInstallEnv
+	t.Cleanup(func() {
+		requireContainInstallPrivilege = origPrivilege
+		requireContainInstallHost = origHost
+		newContainInstallEnv = origEnv
+	})
+
+	requireContainInstallPrivilege = func(string) error { return nil }
+	requireContainInstallHost = func() error { return errors.New("unsupported test host") }
+	newContainInstallEnv = func(io.Writer) *installEnv {
+		t.Fatal("unsupported host reached install environment construction")
+		return nil
+	}
+
+	cmd := installCmd()
+	err := cmd.RunE(cmd, nil)
+	if err == nil || cliutil.ExitCodeOf(err) != cliutil.ExitConfig || !strings.Contains(err.Error(), "unsupported test host") {
+		t.Fatalf("error = %v, want unsupported-host precondition failure", err)
+	}
+}
+
+func TestInstallCmdDryRunSkipsHostPreflightAndPrintsPlan(t *testing.T) {
+	origHost := requireContainInstallHost
+	origEnv := newContainInstallEnv
+	t.Cleanup(func() {
+		requireContainInstallHost = origHost
+		newContainInstallEnv = origEnv
+	})
+	requireContainInstallHost = func() error {
+		t.Fatal("dry-run must not run host preflight")
+		return nil
+	}
+	env, _, out := newFakeEnv(t)
+	newContainInstallEnv = func(io.Writer) *installEnv { return env }
+	src := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(src, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := installCmd()
+	cmd.SetArgs([]string{"--dry-run", "--operator-user", containInstallOperatorUser, "--pipelock-binary", env.pipelockBinary, "--config", src})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if !strings.Contains(out.String(), "planned steps") {
+		t.Fatalf("dry-run output = %q, want plan", out.String())
+	}
+}
+
 func TestWalkAndChown_NoOpEnvCallsForEveryFile(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	chownCalls := 0

@@ -489,6 +489,14 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 				if addErr := w.addRecursive(ev.Name); addErr != nil {
 					w.logError(fmt.Errorf("failed to watch new directory %q: %w", ev.Name, addErr))
 				}
+				// The directory can contain files before fsnotify installs its
+				// nested watches. Reconcile those files now so that first writes
+				// do not become a fail-open detection gap. Arm deliberately does
+				// not call this: it runs before the child starts and must not scan
+				// pre-child files.
+				if reconcileErr := w.reconcileNewDirectory(ctx, ev.Name); reconcileErr != nil {
+					w.logError(fmt.Errorf("failed to reconcile new directory %q: %w", ev.Name, reconcileErr))
+				}
 			}
 		}
 	}
@@ -581,6 +589,66 @@ func (w *fsWatcher) forgetWatchPath(path string) {
 			delete(w.watchedPaths, watched)
 		}
 	}
+}
+
+// reconcileNewDirectory scans regular, non-ignored files that already exist
+// in a directory observed through a runtime Create event. This closes the
+// detection gap where the first write happens before nested watches exist.
+// It must only run from handleEvent: Arm runs before the child starts and
+// intentionally installs watches without scanning existing content.
+//
+// Reconciliation scans synchronously and attributes each file at scan time.
+// It does not keep a file-descriptor snapshot across a debounce window.
+func (w *fsWatcher) reconcileNewDirectory(ctx context.Context, root string) error {
+	var walkErrs []error
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// An unreadable entry is a visible observer failure, not a Finding;
+			// returning it to handleEvent cannot cancel the child.
+			walkErrs = append(walkErrs, fmt.Errorf("walk %q: %w", path, walkErr))
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			// Never follow a link out of the new subtree. It remains unscanned
+			// and therefore cannot create a block-mode cancellation.
+			return nil
+		}
+		if w.isIgnored(path) {
+			// An explicit ignore is a no-Finding path. Skip descendants as well
+			// so a matching directory cannot bypass the configured exclusion.
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			// Only regular files have a safe content-scan contract. Other entry
+			// types are skipped and never become an enforcement signal.
+			return nil
+		}
+
+		// A failed attribution remains a non-agent finding, which is visible
+		// but cannot trigger block mode. This is the existing Finding-gated
+		// failure direction, not a watcher-error cancellation path.
+		isAgent := w.lineage != nil && w.lineage.HasFileOpen(path)
+		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return nil
+		}
+		w.scanWG.Add(1)
+		w.mu.Unlock()
+		w.doScan(ctx, path, isAgent, true)
+		w.scanWG.Done()
+		return nil
+	})
+	if walkErr != nil {
+		walkErrs = append(walkErrs, fmt.Errorf("walk new directory: %w", walkErr))
+	}
+	return errors.Join(walkErrs...)
 }
 
 // flushScan runs a DLP scan synchronously during Close. Close keeps both

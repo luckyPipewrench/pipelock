@@ -6,12 +6,17 @@ package filesentry
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // stubWatcher is a Watcher that drives Findings() from a pre-seeded
@@ -46,6 +51,154 @@ func makeWatcher(t *testing.T, findings ...Finding) Watcher {
 	overflow := make(chan Finding)
 	close(overflow)
 	return &stubWatcher{ch: ch, overflow: overflow}
+}
+
+// newBlockModeConsumerWatcher uses the real watcher event and delivery paths
+// so skipped-file tests cannot pass merely because a stub never emits. The
+// mock lineage makes the write agent-attributed; only an emitted Finding may
+// reach ConsumeFindings and cancel the child context.
+func newBlockModeConsumerWatcher(t *testing.T, maxFileBytes int64) (
+	dir string,
+	watcher *fsWatcher,
+	errs <-chan error,
+	cancelCount *atomic.Int32,
+	blocked <-chan Finding,
+	finish func(),
+) {
+	t.Helper()
+	dir = t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:      true,
+		WatchPaths:   []config.WatchPath{{Path: dir}},
+		ScanContent:  ptrBool(true),
+		MaxFileBytes: maxFileBytes,
+	}
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(defaults)
+	t.Cleanup(sc.Close)
+
+	errorCh := make(chan error, 4)
+	w, err := NewWatcher(cfg, sc, &mockLineage{hasFileOpen: true}, func(err error) {
+		select {
+		case errorCh <- err:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	watcher, ok := w.(*fsWatcher)
+	if !ok {
+		t.Fatalf("NewWatcher returned %T, want *fsWatcher", w)
+	}
+	if err := watcher.Arm(); err != nil {
+		t.Fatalf("Arm: %v", err)
+	}
+
+	counts := &atomic.Int32{}
+	blockCh := make(chan Finding, 1)
+	wait := ConsumeFindings(ConsumerOpts{
+		Watcher: watcher,
+		Action:  config.ActionBlock,
+		Cancel:  func() { counts.Add(1) },
+		OnBlock: func(f Finding) { blockCh <- f },
+	})
+	var once sync.Once
+	finish = func() {
+		once.Do(func() {
+			if err := watcher.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+			wait()
+		})
+	}
+	t.Cleanup(finish)
+	return dir, watcher, errorCh, counts, blockCh, finish
+}
+
+func waitForConsumerWatcherError(t *testing.T, errs <-chan error, want string) {
+	t.Helper()
+	select {
+	case err := <-errs:
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("watcher error = %q, want %q", err, want)
+		}
+	case <-time.After(filesentryPositiveBackstop):
+		t.Fatalf("timeout waiting for watcher error containing %q", want)
+	}
+}
+
+func TestConsumeFindings_BlockMode_SkippedAgentWritesDoNotCancel(t *testing.T) {
+	const maxFileBytes = 128
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+	t.Run("oversized write", func(t *testing.T) {
+		dir, watcher, errs, cancelCount, blocked, finish := newBlockModeConsumerWatcher(t, maxFileBytes)
+		path := filepath.Join(dir, "oversized.txt")
+		if err := os.WriteFile(path, append([]byte(secret), []byte(strings.Repeat("x", 256))...), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		watcher.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+		waitForConsumerWatcherError(t, errs, "oversized")
+		finish()
+
+		if got := cancelCount.Load(); got != 0 {
+			t.Errorf("oversized agent write must not cancel without a Finding, got %d calls", got)
+		}
+		select {
+		case finding := <-blocked:
+			t.Errorf("oversized agent write reached OnBlock with %+v", finding)
+		default:
+		}
+	})
+
+	t.Run("open failure", func(t *testing.T) {
+		dir, watcher, errs, cancelCount, blocked, finish := newBlockModeConsumerWatcher(t, maxFileBytes)
+		path := filepath.Join(dir, "raced-away.txt")
+		if err := os.WriteFile(path, []byte("clean content"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		watcher.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+		waitForPendingTimer(t, watcher, path)
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+		waitForConsumerWatcherError(t, errs, "open failed")
+		finish()
+
+		if got := cancelCount.Load(); got != 0 {
+			t.Errorf("open failure must not cancel without a Finding, got %d calls", got)
+		}
+		select {
+		case finding := <-blocked:
+			t.Errorf("open failure reached OnBlock with %+v", finding)
+		default:
+		}
+	})
+
+	t.Run("normal-sized finding cancels", func(t *testing.T) {
+		dir, watcher, _, cancelCount, blocked, finish := newBlockModeConsumerWatcher(t, maxFileBytes)
+		path := filepath.Join(dir, "detected.txt")
+		if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		watcher.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+		select {
+		case finding := <-blocked:
+			if finding.Path != path || !finding.IsAgent {
+				t.Errorf("OnBlock finding = %+v, want agent finding for %q", finding, path)
+			}
+		case <-time.After(filesentryPositiveBackstop):
+			t.Fatal("timeout waiting for normal-sized agent Finding to cancel")
+		}
+		finish()
+
+		if got := cancelCount.Load(); got != 1 {
+			t.Errorf("normal-sized agent Finding must cancel once, got %d calls", got)
+		}
+	})
 }
 
 func TestConsumeFindings_BlockMode_AgentOverflowCancels(t *testing.T) {

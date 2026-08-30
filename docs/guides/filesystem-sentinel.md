@@ -13,7 +13,7 @@ This catches a class of exfiltration that the network proxy cannot see: an agent
 
 File sentry applies to **subprocess MCP mode only**. HTTP upstream, WebSocket, and listener modes have no local child process and are out of scope.
 
-File sentry detects writes; it doesn't intercept them. With `action: warn` (default), findings are alerted and the agent keeps running. With `action: block`, file sentry fails closed only after it emits a detected, agent-attributed DLP finding. The consumer logs the finding, records the metric, and then cancels the proxy context, terminating the MCP child so the agent cannot continue acting on that detected leak. A skipped, unreadable, ignored, or replaced file doesn't create a finding. Without a finding, block leaves the child running. Writes before Arm work the same way. A watcher backend failure from `Start()` still cancels the runtime; that is a dead watcher, not a skipped file. For write-time interception, use Landlock or the process sandbox (`--sandbox`).
+File sentry detects writes; it doesn't intercept them. With `action: warn` (default), findings are alerted and the agent keeps running. With `action: block`, file sentry fails closed only after it emits a detected, agent-attributed DLP finding. The consumer logs the finding, records the metric, and then cancels the proxy context, terminating the MCP child so the agent cannot continue acting on that detected leak. A skipped, unreadable, ignored, or deleted file doesn't create a finding. If the path is replaced before the scan opens it, the replacement content is scanned and can become a finding. Without a finding, block leaves the child running. Writes before Arm work the same way. A watcher backend failure from `Start()` still cancels the runtime; that is a dead watcher, not a skipped file. For write-time interception, use Landlock or the process sandbox (`--sandbox`).
 
 ## Configuration
 
@@ -39,7 +39,7 @@ file_sentry:
 ### Action
 
 - `warn` (default): every finding is logged to stderr and recorded as a Prometheus metric. The MCP child keeps running.
-- `block`: same logging + metrics, AND on the first detected finding attributed to a process in the agent tree (`IsAgent=true`), the proxy context is cancelled, which terminates the MCP child. Non-agent writes (editor saves, build output, other system processes touching the watched directory) never trigger the block path. Skipped, unreadable, ignored, replaced, and pre-arm writes don't create a finding, so they don't cancel the child. The cancel fires exactly once per session.
+- `block`: same logging + metrics, AND on the first detected finding attributed to a process in the agent tree (`IsAgent=true`), the proxy context is cancelled, which terminates the MCP child. Non-agent writes (editor saves, build output, other system processes touching the watched directory) never trigger the block path. Skipped, unreadable, ignored, deleted, and pre-arm writes don't create a finding, so they don't cancel the child. Replacement content present when the scan opens the path can still become a finding. The cancel fires exactly once per session.
 
 ### Watch Paths
 

@@ -399,12 +399,12 @@ func TestWatcher_ReconcileNewDirectoryCoverage(t *testing.T) {
 			t.Skip("chmod 000 does not restrict root")
 		}
 		dir := t.TempDir()
-		errCh := make(chan error, 4)
+		var errMu sync.Mutex
+		var logged []error
 		fw := newArmedWatcher(t, dir, nil, func(err error) {
-			select {
-			case errCh <- err:
-			default:
-			}
+			errMu.Lock()
+			logged = append(logged, err)
+			errMu.Unlock()
 		})
 		newDir := filepath.Join(dir, "newdir")
 		if err := os.MkdirAll(newDir, 0o750); err != nil {
@@ -414,18 +414,18 @@ func TestWatcher_ReconcileNewDirectoryCoverage(t *testing.T) {
 			t.Skipf("chmod not supported: %v", err)
 		}
 		fw.handleEvent(context.Background(), fsnotify.Event{Name: newDir, Op: fsnotify.Create})
+		if err := fw.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
 		_ = os.Chmod(newDir, 0o600)
-		deadline := time.After(filesentryPositiveBackstop)
-		for {
-			select {
-			case err := <-errCh:
-				if strings.Contains(err.Error(), "failed to reconcile new directory") {
-					return
-				}
-			case <-deadline:
-				t.Fatal("timeout waiting for reconcile error log")
+		errMu.Lock()
+		defer errMu.Unlock()
+		for _, err := range logged {
+			if strings.Contains(err.Error(), "failed to reconcile new directory") {
+				return
 			}
 		}
+		t.Fatalf("logged errors = %v, want reconcile failure", logged)
 	})
 
 	t.Run("skips symlink", func(t *testing.T) {
@@ -467,6 +467,23 @@ func TestWatcher_ReconcileNewDirectoryCoverage(t *testing.T) {
 		case finding := <-fw.Findings():
 			t.Fatalf("scanned ignored directory file %q", finding.Path)
 		case <-time.After(filesentryNegativeObservation):
+		}
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte(secret), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		fw := newArmedWatcher(t, dir, nil, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := fw.reconcileNewDirectory(ctx, dir)
+		if err == nil {
+			t.Fatal("expected reconcile error for cancelled context")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("reconcile error = %v, want context.Canceled", err)
 		}
 	})
 

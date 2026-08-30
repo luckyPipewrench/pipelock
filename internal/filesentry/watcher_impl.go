@@ -489,13 +489,23 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 				if addErr := w.addRecursive(ev.Name); addErr != nil {
 					w.logError(fmt.Errorf("failed to watch new directory %q: %w", ev.Name, addErr))
 				}
-				// The directory can contain files before fsnotify installs its
-				// nested watches. Reconcile those files now so that first writes
-				// do not become a fail-open detection gap. Arm deliberately does
-				// not call this: it runs before the child starts and must not scan
-				// pre-child files.
-				if reconcileErr := w.reconcileNewDirectory(ctx, ev.Name); reconcileErr != nil {
-					w.logError(fmt.Errorf("failed to reconcile new directory %q: %w", ev.Name, reconcileErr))
+				// Watch install stays on the event goroutine so nested watches
+				// exist before the next fsnotify read. Content scanning does not:
+				// a large new tree would otherwise stall event consumption and
+				// overflow the backend queue. Close waits on scanWG for this work.
+				root := ev.Name
+				w.mu.Lock()
+				if w.closed {
+					w.mu.Unlock()
+				} else {
+					w.scanWG.Add(1)
+					w.mu.Unlock()
+					go func() {
+						defer w.scanWG.Done()
+						if reconcileErr := w.reconcileNewDirectory(ctx, root); reconcileErr != nil {
+							w.logError(fmt.Errorf("failed to reconcile new directory %q: %w", root, reconcileErr))
+						}
+					}()
 				}
 			}
 		}
@@ -597,11 +607,15 @@ func (w *fsWatcher) forgetWatchPath(path string) {
 // It must only run from handleEvent: Arm runs before the child starts and
 // intentionally installs watches without scanning existing content.
 //
-// Reconciliation scans synchronously and attributes each file at scan time.
-// It does not keep a file-descriptor snapshot across a debounce window.
+// Reconciliation attributes each file at scan time. It does not keep a
+// file-descriptor snapshot across a debounce window.
 func (w *fsWatcher) reconcileNewDirectory(ctx context.Context, root string) error {
 	var walkErrs []error
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			walkErrs = append(walkErrs, err)
+			return err
+		}
 		if walkErr != nil {
 			// An unreadable entry is a visible observer failure, not a Finding;
 			// returning it to handleEvent cannot cancel the child.

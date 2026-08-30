@@ -985,20 +985,22 @@ func newInterceptHandler(
 				}
 			}
 			bodyReq := BodyScanRequest{
-				Body:            r.Body,
-				Method:          r.Method,
-				ContentType:     r.Header.Get("Content-Type"),
-				ContentEncoding: r.Header.Get("Content-Encoding"),
-				MaxBytes:        ic.Config.RequestBodyScanning.MaxBodyBytes,
-				Scanner:         ic.Scanner,
-				AgentID:         ic.Agent,
-				Host:            r.URL.Hostname(),
-				Path:            r.URL.Path,
-				Target:          targetURL,
-				Suppress:        ic.Config.Suppress,
-				Action:          ic.Config.RequestBodyScanning.Action,
-				DisablePatterns: ic.Config.RequestBodyScanning.DisablePatterns,
-				PatternActions:  ic.Config.RequestBodyScanning.PatternActions,
+				Body:             r.Body,
+				Scheme:           "https",
+				Method:           r.Method,
+				ContentType:      r.Header.Get("Content-Type"),
+				ContentEncoding:  r.Header.Get("Content-Encoding"),
+				MaxBytes:         ic.Config.RequestBodyScanning.MaxBodyBytes,
+				Scanner:          ic.Scanner,
+				AgentID:          ic.Agent,
+				Host:             r.URL.Hostname(),
+				Path:             r.URL.Path,
+				EntropyRoutePath: r.URL.EscapedPath(),
+				Target:           targetURL,
+				Suppress:         ic.Config.Suppress,
+				Action:           ic.Config.RequestBodyScanning.Action,
+				DisablePatterns:  ic.Config.RequestBodyScanning.DisablePatterns,
+				PatternActions:   ic.Config.RequestBodyScanning.PatternActions,
 			}
 			applyContentEntropyConfig(&bodyReq, ic.Config)
 			if isA2A {
@@ -1055,6 +1057,9 @@ func newInterceptHandler(
 			}
 
 			if !result.Clean {
+				// An authorized entropy warning remains a finding for receipts and
+				// does not count as a clean adaptive-recovery event. Its exemption
+				// below prevents score signals and action re-promotion only.
 				hasFinding = true
 				action := result.Action
 				if action == "" {
@@ -1080,7 +1085,7 @@ func newInterceptHandler(
 					case len(injectionNames) > 0:
 						reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
 					case result.EntropyFinding != nil:
-						reason = contentEntropyReason(result.EntropyFinding)
+						reason = bodyEntropyReason(result)
 					default:
 						patternNames := dlpMatchNames(result.DLPMatches)
 						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
@@ -1093,9 +1098,7 @@ func newInterceptHandler(
 				// weakening scoring on general allowlisted hosts like github.com.
 				// Address protection findings and fail-closed body errors are NOT
 				// exempted - only DLP pattern matches.
-				dlpExempt := scannerLabel == scannerLabelBodyDLP &&
-					len(result.DLPMatches) > 0 &&
-					isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains)
+				bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, result, r.URL.Hostname(), ic.Config)
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
 				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)
 				if promptInjectionHardBlock || dlpHardBlock {
@@ -1107,7 +1110,7 @@ func newInterceptHandler(
 				// legitimate LLM traffic from cascading into session blocks.
 				originalBodyAction := action
 				level := interceptEscalationLevel(ic)
-				if !dlpExempt {
+				if !bodyAdaptiveExempt {
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalBodyAction {
@@ -1127,7 +1130,7 @@ func newInterceptHandler(
 				// mode. ActionAsk also has no HITL terminal in intercepted
 				// tunnels, so it fails closed here.
 				if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
-					if !dlpExempt {
+					if !bodyAdaptiveExempt {
 						interceptRecordSignal(ic, session.SignalBlock)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason)
@@ -1154,7 +1157,7 @@ func newInterceptHandler(
 				// a base action that was already "block" would fire here even
 				// without any escalation, which is not the intent.
 				if action == config.ActionBlock && action != originalBodyAction && !ic.Config.EnforceEnabled() {
-					if !dlpExempt {
+					if !bodyAdaptiveExempt {
 						interceptRecordSignal(ic, session.SignalBlock)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason+" (escalated)")

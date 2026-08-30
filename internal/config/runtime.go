@@ -281,6 +281,9 @@ func (c *Config) Clone() *Config {
 	if c.ResponseScanning.AuthenticatedArtifacts != nil {
 		clone.ResponseScanning.AuthenticatedArtifacts = append([]AuthenticatedArtifactEntry(nil), c.ResponseScanning.AuthenticatedArtifacts...)
 	}
+	if c.RequestBodyScanning.ContentEntropyWarnRoutes != nil {
+		clone.RequestBodyScanning.ContentEntropyWarnRoutes = cloneRequestBodyEntropyWarnRoutes(c.RequestBodyScanning.ContentEntropyWarnRoutes)
+	}
 	if c.Taint.TrustedMCPServers != nil {
 		clone.Taint.TrustedMCPServers = append([]string(nil), c.Taint.TrustedMCPServers...)
 	}
@@ -337,6 +340,15 @@ func cloneUnscannablePassthrough(src []UnscannablePassthroughEntry) []Unscannabl
 		if src[i].ContentTypes != nil {
 			dst[i].ContentTypes = append([]string(nil), src[i].ContentTypes...)
 		}
+	}
+	return dst
+}
+
+func cloneRequestBodyEntropyWarnRoutes(src []RequestBodyEntropyWarnRoute) []RequestBodyEntropyWarnRoute {
+	dst := append([]RequestBodyEntropyWarnRoute(nil), src...)
+	for i := range src {
+		dst[i].ContentTypes = append([]string(nil), src[i].ContentTypes...)
+		dst[i].Methods = append([]string(nil), src[i].Methods...)
 	}
 	return dst
 }

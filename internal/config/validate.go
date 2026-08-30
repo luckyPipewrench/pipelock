@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -152,6 +153,110 @@ func validateUnscannablePassthrough(entries []UnscannablePassthroughEntry) error
 		entries[i].Expires = strings.TrimSpace(entries[i].Expires)
 	}
 	return nil
+}
+
+func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
+	if len(cfg.ContentEntropyWarnRoutes) == 0 {
+		return nil
+	}
+	if !cfg.Enabled || !cfg.ContentEntropyEnabled || cfg.ContentEntropyAction != ActionBlock {
+		return fmt.Errorf("request_body_scanning.content_entropy_warn_routes requires enabled request body scanning with content entropy action block")
+	}
+
+	for i := range cfg.ContentEntropyWarnRoutes {
+		entry := &cfg.ContentEntropyWarnRoutes[i]
+		field := fmt.Sprintf("request_body_scanning.content_entropy_warn_routes[%d]", i)
+		host := []string{entry.Host}
+		if err := ValidateTrustedDomains(host, field+".host"); err != nil {
+			return err
+		}
+		if strings.ContainsAny(host[0], "*?[]") {
+			return fmt.Errorf("%s.host must be one exact host without wildcards", field)
+		}
+		entry.Host = host[0]
+
+		path, ok := CanonicalUnscannablePassthroughPath(strings.TrimSpace(entry.Path))
+		if !ok {
+			return fmt.Errorf("%s.path %q must be an exact non-root canonical path without traversal, encoded topology changes, controls, or path parameters", field, entry.Path)
+		}
+		entry.Path = path
+
+		if len(entry.ContentTypes) == 0 {
+			return fmt.Errorf("%s.content_types must contain at least one non-textual media type", field)
+		}
+		for j, raw := range entry.ContentTypes {
+			mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(strings.ToLower(raw)))
+			if err != nil || mediaType == "" {
+				return fmt.Errorf("%s.content_types[%d] %q is invalid", field, j, raw)
+			}
+			if isTextualUnscannablePassthroughType(mediaType) {
+				return fmt.Errorf("%s.content_types[%d] %q is textual/scannable and cannot downgrade entropy enforcement", field, j, raw)
+			}
+			entry.ContentTypes[j] = mediaType
+		}
+
+		for j, raw := range entry.Methods {
+			method := strings.ToUpper(strings.TrimSpace(raw))
+			if !validHTTPMethod(method) {
+				return fmt.Errorf("%s.methods[%d] %q is not a supported HTTP method", field, j, raw)
+			}
+			entry.Methods[j] = method
+		}
+
+		entry.Reason = strings.TrimSpace(entry.Reason)
+		entry.Owner = strings.TrimSpace(entry.Owner)
+		for _, textField := range []struct {
+			name  string
+			value string
+			max   int
+		}{{"reason", entry.Reason, 200}, {"owner", entry.Owner, 100}} {
+			if textField.value == "" {
+				return fmt.Errorf("%s.%s is required", field, textField.name)
+			}
+			if len(textField.value) > textField.max {
+				return fmt.Errorf("%s.%s must be %d characters or fewer", field, textField.name, textField.max)
+			}
+			if strings.IndexFunc(textField.value, unicode.IsControl) >= 0 {
+				return fmt.Errorf("%s.%s must not contain control characters", field, textField.name)
+			}
+		}
+
+		entry.Expires = strings.TrimSpace(entry.Expires)
+		expires, err := time.Parse("2006-01-02", entry.Expires)
+		if err != nil {
+			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+		}
+		if expires.Before(todayUTC()) {
+			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		}
+
+		slices.Sort(entry.ContentTypes)
+		entry.ContentTypes = slices.Compact(entry.ContentTypes)
+		slices.Sort(entry.Methods)
+		entry.Methods = slices.Compact(entry.Methods)
+		for j := range i {
+			previous := cfg.ContentEntropyWarnRoutes[j]
+			methodsOverlap := len(previous.Methods) == 0 || len(entry.Methods) == 0 || sortedStringsOverlap(previous.Methods, entry.Methods)
+			if previous.Host == entry.Host && previous.Path == entry.Path && methodsOverlap && sortedStringsOverlap(previous.ContentTypes, entry.ContentTypes) {
+				return fmt.Errorf("%s overlaps content_entropy_warn_routes[%d]; exact route exceptions must have one unambiguous owner and reason", field, j)
+			}
+		}
+	}
+	return nil
+}
+
+func sortedStringsOverlap(left, right []string) bool {
+	for i, j := 0, 0; i < len(left) && j < len(right); {
+		switch {
+		case left[i] == right[j]:
+			return true
+		case left[i] < right[j]:
+			i++
+		default:
+			j++
+		}
+	}
+	return false
 }
 
 func todayUTC() time.Time {
@@ -322,6 +427,12 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	}
 	if err := c.validateRequestBodyScanning(); err != nil {
 		return warnings, err
+	}
+	if len(c.RequestBodyScanning.ContentEntropyWarnRoutes) > 0 {
+		warnings = append(warnings, Warning{
+			Field:   "request_body_scanning.content_entropy_warn_routes",
+			Message: fmt.Sprintf("%d exact HTTPS route(s) downgrade request-body entropy findings from block to warn; DLP, injection, address, size, and redirect controls remain enforced", len(c.RequestBodyScanning.ContentEntropyWarnRoutes)),
+		})
 	}
 	if err := c.validateRequestPolicy(&warnings); err != nil {
 		return warnings, err
@@ -2363,6 +2474,9 @@ func (c *Config) validateRequestBodyScanning() error {
 		return fmt.Errorf("request_body_scanning.content_entropy_min_length must be non-negative")
 	}
 	if err := validateHostnamePatternList("request_body_scanning.content_entropy_exclusions", c.RequestBodyScanning.ContentEntropyExclusions); err != nil {
+		return err
+	}
+	if err := validateRequestBodyEntropyWarnRoutes(&c.RequestBodyScanning); err != nil {
 		return err
 	}
 	if !c.RequestBodyScanning.Enabled {

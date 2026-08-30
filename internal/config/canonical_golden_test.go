@@ -344,7 +344,10 @@ const (
 	// policy-relevant because an entry lets the proxy release a verified
 	// official rules bundle with response injection matching skipped, so
 	// verifiers must observe the schema change through ph.
-	goldenHashDefaults = "975c1fc1b7554dd04fd7aea3df8cd421159c0c50fa0f89aa666660cd2e445a90"
+	// Re-bumped for request_body_scanning.content_entropy_warn_routes. The
+	// exact route exception changes an entropy block to a visible warning, so
+	// mixed versions must not report the same policy identity.
+	goldenHashDefaults = "4d531d9b039f54906dd5ea1a92ea66054e7a5fd6e62cdbabe1f5fa7b377af218"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -519,7 +522,8 @@ const (
 	// goldenHashDefaults note above. The rich fixture omits the field, so the
 	// nil allowlist flows into ph identically to Defaults() and the hash
 	// shifts in lockstep.
-	goldenHashRichConfig = "e2e76982713a955b7275fff84ab4420fc23441706ccfb2fe26b50470230135fb"
+	// Re-bumped for route-scoped entropy warnings: see goldenHashDefaults.
+	goldenHashRichConfig = "d5c791b08f5cf44338f78aeb3a426ba9a839a6db3151aa4f73aa2244100f8a3f"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

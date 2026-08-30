@@ -126,6 +126,10 @@ const (
 	// recorder into CheckRedirect so policy is re-evaluated against the same
 	// identity and state on every hop.
 	ctxKeyRedirectSessionRecorder
+	// ctxKeyEntropyWarnRoute binds a request-body entropy warning exception to
+	// its exact admitted HTTPS destination. CheckRedirect refuses a replay to
+	// any other route because 307/308 preserve the already-scanned body.
+	ctxKeyEntropyWarnRoute
 
 	// ctxKeySSRFDialScanSnapshot carries the DNS answers from an allowed
 	// scanner SSRF pass into the later dial-time re-resolution. The safe
@@ -787,6 +791,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			currentScanner, _ := req.Context().Value(ctxKeyAgentScanner).(*scanner.Scanner)
 			if currentScanner == nil {
 				currentScanner = p.scannerPtr.Load()
+			}
+			if admitted, ok := req.Context().Value(ctxKeyEntropyWarnRoute).(*BodyEntropyWarnRouteMatch); ok && admitted != nil {
+				matched := matchBodyEntropyWarnRoute(BodyScanRequest{
+					Scheme: req.URL.Scheme, Method: req.Method, ContentType: req.Header.Get(headerContentType),
+					Host: req.URL.Hostname(), EntropyRoutePath: req.URL.EscapedPath(), ContentEntropyAction: config.ActionBlock,
+					ContentEntropyWarnRoutes: currentCfg.RequestBodyScanning.ContentEntropyWarnRoutes,
+				}, time.Now().UTC())
+				if matched == nil || *matched != *admitted {
+					return newRedirectBlockedRequest(scannerLabelBodyEntropy, "redirect replay left the admitted entropy warning route")
+				}
 			}
 			redirectWarnCtx := scanner.DLPWarnContextFromCtx(req.Context())
 			redirectWarnCtx.Method = req.Method

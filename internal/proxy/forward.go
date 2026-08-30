@@ -1261,6 +1261,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// the signer would have to re-drain req.Body itself and the caller
 	// would lose deterministic bookkeeping about byte counts.
 	var forwardBodyBytes []byte
+	var forwardEntropyWarnRoute *BodyEntropyWarnRouteMatch
 	scanA2AForwardBody := func(buf []byte) bool {
 		a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), buf, sc, &cfg.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), cfg))
 		if a2aBodyResult.Clean {
@@ -1354,20 +1355,22 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
-			Body:            r.Body,
-			Method:          r.Method,
-			ContentType:     r.Header.Get("Content-Type"),
-			ContentEncoding: r.Header.Get("Content-Encoding"),
-			MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
-			Scanner:         sc,
-			AgentID:         agent,
-			Host:            r.URL.Hostname(),
-			Path:            r.URL.Path,
-			Target:          targetURL,
-			Suppress:        cfg.Suppress,
-			Action:          cfg.RequestBodyScanning.Action,
-			DisablePatterns: cfg.RequestBodyScanning.DisablePatterns,
-			PatternActions:  cfg.RequestBodyScanning.PatternActions,
+			Body:             r.Body,
+			Scheme:           r.URL.Scheme,
+			Method:           r.Method,
+			ContentType:      r.Header.Get("Content-Type"),
+			ContentEncoding:  r.Header.Get("Content-Encoding"),
+			MaxBytes:         cfg.RequestBodyScanning.MaxBodyBytes,
+			Scanner:          sc,
+			AgentID:          agent,
+			Host:             r.URL.Hostname(),
+			Path:             r.URL.Path,
+			EntropyRoutePath: r.URL.EscapedPath(),
+			Target:           targetURL,
+			Suppress:         cfg.Suppress,
+			Action:           cfg.RequestBodyScanning.Action,
+			DisablePatterns:  cfg.RequestBodyScanning.DisablePatterns,
+			PatternActions:   cfg.RequestBodyScanning.PatternActions,
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
 		if isA2A {
@@ -1375,6 +1378,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
+		forwardEntropyWarnRoute = bodyResult.EntropyWarnRoute
 
 		// Capture observer: record forward body DLP verdict for policy replay.
 		{
@@ -1411,6 +1415,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		recordBodyRedactionMetrics(p.metrics, "forward", agentLabel, bodyResult.RedactionReport)
 
 		if !bodyResult.Clean {
+			// An authorized entropy warning remains a finding for receipts and
+			// does not count as a clean adaptive-recovery event. Its exemption
+			// below prevents score signals and action re-promotion only.
 			hasFinding = true
 			action := bodyResult.Action
 			if action == "" {
@@ -1443,13 +1450,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				case len(patternNames) > 0:
 					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 				case bodyResult.EntropyFinding != nil:
-					reason = contentEntropyReason(bodyResult.EntropyFinding)
+					reason = bodyEntropyReason(bodyResult)
 				}
 			}
 			promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg)
-			fwdBodyExempt := scannerLabel == scannerLabelBodyDLP &&
-				len(bodyResult.DLPMatches) > 0 &&
-				isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
+			bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, bodyResult, r.URL.Hostname(), cfg)
 			dlpHardBlock := shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg)
 			if promptInjectionHardBlock || dlpHardBlock {
 				action = config.ActionBlock
@@ -1481,7 +1486,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if bodyResult.EntropyFinding != nil {
 				p.metrics.RecordBodyEntropy(action, agentLabel)
-				p.logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{contentEntropyReason(bodyResult.EntropyFinding)})
+				p.logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{bodyEntropyReason(bodyResult)})
 			}
 
 			// Fail-closed: if the body cannot be replayed or redaction explicitly
@@ -1516,12 +1521,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Adaptive enforcement: upgrade the body action.
-			// DLP-only exemption: skip upgrade for DLP pattern findings on
-			// adaptive-exempt destinations. Address protection findings and
-			// fail-closed body errors are NOT exempted.
+			// Adaptive enforcement: upgrade the body action except for the
+			// existing DLP destination exemption and an exact entropy warning
+			// route. Address, injection, and fail-closed errors remain eligible.
 			originalBodyAction := action
-			if !fwdBodyExempt {
+			if !bodyAdaptiveExempt {
 				action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
 			}
 			if action != originalBodyAction {
@@ -1900,6 +1904,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
+	if forwardEntropyWarnRoute != nil {
+		ctx = context.WithValue(ctx, ctxKeyEntropyWarnRoute, forwardEntropyWarnRoute)
+	}
 	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, r.URL.Hostname(), effectiveURLPort(r.URL), result)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client

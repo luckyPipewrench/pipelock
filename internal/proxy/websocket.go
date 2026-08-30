@@ -1367,9 +1367,16 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 		DisablePatterns: r.cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:  r.cfg.RequestBodyScanning.PatternActions,
 	}
-	applyContentEntropyConfig(&bodyReq, r.cfg, r.cfg.WebSocketProxy.ContentEntropyExclusions)
+	applyWebSocketContentEntropyConfig(&bodyReq, r.cfg)
 	applyBodyScanRedaction(&bodyReq, r.redaction)
 	return scanRequestBody(ctx, bodyReq)
+}
+
+func applyWebSocketContentEntropyConfig(req *BodyScanRequest, cfg *config.Config) {
+	applyContentEntropyConfig(req, cfg, cfg.WebSocketProxy.ContentEntropyExclusions)
+	// HTTP route exceptions must never become WebSocket frame exceptions if a
+	// future caller starts supplying a ws/wss or normalized HTTPS scheme.
+	req.ContentEntropyWarnRoutes = nil
 }
 
 // enforceClientControlPayload scans Ping and Pong application data without

@@ -446,6 +446,14 @@ func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg 
 	return true
 }
 
+func isBodyAdaptiveExempt(scannerLabel string, result BodyScanResult, hostname string, cfg *config.Config) bool {
+	if scannerLabel == scannerLabelBodyEntropy && result.EntropyWarnRoute != nil {
+		return true
+	}
+	return scannerLabel == scannerLabelBodyDLP && len(result.DLPMatches) > 0 && cfg != nil &&
+		isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+}
+
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
 	Clean            bool
@@ -455,6 +463,7 @@ type BodyScanResult struct {
 	AddressFindings  []addressprotect.Finding // crypto address poisoning findings
 	EntropyFinding   *ContentEntropyFinding
 	EntropyAction    string
+	EntropyWarnRoute *BodyEntropyWarnRouteMatch
 	// RedactedDLPOnly is true when DLP matched the original body but the
 	// post-redaction body scanned clean. Callers can use this to distinguish
 	// "raw residual secret remains" from "secret was removed before forward".
@@ -474,10 +483,22 @@ type BodyScanResult struct {
 // ContentEntropyFinding describes an opaque high-entropy body/frame value.
 type ContentEntropyFinding = contententropy.Finding
 
+// BodyEntropyWarnRouteMatch records the exact operator exception that changed
+// an entropy finding from block to warn. It is kept on the result so audit and
+// receipt surfaces can show why the warning was allowed through.
+type BodyEntropyWarnRouteMatch struct {
+	Host    string
+	Path    string
+	Reason  string
+	Owner   string
+	Expires string
+}
+
 // BodyScanRequest groups the parameters for scanRequestBody, keeping the
 // function signature under the 6-parameter guideline (ctx is passed separately).
 type BodyScanRequest struct {
 	Body            io.Reader
+	Scheme          string
 	Method          string
 	ContentType     string
 	ContentEncoding string
@@ -513,6 +534,10 @@ type BodyScanRequest struct {
 	Host string
 	// Path is the upstream request path, used for provider parser selection.
 	Path string
+	// EntropyRoutePath is the escaped upstream path used only for exact entropy
+	// warning route matching. It must retain encoded topology changes that the
+	// decoded Path intentionally hides from provider and redaction dispatch.
+	EntropyRoutePath string
 	// TrustedProviderOpaqueRequest overrides provider-opaque request recognition.
 	// Nil uses the production OpenAI/ChatGPT host and path allowlist.
 	TrustedProviderOpaqueRequest func(host, path string) bool
@@ -536,6 +561,7 @@ type BodyScanRequest struct {
 	ContentEntropyMinLength  int
 	ContentEntropyTrusted    []string
 	ContentEntropyExclusions []string
+	ContentEntropyWarnRoutes []config.RequestBodyEntropyWarnRoute
 }
 
 // scanRequestBody reads, buffers, and scans an HTTP request body for
@@ -682,7 +708,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	if finding := scanBodyTextsForContentEntropy(texts, req); finding != nil {
 		result.EntropyFinding = finding
 		result.EntropyAction = req.ContentEntropyAction
-		action = config.StrongestAction(action, req.ContentEntropyAction)
+		if matched := matchBodyEntropyWarnRoute(req, time.Now().UTC()); matched != nil {
+			result.EntropyAction = config.ActionWarn
+			result.EntropyWarnRoute = matched
+		}
+		action = config.StrongestAction(action, result.EntropyAction)
 	}
 	for _, text := range texts {
 		injectionResult := req.Scanner.ScanResponse(ctx, text)
@@ -730,7 +760,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 			result.Reason = fmt.Sprintf("address poisoning detected: %s", result.AddressFindings[0].Explanation)
 		}
 		if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && len(result.AddressFindings) == 0 {
-			result.Reason = contentEntropyReason(result.EntropyFinding)
+			result.Reason = bodyEntropyReason(result)
 		}
 		return buf, result
 	}
@@ -1018,6 +1048,50 @@ func contentEntropyReason(f *ContentEntropyFinding) string {
 	return contententropy.Reason(f)
 }
 
+func bodyEntropyReason(result BodyScanResult) string {
+	reason := contentEntropyReason(result.EntropyFinding)
+	if result.EntropyWarnRoute == nil {
+		return reason
+	}
+	return fmt.Sprintf("%s; route warning override: %s (owner %s, expires %s)", reason, result.EntropyWarnRoute.Reason, result.EntropyWarnRoute.Owner, result.EntropyWarnRoute.Expires)
+}
+
+func matchBodyEntropyWarnRoute(req BodyScanRequest, now time.Time) *BodyEntropyWarnRouteMatch {
+	if !strings.EqualFold(req.Scheme, "https") || req.ContentEntropyAction != config.ActionBlock {
+		return nil
+	}
+	path, ok := config.CanonicalUnscannablePassthroughPath(req.EntropyRoutePath)
+	if !ok {
+		return nil
+	}
+	mediaType, _, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(req.ContentType)))
+	if err != nil || mediaType == "" {
+		return nil
+	}
+	method := strings.ToUpper(req.Method)
+	host := strings.ToLower(strings.TrimSuffix(req.Host, "."))
+	today := now.UTC().Format("2006-01-02")
+	for _, entry := range req.ContentEntropyWarnRoutes {
+		if entry.Host != host || entry.Path != path || entry.Expires < today || !stringListContains(entry.ContentTypes, mediaType) {
+			continue
+		}
+		if len(entry.Methods) > 0 && !stringListContains(entry.Methods, method) {
+			continue
+		}
+		return &BodyEntropyWarnRouteMatch{Host: entry.Host, Path: entry.Path, Reason: entry.Reason, Owner: entry.Owner, Expires: entry.Expires}
+	}
+	return nil
+}
+
+func stringListContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraExclusions ...[]string) {
 	if req == nil || cfg == nil {
 		return
@@ -1028,6 +1102,7 @@ func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraEx
 	req.ContentEntropyMinLength = cfg.RequestBodyScanning.ContentEntropyMinLength
 	req.ContentEntropyTrusted = cfg.TrustedDomains
 	req.ContentEntropyExclusions = append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...)
+	req.ContentEntropyWarnRoutes = cfg.RequestBodyScanning.ContentEntropyWarnRoutes
 	for _, exclusions := range extraExclusions {
 		req.ContentEntropyExclusions = append(req.ContentEntropyExclusions, exclusions...)
 	}

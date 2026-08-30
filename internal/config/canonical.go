@@ -234,6 +234,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	view.RequestBodyScanning.ContentEntropyExclusions = sortedCopy(view.RequestBodyScanning.ContentEntropyExclusions)
+	view.RequestBodyScanning.ContentEntropyWarnRoutes = canonicalRequestBodyEntropyWarnRoutes(view.RequestBodyScanning.ContentEntropyWarnRoutes)
 	view.WebSocketProxy.ContentEntropyExclusions = sortedCopy(view.WebSocketProxy.ContentEntropyExclusions)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
@@ -373,6 +374,24 @@ func canonicalUnscannablePassthrough(entries []UnscannablePassthroughEntry) []Un
 			return a.Added < b.Added
 		}
 		return a.Expires < b.Expires
+	})
+	return out
+}
+
+func canonicalRequestBodyEntropyWarnRoutes(entries []RequestBodyEntropyWarnRoute) []RequestBodyEntropyWarnRoute {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]RequestBodyEntropyWarnRoute, len(entries))
+	for i, entry := range entries {
+		out[i] = entry
+		out[i].ContentTypes = sortedCopy(entry.ContentTypes)
+		out[i].Methods = sortedCopy(entry.Methods)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		return a.Host+"\x00"+a.Path+"\x00"+strings.Join(a.Methods, "\x00")+"\x00"+strings.Join(a.ContentTypes, "\x00")+"\x00"+a.Owner+"\x00"+a.Reason+"\x00"+a.Expires <
+			b.Host+"\x00"+b.Path+"\x00"+strings.Join(b.Methods, "\x00")+"\x00"+strings.Join(b.ContentTypes, "\x00")+"\x00"+b.Owner+"\x00"+b.Reason+"\x00"+b.Expires
 	})
 	return out
 }

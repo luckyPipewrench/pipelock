@@ -1292,19 +1292,21 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	maxBytes := reverseRequestScanMaxBytes(cfg)
 
 	bodyReq := BodyScanRequest{
-		Body:            r.Body,
-		Method:          r.Method,
-		ContentType:     r.Header.Get("Content-Type"),
-		ContentEncoding: r.Header.Get("Content-Encoding"),
-		MaxBytes:        maxBytes,
-		Scanner:         sc,
-		Host:            rp.upstream.Hostname(),
-		Path:            r.URL.Path,
-		Target:          receiptInput.Target,
-		Suppress:        cfg.Suppress,
-		Action:          cfg.RequestBodyScanning.Action,
-		DisablePatterns: cfg.RequestBodyScanning.DisablePatterns,
-		PatternActions:  cfg.RequestBodyScanning.PatternActions,
+		Body:             r.Body,
+		Scheme:           rp.upstream.Scheme,
+		Method:           r.Method,
+		ContentType:      r.Header.Get("Content-Type"),
+		ContentEncoding:  r.Header.Get("Content-Encoding"),
+		MaxBytes:         maxBytes,
+		Scanner:          sc,
+		Host:             rp.upstream.Hostname(),
+		Path:             r.URL.Path,
+		EntropyRoutePath: r.URL.EscapedPath(),
+		Target:           receiptInput.Target,
+		Suppress:         cfg.Suppress,
+		Action:           cfg.RequestBodyScanning.Action,
+		DisablePatterns:  cfg.RequestBodyScanning.DisablePatterns,
+		PatternActions:   cfg.RequestBodyScanning.PatternActions,
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
@@ -1381,7 +1383,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		reason = fmt.Sprintf("DLP: %s", strings.Join(patternNames, ", "))
 	}
 	if reason == "" && result.EntropyFinding != nil {
-		reason = contentEntropyReason(result.EntropyFinding)
+		reason = bodyEntropyReason(result)
 	}
 	if reason == "" {
 		reason = "request body contains secret patterns"
@@ -1398,7 +1400,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	}
 	if result.EntropyFinding != nil {
 		rp.metrics.RecordBodyEntropy(action, "")
-		rp.logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{contentEntropyReason(result.EntropyFinding)})
+		rp.logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{bodyEntropyReason(result)})
 	}
 
 	// Fail-closed transport errors (consumed-but-unreplayable body) and

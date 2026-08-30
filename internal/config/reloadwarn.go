@@ -497,6 +497,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("request body content entropy exclusions added: %s — per-message body/frame entropy bypassed for these hosts", strings.Join(added, ", ")),
 		})
 	}
+	if added := entropyWarnRoutesAdded(old.RequestBodyScanning.ContentEntropyWarnRoutes, updated.RequestBodyScanning.ContentEntropyWarnRoutes); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "request_body_scanning.content_entropy_warn_routes",
+			Message: fmt.Sprintf("request body entropy warning routes added or materially changed: %s — matching entropy findings now warn instead of block", strings.Join(added, ", ")),
+		})
+	}
 	if added := passthroughDomainsAdded(old.WebSocketProxy.ContentEntropyExclusions, updated.WebSocketProxy.ContentEntropyExclusions); len(added) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "websocket_proxy.content_entropy_exclusions",
@@ -1324,6 +1330,24 @@ func passthroughDomainsAdded(old, updated []string) []string {
 			added = append(added, d)
 		}
 	}
+	return added
+}
+
+func entropyWarnRoutesAdded(old, updated []RequestBodyEntropyWarnRoute) []string {
+	key := func(entry RequestBodyEntropyWarnRoute) string {
+		return strings.ToLower(entry.Host) + entry.Path + " [" + strings.Join(entry.Methods, ",") + "] [" + strings.Join(entry.ContentTypes, ",") + "] " + entry.Owner + " " + entry.Reason + " " + entry.Expires
+	}
+	oldSet := make(map[string]struct{}, len(old))
+	for _, entry := range old {
+		oldSet[key(entry)] = struct{}{}
+	}
+	var added []string
+	for _, entry := range updated {
+		if _, ok := oldSet[key(entry)]; !ok {
+			added = append(added, entry.Host+entry.Path)
+		}
+	}
+	sort.Strings(added)
 	return added
 }
 

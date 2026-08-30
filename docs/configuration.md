@@ -346,6 +346,14 @@ request_body_scanning:
   content_entropy_threshold: 4.5      # Shannon bits/char above which a body/frame value is flagged
   content_entropy_min_length: 32      # ignore values shorter than this (limits false positives on short opaque IDs)
   content_entropy_exclusions: []      # destination hosts whose bodies legitimately carry opaque content
+  content_entropy_warn_routes:        # optional exact HTTPS exceptions; valid only when the global action is block
+    - host: upload.vendor.example
+      path: /v1/files
+      content_types: [application/octet-stream]
+      methods: [POST]                  # optional; omit to match every HTTP method
+      reason: encrypted customer archives
+      owner: storage team
+      expires: 2099-12-31
 ```
 
 | Field | Default | Description |
@@ -364,6 +372,7 @@ request_body_scanning:
 | `content_entropy_threshold` | `4.5` | Shannon entropy (bits/char) above which a value is flagged. A long all-hex value below this is still flagged as opaque-hex content. |
 | `content_entropy_min_length` | `32` | Minimum value length considered; shorter values are ignored to limit false positives on short opaque identifiers. |
 | `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
+| `content_entropy_warn_routes` | `[]` | Exact, expiring HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry; methods are optional. Other body findings and size/redirect checks still block normally. |
 
 **Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
 
@@ -384,10 +393,15 @@ request_body_scanning:
 
 **Adaptive enforcement interaction:** A body/header DLP action of `warn`, including a per-pattern `pattern_actions` downgrade, still enters the existing adaptive enforcement path and can be upgraded to `block` unless the destination is adaptive-exempt. `disable_patterns` removes only the named DLP finding from this request-body/header surface; it does not create a destination exemption and does not affect URL, response, MCP, or file DLP scanning.
 
+An entropy warning produced by `content_entropy_warn_routes` is not promoted back to block and does not add an adaptive signal. It remains a visible finding, so that request does not count as a clean recovery/decay event. Logs and receipts include the configured reason, owner, and expiry. A 307/308 body replay is allowed only while the redirected request still matches the same exact route; leaving that route fails closed.
+
+Deploy binaries that understand this field across the fleet before publishing shared configuration that uses it. Config parsing rejects unknown fields, so an older process will refuse the new configuration instead of silently ignoring the exception.
+
 **Opaque content entropy (`content_entropy_*`):** DLP catches secrets that match a known pattern. A stolen canary-file value, an opaque token, or a hex-encoded blob has no signature, so a pattern scanner misses it. Content entropy closes that gap: a high-entropy value leaving in a request body, a WebSocket client-to-server frame, or an A2A message body to a destination that is not trusted is flagged, regardless of pattern. Destination trust comes from the parsed upstream authority (not a request-supplied `Host` header), and hosts in `trusted_domains` or `content_entropy_exclusions` are skipped. Entropy suppression never suppresses a DLP match in the same body. The shipped default is `warn` so the detector observes before it enforces; `strict` and `hostile-model` presets use `block`.
 
 Known limits, by design:
-- **Content-addressed uploads look like exfil.** A SHA-256 hash and a hex-encoded 32-byte secret are the same shape, so length alone cannot separate them. In `warn` mode this is a low-cost audit line; in `block` mode (strict/hostile presets), add legitimate upload/hash endpoints to `content_entropy_exclusions` or `trusted_domains`.
+- **Content-addressed uploads look like exfil.** A SHA-256 hash and a hex-encoded 32-byte secret are the same shape, so length alone cannot separate them. In `block` mode (strict/hostile presets), prefer an exact `content_entropy_warn_routes` entry for a known HTTPS upload endpoint. Host-wide `content_entropy_exclusions` and `trusted_domains` are broader exemptions.
+- **Route warning exceptions are HTTP-only.** They apply to forward proxy HTTPS requests, intercepted HTTPS requests, and HTTPS reverse-proxy upstreams. They do not change WebSocket frame entropy or A2A's separate field-aware entropy checks. `Content-Type` narrows operator intent but is supplied by the sender and is not treated as proof that the body is safe.
 - **WebSocket detection is per-message.** A blob split across separate WebSocket messages, each under `content_entropy_min_length`, is not aggregated here; the cross-request data budget (`cross_request_detection`) is the net for sustained multi-message exfiltration.
 - **MCP-transport A2A** (stdio/HTTP MCP gateways) does not yet apply content entropy; those paths lack a parsed upstream authority to gate destination trust on. HTTP/CONNECT-proxied A2A message bodies are covered.
 

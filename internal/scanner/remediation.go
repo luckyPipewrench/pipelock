@@ -69,8 +69,8 @@ const (
 
 const (
 	bodyDLPOperatorKnob        = "Request body DLP matched. For a non-core false positive, add a top-level `suppress:` entry with `rule:` set to the matched rule name and `path:` scoped to the request path. Core DLP matches cannot be suppressed; fix the core pattern's precision."
-	bodyEntropyOperatorKnob    = "If this destination is trusted to receive opaque body or WebSocket-frame content, add only that host to `request_body_scanning.content_entropy_exclusions`; for a WebSocket-only endpoint, prefer `websocket_proxy.content_entropy_exclusions`. `trusted_domains` is broader because it also affects SSRF trust."
-	bodyEntropyOperatorBroader = "Raising `request_body_scanning.content_entropy_threshold` or setting `request_body_scanning.content_entropy_action: warn` affects opaque body/frame entropy for every destination; prefer a per-host exclusion first."
+	bodyEntropyOperatorKnob    = "For a known HTTPS upload endpoint, prefer an exact, expiring `request_body_scanning.content_entropy_warn_routes` entry so the finding remains visible. For a WebSocket-only endpoint, use `websocket_proxy.content_entropy_exclusions`."
+	bodyEntropyOperatorBroader = "Host-wide `request_body_scanning.content_entropy_exclusions`, `trusted_domains`, a higher entropy threshold, or a global warn action affect more traffic than one exact route; use them only when that broader scope is intended."
 	denialOfWalletOperatorKnob = "Correct the denial-of-wallet condition named by the reason. `runaway expansion` and alternating `cycle detected` use fixed detector thresholds and have no per-detector limit knob. " +
 		"To audit instead of block, set the matched `agents._default.budget.dow_action` (or `agents.<name>.budget.dow_action`) to `warn`; this changes enforcement for every denial-of-wallet finding."
 	denialOfWalletToolCallsOperatorKnob = "Raise `agents._default.budget.max_tool_calls_per_session` (or the matched `agents.<name>.budget.max_tool_calls_per_session`) if the DoW subject's per-window tool-call budget is intentionally higher."

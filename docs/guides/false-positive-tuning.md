@@ -121,16 +121,21 @@ positive is an audit line, not a block. Tune before setting
 `request_body_scanning.content_entropy_action: block` for the deployment or
 selecting a blocking preset (strict/hostile presets already block):
 
-- **Narrowest first:** add the specific upload or hash endpoint host to
-  `request_body_scanning.content_entropy_exclusions` (or
-  `websocket_proxy.content_entropy_exclusions` for a WebSocket-only endpoint).
-  This lifts only the entropy check for that host; DLP still applies.
-- **Broader:** if the host is fully trusted, `trusted_domains` covers it for
+- **Narrowest first:** for an HTTPS request-body endpoint, add an exact,
+  expiring `request_body_scanning.content_entropy_warn_routes` entry. The
+  entropy finding remains visible while DLP, prompt injection, address, body
+  size, and redirect checks keep their normal actions.
+- **WebSocket:** use `websocket_proxy.content_entropy_exclusions` for a
+  WebSocket-only endpoint. Route warning entries do not affect WebSocket or
+  A2A entropy scanning.
+- **Broader:** a host in `request_body_scanning.content_entropy_exclusions`
+  skips request-body entropy across every path on that host. If the host is
+  fully trusted, `trusted_domains` covers it for
   entropy and other destination-trust checks at once.
 - **Global (last resort):** raising `request_body_scanning.content_entropy_threshold`
-  lowers sensitivity for every destination. Prefer a per-host exclusion.
+  lowers sensitivity for every destination. Prefer an exact route warning.
 
 `content_entropy_min_length` applies to both individual leaves and their stable
 aggregate views. Raising it can reduce flags for one short identifier, but a
-collection of short identifiers may still exceed the aggregate floor. Prefer a
-per-host exclusion when opaque identifiers are a normal part of that protocol.
+collection of short identifiers may still exceed the aggregate floor. Prefer
+an exact route warning when opaque identifiers are normal at one HTTPS endpoint.

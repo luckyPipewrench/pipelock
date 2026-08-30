@@ -1296,20 +1296,35 @@ type A2ATrustedCardKey struct {
 // smuggled in Authorization/Cookie headers. CONNECT tunnels are out of scope
 // (TLS-encrypted, can't scan without MITM).
 type RequestBodyScanning struct {
-	Enabled                  bool              `yaml:"enabled"`
-	Action                   string            `yaml:"action"`                    // warn, block (no strip for bodies)
-	PatternActions           map[string]string `yaml:"pattern_actions"`           // per-DLP-pattern action override: warn or block; cannot downgrade core DLP
-	DisablePatterns          []string          `yaml:"disable_patterns"`          // non-core DLP pattern names skipped by request body/header scanning
-	MaxBodyBytes             int               `yaml:"max_body_bytes"`            // fail-closed above this limit
-	ScanHeaders              bool              `yaml:"scan_headers"`              // scan request headers for DLP
-	HeaderMode               string            `yaml:"header_mode"`               // "sensitive" (listed headers) or "all" (everything except ignore list)
-	SensitiveHeaders         []string          `yaml:"sensitive_headers"`         // headers to scan in sensitive mode
-	IgnoreHeaders            []string          `yaml:"ignore_headers"`            // headers to skip in all mode
-	ContentEntropyEnabled    bool              `yaml:"content_entropy_enabled"`   // per-message opaque high-entropy body/frame detection
-	ContentEntropyAction     string            `yaml:"content_entropy_action"`    // warn, block
-	ContentEntropyThreshold  float64           `yaml:"content_entropy_threshold"` // Shannon entropy bits per character (0,8]; non-positive fails validation while enabled
-	ContentEntropyMinLength  int               `yaml:"content_entropy_min_length"`
-	ContentEntropyExclusions []string          `yaml:"content_entropy_exclusions"` // host patterns exempt from per-message content entropy only
+	Enabled                  bool                          `yaml:"enabled"`
+	Action                   string                        `yaml:"action"`                    // warn, block (no strip for bodies)
+	PatternActions           map[string]string             `yaml:"pattern_actions"`           // per-DLP-pattern action override: warn or block; cannot downgrade core DLP
+	DisablePatterns          []string                      `yaml:"disable_patterns"`          // non-core DLP pattern names skipped by request body/header scanning
+	MaxBodyBytes             int                           `yaml:"max_body_bytes"`            // fail-closed above this limit
+	ScanHeaders              bool                          `yaml:"scan_headers"`              // scan request headers for DLP
+	HeaderMode               string                        `yaml:"header_mode"`               // "sensitive" (listed headers) or "all" (everything except ignore list)
+	SensitiveHeaders         []string                      `yaml:"sensitive_headers"`         // headers to scan in sensitive mode
+	IgnoreHeaders            []string                      `yaml:"ignore_headers"`            // headers to skip in all mode
+	ContentEntropyEnabled    bool                          `yaml:"content_entropy_enabled"`   // per-message opaque high-entropy body/frame detection
+	ContentEntropyAction     string                        `yaml:"content_entropy_action"`    // warn, block
+	ContentEntropyThreshold  float64                       `yaml:"content_entropy_threshold"` // Shannon entropy bits per character (0,8]; non-positive fails validation while enabled
+	ContentEntropyMinLength  int                           `yaml:"content_entropy_min_length"`
+	ContentEntropyExclusions []string                      `yaml:"content_entropy_exclusions"`  // host patterns exempt from per-message content entropy only
+	ContentEntropyWarnRoutes []RequestBodyEntropyWarnRoute `yaml:"content_entropy_warn_routes"` // exact HTTPS routes where entropy findings warn; all other scanners remain enforced
+}
+
+// RequestBodyEntropyWarnRoute is a narrow, expiring operator exception for
+// legitimate opaque uploads. It changes only request-body entropy findings
+// from block to warn on one exact HTTPS destination. Content-Type is an
+// operator-intent constraint, not proof that attacker-controlled bytes are safe.
+type RequestBodyEntropyWarnRoute struct {
+	Host         string   `yaml:"host"`
+	Path         string   `yaml:"path"`
+	ContentTypes []string `yaml:"content_types"`
+	Methods      []string `yaml:"methods,omitempty"`
+	Reason       string   `yaml:"reason"`
+	Owner        string   `yaml:"owner"`
+	Expires      string   `yaml:"expires"`
 }
 
 // CrossRequestDetection configures cross-request exfiltration detection.

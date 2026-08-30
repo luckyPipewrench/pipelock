@@ -222,3 +222,60 @@ func TestReportLayer_UnavailableNoErrorNoReason(t *testing.T) {
 		t.Errorf("got %q, want %q", got, expected)
 	}
 }
+
+func TestAppliedLaunchOutcome(t *testing.T) {
+	activeLandlock := LayerStatus{Name: LayerLandlock, Active: true}
+	activeSeccomp := LayerStatus{Name: LayerSeccomp, Active: true}
+	inactiveLandlock := LayerStatus{Name: LayerLandlock, Reason: "unavailable"}
+	inactiveSeccomp := LayerStatus{Name: LayerSeccomp, Reason: "unavailable"}
+
+	tests := []struct {
+		name             string
+		strict           bool
+		noNetNS          bool
+		seccompSupported bool
+		landlock         LayerStatus
+		seccomp          LayerStatus
+		want             AppliedLaunchOutcome
+		wantErr          bool
+	}{
+		{name: "full", landlock: activeLandlock, seccomp: activeSeccomp, seccompSupported: true, want: LaunchOutcomeFull},
+		{name: "arm64 partial", landlock: activeLandlock, seccomp: inactiveSeccomp, want: LaunchOutcomePartial},
+		{name: "network advisory override", noNetNS: true, landlock: activeLandlock, seccomp: activeSeccomp, seccompSupported: true, want: LaunchOutcomeAdvisoryOverride},
+		{name: "missing landlock refuses", landlock: inactiveLandlock, seccomp: activeSeccomp, seccompSupported: true, want: LaunchOutcomeRefused, wantErr: true},
+		{name: "unexpected seccomp failure refuses", landlock: activeLandlock, seccomp: inactiveSeccomp, seccompSupported: true, want: LaunchOutcomeRefused, wantErr: true},
+		{name: "strict arm64 refuses", strict: true, landlock: activeLandlock, seccomp: inactiveSeccomp, want: LaunchOutcomeRefused, wantErr: true},
+		{name: "strict network degrade refuses", strict: true, noNetNS: true, landlock: activeLandlock, seccomp: activeSeccomp, seccompSupported: true, want: LaunchOutcomeRefused, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := appliedLaunchOutcome(tt.strict, tt.noNetNS, tt.seccompSupported, tt.landlock, tt.seccomp)
+			if got != tt.want || (err != nil) != tt.wantErr {
+				t.Fatalf("appliedLaunchOutcome() = %q, %v; want %q, error=%v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReportAppliedLaunchOutcome(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		outcome AppliedLaunchOutcome
+		want    []string
+	}{
+		{name: "full", outcome: LaunchOutcomeFull, want: []string{"FULL", "Landlock + seccomp + network namespace applied"}},
+		{name: "partial", outcome: LaunchOutcomePartial, want: []string{"PARTIAL", "seccomp filter unavailable in this build"}},
+		{name: "advisory override", outcome: LaunchOutcomeAdvisoryOverride, want: []string{"ADVISORY-OVERRIDE", "direct egress may bypass Pipelock"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			reportAppliedLaunchOutcome(&buf, tt.outcome)
+			for _, want := range tt.want {
+				if got := buf.String(); !strings.Contains(got, want) {
+					t.Fatalf("outcome output = %q, want substring %q", got, want)
+				}
+			}
+		})
+	}
+}

@@ -53,7 +53,7 @@ type LayerProbe struct {
 func Preflight(workspace string, argv []string, policy *Policy, strict bool) PreflightResult {
 	return preflight(workspace, argv, policy, PreflightRequirements{
 		RequireNetNS:    strict,
-		RequireLandlock: strict,
+		RequireLandlock: true,
 		RequireSeccomp:  strict,
 	}, strict, false)
 }

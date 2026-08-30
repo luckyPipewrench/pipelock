@@ -381,8 +381,8 @@ func TestPreflight_BackwardCompatibleStrictWrapper(t *testing.T) {
 	if result.Requirements != nil {
 		t.Fatalf("legacy Preflight exposed requirements = %#v", result.Requirements)
 	}
-	if result.Mode != "best-effort" {
-		t.Fatalf("legacy Preflight mode = %q, want best-effort", result.Mode)
+	if result.Mode != "required" {
+		t.Fatalf("legacy Preflight mode = %q, want required", result.Mode)
 	}
 }
 

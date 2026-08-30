@@ -211,6 +211,21 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 		}
 	})
 
+	// A store that can clear but cannot bind the clear to a specific record
+	// leaves the scope check defeatable by a concurrent replace, so the handler
+	// refuses instead of falling back to an unconditional delete. The fallback
+	// would be the vulnerability, which is why this path is a refusal rather
+	// than a warning.
+	t.Run("a store without the bound clear is refused", func(t *testing.T) {
+		handler := newTestHandler(t, mustStore(t), nil)
+		handler.emergencyControls = unboundClearer{}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"auth-victim"}`, true))
+		if w.Code != http.StatusNotImplemented {
+			t.Fatalf("status=%d body=%s, want 501", w.Code, w.Body.String())
+		}
+	})
+
 	t.Run("clear error maps to 500", func(t *testing.T) {
 		handler := newTestHandler(t, mustStore(t), nil)
 		handler.emergencyControls = erroringClearer{}
@@ -259,4 +274,21 @@ func (s *swapOnReadStore) ClearRollbackAuthorizationMatching(_ context.Context, 
 	}
 	s.replacementRemoved = true
 	return true, nil
+}
+
+// unboundClearer can clear, and reports an in-scope record, but cannot bind the
+// delete to it. The handler must refuse rather than clear unconditionally.
+type unboundClearer struct {
+	failingEmergencyStore
+}
+
+func (unboundClearer) ClearRollbackAuthorization(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func (unboundClearer) RollbackAuthorizationByID(context.Context, string) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{
+		Authorization:     conductor.RollbackAuthorization{OrgID: "org-main", FleetID: "prod"},
+		AuthorizationHash: "hash-victim",
+	}, true, nil
 }

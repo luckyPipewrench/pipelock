@@ -1873,8 +1873,10 @@ func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanRe
 	}
 
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
-	if len(line) > 0 && line[0] == '[' {
-		return scanToolsBatch(line, sc, cfg)
+	// Trim so a leading-whitespace array is not treated as an unparseable
+	// single object, which would return Clean and skip per-element scanning.
+	if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 && trimmed[0] == '[' {
+		return scanToolsBatch(trimmed, sc, cfg)
 	}
 
 	return scanToolsSingle(line, sc, cfg)

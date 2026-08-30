@@ -25,6 +25,53 @@ import (
 
 const otlpLogsPath = "/v1/logs"
 
+func TestOTLPSink_DoesNotFollowRedirect(t *testing.T) {
+	reached := make(chan struct{}, 1)
+	private := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
+	}))
+	defer private.Close()
+
+	frontHit := make(chan struct{})
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(frontHit)
+		http.Redirect(w, r, private.URL, http.StatusFound)
+	}))
+	defer front.Close()
+
+	sink, err := NewOTLPSink(front.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+
+	if err := sink.Emit(context.Background(), Event{
+		Severity:   SeverityWarn,
+		Type:       testEventBlocked,
+		Timestamp:  time.Now(),
+		InstanceID: testInstanceName,
+		Fields:     map[string]any{testFieldURL: testEvilURL},
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	select {
+	case <-frontHit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for configured OTLP URL")
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-reached:
+		t.Fatal("OTLP client followed a redirect to an unvalidated destination")
+	default:
+	}
+}
+
 func TestOTLPSink_EmitEvent(t *testing.T) {
 	bodyCh := make(chan []byte, 1)
 

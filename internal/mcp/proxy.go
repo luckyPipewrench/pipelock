@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -301,8 +302,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		// MCP does not use JSON-RPC batch messages (top-level arrays).
 		// A batch from the server is either malformed or an attempt to
-		// bypass per-message ID validation. Fail closed.
-		if len(line) > 0 && line[0] == '[' {
+		// bypass per-message ID validation. Fail closed. Use the parsed
+		// frame: WebSocket and SSE can preserve leading whitespace that
+		// a raw first-byte check would miss.
+		if frame.IsBatch {
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocked batch JSON-RPC message (not supported by MCP)\n", lineNum)
 			continue
 		}
@@ -1220,12 +1223,13 @@ func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
 }
 
 func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error) {
-	// Handle batch responses (JSON array).
-	if len(line) > 0 && line[0] == '[' {
+	// Handle batch responses (JSON array). Trim so a leading-whitespace
+	// array is classified the same way ParseMCPFrame sets IsBatch.
+	if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 && trimmed[0] == '[' {
 		if depth >= maxStripDepth {
 			return nil, fmt.Errorf("batch nesting too deep (max %d)", maxStripDepth)
 		}
-		return stripBatchDepth(line, sc, depth+1)
+		return stripBatchDepth(trimmed, sc, depth+1)
 	}
 
 	var rpc stripRPCResponse

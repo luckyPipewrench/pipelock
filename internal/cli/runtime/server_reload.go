@@ -113,6 +113,21 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 				newCfg.Containment.MetricsExposure = oldCfg.Containment.MetricsExposure
 			}
 		}
+		// Emit sinks own live workers, queues, network connections and, for the
+		// durable forwarder, exclusive spool/cursor locks. Replacing them after
+		// the proxy publishes a candidate can make Reload return an error after
+		// the candidate policy and kill-switch state are already live. Replacing
+		// them before publication is not generally safe either: a same-state
+		// forwarder must close the old worker before the replacement can acquire
+		// its lock. Keep the whole coupled block restart-only so a successful
+		// reload has one honest effective configuration and the live audit path
+		// is never torn down by a candidate that may fail.
+		if !reflect.DeepEqual(oldCfg.Emit, newCfg.Emit) {
+			attemptedHash := newCfg.Hash()
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: emit settings changed — live sink workers require restart, ignoring")
+			s.logger.LogConfigReload("ignored", "emit settings restart-only", attemptedHash)
+			newCfg.Emit = oldCfg.Emit
+		}
 		// Block scan_api listener setting changes via reload. The Scan
 		// API server binds at startup and cannot rebind or reconfigure
 		// connection limits / deadlines at runtime.
@@ -513,42 +528,6 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			fmt.Errorf("TLS cert cache reload failed: %w", reloadErr))
 	}
 	s.killswitch.Reload(newCfg)
-
-	// Reload emit sinks: activate the replacement before publication. A
-	// forwarder sharing a spool or cursor requires the old worker to close first
-	// so the two can never race durable state; if the replacement then fails,
-	// the runtime reports
-	// a degraded reload and keeps the unswapped sink set (with that one forwarder
-	// closed) rather than claiming success.
-	newSinks, sinkErr := BuildEmitSinks(newCfg, s.metrics)
-	if sinkErr != nil {
-		reloadErr := fmt.Errorf("emit sink rebuild failed; previous sinks retained: %w", sinkErr)
-		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload degraded: %v\n", reloadErr)
-		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), reloadErr)
-		s.logger.LogConfigReload("failed", reloadErr.Error(), newCfg.Hash())
-		return reloadErr
-	}
-	preclosed, activationErr := activateReplacementEmitSinks(s.emitSinks, newSinks)
-	if activationErr != nil {
-		for _, sink := range newSinks {
-			_ = sink.Close()
-		}
-		reloadErr := fmt.Errorf("emit sink activation failed; previous sink set not swapped: %w", activationErr)
-		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload degraded: %v\n", reloadErr)
-		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), reloadErr)
-		s.logger.LogConfigReload("failed", reloadErr.Error(), newCfg.Hash())
-		return reloadErr
-	}
-	retiredSinks := s.emitter.ReloadSinks(newSinks)
-	finalizeRetiredSinks := newRetiredSinkFinalizer(s.emitter, retiredSinks, preclosed, func(closeErr error) {
-		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
-			fmt.Errorf("closing old emit sink: %w", closeErr))
-	})
-	// Install cleanup immediately after publication. Any later panic still
-	// drains and finalizes exactly this generation before Reload returns.
-	defer finalizeRetiredSinks()
-	s.emitSinks = append([]emit.Sink(nil), newSinks...)
-	finalizeRetiredSinks()
 
 	if needsHITLApprover(newCfg) && !s.hasApprover {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reloaded to HITL ask mode but approver was not initialized at startup; detections will be blocked")

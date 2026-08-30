@@ -117,8 +117,8 @@ var routineSinkStatuses = []error{
 
 // ReloadSinks atomically replaces the sink set and returns the old generation.
 // The caller is responsible for closing the generation's sinks and finalizing
-// that generation afterward.
-// This enables hot-reload of emit configuration without restarting.
+// that generation afterward. Product config reload doesn't use this primitive;
+// emit configuration changes require a process restart.
 func (e *Emitter) ReloadSinks(newSinks []Sink) *RetiredSinks {
 	e.mu.Lock()
 	defer e.mu.Unlock()

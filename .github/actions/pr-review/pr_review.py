@@ -35,7 +35,10 @@ DEEP_REASONING_EFFORT = "xhigh"
 JUDGE_REASONING_EFFORT = "high"
 DEFAULT_MAX_COMPLETION_TOKENS = 8_192
 DEEP_MAX_COMPLETION_TOKENS = 64_000
-JUDGE_MAX_COMPLETION_TOKENS = 8_192
+# Reasoning tokens consume the same output allowance as the compact JSON
+# decision. Deep judge calls use xhigh reasoning, so the 8K discovery cap can
+# expire before any visible decision is produced.
+JUDGE_MAX_COMPLETION_TOKENS = 32_768
 JUDGE_REPAIR_MAX_COMPLETION_TOKENS = 4_096
 DEFAULT_LLM_TIMEOUT_SECONDS = 120
 # Deep calls previously died at roughly 287 seconds.  This is deliberately a
@@ -2203,6 +2206,7 @@ def judge_findings(
     pending_indices = [
         index for index in range(len(candidates)) if decisions.get(index) in {None, "unresolved"}
     ]
+    repair_failed = False
     if pending_indices and (deadline is None or budget_allows(deadline, mode, "judge-repair")):
         pending = [candidates[index] for index in pending_indices]
         recheck_system, recheck_user = build_judge_prompt(
@@ -2219,9 +2223,15 @@ def judge_findings(
             recheck = _parse_judge_decisions(recheck_payload, len(pending))
         except ReviewError:
             recheck = {}
+            repair_failed = True
         for recheck_index, original_index in enumerate(pending_indices):
             if recheck_index in recheck:
                 decisions[original_index] = recheck[recheck_index]
+            elif repair_failed:
+                # Provider failure says nothing about where the decisive fact
+                # lives. Do not preserve a first-pass unresolved verdict and
+                # misreport the failure as outside-evidence uncertainty.
+                decisions.pop(original_index, None)
 
     unresolved = [
         candidates[index]
@@ -2233,7 +2243,7 @@ def judge_findings(
         for index in range(len(candidates))
         if index not in decisions
     ]
-    if not decisions:
+    if not decisions and not repair_failed:
         raise ModelOutputError("judge decided no candidate after targeted recheck")
     verified: list[Finding] = []
     for index, finding in enumerate(candidates):

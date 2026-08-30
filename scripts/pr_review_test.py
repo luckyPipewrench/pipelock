@@ -589,12 +589,21 @@ class CompressionAndClassificationTest(unittest.TestCase):
             [],
             "deep",
         )
-        self.assertIn("production states", system)
-        self.assertIn("every consumer and duplicate", system)
-        self.assertIn("path manifest and change summaries", system)
-        self.assertIn("negative tests for changed guards", system)
-        self.assertNotIn("Search the supplied diff", system)
-        self.assertIn("10. Return no finding", system)
+        for required in (
+            "production states",
+            "error, incomplete, and unknown outcomes",
+            "every consumer and duplicate",
+            "whether the change should exist",
+            "path manifest and change summaries",
+            "negative tests for changed guards",
+            "newest repair",
+            "same code or assumption",
+            "availability and operability",
+            "10. Return no finding",
+            "Do not pad the result",
+        ):
+            self.assertIn(required, system)
+        self.assertNotIn("search sibling instances in the supplied diff", system)
 
 
 class ImmutableBindingTest(unittest.TestCase):
@@ -1399,6 +1408,23 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertEqual([call.args[3] for call in model.call_args_list], ["judge", "judge-repair"])
         self.assertIn("final targeted recheck", model.call_args_list[1].args[0])
 
+    def test_failed_targeted_recheck_marks_pending_candidate_invalid(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidate = pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny")
+        first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer not located"}]}
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="12: return nil"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("caller.go:8 invokes guard", False)
+        ), mock.patch.object(
+            pr_review, "call_model", side_effect=[first, pr_review.ModelTimeout("repair timed out")]
+        ):
+            verified, judged, _budget, _files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "default", [candidate]
+            )
+        self.assertTrue(judged)
+        self.assertEqual(verified, [])
+        self.assertEqual(unresolved, [])
+        self.assertEqual(invalid, [candidate])
+
     def test_default_targeted_recheck_keeps_the_strong_judge_profile(self) -> None:
         self.assertEqual(pr_review.model_for_phase("default", "judge-repair"), pr_review.model_for_mode("deep"))
         self.assertEqual(pr_review.reasoning_for_phase("default", "judge-repair"), pr_review.JUDGE_REASONING_EFFORT)
@@ -1452,6 +1478,12 @@ class JudgeEvidenceTest(unittest.TestCase):
         )
         self.assertLess(payload["max_completion_tokens"], pr_review.DEEP_MAX_COMPLETION_TOKENS)
         self.assertLess(pr_review.llm_timeout_for("deep", "judge-repair"), pr_review.DEEP_LLM_TIMEOUT_SECONDS)
+
+    def test_deep_judge_reserves_reasoning_and_visible_output_tokens(self) -> None:
+        payload = pr_review.build_llm_payload("gpt-5.6-terra", "system", "user", "deep", "judge")
+        self.assertEqual(payload["reasoning_effort"], "xhigh")
+        self.assertEqual(payload["max_completion_tokens"], 32_768)
+        self.assertGreaterEqual(payload["max_completion_tokens"], 25_000)
 
     def test_evidence_terms_search_context_identifiers(self) -> None:
         finding = pr_review.Finding(

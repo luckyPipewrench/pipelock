@@ -900,6 +900,7 @@ func newInterceptHandler(
 		// hand the already-buffered bytes to InjectAndSign for
 		// content-digest computation without a second drain pass.
 		var interceptBodyBytes []byte
+		var interceptEntropyWarningPattern string
 		if !ic.Config.RequestBodyScanning.Enabled && isA2A && ic.Config.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 			bodyBytes, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), ic.Config.RequestBodyScanning.MaxBodyBytes)
 			if err != nil {
@@ -1177,6 +1178,9 @@ func newInterceptHandler(
 					writeBlockedError(w, blockInfo(scannerLabel),
 						"blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return
+				}
+				if action == config.ActionWarn && result.EntropyWarnRoute != nil {
+					interceptEntropyWarningPattern = bodyEntropyReason(result)
 				}
 				// Audit/warn mode: log finding but forward the request.
 				ic.Logger.LogAnomaly(actx, scannerLabel, reason, 0.8)
@@ -1652,9 +1656,19 @@ func newInterceptHandler(
 		// fail closed BEFORE the inner request leaves the intercepted tunnel.
 		// Every field here is request-side, so response allow paths reuse this
 		// action and skip duplicate required intents after the durable gate.
+		receiptVerdict := config.ActionAllow
+		receiptLayer := ""
+		receiptPattern := ""
+		if interceptEntropyWarningPattern != "" {
+			receiptVerdict = config.ActionWarn
+			receiptLayer = scannerLabelBodyEntropy
+			receiptPattern = interceptEntropyWarningPattern
+		}
 		allowReceipt := withInterceptRedaction(receipt.EmitOpts{
 			ActionID:  actionID,
-			Verdict:   config.ActionAllow,
+			Verdict:   receiptVerdict,
+			Layer:     receiptLayer,
+			Pattern:   receiptPattern,
 			Transport: "intercept",
 			Method:    r.Method,
 			Target:    targetURL,

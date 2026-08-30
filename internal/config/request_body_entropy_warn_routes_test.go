@@ -132,6 +132,35 @@ func TestEntropyWarnRoutesSurfaceLoadAndReloadDowngradeWarnings(t *testing.T) {
 	}
 }
 
+func TestEntropyWarnRoutesReloadIdentitySeparatesOwnerAndReason(t *testing.T) {
+	old := validEntropyWarnRouteConfig()
+	old.RequestBodyScanning.ContentEntropyWarnRoutes[0].Owner = "storage team"
+	old.RequestBodyScanning.ContentEntropyWarnRoutes[0].Reason = "encrypted upload"
+	updated := validEntropyWarnRouteConfig()
+	updated.RequestBodyScanning.ContentEntropyWarnRoutes[0].Owner = "storage"
+	updated.RequestBodyScanning.ContentEntropyWarnRoutes[0].Reason = "team encrypted upload"
+
+	var message string
+	for _, warning := range ValidateReload(old, updated) {
+		if warning.Field == "request_body_scanning.content_entropy_warn_routes" {
+			message = warning.Message
+			break
+		}
+	}
+	if message == "" {
+		t.Fatal("colliding owner/reason change did not surface a reload warning")
+	}
+	for _, want := range []string{
+		`host="upload.vendor.example"`, `path="/v1/files"`, `methods=["post"]`,
+		`content_types=["application/octet-stream; charset=binary"]`, `owner="storage"`,
+		`reason="team encrypted upload"`, `expires="2099-12-31"`,
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("reload warning %q does not contain %q", message, want)
+		}
+	}
+}
+
 func hasConfigWarningField(warnings []Warning, field string) bool {
 	for _, warning := range warnings {
 		if warning.Field == field {

@@ -1334,21 +1334,24 @@ func passthroughDomainsAdded(old, updated []string) []string {
 }
 
 func entropyWarnRoutesAdded(old, updated []RequestBodyEntropyWarnRoute) []string {
-	key := func(entry RequestBodyEntropyWarnRoute) string {
-		return strings.ToLower(entry.Host) + entry.Path + " [" + strings.Join(entry.Methods, ",") + "] [" + strings.Join(entry.ContentTypes, ",") + "] " + entry.Owner + " " + entry.Reason + " " + entry.Expires
-	}
 	oldSet := make(map[string]struct{}, len(old))
 	for _, entry := range old {
-		oldSet[key(entry)] = struct{}{}
+		oldSet[entropyWarnRouteIdentity(entry)] = struct{}{}
 	}
 	var added []string
 	for _, entry := range updated {
-		if _, ok := oldSet[key(entry)]; !ok {
-			added = append(added, entry.Host+entry.Path)
+		identity := entropyWarnRouteIdentity(entry)
+		if _, ok := oldSet[identity]; !ok {
+			added = append(added, identity)
 		}
 	}
 	sort.Strings(added)
 	return added
+}
+
+func entropyWarnRouteIdentity(entry RequestBodyEntropyWarnRoute) string {
+	return fmt.Sprintf("host=%q path=%q methods=%q content_types=%q owner=%q reason=%q expires=%q",
+		strings.TrimSuffix(strings.ToLower(entry.Host), "."), entry.Path, entry.Methods, entry.ContentTypes, entry.Owner, entry.Reason, entry.Expires)
 }
 
 // forwarderDestinationsAdded compares exact DNS hosts using the same

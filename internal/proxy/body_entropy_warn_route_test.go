@@ -5,10 +5,12 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -192,5 +194,75 @@ func TestWebSocketContentEntropyConfigExplicitlyDropsHTTPWarnRoutes(t *testing.T
 	}
 	if !stringListContains(req.ContentEntropyExclusions, "stream.vendor.example") {
 		t.Fatalf("WebSocket entropy exclusions were not applied: %+v", req.ContentEntropyExclusions)
+	}
+}
+
+func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(t *testing.T) {
+	for _, requireReceipts := range []bool{false, true} {
+		t.Run(fmt.Sprintf("require_receipts_%t", requireReceipts), func(t *testing.T) {
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.RequestBodyScanning.ContentEntropyEnabled = true
+			cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+			cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+			cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+			cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []config.RequestBodyEntropyWarnRoute{entropyWarnRoute()}
+			cfg.FlightRecorder.RequireReceipts = requireReceipts
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(func() { sc.Close() })
+			p, err := New(cfg, logger, sc, m)
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(rph.emitter)
+
+			var calls atomic.Int32
+			rt := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusTemporaryRedirect,
+					Header: http.Header{
+						headerContentType: {"text/plain"},
+						"Location":        {"https://other.vendor.example/v1/files"},
+					},
+					Body: http.NoBody,
+				}, nil
+			})
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				"https://upload.vendor.example/v1/files", strings.NewReader(opaqueHighEntropyBodyValue()))
+			if err != nil {
+				t.Fatalf("NewRequestWithContext: %v", err)
+			}
+			req.Header.Set(headerContentType, "application/octet-stream")
+			resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+				&InterceptContext{Proxy: p, TargetHost: "upload.vendor.example", TargetPort: "443"}, req)
+			t.Cleanup(func() { _ = resp.Body.Close() })
+			if resp.StatusCode != http.StatusTemporaryRedirect {
+				t.Fatalf("status = %d, want 307 returned to the agent", resp.StatusCode)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("intercept RoundTrip calls = %d, want 1 (redirects are not followed internally)", got)
+			}
+
+			var warningReceiptFound bool
+			for _, rcpt := range rph.findReceipts(t) {
+				ar := rcpt.ActionRecord
+				if ar.Transport != "intercept" || ar.Layer != scannerLabelBodyEntropy {
+					continue
+				}
+				warningReceiptFound = true
+				if ar.Verdict != config.ActionWarn {
+					t.Fatalf("entropy receipt verdict = %q, want warn", ar.Verdict)
+				}
+				for _, want := range []string{"encrypted customer archive", "storage team", "2099-12-31"} {
+					if !strings.Contains(ar.Pattern, want) {
+						t.Fatalf("entropy receipt pattern %q does not contain %q", ar.Pattern, want)
+					}
+				}
+			}
+			if !warningReceiptFound {
+				t.Fatal("intercept entropy warning receipt was not emitted")
+			}
+		})
 	}
 }

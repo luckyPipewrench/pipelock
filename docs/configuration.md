@@ -342,7 +342,7 @@ request_body_scanning:
     - Proxy-Authorization
     - X-Goog-Api-Key
   content_entropy_enabled: true       # detect opaque high-entropy body content (exfil with no credential signature)
-  content_entropy_action: warn        # warn or block; general presets default warn, strict/hostile default block
+  content_entropy_action: block       # required for the exact route warning example below; general presets default warn
   content_entropy_threshold: 4.5      # Shannon bits/char above which a body/frame value is flagged
   content_entropy_min_length: 32      # ignore values shorter than this (limits false positives on short opaque IDs)
   content_entropy_exclusions: []      # destination hosts whose bodies legitimately carry opaque content
@@ -372,7 +372,7 @@ request_body_scanning:
 | `content_entropy_threshold` | `4.5` | Shannon entropy (bits/char) above which a value is flagged. A long all-hex value below this is still flagged as opaque-hex content. |
 | `content_entropy_min_length` | `32` | Minimum value length considered; shorter values are ignored to limit false positives on short opaque identifiers. |
 | `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
-| `content_entropy_warn_routes` | `[]` | Exact, expiring HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry; methods are optional. Other body findings and size/redirect checks still block normally. |
+| `content_entropy_warn_routes` | `[]` | Exact, expiring HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry; methods are optional. Other findings retain their configured actions; size and redirect limits remain fail-closed. |
 
 **Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
 

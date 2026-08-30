@@ -107,11 +107,15 @@ def load_workflow(path: Path) -> object:
 class TestReleaseArtifacts(unittest.TestCase):
     def test_scratch_images_use_a_non_go_init(self) -> None:
         """Keep the published binary out of PID 1 in a new PID namespace."""
+        expected_tini_copies = {
+            "Dockerfile": "COPY --from=builder /sbin/tini-static /sbin/tini-static",
+            "Dockerfile.goreleaser": "COPY --from=certs /sbin/tini-static /sbin/tini-static",
+        }
         for dockerfile in RUNTIME_DOCKERFILES:
             with self.subTest(dockerfile=dockerfile.name):
                 source = dockerfile.read_text(encoding="utf-8")
                 self.assertIn("tini-static=0.19.0-r3", source)
-                self.assertIn("COPY --from=", source)
+                self.assertIn(expected_tini_copies[dockerfile.name], source)
                 self.assertIn("/sbin/tini-static", source)
                 self.assertIn(
                     'ENTRYPOINT ["/sbin/tini-static", "--", "/pipelock"]', source

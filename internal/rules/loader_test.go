@@ -285,6 +285,37 @@ func TestLoadBundlesFailedBundleIsAtomic(t *testing.T) {
 	}
 }
 
+func TestLoadBundlesMissingRuntimeLoaderIsAtomic(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "missing-loader")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	bundle := testBundle("missing-loader", []Rule{
+		testDLPRule("dlp-before-missing-loader", confidenceHigh, StatusStable),
+		testToolPoisonRule("missing-loader", scanFieldDescription),
+	})
+	writeUnsignedBundle(t, bundleDir, bundle)
+
+	definitions := slices.DeleteFunc(append([]ruleTypeDefinition(nil), ruleTypeDefinitions...), func(definition ruleTypeDefinition) bool {
+		return definition.ID == RuleTypeToolPoison
+	})
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+		definitions:     definitions,
+	})
+
+	if len(result.IntegrityErrors()) != 1 || !strings.Contains(result.IntegrityErrors()[0].Reason, "has no runtime loader") {
+		t.Fatalf("integrity errors = %+v, want missing runtime loader", result.IntegrityErrors())
+	}
+	if len(result.DLP) != 0 || len(result.Loaded) != 0 {
+		t.Fatalf("failed bundle leaked state: DLP=%+v loaded=%+v", result.DLP, result.Loaded)
+	}
+}
+
 func TestLoadBundlesOfficialLoaderFailureWarnsDegraded(t *testing.T) {
 	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)

@@ -631,6 +631,32 @@ func parseFuncBody(t *testing.T, body string) ast.Node {
 	return parsed.Decls[0]
 }
 
+// TestPackageNameOfDerivesTheProofPackage covers the input to the usage check
+// rather than the check itself.
+//
+// TestFeatureConstantUsage supplies the package name directly, so it cannot
+// notice packageNameOf deriving the wrong one. That matters in a single
+// direction: deriving "license" for a proof that lives elsewhere would accept a
+// bare identifier outside the package that declares the constants, which is one
+// of the holes the qualifier rule exists to close. These read the two real
+// files a proof reference actually points at.
+func TestPackageNameOfDerivesTheProofPackage(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, testCase := range []struct {
+		file string
+		want string
+	}{
+		{"internal/license/license.go", "license"},
+		{"internal/cli/assess/finalize.go", "assess"},
+	} {
+		t.Run(testCase.file, func(t *testing.T) {
+			if got := packageNameOf(t, root, testCase.file); got != testCase.want {
+				t.Fatalf("packageNameOf(%q) = %q, want %q", testCase.file, got, testCase.want)
+			}
+		})
+	}
+}
+
 // TestFeatureConstantUsage covers the paths a manifest proof reference can take
 // wrong. Each rejection here was a real hole at some point in this file's
 // history: mentioning the constant without passing it, and matching an

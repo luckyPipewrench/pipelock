@@ -39,8 +39,9 @@ type LaunchConfig struct {
 	Strict bool
 
 	// BestEffort skips namespace isolation when unavailable (e.g. inside
-	// containers where CLONE_NEWUSER is blocked by seccomp). Landlock and
-	// seccomp are still applied. Mutually exclusive with Strict.
+	// containers where CLONE_NEWUSER is blocked by seccomp). Landlock is still
+	// applied, and seccomp where the build contains a filter, which is
+	// linux/amd64 only. Mutually exclusive with Strict.
 	BestEffort bool
 
 	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
@@ -186,7 +187,7 @@ func (p *PreparedSandboxCmd) abortStartedChild() {
 //
 // When BestEffort is true and user namespaces are unavailable (e.g. inside
 // containers), the child is launched without namespace isolation. Landlock
-// and seccomp containment are still applied.
+// containment is still applied, and seccomp on linux/amd64.
 //
 // For simple cases, use LaunchSandboxed which calls Start automatically.
 func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
@@ -301,7 +302,8 @@ func PrepareSandboxLaunch(cfg LaunchConfig) (*PreparedSandboxCmd, error) {
 			Setpgid:   true,            // own process group for cleanup
 		}
 	} else {
-		// Best-effort: no namespace isolation. Child still gets Landlock + seccomp.
+		// Best-effort: no namespace isolation. Child still gets Landlock, plus
+		// seccomp on linux/amd64 where the build contains a filter.
 		cmd.Env = append(cmd.Env, noNetNSEnvKey+"=1")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Pdeathsig: syscall.SIGTERM,

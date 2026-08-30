@@ -2530,7 +2530,7 @@ sandbox:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable sandbox containment |
-| `best_effort` | `false` | Skip namespace isolation when unavailable (e.g. containers). Landlock + seccomp still apply. |
+| `best_effort` | `false` | Skip namespace isolation when unavailable (e.g. containers). Landlock still applies, and seccomp on `linux/amd64`. |
 | `strict` | `false` | Error if any containment layer is unavailable. Mutually exclusive with `best_effort`. |
 | `workspace` | CWD | Agent working directory (resolved to absolute at startup) |
 | `filesystem.allow_read` | `[]` | Additional read-only filesystem paths |
@@ -2541,7 +2541,7 @@ If `filesystem` is omitted, the default Landlock policy is used (safe for Python
 **Containment layers:**
 - **Landlock LSM:** Restricts filesystem access to declared paths. Allowlist model. Protected directories (`~/.ssh`, `~/.aws`, `~/.kube`, etc.) are denied. Only dirs that exist on the system are checked.
 - **Network namespaces:** Agent runs in an isolated network namespace. All HTTP/HTTPS traffic is kernel-confined to the namespace and routed through pipelock's bridge proxy. Raw socket direct egress is impossible. MCP stdio servers that act as HTTP bridges receive `HTTP_PROXY`/`HTTPS_PROXY` pointing at the in-namespace bridge, so upstream calls still traverse Pipelock's forward-proxy scanner.
-- **Seccomp BPF:** Syscall allowlist (~130 safe syscalls for Go/Python/Node.js). Blocks ptrace, mount, module loading, kexec (KILL). io_uring returns EPERM (allows runtimes like Node.js 22 to fall back to epoll). Clone flags filtered to prevent namespace escape.
+- **Seccomp BPF (`linux/amd64` only):** Syscall allowlist (~130 safe syscalls for Go/Python/Node.js). Blocks ptrace, mount, module loading, kexec (KILL). io_uring returns EPERM (allows runtimes like Node.js 22 to fall back to epoll). Clone flags filtered to prevent namespace escape.
 
 For sandboxed MCP stdio servers on Linux, the bridge enables forward-proxy handling internally even when `forward_proxy.enabled` is false in YAML. This is scoped to the sandbox bridge only and does not expose the normal forward proxy listener.
 
@@ -2561,7 +2561,7 @@ pipelock sandbox --config pipelock.yaml -- python agent.py
 # Pass environment variables to sandboxed process
 pipelock sandbox --env API_KEY --env HOME=/app -- node server.js
 
-# Best-effort mode for containers (Landlock + seccomp, no namespace)
+# Best-effort mode for containers (Landlock, plus seccomp on linux/amd64, no namespace)
 pipelock sandbox --best-effort -- python agent.py
 
 # Check sandbox capabilities without launching

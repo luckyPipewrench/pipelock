@@ -46,7 +46,7 @@ func OWASPAgenticTop10() Framework {
 				Name:     "Unexpected Code Execution (RCE)",
 				Status:   StatusCovered,
 				Features: []string{featureSandbox, featureMCPToolPolicy},
-				Evidence: "Landlock/seccomp sandbox contains processes, tool policy blocks shell execution patterns.",
+				Evidence: "Landlock sandbox contains processes, with seccomp syscall filtering on linux/amd64; tool policy blocks shell execution patterns.",
 			},
 			{
 				ID:       "ASI06",

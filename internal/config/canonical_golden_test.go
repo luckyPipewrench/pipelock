@@ -339,7 +339,12 @@ const (
 	// Re-bumped for provider-key left-boundary precision. The change prevents
 	// ordinary prose from being redacted or blocked, while deliberately losing
 	// detection for a key glued to a preceding token-alphabet character.
-	goldenHashDefaults = "372a8ac8fc647317f2878b78e019c94021dcaf30359d9149691d51a1083b4ff2"
+	// Re-bumped for response_scanning.authenticated_artifacts: the canonical
+	// view now carries the exact signed-artifact allowlist. It is
+	// policy-relevant because an entry lets the proxy release a verified
+	// official rules bundle with response injection matching skipped, so
+	// verifiers must observe the schema change through ph.
+	goldenHashDefaults = "975c1fc1b7554dd04fd7aea3df8cd421159c0c50fa0f89aa666660cd2e445a90"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -510,7 +515,11 @@ const (
 	// which the ops-field invariance test confirms by landing on this same
 	// hash.
 	// Re-bumped for provider-key left-boundary precision; see goldenHashDefaults.
-	goldenHashRichConfig = "ccc3ae30a36df4a01fb355913a60e438937edb693694d4e393836bccebab0128"
+	// Re-bumped for response_scanning.authenticated_artifacts: see
+	// goldenHashDefaults note above. The rich fixture omits the field, so the
+	// nil allowlist flows into ph identically to Defaults() and the hash
+	// shifts in lockstep.
+	goldenHashRichConfig = "e2e76982713a955b7275fff84ab4420fc23441706ccfb2fe26b50470230135fb"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

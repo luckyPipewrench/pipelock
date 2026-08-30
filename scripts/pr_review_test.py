@@ -1425,6 +1425,30 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertEqual(unresolved, [])
         self.assertEqual(invalid, [candidate])
 
+    def test_omitted_targeted_recheck_decision_marks_candidate_invalid(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidates = [
+            pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny"),
+            pr_review.Finding("medium", "b.go", 9, "state may drift", "consumer unclear", "validate"),
+        ]
+        first = {
+            "findings": [
+                {"index": 0, "verdict": "unresolved", "reason": "consumer not located"},
+                {"index": 1, "verdict": "unresolved", "reason": "consumer not located"},
+            ]
+        }
+        repaired = {"findings": [{"index": 0, "verdict": "drop", "reason": "caller closes premise"}]}
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="12: return nil"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("caller.go:8 invokes guard", False)
+        ), mock.patch.object(pr_review, "call_model", side_effect=[first, repaired]):
+            verified, judged, _budget, _files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "default", candidates
+            )
+        self.assertTrue(judged)
+        self.assertEqual(verified, [])
+        self.assertEqual(unresolved, [])
+        self.assertEqual(invalid, [candidates[1]])
+
     def test_default_targeted_recheck_keeps_the_strong_judge_profile(self) -> None:
         self.assertEqual(pr_review.model_for_phase("default", "judge-repair"), pr_review.model_for_mode("deep"))
         self.assertEqual(pr_review.reasoning_for_phase("default", "judge-repair"), pr_review.JUDGE_REASONING_EFFORT)

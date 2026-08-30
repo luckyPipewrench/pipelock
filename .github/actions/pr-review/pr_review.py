@@ -2227,10 +2227,11 @@ def judge_findings(
         for recheck_index, original_index in enumerate(pending_indices):
             if recheck_index in recheck:
                 decisions[original_index] = recheck[recheck_index]
-            elif repair_failed:
+            else:
                 # Provider failure says nothing about where the decisive fact
-                # lives. Do not preserve a first-pass unresolved verdict and
-                # misreport the failure as outside-evidence uncertainty.
+                # lives, and an omitted repair decision violates the repair
+                # contract. Neither may preserve a first-pass unresolved
+                # verdict as outside-evidence uncertainty.
                 decisions.pop(original_index, None)
 
     unresolved = [

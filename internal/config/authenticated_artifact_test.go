@@ -15,12 +15,19 @@ func TestAuthenticatedArtifactsConfigContract(t *testing.T) {
 		entries []AuthenticatedArtifactEntry
 		want    string
 	}{
-		{"omitted", nil, ""}, {"valid", []AuthenticatedArtifactEntry{valid}, ""},
+		{"omitted", nil, ""},
+		{"valid", []AuthenticatedArtifactEntry{valid}, ""},
 		{"duplicate", []AuthenticatedArtifactEntry{valid, valid}, "duplicates"},
 		{"wildcard host", []AuthenticatedArtifactEntry{{Host: "*.example", Path: valid.Path, BundleName: valid.BundleName}}, "exact DNS"},
+		{"bad DNS label", []AuthenticatedArtifactEntry{{Host: "-rules.example", Path: valid.Path, BundleName: valid.BundleName}}, "host"},
+		{"non ASCII host", []AuthenticatedArtifactEntry{{Host: "rulés.example", Path: valid.Path, BundleName: valid.BundleName}}, "host"},
+		{"trailing DNS dot normalizes", []AuthenticatedArtifactEntry{{Host: "RULES.EXAMPLE.", Path: valid.Path, BundleName: valid.BundleName}}, ""},
 		{"root path", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: "/", BundleName: valid.BundleName}}, "canonical non-root"},
 		{"encoded topology", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: "/rules/%2e%2e/x", BundleName: valid.BundleName}}, "canonical non-root"},
+		{"encoded slash", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: "/rules%2fbundle.yaml", BundleName: valid.BundleName}}, "canonical non-root"},
 		{"missing name", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path}}, "bundle_name"},
+		{"invalid name uppercase", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path, BundleName: "Pipelock-Community"}}, "bundle_name"},
+		{"invalid name edge hyphen", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path, BundleName: "-pipelock"}}, "bundle_name"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Defaults()

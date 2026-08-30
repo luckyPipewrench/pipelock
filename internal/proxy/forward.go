@@ -2269,9 +2269,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeStatus = strconv.Itoa(resp.StatusCode)
 			outcomeBytes = 0
 			outcomeReason = "complete"
-			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 				forwardScope := adaptiveScopeForHost(r.URL.Hostname())
-				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt, adaptiveRecoveryContext{
+				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 					sessionKey: sessionKeyFor(agent, clientIP),
 					scope:      forwardScope,
 					reason:     adaptiveRecoveryClean,
@@ -2341,7 +2341,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
 		outcomeBytes = written
 		outcomeReason = "complete"
-		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 		}
 		return
@@ -2825,9 +2825,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
 		}
-		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			forwardScope := adaptiveScopeForHost(r.URL.Hostname())
-			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt, adaptiveRecoveryContext{
+			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				sessionKey: sessionKeyFor(agent, clientIP),
 				scope:      forwardScope,
 				reason:     adaptiveRecoveryClean,

@@ -1281,16 +1281,18 @@ func validateAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) error 
 	for i := range entries {
 		entry := &entries[i]
 		field := fmt.Sprintf("response_scanning.authenticated_artifacts[%d]", i)
-		entry.Host = strings.ToLower(strings.TrimSpace(entry.Host))
-		if entry.Host == "" || strings.ContainsAny(entry.Host, ":/*@") || net.ParseIP(entry.Host) != nil {
-			return fmt.Errorf("%s.host must be one exact DNS host without port or wildcard", field)
+		host, err := normalizeQueryEntropyParamHost(entry.Host)
+		if err != nil {
+			return fmt.Errorf("%s.host must be one exact registrable DNS host: %w", field, err)
 		}
-		if entry.Path == "" || entry.Path == "/" || !strings.HasPrefix(entry.Path, "/") || path.Clean(entry.Path) != entry.Path || strings.ContainsAny(entry.Path, "%?#;") || strings.ContainsAny(entry.Path, "\r\n\t") {
-			return fmt.Errorf("%s.path must be one canonical non-root path", field)
+		pathValue, err := normalizeQueryEntropyParamPath(entry.Path)
+		if err != nil {
+			return fmt.Errorf("%s.path must be one canonical non-root path: %w", field, err)
 		}
-		if entry.BundleName == "" || strings.TrimSpace(entry.BundleName) != entry.BundleName {
-			return fmt.Errorf("%s.bundle_name is required", field)
+		if !authenticatedArtifactBundleNameRE.MatchString(entry.BundleName) {
+			return fmt.Errorf("%s.bundle_name must be 3-64 lowercase alphanumeric characters or hyphens without edge hyphens", field)
 		}
+		entry.Host, entry.Path = host, pathValue
 		key := entry.Host + "\x00" + entry.Path
 		if _, ok := seen[key]; ok {
 			return fmt.Errorf("%s duplicates an earlier authenticated artifact", field)
@@ -1299,6 +1301,8 @@ func validateAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) error 
 	}
 	return nil
 }
+
+var authenticatedArtifactBundleNameRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$`)
 
 func hostMatchesResponseSizeExemptDomain(host string, domains []string) bool {
 	return hostMatchesPassthrough(host, domains)

@@ -75,6 +75,9 @@ func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *h
 	if err != nil {
 		return nil, fmt.Errorf("authenticated artifact signature read: %w", err)
 	}
+	if len(sigData) > 4096 {
+		return nil, fmt.Errorf("authenticated artifact refused: signature exceeds 4096 bytes")
+	}
 	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigData)))
 	if err != nil {
 		return nil, fmt.Errorf("authenticated artifact signature decode: %w", err)
@@ -92,6 +95,9 @@ func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *h
 	}
 	if bundle.Name != entry.BundleName {
 		return nil, fmt.Errorf("authenticated artifact identity mismatch: got %q, want %q", bundle.Name, entry.BundleName)
+	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("authenticated artifact close upstream body: %w", err)
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return &authenticatedArtifactResponse{body: body}, nil

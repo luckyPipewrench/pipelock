@@ -26,6 +26,8 @@ func TestAuthenticatedArtifactsConfigContract(t *testing.T) {
 		{"encoded topology", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: "/rules/%2e%2e/x", BundleName: valid.BundleName}}, "canonical non-root"},
 		{"encoded slash", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: "/rules%2fbundle.yaml", BundleName: valid.BundleName}}, "canonical non-root"},
 		{"missing name", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path}}, "bundle_name"},
+		{"invalid name one character", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path, BundleName: "a"}}, "bundle_name"},
+		{"invalid name two characters", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path, BundleName: "ab"}}, "bundle_name"},
 		{"invalid name uppercase", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path, BundleName: "Pipelock-Community"}}, "bundle_name"},
 		{"invalid name edge hyphen", []AuthenticatedArtifactEntry{{Host: valid.Host, Path: valid.Path, BundleName: "-pipelock"}}, "bundle_name"},
 	} {
@@ -44,8 +46,8 @@ func TestAuthenticatedArtifactsConfigContract(t *testing.T) {
 }
 
 func TestAuthenticatedArtifactsCloneAndCanonicalOrder(t *testing.T) {
-	a := AuthenticatedArtifactEntry{Host: "a.example", Path: "/rules/a/bundle.yaml", BundleName: "a"}
-	b := AuthenticatedArtifactEntry{Host: "b.example", Path: "/rules/b/bundle.yaml", BundleName: "b"}
+	a := AuthenticatedArtifactEntry{Host: "a.example", Path: "/rules/a/bundle.yaml", BundleName: "aaa"}
+	b := AuthenticatedArtifactEntry{Host: "b.example", Path: "/rules/b/bundle.yaml", BundleName: "bbb"}
 	cfg := Defaults()
 	cfg.ResponseScanning.AuthenticatedArtifacts = []AuthenticatedArtifactEntry{b, a}
 	clone := cfg.Clone()

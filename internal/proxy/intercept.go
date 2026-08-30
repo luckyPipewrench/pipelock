@@ -1750,7 +1750,7 @@ func newInterceptHandler(
 		// scanning state, because pipelock must never forward
 		// inspection-resistant bytes through a security boundary.
 		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), ic.Config.ResponseScanning.ExemptDomains)
-		if HasSingleSSEContentType(resp.Header) {
+		if HasSingleSSEContentType(resp.Header) && !interceptAuthenticatedArtifact {
 			if ic.Scanner.ResponseScanningEnabled() && interceptRespExempt {
 				ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 				ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
@@ -1913,7 +1913,7 @@ func newInterceptHandler(
 					Outcome:           captureOutcome(config.ActionAllow, true),
 				})
 			}
-			if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding {
+			if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact {
 				ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 			}
 			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
@@ -1997,7 +1997,7 @@ func newInterceptHandler(
 						})
 					}
 					ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
-					if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding {
+					if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact {
 						ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 					}
 					return

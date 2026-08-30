@@ -2148,7 +2148,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// pipelock must never forward inspection-resistant bytes through a
 	// security boundary.
 	fwdRespIsSSE := HasSingleSSEContentType(resp.Header)
-	if fwdRespIsSSE {
+	if fwdRespIsSSE && !fwdAuthenticatedArtifact {
 		if sc.ResponseScanningEnabled() && fwdRespExempt {
 			p.logger.LogResponseScanExempt(actx, fwdRespHost)
 			p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)

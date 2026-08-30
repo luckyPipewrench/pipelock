@@ -67,7 +67,7 @@ func verifyAuthenticatedArtifact(ctx context.Context, req *http.Request, resp *h
 	if err != nil {
 		return nil, fmt.Errorf("authenticated artifact signature fetch: %w", err)
 	}
-	defer sigResp.Body.Close() //nolint:errcheck // best effort
+	defer func() { _ = sigResp.Body.Close() }()
 	if sigResp.Request == nil || sigResp.Request.URL == nil || sigResp.Request.URL.String() != sigURL.String() || sigResp.StatusCode < http.StatusOK || sigResp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("authenticated artifact refused: signature redirect or status")
 	}

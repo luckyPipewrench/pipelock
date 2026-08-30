@@ -96,10 +96,12 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 		signature   []byte
 		sigStatus   int
 		sigRedirect bool
+		contentType string
 		want        int
 	}{
 		{name: "no matching policy retains response scan", body: []byte(testInjectionPayload), want: http.StatusForbidden},
 		{name: "valid official artifact bypasses only injection scan", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, want: http.StatusOK},
+		{name: "valid official artifact bypasses SSE injection scan", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, contentType: "text/event-stream", want: http.StatusOK},
 		{name: "tampered body is blocked", policy: true, body: artifactBundle("NEVER_RELEASE tampered"), signature: goodSig, sigStatus: http.StatusOK, want: http.StatusForbidden},
 		{name: "invalid signature is blocked", policy: true, body: goodBody, signature: []byte("not-base64"), sigStatus: http.StatusOK, want: http.StatusForbidden},
 		{name: "missing signature is blocked", policy: true, body: goodBody, sigStatus: http.StatusNotFound, want: http.StatusForbidden},
@@ -122,7 +124,11 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 					}
 					return artifactResponse(responseReq, tc.sigStatus, tc.signature), nil
 				}
-				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: originalBody, Request: req}, nil
+				contentType := tc.contentType
+				if contentType == "" {
+					contentType = "text/plain"
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: originalBody, Request: req}, nil
 			})
 			logger := audit.NewNop()
 			p := newArtifactIntegrationProxy(t, cfg, logger, rt)
@@ -134,6 +140,9 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 			}
 			if tc.want == http.StatusForbidden && strings.Contains(w.Body.String(), "NEVER_RELEASE") {
 				t.Fatal("blocked artifact bytes reached the client")
+			}
+			if tc.want == http.StatusOK && !bytes.Equal(w.Body.Bytes(), tc.body) {
+				t.Fatalf("released body=%q want exact verified body=%q", w.Body.Bytes(), tc.body)
 			}
 			if tc.policy && !originalBody.closed {
 				t.Fatal("verified handler path did not close the upstream body")
@@ -154,9 +163,11 @@ func TestInterceptAuthenticatedArtifact_HandlerPath(t *testing.T) {
 		signature   []byte
 		sigStatus   int
 		sigRedirect bool
+		contentType string
 		want        int
 	}{
 		{name: "valid official artifact", body: goodBody, signature: goodSig, sigStatus: http.StatusOK, want: http.StatusOK},
+		{name: "valid official artifact with SSE content type", body: goodBody, signature: goodSig, sigStatus: http.StatusOK, contentType: "text/event-stream", want: http.StatusOK},
 		{name: "tampered body", body: artifactBundle("NEVER_RELEASE tampered"), signature: goodSig, sigStatus: http.StatusOK, want: http.StatusForbidden},
 		{name: "invalid signature", body: goodBody, signature: []byte("not-base64"), sigStatus: http.StatusOK, want: http.StatusForbidden},
 		{name: "missing signature", body: goodBody, sigStatus: http.StatusNotFound, want: http.StatusForbidden},
@@ -179,7 +190,11 @@ func TestInterceptAuthenticatedArtifact_HandlerPath(t *testing.T) {
 					}
 					return artifactResponse(responseReq, tc.sigStatus, tc.signature), nil
 				}
-				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: originalBody, Request: req}, nil
+				contentType := tc.contentType
+				if contentType == "" {
+					contentType = "text/plain"
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: originalBody, Request: req}, nil
 			})
 			rec := &artifactCleanRecorder{}
 			handler := newInterceptHandler(&InterceptContext{TargetHost: "rules.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), ClientIP: testLoopbackIP, RequestID: "artifact-intercept", Agent: "test-agent", Recorder: rec}, rt)
@@ -191,6 +206,9 @@ func TestInterceptAuthenticatedArtifact_HandlerPath(t *testing.T) {
 			}
 			if tc.want == http.StatusForbidden && strings.Contains(w.Body.String(), "NEVER_RELEASE") {
 				t.Fatal("blocked artifact bytes reached the client")
+			}
+			if tc.want == http.StatusOK && !bytes.Equal(w.Body.Bytes(), tc.body) {
+				t.Fatalf("released body=%q want exact verified body=%q", w.Body.Bytes(), tc.body)
 			}
 			if !originalBody.closed {
 				t.Fatal("intercept handler did not close the upstream body")

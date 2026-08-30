@@ -1302,7 +1302,10 @@ func validateAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) error 
 	return nil
 }
 
-var authenticatedArtifactBundleNameRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$`)
+// Keep this syntax identical to the authoritative bundle-name contract in
+// internal/rules. Config cannot import that package because rules imports
+// config, so an external-package parity test pins the contract boundaries.
+var authenticatedArtifactBundleNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 func hostMatchesResponseSizeExemptDomain(host string, domains []string) bool {
 	return hostMatchesPassthrough(host, domains)

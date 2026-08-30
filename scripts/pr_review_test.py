@@ -683,6 +683,19 @@ class CompareCompletenessTest(unittest.TestCase):
 
 
 class LocalDiffCompletenessTest(unittest.TestCase):
+    def test_bounded_pipe_stops_and_reaps_before_retaining_excess_output(self) -> None:
+        process = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import os; os.write(1, b'x' * 131072)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        data, returncode, oversized = pr_review._read_bounded_stdout(process, 1024, 10)
+
+        self.assertTrue(oversized)
+        self.assertEqual(len(data), 1024)
+        self.assertIsNotNone(returncode)
+        self.assertIsNotNone(process.poll(), "an oversized producer must be reaped")
+
     def test_run_uses_the_local_diff_without_the_capped_api_check(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False), mock.patch.object(
@@ -741,6 +754,29 @@ class LocalDiffCompletenessTest(unittest.TestCase):
             binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
             with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": directory}, clear=False):
                 with self.assertRaises(pr_review.FetchError):
+                    pr_review.fetch_local_bound_diff(binding)
+
+    def test_local_diff_rejects_oversize_while_streaming(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "kept.go").write_text("package kept\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "kept.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            (root / "large.go").write_text("package large\n" + ("var value = 1\n" * 200), encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "large.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "head"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True
+            ).stdout.strip()
+            binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            with mock.patch.dict(
+                pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": directory}, clear=False
+            ), mock.patch.object(pr_review, "MAX_LOCAL_DIFF_BYTES", 128):
+                with self.assertRaisesRegex(pr_review.FetchError, "bounded size"):
                     pr_review.fetch_local_bound_diff(binding)
 
 

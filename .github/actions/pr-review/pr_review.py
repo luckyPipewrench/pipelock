@@ -17,7 +17,6 @@ import re
 import selectors
 import subprocess
 import sys
-import tempfile
 import time
 import unicodedata
 import urllib.parse
@@ -991,6 +990,43 @@ def fetch_bound_diff(repo: str, binding: PullBinding, token: str) -> str:
     raise FetchError(f"immutable diff fetch failed with status {last_status}")
 
 
+def _read_bounded_stdout(
+    process: subprocess.Popen[Any], max_bytes: int, timeout_seconds: float
+) -> tuple[bytes, int, bool]:
+    """Drain a child pipe without ever retaining more than max_bytes."""
+    if process.stdout is None:
+        process.kill()
+        _reap_process(process)
+        raise OSError("child stdout pipe was unavailable")
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout_seconds
+    data = bytearray()
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                _reap_process(process)
+                raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+            if not selector.select(timeout=min(0.25, remaining)):
+                continue
+            chunk = os.read(process.stdout.fileno(), 64 * 1024)
+            if not chunk:
+                _reap_process(process)
+                return bytes(data), process.returncode if process.returncode is not None else -1, False
+            available = max_bytes - len(data)
+            if len(chunk) > available:
+                data.extend(chunk[:available])
+                process.kill()
+                _reap_process(process)
+                return bytes(data), process.returncode, True
+            data.extend(chunk)
+    finally:
+        selector.close()
+        process.stdout.close()
+
+
 def fetch_local_bound_diff(binding: PullBinding) -> str | None:
     """Read the complete immutable diff locally when the reviewed checkout exists.
 
@@ -1006,36 +1042,29 @@ def fetch_local_bound_diff(binding: PullBinding) -> str | None:
     if root is None:
         raise FetchError("immutable reviewed checkout was unavailable")
     try:
-        with tempfile.TemporaryFile() as output:
-            process = subprocess.Popen(
-                [
-                    "git",
-                    "-C",
-                    str(root),
-                    "-c",
-                    "core.quotepath=false",
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--find-renames",
-                    f"{binding.base_sha}...{binding.head_sha}",
-                    "--",
-                ],
-                stdout=output,
-                stderr=subprocess.DEVNULL,
-            )
-            try:
-                returncode = process.wait(timeout=LOCAL_DIFF_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-                raise
-            size = output.tell()
-            if size > MAX_LOCAL_DIFF_BYTES:
-                log_phase("local-diff", status="oversized", correlation=binding.correlation)
-                raise FetchError("immutable local diff exceeded the bounded size")
-            output.seek(0)
-            diff = output.read()
+        process = subprocess.Popen(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--find-renames",
+                f"{binding.base_sha}...{binding.head_sha}",
+                "--",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        diff, returncode, oversized = _read_bounded_stdout(
+            process, MAX_LOCAL_DIFF_BYTES, LOCAL_DIFF_TIMEOUT_SECONDS
+        )
+        if oversized:
+            log_phase("local-diff", status="oversized", correlation=binding.correlation)
+            raise FetchError("immutable local diff exceeded the bounded size")
     except (OSError, subprocess.TimeoutExpired) as exc:
         log_phase("local-diff", status="unreadable", correlation=binding.correlation)
         raise FetchError("immutable local diff could not be read") from exc

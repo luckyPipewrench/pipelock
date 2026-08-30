@@ -333,11 +333,11 @@ func newAppliedStateFleetHandler(t *testing.T, enrollments EnrollmentStore, sink
 	if err != nil {
 		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
 	}
-	adminAuth, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{
+	adminAuth, err := ScopedBearerAdminAuthenticator([]ScopedBearerCredential{
 		{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"},
 	})
 	if err != nil {
-		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+		t.Fatalf("ScopedBearerAdminAuthenticator() error = %v", err)
 	}
 	handler, err := NewHandler(HandlerOptions{
 		Store:              mustStore(t),
@@ -346,7 +346,7 @@ func newAppliedStateFleetHandler(t *testing.T, enrollments EnrollmentStore, sink
 		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
 		AuthorizePublisher: func(*http.Request) error { return nil },
 		AuthorizeFollowers: followerAuth,
-		AuthorizeAdmin:     adminAuth,
+		AuthenticateAdmin:  adminAuth,
 		AuditSink:          sink,
 		AuditKeys:          rejectingAuditKeyResolver,
 		Enrollments:        enrollments,

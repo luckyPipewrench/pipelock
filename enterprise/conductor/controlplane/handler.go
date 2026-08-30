@@ -140,7 +140,7 @@ type HandlerOptions struct {
 	AuthorizeAuditQuery        AuditQueryAuthorizer
 	AuthorizeFollowers         FollowerListAuthorizer
 	AuthorizeStream            StreamStatusAuthorizer
-	AuthorizeAdmin             PublisherAuthorizer
+	AuthenticateAdmin          AdminAuthenticator
 	AuditSink                  AuditBatchSink
 	AuditKeys                  AuditKeyResolver
 	Enrollments                EnrollmentStore
@@ -168,7 +168,7 @@ type Handler struct {
 	authorizeAuditQuery        AuditQueryAuthorizer
 	authorizeFollowers         FollowerListAuthorizer
 	authorizeStream            StreamStatusAuthorizer
-	authorizeAdmin             PublisherAuthorizer
+	authenticateAdmin          AdminAuthenticator
 	auditSink                  AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
 	// [AuditBatchQuerier], so GET returns 501 rather than a retryable 500.
@@ -364,10 +364,10 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 			return ErrPublisherForbidden
 		}
 	}
-	authorizeAdmin := opts.AuthorizeAdmin
-	if authorizeAdmin == nil {
-		authorizeAdmin = func(*http.Request) error {
-			return ErrPublisherForbidden
+	authenticateAdmin := opts.AuthenticateAdmin
+	if authenticateAdmin == nil {
+		authenticateAdmin = func(*http.Request) (AdminIdentity, error) {
+			return AdminIdentity{}, ErrPublisherForbidden
 		}
 	}
 	auditQuerier, _ := opts.AuditSink.(AuditBatchQuerier)
@@ -395,7 +395,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		authorizeAuditQuery:        authorizeAuditQuery,
 		authorizeFollowers:         authorizeFollowers,
 		authorizeStream:            authorizeStream,
-		authorizeAdmin:             authorizeAdmin,
+		authenticateAdmin:          authenticateAdmin,
 		auditSink:                  opts.AuditSink,
 		auditQuerier:               auditQuerier,
 		auditKeys:                  opts.AuditKeys,
@@ -961,7 +961,8 @@ func (h *Handler) validateRemoteKillRequest(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
 		return publishRemoteKillRequest{}, time.Time{}, false
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return publishRemoteKillRequest{}, time.Time{}, false
 	}
@@ -977,6 +978,10 @@ func (h *Handler) validateRemoteKillRequest(w http.ResponseWriter, r *http.Reque
 			return publishRemoteKillRequest{}, time.Time{}, false
 		}
 		writeError(w, http.StatusBadRequest, err)
+		return publishRemoteKillRequest{}, time.Time{}, false
+	}
+	if !admin.Allows(req.Message.OrgID, req.Message.FleetID) {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return publishRemoteKillRequest{}, time.Time{}, false
 	}
 	now := h.now()
@@ -1070,7 +1075,8 @@ func (h *Handler) validateRollbackAuthorizationRequest(w http.ResponseWriter, r 
 		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
 		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
@@ -1086,6 +1092,10 @@ func (h *Handler) validateRollbackAuthorizationRequest(w http.ResponseWriter, r 
 			return publishRollbackAuthorizationRequest{}, time.Time{}, false
 		}
 		writeError(w, http.StatusBadRequest, err)
+		return publishRollbackAuthorizationRequest{}, time.Time{}, false
+	}
+	if !admin.Allows(req.Authorization.OrgID, req.Authorization.FleetID) {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return publishRollbackAuthorizationRequest{}, time.Time{}, false
 	}
 	now := h.now()
@@ -1203,6 +1213,20 @@ type rollbackClearer interface {
 	ClearRollbackAuthorization(ctx context.Context, authorizationID string) (bool, error)
 }
 
+// rollbackAuthorizationMatchingClearer clears only when the id still resolves
+// to the record the caller authorised. A store that cannot express that has no
+// way to close the window between the scope check and the delete, so the
+// handler refuses rather than clearing unconditionally.
+type rollbackAuthorizationMatchingClearer interface {
+	ClearRollbackAuthorizationMatching(ctx context.Context, authorizationID string, expectedHash string) (bool, error)
+}
+
+// rollbackAuthorizationByIDReader resolves the stored, authoritative tenant
+// scope before an administrator can clear a rollback by its opaque ID.
+type rollbackAuthorizationByIDReader interface {
+	RollbackAuthorizationByID(ctx context.Context, authorizationID string) (StoredRollbackAuthorization, bool, error)
+}
+
 // clearRollbackAuthorizationRequest is the JSON body for DELETE
 // /api/v1/conductor/rollback-authorizations.
 type clearRollbackAuthorizationRequest struct {
@@ -1214,11 +1238,14 @@ func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
 		return
 	}
-	if err := h.authorizeAdmin(r); err != nil {
+	admin, err := h.authenticateAdmin(r)
+	if err != nil {
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
-	clearer, ok := h.emergencyControls.(rollbackClearer)
+	// Only the bound clear is required. Asserting the unbound one first would
+	// refuse a store that implements just the safer capability.
+	matching, ok := h.emergencyControls.(rollbackAuthorizationMatchingClearer)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, ErrEmergencyClearUnsupported)
 		return
@@ -1237,7 +1264,27 @@ func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: authorization_id", conductor.ErrMissingField))
 		return
 	}
-	cleared, err := clearer.ClearRollbackAuthorization(r.Context(), req.AuthorizationID)
+	reader, ok := h.emergencyControls.(rollbackAuthorizationByIDReader)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyClearUnsupported)
+		return
+	}
+	record, found, err := reader.RollbackAuthorizationByID(r.Context(), req.AuthorizationID)
+	if err != nil {
+		if errors.Is(err, ErrEmergencyClearUnsupported) {
+			writeError(w, http.StatusNotImplemented, err)
+			return
+		}
+		writeStoreError(w, err)
+		return
+	}
+	if !found || !admin.Allows(record.Authorization.OrgID, record.Authorization.FleetID) {
+		// Out-of-scope records are indistinguishable from absent records so one
+		// tenant's administrator cannot enumerate another tenant's rollback IDs.
+		writeError(w, http.StatusNotFound, ErrEmergencyNotFound)
+		return
+	}
+	cleared, err := matching.ClearRollbackAuthorizationMatching(r.Context(), req.AuthorizationID, record.AuthorizationHash)
 	if err != nil {
 		if errors.Is(err, ErrEmergencyClearUnsupported) {
 			writeError(w, http.StatusNotImplemented, err)

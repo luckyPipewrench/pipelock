@@ -28,6 +28,20 @@ func (erroringClearer) ClearRollbackAuthorization(context.Context, string) (bool
 	return false, errors.New("clear failed")
 }
 
+// A realistic store supports the bound clear. The handler refuses rather than
+// clearing unconditionally when it cannot bind the delete to the record the
+// scope check approved, so a double lacking this would exercise the refusal
+// path instead of the store-error path this case is written for.
+func (erroringClearer) ClearRollbackAuthorizationMatching(context.Context, string, string) (bool, error) {
+	return false, errors.New("clear failed")
+}
+
+func (erroringClearer) RollbackAuthorizationByID(context.Context, string) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{Authorization: conductor.RollbackAuthorization{
+		OrgID: "org-main", FleetID: "prod",
+	}}, true, nil
+}
+
 func clearRollbackRequest(body string, admin bool) *http.Request {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, RollbackAuthorizationsPath, strings.NewReader(body))
 	if admin {
@@ -66,6 +80,23 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"rollback-clear-ok"}`, true))
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("second clear status=%d body=%s, want 404", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("cross-org authorization is hidden and not cleared", func(t *testing.T) {
+		handler := newTestHandler(t, mustStore(t), nil)
+		auth := signedTestRollback(t, "rollback-other-org", testNow, 100)
+		if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
+			t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"rollback-other-org"}`, true))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("cross-org clear status=%d body=%s, want 404", w.Code, w.Body.String())
+		}
+		reader := handler.emergencyControls.(rollbackAuthorizationByIDReader)
+		if _, found, err := reader.RollbackAuthorizationByID(t.Context(), "rollback-other-org"); err != nil || !found {
+			t.Fatalf("cross-org rollback missing after denied clear: found=%v err=%v", found, err)
 		}
 	})
 
@@ -143,7 +174,7 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 			Now:                func() time.Time { return testNow },
 			FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
 			AuthorizePublisher: func(*http.Request) error { return nil },
-			AuthorizeAdmin:     func(*http.Request) error { return nil },
+			AuthenticateAdmin:  allowTestAdmin,
 			AuditSink:          discardAuditSink{},
 			AuditKeys:          rejectingAuditKeyResolver,
 			EmergencyControls:  failingEmergencyStore{},
@@ -158,6 +189,49 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 		}
 	})
 
+	// The scope check reads a record, and the delete happens in a separate
+	// store call. If the id is remapped in between, an unconditional delete
+	// removes the REPLACEMENT, which is a cross-tenant deletion the scope check
+	// appeared to have prevented. The store binds the delete to the record hash
+	// the caller authorised, so a swapped record is left alone.
+	t.Run("a record replaced between the scope check and the delete is not cleared", func(t *testing.T) {
+		handler := newTestHandler(t, mustStore(t), nil)
+		swapping := &swapOnReadStore{}
+		handler.emergencyControls = swapping
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"auth-victim"}`, true))
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status=%d body=%s, want 404", w.Code, w.Body.String())
+		}
+		// Assert the bound call actually ran with the authorised hash. Checking
+		// only what was NOT deleted would also pass for a handler that skipped
+		// the clear altogether.
+		if swapping.clearedHash != swapping.readHash {
+			t.Fatalf("cleared hash %q differs from the authorised hash %q, so the bound clear did not run against the record the scope check approved",
+				swapping.clearedHash, swapping.readHash)
+		}
+		if swapping.replacementRemoved {
+			t.Fatal("the replacement record was removed; the delete was not bound to the authorised record")
+		}
+	})
+
+	// A store that can clear but cannot bind the clear to a specific record
+	// leaves the scope check defeatable by a concurrent replace, so the handler
+	// refuses instead of falling back to an unconditional delete. The fallback
+	// would be the vulnerability, which is why this path is a refusal rather
+	// than a warning.
+	t.Run("a store without the bound clear is refused", func(t *testing.T) {
+		handler := newTestHandler(t, mustStore(t), nil)
+		handler.emergencyControls = unboundClearer{}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"auth-victim"}`, true))
+		if w.Code != http.StatusNotImplemented {
+			t.Fatalf("status=%d body=%s, want 501", w.Code, w.Body.String())
+		}
+	})
+
 	t.Run("clear error maps to 500", func(t *testing.T) {
 		handler := newTestHandler(t, mustStore(t), nil)
 		handler.emergencyControls = erroringClearer{}
@@ -167,4 +241,60 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 			t.Fatalf("status=%d body=%s, want 500", w.Code, w.Body.String())
 		}
 	})
+}
+
+// swapOnReadStore simulates the record being replaced between the handler's
+// scope-check read and its delete. It records the hash the handler authorised
+// and the hash it then asked to clear, so the test can assert the two agree
+// rather than asserting on a message.
+type swapOnReadStore struct {
+	failingEmergencyStore
+	readHash           string
+	clearedHash        string
+	replacementRemoved bool
+}
+
+func (s *swapOnReadStore) RollbackAuthorizationByID(context.Context, string) (StoredRollbackAuthorization, bool, error) {
+	s.readHash = "hash-victim"
+	return StoredRollbackAuthorization{
+		Authorization:     conductor.RollbackAuthorization{OrgID: "org-main", FleetID: "prod"},
+		AuthorizationHash: s.readHash,
+	}, true, nil
+}
+
+// The handler resolves the base clearer first, so a double lacking this never
+// reaches the bound path and every assertion about it passes vacuously. That
+// happened on the first attempt at this test.
+func (s *swapOnReadStore) ClearRollbackAuthorization(_ context.Context, _ string) (bool, error) {
+	s.replacementRemoved = true
+	return true, nil
+}
+
+func (s *swapOnReadStore) ClearRollbackAuthorizationMatching(_ context.Context, _ string, expectedHash string) (bool, error) {
+	s.clearedHash = expectedHash
+	// The id now resolves to a different organisation's record. A store that
+	// honours the binding must refuse; one that ignores it removes this.
+	const replacementHash = "hash-other-org"
+	if expectedHash != "" && expectedHash != replacementHash {
+		return false, nil
+	}
+	s.replacementRemoved = true
+	return true, nil
+}
+
+// unboundClearer can clear, and reports an in-scope record, but cannot bind the
+// delete to it. The handler must refuse rather than clear unconditionally.
+type unboundClearer struct {
+	failingEmergencyStore
+}
+
+func (unboundClearer) ClearRollbackAuthorization(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func (unboundClearer) RollbackAuthorizationByID(context.Context, string) (StoredRollbackAuthorization, bool, error) {
+	return StoredRollbackAuthorization{
+		Authorization:     conductor.RollbackAuthorization{OrgID: "org-main", FleetID: "prod"},
+		AuthorizationHash: "hash-victim",
+	}, true, nil
 }

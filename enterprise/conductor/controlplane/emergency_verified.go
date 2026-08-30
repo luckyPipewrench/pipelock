@@ -511,17 +511,41 @@ func (v *verifiedEmergencyStore) RemoteKills(ctx context.Context) ([]StoredRemot
 	return v.verifiedRemoteKills(ctx, time.Now().UTC())
 }
 
-// ClearRollbackAuthorization forwards an admin clear to the underlying store if
-// it supports clearing. The verified view does not gate clears: removing a
-// record (verified or not) only ever shrinks served state, so it is safe to
-// pass through, and an operator must be able to clear a quarantined-but-present
-// record from disk.
+// ClearRollbackAuthorizationMatching forwards a bound admin clear to the
+// underlying store. The verified view does not gate clears: removing a record
+// only ever shrinks served state. It refuses when the inner store cannot
+// express the binding, because an unconditional clear there would reopen the
+// window between the caller's scope check and the delete.
+func (v *verifiedEmergencyStore) ClearRollbackAuthorizationMatching(ctx context.Context, authorizationID string, expectedHash string) (bool, error) {
+	matcher, ok := v.inner.(rollbackAuthorizationMatchingClearer)
+	if !ok {
+		// Fall back to the unconditional clear only when the underlying store
+		// cannot express the binding. Reported so a deployment on such a store
+		// is not silently exposed to the replace-between-read-and-clear window.
+		return false, ErrEmergencyClearUnsupported
+	}
+	return matcher.ClearRollbackAuthorizationMatching(ctx, authorizationID, expectedHash)
+}
+
+// ClearRollbackAuthorization forwards an unbound admin clear to the underlying
+// store if it supports clearing.
 func (v *verifiedEmergencyStore) ClearRollbackAuthorization(ctx context.Context, authorizationID string) (bool, error) {
 	clearer, ok := v.inner.(rollbackClearer)
 	if !ok {
 		return false, ErrEmergencyClearUnsupported
 	}
 	return clearer.ClearRollbackAuthorization(ctx, authorizationID)
+}
+
+// RollbackAuthorizationByID resolves scope from the underlying stored record,
+// including a quarantined record that an authorized operator still needs to
+// clear. Signature validity controls serving, not which tenant owns the row.
+func (v *verifiedEmergencyStore) RollbackAuthorizationByID(ctx context.Context, authorizationID string) (StoredRollbackAuthorization, bool, error) {
+	reader, ok := v.inner.(rollbackAuthorizationByIDReader)
+	if !ok {
+		return StoredRollbackAuthorization{}, false, ErrEmergencyClearUnsupported
+	}
+	return reader.RollbackAuthorizationByID(ctx, authorizationID)
 }
 
 // PreviewRemoteKill forwards a remote-kill dry-run preview to the underlying

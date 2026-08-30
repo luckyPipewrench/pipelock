@@ -218,8 +218,8 @@ func startConductor(ctx context.Context, storageDir string, opts Options, materi
 		_ = auditStore.Close()
 		return nil, err
 	}
-	adminAuth, err := controlplane.ScopedBearerAdminAuthorizer([]controlplane.ScopedBearerCredential{
-		{Token: material.adminToken, Role: controlplane.RoleAdmin},
+	adminAuth, err := controlplane.ScopedBearerAdminAuthenticator([]controlplane.ScopedBearerCredential{
+		{Token: material.adminToken, Role: controlplane.RoleAdmin, OrgID: opts.OrgID},
 	})
 	if err != nil {
 		_ = auditStore.Close()
@@ -233,7 +233,7 @@ func startConductor(ctx context.Context, storageDir string, opts Options, materi
 		AuthorizePublisher:  publisherAuth,
 		AuthorizeBundle:     bundleAuth,
 		AuthorizeAuditQuery: auditQueryAuth,
-		AuthorizeAdmin:      adminAuth,
+		AuthenticateAdmin:   adminAuth,
 		AuditSink:           auditStore,
 		AuditKeys:           controlplane.CompositeAuditKeyResolver(enrollments, nil),
 		Enrollments:         enrollments,

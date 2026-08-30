@@ -119,7 +119,7 @@ func NewWebhookSink(url string, opts ...WebhookOption) *WebhookSink {
 	w := &WebhookSink{
 		url:    url,
 		format: FormatJSON,
-		client: &http.Client{Timeout: DefaultWebhookTimeout},
+		client: newNoRedirectHTTPClient(DefaultWebhookTimeout),
 		queue:  make(chan Event, DefaultQueueSize),
 		done:   make(chan struct{}),
 	}

@@ -148,7 +148,7 @@ func NewOTLPSink(endpoint, version string, minSev Severity, headers map[string]s
 		minSev:   minSev,
 		useGzip:  useGzip,
 		version:  version,
-		client:   &http.Client{Timeout: timeout},
+		client:   newNoRedirectHTTPClient(timeout),
 		resource: resource,
 		queue:    make(chan Event, queueSize),
 		done:     make(chan struct{}),

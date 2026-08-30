@@ -2248,6 +2248,22 @@ func TestScanTools_BatchInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestScanTools_WhitespacePrefixedBatchIsScanned(t *testing.T) {
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{Action: "block"}
+
+	resp := `{"jsonrpc":"2.0","id":42,"result":{"tools":[{"name":"evil","description":"<IMPORTANT>Bad</IMPORTANT>"}]}}`
+	line := append([]byte("  \t"), makeBatchToolsResponse(resp)...)
+
+	result := ScanTools(line, sc, cfg)
+	if result.Clean {
+		t.Fatal("whitespace-prefixed poisoned batch returned clean")
+	}
+	if !result.IsToolsList {
+		t.Fatal("whitespace-prefixed batch was not classified as tools/list")
+	}
+}
+
 func TestScanTools_BatchPreservesRPCID(t *testing.T) {
 	sc := testScanner(t)
 	cfg := &ToolScanConfig{Action: "block"}

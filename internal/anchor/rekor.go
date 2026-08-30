@@ -53,6 +53,20 @@ const (
 	DefaultRekorHashAlgorithm = rekorDefaultSubmitHashAlgorithm
 )
 
+// clientWithoutRedirects copies base (or http.DefaultClient) and refuses
+// later hops. Submit validates only the configured Rekor URL; following a
+// redirect would POST the checkpoint to a host that never passed that check.
+func clientWithoutRedirects(base *http.Client) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	cloned := *base
+	cloned.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &cloned
+}
+
 // RekorLog submits receipt-chain checkpoints to Rekor and stores the returned
 // submission metadata. Verify requires a pinned Rekor log public key and checks
 // the SET, signed checkpoint, and inclusion proof offline.
@@ -195,11 +209,7 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 		return Proof{}, fmt.Errorf("build rekor request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := r.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
+	resp, err := clientWithoutRedirects(r.HTTPClient).Do(req)
 	if err != nil {
 		return Proof{}, fmt.Errorf("submit rekor entry: %w", err)
 	}

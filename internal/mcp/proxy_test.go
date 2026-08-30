@@ -3486,6 +3486,86 @@ func TestForwardScanned_BlocksBatchJSONRPC(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_BlocksWhitespacePrefixedSSEBatches(t *testing.T) {
+	// SSE preserves the payload's leading whitespace. A JSON-RPC batch must
+	// still be rejected before response validation, otherwise it can bypass the
+	// single-message response gate.
+	batch := `[{"jsonrpc":"2.0","id":1,"result":"ok"}]`
+	tests := []struct {
+		name string
+		sse  string
+	}{
+		{
+			name: "space",
+			sse:  "data:  " + batch + "\n\n",
+		},
+		{
+			name: "tab",
+			sse:  "data: \t" + batch + "\n\n",
+		},
+		{
+			name: "newline",
+			sse:  "data: \ndata: " + batch + "\n\n",
+		},
+		{
+			name: "carriage return",
+			sse:  "data: \r" + batch + "\n\n",
+		},
+		{
+			name: "malformed batch",
+			sse:  "data:  [not json\n\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, logBuf bytes.Buffer
+			found, err := ForwardScanned(
+				transport.NewSSEReader(strings.NewReader(tc.sse)),
+				transport.NewStdioWriter(&out),
+				&logBuf,
+				nil,
+				MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionWarn)},
+			)
+			if err != nil {
+				t.Fatalf("ForwardScanned: %v", err)
+			}
+			if found {
+				t.Fatal("batch rejection must not report an injection finding")
+			}
+			if out.Len() != 0 {
+				t.Fatalf("batch reached client: %q", out.String())
+			}
+			if !strings.Contains(logBuf.String(), "blocked batch JSON-RPC") {
+				t.Fatalf("batch rejection was not logged: %q", logBuf.String())
+			}
+		})
+	}
+}
+
+func TestForwardScanned_ForwardsWhitespacePrefixedSSEResponse(t *testing.T) {
+	const response = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"clean"}]}}`
+	const sse = "data:  " + response + "\n\n"
+
+	var out, logBuf bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewSSEReader(strings.NewReader(sse)),
+		transport.NewStdioWriter(&out),
+		&logBuf,
+		nil,
+		MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionWarn)},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("clean response reported an injection finding")
+	}
+	if got := strings.TrimSpace(out.String()); got != response {
+		t.Fatalf("response = %q, want %q (log %q)", got, response, logBuf.String())
+	}
+}
+
 func TestIsRequest(t *testing.T) {
 	tests := []struct {
 		name string

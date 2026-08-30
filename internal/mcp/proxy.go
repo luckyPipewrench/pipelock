@@ -302,7 +302,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// MCP does not use JSON-RPC batch messages (top-level arrays).
 		// A batch from the server is either malformed or an attempt to
 		// bypass per-message ID validation. Fail closed.
-		if len(line) > 0 && line[0] == '[' {
+		if frame.IsBatch {
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocked batch JSON-RPC message (not supported by MCP)\n", lineNum)
 			continue
 		}

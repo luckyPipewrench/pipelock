@@ -140,17 +140,19 @@ func TestVerifyAuthenticatedArtifact_FailsClosedForVerifierErrors(t *testing.T) 
 		})
 	}
 	for _, tc := range []struct {
-		name string
-		resp *http.Response
-		rt   http.RoundTripper
+		name       string
+		resp       *http.Response
+		rt         http.RoundTripper
+		noSigFetch bool
 	}{
 		{
-			name: "default transport still rejects redirect",
-			resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(nil)), Request: &http.Request{URL: &url.URL{Scheme: "https", Host: u.Host, Path: "/other"}}},
+			name:       "default transport still rejects redirect",
+			resp:       &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(nil)), Request: &http.Request{URL: &url.URL{Scheme: "https", Host: u.Host, Path: "/other"}}},
+			noSigFetch: true,
 		},
-		{name: "upstream status", resp: &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(bytes.NewReader(nil)), Request: req}},
-		{name: "bundle read", resp: &http.Response{StatusCode: http.StatusOK, Body: artifactErrorBody{readErr: errors.New("bundle read failed")}, Request: req}},
-		{name: "bundle too large", resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), domrules.MaxBundleFileSize+1))), Request: req}},
+		{name: "upstream status", resp: &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(bytes.NewReader(nil)), Request: req}, noSigFetch: true},
+		{name: "bundle read", resp: &http.Response{StatusCode: http.StatusOK, Body: artifactErrorBody{readErr: errors.New("bundle read failed")}, Request: req}, noSigFetch: true},
+		{name: "bundle too large", resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), domrules.MaxBundleFileSize+1))), Request: req}, noSigFetch: true},
 		{
 			name: "signature transport",
 			resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(validBody)), Request: req},
@@ -189,7 +191,7 @@ func TestVerifyAuthenticatedArtifact_FailsClosedForVerifierErrors(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func() { _ = tc.resp.Body.Close() }()
-			if tc.rt == nil && tc.name != "default transport still rejects redirect" && tc.name != "upstream status" && tc.name != "bundle read" && tc.name != "bundle too large" {
+			if tc.rt == nil && !tc.noSigFetch {
 				t.Fatal("test setup omitted a signature transport")
 			}
 			artifact, err := verifyAuthenticatedArtifact(t.Context(), req, tc.resp, tc.rt, entries)

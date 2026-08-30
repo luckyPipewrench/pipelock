@@ -45,6 +45,21 @@ func TestAuthenticatedArtifactsConfigContract(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedArtifactsConfigNormalizesHost(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.AuthenticatedArtifacts = []AuthenticatedArtifactEntry{{
+		Host:       "RULES.EXAMPLE.",
+		Path:       "/rules/pipelock-community/bundle.yaml",
+		BundleName: "pipelock-community",
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ResponseScanning.AuthenticatedArtifacts[0].Host; got != "rules.example" {
+		t.Fatalf("normalized host=%q want %q", got, "rules.example")
+	}
+}
+
 func TestAuthenticatedArtifactsCloneAndCanonicalOrder(t *testing.T) {
 	a := AuthenticatedArtifactEntry{Host: "a.example", Path: "/rules/a/bundle.yaml", BundleName: "aaa"}
 	b := AuthenticatedArtifactEntry{Host: "b.example", Path: "/rules/b/bundle.yaml", BundleName: "bbb"}

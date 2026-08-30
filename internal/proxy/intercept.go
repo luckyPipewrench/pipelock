@@ -1706,7 +1706,7 @@ func newInterceptHandler(
 			ic.Logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
 			ic.Metrics.RecordTLSResponseBlocked("authenticated_artifact")
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}))
-			writeBlockedError(w, blockInfoFor(blockreason.PromptInjection, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
+			writeBlockedError(w, blockInfoFor(blockreason.EnvelopeVerifyFailed, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "authenticated_artifact")
 			return
 		} else if artifact != nil {

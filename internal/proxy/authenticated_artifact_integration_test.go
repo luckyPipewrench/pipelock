@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
@@ -98,15 +99,16 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 		sigRedirect bool
 		contentType string
 		want        int
+		wantReason  blockreason.Reason
 	}{
-		{name: "no matching policy retains response scan", body: []byte(testInjectionPayload), want: http.StatusForbidden},
+		{name: "no matching policy retains response scan", body: []byte(testInjectionPayload), want: http.StatusForbidden, wantReason: blockreason.PromptInjection},
 		{name: "valid official artifact bypasses only injection scan", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, want: http.StatusOK},
 		{name: "valid official artifact bypasses SSE injection scan", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, contentType: "text/event-stream", want: http.StatusOK},
-		{name: "tampered body is blocked", policy: true, body: artifactBundle("NEVER_RELEASE tampered"), signature: goodSig, sigStatus: http.StatusOK, want: http.StatusForbidden},
-		{name: "invalid signature is blocked", policy: true, body: goodBody, signature: []byte("not-base64"), sigStatus: http.StatusOK, want: http.StatusForbidden},
-		{name: "missing signature is blocked", policy: true, body: goodBody, sigStatus: http.StatusNotFound, want: http.StatusForbidden},
-		{name: "signature redirect is blocked", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, sigRedirect: true, want: http.StatusForbidden},
-		{name: "oversized signature is blocked", policy: true, body: goodBody, signature: bytes.Repeat([]byte("A"), 4097), sigStatus: http.StatusOK, want: http.StatusForbidden},
+		{name: "tampered body is blocked", policy: true, body: artifactBundle("NEVER_RELEASE tampered"), signature: goodSig, sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "invalid signature is blocked", policy: true, body: goodBody, signature: []byte("not-base64"), sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "missing signature is blocked", policy: true, body: goodBody, sigStatus: http.StatusNotFound, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "signature redirect is blocked", policy: true, body: goodBody, signature: goodSig, sigStatus: http.StatusOK, sigRedirect: true, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "oversized signature is blocked", policy: true, body: goodBody, signature: bytes.Repeat([]byte("A"), 4097), sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := artifactConfig()
@@ -116,6 +118,9 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 			originalBody := &closeTrackingBody{Reader: bytes.NewReader(tc.body)}
 			rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 				if strings.HasSuffix(req.URL.Path, ".sig") {
+					if req.Context().Value(ctxKeyAgentConfig) != cfg {
+						t.Fatal("signature fetch lost the scanned outbound request context")
+					}
 					responseReq := req
 					if tc.sigRedirect {
 						redirected := req.Clone(context.Background())
@@ -137,6 +142,12 @@ func TestForwardHTTPAuthenticatedArtifact_HandlerPath(t *testing.T) {
 			p.handleForwardHTTP(w, req)
 			if w.Code != tc.want {
 				t.Fatalf("status=%d want=%d body=%q", w.Code, tc.want, w.Body.String())
+			}
+			if tc.wantReason != "" && w.Header().Get(blockreason.HeaderReason) != string(tc.wantReason) {
+				t.Fatalf("%s=%q want=%q", blockreason.HeaderReason, w.Header().Get(blockreason.HeaderReason), tc.wantReason)
+			}
+			if tc.wantReason == blockreason.EnvelopeVerifyFailed && w.Header().Get(blockreason.HeaderLayer) != "authenticated_artifact" {
+				t.Fatalf("%s=%q want authenticated_artifact", blockreason.HeaderLayer, w.Header().Get(blockreason.HeaderLayer))
 			}
 			if tc.want == http.StatusForbidden && strings.Contains(w.Body.String(), "NEVER_RELEASE") {
 				t.Fatal("blocked artifact bytes reached the client")
@@ -165,14 +176,15 @@ func TestInterceptAuthenticatedArtifact_HandlerPath(t *testing.T) {
 		sigRedirect bool
 		contentType string
 		want        int
+		wantReason  blockreason.Reason
 	}{
 		{name: "valid official artifact", body: goodBody, signature: goodSig, sigStatus: http.StatusOK, want: http.StatusOK},
 		{name: "valid official artifact with SSE content type", body: goodBody, signature: goodSig, sigStatus: http.StatusOK, contentType: "text/event-stream", want: http.StatusOK},
-		{name: "tampered body", body: artifactBundle("NEVER_RELEASE tampered"), signature: goodSig, sigStatus: http.StatusOK, want: http.StatusForbidden},
-		{name: "invalid signature", body: goodBody, signature: []byte("not-base64"), sigStatus: http.StatusOK, want: http.StatusForbidden},
-		{name: "missing signature", body: goodBody, sigStatus: http.StatusNotFound, want: http.StatusForbidden},
-		{name: "signature path mismatch", body: goodBody, signature: goodSig, sigStatus: http.StatusOK, sigRedirect: true, want: http.StatusForbidden},
-		{name: "oversized signature", body: goodBody, signature: bytes.Repeat([]byte("A"), 4097), sigStatus: http.StatusOK, want: http.StatusForbidden},
+		{name: "tampered body", body: artifactBundle("NEVER_RELEASE tampered"), signature: goodSig, sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "invalid signature", body: goodBody, signature: []byte("not-base64"), sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "missing signature", body: goodBody, sigStatus: http.StatusNotFound, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "signature path mismatch", body: goodBody, signature: goodSig, sigStatus: http.StatusOK, sigRedirect: true, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
+		{name: "oversized signature", body: goodBody, signature: bytes.Repeat([]byte("A"), 4097), sigStatus: http.StatusOK, want: http.StatusForbidden, wantReason: blockreason.EnvelopeVerifyFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := artifactConfig()
@@ -203,6 +215,12 @@ func TestInterceptAuthenticatedArtifact_HandlerPath(t *testing.T) {
 			handler.ServeHTTP(w, req)
 			if w.Code != tc.want {
 				t.Fatalf("status=%d want=%d body=%q", w.Code, tc.want, w.Body.String())
+			}
+			if tc.wantReason != "" && w.Header().Get(blockreason.HeaderReason) != string(tc.wantReason) {
+				t.Fatalf("%s=%q want=%q", blockreason.HeaderReason, w.Header().Get(blockreason.HeaderReason), tc.wantReason)
+			}
+			if tc.wantReason == blockreason.EnvelopeVerifyFailed && w.Header().Get(blockreason.HeaderLayer) != "authenticated_artifact" {
+				t.Fatalf("%s=%q want authenticated_artifact", blockreason.HeaderLayer, w.Header().Get(blockreason.HeaderLayer))
 			}
 			if tc.want == http.StatusForbidden && strings.Contains(w.Body.String(), "NEVER_RELEASE") {
 				t.Fatal("blocked artifact bytes reached the client")
@@ -263,33 +281,39 @@ func TestForwardHTTPAuthenticatedArtifact_DoesNotDecayAdaptiveScore(t *testing.T
 	priv := installArtifactOfficialKey(t)
 	body := artifactBundle(testInjectionPayload)
 	sig := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body)))
-	cfg := artifactConfig()
-	cfg.SessionProfiling.Enabled = true
-	cfg.AdaptiveEnforcement.Enabled = true
-	cfg.AdaptiveEnforcement.EscalationThreshold = 100
-	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
-	p := newArtifactIntegrationProxy(t, cfg, audit.NewNop(), roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasSuffix(req.URL.Path, ".sig") {
-			return artifactResponse(req, http.StatusOK, sig), nil
-		}
-		return artifactResponse(req, http.StatusOK, body), nil
-	}))
-	sm := p.sessionMgrPtr.Load()
-	if sm == nil {
-		t.Fatal("session manager not initialized")
-	}
-	rec := sm.GetOrCreate("192.0.2.1")
-	rec.RecordSignal(session.SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
-	before := rec.ThreatScore()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://rules.example"+artifactIntegrationPath, nil)
-	req.RemoteAddr = "192.0.2.1:1234"
-	w := httptest.NewRecorder()
-	p.handleForwardHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
-	}
-	if got := rec.ThreatScore(); got != before {
-		t.Fatalf("verified artifact decayed adaptive score from %v to %v despite skipped injection scan", before, got)
+	for _, contentType := range []string{"text/plain", "text/event-stream"} {
+		t.Run(contentType, func(t *testing.T) {
+			cfg := artifactConfig()
+			cfg.SessionProfiling.Enabled = true
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = 100
+			cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+			p := newArtifactIntegrationProxy(t, cfg, audit.NewNop(), roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(req.URL.Path, ".sig") {
+					return artifactResponse(req, http.StatusOK, sig), nil
+				}
+				resp := artifactResponse(req, http.StatusOK, body)
+				resp.Header.Set(headerContentType, contentType)
+				return resp, nil
+			}))
+			sm := p.sessionMgrPtr.Load()
+			if sm == nil {
+				t.Fatal("session manager not initialized")
+			}
+			rec := sm.GetOrCreate("192.0.2.1")
+			rec.RecordSignal(session.SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
+			before := rec.ThreatScore()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://rules.example"+artifactIntegrationPath, nil)
+			req.RemoteAddr = "192.0.2.1:1234"
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+			}
+			if got := rec.ThreatScore(); got != before {
+				t.Fatalf("verified artifact decayed adaptive score from %v to %v despite skipped injection scan", before, got)
+			}
+		})
 	}
 }
 

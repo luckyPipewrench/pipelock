@@ -2096,11 +2096,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// buffers and verifies this exact response before allowing only injection
 	// matching to be skipped; all other response controls remain below.
 	fwdAuthenticatedArtifact := false
-	if artifact, artifactErr := verifyAuthenticatedArtifact(r.Context(), outReq, resp, p.client.Transport, cfg.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
+	if artifact, artifactErr := verifyAuthenticatedArtifact(outReq.Context(), outReq, resp, p.client.Transport, cfg.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
 		p.logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
 		p.metrics.RecordBlocked(r.URL.Hostname(), "authenticated_artifact", time.Since(start), agentLabel)
 		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}))
-		writeBlockedError(w, blockInfoFor(blockreason.PromptInjection, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
+		writeBlockedError(w, blockInfoFor(blockreason.EnvelopeVerifyFailed, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
 		outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), "authenticated_artifact"
 		return
 	} else if artifact != nil {
@@ -2874,7 +2874,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if responseBudgetTruncated {
 		outcomeReason = "budget_truncated"
 	}
-	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 }

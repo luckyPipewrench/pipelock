@@ -123,7 +123,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// reload has one honest effective configuration and the live audit path
 		// is never torn down by a candidate that may fail.
 		if !reflect.DeepEqual(oldCfg.Emit, newCfg.Emit) {
-			attemptedHash := newCfg.Hash()
+			attemptedHash := newCfg.Emit.Fingerprint()
 			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: emit settings changed — live sink workers require restart, ignoring")
 			s.logger.LogConfigReload("ignored", "emit settings restart-only", attemptedHash)
 			newCfg.Emit = oldCfg.Emit

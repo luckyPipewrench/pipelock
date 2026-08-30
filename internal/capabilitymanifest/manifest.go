@@ -88,12 +88,24 @@ type Gate struct {
 // GateFeature points at the enforcement selector and at a declaration that
 // names the feature constant.
 //
-// The two references are checked INDEPENDENTLY: the parity test looks for the
-// enforcement selector in one declaration and the feature constant in the
-// other, and nothing connects them. So proof shows the feature constant is
-// passed to a call in the referenced declaration; it does not establish that
-// this selector is bound to that feature, or that the declaration verifies
-// anything.
+// The Proof field is NOT proof. It is a source reference an auditor can follow,
+// and the name is a historical one this comment exists to contradict until the
+// field is renamed. Four review rounds tightened the check behind it and each
+// found the next way through, because the check reads the SHAPE of the code and
+// the field name promises something about its MEANING.
+//
+// What the check establishes: the referenced declaration exists, and it passes
+// something spelled like the feature constant to some call. What it cannot
+// establish, and must not be read as establishing: that the identifier resolves
+// to the license package's constant rather than a local of the same spelling,
+// that the call does anything with it, that the result is tested, or that the
+// enforcement selector in the OTHER reference is bound to this feature. The two
+// references are checked independently and nothing connects them.
+//
+// Closing that gap needs binding resolution through go/types, not a stricter
+// spelling rule. Until someone decides that is worth a package load inside a
+// parity test, treat a passing check as evidence the reference is live, and
+// nothing more.
 //
 // Proof is often a dedicated license helper such as VerifyAgentsWithOptions,
 // but it does NOT have to be a separate declaration, and a feature whose

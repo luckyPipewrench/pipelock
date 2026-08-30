@@ -390,6 +390,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("parse error: %v", err), Class: BundleErrorClassIntegrity})
 		return
 	}
+	bundleWarnings := make([]string, 0, 1)
 
 	// Check min_pipelock version requirement.
 	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion, opts.AllowUnversionedLoad); err != nil {
@@ -400,7 +401,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassIntegrity})
 		return
 	} else if warning != "" {
-		ctx.Result.Warnings = append(ctx.Result.Warnings, fmt.Sprintf("bundle %q: %s", bundle.Name, warning))
+		bundleWarnings = append(bundleWarnings, fmt.Sprintf("bundle %q: %s", bundle.Name, warning))
 	}
 
 	// Check pipelock-* name reservation: only official signers allowed.
@@ -460,7 +461,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 			return
 		}
 		if fr.Expired {
-			ctx.Result.Warnings = append(ctx.Result.Warnings, fr.Message)
+			bundleWarnings = append(bundleWarnings, fr.Message)
 		}
 
 	}
@@ -469,7 +470,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	// leak part of this bundle into the shared result or persisted state.
 	stagedCtx := &bundleExecCtx{
 		MinRank:        ctx.MinRank,
-		Result:         &LoadResult{},
+		Result:         &LoadResult{Warnings: bundleWarnings},
 		FreshnessState: cloneFreshnessState(ctx.FreshnessState),
 		Now:            ctx.Now,
 		Definitions:    ctx.Definitions,

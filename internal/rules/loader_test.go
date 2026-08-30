@@ -223,9 +223,10 @@ func TestLoadBundlesFailedBundleIsAtomic(t *testing.T) {
 	}
 	failing := testBundleV2("a-failing", TierCommunity, 7, []Rule{
 		testDLPRule("dlp-before-failure", confidenceHigh, StatusStable),
-		testToolPoisonRule("forced-failure", confidenceHigh, StatusStable, scanFieldDescription),
+		testToolPoisonRule("forced-failure", scanFieldDescription),
 	})
 	failing.KeyID = KeyFingerprint(pub)
+	failing.TestedThroughPipelock = "1.0.0"
 	writeSignedBundle(t, failingDir, failing, pub, priv)
 
 	successDir := filepath.Join(dir, "z-success")
@@ -262,6 +263,9 @@ func TestLoadBundlesFailedBundleIsAtomic(t *testing.T) {
 	if len(result.Loaded) != 1 || result.Loaded[0].Name != "z-success" {
 		t.Fatalf("loaded bundles = %+v, want only z-success", result.Loaded)
 	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings = %q, want none from failed bundle", result.Warnings)
+	}
 
 	state, err := LoadFreshnessState(dir)
 	if err != nil {
@@ -295,7 +299,7 @@ func TestLoadBundlesOfficialLoaderFailureWarnsDegraded(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	bundle := testBundle(StandardBundleName, []Rule{
-		testToolPoisonRule("forced-failure", confidenceHigh, StatusStable, scanFieldDescription),
+		testToolPoisonRule("forced-failure", scanFieldDescription),
 	})
 	writeSignedBundle(t, bundleDir, bundle, pub, priv)
 
@@ -384,15 +388,15 @@ func testInjectionRule(id, confidence string) Rule {
 }
 
 // testToolPoisonRule creates a valid tool-poison rule.
-func testToolPoisonRule(id, confidence, status, scanField string) Rule {
+func testToolPoisonRule(id, scanField string) Rule {
 	return Rule{
 		ID:          id,
 		Type:        RuleTypeToolPoison,
-		Status:      status,
+		Status:      StatusStable,
 		Name:        "Test Tool Poison Rule " + id,
 		Description: "Detects poisoned tool " + id,
 		Severity:    severityCritical,
-		Confidence:  confidence,
+		Confidence:  confidenceHigh,
 		Pattern:     RulePattern{Regex: `exec\s+curl`, ScanField: scanField},
 	}
 }
@@ -527,7 +531,7 @@ func TestLoadBundles_ValidUnsignedBundle(t *testing.T) {
 	b := testBundle(testBundleName, []Rule{
 		testDLPRule("dlp-rule-001", confidenceHigh, StatusStable),
 		testInjectionRule("inj-rule-001", confidenceMedium),
-		testToolPoisonRule("tp-rule-001", confidenceHigh, StatusStable, scanFieldDescription),
+		testToolPoisonRule("tp-rule-001", scanFieldDescription),
 	})
 	writeUnsignedBundle(t, bundleDir, b)
 
@@ -1318,7 +1322,7 @@ func TestLoadBundles_RuleTypeRouting(t *testing.T) {
 		testDLPRule("dlp-001", confidenceHigh, StatusStable),
 		testDLPRule("dlp-002", confidenceHigh, StatusStable),
 		testInjectionRule("inj-001", confidenceHigh),
-		testToolPoisonRule("tp-001", confidenceHigh, StatusStable, scanFieldName),
+		testToolPoisonRule("tp-001", scanFieldName),
 	})
 	writeUnsignedBundle(t, bundleDir, b)
 

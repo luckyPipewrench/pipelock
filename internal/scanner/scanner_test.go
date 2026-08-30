@@ -164,7 +164,12 @@ func TestScan_BlocksBlocklistedDomains(t *testing.T) {
 }
 
 func TestScan_BlocksDLPPatterns(t *testing.T) {
-	s := MustNew(testConfig())
+	cfg := testConfig()
+	// DLP owns the assertion in this test. GitHub's stateless installation
+	// tokens are roughly 520 characters, so the generic URL-length guard must
+	// not preempt the detector under test.
+	cfg.FetchProxy.Monitoring.MaxURLLength = 2048
+	s := MustNew(cfg)
 
 	tests := []struct {
 		url     string
@@ -175,6 +180,7 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		{"https://example.com/path?" + "token=" + "ASIA" + "IOSFODNN7EXAMPLE", "AWS Access ID"},
 		{"https://example.com/path/ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},
 		{"https://example.com/path/gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},
+		{"https://example.com/path/ghs_eyJhbGciOiJFUzI1NiJ9." + strings.Repeat("A", 240) + "." + strings.Repeat("B", 220) + "-_", "GitHub Token"},
 		{"https://example.com/api?k=fw_" + "aBcDeFgHiJkLmNoPqRsTuV", "Fireworks API Key"},
 		{"https://example.com/api?k=GOCSPX-" + "aBcDeFgHiJkLmNoPqRsTuVwXyZaB", "Google OAuth Client Secret"},
 		{"https://example.com/api?k=AIza" + "SyA1234567890abcdefghijklmnopqrstuv", "Google API Key"},

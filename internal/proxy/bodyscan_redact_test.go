@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -54,6 +55,36 @@ func TestScanRequestBody_Redaction_BeforeDLPEarlyReturn(t *testing.T) {
 	}
 	if len(result.DLPMatches) == 0 {
 		t.Fatal("expected pre-redaction DLP evidence to survive redaction")
+	}
+}
+
+func TestScanRequestBody_RedactsGitHubStatelessInstallationToken(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	githubJWTHeader := strings.Join([]string{"ghs_", "eyJ", "hbG", "ciOi", "JFUz", "I1Ni", "J9."}, "")
+	token := githubJWTHeader + strings.Repeat("A", 240) + "." + strings.Repeat("B", 220) + "-_"
+	body := `{"token":"` + token + `"}`
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:          strings.NewReader(body),
+		ContentType:   contentTypeJSON,
+		MaxBytes:      len(body) * 2,
+		Scanner:       sc,
+		RedactMatcher: redact.NewDefaultMatcher(),
+	})
+
+	var redacted struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(buf, &redacted); err != nil {
+		t.Fatalf("parse redacted body: %v", err)
+	}
+	if redacted.Token != "<pl:github-token:1>" {
+		t.Fatalf("redacted token = %q, want complete placeholder", redacted.Token)
+	}
+	if result.RedactionReport == nil || !result.RedactionReport.Applied {
+		t.Fatalf("RedactionReport missing or not applied: %+v", result.RedactionReport)
 	}
 }
 

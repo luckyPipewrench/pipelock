@@ -2336,7 +2336,8 @@ def derive_state(progress: ReviewProgress) -> str:
 # step, so the pattern has to match the reassembled form as well as the original.
 SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     ('aws-access-key', '(?:AKIA|ASIA|AROA|AIDA|AGPA|AIPA|ANPA|ANVA|A3T)[A-Z0-9]{16,}'),
-    ('github-token', 'gh[pousr]_?[A-Za-z0-9]{36,}'),
+    ('github-token', '(?:gh[pour]_?[A-Za-z0-9]{36,}|ghs_?[A-Za-z0-9.\\-_]{36,})'),
+    ('azure-sas-token', '(?i)\\bsig=(?:[A-Za-z0-9%]{43,}%3d\\b|[A-Za-z0-9+/]{43}=)'),
     ('github-pat', 'github_?pat_?[A-Za-z0-9]{22,}'),
     ('slack-token', 'xox[abprs]-[A-Za-z0-9-]{10,}'),
     ('stripe-key', '(?:sk|rk)_?(?:live|test)_?[A-Za-z0-9]{16,}'),

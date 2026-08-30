@@ -104,7 +104,7 @@ dlp:
       regex: '[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}'
       severity: critical
     - name: "GitHub Token"
-      regex: 'gh[pousr]_[A-Za-z0-9_]{36,}'
+      regex: '(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})'
       severity: critical
     - name: "GitHub Fine-Grained PAT"
       regex: 'github_pat_[a-zA-Z0-9_]{36,}'

@@ -762,7 +762,7 @@ For built-in provider-key patterns, the default config already exempts the provi
 | Google OAuth Client ID | `*.apps.googleusercontent.com` | medium |
 | Stripe Key | `[sr]k_live\|test_` | critical |
 | Stripe Webhook Secret | `whsec_` | critical |
-| GitHub Token | `gh[pousr]_` | critical |
+| GitHub Token | `gh[pour]_` / `ghs_` + 36+ JWT-safe chars | critical |
 | GitHub Fine-Grained PAT | `github_pat_` | critical |
 | GitLab PAT | `glpat-` | critical |
 | GitLab Deploy Token | `gldt-` | critical |
@@ -779,7 +779,7 @@ For built-in provider-key patterns, the default config already exempts the provi
 | GCP Service Account Key (always-on core pattern, not part of the 65 default count) | `"type":"service_account"` | critical |
 | GCP Service Account Private Key ID | `"private_key_id":"<40 hex>"` | high |
 | Azure Storage Account Key | `AccountKey=<88-char base64>` | critical |
-| Azure SAS Token | `sig=<base64>%3D` | high |
+| Azure SAS Token | `sig=<base64>%3D` / decoded `sig=<base64>=` | high |
 | Slack Token | `xox[bpras]-` | critical |
 | Slack App Token | `xapp-` | critical |
 | Discord Bot Token | `[MN]*.*.*` / `mfa.*` | critical |

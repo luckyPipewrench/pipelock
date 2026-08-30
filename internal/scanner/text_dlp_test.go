@@ -1598,6 +1598,27 @@ func TestScanTextForDLP_GitHubTokensInLongOpaqueRunsStillBlock(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_GitHubStatelessInstallationToken(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+
+	// GitHub's stateless installation-token contract is a ghs_-prefixed JWT
+	// of roughly 520 characters. Keep the first segment below the legacy
+	// 36-character opaque-token floor: the complete token is the credential,
+	// and GitHub explicitly requires matchers to accept dots and hyphens.
+	token := "ghs_" + "eyJhbGciOiJFUzI1NiJ9" + "." +
+		strings.Repeat("A", 240) + "." + strings.Repeat("B", 220) + "-_"
+
+	result := s.ScanTextForDLP(context.Background(), "token="+token)
+	if result.Clean {
+		t.Fatal("GitHub stateless installation token was not detected")
+	}
+	if !hasTextDLPMatch(result.Matches, "GitHub Token", "") {
+		t.Fatalf("missing GitHub Token match: %v", result.Matches)
+	}
+}
+
 func TestScanTextForDLP_MultiplePatterns(t *testing.T) {
 	cfg := testConfig()
 	s := MustNew(cfg)

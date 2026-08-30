@@ -117,6 +117,10 @@ func TestValidateReceiptPublicSafe_Rejections(t *testing.T) {
 		{"openai service key in pattern", func(ar *receipt.ActionRecord) {
 			ar.Pattern = "leaked " + "sk-" + "svcacct-" + "AAAAAAAAAA_BBBBBBBBBB"
 		}},
+		{"github stateless installation token in target", func(ar *receipt.ActionRecord) {
+			ar.Target = "https://collector.example.com/?k=" + "ghs_eyJhbGciOiJFUzI1NiJ9." +
+				strings.Repeat("A", 240) + "." + strings.Repeat("B", 220) + "-_"
+		}},
 		{"populated request_id", func(ar *receipt.ActionRecord) { ar.RequestID = "req-provider-9c4ad1" }},
 		{"bad run nonce", func(ar *receipt.ActionRecord) { ar.RunNonce = "not-a-nonce" }},
 		{"populated session task", func(ar *receipt.ActionRecord) { ar.SessionTaskLabel = "internal-task" }},

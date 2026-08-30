@@ -180,6 +180,26 @@ func TestScanHTTPInput_DLPBlocksSecret(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_DLPBlocksGitHubStatelessInstallationToken(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	githubJWTHeader := strings.Join([]string{"ghs_", "eyJ", "hbG", "ciOi", "JFUz", "I1Ni", "J9."}, "")
+	token := githubJWTHeader + strings.Repeat("A", 240) + "." + strings.Repeat("B", 220) + "-_"
+	msg := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"content":"%s"}}}`, token))
+	var logBuf bytes.Buffer
+
+	blocked := scanHTTPInput(msg, &logBuf, "session-1", "audit-1", MCPProxyOpts{
+		Scanner: sc,
+		InputCfg: &InputScanConfig{
+			Enabled:      true,
+			Action:       config.ActionBlock,
+			OnParseError: config.ActionBlock,
+		},
+	})
+	if blocked == nil {
+		t.Fatal("expected GitHub stateless token in MCP tool arguments to block")
+	}
+}
+
 func TestScanHTTPInput_DLPBlocksStackedEncodedSecret(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"

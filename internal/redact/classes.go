@@ -10,8 +10,7 @@ import (
 )
 
 // A classPattern associates a secret class with a compiled regex that
-// matches instances of that class in arbitrary text. Patterns must not have
-// anchors (^ / $) because they are applied inside larger string scalars.
+// matches instances of that class in arbitrary text.
 type classPattern struct {
 	class   Class
 	pattern *regexp.Regexp
@@ -115,7 +114,7 @@ func tokenClasses() []classPattern {
 		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope, skipLeading: sigV4CredentialPrefix},
 		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
 		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}\b`), priority: 100},
-		{class: ClassGitHubToken, pattern: regexp.MustCompile(`(?i)(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{36,})`), priority: 100},
+		{class: ClassGitHubToken, pattern: regexp.MustCompile(`(?i)(?:(?:ghp|gho|ghu|ghr)_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,}|github_pat_[A-Za-z0-9_]{36,})`), priority: 100},
 		// All documented GitLab token prefixes (token overview: glpat-,
 		// gloas-, gldt-, glrt-/glrtr-, glcbt-, glptt-, glft-, glimt-,
 		// glagent-, glwt-, glsoat-, glffct-) share the gl<type>- + base64url
@@ -132,10 +131,10 @@ func tokenClasses() []classPattern {
 		// in an AccountKey= connection-string field. Anchored on AccountKey= to
 		// avoid matching arbitrary base64.
 		{class: ClassAzureStorageKey, pattern: regexp.MustCompile(`(?i)\bAccountKey=[A-Za-z0-9+/]{86}==`), priority: 100},
-		// Azure SAS signature: the sig= parameter is a URL-encoded base64
-		// HMAC-SHA256 (32 bytes -> 44 base64 chars, trailing '=' as %3D).
-		// Anchored on the urlencoded padding to bound the match.
-		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`), priority: 100},
+		// Azure SAS signature: the sig= parameter is a base64 HMAC-SHA256
+		// (32 bytes -> 44 base64 chars). Match encoded or decoded padding;
+		// the padding itself terminates the value without consuming a query delimiter.
+		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`), priority: 100},
 		{class: ClassSlackToken, pattern: regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
 		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)fw_[A-Za-z0-9]{22}\b`), priority: 100},
 		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)(?:sk-or-v1-[A-Fa-f0-9]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,}|pcsk_[A-Za-z0-9]{36,}|gsk_[A-Za-z0-9]{48,}|xai-[A-Za-z0-9_-]{80,})\b`), priority: 100},

@@ -347,7 +347,9 @@ const (
 	// Re-bumped for request_body_scanning.content_entropy_warn_routes. The
 	// exact route exception changes an entropy block to a visible warning, so
 	// mixed versions must not report the same policy identity.
-	goldenHashDefaults = "4d531d9b039f54906dd5ea1a92ea66054e7a5fd6e62cdbabe1f5fa7b377af218"
+	// Re-bumped for issuer-backed GitHub stateless-token and decoded Azure SAS
+	// coverage in the default DLP pattern set.
+	goldenHashDefaults = "718ecf4871dbd1744da7a7e624c863aa6baab0b5681f66ce6ab7403723a4d82e"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -523,7 +525,9 @@ const (
 	// nil allowlist flows into ph identically to Defaults() and the hash
 	// shifts in lockstep.
 	// Re-bumped for route-scoped entropy warnings: see goldenHashDefaults.
-	goldenHashRichConfig = "d5c791b08f5cf44338f78aeb3a426ba9a839a6db3151aa4f73aa2244100f8a3f"
+	// Re-bumped for issuer-backed GitHub stateless-token and decoded Azure SAS
+	// coverage: the rich fixture inherits the default DLP pattern set.
+	goldenHashRichConfig = "1ac09f329b157f9f8c096b8e534cf6631a4ceeabc8105d632476d99d89aa0f4d"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

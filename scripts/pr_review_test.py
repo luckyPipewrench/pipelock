@@ -2151,6 +2151,29 @@ class StructuredOutputSafetyTest(unittest.TestCase):
                 self.assertNotIn(sample, rendered)
                 self.assertIn(label, rendered)
 
+        stateless = (
+            bytes.fromhex("6768735f").decode()
+            + "eyJhbGciOiJFUzI1NiJ9."
+            + "A" * 48
+            + "."
+            + "B" * 48
+            + "-_"
+        )
+        rendered = pr_review.sanitize_public_text(
+            f"The diff contains {stateless}&next=1; remove it.", limit=600
+        )
+        self.assertNotIn(stateless, rendered)
+        self.assertIn("(redacted:github-token)&next=1", rendered)
+
+        for suffix in ("A" * 43 + "=", "B" * 43 + "%3d"):
+            with self.subTest(credential="azure-sas-token", suffix=suffix[-3:]):
+                sample = bytes.fromhex("7369673d").decode() + suffix
+                rendered = pr_review.sanitize_public_text(
+                    f"The diff contains {sample}&next=1; remove it.", limit=600
+                )
+                self.assertNotIn(sample, rendered)
+                self.assertIn("(redacted:azure-sas-token)&next=1", rendered)
+
     def test_a_separator_inside_the_body_does_not_shorten_a_token_past_its_minimum(self) -> None:
         """A length minimum cannot be rescued by an optional separator.
 

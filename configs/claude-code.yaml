@@ -163,7 +163,7 @@ dlp:
       regex: 'whsec_[a-zA-Z0-9_\-]{20,}'
       severity: critical
     - name: "GitHub Token"
-      regex: 'gh[pousr]_[A-Za-z0-9_]{36,}'
+      regex: '(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})'
       severity: critical
     - name: "GitHub Fine-Grained PAT"
       regex: 'github_pat_[a-zA-Z0-9_]{36,}'
@@ -220,7 +220,7 @@ dlp:
       regex: 'AccountKey=[A-Za-z0-9+/]{86}=='
       severity: critical
     - name: "Azure SAS Token"
-      regex: '\bsig=[A-Za-z0-9%]{43,}%3d\b'
+      regex: '\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)'
       severity: high
     - name: "Slack Token"
       regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'

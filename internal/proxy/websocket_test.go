@@ -181,6 +181,31 @@ func TestWebSocketClientMessageBody_ContentEntropy(t *testing.T) {
 	}
 }
 
+func TestWebSocketClientMessageBody_DetectsDecodedAzureSAS(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.WebSocketProxy.Enabled = true
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	relay := &wsRelay{
+		cfg:       cfg,
+		maxMsg:    cfg.WebSocketProxy.MaxMessageBytes,
+		scanner:   sc,
+		hostname:  "socket.vendor.example",
+		path:      "/ws",
+		targetURL: "wss://socket.vendor.example/ws",
+	}
+	msg := []byte(`{"sas":"sig=` + strings.Repeat("A", 43) + `="}`)
+
+	_, result := relay.scanClientMessageBody(context.Background(), msg)
+	for _, match := range result.DLPMatches {
+		if match.PatternName == "Azure SAS Token" {
+			return
+		}
+	}
+	t.Fatalf("decoded Azure SAS was not detected in WebSocket JSON: %+v", result.DLPMatches)
+}
+
 // wsAckServer reads one client message and replies with a clean acknowledgement.
 func wsAckServer(t *testing.T) (string, func()) {
 	t.Helper()

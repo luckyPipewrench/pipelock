@@ -54,9 +54,12 @@ var defaultDLPPatternSet = []DLPPattern{
 	{Name: "Stripe Webhook Secret", Regex: `whsec_[a-zA-Z0-9_\-]{20,}`, Severity: SeverityCritical},
 
 	// Source control tokens
-	// GitHub tokens are base64url-ish after a short "gh?_"/"github_pat_"
-	// prefix. Keep these unanchored so glued-key exfiltration still matches.
-	{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: SeverityCritical},
+	// GitHub's classic tokens are base64url-ish after a short "gh?_" prefix.
+	// Stateless server-to-server tokens use ghs_ followed by a JWT and therefore
+	// also contain dots and hyphens. Keep the broader alphabet scoped to ghs_ so
+	// the other short prefixes do not start matching dotted prose.
+	// Source: https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/
+	{Name: "GitHub Token", Regex: `(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})`, Severity: SeverityCritical},
 	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical},
 	// GitLab personal access tokens: "glpat-" prefix, 20+ chars.
 	{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
@@ -113,11 +116,11 @@ var defaultDLPPatternSet = []DLPPattern{
 	// (86 + "==") in an AccountKey= connection-string field. Anchored
 	// on AccountKey= so arbitrary 88-char base64 does not match.
 	{Name: "Azure Storage Account Key", Regex: `AccountKey=[A-Za-z0-9+/]{86}==`, Severity: SeverityCritical},
-	// Azure SAS signature: the sig= parameter is a URL-encoded base64
-	// HMAC-SHA256 (32 bytes -> 44 base64 chars, trailing '=' as %3D).
-	// Anchored on the urlencoded padding; severity "high" reflects the
-	// generality of a "sig=" parameter name.
-	{Name: "Azure SAS Token", Regex: `\bsig=[A-Za-z0-9%]{43,}%3d\b`, Severity: SeverityHigh},
+	// Azure SAS signature: the sig= parameter is a base64 HMAC-SHA256
+	// (32 bytes -> 44 base64 chars). Match both the URI form with encoded
+	// padding and the decoded form read after a carrier is unescaped.
+	// Source: https://learn.microsoft.com/en-us/rest/api/storageservices/create-account-sas
+	{Name: "Azure SAS Token", Regex: `\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`, Severity: SeverityHigh},
 
 	// Messaging platform tokens
 	{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},

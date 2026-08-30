@@ -24,6 +24,36 @@ func TestDefaultDLPPatternsMatchDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultDLPPatternsMatchIssuerBackedDecodedFormats(t *testing.T) {
+	t.Parallel()
+	githubJWTHeader := strings.Join([]string{"ghs_", "eyJ", "hbG", "ciOi", "JFUz", "I1Ni", "J9."}, "")
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{
+			name: "GitHub Token",
+			value: githubJWTHeader +
+				strings.Repeat("A", 48) + "." + strings.Repeat("B", 48) + "-_",
+		},
+		{
+			name:  "Azure SAS Token",
+			value: "sig=" + strings.Repeat("A", 43) + "=",
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			re := regexp.MustCompile(mustDLPPatternRegex(t, test.name))
+			if got := re.FindString(test.value + "&next=1"); got != test.value {
+				t.Fatalf("%s pattern matched %q, want exact credential %q", test.name, got, test.value)
+			}
+		})
+	}
+}
+
 func TestDefaultDLPPatternsReturnsDeepCopy(t *testing.T) {
 	t.Parallel()
 
@@ -200,6 +230,7 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 		variant string
 		value   string
 		class   redact.Class
+		exact   bool
 	}{
 		{name: "Anthropic API Key", value: "sk-" + "ant-" + strings.Repeat("A", 20), class: redact.ClassAnthropicKey},
 		{name: "OpenAI API Key", value: "sk-" + "proj-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
@@ -223,7 +254,8 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 		{name: "AWS Access ID", value: "AKIA" + strings.Repeat("A", 16), class: redact.ClassAWSAccessKey},
 		{name: "AWS Secret Key", value: "aws_secret_access_key = " + strings.Repeat("A", 40), class: redact.ClassAWSSecretKey},
 		{name: "Azure Storage Account Key", value: "AccountKey=" + strings.Repeat("A", 86) + "==", class: redact.ClassAzureStorageKey},
-		{name: "Azure SAS Token", value: "sig=" + strings.Repeat("A", 43) + "%3d", class: redact.ClassAzureSAS},
+		{name: "Azure SAS Token", value: "sig=" + strings.Repeat("A", 43) + "%3d", class: redact.ClassAzureSAS, exact: true},
+		{name: "Azure SAS Token", variant: " decoded", value: "sig=" + strings.Repeat("A", 43) + "=", class: redact.ClassAzureSAS, exact: true},
 		{name: "Slack Token", value: "xoxb-" + strings.Repeat("A", 15), class: redact.ClassSlackToken},
 		{name: "Hugging Face Token", value: "hf_" + strings.Repeat("A", 34), class: redact.ClassHuggingFaceToken},
 		{name: "Databricks Token", value: "dapi" + strings.Repeat("a", 32), class: redact.ClassDatabricksPAT},
@@ -256,12 +288,16 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 			if !regexpMustCompile(t, pattern.Regex).MatchString(tt.value) {
 				t.Fatalf("sample %q no longer matches canonical DLP regex %q", tt.value, pattern.Regex)
 			}
-			for _, match := range matcher.Scan(tt.value) {
-				if match.Class == tt.class && strings.Contains(tt.value, match.Original) {
+			input := tt.value
+			if tt.exact {
+				input += "&next=1"
+			}
+			for _, match := range matcher.Scan(input) {
+				if match.Class == tt.class && (!tt.exact || match.Original == tt.value) {
 					return
 				}
 			}
-			t.Fatalf("redaction mirror did not classify %q as %s; matches=%+v", tt.name, tt.class, matcher.Scan(tt.value))
+			t.Fatalf("redaction mirror did not classify %q as exact %s span; matches=%+v", tt.name, tt.class, matcher.Scan(input))
 		})
 	}
 }

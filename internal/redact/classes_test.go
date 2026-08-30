@@ -91,6 +91,7 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"azure-storage-key", "conn AccountKey=" + strings.Repeat("A", 86) + "==", ClassAzureStorageKey},
 		// Azure SAS signature parameter.
 		{"azure-sas-token", "url sig=" + strings.Repeat("A", 43) + "%3d", ClassAzureSAS},
+		{"azure-sas-token-decoded", "url sig=" + strings.Repeat("A", 43) + "=", ClassAzureSAS},
 		{"env-secret", fakeTelegramEnvSecret(), ClassEnvSecret},
 		{"seed-phrase", "mnemonic abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ClassSeedPhrase},
 		{"ad-user", "CONTOSO\\jsmith logged in", ClassADUser},
@@ -296,6 +297,23 @@ func TestDefaultMatcher_GitHubTokenInOpaqueRunStillMatches(t *testing.T) {
 	}
 }
 
+func TestDefaultMatcher_AzureSASPreservesQueryDelimiter(t *testing.T) {
+	t.Parallel()
+
+	signature := "sig=" + strings.Repeat("A", 43) + "="
+	input := signature + "&next=value"
+	matches := NewDefaultMatcher().Scan(input)
+	for _, match := range matches {
+		if match.Class == ClassAzureSAS {
+			if match.Original != signature {
+				t.Fatalf("Azure SAS match = %q, want %q", match.Original, signature)
+			}
+			return
+		}
+	}
+	t.Fatalf("Azure SAS signature was not detected in %q", input)
+}
+
 func TestDefaultMatcher_ProviderKeyGlueParity(t *testing.T) {
 	t.Parallel()
 	m := NewDefaultMatcher()
@@ -323,6 +341,7 @@ func TestDefaultMatcher_ProviderKeyGlueParity(t *testing.T) {
 		{"sentry", "sntrys_" + strings.Repeat("A", 40), ClassSentryAuthToken},
 		// Round 2: source-control, messaging, package-registry, platform tokens
 		{"github-ghp", "ghp_" + strings.Repeat("A", 36), ClassGitHubToken},
+		{"github-ghs-stateless", "ghs_eyJhbGciOiJFUzI1NiJ9." + strings.Repeat("A", 240) + "." + strings.Repeat("B", 220) + "-_", ClassGitHubToken},
 		{"github-pat", "github_pat_" + strings.Repeat("B", 36), ClassGitHubToken},
 		{"gitlab-pat", "glpat-" + strings.Repeat("C", 24), ClassGitLabToken},
 		{"gitlab-deploy", "gldt-" + strings.Repeat("D", 24), ClassGitLabToken},

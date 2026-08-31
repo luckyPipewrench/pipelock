@@ -37,7 +37,7 @@ annotations:
       url: https://pipelab.org/learn/
     - name: Release notes
       url: https://github.com/luckyPipewrench/pipelock/releases
-    - name: Audit Packet verifier
+    - name: Receipt verifier (Python)
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: changed

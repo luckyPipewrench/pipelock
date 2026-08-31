@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Provider-key detection now requires a valid leading boundary.** This removes false positives and accidental redaction of ordinary prose; keys glued directly to a preceding key-alphabet character are no longer matched.
 - **Immutable core DLP and response floors can no longer be suppressed.** Existing suppressions naming those protected patterns must be removed or replaced with the documented scoped alternatives.
 - **Invalid duration values that overflow internal conversion are rejected during configuration validation.**
+- **Unsafe request trailers and opaque MCP arguments are now rejected.** Populated HTTP trailers that cannot be scanned and MCP tool arguments that redaction cannot safely inspect fail closed.
 
 ### Added
 

@@ -21,12 +21,13 @@ import (
 //
 // The carve-out is intentionally narrow:
 //
-//   - All five mandatory SigV4 query parameters must validate structurally
+//   - All six mandatory SigV4 query parameters must validate structurally
 //     and appear exactly once: X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date,
-//     X-Amz-Signature, X-Amz-Expires. Duplicate structural fields fall back
-//     to normal DLP scanning so a duplicate credential cannot be hidden by
-//     the scrub pass and an attacker cannot silence the long-expiry warn
-//     by pinning the scanner's view to a short value.
+//     X-Amz-Signature, X-Amz-Expires, X-Amz-SignedHeaders. The signed-header
+//     list must be well-formed and include host. Duplicate structural fields
+//     fall back to normal DLP scanning so a duplicate credential cannot be
+//     hidden by the scrub pass and an attacker cannot silence the long-expiry
+//     warn by pinning the scanner's view to a short value.
 //   - The destination host must match an AWS-published amazonaws.com
 //     hostname. The carve-out is for legitimate fetches to the issuer's
 //     own S3 endpoint; a SigV4-shaped URL to an attacker host is not
@@ -75,6 +76,10 @@ const (
 	// operationally unusual and worth surfacing.
 	sigV4LongExpiryThreshold = 86400
 
+	// sigV4MaxExpirySeconds is AWS S3's maximum presigned URL lifetime.
+	// Values above seven days cannot represent a valid S3 presigned URL.
+	sigV4MaxExpirySeconds = 604800
+
 	// WarnPatternSigV4LongExpiry is the warn-match pattern name emitted
 	// when a SigV4 carve-out fires with an unusually long X-Amz-Expires.
 	WarnPatternSigV4LongExpiry = "SigV4 Long Expiry"
@@ -113,6 +118,11 @@ var (
 	// sigV4ScopeDateRe matches the YYYYMMDD prefix of a credential scope.
 	sigV4ScopeDateRe = regexp.MustCompile(`^[0-9]{8}$`)
 
+	// sigV4SignedHeaderNameRe accepts the lowercase header-name shape used
+	// in SigV4 canonical requests. Empty or malformed list members invalidate
+	// the carve-out and leave the credential for immutable DLP enforcement.
+	sigV4SignedHeaderNameRe = regexp.MustCompile(`^[a-z0-9-]+$`)
+
 	// sigV4AmazonHostSuffixes lists DNS suffixes for AWS-issued endpoints
 	// that legitimately emit presigned URLs. The carve-out only fires when
 	// parsed.Hostname() matches one of these (case-insensitive). Pipelock
@@ -141,7 +151,7 @@ type sigV4Detection struct {
 // detectValidSigV4 returns the access-key inside the X-Amz-Credential value
 // when the URL carries a structurally valid AWS Signature Version 4 query
 // set hosted on an AWS-issued amazonaws.com endpoint. Strict by design:
-// all five mandatory parameters must pass their format check and appear
+// all six mandatory parameters must pass their format check and appear
 // exactly once, and the destination host must be AWS-owned. An invalid or
 // partial set returns Valid=false and leaves the caller to fall through
 // to the normal core DLP scan.
@@ -174,6 +184,9 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 		return sigV4Detection{}
 	}
 	if !sigV4SignatureRe.MatchString(params["X-Amz-Signature"]) {
+		return sigV4Detection{}
+	}
+	if !validSigV4SignedHeaders(params["X-Amz-SignedHeaders"]) {
 		return sigV4Detection{}
 	}
 
@@ -210,17 +223,38 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 		return sigV4Detection{}
 	}
 	expires, err := strconv.Atoi(expRaw)
-	if err != nil || expires <= 0 {
+	if err != nil || expires <= 0 || expires > sigV4MaxExpirySeconds {
 		return sigV4Detection{}
 	}
 
 	return sigV4Detection{Valid: true, KeyID: parts[0], Expires: expires}
 }
 
+func validSigV4SignedHeaders(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	seen := make(map[string]struct{})
+	hasHost := false
+	for _, name := range strings.Split(raw, ";") {
+		if !sigV4SignedHeaderNameRe.MatchString(name) {
+			return false
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return false
+		}
+		seen[name] = struct{}{}
+		if name == "host" {
+			hasHost = true
+		}
+	}
+	return hasHost
+}
+
 // extractSigV4FieldsLiteralKeyed walks RawQuery and returns a map of
-// the five mandatory SigV4 parameter values keyed by their canonical
+// the six mandatory SigV4 parameter values keyed by their canonical
 // literal names (X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date,
-// X-Amz-Signature, X-Amz-Expires).
+// X-Amz-Signature, X-Amz-Expires, X-Amz-SignedHeaders).
 //
 // Keys are compared byte-for-byte against the canonical literal - no
 // percent-decoding on the key side. This keeps the detector and the
@@ -237,11 +271,12 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 // the caller is responsible for rejecting empties.
 func extractSigV4FieldsLiteralKeyed(rawQuery string) (map[string]string, bool) {
 	known := map[string]struct{}{
-		"X-Amz-Algorithm":  {},
-		"X-Amz-Credential": {},
-		"X-Amz-Date":       {},
-		"X-Amz-Signature":  {},
-		"X-Amz-Expires":    {},
+		"X-Amz-Algorithm":     {},
+		"X-Amz-Credential":    {},
+		"X-Amz-Date":          {},
+		"X-Amz-Signature":     {},
+		"X-Amz-Expires":       {},
+		"X-Amz-SignedHeaders": {},
 	}
 	out := map[string]string{}
 	if rawQuery == "" {

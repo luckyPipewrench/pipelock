@@ -1289,6 +1289,15 @@ func TestScanRequestBody_EmbeddedSigV4URLNeedsNoCoreSuppression(t *testing.T) {
 			if result.Clean != tc.wantClean {
 				t.Fatalf("Clean = %v, want %v; matches=%+v", result.Clean, tc.wantClean, result.DLPMatches)
 			}
+			if tc.wantClean {
+				if len(result.DLPMatches) != 0 {
+					t.Fatalf("DLPMatches = %v, want none", dlpMatchNames(result.DLPMatches))
+				}
+				return
+			}
+			if !hasDLPMatchName(result.DLPMatches, "AWS Access ID") {
+				t.Fatalf("DLPMatches = %v, want AWS Access ID", dlpMatchNames(result.DLPMatches))
+			}
 		})
 	}
 }

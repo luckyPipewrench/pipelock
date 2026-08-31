@@ -1168,8 +1168,13 @@ func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []strin
 			}
 		}
 	}
-	joined := strings.Join(sortedBodyTexts(texts), bodyDLPJoinSeparator)
-	result := scanBodyTextForDLP(ctx, sc, joined, allowEmbeddedSigV4)
+	sorted := sortedBodyTexts(texts)
+	var result scanner.TextDLPResult
+	if allowEmbeddedSigV4 {
+		result = sc.ScanRequestBodyTextPartsForDLP(ctx, sorted, bodyDLPJoinSeparator)
+	} else {
+		result = sc.ScanTextForDLP(ctx, strings.Join(sorted, bodyDLPJoinSeparator))
+	}
 	if !result.Clean {
 		if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)

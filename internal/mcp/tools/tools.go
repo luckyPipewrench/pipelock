@@ -1226,6 +1226,7 @@ func collectHyperSchemaDescriptions(value any, result *[]string, depth int) {
 		if !ok {
 			continue
 		}
+		collectStringLeaves(link["description"], result, depth+1)
 		for _, key := range []string{"headerSchema", "hrefSchema", "submissionSchema", "targetSchema"} {
 			collectSchemaDescriptionFieldsMode(link[key], result, depth+1, false)
 		}

@@ -3797,6 +3797,13 @@ func TestScanTools_ExtraPoisonDescriptionScope(t *testing.T) {
 			wantMatch: true,
 		},
 		{
+			name: "hyper schema link description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"$schema":` +
+				`"https://json-schema.org/draft/2019-09/hyper-schema","links":[{"rel":"create",` +
+				`"description":"` + marker + `"}]}}`,
+			wantMatch: true,
+		},
+		{
 			name: "non-string description",
 			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object","properties":{` +
 				`"query":{"type":"string","description":["` + marker + `"]}}}}`,
@@ -3842,6 +3849,18 @@ func TestScanTools_ExtraPoisonDescriptionScope(t *testing.T) {
 			wantMatch: false,
 		},
 		{
+			name: "hyper schema link title",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"links":[{` +
+				`"title":"` + marker + `"}]}}`,
+			wantMatch: false,
+		},
+		{
+			name: "hyper schema link target hints",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"links":[{` +
+				`"targetHints":{"description":"` + marker + `"}}]}}`,
+			wantMatch: false,
+		},
+		{
 			name: "input schema default object description",
 			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object",` +
 				`"default":{"description":"` + marker + `"}}}`,
@@ -3875,6 +3894,22 @@ func TestScanTools_ExtraPoisonDescriptionScope(t *testing.T) {
 }
 
 func TestCollectSchemaDescriptionFields_DialectsAndMalformed(t *testing.T) {
+	t.Run("hyper schema link fields", func(t *testing.T) {
+		var got []string
+		collectHyperSchemaDescriptions([]any{map[string]any{
+			"description":      "link",
+			"headerSchema":     map[string]any{"description": "header"},
+			"hrefSchema":       map[string]any{"description": "href"},
+			"submissionSchema": map[string]any{"description": "submission"},
+			"targetSchema":     map[string]any{"description": "target"},
+		}}, &got, 0)
+		for _, want := range []string{"link", "header", "href", "submission", "target"} {
+			if !slices.Contains(got, want) {
+				t.Fatalf("descriptions = %v, want %q", got, want)
+			}
+		}
+	})
+
 	t.Run("single schema keyword", func(t *testing.T) {
 		var got []string
 		collectSchemaDescriptionFields(map[string]any{

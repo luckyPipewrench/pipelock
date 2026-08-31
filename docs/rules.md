@@ -221,6 +221,8 @@ the `pattern.validator` field.
 | Injection pattern | `injection` | `response_scanning.patterns` |
 | Tool poison pattern | `tool-poison` | `mcp_tool_scanning` descriptions |
 
+Tool-poison rules with `scan_field: description` scan the tool's `description` and `description` fields nested in its input schema. Built-in scanning still covers every other agent-visible tool field, but those fields do not trigger description-scoped bundle rules.
+
 ### Machine-readable reader contract
 
 A release-stamped Pipelock binary can export the rule-bundle contract it enforces:

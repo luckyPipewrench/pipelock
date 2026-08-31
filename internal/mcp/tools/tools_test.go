@@ -3752,6 +3752,122 @@ func TestScanTools_ExtraPoisonDescription(t *testing.T) {
 	}
 }
 
+func TestScanTools_ExtraPoisonDescriptionScope(t *testing.T) {
+	const marker = "scope sentinel phrase"
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			{
+				Name:      "description-only-rule",
+				RuleID:    "test/description-only",
+				Re:        regexp.MustCompile(`scope\s+sentinel\s+phrase`),
+				ScanField: "description",
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		tool      string
+		wantMatch bool
+	}{
+		{
+			name:      "tool description",
+			tool:      `{"name":"helper","description":"` + marker + `"}`,
+			wantMatch: true,
+		},
+		{
+			name: "input schema description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object","properties":{` +
+				`"query":{"type":"string","description":"` + marker + `"}}}}`,
+			wantMatch: true,
+		},
+		{
+			name: "nested input schema description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"allOf":[{"type":"object",` +
+				`"properties":{"query":{"type":"string","description":"` + marker + `"}}}]}}`,
+			wantMatch: true,
+		},
+		{
+			name: "hyper schema nested description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"$schema":` +
+				`"https://json-schema.org/draft/2019-09/hyper-schema","links":[{"rel":"create",` +
+				`"submissionSchema":{"description":"` + marker + `"}}]}}`,
+			wantMatch: true,
+		},
+		{
+			name: "non-string description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object","properties":{` +
+				`"query":{"type":"string","description":["` + marker + `"]}}}}`,
+			wantMatch: true,
+		},
+		{
+			name: "property named default description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object","properties":{` +
+				`"default":{"type":"string","description":"` + marker + `"}}}}`,
+			wantMatch: true,
+		},
+		{
+			name:      "tool title",
+			tool:      `{"name":"helper","description":"safe","title":"` + marker + `"}`,
+			wantMatch: false,
+		},
+		{
+			name:      "metadata",
+			tool:      `{"name":"helper","description":"safe","_meta":{"note":"` + marker + `"}}`,
+			wantMatch: false,
+		},
+		{
+			name:      "annotations",
+			tool:      `{"name":"helper","description":"safe","annotations":{"note":"` + marker + `"}}`,
+			wantMatch: false,
+		},
+		{
+			name: "input schema key",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object","properties":{` +
+				`"` + marker + `":{"type":"string"}}}}`,
+			wantMatch: false,
+		},
+		{
+			name: "input schema extension",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object",` +
+				`"x-agent-note":"` + marker + `"}}`,
+			wantMatch: false,
+		},
+		{
+			name: "input schema default object description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object",` +
+				`"default":{"description":"` + marker + `"}}}`,
+			wantMatch: false,
+		},
+		{
+			name: "output schema description",
+			tool: `{"name":"helper","description":"safe","outputSchema":{"type":"object",` +
+				`"description":"` + marker + `"}}`,
+			wantMatch: false,
+		},
+		{
+			name:      "unknown extension field",
+			tool:      `{"name":"helper","description":"safe","x-vendor-note":"` + marker + `"}`,
+			wantMatch: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ScanTools(makeToolsResponse("["+tc.tool+"]"), sc, cfg)
+			matched := false
+			for _, match := range result.Matches {
+				matched = matched || slices.Contains(match.ToolPoison, "description-only-rule")
+			}
+			if matched != tc.wantMatch {
+				t.Fatalf("description-only rule matched = %t, want %t; result = %+v", matched, tc.wantMatch, result)
+			}
+		})
+	}
+}
+
 func TestScanTools_ExtraPoisonName(t *testing.T) {
 	sc := testScanner(t)
 	cfg := &ToolScanConfig{

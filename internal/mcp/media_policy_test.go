@@ -472,6 +472,10 @@ func TestForwardScanned_MediaPolicyBlocksEmbeddedResourceMedia(t *testing.T) {
 	}
 }
 
+// mcpJPEGScanMarker is SOS entropy-coded payload in buildMCPValidJPEG.
+// Metadata strip must keep it; tests use it so an empty rewrite cannot pass.
+var mcpJPEGScanMarker = []byte{0x11, 0x22, 0x33}
+
 func buildMCPValidJPEG(app1Payload []byte) []byte {
 	writeSegmentLen := func(b *bytes.Buffer, length int) {
 		if length < 0 || length > math.MaxUint16 {
@@ -492,9 +496,22 @@ func buildMCPValidJPEG(app1Payload []byte) []byte {
 	b.Write(app1Payload)
 	b.Write([]byte{0xFF, 0xDA})
 	b.Write([]byte{0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x3F, 0x00})
-	b.Write([]byte{0x11, 0x22, 0x33})
+	b.Write(mcpJPEGScanMarker)
 	b.Write([]byte{0xFF, 0xD9})
 	return b.Bytes()
+}
+
+func assertMCPJPEGMetadataStripped(t *testing.T, decoded, original, secret []byte, secretGoneMsg string) {
+	t.Helper()
+	if bytes.Contains(decoded, secret) {
+		t.Fatal(secretGoneMsg)
+	}
+	if len(decoded) >= len(original) {
+		t.Fatalf("stripped JPEG length %d >= original %d", len(decoded), len(original))
+	}
+	if !bytes.Contains(decoded, mcpJPEGScanMarker) {
+		t.Fatal("stripped JPEG lost image scan data")
+	}
 }
 
 func newMCPScannerWithMediaPolicy(t *testing.T) (*scanner.Scanner, *config.Config) {
@@ -555,12 +572,7 @@ func TestForwardScanned_MediaPolicyStripsToolResultImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeString: %v", err)
 	}
-	if bytes.Contains(decoded, []byte("mcp-secret-metadata")) {
-		t.Fatal("stripped MCP image block still contains metadata payload")
-	}
-	if len(decoded) >= len(jpeg) {
-		t.Fatalf("stripped MCP image length %d >= original %d", len(decoded), len(jpeg))
-	}
+	assertMCPJPEGMetadataStripped(t, decoded, jpeg, []byte("mcp-secret-metadata"), "stripped MCP image block still contains metadata payload")
 }
 
 func TestForwardScanned_MediaPolicyStripsEmbeddedResourceImage(t *testing.T) {
@@ -629,12 +641,7 @@ func TestForwardScanned_MediaPolicyStripsEmbeddedResourceImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeString: %v", err)
 	}
-	if bytes.Contains(decoded, []byte("nested-mcp-secret-metadata")) {
-		t.Fatal("stripped embedded resource image still contains metadata payload")
-	}
-	if len(decoded) >= len(jpeg) {
-		t.Fatalf("stripped embedded resource image length %d >= original %d", len(decoded), len(jpeg))
-	}
+	assertMCPJPEGMetadataStripped(t, decoded, jpeg, []byte("nested-mcp-secret-metadata"), "stripped embedded resource image still contains metadata payload")
 }
 
 func TestForwardScanned_EmbeddedResourceSniffsMediaWithoutMimeType(t *testing.T) {
@@ -678,9 +685,7 @@ func TestForwardScanned_EmbeddedResourceSniffsMediaWithoutMimeType(t *testing.T)
 	if err != nil {
 		t.Fatalf("DecodeString: %v", err)
 	}
-	if bytes.Contains(decoded, []byte("sniffed-mcp-secret-metadata")) {
-		t.Fatal("resource blob without mimeType was not sniffed as image media")
-	}
+	assertMCPJPEGMetadataStripped(t, decoded, jpeg, []byte("sniffed-mcp-secret-metadata"), "resource blob without mimeType was not sniffed as image media")
 }
 
 func TestForwardScanned_EmbeddedResourcePlainBlobIsNotMediaPolicy(t *testing.T) {

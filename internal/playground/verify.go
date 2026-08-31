@@ -53,6 +53,7 @@ type VerifyReport struct {
 const (
 	packetSubdir               = "packet"
 	launchManifestFile         = "launch-manifest.json"
+	orchestratorDelegationFile = "orchestrator-delegation.json"
 	witnessFile                = "witness.json"
 	redWitnessFile             = "red-witness.json"
 	hostContainmentWitnessFile = "host-containment-witness.json"
@@ -103,6 +104,7 @@ var containmentChecks = []string{
 // files inside a run directory and inside the downloadable tar.gz bundle.
 type RunArtifacts struct {
 	LaunchManifest         []byte
+	OrchestratorDelegation []byte
 	Witness                []byte
 	RedWitness             []byte
 	HostContainmentWitness []byte
@@ -182,6 +184,8 @@ func ExtractRunArtifactsFromBundle(bundle []byte) (RunArtifacts, error) {
 		switch name {
 		case launchManifestFile:
 			artifacts.LaunchManifest = data
+		case orchestratorDelegationFile:
+			artifacts.OrchestratorDelegation = data
 		case witnessFile:
 			artifacts.Witness = data
 		case redWitnessFile:
@@ -215,6 +219,7 @@ func bundleArtifactName(raw string, typeflag byte) (name string, retain bool, er
 	case verifyInstructionsFile:
 		return name, false, nil
 	case launchManifestFile,
+		orchestratorDelegationFile,
 		witnessFile,
 		redWitnessFile,
 		hostContainmentWitnessFile,
@@ -264,6 +269,9 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	var artifacts RunArtifacts
 	var err error
 	if artifacts.LaunchManifest, err = readRunArtifact(cleanDir, launchManifestFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.OrchestratorDelegation, err = readRunArtifact(cleanDir, orchestratorDelegationFile); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
 	if artifacts.Witness, err = readRunArtifact(cleanDir, witnessFile); err != nil {

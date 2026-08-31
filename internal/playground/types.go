@@ -40,7 +40,12 @@ type LaunchManifest struct {
 	// deterministic one. Covered by the manifest signature, so it cannot be
 	// flipped to dodge the stricter check.
 	AgentKind string `json:"agent_kind,omitempty"`
-	Signature string `json:"signature,omitempty"`
+	// DelegationID and ImageDigest bind delegated manifests to the root-signed
+	// session authorization. They remain absent from legacy manifests so the
+	// legacy canonical signed bytes stay byte-identical.
+	DelegationID string `json:"delegation_id,omitempty"`
+	ImageDigest  string `json:"image_digest,omitempty"`
+	Signature    string `json:"signature,omitempty"`
 }
 
 // Agent kinds recorded in LaunchManifest.AgentKind. Empty is treated as

@@ -35,6 +35,7 @@ var archiveArtifacts = []struct {
 	required bool
 }{
 	{launchManifestFile, true},
+	{orchestratorDelegationFile, false}, // absent only for legacy direct-root bundles
 	{witnessFile, true},
 	{redWitnessFile, true},
 	{hostContainmentWitnessFile, false},

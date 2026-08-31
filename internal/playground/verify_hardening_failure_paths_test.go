@@ -63,6 +63,7 @@ func TestHardeningVerifyRunPreservesEveryArtifactReadFailure(t *testing.T) {
 
 	names := []string{
 		launchManifestFile,
+		orchestratorDelegationFile,
 		witnessFile,
 		redWitnessFile,
 		hostContainmentWitnessFile,

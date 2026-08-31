@@ -108,6 +108,27 @@ func TestArchiveRunForDownload_IncludesVerifiableArtifacts(t *testing.T) {
 	}
 }
 
+func TestArchiveRunForDownload_RoundTripsOptionalDelegation(t *testing.T) {
+	dir := t.TempDir()
+	writeRunArtifacts(t, dir, false)
+	want := []byte(`{"format":"pipelock-playground-delegation/v1"}`)
+	if err := os.WriteFile(filepath.Join(dir, orchestratorDelegationFile), want, 0o600); err != nil {
+		t.Fatalf("write delegation: %v", err)
+	}
+
+	bundle, err := ArchiveRunForDownload(dir, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatalf("ArchiveRunForDownload: %v", err)
+	}
+	artifacts, err := ExtractRunArtifactsFromBundle(bundle)
+	if err != nil {
+		t.Fatalf("ExtractRunArtifactsFromBundle: %v", err)
+	}
+	if !bytes.Equal(artifacts.OrchestratorDelegation, want) {
+		t.Fatalf("delegation = %q, want %q", artifacts.OrchestratorDelegation, want)
+	}
+}
+
 func TestArchiveRunForDownload_IncludesContainmentWitnessWhenPresent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

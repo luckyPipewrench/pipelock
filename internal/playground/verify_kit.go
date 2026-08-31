@@ -80,6 +80,7 @@ var verifyKitRequiredFiles = []string{
 // fail the kit build.
 var verifyKitOptionalFiles = []string{
 	hostContainmentWitnessFile,
+	orchestratorDelegationFile,
 	"VERIFY.txt",
 }
 

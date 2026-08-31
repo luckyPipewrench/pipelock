@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-08-31
+
+### Breaking Changes / Upgrade Notes
+
+- **npm lifecycle scripts are disabled by default in contained environments.** Commands that require dependency install scripts must use the documented explicit override.
+- **Emit configuration changes now require a restart.** Reloads leave the active emitter unchanged and report the ignored change.
+- **Provider-key detection now requires a valid leading boundary.** This removes false positives and accidental redaction of ordinary prose; keys glued directly to a preceding key-alphabet character are no longer matched.
+- **Immutable core DLP and response floors can no longer be suppressed.** Existing suppressions naming those protected patterns must be removed or replaced with the documented scoped alternatives.
+- **Invalid duration values that overflow internal conversion are rejected during configuration validation.**
+
+### Added
+
+- **External authority propagation at forwarding gates**, including audit, emission, WebSocket, and MCP paths.
+- **Offline recorder compaction and legacy recorder-epoch inventory** with bounded reads and integrity-preserving publication.
+- **Native AEL evidence emission** for session lifecycle and activity records.
+- **License-expiry warnings** and **rules-bundle compatibility warnings** in operator status surfaces.
+- **A code-checked capability manifest** that reports the supported capabilities from attached implementation.
+- **Route-scoped entropy warnings** for selected request paths.
+- **Detection and redaction for current GitHub installation-token and Azure SAS token formats.**
+- **An exported rules reader-schema contract** with atomic bundle loading and status publication.
+
+### Changed
+
+- Canary matching now uses bounded recursive decoding across whole-text and segmented views.
+- Shielded large-response handling is consistent across forward and reverse proxy paths and records the configured cap and remedy.
+- Audit, evidence, and dashboard surfaces distinguish recorded agent labels from identities established by trusted provenance.
+- AEL liveness evidence begins with an immediate heartbeat so short sessions can satisfy the declared cadence.
+- Conductor follower state uses signed applied-state heartbeats with bounded negotiation retry.
+- Verified PNG and JPEG bodies bypass text prompt scanning while readable metadata and malformed or non-image bodies remain scanned.
+- DLP prefiltering uses proven required literals to reduce unnecessary pattern work while retaining an always-run path for patterns whose anchors cannot be proven.
+- MCP tool-definition scanning avoids reprocessing duplicate input-schema text while retaining one scan of every agent-visible field.
+
+### Fixed
+
+- URL paths now participate in cross-request exfiltration detection.
+- Skill and file scanning discovers extensionless references, scans text before classifying binary content, and prevents symlink or path-replacement escapes from presenting as clean.
+- MCP setup and generated wrappers verify executable identity and proxy invocation rather than trusting self-written markers.
+- MCP tool arguments that redaction cannot safely inspect now fail closed.
+- Generic non-media responses and WebSocket control payloads are scanned, with taint attribution preserved across frames.
+- A2A Agent Card controls run on forwarded MCP responses.
+- Redirect policy and official rules-registry origin checks remain enforced across repeated fetch, update, and sink paths.
+- Conductor audit/admin operations are organization-scoped, including removed-follower handling.
+- Unreadable posture evidence warns without taking down receipt-enabled startup.
+- Files already present in newly created file-sentry directories are scanned without blocking event processing.
+- Response prefiltering preserves required literals across regex alternation branches, keeping candidate selection deterministic and never skipping patterns without a proven anchor.
+- HTTP request trailers fail closed when they cannot be scanned; forwarded hosts follow the admitted URL, and scanned bodies are not replayed across authority-changing redirects.
+- MCP media policy scans and safely rewrites nested `resource.blob` payloads.
+- Strict reloads cannot remove an active MCP listener state-token requirement.
+- Pinned EvidenceReceipt verification requires `signer_key_id` to match the pinned public key across the bundled verifiers.
+- Description-scoped bundle rules match only tool and input-schema descriptions, including Hyper-Schema link descriptions, while built-in scanning retains broader field coverage.
+
 ## [3.4.0] - 2026-08-20
 
 ### Breaking Changes / Upgrade Notes

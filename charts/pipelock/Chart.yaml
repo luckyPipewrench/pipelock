@@ -6,8 +6,8 @@ type: application
 # gate enforces that both equal the release tag. The chart publishes to an
 # OCI registry under this version as the tag, so a version that did not move
 # every release would overwrite the previously published chart in place.
-version: 3.4.0
-appVersion: "3.4.0"
+version: 3.5.0
+appVersion: "3.5.0"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock
@@ -41,12 +41,16 @@ annotations:
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: changed
-      description: Pipelock appVersion 3.4.0. MCP reasoning trust can no longer weaken a stricter response action, and scan-diff now distinguishes findings from instrument errors.
+      description: Pipelock appVersion 3.5.0. External authority propagation, native AEL evidence, and the code-checked capability manifest make trust and support claims explicit.
     - kind: added
-      description: Containment-aware upgrades, filesystem and command guard enforcement, exact destination grants, and commitment-key lifecycle operations.
+      description: Route-scoped entropy warnings, license and rules-compatibility warnings, and detection for current GitHub installation and Azure SAS token formats.
     - kind: added
-      description: Reverse-proxy scan-capacity budgeting and v3 outer-chain namespace support for recorder readers.
+      description: Offline recorder compaction, legacy recorder-epoch inventory, and an exported rules reader-schema contract.
     - kind: fixed
-      description: Reverse-proxy media request bodies are scanned, oversized bodies fail closed, and provider-opaque carve-outs require ciphertext-like content.
+      description: File, skill, MCP, WebSocket, redirect, and generic response paths cover previously missed content and refuse unsafe handling where their contracts require it.
     - kind: fixed
-      description: Credential matching covers encoding noise, path-query seams, and credentials split across more than four query values.
+      description: Response prefiltering preserves required literals across regex alternation branches and always evaluates patterns without a proven anchor.
+    - kind: fixed
+      description: Request trailers, cross-authority body replays, nested MCP media, strict state-token reloads, and pinned receipt signer identities now fail closed.
+    - kind: fixed
+      description: Description-scoped bundle rules honor their field contract while built-in MCP scanning continues to cover every agent-visible field.

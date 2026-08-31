@@ -406,6 +406,36 @@ func setStagedVerifierSourceCommits(t *testing.T, inventory map[string]interface
 	}
 }
 
+func stagedVerifierSourceRef(t *testing.T, root, language string) string {
+	t.Helper()
+	inventoryPath := filepath.Join(root, "release", "verifier-installers.json")
+	raw, err := os.ReadFile(inventoryPath) // #nosec G304 -- fixed inventory path under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged inventory: %v", err)
+	}
+	var inventory struct {
+		Verifiers []struct {
+			Language  string `json:"language"`
+			Publisher struct {
+				SourceRef string `json:"source_ref"`
+			} `json:"publisher"`
+		} `json:"verifiers"`
+	}
+	if err := json.Unmarshal(raw, &inventory); err != nil {
+		t.Fatalf("decode staged inventory: %v", err)
+	}
+	for _, verifier := range inventory.Verifiers {
+		if verifier.Language == language {
+			if verifier.Publisher.SourceRef == "" {
+				t.Fatalf("staged %s verifier has no publisher source_ref", language)
+			}
+			return verifier.Publisher.SourceRef
+		}
+	}
+	t.Fatalf("staged inventory has no %s verifier entry", language)
+	return ""
+}
+
 func TestReleaseVerifierInstallGateRejectsMissingVerifierTag(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	inventoryPath := filepath.Join(root, "release", "verifier-installers.json")
@@ -481,7 +511,7 @@ func TestReleaseVerifierInstallGateRejectsPostTagSourceDrift(t *testing.T) {
 	}
 
 	tagCommit := runGit("rev-parse", "HEAD")
-	runGit("tag", "verifier-v0.3.0")
+	runGit("tag", stagedVerifierSourceRef(t, root, "TypeScript"))
 	// Point the inventory at this fixture's own tag commit and unblock it, so the
 	// gate reaches the source-drift check. These were find-and-replace edits
 	// against REPLACE_WITH_* and `"release_blocked": true`; both silently became

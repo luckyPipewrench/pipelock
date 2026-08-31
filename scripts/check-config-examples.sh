@@ -69,17 +69,19 @@ fi
 # Fixture a real recorder signing key. Without this the check is CIRCULAR: a snippet
 # that correctly sets signing_key_path names a file this host does not have, gets
 # skipped as environment-dependent, and is never booted — so the policy would not
-# exercise the very examples it exists to protect. A signing key is trivially
-# fixture-creatable (init generates one), so it must be fixtured, not skipped. Skips
-# are reserved for dependencies that cannot reasonably be created here (a real signed
-# license, an operator's CA). `init` writes keys/ next to the config it generates.
-FIXTURE_KEY=""
-if "$BIN" init --output "$WORK/keygen/pipelock.yaml" --skip-canary --skip-validate >/dev/null 2>&1 \
-    && [ -s "$WORK/keygen/keys/flight-recorder-signing.key" ]; then
-    FIXTURE_KEY="$WORK/keygen/keys/flight-recorder-signing.key"
-else
-    echo "config-examples: WARNING - could not fixture a recorder signing key;" >&2
-    echo "  snippets naming signing_key_path will be skipped instead of booted." >&2
+# exercise the very examples it exists to protect. Generate only the required key
+# through its dedicated shipped lifecycle command. `init` performs unrelated host
+# setup after writing the key, so using its overall exit status makes this gate skip
+# recorder examples when that later setup is unavailable.
+FIXTURE_KEY="$WORK/keygen/flight-recorder-signing.key"
+mkdir -p "$(dirname "$FIXTURE_KEY")"
+KEYGEN_OUT="$WORK/recorder-key-generate.txt"
+if ! HOME="$PROBE_HOME" "$BIN" signing key generate \
+    --purpose receipt-signing --out "$FIXTURE_KEY" >"$KEYGEN_OUT" 2>&1 \
+    || [ ! -s "$FIXTURE_KEY" ]; then
+    echo "config-examples: could not fixture a recorder signing key" >&2
+    grep -vE '^[[:space:]]*$' "$KEYGEN_OUT" | tail -3 >&2 || true
+    exit 1
 fi
 
 # Top-level keys of config.Config. A yaml block is a pipelock config only if every

@@ -234,7 +234,7 @@ fi
 
 release_blocked="$(python3 -c 'import json, sys; print(str(json.load(open(sys.argv[1], encoding="utf-8"))["release_blocked"]).lower())' "$INVENTORY")"
 if [[ "$release_blocked" == "true" ]]; then
-	printf 'release verifier install gate: release is explicitly blocked until verifier-v0.3.0 is published and its immutable registry digests replace the inventory placeholders\n' >&2
+	printf 'release verifier install gate: release is explicitly blocked until verifier-v%s is published and its immutable registry digests replace the inventory placeholders\n' "$ts_version" >&2
 	exit 2
 fi
 

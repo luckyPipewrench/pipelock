@@ -1312,7 +1312,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return false
 	}
 	if !cfg.RequestBodyScanning.Enabled && isA2A && cfg.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-		buf, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes)
+		buf, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)
 		if err != nil {
 			reason := "a2a: " + err.Error()
 			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
@@ -1356,6 +1356,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
 			Body:             r.Body,
+			Trailer:          r.Trailer,
 			Scheme:           r.URL.Scheme,
 			Method:           r.Method,
 			ContentType:      r.Header.Get("Content-Type"),
@@ -1910,6 +1911,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, r.URL.Hostname(), effectiveURLPort(r.URL), result)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
+	// The URL authority is the value policy admitted. Never propagate a
+	// client-controlled Host override to the upstream request.
+	outReq.Host = outReq.URL.Host
 	outReq = outReq.WithContext(context.WithValue(outReq.Context(), ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{emitter: envEmitter}))
 	// Strip the internal identity header AND the ?agent= query param before
 	// the request leaves pipelock. Either vector could otherwise bleed an
@@ -2926,7 +2930,7 @@ func recordA2AContentEntropyTelemetry(logger *audit.Logger, m *metrics.Metrics, 
 	logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{contentEntropyReason(result.EntropyFinding)})
 }
 
-func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxBytes int) ([]byte, error) {
+func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxBytes int, trailer http.Header) ([]byte, error) {
 	if hasNonIdentityEncoding(contentEncoding) {
 		return nil, fmt.Errorf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", contentEncoding)
 	}
@@ -2937,6 +2941,9 @@ func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxB
 	}
 	if len(buf) > maxBytes {
 		return nil, fmt.Errorf("request body exceeds max_body_bytes (%d)", maxBytes)
+	}
+	if len(trailer) != 0 {
+		return nil, fmt.Errorf("request trailers cannot be scanned for secrets")
 	}
 	return buf, nil
 }

@@ -153,7 +153,7 @@ func verifyEvidenceReceipt(r contractreceipt.EvidenceReceipt, keyHex string, opt
 		}
 		return false, nil
 	}
-	if err := contractreceipt.VerifyWithKey(r, chainOpts.PinnedKey, r.Signature.SignerKeyID); err != nil {
+	if err := contractreceipt.VerifyWithKey(r, chainOpts.PinnedKey, contractreceipt.SignerKeyID(chainOpts.PinnedKey)); err != nil {
 		return false, err
 	}
 	return true, nil

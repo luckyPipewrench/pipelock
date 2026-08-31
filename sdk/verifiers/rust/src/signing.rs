@@ -103,7 +103,7 @@ pub fn verify_evidence_receipt(
         .get("signature")
         .and_then(|value| value.as_object())
         .ok_or_else(|| "signature is required".to_string())?;
-    require_string(
+    let signer_key_id = require_string(
         signature_obj.get("signer_key_id"),
         "signature.signer_key_id",
     )?;
@@ -128,7 +128,11 @@ pub fn verify_evidence_receipt(
         Signature::from_slice(&sig_bytes).map_err(|err| format!("invalid signature: {err}"))?;
     verifying_key
         .verify_strict(&evidence_preimage(receipt)?, &signature)
-        .map_err(|_| "signature verification failed".to_string())
+        .map_err(|_| "signature verification failed".to_string())?;
+    if signer_key_id != key_hex {
+        return Err("signature.signer_key_id does not match pinned public key".to_string());
+    }
+    Ok(())
 }
 
 pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), String> {

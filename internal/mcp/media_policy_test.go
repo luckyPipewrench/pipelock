@@ -155,6 +155,12 @@ func TestMCPMediaPayloadFields(t *testing.T) {
 			wantNames: []string{"data", "blob", "raw"},
 		},
 		{
+			name:      "embedded_resource_blob",
+			block:     jsonrpc.ContentBlock{Type: "resource", Resource: &jsonrpc.ResourceContents{MimeType: "video/mp4", Blob: "Y2xpcA=="}},
+			wantCount: 1,
+			wantNames: []string{"resource.blob"},
+		},
+		{
 			name:      "no_payload_fields",
 			block:     jsonrpc.ContentBlock{Type: "text", Text: "hello"},
 			wantCount: 0,
@@ -173,6 +179,98 @@ func TestMCPMediaPayloadFields(t *testing.T) {
 				if fields[i].name != wantName {
 					t.Errorf("field[%d].name = %q, want %q", i, fields[i].name, wantName)
 				}
+			}
+		})
+	}
+}
+
+func TestMCPResourceMediaHint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		resource   jsonrpc.ResourceContents
+		wantType   string
+		wantHinted bool
+	}{
+		{
+			name:       "video_mime",
+			resource:   jsonrpc.ResourceContents{MimeType: "video/mp4"},
+			wantType:   "video/mp4",
+			wantHinted: true,
+		},
+		{
+			name:       "non_media_mime",
+			resource:   jsonrpc.ResourceContents{MimeType: "text/plain"},
+			wantType:   "",
+			wantHinted: false,
+		},
+		{
+			name:       "empty",
+			resource:   jsonrpc.ResourceContents{},
+			wantType:   "",
+			wantHinted: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotType, gotHinted := mcpResourceMediaHint(tt.resource)
+			if gotType != tt.wantType {
+				t.Errorf("mcpResourceMediaHint() type = %q, want %q", gotType, tt.wantType)
+			}
+			if gotHinted != tt.wantHinted {
+				t.Errorf("mcpResourceMediaHint() hinted = %v, want %v", gotHinted, tt.wantHinted)
+			}
+		})
+	}
+}
+
+func TestSetMCPMediaPayloadRejectsUnsafeRewriteShapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		block   map[string]json.RawMessage
+		field   string
+		wantErr string
+	}{
+		{
+			name:    "unknown_field",
+			block:   map[string]json.RawMessage{},
+			field:   "sidecar",
+			wantErr: "unknown payload field",
+		},
+		{
+			name:    "resource_missing",
+			block:   map[string]json.RawMessage{},
+			field:   "resource.blob",
+			wantErr: "resource is missing",
+		},
+		{
+			name:    "resource_not_object",
+			block:   map[string]json.RawMessage{"resource": json.RawMessage(`"not-an-object"`)},
+			field:   "resource.blob",
+			wantErr: "parse resource",
+		},
+		{
+			name:    "resource_null",
+			block:   map[string]json.RawMessage{"resource": json.RawMessage(`null`)},
+			field:   "resource.blob",
+			wantErr: "resource is null",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := setMCPMediaPayload(tt.block, tt.field, "YQ==")
+			if err == nil {
+				t.Fatal("setMCPMediaPayload() error = nil, want rejection")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("setMCPMediaPayload() error = %q, want %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -299,6 +397,85 @@ func TestForwardScanned_MediaPolicyBlocksBlobOnlyField(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_MediaPolicyBlocksEmbeddedResourceMedia(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       int
+		mimeType string
+		payload  string
+		blob     string
+	}{
+		{
+			name:     "video_blob",
+			id:       70,
+			mimeType: "video/mp4",
+			payload:  "fake video bytes",
+		},
+		{
+			name:     "audio_blob",
+			id:       71,
+			mimeType: "audio/wav",
+			payload:  "fake audio bytes",
+		},
+		{
+			name:     "invalid_base64_video",
+			id:       72,
+			mimeType: "video/mp4",
+			blob:     "not-base64!",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc, cfg := newMCPScannerWithMediaPolicy(t)
+			encoded := tt.blob
+			if encoded == "" {
+				encoded = base64.StdEncoding.EncodeToString([]byte(tt.payload))
+			}
+			line := fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"resource","resource":{"uri":"file:///attachment","mimeType":"%s","blob":"%s"}}]}}`,
+				tt.id,
+				tt.mimeType,
+				encoded,
+			)
+
+			var out, log bytes.Buffer
+			found, err := ForwardScanned(
+				transport.NewStdioReader(strings.NewReader(line+"\n")),
+				transport.NewStdioWriter(&out),
+				&log,
+				nil,
+				MCPProxyOpts{
+					Scanner:     sc,
+					MediaPolicy: &cfg.MediaPolicy,
+					Transport:   testMCPMediaTransport,
+				},
+			)
+			if err != nil {
+				t.Fatalf("ForwardScanned: %v", err)
+			}
+			if found {
+				t.Fatal("expected media-policy block without an injection finding")
+			}
+
+			var resp rpcError
+			if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
+				t.Fatalf("unmarshal block response: %v", err)
+			}
+			if string(resp.ID) != fmt.Sprintf("%d", tt.id) {
+				t.Fatalf("block response id = %s, want %d", string(resp.ID), tt.id)
+			}
+			if resp.Error.Code != -32002 || !strings.Contains(resp.Error.Message, "media policy") {
+				t.Fatalf("block response = (%d, %q), want media-policy error", resp.Error.Code, resp.Error.Message)
+			}
+		})
+	}
+}
+
+// mcpJPEGScanMarker is SOS entropy-coded payload in buildMCPValidJPEG.
+// Metadata strip must keep it; tests use it so an empty rewrite cannot pass.
+var mcpJPEGScanMarker = []byte{0x11, 0x22, 0x33}
+
 func buildMCPValidJPEG(app1Payload []byte) []byte {
 	writeSegmentLen := func(b *bytes.Buffer, length int) {
 		if length < 0 || length > math.MaxUint16 {
@@ -319,9 +496,22 @@ func buildMCPValidJPEG(app1Payload []byte) []byte {
 	b.Write(app1Payload)
 	b.Write([]byte{0xFF, 0xDA})
 	b.Write([]byte{0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x3F, 0x00})
-	b.Write([]byte{0x11, 0x22, 0x33})
+	b.Write(mcpJPEGScanMarker)
 	b.Write([]byte{0xFF, 0xD9})
 	return b.Bytes()
+}
+
+func assertMCPJPEGMetadataStripped(t *testing.T, decoded, original, secret []byte, secretGoneMsg string) {
+	t.Helper()
+	if bytes.Contains(decoded, secret) {
+		t.Fatal(secretGoneMsg)
+	}
+	if len(decoded) >= len(original) {
+		t.Fatalf("stripped JPEG length %d >= original %d", len(decoded), len(original))
+	}
+	if !bytes.Contains(decoded, mcpJPEGScanMarker) {
+		t.Fatal("stripped JPEG lost image scan data")
+	}
 }
 
 func newMCPScannerWithMediaPolicy(t *testing.T) (*scanner.Scanner, *config.Config) {
@@ -382,11 +572,154 @@ func TestForwardScanned_MediaPolicyStripsToolResultImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeString: %v", err)
 	}
-	if bytes.Contains(decoded, []byte("mcp-secret-metadata")) {
-		t.Fatal("stripped MCP image block still contains metadata payload")
+	assertMCPJPEGMetadataStripped(t, decoded, jpeg, []byte("mcp-secret-metadata"), "stripped MCP image block still contains metadata payload")
+}
+
+func TestForwardScanned_MediaPolicyStripsEmbeddedResourceImage(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	jpeg := buildMCPValidJPEG([]byte("Exif\x00\x00nested-mcp-secret-metadata"))
+	line := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":43,"result":{"content":[{"type":"resource","resource":{"uri":"file:///photo.jpg","mimeType":"image/jpeg","blob":"%s","_meta":{"vendor.example/trace":"keep"},"x-vendor-extension":{"retention":"keep"}}},{"type":"text","text":"safe"}]}}`,
+		base64.StdEncoding.EncodeToString(jpeg),
+	)
+
+	var out, log bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(line+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		nil,
+		MCPProxyOpts{
+			Scanner:     sc,
+			MediaPolicy: &cfg.MediaPolicy,
+			Transport:   transportMCPStdio,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
 	}
-	if len(decoded) >= len(jpeg) {
-		t.Fatalf("stripped MCP image length %d >= original %d", len(decoded), len(jpeg))
+	if found {
+		t.Fatal("expected no injection finding for media-only response")
+	}
+
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &rpc); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	var result jsonrpc.ToolResult
+	if err := json.Unmarshal(rpc.Result, &result); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	if len(result.Content) != 2 || result.Content[0].Resource == nil {
+		t.Fatalf("content = %+v, want embedded resource and text block", result.Content)
+	}
+	if resource := result.Content[0].Resource; resource.URI != "file:///photo.jpg" || resource.MimeType != "image/jpeg" {
+		t.Fatalf("resource metadata = %+v, want uri and mimeType preserved", resource)
+	}
+	var rawResult map[string]json.RawMessage
+	if err := json.Unmarshal(rpc.Result, &rawResult); err != nil {
+		t.Fatalf("unmarshal raw result: %v", err)
+	}
+	var rawContent []map[string]json.RawMessage
+	if err := json.Unmarshal(rawResult["content"], &rawContent); err != nil || len(rawContent) == 0 {
+		t.Fatalf("raw content = %s", rawResult["content"])
+	}
+	resourceRaw, ok := rawContent[0]["resource"]
+	if !ok {
+		t.Fatal("rewritten content[0] dropped resource")
+	}
+	for _, want := range []string{`"vendor.example/trace":"keep"`, `"x-vendor-extension":{"retention":"keep"}`} {
+		if !bytes.Contains(resourceRaw, []byte(want)) {
+			t.Fatalf("resource dropped extension %s: %s", want, resourceRaw)
+		}
+	}
+	if result.Content[1].Text != "safe" {
+		t.Fatalf("text block = %q, want safe", result.Content[1].Text)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(result.Content[0].Resource.Blob)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	assertMCPJPEGMetadataStripped(t, decoded, jpeg, []byte("nested-mcp-secret-metadata"), "stripped embedded resource image still contains metadata payload")
+}
+
+func TestForwardScanned_EmbeddedResourceSniffsMediaWithoutMimeType(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	jpeg := buildMCPValidJPEG([]byte("Exif\x00\x00sniffed-mcp-secret-metadata"))
+	line := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":44,"result":{"content":[{"type":"resource","resource":{"uri":"file:///photo.bin","blob":"%s"}}]}}`,
+		base64.StdEncoding.EncodeToString(jpeg),
+	)
+
+	var out, log bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(line+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		nil,
+		MCPProxyOpts{
+			Scanner:     sc,
+			MediaPolicy: &cfg.MediaPolicy,
+			Transport:   testMCPMediaTransport,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("expected media-policy handling without an injection finding")
+	}
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &rpc); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	var result jsonrpc.ToolResult
+	if err := json.Unmarshal(rpc.Result, &result); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	if len(result.Content) != 1 || result.Content[0].Resource == nil {
+		t.Fatalf("content = %+v, want sniffed embedded resource", result.Content)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(result.Content[0].Resource.Blob)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	assertMCPJPEGMetadataStripped(t, decoded, jpeg, []byte("sniffed-mcp-secret-metadata"), "resource blob without mimeType was not sniffed as image media")
+}
+
+func TestForwardScanned_EmbeddedResourcePlainBlobIsNotMediaPolicy(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	payload := base64.StdEncoding.EncodeToString([]byte(`{"note":"ok"}`))
+	line := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":45,"result":{"content":[{"type":"resource","resource":{"uri":"file:///note.json","mimeType":"application/json","blob":"%s"}}]}}`,
+		payload,
+	)
+
+	var out, log bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(line+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		nil,
+		MCPProxyOpts{
+			Scanner:     sc,
+			MediaPolicy: &cfg.MediaPolicy,
+			Transport:   testMCPMediaTransport,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("plain JSON resource blob should not become an injection finding")
+	}
+	var resp rpcError
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err == nil && resp.Error.Code == -32002 {
+		t.Fatalf("plain JSON resource blob was media-blocked: %s", resp.Error.Message)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"note":"ok"`)) && !bytes.Contains(out.Bytes(), []byte(payload)) {
+		t.Fatalf("plain JSON resource blob was dropped: %s", bytes.TrimSpace(out.Bytes()))
 	}
 }
 

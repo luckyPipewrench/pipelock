@@ -1730,7 +1730,7 @@ func compactSignedReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, pre
 		Crit:    contractreceipt.CritForPayloadKind(contractreceipt.PayloadShadowDelta),
 		EventID: fmt.Sprintf("01900000-0000-7000-8000-%012d", seq), Timestamp: time.Unix(1, 0).UTC(), Actor: "test",
 		ChainSeq: seq, ChainPrevHash: prev, ContractHash: "sha256:test-contract", ActiveManifestHash: "sha256:test-manifest", Payload: payload,
-		Signature: contractreceipt.SignatureProof{SignerKeyID: "test-key", KeyPurpose: "receipt-signing", Algorithm: "ed25519"},
+		Signature: contractreceipt.SignatureProof{SignerKeyID: contractreceipt.SignerKeyID(priv.Public().(ed25519.PublicKey)), KeyPurpose: "receipt-signing", Algorithm: "ed25519"},
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {

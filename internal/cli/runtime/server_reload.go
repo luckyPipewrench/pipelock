@@ -733,6 +733,13 @@ func requiredModeTeardowns(oldCfg, newCfg *config.Config) []string {
 	tornDown("mcp_binary_integrity.require_signature",
 		oldCfg.MCPBinaryIntegrity.Enabled && oldCfg.MCPBinaryIntegrity.RequireSignature,
 		newCfg.MCPBinaryIntegrity.Enabled && newCfg.MCPBinaryIntegrity.RequireSignature)
+	// Listener state tokens are optional in balanced and audit modes for
+	// compatibility, but a strict-mode listener that was requiring one cannot
+	// silently stop doing so. Session binding is the parent that makes the
+	// setting effective, so turning that parent off is a teardown too.
+	tornDown("mcp_session_binding.listener_require_state_token",
+		oldCfg.Mode == config.ModeStrict && oldCfg.MCPSessionBinding.Enabled && oldCfg.MCPSessionBinding.RequiresListenerStateToken(),
+		newCfg.MCPSessionBinding.Enabled && newCfg.MCPSessionBinding.RequiresListenerStateToken())
 	tornDown("mediation_envelope.verify_inbound.enabled",
 		oldCfg.MediationEnvelope.VerifyInbound.Enabled, newCfg.MediationEnvelope.VerifyInbound.Enabled)
 	// sni_require_tls refuses to splice an opaque CONNECT tunnel when the

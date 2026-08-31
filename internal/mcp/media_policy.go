@@ -90,14 +90,13 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 
 	changed := false
 	exposures := make([]audit.MediaExposureInfo, 0, len(content))
+	var rawContentBlocks []map[string]json.RawMessage
 
 	for i := range content {
 		fields := mcpMediaPayloadFields(content[i])
 		if len(fields) == 0 {
 			continue
 		}
-
-		contentType, hinted := mcpMediaHint(content[i])
 
 		for _, field := range fields {
 			decoded, ok := decodeMCPMediaPayload(field.encoded)
@@ -108,11 +107,11 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 				continue
 			}
 
-			verdict := applyMCPMediaPolicy(policy, contentType, decoded, transport)
+			verdict := applyMCPMediaPolicy(policy, field.contentType, decoded, transport)
 			if verdict.Exposure != nil {
 				exposures = append(exposures, *verdict.Exposure)
 			}
-			if hinted && verdict.MediaType == "" {
+			if field.looksLikeMedia && verdict.MediaType == "" {
 				return raw, changed, fmt.Sprintf("media_policy: unsupported media in result.content[%d].%s", i, field.name), exposures
 			}
 			if verdict.Blocked {
@@ -120,13 +119,16 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 			}
 			if verdict.StripResult != nil && verdict.StripResult.Changed() {
 				encodedOut := base64.StdEncoding.EncodeToString(verdict.Body)
-				switch field.name {
-				case "data":
-					content[i].Data = encodedOut
-				case "blob":
-					content[i].Blob = encodedOut
-				case "raw":
-					content[i].Raw = encodedOut
+				if rawContentBlocks == nil {
+					if err := json.Unmarshal(contentRaw, &rawContentBlocks); err != nil {
+						return raw, changed, fmt.Sprintf("media_policy: parse tool result content for rewrite: %v", err), exposures
+					}
+					if len(rawContentBlocks) != len(content) {
+						return raw, changed, "media_policy: content block count changed during rewrite", exposures
+					}
+				}
+				if err := setMCPMediaPayload(rawContentBlocks[i], field.name, encodedOut); err != nil {
+					return raw, changed, fmt.Sprintf("media_policy: rewrite result.content[%d].%s: %v", i, field.name, err), exposures
 				}
 				changed = true
 			}
@@ -137,7 +139,7 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 		return raw, false, "", exposures
 	}
 
-	updatedContent, err := json.Marshal(content)
+	updatedContent, err := json.Marshal(rawContentBlocks)
 	if err != nil {
 		return raw, false, fmt.Sprintf("media_policy: re-marshal tool result content: %v", err), exposures
 	}
@@ -150,28 +152,73 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 	return updated, true, "", exposures
 }
 
+func setMCPMediaPayload(block map[string]json.RawMessage, field, encoded string) error {
+	encodedPayload, err := json.Marshal(encoded)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	switch field {
+	case "data", "blob", "raw":
+		block[field] = encodedPayload
+		return nil
+	case "resource.blob":
+		resourceRaw, ok := block["resource"]
+		if !ok {
+			return fmt.Errorf("resource is missing")
+		}
+		var resource map[string]json.RawMessage
+		if err := json.Unmarshal(resourceRaw, &resource); err != nil {
+			return fmt.Errorf("parse resource: %w", err)
+		}
+		if resource == nil {
+			return fmt.Errorf("resource is null")
+		}
+		resource["blob"] = encodedPayload
+		updatedResource, err := json.Marshal(resource)
+		if err != nil {
+			return fmt.Errorf("re-marshal resource: %w", err)
+		}
+		block["resource"] = updatedResource
+		return nil
+	default:
+		return fmt.Errorf("unknown payload field")
+	}
+}
+
 // mcpMediaField represents a single payload field within a content block.
 type mcpMediaField struct {
 	name           string
 	encoded        string
+	contentType    string
 	looksLikeMedia bool
 }
 
 // mcpMediaPayloadFields returns ALL non-empty payload fields (data, blob, raw)
-// for a content block. The MCP spec allows only ONE payload field per block, but
-// fail-closed means we scan all populated fields to prevent a bypass where
-// blocked media hides in blob while benign content sits in data.
+// for a content block and resource.blob for an embedded resource. The MCP spec
+// allows only ONE payload field per block, but fail-closed means we scan all
+// populated fields to prevent a bypass where blocked media hides in blob while
+// benign content sits in data, or in a resource nested beneath type="resource".
 func mcpMediaPayloadFields(block jsonrpc.ContentBlock) []mcpMediaField {
-	looksMedia := mcpContentBlockLooksLikeMedia(block)
+	contentType, looksMedia := mcpMediaHint(block)
 	var fields []mcpMediaField
 	if block.Data != "" {
-		fields = append(fields, mcpMediaField{"data", block.Data, looksMedia})
+		fields = append(fields, mcpMediaField{name: "data", encoded: block.Data, contentType: contentType, looksLikeMedia: looksMedia})
 	}
 	if block.Blob != "" {
-		fields = append(fields, mcpMediaField{"blob", block.Blob, looksMedia})
+		fields = append(fields, mcpMediaField{name: "blob", encoded: block.Blob, contentType: contentType, looksLikeMedia: looksMedia})
 	}
 	if block.Raw != "" {
-		fields = append(fields, mcpMediaField{"raw", block.Raw, looksMedia})
+		fields = append(fields, mcpMediaField{name: "raw", encoded: block.Raw, contentType: contentType, looksLikeMedia: looksMedia})
+	}
+	if block.Resource != nil && block.Resource.Blob != "" {
+		resourceType, resourceLooksMedia := mcpResourceMediaHint(*block.Resource)
+		fields = append(fields, mcpMediaField{
+			name:           "resource.blob",
+			encoded:        block.Resource.Blob,
+			contentType:    resourceType,
+			looksLikeMedia: resourceLooksMedia,
+		})
 	}
 	return fields
 }
@@ -205,6 +252,13 @@ func mcpMediaHint(block jsonrpc.ContentBlock) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func mcpResourceMediaHint(resource jsonrpc.ResourceContents) (string, bool) {
+	if mt := canonicalMCPContentType(resource.MimeType); isMCPMediaType(mt) {
+		return mt, true
+	}
+	return "", false
 }
 
 func decodeMCPMediaPayload(encoded string) ([]byte, bool) {

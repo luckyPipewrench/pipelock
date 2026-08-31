@@ -497,7 +497,11 @@ type BodyEntropyWarnRouteMatch struct {
 // BodyScanRequest groups the parameters for scanRequestBody, keeping the
 // function signature under the 6-parameter guideline (ctx is passed separately).
 type BodyScanRequest struct {
-	Body            io.Reader
+	Body io.Reader
+	// Trailer is populated by net/http only after Body reaches EOF. Request
+	// scanning does not yet inspect trailer fields, so a populated map must
+	// fail closed rather than let values bypass the scanned body and headers.
+	Trailer         http.Header
 	Scheme          string
 	Method          string
 	ContentType     string
@@ -586,6 +590,18 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 			Clean:  false,
 			Action: config.ActionBlock,
 			Reason: fmt.Sprintf("error reading request body: %v", err),
+		}
+	}
+	if len(req.Trailer) != 0 {
+		// A Trailer header is hop-by-hop, but removing that header does not clear
+		// Request.Trailer. The values become available only after the body drain
+		// above, and they are not part of the body or header DLP surfaces yet.
+		// Return no replayable bytes so every caller treats this as fail-closed,
+		// including in audit mode.
+		return nil, BodyScanResult{
+			Clean:  false,
+			Action: config.ActionBlock,
+			Reason: "request trailers cannot be scanned for secrets",
 		}
 	}
 

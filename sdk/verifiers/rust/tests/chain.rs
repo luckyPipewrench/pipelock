@@ -1193,10 +1193,6 @@ fn build_evidence_chain(count: usize) -> Vec<Value> {
 }
 
 fn sign_evidence_receipt(receipt: &mut Value) {
-    let signer_key_id = receipt["signature"]["signer_key_id"]
-        .as_str()
-        .unwrap_or("receipt-signing-test")
-        .to_string();
     let mut clone = receipt.clone();
     clone["signature"] = json!({
         "signer_key_id": "",
@@ -1211,7 +1207,7 @@ fn sign_evidence_receipt(receipt: &mut Value) {
     let key = SigningKey::from_bytes(&seed);
     let signature = key.sign(&canonicalize_jcs_value(&clone).expect("canonicalize receipt"));
     receipt["signature"] = json!({
-        "signer_key_id": signer_key_id,
+        "signer_key_id": V2_GOLDEN_PUBLIC_KEY,
         "key_purpose": "receipt-signing",
         "algorithm": "ed25519",
         "signature": format!("ed25519:{}", hex::encode(signature.to_bytes()))

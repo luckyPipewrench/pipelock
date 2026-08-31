@@ -1293,6 +1293,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 
 	bodyReq := BodyScanRequest{
 		Body:             r.Body,
+		Trailer:          r.Trailer,
 		Scheme:           rp.upstream.Scheme,
 		Method:           r.Method,
 		ContentType:      r.Header.Get("Content-Type"),

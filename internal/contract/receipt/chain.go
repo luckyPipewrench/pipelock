@@ -155,6 +155,7 @@ func VerifyChain(receipts []EvidenceReceipt, opts ChainVerifyOptions) ChainResul
 	}
 
 	signerID := receipts[0].Signature.SignerKeyID
+	pinnedSignerKeyID := SignerKeyID(opts.PinnedKey)
 	prevHash := GenesisHash
 	var tipHash string
 
@@ -200,7 +201,7 @@ func VerifyChain(receipts []EvidenceReceipt, opts ChainVerifyOptions) ChainResul
 		}
 
 		if opts.PinnedKey != nil {
-			if err := VerifyWithKey(r, opts.PinnedKey, r.Signature.SignerKeyID); err != nil {
+			if err := VerifyWithKey(r, opts.PinnedKey, pinnedSignerKeyID); err != nil {
 				return brokenChain(seq, "receipt %d signature: %v", seq, err)
 			}
 		}
@@ -269,7 +270,7 @@ func (v *StreamingVerifier) AddRaw(raw []byte) error {
 		return v.latch(brokenChain(v.count, "receipt %d decode: %v", v.count, err))
 	}
 	seq := v.count
-	if err := VerifyWithKey(r, v.key, r.Signature.SignerKeyID); err != nil {
+	if err := VerifyWithKey(r, v.key, SignerKeyID(v.key)); err != nil {
 		return v.latch(brokenChain(seq, "receipt %d signature: %v", seq, err))
 	}
 	if v.count == 0 {

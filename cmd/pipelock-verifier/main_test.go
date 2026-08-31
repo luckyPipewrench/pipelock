@@ -36,7 +36,6 @@ const (
 	tHTTPS         = "https"
 	tNotPipelock   = "not-pipelock"
 	verdictAllowed = "allow"
-	v2SignerID     = "receipt-signing-v2-test"
 	v2ContractHash = "sha256:v2-contract"
 )
 
@@ -55,6 +54,26 @@ type evidenceFixture struct {
 	priv     ed25519.PrivateKey
 	receipts []contractreceipt.EvidenceReceipt
 	keyHex   string
+}
+
+func writePinnedV2ReceiptFixture(t *testing.T, source, destination, keyHex string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(source))
+	if err != nil {
+		t.Fatalf("read v2 fixture: %v", err)
+	}
+	r, err := decodeEvidenceReceipt(data)
+	if err != nil {
+		t.Fatalf("decode v2 fixture: %v", err)
+	}
+	r.Signature.SignerKeyID = keyHex
+	data, err = json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal v2 fixture: %v", err)
+	}
+	if err := os.WriteFile(destination, data, 0o600); err != nil {
+		t.Fatalf("write v2 fixture: %v", err)
+	}
 }
 
 func newEvidenceFixture(t *testing.T, n int) *evidenceFixture {
@@ -105,7 +124,7 @@ func newEvidenceFixture(t *testing.T, n int) *evidenceFixture {
 			t.Fatalf("preimage: %v", err)
 		}
 		r.Signature = contractreceipt.SignatureProof{
-			SignerKeyID: v2SignerID,
+			SignerKeyID: hex.EncodeToString(pub),
 			KeyPurpose:  "receipt-signing",
 			Algorithm:   "ed25519",
 			Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
@@ -1539,13 +1558,15 @@ func TestReceipt_EvidenceV2RecheckSourceSpan(t *testing.T) {
 	if err := os.WriteFile(sourcePath, []byte("https://example.com/[redacted-value]"), 0o600); err != nil {
 		t.Fatalf("write recheck source: %v", err)
 	}
-	receiptPath := filepath.Clean(filepath.Join("..", "..", "internal", "contract", "testdata", "golden", "valid_evidence_receipt_proxy_decision_with_spans.json"))
 	keyHex := strings.Join([]string{
 		"d75a980182b10ab7",
 		"d54bfed3c964073a",
 		"0ee172f3daa62325",
 		"af021a68f707511a",
 	}, "")
+	fixturePath := filepath.Clean(filepath.Join("..", "..", "internal", "contract", "testdata", "golden", "valid_evidence_receipt_proxy_decision_with_spans.json"))
+	receiptPath := filepath.Join(dir, "receipt.json")
+	writePinnedV2ReceiptFixture(t, fixturePath, receiptPath, keyHex)
 	stdout, stderr, code := runRoot(t,
 		"receipt",
 		"--json",
@@ -1585,13 +1606,15 @@ func TestReceipt_EvidenceV2RecheckSourceSpanMismatchReportsInvalid(t *testing.T)
 	if err := os.WriteFile(sourcePath, []byte("https://example.com/xxxxxxxxxxxxxxxx"), 0o600); err != nil {
 		t.Fatalf("write recheck source: %v", err)
 	}
-	receiptPath := filepath.Clean(filepath.Join("..", "..", "internal", "contract", "testdata", "golden", "valid_evidence_receipt_proxy_decision_with_spans.json"))
 	keyHex := strings.Join([]string{
 		"d75a980182b10ab7",
 		"d54bfed3c964073a",
 		"0ee172f3daa62325",
 		"af021a68f707511a",
 	}, "")
+	fixturePath := filepath.Clean(filepath.Join("..", "..", "internal", "contract", "testdata", "golden", "valid_evidence_receipt_proxy_decision_with_spans.json"))
+	receiptPath := filepath.Join(dir, "receipt.json")
+	writePinnedV2ReceiptFixture(t, fixturePath, receiptPath, keyHex)
 	stdout, stderr, code := runRoot(t,
 		"receipt",
 		"--json",
@@ -2018,7 +2041,7 @@ func TestChain_EvidenceV2PinnedKey(t *testing.T) {
 	stdout, stderr, code := runRoot(t,
 		"chain",
 		"--key", fix.keyHex,
-		"--expect-signer-id", v2SignerID,
+		"--expect-signer-id", fix.keyHex,
 		"--expect-payload-kind", string(contractreceipt.PayloadShadowDelta),
 		"--expect-contract", v2ContractHash,
 		evidence,
@@ -2421,7 +2444,7 @@ func TestChain_EvidenceV2DirHappyPath(t *testing.T) {
 	stdout, stderr, code := runRoot(t,
 		"chain", "--dir",
 		"--key", fix.keyHex,
-		"--expect-signer-id", v2SignerID,
+		"--expect-signer-id", fix.keyHex,
 		dir,
 	)
 	if code != cliutil.ExitOK {
@@ -2447,7 +2470,7 @@ func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 		"chain", "--dir",
 		"--location", filepath.ToSlash(locationID),
 		"--key", fix.keyHex,
-		"--expect-signer-id", v2SignerID,
+		"--expect-signer-id", fix.keyHex,
 		root,
 	)
 	if code != cliutil.ExitOK {
@@ -2629,6 +2652,18 @@ func TestVerifyEvidenceReceipt_ManifestMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "active_manifest_hash") {
 		t.Errorf("expected manifest error, got %v", err)
+	}
+}
+
+func TestVerifyEvidenceReceipt_PinnedKeyBindsSignerKeyID(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	relabeled := fix.receipts[0]
+	relabeled.Signature.SignerKeyID = "attacker-label"
+
+	_, err := verifyEvidenceReceipt(relabeled, fix.keyHex, evidenceBindingOptions{})
+	if err == nil || !strings.Contains(err.Error(), "signer_key_id") {
+		t.Fatalf("relabeled pinned receipt error = %v, want signer_key_id rejection", err)
 	}
 }
 

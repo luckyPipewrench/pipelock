@@ -58,7 +58,7 @@ func TestGolden_EvidenceReceiptProxyDecision(t *testing.T) {
 		t.Fatalf("preimage: %v", err)
 	}
 	r.Signature = SignatureProof{
-		SignerKeyID: "receipt-signing-test",
+		SignerKeyID: SignerKeyID(priv.Public().(ed25519.PublicKey)),
 		KeyPurpose:  "receipt-signing",
 		Algorithm:   "ed25519",
 		Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
@@ -126,7 +126,7 @@ func TestGolden_EvidenceReceiptProxyDecisionWithSpans(t *testing.T) {
 		t.Fatalf("preimage: %v", err)
 	}
 	r.Signature = SignatureProof{
-		SignerKeyID: "receipt-signing-test",
+		SignerKeyID: SignerKeyID(priv.Public().(ed25519.PublicKey)),
 		KeyPurpose:  "receipt-signing",
 		Algorithm:   "ed25519",
 		Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
@@ -190,7 +190,7 @@ func TestGolden_EvidenceReceiptPromoteCommitted(t *testing.T) {
 		t.Fatalf("preimage: %v", err)
 	}
 	r.Signature = SignatureProof{
-		SignerKeyID: "receipt-signing-test",
+		SignerKeyID: SignerKeyID(priv.Public().(ed25519.PublicKey)),
 		KeyPurpose:  "receipt-signing",
 		Algorithm:   "ed25519",
 		Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
@@ -260,7 +260,7 @@ func TestGolden_EvidenceReceiptShadowDelta(t *testing.T) {
 		t.Fatalf("preimage: %v", err)
 	}
 	r.Signature = SignatureProof{
-		SignerKeyID: "receipt-signing-test",
+		SignerKeyID: SignerKeyID(priv.Public().(ed25519.PublicKey)),
 		KeyPurpose:  "receipt-signing",
 		Algorithm:   "ed25519",
 		Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),

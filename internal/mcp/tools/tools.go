@@ -1203,14 +1203,31 @@ func collectSchemaDescriptionFieldsMode(value any, result *[]string, depth int, 
 			continue
 		case "properties", "patternProperties", "dependentSchemas", "dependencies", "$defs", "definitions":
 			collectSchemaDescriptionFieldsMode(child, result, depth+1, true)
-		default:
-			if strings.HasPrefix(key, "x-") || strings.HasPrefix(key, "X-") {
-				continue
-			}
-			// Unknown keywords may introduce schema containers in newer drafts
-			// or extensions such as Hyper-Schema links. Follow structured values
-			// so a declared description cannot disappear when the dialect grows.
+		case "additionalItems", "additionalProperties", "contains", "contentSchema", "else", "if", "items", "not", "propertyNames", "then", "unevaluatedItems", "unevaluatedProperties":
 			collectSchemaDescriptionFieldsMode(child, result, depth+1, false)
+		case "allOf", "anyOf", "oneOf", "prefixItems":
+			collectSchemaDescriptionFieldsMode(child, result, depth+1, false)
+		case "links":
+			collectHyperSchemaDescriptions(child, result, depth+1)
+		}
+	}
+}
+
+func collectHyperSchemaDescriptions(value any, result *[]string, depth int) {
+	if depth > maxSchemaDepth {
+		return
+	}
+	links, ok := value.([]any)
+	if !ok {
+		return
+	}
+	for _, value := range links {
+		link, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"headerSchema", "hrefSchema", "submissionSchema", "targetSchema"} {
+			collectSchemaDescriptionFieldsMode(link[key], result, depth+1, false)
 		}
 	}
 }

@@ -3836,6 +3836,12 @@ func TestScanTools_ExtraPoisonDescriptionScope(t *testing.T) {
 			wantMatch: false,
 		},
 		{
+			name: "unknown schema object description",
+			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object",` +
+				`"vendor":{"description":"` + marker + `"}}}`,
+			wantMatch: false,
+		},
+		{
 			name: "input schema default object description",
 			tool: `{"name":"helper","description":"safe","inputSchema":{"type":"object",` +
 				`"default":{"description":"` + marker + `"}}}`,
@@ -3866,6 +3872,38 @@ func TestScanTools_ExtraPoisonDescriptionScope(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCollectSchemaDescriptionFields_DialectsAndMalformed(t *testing.T) {
+	t.Run("single schema keyword", func(t *testing.T) {
+		var got []string
+		collectSchemaDescriptionFields(map[string]any{
+			"contains": map[string]any{"description": "nested"},
+		}, &got, 0)
+		if !slices.Contains(got, "nested") {
+			t.Fatalf("descriptions = %v, want nested", got)
+		}
+	})
+
+	t.Run("depth limits", func(t *testing.T) {
+		var got []string
+		collectSchemaDescriptionFields(map[string]any{"description": "too deep"}, &got, maxSchemaDepth+1)
+		collectHyperSchemaDescriptions([]any{map[string]any{
+			"submissionSchema": map[string]any{"description": "too deep"},
+		}}, &got, maxSchemaDepth+1)
+		if len(got) != 0 {
+			t.Fatalf("descriptions = %v, want none", got)
+		}
+	})
+
+	t.Run("malformed hyper schema links", func(t *testing.T) {
+		var got []string
+		collectHyperSchemaDescriptions(map[string]any{"description": "not a link array"}, &got, 0)
+		collectHyperSchemaDescriptions([]any{"not a link object"}, &got, 0)
+		if len(got) != 0 {
+			t.Fatalf("descriptions = %v, want none", got)
+		}
+	})
 }
 
 func TestScanTools_ExtraPoisonName(t *testing.T) {

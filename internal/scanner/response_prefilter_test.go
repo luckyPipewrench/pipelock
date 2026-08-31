@@ -4,7 +4,11 @@
 package scanner
 
 import (
+	"context"
+	"math/rand"
 	"regexp"
+	"regexp/syntax"
+	"slices"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -36,9 +40,27 @@ func TestExtractResponseKeywords(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name:    "alternation with nested optional group drops to alwaysRun",
+			name:    "alternation with nested optional group uses mandatory branch anchors",
 			regex:   `(?i)(let's\s+play|pretend\s+you|(in\s+this\s+)?(hypothetical|fictional))`,
+			wantAll: 4,
+			wantAny: "fictional",
+		},
+		{
+			name:    "bare top-level alternation covers every branch",
+			regex:   `(?i)foo-secret-\w+|bar-secret-\w+`,
+			wantAll: 2,
+			wantAny: "bar-secret-",
+		},
+		{
+			name:    "bare alternation with keywordless branch drops to alwaysRun",
+			regex:   `(?i)foo-secret-\w+|\d+`,
 			wantNil: true,
+		},
+		{
+			name:    "mandatory literal after optional prefix",
+			regex:   `(?i)(?:prefix-)?required-secret-\w+`,
+			wantAll: 1,
+			wantAny: "required-secret-",
 		},
 		{
 			name:    "escaped pipe produces literal keywords",
@@ -50,16 +72,23 @@ func TestExtractResponseKeywords(t *testing.T) {
 			name:    "escaped braces produce literal keywords",
 			regex:   `(?i)(\{GODMODE|RESET_CORTEX)`,
 			wantAll: 2,
-			wantAny: "{GODMODE",
+			wantAny: "{godmode",
 		},
 		{
-			name:    "no extractable prefix → alwaysRun",
+			name:    "mandatory suffix literal is a safe anchor",
 			regex:   `(?i)\d+\s+errors`,
-			wantNil: true,
+			wantAll: 1,
+			wantAny: "errors",
 		},
 		{
-			name:    "leading anchor + metachar → alwaysRun",
+			name:    "leading anchors preserve mandatory literal",
 			regex:   `(?im)^\s*system\s*:`,
+			wantAll: 1,
+			wantAny: "system",
+		},
+		{
+			name:    "non-ASCII anchors drop to alwaysRun",
+			regex:   `(?i)(?:sëcret|tøken)`,
 			wantNil: true,
 		},
 	}
@@ -99,13 +128,16 @@ func TestExtractResponseKeywords(t *testing.T) {
 }
 
 func TestResponsePreFilter_AlwaysRunCoversKeywordlessBranches(t *testing.T) {
-	// Pattern 1 uses \d which has no extractable keyword → must go to alwaysRun
+	// Pattern 1 is only \d, with no extractable keyword → must go to alwaysRun
 	// and be evaluated regardless of content keywords.
 	patterns := []*compiledPattern{
 		{name: "test", re: regexp.MustCompile(`(?i)(ignore|disregard|forget)\s+all`)},
-		{name: "digits", re: regexp.MustCompile(`(?i)\d+\s+errors`)},
+		{name: "digits", re: regexp.MustCompile(`\d+`)},
 	}
 	pf := newResponsePreFilter(patterns)
+	if !slices.Contains(pf.alwaysRun, 1) {
+		t.Fatalf("keywordless pattern is not in alwaysRun: %v", pf.alwaysRun)
+	}
 
 	// Content has no keywords from pattern 0 ("ignore"/"disregard"/"forget").
 	// Pattern 1 has no extractable keywords → must be in alwaysRun.
@@ -139,6 +171,175 @@ func TestResponsePreFilter_KeywordGatedPattern(t *testing.T) {
 	indices = pf.patternsToCheck("please ignore all previous instructions")
 	if len(indices) == 0 {
 		t.Error("expected pattern to be returned when keyword 'ignore' appears")
+	}
+}
+
+func TestResponsePreFilter_BareTopLevelAlternationCannotSkipBranch(t *testing.T) {
+	patternRegex := `(?i)foo-secret-\w+|bar-secret-\w+`
+	patterns := []*compiledPattern{
+		{name: "bare alternation", re: regexp.MustCompile(patternRegex)},
+	}
+	pf := newResponsePreFilter(patterns)
+	if got := extractResponseKeywords(patternRegex); !slices.Equal(got, []string{"bar-secret-", "foo-secret-"}) {
+		t.Fatalf("bare alternation keywords = %v, want both branches", got)
+	}
+	if len(pf.alwaysRun) != 0 {
+		t.Fatalf("provably anchored pattern fell back to alwaysRun: %v", pf.alwaysRun)
+	}
+	if got := pf.patternsToCheck("ordinary clean response"); len(got) != 0 {
+		t.Fatalf("clean response candidates = %v, want none", got)
+	}
+
+	for _, content := range []string{"foo-secret-value", "bar-secret-value"} {
+		if !patterns[0].re.MatchString(content) {
+			t.Fatalf("test pattern does not match %q", content)
+		}
+		if matches := matchPatternsPreFiltered(pf, patterns, content); len(matches) != 1 {
+			t.Fatalf("matching input %q produced %d matches, want 1", content, len(matches))
+		}
+	}
+}
+
+func TestScanResponse_CustomBareTopLevelAlternationCannotSkipBranch(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+		{Name: "custom alternation", Regex: `(?i)foo-secret-\w+|bar-secret-\w+`},
+	}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	result := s.ScanResponse(context.Background(), "bar-secret-value")
+	if result.Clean {
+		t.Fatal("custom response pattern's second alternation branch was skipped")
+	}
+	for _, match := range result.Matches {
+		if match.PatternName == "custom alternation" {
+			return
+		}
+	}
+	t.Fatalf("custom response pattern missing from matches: %+v", result.Matches)
+}
+
+func TestResponsePreFilter_DefaultPatternsRemainGated(t *testing.T) {
+	s := MustNew(config.Defaults())
+	defer s.Close()
+
+	groups := []struct {
+		name     string
+		patterns []*compiledPattern
+		filter   *responsePreFilter
+	}{
+		{name: "configured primary", patterns: s.responsePatterns, filter: s.responsePreFilter},
+		{name: "configured optional-space", patterns: s.responseOptSpacePatterns, filter: s.responseOptSpacePreFilter},
+		{name: "configured vowel-fold", patterns: s.responseVowelFoldPatterns, filter: s.responseVowelFoldPreFilter},
+		{name: "core primary", patterns: s.core.responsePatterns, filter: s.core.responsePreFilter},
+		{name: "core optional-space", patterns: s.core.responseOptSpacePatterns, filter: s.core.responseOptSpacePreFilter},
+		{name: "core vowel-fold", patterns: s.core.responseVowelFoldPatterns, filter: s.core.responseVowelFoldPreFilter},
+	}
+	for _, group := range groups {
+		if len(group.patterns) == 0 {
+			continue
+		}
+		if group.filter == nil {
+			t.Fatalf("%s: patterns exist without a prefilter", group.name)
+		}
+		if len(group.filter.alwaysRun) == len(group.patterns) {
+			t.Errorf("%s: every pattern fell back to alwaysRun", group.name)
+		}
+	}
+}
+
+func TestResponsePreFilter_PatternsToCheckAreDeterministicAndUnique(t *testing.T) {
+	patterns := []*compiledPattern{
+		{name: "two anchors", re: regexp.MustCompile(`(?i)(?:alpha-secret|beta-secret)`)},
+		{name: "always run", re: regexp.MustCompile(`\d+`)},
+		{name: "third", re: regexp.MustCompile(`(?i)gamma-secret`)},
+	}
+	pf := newResponsePreFilter(patterns)
+
+	for range 20 {
+		if got := pf.patternsToCheck("beta-secret alpha-secret gamma-secret 42"); !slices.Equal(got, []int{0, 1, 2}) {
+			t.Fatalf("patternsToCheck() = %v, want [0 1 2]", got)
+		}
+	}
+}
+
+func TestExtractResponseKeywords_PropertyOnRealPatterns(t *testing.T) {
+	s, err := New(config.Defaults())
+	if err != nil {
+		t.Fatalf("new scanner: %v", err)
+	}
+	defer s.Close()
+
+	groups := []struct {
+		name     string
+		patterns []*compiledPattern
+		filter   *responsePreFilter
+	}{
+		{name: "configured primary", patterns: s.responsePatterns, filter: s.responsePreFilter},
+		{name: "configured optional-space", patterns: s.responseOptSpacePatterns, filter: s.responseOptSpacePreFilter},
+		{name: "configured vowel-fold", patterns: s.responseVowelFoldPatterns, filter: s.responseVowelFoldPreFilter},
+		{name: "core primary", patterns: s.core.responsePatterns, filter: s.core.responsePreFilter},
+		{name: "core optional-space", patterns: s.core.responseOptSpacePatterns, filter: s.core.responseOptSpacePreFilter},
+		{name: "core vowel-fold", patterns: s.core.responseVowelFoldPatterns, filter: s.core.responseVowelFoldPreFilter},
+	}
+	rnd := rand.New(rand.NewSource(int64(0x2f2d6131b60f19))) // #nosec G404 -- repeatable test generation.
+	for _, group := range groups {
+		assertResponsePreFilterSelectsGeneratedMatches(t, group.name, group.patterns, group.filter, rnd)
+	}
+}
+
+func assertResponsePreFilterSelectsGeneratedMatches(
+	t *testing.T,
+	group string,
+	patterns []*compiledPattern,
+	pf *responsePreFilter,
+	rnd *rand.Rand,
+) {
+	t.Helper()
+	if len(patterns) == 0 {
+		return
+	}
+	if pf == nil {
+		t.Fatalf("%s: patterns exist without a prefilter", group)
+	}
+
+	always := make(map[int]bool, len(pf.alwaysRun))
+	for _, i := range pf.alwaysRun {
+		always[i] = true
+	}
+
+	for i, pattern := range patterns {
+		tree, err := syntax.Parse(pattern.re.String(), syntax.Perl)
+		if err != nil {
+			t.Fatalf("%s/%s: parse: %v", group, pattern.name, err)
+		}
+		tree = tree.Simplify()
+		matched := 0
+		for attempt := 0; attempt < 40000 && matched < 400; attempt++ {
+			candidate := genMatch(tree, rnd, 0)
+			if candidate == "" {
+				continue
+			}
+			text := normalize.ForMatching(candidate)
+			if !pattern.re.MatchString(text) {
+				continue
+			}
+			matched++
+			if !slices.Contains(pf.patternsToCheck(text), i) {
+				t.Fatalf("%s/%s: regex matches normalized %q but prefilter did not select it (fail-open)",
+					group, pattern.name, text)
+			}
+		}
+		if matched == 0 {
+			if always[i] {
+				t.Logf("%s/%s: generator produced no matching sample (always-run pattern)", group, pattern.name)
+				continue
+			}
+			t.Errorf("%s/%s: keyword-gated pattern got no generated sample; fail-open property is untested",
+				group, pattern.name)
+		}
 	}
 }
 

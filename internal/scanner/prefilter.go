@@ -51,7 +51,7 @@ func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
 	return pf
 }
 
-const minDLPAnchorLength = 3
+const minPreFilterAnchorLength = 3
 
 // extractRequiredLiteralAnchors returns literal alternatives where every match
 // of the regex must contain at least one returned string. The full syntax tree
@@ -59,13 +59,28 @@ const minDLPAnchorLength = 3
 // top-level alternation follows it. If any branch cannot prove an anchor, the
 // pattern stays in alwaysRun.
 func extractRequiredLiteralAnchors(regex string) []string {
+	result := extractConservativeLiteralAnchors(regex, true)
+	if isGenericCredentialAnchorSet(result) {
+		return nil
+	}
+	return result
+}
+
+// extractConservativeLiteralAnchors returns literal alternatives where every
+// regex match must contain at least one returned string. It is shared by the
+// DLP and response prefilters so both fail closed on the same regex syntax.
+// preferLeading lets the DLP hot path choose a longer proven leading set;
+// response keywords stay on literal runs and do not absorb whitespace classes.
+func extractConservativeLiteralAnchors(regex string, preferLeading bool) []string {
 	re, err := syntax.Parse(regex, syntax.Perl)
 	if err != nil {
 		return nil
 	}
 	anchors := requiredLiteralAnchors(re)
-	if leading, _ := leadingLiteralAnchors(re); betterAnchorSet(leading, anchors) {
-		anchors = leading
+	if preferLeading {
+		if leading, _ := leadingLiteralAnchors(re); betterAnchorSet(leading, anchors) {
+			anchors = leading
+		}
 	}
 	if len(anchors) == 0 {
 		return nil
@@ -75,7 +90,7 @@ func extractRequiredLiteralAnchors(regex string) []string {
 	result := make([]string, 0, len(anchors))
 	for _, anchor := range anchors {
 		anchor = strings.ToLower(anchor)
-		if len(anchor) < minDLPAnchorLength || !isASCIIString(anchor) {
+		if len(anchor) < minPreFilterAnchorLength || !isASCIIString(anchor) {
 			return nil
 		}
 		if _, ok := seen[anchor]; ok {
@@ -85,9 +100,6 @@ func extractRequiredLiteralAnchors(regex string) []string {
 		result = append(result, anchor)
 	}
 	sort.Strings(result)
-	if isGenericCredentialAnchorSet(result) {
-		return nil
-	}
 	return result
 }
 
@@ -345,91 +357,4 @@ func (pf *dlpPreFilter) patternsToCheck(text string) []int {
 		}
 	}
 	return unique
-}
-
-// extractLiteralPrefix extracts the longest leading literal string from a regex.
-// It stops at the first metacharacter that could match variable content.
-// The (?i) flag (forced by scanner compilation) is stripped first.
-//
-// Examples:
-//
-//	"(?i)sk-ant-[a-zA-Z0-9]{10,}"  → "sk-ant-"
-//	"(?i)(AKIA|A3T|AGPA)..."       → ""  (alternation at start = no single prefix)
-//	"(?i)github_pat_[a-zA-Z0-9]+"  → "github_pat_"
-//	"(?i)\\b(?:password|token)=.+" → ""  (\b before alternation gives no prefix)
-//	"(?i)\\bhvs\\..+"              → "hvs."  (leading boundary skipped)
-//	"(?i)-----BEGIN\\s+..."        → "-----begin"  (stops before \s)
-//	"(?i)[sr]k_(live|test)_..."    → ""  (char class at start)
-func extractLiteralPrefix(regex string) string {
-	// Strip (?i) flag prefix added by scanner compilation.
-	s := strings.TrimPrefix(regex, "(?i)")
-
-	// Strip any remaining inline flags like (?:...) at the very start.
-	// Non-capturing groups with a single literal alternative are handled
-	// by walking into the group.
-	if strings.HasPrefix(s, "(?:") {
-		// If the group contains alternation (|), there's no single prefix.
-		closeIdx := strings.Index(s, ")")
-		if closeIdx < 0 {
-			return ""
-		}
-		groupContent := s[3:closeIdx]
-		if strings.Contains(groupContent, "|") {
-			return ""
-		}
-		// If the group is quantified (?, *, +, {n}), the prefix is optional
-		// and cannot be used as a required match gate.
-		if closeIdx+1 < len(s) {
-			switch s[closeIdx+1] {
-			case '?', '*', '+', '{':
-				return ""
-			}
-		}
-		// Single-alternative non-capturing group: treat content as literal prefix
-		// followed by rest of regex.
-		s = groupContent + s[closeIdx+1:]
-	}
-
-	var prefix []byte
-	i := 0
-	for i < len(s) {
-		c := s[i]
-
-		// Backslash escapes: some produce literals, some are metacharacters.
-		if c == '\\' {
-			if i+1 >= len(s) {
-				break
-			}
-			next := s[i+1]
-			if next == 'b' && len(prefix) == 0 {
-				// A leading word boundary constrains the left edge but does
-				// not change the literal bytes any match must contain.
-				i += 2
-				continue
-			}
-			switch next {
-			case '.', '\\', '-', '_', '[', ']', '(', ')', '{', '}', '+', '*', '?', '^', '$', '|', '/':
-				// Escaped literal character.
-				prefix = append(prefix, next)
-				i += 2
-				continue
-			default:
-				// \s, \d, \b, \w, etc. are variable-width metacharacters.
-				break
-			}
-			break
-		}
-
-		// Regex metacharacters that end the literal prefix.
-		switch c {
-		case '[', '(', '.', '*', '+', '?', '{', '}', '^', '$', '|':
-			// Hit a metacharacter; stop extracting.
-			return strings.ToLower(string(prefix))
-		}
-
-		prefix = append(prefix, c)
-		i++
-	}
-
-	return strings.ToLower(string(prefix))
 }

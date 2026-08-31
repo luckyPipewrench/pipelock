@@ -3,7 +3,10 @@
 
 package scanner
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // responsePreFilter provides fast keyword-based pre-screening for response
 // pattern matching. Before running expensive regex against the full content,
@@ -72,179 +75,15 @@ func (pf *responsePreFilter) patternsToCheck(content string) []int {
 			hits = append(hits, idx)
 		}
 	}
+	sort.Ints(hits)
 	return hits
 }
 
 // extractResponseKeywords extracts keyword anchors from a response pattern
-// regex. Handles two cases:
-//  1. Literal prefix: "(?i)from\s+now\s+on" -> ["from"]
-//  2. Leading alternation: "(?i)(ignore|disregard|forget)" -> ["ignore", "disregard", "forget"]
-//
-// Returns nil if no reliable keywords can be extracted.
+// regex. The shared syntax-tree extractor proves that every branch contains at
+// least one returned anchor; otherwise the pattern stays in alwaysRun.
 func extractResponseKeywords(regex string) []string {
-	s := regex
-
-	// Strip ALL leading inline flag groups: (?i), (?im), (?-i), etc.
-	// These are non-capturing groups that only set flags, not match content.
-	for strings.HasPrefix(s, "(?") {
-		closeIdx := strings.Index(s, ")")
-		if closeIdx < 0 {
-			return nil
-		}
-		flagContent := s[2:closeIdx]
-		isFlags := true
-		for _, c := range flagContent {
-			if (c < 'a' || c > 'z') && c != '-' {
-				isFlags = false
-				break
-			}
-		}
-		if !isFlags {
-			break
-		}
-		s = s[closeIdx+1:]
-	}
-
-	// Skip leading anchors and optional whitespace that don't contribute
-	// keyword content: ^, \s*, \s+, \b
-	for {
-		if strings.HasPrefix(s, "^") {
-			s = s[1:]
-		} else if strings.HasPrefix(s, "\\s*") || strings.HasPrefix(s, "\\s+") || strings.HasPrefix(s, "\\b") {
-			s = s[3:]
-		} else {
-			break
-		}
-	}
-
-	// Leading alternation group: (ignore|disregard|forget)
-	// ALL branches must produce a keyword. If any branch has no extractable
-	// keyword, the pattern goes to alwaysRun (conservative: never skip a
-	// pattern that could match through a keywordless branch).
-	if strings.HasPrefix(s, "(") {
-		closeIdx := findMatchingParen(s)
-		if closeIdx > 0 && strings.Contains(s[1:closeIdx], "|") {
-			branches := splitTopLevelAlternation(s[1:closeIdx])
-			var keywords []string
-			for _, b := range branches {
-				b = strings.TrimPrefix(b, "?:")
-				b = strings.TrimPrefix(b, "?-i:")
-				lit := extractLiteralRun(b)
-				if len(lit) >= 3 {
-					keywords = append(keywords, lit)
-				} else {
-					// Branch without keyword → can't gate this pattern.
-					return nil
-				}
-			}
-			if len(keywords) > 0 {
-				return keywords
-			}
-			return nil
-		}
-	}
-
-	// Literal prefix
-	prefix := extractLiteralPrefix(regex)
-	if len(prefix) >= 3 {
-		return []string{prefix}
-	}
-	return nil
-}
-
-// findMatchingParen finds the index of the closing paren matching the
-// opening paren at s[0]. Handles nested groups.
-func findMatchingParen(s string) int {
-	depth := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return i
-			}
-		case '\\':
-			i++ // skip escaped character
-		}
-	}
-	return -1
-}
-
-// splitTopLevelAlternation splits on | that is not inside nested parens.
-func splitTopLevelAlternation(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case '|':
-			if depth == 0 {
-				parts = append(parts, s[start:i])
-				start = i + 1
-			}
-		case '\\':
-			i++ // skip escaped character
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
-}
-
-// extractLiteralRun extracts leading literal characters from a string,
-// stopping at the first regex metacharacter. Handles nested flag groups
-// like (?-i:\bDAN\b) by stripping the group syntax and anchors first.
-func extractLiteralRun(s string) string {
-	// Strip leading flag groups: (?-i:, (?:, etc.
-	for strings.HasPrefix(s, "(?") {
-		colon := strings.Index(s, ":")
-		closeIdx := strings.Index(s, ")")
-		if colon > 0 && (closeIdx < 0 || colon < closeIdx) {
-			// Flag group (?-i: or (?: - skip past the colon
-			s = s[colon+1:]
-			// Also strip trailing ) if it's the last char
-			s = strings.TrimSuffix(s, ")")
-		} else {
-			break
-		}
-	}
-	// Strip word boundary anchors
-	for strings.HasPrefix(s, "\\b") {
-		s = s[2:]
-	}
-	s = strings.TrimSuffix(s, "\\b)")
-	s = strings.TrimSuffix(s, "\\b")
-	var result []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '\\' {
-			if i+1 < len(s) {
-				next := s[i+1]
-				switch next {
-				case '.', '\\', '-', '_', '\'', '[', ']', '(', ')', '{', '}', '+', '*', '?', '^', '$', '|', '/', '!', ':':
-					// Escaped literal character - treat as keyword content.
-					result = append(result, next)
-					i++
-					continue
-				default:
-					// \s, \d, \b, \w, etc. are metacharacters - stop.
-					return string(result)
-				}
-			}
-			return string(result)
-		}
-		switch c {
-		case '[', '(', '.', '*', '+', '?', '{', '}', '^', '$', '|':
-			return string(result)
-		}
-		result = append(result, c)
-	}
-	return string(result)
+	return extractConservativeLiteralAnchors(regex, false)
 }
 
 // hasEncodedRun checks whether content contains a contiguous run of

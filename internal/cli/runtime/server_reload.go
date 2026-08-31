@@ -36,7 +36,15 @@ import (
 func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
+	return s.reloadLocked(newCfg)
+}
 
+// reloadLocked applies a validated runtime configuration while reloadMu is
+// held by the caller. Keeping the activation body behind this seam lets
+// Conductor preserve follower-local state from the current live config under
+// the same lock, so a concurrent operator reload cannot be overwritten by a
+// stale pre-apply snapshot.
+func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			ReloadPanicHandler(r, s.sentry, s.logger, s.opts.ConfigFile)

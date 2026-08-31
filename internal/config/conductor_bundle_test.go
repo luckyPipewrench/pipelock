@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPreserveConductorBundleLocalRuntimeStateNilInputs(t *testing.T) {
@@ -24,8 +25,15 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	t.Parallel()
 
 	oldCfg := &Config{
-		FetchProxy:           FetchProxy{Listen: "127.0.0.1:18080", TimeoutSeconds: 12},
-		MetricsListen:        "127.0.0.1:19090",
+		FetchProxy:    FetchProxy{Listen: "127.0.0.1:18080", TimeoutSeconds: 12},
+		MetricsListen: "192.0.2.20:19090",
+		Containment: ContainmentConfig{MetricsExposure: &ContainmentMetricsExposure{
+			AllowFullMetrics:   true,
+			AllowedSourceCIDRs: []string{"192.0.2.42/32"},
+			Owner:              "observability",
+			Reason:             "Prometheus scrape",
+			ExpiresAt:          "2099-01-01T00:00:00Z",
+		}},
 		Internal:             []string{"10.0.0.0/8"},
 		TrustedDomains:       []string{"trusted.example"},
 		Suppress:             []SuppressEntry{{Rule: "body_dlp", Path: "api.example/*", Reason: "fixture"}},
@@ -38,6 +46,7 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	newCfg := &Config{
 		FetchProxy:           FetchProxy{Listen: "127.0.0.1:28080"},
 		MetricsListen:        "127.0.0.1:29090",
+		Containment:          ContainmentConfig{},
 		Internal:             []string{"192.168.0.0/16"},
 		TrustedDomains:       []string{"other.example"},
 		Suppress:             []SuppressEntry{{Rule: "old", Path: "old.example/*"}},
@@ -58,6 +67,17 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	}
 	if newCfg.MetricsListen != oldCfg.MetricsListen {
 		t.Fatalf("MetricsListen = %q, want %q", newCfg.MetricsListen, oldCfg.MetricsListen)
+	}
+	if !reflect.DeepEqual(newCfg.Containment, oldCfg.Containment) {
+		t.Fatalf("Containment = %#v, want %#v", newCfg.Containment, oldCfg.Containment)
+	}
+	if err := ValidateContainmentMetricsExposure(
+		newCfg.MetricsListen,
+		8888,
+		newCfg.Containment.MetricsExposure,
+		time.Date(2098, time.January, 1, 0, 0, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("preserved containment metrics configuration rejected: %v", err)
 	}
 	if !reflect.DeepEqual(newCfg.Internal, oldCfg.Internal) {
 		t.Fatalf("Internal = %#v, want %#v", newCfg.Internal, oldCfg.Internal)
@@ -88,6 +108,8 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	oldCfg.TrustedDomains[0] = "mutated.example"
 	oldCfg.Suppress[0].Path = "mutated.example/*"
 	oldCfg.Agents["builder"] = AgentProfile{Sandbox: &AgentSandboxOverride{Enabled: boolPtr(false)}}
+	oldCfg.Containment.MetricsExposure.Owner = "mutated"
+	oldCfg.Containment.MetricsExposure.AllowedSourceCIDRs[0] = "192.0.2.43/32"
 	if newCfg.Internal[0] == oldCfg.Internal[0] {
 		t.Fatal("Internal slice aliases old config")
 	}
@@ -99,6 +121,12 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	}
 	if reflect.DeepEqual(newCfg.Agents["builder"], oldCfg.Agents["builder"]) {
 		t.Fatal("Agents map aliases old config")
+	}
+	if newCfg.Containment.MetricsExposure.Owner == oldCfg.Containment.MetricsExposure.Owner {
+		t.Fatal("Containment.MetricsExposure aliases old config")
+	}
+	if newCfg.Containment.MetricsExposure.AllowedSourceCIDRs[0] == oldCfg.Containment.MetricsExposure.AllowedSourceCIDRs[0] {
+		t.Fatal("Containment.MetricsExposure.AllowedSourceCIDRs aliases old config")
 	}
 }
 

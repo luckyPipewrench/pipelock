@@ -772,6 +772,7 @@ func TestNewServer_WiresConductorBundlePoller(t *testing.T) {
 
 func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	s, signer := newConductorApplyTestServer(t)
+	s.containmentManaged = true
 	oldCfg := s.proxy.CurrentConfig()
 	oldCfg.FetchProxy.Listen = "127.0.0.1:18897"
 	oldCfg.ForwardProxy.Enabled = true
@@ -852,6 +853,14 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.Sandbox.Enabled = true
 	oldCfg.Sandbox.Workspace = "/tmp/pipelock-sandbox"
 	oldCfg.LicenseFile = "/etc/pipelock/license.token"
+	oldCfg.MetricsListen = "192.0.2.20:19090"
+	oldCfg.Containment.MetricsExposure = &config.ContainmentMetricsExposure{
+		AllowFullMetrics:   true,
+		AllowedSourceCIDRs: []string{"192.0.2.42/32"},
+		Owner:              "observability",
+		Reason:             "Prometheus scrape",
+		ExpiresAt:          "2099-01-01T00:00:00Z",
+	}
 	bundleDLP := config.DLPPattern{Name: "bundle-secret", Regex: `BUNDLE_SECRET_[A-Z]+`, Severity: config.SeverityCritical}
 	oldCfg.ApplyDefaults()
 	expectedLocal := oldCfg.Clone()
@@ -928,6 +937,13 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	}
 	if live.Emit.Syslog.Address != oldCfg.Emit.Syslog.Address {
 		t.Fatalf("emit.syslog.address = %q, want preserved %q", live.Emit.Syslog.Address, oldCfg.Emit.Syslog.Address)
+	}
+	if live.MetricsListen != oldCfg.MetricsListen || !reflect.DeepEqual(live.Containment, oldCfg.Containment) {
+		t.Fatalf("containment metrics config = listen %q containment=%+v, want listen %q containment=%+v",
+			live.MetricsListen, live.Containment, oldCfg.MetricsListen, oldCfg.Containment)
+	}
+	if s.containmentMetricsDenied.Load() {
+		t.Fatal("valid preserved containment metrics policy left metrics denied")
 	}
 	for _, required := range []struct {
 		name string

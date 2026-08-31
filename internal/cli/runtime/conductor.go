@@ -147,10 +147,7 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 		LocalVersion: cliutil.Version,
 		LoadConfig:   config.Load,
 		Reload: func(newCfg *config.Config) error {
-			if err := preserveConductorBundleLocalRuntimeState(cfg, newCfg, bundle.Payload.ConfigYAML); err != nil {
-				return err
-			}
-			return s.Reload(newCfg)
+			return s.reloadConductorPolicyBundle(newCfg, bundle.Payload.ConfigYAML)
 		},
 		// Close the in-flight apply window: teardownConductor sets conductorDown
 		// without taking conductorApplyMu (that would deadlock the poller's own
@@ -168,6 +165,17 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 
 func preserveConductorBundleLocalRuntimeState(oldCfg, newCfg *config.Config, bundleYAML string) error {
 	return config.PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg, bundleYAML)
+}
+
+func (s *Server) reloadConductorPolicyBundle(newCfg *config.Config, bundleYAML string) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
+	oldCfg := s.proxy.CurrentConfig()
+	if err := preserveConductorBundleLocalRuntimeState(oldCfg, newCfg, bundleYAML); err != nil {
+		return err
+	}
+	return s.reloadLocked(newCfg)
 }
 
 func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*auditbatcher.Queue, *auditbatcher.Transport, error) {

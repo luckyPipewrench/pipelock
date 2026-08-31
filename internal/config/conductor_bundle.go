@@ -50,6 +50,12 @@ func PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg *Config, bundleYAML
 	newCfg.Emit = oldCfg.Emit
 	newCfg.Sentry = oldCfg.Sentry
 	newCfg.MetricsListen = oldCfg.MetricsListen
+	newCfg.Containment = oldCfg.Containment
+	if oldCfg.Containment.MetricsExposure != nil {
+		exposure := *oldCfg.Containment.MetricsExposure
+		exposure.AllowedSourceCIDRs = append([]string(nil), oldCfg.Containment.MetricsExposure.AllowedSourceCIDRs...)
+		newCfg.Containment.MetricsExposure = &exposure
+	}
 	newCfg.MCPWSListener = oldCfg.MCPWSListener
 	newCfg.ReverseProxy = oldCfg.ReverseProxy
 	newCfg.ScanAPI = oldCfg.ScanAPI

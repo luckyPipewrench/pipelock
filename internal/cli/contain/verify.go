@@ -1119,7 +1119,7 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
-		if err := verifyNFTPersistence(env); err != nil {
+		if err := verifyNFTPersistence(env, current); err != nil {
 			return statusFail, err.Error()
 		}
 	}
@@ -1236,7 +1236,7 @@ func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
 	return nftRulesHeaderUIDs{}, false, nil
 }
 
-func verifyNFTPersistence(env *probeEnv) error {
+func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 	data, err := env.readFile(env.nftPersistUnitPath)
 	if err != nil {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
@@ -1244,6 +1244,30 @@ func verifyNFTPersistence(env *probeEnv) error {
 	body := string(data)
 	if !execStartLineContains(body, env.nftRulesPath) {
 		return fmt.Errorf("%s missing ExecStart for %s", env.nftPersistUnitPath, env.nftRulesPath)
+	}
+	rules, err := env.readFile(env.nftRulesPath)
+	if err != nil {
+		return fmt.Errorf("read persisted nftables rules file %s: %w", env.nftRulesPath, err)
+	}
+	if !current.operatorKnown {
+		return fmt.Errorf("persisted nftables rules file %s is missing the managed operator uid header", env.nftRulesPath)
+	}
+	operatorUID := current.operatorUID
+	if env.operatorUser != "" {
+		operatorUID, err = lookupUID(env.lookupUser, env.operatorUser)
+		if err != nil {
+			return fmt.Errorf("lookup operator uid %s: %w", env.operatorUser, err)
+		}
+		if operatorUID == current.agentUID {
+			return fmt.Errorf("%s and %s both resolve to uid %d; contained agent must not be allow-listed", env.operatorUser, env.agentUserName, current.agentUID)
+		}
+		if current.operatorUID != operatorUID {
+			return fmt.Errorf("nftables rules file operator uid %d does not match current %s uid %d", current.operatorUID, env.operatorUser, operatorUID)
+		}
+	}
+	want := renderNFTRules(operatorUID, current.proxyUID, current.agentUID, env.port, env.nftTable, env.nftChain)
+	if string(rules) != want {
+		return fmt.Errorf("persisted nftables rules file %s does not match the canonical containment boundary; rerun pipelock contain install before reboot", env.nftRulesPath)
 	}
 	return nil
 }

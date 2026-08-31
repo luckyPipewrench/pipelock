@@ -1235,11 +1235,12 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 	tests := []struct {
 		name       string
 		unitBody   func(string) string
+		rulesBody  func() string
 		wantStatus string
 		wantDetail string
 	}{
 		{
-			name: "exec start points at managed rules",
+			name: "canonical rules and exec start point at managed rules",
 			unitBody: func(rulesPath string) string {
 				return "[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"
 			},
@@ -1262,6 +1263,30 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 			wantStatus: statusFail,
 			wantDetail: "missing ExecStart",
 		},
+		{
+			name: "stale persisted rules fail despite canonical live rules and matching unit",
+			unitBody: func(rulesPath string) string {
+				return "[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"
+			},
+			rulesBody: func() string {
+				return `# Pipelock containment ruleset (managed by pipelock contain install).
+# operator=1000  pipelock-proxy=988  pipelock-agent=987  proxy-port=8888
+table inet pipelock_containment {
+    chain output_filter {
+        type filter hook output priority filter; policy accept;
+
+        meta skuid 1000 accept
+        meta skuid 988 accept
+
+        meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+        meta skuid 987 drop
+    }
+}
+`
+			},
+			wantStatus: statusFail,
+			wantDetail: "does not match the canonical containment boundary",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1269,6 +1294,13 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 			tmp := t.TempDir()
 			unitPath := filepath.Join(tmp, "pipelock-containment-nft.service")
 			rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
+			rulesBody := renderNFTRules(1000, 988, 987, 8888, testTable, testChain)
+			if tc.rulesBody != nil {
+				rulesBody = tc.rulesBody()
+			}
+			if err := os.WriteFile(rulesPath, []byte(rulesBody), 0o600); err != nil {
+				t.Fatalf("write persisted rules: %v", err)
+			}
 			if err := os.WriteFile(unitPath, []byte(tc.unitBody(rulesPath)), 0o600); err != nil {
 				t.Fatalf("write persistence unit: %v", err)
 			}
@@ -1290,6 +1322,36 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 				t.Fatalf("detail: got %q, want substring %q", gotDetail, tc.wantDetail)
 			}
 		})
+	}
+}
+
+func TestProbeNFTContainment_RejectsPersistedOperatorUIDDrift(t *testing.T) {
+	tmp := t.TempDir()
+	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
+	unitPath := filepath.Join(tmp, "pipelock-containment-nft.service")
+	if err := os.WriteFile(rulesPath, []byte(renderNFTRules(98, 988, 987, 8888, testTable, testChain)), 0o600); err != nil {
+		t.Fatalf("write persisted rules: %v", err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/usr/sbin/nft -f "+rulesPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write persistence unit: %v", err)
+	}
+	env := makeProbeEnv(t, func(e *probeEnv) {
+		e.operatorUser = testOperatorUser
+		e.lookupUser = containTestLookup
+		e.nftRulesPath = rulesPath
+		e.nftPersistUnitPath = unitPath
+		e.readFile = os.ReadFile
+		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+			return renderNFTRules(98, 988, 987, 8888, testTable, testChain), 0, nil
+		}
+	})
+
+	gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
+	if gotStatus != statusFail {
+		t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+	}
+	if !strings.Contains(gotDetail, "does not match current operator uid 1000") {
+		t.Fatalf("detail: got %q, want current operator uid drift", gotDetail)
 	}
 }
 

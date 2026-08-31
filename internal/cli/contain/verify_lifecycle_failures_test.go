@@ -804,8 +804,89 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			env.nftPersistUnitPath = "/managed/pipelock-nft.service"
 			env.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
 		})
-		err := verifyNFTPersistence(env)
+		err := verifyNFTPersistence(env, containmentUIDs{})
 		if err == nil || !strings.Contains(err.Error(), "read nftables persistence unit") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("persisted rules unreadable", func(t *testing.T) {
+		const rulesPath = "/managed/pipelock.nft"
+		env := makeProbeEnv(t, func(env *probeEnv) {
+			env.nftPersistUnitPath = "/managed/pipelock-nft.service"
+			env.nftRulesPath = rulesPath
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.nftPersistUnitPath {
+					return []byte("[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"), nil
+				}
+				return nil, os.ErrPermission
+			}
+		})
+		err := verifyNFTPersistence(env, containmentUIDs{operatorKnown: true})
+		if err == nil || !strings.Contains(err.Error(), "read persisted nftables rules file") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("managed operator header missing", func(t *testing.T) {
+		const rulesPath = "/managed/pipelock.nft"
+		env := makeProbeEnv(t, func(env *probeEnv) {
+			env.operatorUser = ""
+			env.nftPersistUnitPath = "/managed/pipelock-nft.service"
+			env.nftRulesPath = rulesPath
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.nftPersistUnitPath {
+					return []byte("[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"), nil
+				}
+				return []byte("table inet pipelock_containment {}\n"), nil
+			}
+		})
+		err := verifyNFTPersistence(env, containmentUIDs{})
+		if err == nil || !strings.Contains(err.Error(), "missing the managed operator uid header") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("operator lookup failure", func(t *testing.T) {
+		const rulesPath = "/managed/pipelock.nft"
+		current := containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 988, agentUID: 987}
+		env := makeProbeEnv(t, func(env *probeEnv) {
+			env.operatorUser = "ghost"
+			env.nftPersistUnitPath = "/managed/pipelock-nft.service"
+			env.nftRulesPath = rulesPath
+			env.lookupUser = func(string) (*user.User, error) { return nil, user.UnknownUserError("ghost") }
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.nftPersistUnitPath {
+					return []byte("[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"), nil
+				}
+				return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
+			}
+		})
+		err := verifyNFTPersistence(env, current)
+		if err == nil || !strings.Contains(err.Error(), "lookup operator uid ghost") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("operator resolves to contained agent", func(t *testing.T) {
+		const rulesPath = "/managed/pipelock.nft"
+		current := containmentUIDs{operatorUID: 987, operatorKnown: true, proxyUID: 988, agentUID: 987}
+		env := makeProbeEnv(t, func(env *probeEnv) {
+			env.operatorUser = testOperatorUser
+			env.nftPersistUnitPath = "/managed/pipelock-nft.service"
+			env.nftRulesPath = rulesPath
+			env.lookupUser = func(name string) (*user.User, error) {
+				return &user.User{Uid: "987", Username: name}, nil
+			}
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.nftPersistUnitPath {
+					return []byte("[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"), nil
+				}
+				return []byte(renderNFTRules(987, 988, 987, env.port, env.nftTable, env.nftChain)), nil
+			}
+		})
+		err := verifyNFTPersistence(env, current)
+		if err == nil || !strings.Contains(err.Error(), "contained agent must not be allow-listed") {
 			t.Fatalf("error = %v", err)
 		}
 	})

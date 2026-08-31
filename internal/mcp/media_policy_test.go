@@ -604,9 +604,21 @@ func TestForwardScanned_MediaPolicyStripsEmbeddedResourceImage(t *testing.T) {
 	if resource := result.Content[0].Resource; resource.URI != "file:///photo.jpg" || resource.MimeType != "image/jpeg" {
 		t.Fatalf("resource metadata = %+v, want uri and mimeType preserved", resource)
 	}
+	var rawResult map[string]json.RawMessage
+	if err := json.Unmarshal(rpc.Result, &rawResult); err != nil {
+		t.Fatalf("unmarshal raw result: %v", err)
+	}
+	var rawContent []map[string]json.RawMessage
+	if err := json.Unmarshal(rawResult["content"], &rawContent); err != nil || len(rawContent) == 0 {
+		t.Fatalf("raw content = %s", rawResult["content"])
+	}
+	resourceRaw, ok := rawContent[0]["resource"]
+	if !ok {
+		t.Fatal("rewritten content[0] dropped resource")
+	}
 	for _, want := range []string{`"vendor.example/trace":"keep"`, `"x-vendor-extension":{"retention":"keep"}`} {
-		if !bytes.Contains(rpc.Result, []byte(want)) {
-			t.Fatalf("rewritten result dropped resource extension %s: %s", want, rpc.Result)
+		if !bytes.Contains(resourceRaw, []byte(want)) {
+			t.Fatalf("resource dropped extension %s: %s", want, resourceRaw)
 		}
 	}
 	if result.Content[1].Text != "safe" {
@@ -622,6 +634,87 @@ func TestForwardScanned_MediaPolicyStripsEmbeddedResourceImage(t *testing.T) {
 	}
 	if len(decoded) >= len(jpeg) {
 		t.Fatalf("stripped embedded resource image length %d >= original %d", len(decoded), len(jpeg))
+	}
+}
+
+func TestForwardScanned_EmbeddedResourceSniffsMediaWithoutMimeType(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	jpeg := buildMCPValidJPEG([]byte("Exif\x00\x00sniffed-mcp-secret-metadata"))
+	line := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":44,"result":{"content":[{"type":"resource","resource":{"uri":"file:///photo.bin","blob":"%s"}}]}}`,
+		base64.StdEncoding.EncodeToString(jpeg),
+	)
+
+	var out, log bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(line+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		nil,
+		MCPProxyOpts{
+			Scanner:     sc,
+			MediaPolicy: &cfg.MediaPolicy,
+			Transport:   testMCPMediaTransport,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("expected media-policy handling without an injection finding")
+	}
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &rpc); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	var result jsonrpc.ToolResult
+	if err := json.Unmarshal(rpc.Result, &result); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	if len(result.Content) != 1 || result.Content[0].Resource == nil {
+		t.Fatalf("content = %+v, want sniffed embedded resource", result.Content)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(result.Content[0].Resource.Blob)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	if bytes.Contains(decoded, []byte("sniffed-mcp-secret-metadata")) {
+		t.Fatal("resource blob without mimeType was not sniffed as image media")
+	}
+}
+
+func TestForwardScanned_EmbeddedResourcePlainBlobIsNotMediaPolicy(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	payload := base64.StdEncoding.EncodeToString([]byte(`{"note":"ok"}`))
+	line := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":45,"result":{"content":[{"type":"resource","resource":{"uri":"file:///note.json","mimeType":"application/json","blob":"%s"}}]}}`,
+		payload,
+	)
+
+	var out, log bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(line+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		nil,
+		MCPProxyOpts{
+			Scanner:     sc,
+			MediaPolicy: &cfg.MediaPolicy,
+			Transport:   testMCPMediaTransport,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("plain JSON resource blob should not become an injection finding")
+	}
+	var resp rpcError
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err == nil && resp.Error.Code == -32002 {
+		t.Fatalf("plain JSON resource blob was media-blocked: %s", resp.Error.Message)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"note":"ok"`)) && !bytes.Contains(out.Bytes(), []byte(payload)) {
+		t.Fatalf("plain JSON resource blob was dropped: %s", bytes.TrimSpace(out.Bytes()))
 	}
 }
 

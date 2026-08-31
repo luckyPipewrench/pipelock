@@ -234,16 +234,16 @@ func validSigV4SignedHeaders(raw string) bool {
 	if raw == "" {
 		return false
 	}
-	seen := make(map[string]struct{})
 	hasHost := false
+	previous := ""
 	for _, name := range strings.Split(raw, ";") {
 		if !sigV4SignedHeaderNameRe.MatchString(name) {
 			return false
 		}
-		if _, duplicate := seen[name]; duplicate {
+		if previous != "" && name <= previous {
 			return false
 		}
-		seen[name] = struct{}{}
+		previous = name
 		if name == "host" {
 			hasHost = true
 		}

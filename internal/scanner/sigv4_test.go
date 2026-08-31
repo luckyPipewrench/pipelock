@@ -106,6 +106,13 @@ func TestDetectValidSigV4(t *testing.T) {
 			wantExp:   604800,
 		},
 		{
+			name:      "valid_sorted_signed_headers",
+			rawURL:    strings.Replace(buildSigV4URL(t, fakeAKIAExample, "3600", ""), "X-Amz-SignedHeaders=host", "X-Amz-SignedHeaders=content-type%3Bhost", 1),
+			wantValid: true,
+			wantKeyID: fakeAKIAExample,
+			wantExp:   3600,
+		},
+		{
 			name:      "expiry_above_7_days_invalidates",
 			rawURL:    buildSigV4URL(t, fakeAKIAExample, "604801", ""),
 			wantValid: false,
@@ -188,6 +195,11 @@ func TestDetectValidSigV4(t *testing.T) {
 		{
 			name:      "signed_headers_must_include_host",
 			rawURL:    strings.Replace(buildSigV4URL(t, fakeAKIAExample, "3600", ""), "X-Amz-SignedHeaders=host", "X-Amz-SignedHeaders=content-type", 1),
+			wantValid: false,
+		},
+		{
+			name:      "signed_headers_must_be_sorted",
+			rawURL:    strings.Replace(buildSigV4URL(t, fakeAKIAExample, "3600", ""), "X-Amz-SignedHeaders=host", "X-Amz-SignedHeaders=host%3Bcontent-type", 1),
 			wantValid: false,
 		},
 		{
@@ -832,6 +844,22 @@ func TestScanRequestBodyTextPartsForDLP(t *testing.T) {
 	}
 	if !foundAWSKey {
 		t.Fatalf("split cross-field secret lacks %q match: %+v", patternNameAWSAccessID, leaked.Matches)
+	}
+
+	unsorted := strings.Replace(valid, "X-Amz-SignedHeaders=host", "X-Amz-SignedHeaders=host%3Bcontent-type", 1)
+	malformed := sc.ScanRequestBodyTextPartsForDLP(context.Background(), []string{unsorted}, ".")
+	if malformed.Clean {
+		t.Fatal("unsorted signed headers must leave the embedded AWS access key blocked")
+	}
+	foundAWSKey = false
+	for _, match := range malformed.Matches {
+		if match.PatternName == patternNameAWSAccessID {
+			foundAWSKey = true
+			break
+		}
+	}
+	if !foundAWSKey {
+		t.Fatalf("unsorted signed headers lack %q match: %+v", patternNameAWSAccessID, malformed.Matches)
 	}
 }
 

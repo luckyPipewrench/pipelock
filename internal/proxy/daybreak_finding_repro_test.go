@@ -357,6 +357,80 @@ func TestDaybreak_SameHost308StillFollowed(t *testing.T) {
 	}
 }
 
+func TestDaybreak_A2AOnlyTrailerFailsClosed(t *testing.T) {
+	t.Run("forward", testDaybreakForwardA2ATrailerBlock)
+	t.Run("tls intercept", testDaybreakInterceptA2ATrailerBlock)
+}
+
+func newDaybreakA2ATrailerRequest(t *testing.T, target string) *http.Request {
+	t.Helper()
+	req := newDaybreakTrailerRequest(t, target)
+	req.Header.Set("Content-Type", "application/a2a+json")
+	return req
+}
+
+func testDaybreakForwardA2ATrailerBlock(t *testing.T) {
+	t.Helper()
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	proxyAddr, _, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = false
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+	})
+	defer cleanup()
+	client := &http.Client{Transport: &http.Transport{Proxy: func(*http.Request) (*url.URL, error) {
+		return &url.URL{Scheme: "http", Host: proxyAddr}, nil
+	}}}
+
+	resp, err := client.Do(newDaybreakA2ATrailerRequest(t, upstream.URL+"/message:send"))
+	if err != nil {
+		t.Fatalf("forward A2A trailer request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream requests = %d, want 0", got)
+	}
+}
+
+func testDaybreakInterceptA2ATrailerBlock(t *testing.T) {
+	t.Helper()
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionBlock
+	var upstreamHits atomic.Int32
+	rt := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		upstreamHits.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{headerContentType: {"application/a2a+json"}},
+			Body:       io.NopCloser(strings.NewReader("unexpected")),
+		}, nil
+	})
+
+	resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+		&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443"},
+		newDaybreakA2ATrailerRequest(t, "https://api.vendor.example/message:send"))
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream RoundTrip calls = %d, want 0", got)
+	}
+}
+
 func TestRedirectReplaysBodyToNewAuthorityGuards(t *testing.T) {
 	t.Parallel()
 

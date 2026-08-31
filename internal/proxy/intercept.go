@@ -902,7 +902,7 @@ func newInterceptHandler(
 		var interceptBodyBytes []byte
 		var interceptEntropyWarningPattern string
 		if !ic.Config.RequestBodyScanning.Enabled && isA2A && ic.Config.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-			bodyBytes, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), ic.Config.RequestBodyScanning.MaxBodyBytes)
+			bodyBytes, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), ic.Config.RequestBodyScanning.MaxBodyBytes, r.Trailer)
 			if err != nil {
 				reason := "a2a: " + err.Error()
 				ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)

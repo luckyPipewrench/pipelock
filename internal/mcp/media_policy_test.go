@@ -465,6 +465,9 @@ func TestForwardScanned_MediaPolicyBlocksEmbeddedResourceMedia(t *testing.T) {
 			if string(resp.ID) != fmt.Sprintf("%d", tt.id) {
 				t.Fatalf("block response id = %s, want %d", string(resp.ID), tt.id)
 			}
+			if resp.Error.Code != -32002 || !strings.Contains(resp.Error.Message, "media policy") {
+				t.Fatalf("block response = (%d, %q), want media-policy error", resp.Error.Code, resp.Error.Message)
+			}
 		})
 	}
 }

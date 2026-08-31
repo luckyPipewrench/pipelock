@@ -55,11 +55,14 @@ func mcpLineMediaBlocked(t *testing.T, sc *scanner.Scanner, cfg *config.Config, 
 		t.Fatalf("ForwardScanned: %v", err)
 	}
 	if found {
-		return true
+		t.Fatalf("injection finding, want a media-policy JSON-RPC error; out=%s", bytes.TrimSpace(out.Bytes()))
 	}
 	var resp rpcError
 	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
-		return false
+		t.Fatalf("unmarshal media-policy block: %v; out=%s", err, bytes.TrimSpace(out.Bytes()))
 	}
-	return resp.Error.Message != ""
+	if resp.Error.Code != -32002 || !strings.Contains(resp.Error.Message, "media policy") {
+		t.Fatalf("block response = (%d, %q), want media-policy error", resp.Error.Code, resp.Error.Message)
+	}
+	return true
 }

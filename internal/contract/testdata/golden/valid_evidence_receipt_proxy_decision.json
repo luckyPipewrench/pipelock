@@ -17,7 +17,7 @@
   "event_id": "01F8MECHZX3TBDSZ7XRADM79XV",
   "timestamp": "2026-04-25T22:00:00Z",
   "signature": {
-    "signer_key_id": "receipt-signing-test",
+    "signer_key_id": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
     "key_purpose": "receipt-signing",
     "algorithm": "ed25519",
     "signature": "ed25519:6cd1df06549a9532218d60aa556d52755a525d084ce0ca766591cad98722d21297b09d01e218b2d515c185867ff2fb861a7e8699b3072cb5864760fb50f86e0b"

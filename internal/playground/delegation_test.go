@@ -69,9 +69,19 @@ func TestOrchestratorDelegationSignParseVerifyAndBind(t *testing.T) {
 	if !DelegationBindsLaunchManifest(parsed, lm) {
 		t.Fatal("delegation did not bind matching manifest")
 	}
-	lm.ImageDigest = "sha256:" + strings.Repeat("4", 64)
-	if DelegationBindsLaunchManifest(parsed, lm) {
-		t.Fatal("delegation bound manifest with wrong image")
+	mutations := map[string]func(*LaunchManifest){
+		"run nonce":     func(m *LaunchManifest) { m.RunNonce = "run-2" },
+		"delegation id": func(m *LaunchManifest) { m.DelegationID = strings.Repeat("b", 64) },
+		"image digest":  func(m *LaunchManifest) { m.ImageDigest = "sha256:" + strings.Repeat("4", 64) },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			mismatched := lm
+			mutate(&mismatched)
+			if DelegationBindsLaunchManifest(parsed, mismatched) {
+				t.Fatalf("delegation bound manifest with wrong %s", name)
+			}
+		})
 	}
 	if DelegationBindsLaunchManifest(OrchestratorDelegation{}, LaunchManifest{}) {
 		t.Fatal("empty delegation bound empty manifest")

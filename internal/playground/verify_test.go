@@ -285,15 +285,17 @@ func TestVerify_AllGood_Passes(t *testing.T) {
 		}
 		t.Fatalf("good run must pass: OK=false")
 	}
-	// Every check must have passed. 8 required checks in the full chain.
-	const expectedChecks = 8
-	if len(rep.Checks) < expectedChecks {
-		t.Fatalf("expected at least %d checks, got %d", expectedChecks, len(rep.Checks))
-	}
+	delegationChecked := false
 	for _, c := range rep.Checks {
 		if !c.OK {
 			t.Fatalf("check %q failed: %s", c.Name, c.Reason)
 		}
+		if c.Name == "orchestrator-delegation" {
+			delegationChecked = true
+		}
+	}
+	if !delegationChecked {
+		t.Fatal("verification report omitted orchestrator-delegation check")
 	}
 }
 
@@ -335,6 +337,33 @@ func TestVerify_DelegationFailuresFailClosed(t *testing.T) {
 		}
 		if rep.OK {
 			t.Fatal("malformed delegation artifact passed")
+		}
+	})
+	t.Run("invalid signature", func(t *testing.T) {
+		dir, orchPubHex, _ := buildDelegatedRunDir(t)
+		path := filepath.Join(dir, "orchestrator-delegation.json")
+		raw, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		delegation, err := playground.ParseOrchestratorDelegation(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		delegation.Signature = strings.Repeat("0", ed25519.SignatureSize*2)
+		raw, err = json.Marshal(delegation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rep, err := playground.VerifyRun(dir, orchPubHex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.OK {
+			t.Fatal("delegation with invalid signature passed")
 		}
 	})
 	t.Run("mismatched image", func(t *testing.T) {

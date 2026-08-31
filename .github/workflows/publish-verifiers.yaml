@@ -58,6 +58,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Assert tag matches verifier package versions
+        if: ${{ startsWith(github.ref, 'refs/tags/verifier-v') }}
+        env:
+          VERIFIER_TAG: ${{ github.ref_name }}
+        run: scripts/check-verifier-publish-tag.sh "$VERIFIER_TAG"
+
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

@@ -1202,6 +1202,97 @@ func TestScanRequestBody_CoreDLPIgnoresInjectedSuppress(t *testing.T) {
 	}
 }
 
+func TestScanRequestBody_EmbeddedSigV4URLNeedsNoCoreSuppression(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	key := fakeAPIKey()
+	q := url.Values{}
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", key+"/20260831/us-east-1/s3/aws4_request")
+	q.Set("X-Amz-Date", "20260831T120000Z")
+	q.Set("X-Amz-Expires", "3600")
+	q.Set("X-Amz-Signature", strings.Repeat("a", 64))
+	q.Set("X-Amz-SignedHeaders", "host")
+	presignedURL := "https://uploads.s3.amazonaws.com/object?" + q.Encode()
+	route := config.RequestBodySigV4CredentialRoute{
+		Host:         "api.vendor.example",
+		Path:         "/v1/graphql",
+		ContentTypes: []string{contentTypeJSON},
+		Methods:      []string{http.MethodPost},
+		Reason:       "attachment registration",
+		Owner:        "platform",
+		Expires:      "2099-12-31",
+	}
+
+	for _, tc := range []struct {
+		name        string
+		body        string
+		scheme      string
+		method      string
+		contentType string
+		host        string
+		path        string
+		expires     string
+		wantClean   bool
+	}{
+		{
+			name: "authorized attachment URL", body: `{"query":"mutation($url:String!){registerAttachment(url:$url)}","variables":{"url":"` + presignedURL + `"}}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: true,
+		},
+		{
+			name: "separate key beside attachment URL", body: `{"variables":{"url":"` + presignedURL + `","other":"` + key + `"}}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: false,
+		},
+		{
+			name: "unauthorized destination", body: `{"variables":{"url":"` + presignedURL + `"}}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: "collector.example", path: route.Path, expires: route.Expires, wantClean: false,
+		},
+		{
+			name: "plain HTTP", body: `{"variables":{"url":"` + presignedURL + `"}}`,
+			scheme: "http", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: false,
+		},
+		{
+			name: "wrong method", body: `{"variables":{"url":"` + presignedURL + `"}}`,
+			scheme: "https", method: http.MethodPut, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: false,
+		},
+		{
+			name: "wrong media type", body: `url=` + presignedURL,
+			scheme: "https", method: http.MethodPost, contentType: "text/plain", host: route.Host, path: route.Path, expires: route.Expires, wantClean: false,
+		},
+		{
+			name: "wrong path", body: `{"variables":{"url":"` + presignedURL + `"}}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: "/v1/other", expires: route.Expires, wantClean: false,
+		},
+		{
+			name: "expired route", body: `{"variables":{"url":"` + presignedURL + `"}}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: "2020-01-01", wantClean: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routeForCase := route
+			routeForCase.Expires = tc.expires
+			_, result := scanRequestBody(context.Background(), BodyScanRequest{
+				Body:                  strings.NewReader(tc.body),
+				Scheme:                tc.scheme,
+				Method:                tc.method,
+				ContentType:           tc.contentType,
+				MaxBytes:              cfg.RequestBodyScanning.MaxBodyBytes,
+				Scanner:               sc,
+				Host:                  tc.host,
+				Path:                  tc.path,
+				EntropyRoutePath:      tc.path,
+				Target:                tc.scheme + "://" + tc.host + tc.path,
+				SigV4CredentialRoutes: []config.RequestBodySigV4CredentialRoute{routeForCase},
+			})
+			if result.Clean != tc.wantClean {
+				t.Fatalf("Clean = %v, want %v; matches=%+v", result.Clean, tc.wantClean, result.DLPMatches)
+			}
+		})
+	}
+}
+
 func TestScanRequestBody_DefaultProviderSuppressionRemainsAvailable(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)

@@ -235,6 +235,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	view.RequestBodyScanning.ContentEntropyExclusions = sortedCopy(view.RequestBodyScanning.ContentEntropyExclusions)
 	view.RequestBodyScanning.ContentEntropyWarnRoutes = canonicalRequestBodyEntropyWarnRoutes(view.RequestBodyScanning.ContentEntropyWarnRoutes)
+	view.RequestBodyScanning.SigV4CredentialRoutes = canonicalRequestBodySigV4CredentialRoutes(view.RequestBodyScanning.SigV4CredentialRoutes)
 	view.WebSocketProxy.ContentEntropyExclusions = sortedCopy(view.WebSocketProxy.ContentEntropyExclusions)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
@@ -265,6 +266,21 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 		guardView = &guard
 	}
 	return canonicalPolicyView{Config: view, Guard: guardView}
+}
+
+func canonicalRequestBodySigV4CredentialRoutes(entries []RequestBodySigV4CredentialRoute) []RequestBodySigV4CredentialRoute {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := append([]RequestBodySigV4CredentialRoute(nil), entries...)
+	for i := range out {
+		out[i].ContentTypes = sortedCopy(out[i].ContentTypes)
+		out[i].Methods = sortedCopy(out[i].Methods)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return sigV4CredentialRouteIdentity(out[i]) < sigV4CredentialRouteIdentity(out[j])
+	})
+	return out
 }
 
 func canonicalAuthenticatedArtifacts(entries []AuthenticatedArtifactEntry) []AuthenticatedArtifactEntry {

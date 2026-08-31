@@ -510,6 +510,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("request body entropy warning routes added or materially changed: %s — matching entropy findings now warn instead of block", strings.Join(added, ", ")),
 		})
 	}
+	if added := sigV4CredentialRoutesAdded(old.RequestBodyScanning.SigV4CredentialRoutes, updated.RequestBodyScanning.SigV4CredentialRoutes); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "request_body_scanning.sigv4_credential_routes",
+			Message: fmt.Sprintf("request body SigV4 credential routes added or materially changed: %s — matching bodies may carry a structurally valid presigned URL", strings.Join(added, ", ")),
+		})
+	}
 	if added := passthroughDomainsAdded(old.WebSocketProxy.ContentEntropyExclusions, updated.WebSocketProxy.ContentEntropyExclusions); len(added) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "websocket_proxy.content_entropy_exclusions",
@@ -1357,6 +1363,27 @@ func entropyWarnRoutesAdded(old, updated []RequestBodyEntropyWarnRoute) []string
 }
 
 func entropyWarnRouteIdentity(entry RequestBodyEntropyWarnRoute) string {
+	return fmt.Sprintf("host=%q path=%q methods=%q content_types=%q owner=%q reason=%q expires=%q",
+		strings.TrimSuffix(strings.ToLower(entry.Host), "."), entry.Path, entry.Methods, entry.ContentTypes, entry.Owner, entry.Reason, entry.Expires)
+}
+
+func sigV4CredentialRoutesAdded(old, updated []RequestBodySigV4CredentialRoute) []string {
+	oldSet := make(map[string]struct{}, len(old))
+	for _, entry := range old {
+		oldSet[sigV4CredentialRouteIdentity(entry)] = struct{}{}
+	}
+	var added []string
+	for _, entry := range updated {
+		identity := sigV4CredentialRouteIdentity(entry)
+		if _, ok := oldSet[identity]; !ok {
+			added = append(added, identity)
+		}
+	}
+	sort.Strings(added)
+	return added
+}
+
+func sigV4CredentialRouteIdentity(entry RequestBodySigV4CredentialRoute) string {
 	return fmt.Sprintf("host=%q path=%q methods=%q content_types=%q owner=%q reason=%q expires=%q",
 		strings.TrimSuffix(strings.ToLower(entry.Host), "."), entry.Path, entry.Methods, entry.ContentTypes, entry.Owner, entry.Reason, entry.Expires)
 }

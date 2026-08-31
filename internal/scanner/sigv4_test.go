@@ -663,6 +663,94 @@ func TestSigV4CarveoutEndToEnd(t *testing.T) {
 	}
 }
 
+func TestEmbeddedSigV4TextDLPCarveout(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	valid := buildSigV4URL(t, fakeAKIAExample, "3600", "")
+	malformed := strings.Replace(valid, "X-Amz-Signature="+validSigV4Signature, "X-Amz-Signature=short", 1)
+	nonAWS := strings.Replace(valid, "examplebucket.s3.amazonaws.com", "attacker.example", 1)
+	duplicate := valid + "&X-Amz-Credential=" + url.QueryEscape(fakeASIAExample+"/"+validSigV4Scope)
+	pathLeak := strings.Replace(valid, "/object/key.bin", "/object/"+fakeASIAExample, 1)
+
+	cases := []struct {
+		name      string
+		text      string
+		wantClean bool
+	}{
+		{
+			name:      "valid URL in GraphQL JSON body",
+			text:      `{"query":"mutation($url:String!){jobNoteAddAttachment(url:$url)}","variables":{"url":"` + valid + `"}}`,
+			wantClean: true,
+		},
+		{
+			name:      "valid URL plus separate leaked key",
+			text:      `{"url":"` + valid + `","leaked":"` + fakeASIAExample + `"}`,
+			wantClean: false,
+		},
+		{
+			name:      "malformed signature",
+			text:      `{"url":"` + malformed + `"}`,
+			wantClean: false,
+		},
+		{
+			name:      "non AWS host",
+			text:      `{"url":"` + nonAWS + `"}`,
+			wantClean: false,
+		},
+		{
+			name:      "duplicate credential field",
+			text:      `{"url":"` + duplicate + `"}`,
+			wantClean: false,
+		},
+		{
+			name:      "key outside credential field in URL path",
+			text:      `{"url":"` + pathLeak + `"}`,
+			wantClean: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sc.ScanRequestBodyTextForDLP(context.Background(), tc.text)
+			if got.Clean != tc.wantClean {
+				t.Fatalf("Clean = %v, want %v; matches=%+v", got.Clean, tc.wantClean, got.Matches)
+			}
+			if !tc.wantClean {
+				found := false
+				for _, match := range got.Matches {
+					if match.PatternName == patternNameAWSAccessID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("blocked text lacks %q match: %+v", patternNameAWSAccessID, got.Matches)
+				}
+			}
+		})
+	}
+
+	if got := sc.ScanTextForDLP(context.Background(), `{"url":"`+valid+`"}`); got.Clean {
+		t.Fatal("ordinary text DLP must not apply the request-body route carve-out")
+	}
+
+	longLived := buildSigV4URL(t, fakeAKIAExample, "259200", "")
+	var warned bool
+	sc.SetDLPWarnHook(func(_ context.Context, patternName, severity string) {
+		warned = patternName == WarnPatternSigV4LongExpiry && severity == "info"
+	})
+	got := sc.ScanRequestBodyTextForDLP(context.Background(), `{"url":"`+longLived+`"}`)
+	if !got.Clean || len(got.InformationalMatches) != 1 || got.InformationalMatches[0].PatternName != WarnPatternSigV4LongExpiry || !warned {
+		t.Fatalf("long-lived body URL did not preserve SigV4 warning visibility: %+v warned=%v", got, warned)
+	}
+}
+
 // TestSigV4CarveoutDoesNotShortcircuitOtherScanners verifies that the carve-out
 // only suppresses the AKIA finding inside the credential value. Other scanner
 // stages (rate limit, URL length, data budget) still run normally on the

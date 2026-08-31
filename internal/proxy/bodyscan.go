@@ -566,6 +566,7 @@ type BodyScanRequest struct {
 	ContentEntropyTrusted    []string
 	ContentEntropyExclusions []string
 	ContentEntropyWarnRoutes []config.RequestBodyEntropyWarnRoute
+	SigV4CredentialRoutes    []config.RequestBodySigV4CredentialRoute
 }
 
 // scanRequestBody reads, buffers, and scans an HTTP request body for
@@ -619,6 +620,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		return buf, BodyScanResult{Clean: true}
 	}
 
+	allowEmbeddedSigV4 := matchBodySigV4CredentialRoute(req, time.Now().UTC())
 	var preRedactionDLP []scanner.TextDLPMatch
 	if req.RedactMatcher != nil {
 		extracted := extractBodyTextForDLP(buf, req)
@@ -627,8 +629,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		// this body cannot be parsed.
 		if extracted.Err == "" {
 			disabled := bodyDLPDisabledSet(req.DisablePatterns)
-			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled)
-			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled)...)
+			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4)
+			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4)...)
 		}
 	}
 
@@ -707,8 +709,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
-	matches := scanBodyTextsForDLP(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP)
-	matches = append(matches, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP)...)
+	matches := scanBodyTextsForDLP(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4)
+	matches = append(matches, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4)...)
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
 		result.DLPMatches = matches
@@ -1099,6 +1101,31 @@ func matchBodyEntropyWarnRoute(req BodyScanRequest, now time.Time) *BodyEntropyW
 	return nil
 }
 
+func matchBodySigV4CredentialRoute(req BodyScanRequest, now time.Time) bool {
+	if !strings.EqualFold(req.Scheme, "https") {
+		return false
+	}
+	path, ok := config.CanonicalUnscannablePassthroughPath(req.EntropyRoutePath)
+	if !ok {
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(req.ContentType)))
+	if err != nil || mediaType == "" {
+		return false
+	}
+	method := strings.ToUpper(req.Method)
+	host := strings.ToLower(strings.TrimSuffix(req.Host, "."))
+	today := now.UTC().Format("2006-01-02")
+	for _, entry := range req.SigV4CredentialRoutes {
+		if entry.Host != host || entry.Path != path || entry.Expires < today ||
+			!stringListContains(entry.ContentTypes, mediaType) || !stringListContains(entry.Methods, method) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func stringListContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -1124,10 +1151,17 @@ func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraEx
 	}
 }
 
-func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}) []scanner.TextDLPMatch {
+func applySigV4CredentialRouteConfig(req *BodyScanRequest, cfg *config.Config) {
+	if req == nil || cfg == nil {
+		return
+	}
+	req.SigV4CredentialRoutes = cfg.RequestBodyScanning.SigV4CredentialRoutes
+}
+
+func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool) []scanner.TextDLPMatch {
 	var allMatches []scanner.TextDLPMatch
 	for _, text := range texts {
-		result := sc.ScanTextForDLP(ctx, text)
+		result := scanBodyTextForDLP(ctx, sc, text, allowEmbeddedSigV4)
 		if !result.Clean {
 			if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled); len(matches) > 0 {
 				allMatches = append(allMatches, matches...)
@@ -1135,7 +1169,7 @@ func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []strin
 		}
 	}
 	joined := strings.Join(sortedBodyTexts(texts), bodyDLPJoinSeparator)
-	result := sc.ScanTextForDLP(ctx, joined)
+	result := scanBodyTextForDLP(ctx, sc, joined, allowEmbeddedSigV4)
 	if !result.Clean {
 		if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)
@@ -1144,11 +1178,18 @@ func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []strin
 	return uniqueBodyDLPMatches(allMatches)
 }
 
-func scanProviderOpaqueTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}) []scanner.TextDLPMatch {
+func scanBodyTextForDLP(ctx context.Context, sc *scanner.Scanner, text string, allowEmbeddedSigV4 bool) scanner.TextDLPResult {
+	if allowEmbeddedSigV4 {
+		return sc.ScanRequestBodyTextForDLP(ctx, text)
+	}
+	return sc.ScanTextForDLP(ctx, text)
+}
+
+func scanProviderOpaqueTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool) []scanner.TextDLPMatch {
 	if len(texts) == 0 {
 		return nil
 	}
-	matches := scanBodyTextsForDLP(ctx, sc, texts, target, suppress, disabled)
+	matches := scanBodyTextsForDLP(ctx, sc, texts, target, suppress, disabled, allowEmbeddedSigV4)
 	for i := range matches {
 		matches[i].ProviderOpaque = true
 	}

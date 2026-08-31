@@ -245,6 +245,96 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 	return nil
 }
 
+func validateRequestBodySigV4CredentialRoutes(cfg *RequestBodyScanning) error {
+	if len(cfg.SigV4CredentialRoutes) == 0 {
+		return nil
+	}
+	if !cfg.Enabled {
+		return fmt.Errorf("request_body_scanning.sigv4_credential_routes requires enabled request body scanning")
+	}
+
+	for i := range cfg.SigV4CredentialRoutes {
+		entry := &cfg.SigV4CredentialRoutes[i]
+		field := fmt.Sprintf("request_body_scanning.sigv4_credential_routes[%d]", i)
+		host := []string{entry.Host}
+		if err := ValidateTrustedDomains(host, field+".host"); err != nil {
+			return err
+		}
+		if strings.ContainsAny(host[0], "*?[]") {
+			return fmt.Errorf("%s.host must be one exact host without wildcards", field)
+		}
+		entry.Host = host[0]
+
+		path, ok := CanonicalUnscannablePassthroughPath(strings.TrimSpace(entry.Path))
+		if !ok {
+			return fmt.Errorf("%s.path %q must be an exact non-root canonical path without traversal, encoded topology changes, controls, or path parameters", field, entry.Path)
+		}
+		entry.Path = path
+
+		if len(entry.ContentTypes) == 0 {
+			return fmt.Errorf("%s.content_types must contain at least one media type", field)
+		}
+		for j, raw := range entry.ContentTypes {
+			mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(strings.ToLower(raw)))
+			if err != nil || mediaType == "" {
+				return fmt.Errorf("%s.content_types[%d] %q is invalid", field, j, raw)
+			}
+			entry.ContentTypes[j] = mediaType
+		}
+
+		if len(entry.Methods) == 0 {
+			return fmt.Errorf("%s.methods must contain at least one HTTP method", field)
+		}
+		for j, raw := range entry.Methods {
+			method := strings.ToUpper(strings.TrimSpace(raw))
+			if !validHTTPMethod(method) {
+				return fmt.Errorf("%s.methods[%d] %q is not a supported HTTP method", field, j, raw)
+			}
+			entry.Methods[j] = method
+		}
+
+		entry.Reason = strings.TrimSpace(entry.Reason)
+		entry.Owner = strings.TrimSpace(entry.Owner)
+		for _, textField := range []struct {
+			name  string
+			value string
+			max   int
+		}{{"reason", entry.Reason, 200}, {"owner", entry.Owner, 100}} {
+			if textField.value == "" {
+				return fmt.Errorf("%s.%s is required", field, textField.name)
+			}
+			if len(textField.value) > textField.max {
+				return fmt.Errorf("%s.%s must be %d characters or fewer", field, textField.name, textField.max)
+			}
+			if strings.IndexFunc(textField.value, unicode.IsControl) >= 0 {
+				return fmt.Errorf("%s.%s must not contain control characters", field, textField.name)
+			}
+		}
+
+		entry.Expires = strings.TrimSpace(entry.Expires)
+		expires, err := time.Parse("2006-01-02", entry.Expires)
+		if err != nil {
+			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+		}
+		if expires.Before(todayUTC()) {
+			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		}
+
+		slices.Sort(entry.ContentTypes)
+		entry.ContentTypes = slices.Compact(entry.ContentTypes)
+		slices.Sort(entry.Methods)
+		entry.Methods = slices.Compact(entry.Methods)
+		for j := range i {
+			previous := cfg.SigV4CredentialRoutes[j]
+			if previous.Host == entry.Host && previous.Path == entry.Path &&
+				sortedStringsOverlap(previous.Methods, entry.Methods) && sortedStringsOverlap(previous.ContentTypes, entry.ContentTypes) {
+				return fmt.Errorf("%s overlaps sigv4_credential_routes[%d]; exact route exceptions must have one unambiguous owner and reason", field, j)
+			}
+		}
+	}
+	return nil
+}
+
 func sortedStringsOverlap(left, right []string) bool {
 	for i, j := 0, 0; i < len(left) && j < len(right); {
 		switch {
@@ -427,6 +517,12 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	}
 	if err := c.validateRequestBodyScanning(); err != nil {
 		return warnings, err
+	}
+	if len(c.RequestBodyScanning.SigV4CredentialRoutes) > 0 {
+		warnings = append(warnings, Warning{
+			Field:   "request_body_scanning.sigv4_credential_routes",
+			Message: fmt.Sprintf("%d exact HTTPS route(s) allow request bodies to carry structurally valid SigV4 presigned URLs; all malformed, bare, and out-of-route credentials remain blocked", len(c.RequestBodyScanning.SigV4CredentialRoutes)),
+		})
 	}
 	if len(c.RequestBodyScanning.ContentEntropyWarnRoutes) > 0 {
 		warnings = append(warnings, Warning{
@@ -2401,6 +2497,9 @@ func validOptionalCardOriginPort(hostport, port string) bool {
 }
 
 func (c *Config) validateRequestBodyScanning() error {
+	if err := validateRequestBodySigV4CredentialRoutes(&c.RequestBodyScanning); err != nil {
+		return err
+	}
 	knownPatterns := c.effectiveBodyDLPPatternNames()
 	disabledPatterns := make(map[string]struct{}, len(c.RequestBodyScanning.DisablePatterns))
 	for i, pattern := range c.RequestBodyScanning.DisablePatterns {

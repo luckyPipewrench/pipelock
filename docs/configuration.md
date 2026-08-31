@@ -354,6 +354,14 @@ request_body_scanning:
       reason: encrypted customer archives
       owner: storage team
       expires: 2099-12-31
+  sigv4_credential_routes:             # optional exact HTTPS body routes that carry presigned URLs
+    - host: api.vendor.example
+      path: /v1/graphql
+      content_types: [application/json]
+      methods: [POST]
+      reason: register attachment URL
+      owner: platform team
+      expires: 2099-12-31
 ```
 
 | Field | Default | Description |
@@ -373,6 +381,7 @@ request_body_scanning:
 | `content_entropy_min_length` | `32` | Minimum value length considered; shorter values are ignored to limit false positives on short opaque identifiers. |
 | `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
 | `content_entropy_warn_routes` | `[]` | Exact, expiring HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry; methods are optional. Other findings retain their configured actions; size and redirect limits remain fail-closed. |
+| `sigv4_credential_routes` | `[]` | Exact, expiring HTTPS request-body routes allowed to carry a structurally valid AWS SigV4 presigned URL. Each entry requires one exact host and canonical non-root path, one or more methods and content types, a reason, owner, and expiry. Only the access-key ID inside a complete presigned URL is exempted; bare keys, malformed URLs, extra credentials, headers, and every out-of-route destination still hit the immutable DLP floor. |
 
 **Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
 
@@ -391,11 +400,13 @@ request_body_scanning:
 
 **Security hard-blocks:** In enforce mode, immutable core DLP findings in request bodies and headers hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`; they cannot be disabled or downgraded by `pattern_actions`. Request-body prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason: prompt_injection`. Operators that need audit-only rollout for selected non-core critical body-DLP patterns can set those exact names under `request_body_scanning.pattern_actions` with `warn`, or run the deployment with `enforce: false`.
 
+Some APIs accept an AWS presigned URL inside a JSON or form body so the server can fetch an attachment. The URL contains an AWS access-key ID, which belongs to the immutable DLP floor and cannot be handled with `suppress`, `disable_patterns`, or `pattern_actions`. Use `sigv4_credential_routes` only for that exact outbound HTTPS route. Pipelock validates the destination, method, media type, expiry, and complete SigV4 structure before exempting the key inside `X-Amz-Credential`; the same value anywhere else remains blocked. Long-lived presigned URLs keep the existing `SigV4 Long Expiry` warning.
+
 **Adaptive enforcement interaction:** A body/header DLP action of `warn`, including a per-pattern `pattern_actions` downgrade, still enters the existing adaptive enforcement path and can be upgraded to `block` unless the destination is adaptive-exempt. `disable_patterns` removes only the named DLP finding from this request-body/header surface; it does not create a destination exemption and does not affect URL, response, MCP, or file DLP scanning.
 
 An entropy warning produced by `content_entropy_warn_routes` is not promoted back to block and does not add an adaptive signal. It remains a visible finding, so that request does not count as a clean recovery/decay event. Logs and receipts include the configured reason, owner, and expiry. A 307/308 body replay is allowed only while the redirected request still matches the same exact route; leaving that route fails closed.
 
-Deploy binaries that understand this field across the fleet before publishing shared configuration that uses it. Config parsing rejects unknown fields, so an older process will refuse the new configuration instead of silently ignoring the exception.
+Deploy binaries that understand these route fields across the fleet before publishing shared configuration that uses them. Config parsing rejects unknown fields, so an older process will refuse the new configuration instead of silently ignoring an exception.
 
 **Opaque content entropy (`content_entropy_*`):** DLP catches secrets that match a known pattern. A stolen canary-file value, an opaque token, or a hex-encoded blob has no signature, so a pattern scanner misses it. Content entropy closes that gap: a high-entropy value leaving in a request body, a WebSocket client-to-server frame, or an A2A message body to a destination that is not trusted is flagged, regardless of pattern. Destination trust comes from the parsed upstream authority (not a request-supplied `Host` header), and hosts in `trusted_domains` or `content_entropy_exclusions` are skipped. Entropy suppression never suppresses a DLP match in the same body. The shipped default is `warn` so the detector observes before it enforces; `strict` and `hostile-model` presets use `block`.
 

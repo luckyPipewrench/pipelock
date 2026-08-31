@@ -1005,6 +1005,7 @@ func newInterceptHandler(
 				PatternActions:   ic.Config.RequestBodyScanning.PatternActions,
 			}
 			applyContentEntropyConfig(&bodyReq, ic.Config)
+			applySigV4CredentialRouteConfig(&bodyReq, ic.Config)
 			if isA2A {
 				bodyReq.ContentEntropyEnabled = false
 			}

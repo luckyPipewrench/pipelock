@@ -284,6 +284,9 @@ func (c *Config) Clone() *Config {
 	if c.RequestBodyScanning.ContentEntropyWarnRoutes != nil {
 		clone.RequestBodyScanning.ContentEntropyWarnRoutes = cloneRequestBodyEntropyWarnRoutes(c.RequestBodyScanning.ContentEntropyWarnRoutes)
 	}
+	if c.RequestBodyScanning.SigV4CredentialRoutes != nil {
+		clone.RequestBodyScanning.SigV4CredentialRoutes = cloneRequestBodySigV4CredentialRoutes(c.RequestBodyScanning.SigV4CredentialRoutes)
+	}
 	if c.Taint.TrustedMCPServers != nil {
 		clone.Taint.TrustedMCPServers = append([]string(nil), c.Taint.TrustedMCPServers...)
 	}
@@ -306,6 +309,15 @@ func (c *Config) Clone() *Config {
 	}
 
 	return &clone
+}
+
+func cloneRequestBodySigV4CredentialRoutes(entries []RequestBodySigV4CredentialRoute) []RequestBodySigV4CredentialRoute {
+	out := append([]RequestBodySigV4CredentialRoute(nil), entries...)
+	for i := range out {
+		out[i].ContentTypes = append([]string(nil), out[i].ContentTypes...)
+		out[i].Methods = append([]string(nil), out[i].Methods...)
+	}
+	return out
 }
 
 // cloneDLPPatterns returns a deep copy of src. Each pattern's ExemptDomains

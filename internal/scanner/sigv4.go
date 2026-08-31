@@ -360,3 +360,32 @@ func scrubSigV4Credential(parsed *url.URL, akia string) *url.URL {
 	clone.RawQuery = strings.Join(pairs, "&")
 	return &clone
 }
+
+// scrubEmbeddedSigV4Credentials applies the structural portion of the
+// presigned-URL carve-out to complete URL tokens embedded in inspected text.
+// Destination authorization is deliberately outside this helper.
+//
+// Only a URL that passes detectValidSigV4 is changed, and only the access-key
+// component of its X-Amz-Credential value is replaced. A credential elsewhere
+// in the text or URL, a malformed SigV4 field set, duplicate fields, or a URL
+// on a non-AWS host remains untouched for the immutable DLP floor to block.
+func scrubEmbeddedSigV4Credentials(text string) (string, []sigV4Detection) {
+	if !strings.Contains(text, "://") || !strings.Contains(text, sigV4CredentialQueryKey) {
+		return text, nil
+	}
+
+	var detections []sigV4Detection
+	scrubbed := textURLTokenRe.ReplaceAllStringFunc(text, func(token string) string {
+		parsed, err := url.Parse(token)
+		if err != nil {
+			return token
+		}
+		detection := detectValidSigV4(parsed)
+		if !detection.Valid {
+			return token
+		}
+		detections = append(detections, detection)
+		return scrubSigV4Credential(parsed, detection.KeyID).String()
+	})
+	return scrubbed, detections
+}

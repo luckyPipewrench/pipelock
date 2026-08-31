@@ -347,9 +347,12 @@ const (
 	// Re-bumped for request_body_scanning.content_entropy_warn_routes. The
 	// exact route exception changes an entropy block to a visible warning, so
 	// mixed versions must not report the same policy identity.
+	// Re-bumped for request_body_scanning.sigv4_credential_routes. The exact
+	// route grant changes whether a request body may carry a structurally valid
+	// presigned URL and therefore belongs in the policy identity.
 	// Re-bumped for issuer-backed GitHub stateless-token and decoded Azure SAS
 	// coverage in the default DLP pattern set.
-	goldenHashDefaults = "718ecf4871dbd1744da7a7e624c863aa6baab0b5681f66ce6ab7403723a4d82e"
+	goldenHashDefaults = "88d9b0f0909023d23017f4982737d7cf771bae3cd71261e079a670a35d6b276e"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -525,9 +528,10 @@ const (
 	// nil allowlist flows into ph identically to Defaults() and the hash
 	// shifts in lockstep.
 	// Re-bumped for route-scoped entropy warnings: see goldenHashDefaults.
+	// Re-bumped for route-scoped SigV4 body credentials: see goldenHashDefaults.
 	// Re-bumped for issuer-backed GitHub stateless-token and decoded Azure SAS
 	// coverage: the rich fixture inherits the default DLP pattern set.
-	goldenHashRichConfig = "1ac09f329b157f9f8c096b8e534cf6631a4ceeabc8105d632476d99d89aa0f4d"
+	goldenHashRichConfig = "9028a9d0f3902660b84acee629ea483e9454cfc4197738596b5e2efec6ec7fba"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

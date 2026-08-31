@@ -1374,6 +1374,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			PatternActions:   cfg.RequestBodyScanning.PatternActions,
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
+		applySigV4CredentialRouteConfig(&bodyReq, cfg)
 		if isA2A {
 			bodyReq.ContentEntropyEnabled = false
 		}

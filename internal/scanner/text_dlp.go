@@ -318,6 +318,25 @@ func (s *Scanner) ScanTextForDLP(ctx context.Context, text string) TextDLPResult
 	return s.scanTextForDLP(ctx, text, textDLPOptions{emitWarns: true, scanSecretLeak: true})
 }
 
+// ScanRequestBodyTextForDLP scans outbound request-body text after applying
+// the embedded SigV4 credential carve-out. Callers must independently verify
+// that the request matches an explicit destination route before using it.
+func (s *Scanner) ScanRequestBodyTextForDLP(ctx context.Context, text string) TextDLPResult {
+	scrubbed, detections := scrubEmbeddedSigV4Credentials(text)
+	result := s.scanTextForDLP(ctx, scrubbed, textDLPOptions{emitWarns: true, scanSecretLeak: true})
+
+	for _, detection := range detections {
+		if detection.Expires <= sigV4LongExpiryThreshold {
+			continue
+		}
+		match := TextDLPMatch{PatternName: WarnPatternSigV4LongExpiry, Severity: "info", Warn: true}
+		result.InformationalMatches = append(result.InformationalMatches, match)
+		s.emitDLPWarns(ctx, []WarnMatch{{PatternName: match.PatternName, Severity: match.Severity}})
+		break
+	}
+	return result
+}
+
 // ScanTextForDLPQuiet runs the same text-DLP detection logic as ScanTextForDLP
 // but suppresses warn-hook emission. Callers use this when they need to compare
 // multiple related scans without duplicating warn telemetry.

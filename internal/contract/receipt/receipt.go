@@ -333,6 +333,13 @@ func ReceiptHash(r EvidenceReceipt) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// SignerKeyID returns the canonical signer_key_id for a pinned Ed25519 public
+// key. KeyedSigner emits this lowercase hexadecimal form when producing v2
+// receipts, so pinned verification can bind the receipt label to its key.
+func SignerKeyID(pubKey ed25519.PublicKey) string {
+	return hex.EncodeToString(pubKey)
+}
+
 // VerifyWithKey verifies the detached Ed25519 signature against pubKey and
 // confirms that the receipt declares the expected signer key id.
 func VerifyWithKey(r EvidenceReceipt, pubKey ed25519.PublicKey, expectedSignerKeyID string) error {

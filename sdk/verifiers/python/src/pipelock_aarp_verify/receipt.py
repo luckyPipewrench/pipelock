@@ -1032,7 +1032,9 @@ def verify_evidence_receipt(
 ) -> None:
     normalize_evidence_receipt(receipt)
     signature = _require_object(receipt.get("signature"), "signature")
-    _require_string(signature.get("signer_key_id"), "signature.signer_key_id")
+    signer_key_id = _require_string(
+        signature.get("signer_key_id"), "signature.signer_key_id"
+    )
     key_hex = expected_key_hex.lower()
     if not key_hex:
         raise ReceiptError("EvidenceReceipt v2 verification requires --key")
@@ -1049,6 +1051,8 @@ def verify_evidence_receipt(
         public_key.verify(sig, _evidence_preimage(receipt))
     except InvalidSignature as exc:
         raise ReceiptError("signature verification failed") from exc
+    if signer_key_id != key_hex:
+        raise ReceiptError("signature.signer_key_id does not match pinned public key")
 
 
 def verify_action_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -> None:

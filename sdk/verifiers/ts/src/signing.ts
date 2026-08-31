@@ -463,4 +463,7 @@ export async function verifyEvidenceReceipt(receipt: Receipt, expectedKeyHex = "
   );
   const ok = await ed25519.verifyAsync(sig, evidencePreimage(receipt), pubKey, { zip215: false });
   if (!ok) throw new Error("signature verification failed");
+  if (requireString(signature["signer_key_id"], "signature.signer_key_id") !== keyHex) {
+    throw new Error("signature.signer_key_id does not match pinned public key");
+  }
 }

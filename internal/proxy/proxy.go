@@ -792,6 +792,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if currentScanner == nil {
 				currentScanner = p.scannerPtr.Load()
 			}
+			if redirectReplaysBodyToNewAuthority(req, via) {
+				return newRedirectBlockedRequest(scannerLabelBodyDLP, "redirect replay changes destination authority")
+			}
 			if admitted, ok := req.Context().Value(ctxKeyEntropyWarnRoute).(*BodyEntropyWarnRouteMatch); ok && admitted != nil {
 				matched := matchBodyEntropyWarnRoute(BodyScanRequest{
 					Scheme: req.URL.Scheme, Method: req.Method, ContentType: req.Header.Get(headerContentType),
@@ -947,6 +950,22 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p, nil
+}
+
+// redirectReplaysBodyToNewAuthority reports whether net/http is about to
+// replay a request body (the 307/308 path) to a different authority. Body DLP
+// suppressions are destination-scoped, so retaining the first-hop decision on
+// a changed authority would fail open. Re-evaluation can replace this guard
+// when redirect-time body scanning is implemented.
+func redirectReplaysBodyToNewAuthority(req *http.Request, via []*http.Request) bool {
+	if req == nil || req.URL == nil || req.GetBody == nil || len(via) == 0 {
+		return false
+	}
+	previous := via[len(via)-1]
+	if previous == nil || previous.URL == nil {
+		return false
+	}
+	return !strings.EqualFold(req.URL.Host, previous.URL.Host)
 }
 
 // refreshEnvelopeForRedirect rebuilds the Pipelock-Mediation header

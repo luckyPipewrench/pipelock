@@ -19,6 +19,17 @@ const v2GoldenPublicKey = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021
 const v2GoldenPolicyHash =
   "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+function writeCanonicalV2Receipt(source: string, name: string): string {
+  const receipt = JSON.parse(readFileSync(source, "utf8")) as Receipt;
+  (receipt.signature as Record<string, unknown>)["signer_key_id"] = v2GoldenPublicKey;
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-v2-${name}-${process.pid}.json`,
+  );
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  return pathname;
+}
+
 test("receipt command accepts a valid Go-generated receipt", async () => {
   const report = await runReceipt(validSingle, "");
   assert.equal(report.valid, false);
@@ -83,19 +94,43 @@ test("receipt command rejects invalid UTF-8 before parsing", async () => {
 });
 
 test("receipt command accepts a valid EvidenceReceipt v2 spanned proxy decision", async () => {
-  const report = await runReceipt(validSpannedV2, v2GoldenPublicKey);
-  assert.equal(report.valid, true, report.error);
-  assert.equal(report.action_id, "01F8MECHZX3TBDSZ7XRADM79ZS");
-  assert.equal(report.verdict, "block");
-  assert.equal(report.transport, "forward");
-  assert.equal(report.signer_key, v2GoldenPublicKey);
-  assert.equal(report.policy_hash, v2GoldenPolicyHash);
+  const pathname = writeCanonicalV2Receipt(validSpannedV2, "valid-spanned");
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, true, report.error);
+    assert.equal(report.action_id, "01F8MECHZX3TBDSZ7XRADM79ZS");
+    assert.equal(report.verdict, "block");
+    assert.equal(report.transport, "forward");
+    assert.equal(report.signer_key, v2GoldenPublicKey);
+    assert.equal(report.policy_hash, v2GoldenPolicyHash);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
 });
 
 test("receipt command accepts a valid EvidenceReceipt v2 plain proxy decision", async () => {
-  const report = await runReceipt(validPlainV2, v2GoldenPublicKey);
-  assert.equal(report.valid, true, report.error);
-  assert.equal(report.policy_hash, v2GoldenPolicyHash);
+  const pathname = writeCanonicalV2Receipt(validPlainV2, "valid-plain");
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, true, report.error);
+    assert.equal(report.policy_hash, v2GoldenPolicyHash);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
+});
+
+test("receipt command rejects a relabeled EvidenceReceipt v2 signer", async () => {
+  const pathname = writeCanonicalV2Receipt(validPlainV2, "relabeled");
+  const receipt = JSON.parse(readFileSync(pathname, "utf8")) as Receipt;
+  (receipt.signature as Record<string, unknown>)["signer_key_id"] = "attacker-label";
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /signer_key_id.*pinned public key/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
 });
 
 test("receipt command rejects EvidenceReceipt v2 decisions missing policy_hash", async () => {

@@ -1356,6 +1356,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
 			Body:             r.Body,
+			Trailer:          r.Trailer,
 			Scheme:           r.URL.Scheme,
 			Method:           r.Method,
 			ContentType:      r.Header.Get("Content-Type"),
@@ -1910,6 +1911,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, r.URL.Hostname(), effectiveURLPort(r.URL), result)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
+	// The URL authority is the value policy admitted. Never propagate a
+	// client-controlled Host override to the upstream request.
+	outReq.Host = outReq.URL.Host
 	outReq = outReq.WithContext(context.WithValue(outReq.Context(), ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{emitter: envEmitter}))
 	// Strip the internal identity header AND the ?agent= query param before
 	// the request leaves pipelock. Either vector could otherwise bleed an

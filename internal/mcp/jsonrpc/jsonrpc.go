@@ -37,11 +37,15 @@ type ContentBlock struct {
 	MediaType   string            `json:"mediaType,omitempty"`
 }
 
-// ResourceContents is the text-bearing portion of an embedded MCP resource.
+// ResourceContents is the content carried by an embedded MCP resource.
 // Blob data intentionally stays out of prompt scanning: it is opaque binary
-// content, while Text is rendered directly to the agent.
+// content, while Text is rendered directly to the agent. Media policy handles
+// the Blob with its declared MimeType separately.
 type ResourceContents struct {
-	Text string `json:"text,omitempty"`
+	URI      string `json:"uri,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Blob     string `json:"blob,omitempty"`
 }
 
 // ToolResult represents the result field of an MCP tool response.

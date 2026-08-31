@@ -121,9 +121,11 @@ def verify_evidence_receipt(fixture: Path, pubkey: bytes) -> tuple[bool, str]:
     pk = Ed25519PublicKey.from_public_bytes(pubkey)
     try:
         pk.verify(sig, preimage)
-        return True, ""
     except InvalidSignature as e:
         return False, f"verify failed: {e}"
+    if sig_obj.get("signer_key_id") != pubkey.hex():
+        return False, "signer_key_id does not match pinned public key"
+    return True, ""
 
 
 def fingerprint(pubkey_bytes: bytes) -> str:

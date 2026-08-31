@@ -47,8 +47,19 @@ V2_PRIVATE_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031
 TESTDATA_PRIVATE_SEED_HEX = TESTDATA_KEY_INFO["seed_hex"]
 
 
-def test_valid_spanned_v2_receipt_verifies() -> None:
-    report = verify_receipt_file(VALID_SPANNED_V2, V2_GOLDEN_PUBLIC_KEY)
+def _write_canonical_v2_receipt(source: Path, tmp_path: Path, name: str) -> Path:
+    receipt = json.loads(source.read_text())
+    receipt["signature"]["signer_key_id"] = V2_GOLDEN_PUBLIC_KEY
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps(receipt))
+    return path
+
+
+def test_valid_spanned_v2_receipt_verifies(tmp_path: Path) -> None:
+    report = verify_receipt_file(
+        _write_canonical_v2_receipt(VALID_SPANNED_V2, tmp_path, "valid-spanned"),
+        V2_GOLDEN_PUBLIC_KEY,
+    )
     assert report["valid"] is True, report.get("error")
     assert report["action_id"] == "01F8MECHZX3TBDSZ7XRADM79ZS"
     assert report["verdict"] == "block"
@@ -57,10 +68,24 @@ def test_valid_spanned_v2_receipt_verifies() -> None:
     assert report["policy_hash"] == V2_GOLDEN_POLICY_HASH
 
 
-def test_valid_plain_v2_receipt_verifies() -> None:
-    report = verify_receipt_file(VALID_PLAIN_V2, V2_GOLDEN_PUBLIC_KEY)
+def test_valid_plain_v2_receipt_verifies(tmp_path: Path) -> None:
+    report = verify_receipt_file(
+        _write_canonical_v2_receipt(VALID_PLAIN_V2, tmp_path, "valid-plain"),
+        V2_GOLDEN_PUBLIC_KEY,
+    )
     assert report["valid"] is True, report.get("error")
     assert report["policy_hash"] == V2_GOLDEN_POLICY_HASH
+
+
+def test_relabelled_v2_signer_is_rejected_under_pinned_key(tmp_path: Path) -> None:
+    path = _write_canonical_v2_receipt(VALID_PLAIN_V2, tmp_path, "relabeled")
+    receipt = json.loads(path.read_text())
+    receipt["signature"]["signer_key_id"] = "attacker-label"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "signer_key_id does not match pinned public key" in report["error"]
 
 
 def test_receipt_rejects_number_outside_cross_language_range(tmp_path: Path) -> None:
@@ -258,9 +283,10 @@ def test_spanned_v2_receipt_does_not_expose_oracle_key() -> None:
     assert "golden-span-mac-key" not in json.dumps(receipt)
 
 
-def test_receipt_cli_json(capsys) -> None:  # type: ignore[no-untyped-def]
+def test_receipt_cli_json(capsys, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    path = _write_canonical_v2_receipt(VALID_SPANNED_V2, tmp_path, "cli")
     code = main(
-        ["receipt", str(VALID_SPANNED_V2), "--key", V2_GOLDEN_PUBLIC_KEY, "--json"]
+        ["receipt", str(path), "--key", V2_GOLDEN_PUBLIC_KEY, "--json"]
     )
     captured = capsys.readouterr()
     assert code == 0
@@ -663,8 +689,7 @@ def _build_v2_chain(count: int) -> list[dict[str, object]]:
 def _sign_v2_receipt(receipt: dict[str, object]) -> None:
     from pipelock_aarp_verify.canonical import canonicalize
 
-    signature = receipt["signature"]
-    assert isinstance(signature, dict)
+    assert isinstance(receipt["signature"], dict)
     receipt["signature"] = {
         "signer_key_id": "",
         "key_purpose": "",
@@ -674,7 +699,7 @@ def _sign_v2_receipt(receipt: dict[str, object]) -> None:
     key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(V2_PRIVATE_SEED_HEX))
     sig = key.sign(canonicalize(receipt))
     receipt["signature"] = {
-        "signer_key_id": signature.get("signer_key_id", "receipt-signing-test"),
+        "signer_key_id": V2_GOLDEN_PUBLIC_KEY,
         "key_purpose": "receipt-signing",
         "algorithm": "ed25519",
         "signature": f"ed25519:{sig.hex()}",

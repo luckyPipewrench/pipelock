@@ -56,6 +56,16 @@ func TestReloadDowngradeRejectReason_RequiredTeardownWithoutWarnings(t *testing.
 			wantIn: "mcp_binary_integrity.require_signature",
 		},
 		{
+			name: "mcp_session_binding_listener_require_state_token_in_strict_mode",
+			on: func(c *config.Config) {
+				required := true
+				c.Mode = config.ModeStrict
+				c.MCPSessionBinding.Enabled = true
+				c.MCPSessionBinding.ListenerRequireStateToken = &required
+			},
+			wantIn: "mcp_session_binding.listener_require_state_token",
+		},
+		{
 			name:   "mediation_envelope_verify_inbound",
 			on:     func(c *config.Config) { c.MediationEnvelope.VerifyInbound.Enabled = true },
 			wantIn: "mediation_envelope.verify_inbound.enabled",
@@ -187,5 +197,57 @@ func TestRequiredModeTeardowns_SNIRequireTLSParentGating(t *testing.T) {
 	staleNew.ForwardProxy.SNIRequireTLS = &no
 	if torn := requiredModeTeardowns(staleOld, staleNew); len(torn) > 0 {
 		t.Fatalf("clearing sni_require_tls under disabled verification reported a teardown: %v", torn)
+	}
+}
+
+func TestRequiredModeTeardowns_ListenerStateTokenParentGating(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+
+	inForce := config.Defaults()
+	inForce.Mode = config.ModeStrict
+	inForce.MCPSessionBinding.Enabled = true
+	inForce.MCPSessionBinding.ListenerRequireStateToken = &yes
+
+	flagOff := inForce.Clone()
+	flagOff.MCPSessionBinding.ListenerRequireStateToken = &no
+	if torn := requiredModeTeardowns(inForce, flagOff); len(torn) != 1 || torn[0] != "mcp_session_binding.listener_require_state_token" {
+		t.Fatalf("clearing listener_require_state_token reported %v, want exactly mcp_session_binding.listener_require_state_token", torn)
+	}
+	if torn := requiredModeTeardowns(flagOff, inForce); len(torn) > 0 {
+		t.Fatalf("enabling listener_require_state_token reported a teardown: %v", torn)
+	}
+	if reason := reloadDowngradeRejectReason(flagOff, inForce, nil); reason != "" {
+		t.Fatalf("enabling listener_require_state_token rejected as a downgrade: %q", reason)
+	}
+
+	parentOff := inForce.Clone()
+	parentOff.MCPSessionBinding.Enabled = false
+	if torn := requiredModeTeardowns(inForce, parentOff); len(torn) == 0 {
+		t.Fatal("disabling MCP session binding while listener_require_state_token stayed true reported no teardown")
+	}
+
+	staleOld := config.Defaults()
+	staleOld.Mode = config.ModeStrict
+	staleOld.MCPSessionBinding.ListenerRequireStateToken = &yes
+	staleNew := staleOld.Clone()
+	staleNew.MCPSessionBinding.ListenerRequireStateToken = &no
+	if torn := requiredModeTeardowns(staleOld, staleNew); len(torn) > 0 {
+		t.Fatalf("clearing listener_require_state_token under disabled session binding reported a teardown: %v", torn)
+	}
+
+	for _, mode := range []string{config.ModeBalanced, config.ModeAudit} {
+		t.Run(mode, func(t *testing.T) {
+			compatibleOld := inForce.Clone()
+			compatibleOld.Mode = mode
+			compatibleNew := compatibleOld.Clone()
+			compatibleNew.MCPSessionBinding.ListenerRequireStateToken = &no
+			if torn := requiredModeTeardowns(compatibleOld, compatibleNew); len(torn) > 0 {
+				t.Fatalf("%s listener_require_state_token disable reported a required teardown: %v", mode, torn)
+			}
+			if reason := reloadDowngradeRejectReason(compatibleOld, compatibleNew, config.ValidateReload(compatibleOld, compatibleNew)); reason != "" {
+				t.Fatalf("%s listener_require_state_token disable rejected: %q", mode, reason)
+			}
+		})
 	}
 }

@@ -7,12 +7,24 @@ use base64::Engine;
 use pipelock_verifier_rs::receipt::run_receipt;
 use serde_json::Value;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const V2_GOLDEN_PUBLIC_KEY: &str =
     "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 const V2_GOLDEN_POLICY_HASH: &str =
     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn write_canonical_v2_receipt(source: &Path, name: &str) -> PathBuf {
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["signature"]["signer_key_id"] = Value::String(V2_GOLDEN_PUBLIC_KEY.to_string());
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-{name}-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    path
+}
 
 #[test]
 fn valid_single_receipt_verifies_with_shared_key() {
@@ -135,14 +147,12 @@ fn cli_accepts_key_equals_value() {
 #[test]
 fn valid_spanned_v2_receipt_verifies_with_shared_key() {
     let root = common::repo_root();
-    let report = run_receipt(
-        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json")
-            .to_str()
-            .unwrap(),
-        V2_GOLDEN_PUBLIC_KEY,
-    false,
-    )
-    .unwrap();
+    let path = write_canonical_v2_receipt(
+        &root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json"),
+        "valid-spanned",
+    );
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
+    let _ = fs::remove_file(path);
     assert!(report.valid, "{:?}", report.error);
     assert_eq!(
         report.action_id.as_deref(),
@@ -157,16 +167,35 @@ fn valid_spanned_v2_receipt_verifies_with_shared_key() {
 #[test]
 fn valid_plain_v2_receipt_verifies_with_shared_key() {
     let root = common::repo_root();
-    let report = run_receipt(
-        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json")
-            .to_str()
-            .unwrap(),
-        V2_GOLDEN_PUBLIC_KEY,
-        false,
-    )
-    .unwrap();
+    let path = write_canonical_v2_receipt(
+        &root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json"),
+        "valid-plain",
+    );
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
+    let _ = fs::remove_file(path);
     assert!(report.valid, "{:?}", report.error);
     assert_eq!(report.policy_hash.as_deref(), Some(V2_GOLDEN_POLICY_HASH));
+}
+
+#[test]
+fn relabeled_v2_signer_is_rejected_under_pinned_key() {
+    let root = common::repo_root();
+    let path = write_canonical_v2_receipt(
+        &root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json"),
+        "relabeled",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    receipt["signature"]["signer_key_id"] = Value::String("attacker-label".to_string());
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("signer_key_id does not match pinned public key"));
 }
 
 #[test]

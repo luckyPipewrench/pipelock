@@ -302,6 +302,13 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "MCP session binding disabled",
 		})
 	}
+	if old.MCPSessionBinding.Enabled && updated.MCPSessionBinding.Enabled &&
+		old.MCPSessionBinding.RequiresListenerStateToken() && !updated.MCPSessionBinding.RequiresListenerStateToken() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_session_binding.listener_require_state_token",
+			Message: "MCP listener state-token requirement disabled",
+		})
+	}
 
 	// A2A scanning disabled or downgraded
 	if old.A2AScanning.Enabled && !updated.A2AScanning.Enabled {

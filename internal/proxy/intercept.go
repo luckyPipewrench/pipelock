@@ -987,6 +987,7 @@ func newInterceptHandler(
 			}
 			bodyReq := BodyScanRequest{
 				Body:             r.Body,
+				Trailer:          r.Trailer,
 				Scheme:           "https",
 				Method:           r.Method,
 				ContentType:      r.Header.Get("Content-Type"),

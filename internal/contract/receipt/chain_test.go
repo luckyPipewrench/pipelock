@@ -88,10 +88,11 @@ func signReceipt(t *testing.T, r receipt.EvidenceReceipt, priv ed25519.PrivateKe
 // by priv under the test signer id.
 func buildChain(t *testing.T, priv ed25519.PrivateKey, n int) []receipt.EvidenceReceipt {
 	t.Helper()
+	signerID := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
 	var chain []receipt.EvidenceReceipt
 	prev := receipt.GenesisHash
 	for i := 0; i < n; i++ {
-		r := signReceipt(t, unsignedReceipt(t, testSignerID, uint64(i), prev), priv)
+		r := signReceipt(t, unsignedReceipt(t, signerID, uint64(i), prev), priv)
 		h, err := receipt.ReceiptHash(r)
 		if err != nil {
 			t.Fatalf("hash receipt %d: %v", i, err)
@@ -145,7 +146,7 @@ func TestPinnedStreamingVerifierFailsClosedAndLatches(t *testing.T) {
 		}
 	})
 	t.Run("invalid input latches independently", func(t *testing.T) {
-		badSignature := unsignedReceipt(t, testSignerID, 0, receipt.GenesisHash)
+		badSignature := unsignedReceipt(t, receipt.SignerKeyID(pub), 0, receipt.GenesisHash)
 		badSignature = signReceipt(t, badSignature, priv)
 		badSignature.Actor = "tampered"
 		valid := buildChain(t, priv, 1)[0]
@@ -187,7 +188,7 @@ func TestPinnedStreamingVerifierFailsClosedAndLatches(t *testing.T) {
 	})
 	t.Run("signature signer and chain disagreement deny", func(t *testing.T) {
 		v, _ := receipt.NewPinnedStreamingVerifier(pub)
-		badSig := unsignedReceipt(t, testSignerID, 0, receipt.GenesisHash)
+		badSig := unsignedReceipt(t, receipt.SignerKeyID(pub), 0, receipt.GenesisHash)
 		badSig = signReceipt(t, badSig, priv)
 		badSig.Actor = "tampered"
 		if err := v.AddRaw(marshal(t, badSig)); err == nil || !strings.Contains(err.Error(), "signature") {
@@ -207,7 +208,7 @@ func TestPinnedStreamingVerifierFailsClosedAndLatches(t *testing.T) {
 			t.Fatalf("signer error=%v", err)
 		}
 		v, _ = receipt.NewPinnedStreamingVerifier(pub)
-		wrongSeq := signReceipt(t, unsignedReceipt(t, testSignerID, 1, receipt.GenesisHash), priv)
+		wrongSeq := signReceipt(t, unsignedReceipt(t, receipt.SignerKeyID(pub), 1, receipt.GenesisHash), priv)
 		if err := v.AddRaw(marshal(t, wrongSeq)); err == nil || !strings.Contains(err.Error(), "sequence") {
 			t.Fatalf("sequence error=%v", err)
 		}
@@ -295,8 +296,8 @@ func TestVerifyChain_ValidPinnedKey(t *testing.T) {
 	if res.ReceiptCount != 3 || res.FinalSeq != 2 {
 		t.Errorf("count=%d finalSeq=%d, want 3/2", res.ReceiptCount, res.FinalSeq)
 	}
-	if res.SignerKeyID != testSignerID {
-		t.Errorf("signer=%q, want %q", res.SignerKeyID, testSignerID)
+	if res.SignerKeyID != receipt.SignerKeyID(pub) {
+		t.Errorf("signer=%q, want %q", res.SignerKeyID, receipt.SignerKeyID(pub))
 	}
 }
 

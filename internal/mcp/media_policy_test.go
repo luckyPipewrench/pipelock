@@ -155,6 +155,12 @@ func TestMCPMediaPayloadFields(t *testing.T) {
 			wantNames: []string{"data", "blob", "raw"},
 		},
 		{
+			name:      "embedded_resource_blob",
+			block:     jsonrpc.ContentBlock{Type: "resource", Resource: &jsonrpc.ResourceContents{MimeType: "video/mp4", Blob: "Y2xpcA=="}},
+			wantCount: 1,
+			wantNames: []string{"resource.blob"},
+		},
+		{
 			name:      "no_payload_fields",
 			block:     jsonrpc.ContentBlock{Type: "text", Text: "hello"},
 			wantCount: 0,
@@ -173,6 +179,98 @@ func TestMCPMediaPayloadFields(t *testing.T) {
 				if fields[i].name != wantName {
 					t.Errorf("field[%d].name = %q, want %q", i, fields[i].name, wantName)
 				}
+			}
+		})
+	}
+}
+
+func TestMCPResourceMediaHint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		resource   jsonrpc.ResourceContents
+		wantType   string
+		wantHinted bool
+	}{
+		{
+			name:       "video_mime",
+			resource:   jsonrpc.ResourceContents{MimeType: "video/mp4"},
+			wantType:   "video/mp4",
+			wantHinted: true,
+		},
+		{
+			name:       "non_media_mime",
+			resource:   jsonrpc.ResourceContents{MimeType: "text/plain"},
+			wantType:   "",
+			wantHinted: false,
+		},
+		{
+			name:       "empty",
+			resource:   jsonrpc.ResourceContents{},
+			wantType:   "",
+			wantHinted: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotType, gotHinted := mcpResourceMediaHint(tt.resource)
+			if gotType != tt.wantType {
+				t.Errorf("mcpResourceMediaHint() type = %q, want %q", gotType, tt.wantType)
+			}
+			if gotHinted != tt.wantHinted {
+				t.Errorf("mcpResourceMediaHint() hinted = %v, want %v", gotHinted, tt.wantHinted)
+			}
+		})
+	}
+}
+
+func TestSetMCPMediaPayloadRejectsUnsafeRewriteShapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		block   map[string]json.RawMessage
+		field   string
+		wantErr string
+	}{
+		{
+			name:    "unknown_field",
+			block:   map[string]json.RawMessage{},
+			field:   "sidecar",
+			wantErr: "unknown payload field",
+		},
+		{
+			name:    "resource_missing",
+			block:   map[string]json.RawMessage{},
+			field:   "resource.blob",
+			wantErr: "resource is missing",
+		},
+		{
+			name:    "resource_not_object",
+			block:   map[string]json.RawMessage{"resource": json.RawMessage(`"not-an-object"`)},
+			field:   "resource.blob",
+			wantErr: "parse resource",
+		},
+		{
+			name:    "resource_null",
+			block:   map[string]json.RawMessage{"resource": json.RawMessage(`null`)},
+			field:   "resource.blob",
+			wantErr: "resource is null",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := setMCPMediaPayload(tt.block, tt.field, "YQ==")
+			if err == nil {
+				t.Fatal("setMCPMediaPayload() error = nil, want rejection")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("setMCPMediaPayload() error = %q, want %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -299,6 +397,78 @@ func TestForwardScanned_MediaPolicyBlocksBlobOnlyField(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_MediaPolicyBlocksEmbeddedResourceMedia(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       int
+		mimeType string
+		payload  string
+		blob     string
+	}{
+		{
+			name:     "video_blob",
+			id:       70,
+			mimeType: "video/mp4",
+			payload:  "fake video bytes",
+		},
+		{
+			name:     "audio_blob",
+			id:       71,
+			mimeType: "audio/wav",
+			payload:  "fake audio bytes",
+		},
+		{
+			name:     "invalid_base64_video",
+			id:       72,
+			mimeType: "video/mp4",
+			blob:     "not-base64!",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc, cfg := newMCPScannerWithMediaPolicy(t)
+			encoded := tt.blob
+			if encoded == "" {
+				encoded = base64.StdEncoding.EncodeToString([]byte(tt.payload))
+			}
+			line := fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"resource","resource":{"uri":"file:///attachment","mimeType":"%s","blob":"%s"}}]}}`,
+				tt.id,
+				tt.mimeType,
+				encoded,
+			)
+
+			var out, log bytes.Buffer
+			found, err := ForwardScanned(
+				transport.NewStdioReader(strings.NewReader(line+"\n")),
+				transport.NewStdioWriter(&out),
+				&log,
+				nil,
+				MCPProxyOpts{
+					Scanner:     sc,
+					MediaPolicy: &cfg.MediaPolicy,
+					Transport:   testMCPMediaTransport,
+				},
+			)
+			if err != nil {
+				t.Fatalf("ForwardScanned: %v", err)
+			}
+			if found {
+				t.Fatal("expected media-policy block without an injection finding")
+			}
+
+			var resp rpcError
+			if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
+				t.Fatalf("unmarshal block response: %v", err)
+			}
+			if string(resp.ID) != fmt.Sprintf("%d", tt.id) {
+				t.Fatalf("block response id = %s, want %d", string(resp.ID), tt.id)
+			}
+		})
+	}
+}
+
 func buildMCPValidJPEG(app1Payload []byte) []byte {
 	writeSegmentLen := func(b *bytes.Buffer, length int) {
 		if length < 0 || length > math.MaxUint16 {
@@ -387,6 +557,68 @@ func TestForwardScanned_MediaPolicyStripsToolResultImage(t *testing.T) {
 	}
 	if len(decoded) >= len(jpeg) {
 		t.Fatalf("stripped MCP image length %d >= original %d", len(decoded), len(jpeg))
+	}
+}
+
+func TestForwardScanned_MediaPolicyStripsEmbeddedResourceImage(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	jpeg := buildMCPValidJPEG([]byte("Exif\x00\x00nested-mcp-secret-metadata"))
+	line := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":43,"result":{"content":[{"type":"resource","resource":{"uri":"file:///photo.jpg","mimeType":"image/jpeg","blob":"%s","_meta":{"vendor.example/trace":"keep"},"x-vendor-extension":{"retention":"keep"}}},{"type":"text","text":"safe"}]}}`,
+		base64.StdEncoding.EncodeToString(jpeg),
+	)
+
+	var out, log bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(line+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		nil,
+		MCPProxyOpts{
+			Scanner:     sc,
+			MediaPolicy: &cfg.MediaPolicy,
+			Transport:   transportMCPStdio,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("expected no injection finding for media-only response")
+	}
+
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &rpc); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	var result jsonrpc.ToolResult
+	if err := json.Unmarshal(rpc.Result, &result); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	if len(result.Content) != 2 || result.Content[0].Resource == nil {
+		t.Fatalf("content = %+v, want embedded resource and text block", result.Content)
+	}
+	if resource := result.Content[0].Resource; resource.URI != "file:///photo.jpg" || resource.MimeType != "image/jpeg" {
+		t.Fatalf("resource metadata = %+v, want uri and mimeType preserved", resource)
+	}
+	for _, want := range []string{`"vendor.example/trace":"keep"`, `"x-vendor-extension":{"retention":"keep"}`} {
+		if !bytes.Contains(rpc.Result, []byte(want)) {
+			t.Fatalf("rewritten result dropped resource extension %s: %s", want, rpc.Result)
+		}
+	}
+	if result.Content[1].Text != "safe" {
+		t.Fatalf("text block = %q, want safe", result.Content[1].Text)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(result.Content[0].Resource.Blob)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	if bytes.Contains(decoded, []byte("nested-mcp-secret-metadata")) {
+		t.Fatal("stripped embedded resource image still contains metadata payload")
+	}
+	if len(decoded) >= len(jpeg) {
+		t.Fatalf("stripped embedded resource image length %d >= original %d", len(decoded), len(jpeg))
 	}
 }
 

@@ -18,7 +18,7 @@ import {
   verifyChainWithEndorsements,
   verifyRotationEndorsement,
 } from "../src/rotation.js";
-import type { JSONObject, Receipt } from "../src/types.js";
+import type { Receipt } from "../src/types.js";
 import { InvalidError } from "../src/util.js";
 
 const validChain = "../../conformance/testdata/valid-chain.jsonl";
@@ -1042,7 +1042,6 @@ async function buildEvidenceChain(count: number): Promise<Receipt[]> {
 }
 
 async function signEvidenceReceipt(receipt: Receipt): Promise<void> {
-  const signature = receipt.signature as JSONObject;
   receipt.signature = {
     signer_key_id: "",
     key_purpose: "",
@@ -1054,7 +1053,7 @@ async function signEvidenceReceipt(receipt: Receipt): Promise<void> {
     Buffer.from(v2PrivateSeedHex, "hex"),
   );
   receipt.signature = {
-    signer_key_id: signature["signer_key_id"] ?? "receipt-signing-test",
+    signer_key_id: v2GoldenPublicKey,
     key_purpose: "receipt-signing",
     algorithm: "ed25519",
     signature: `ed25519:${Buffer.from(sig).toString("hex")}`,

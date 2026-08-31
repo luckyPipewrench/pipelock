@@ -35,6 +35,10 @@ func validDelegation(pub ed25519.PublicKey) OrchestratorDelegation {
 	}
 }
 
+func delegationTestNow() time.Time {
+	return time.Unix(1_800_000_020, 0).UTC()
+}
+
 func TestOrchestratorDelegationSignParseVerifyAndBind(t *testing.T) {
 	rootPub, rootPriv := delegationTestKey(0x41)
 	sessionPub, _ := delegationTestKey(0x42)
@@ -58,7 +62,7 @@ func TestOrchestratorDelegationSignParseVerifyAndBind(t *testing.T) {
 		ImageDigest: d.ImageDigest,
 		MaxLifetime: 31 * time.Minute,
 	}
-	if err := VerifyOrchestratorDelegation(rootPub, parsed, want); err != nil {
+	if err := verifyOrchestratorDelegationAt(rootPub, parsed, want, delegationTestNow()); err != nil {
 		t.Fatalf("VerifyOrchestratorDelegation: %v", err)
 	}
 	lm := LaunchManifest{RunNonce: d.RunNonce, DelegationID: d.DelegationID, ImageDigest: d.ImageDigest}
@@ -108,16 +112,36 @@ func TestOrchestratorDelegationRejectsMutationAndWrongScope(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			got := signed
 			mutate(&got)
-			if err := VerifyOrchestratorDelegation(rootPub, got, DelegationExpectations{}); err == nil {
+			if err := verifyOrchestratorDelegationAt(rootPub, got, DelegationExpectations{}, delegationTestNow()); err == nil {
 				t.Fatal("mutated delegation verified")
 			}
 		})
 	}
-	if err := VerifyOrchestratorDelegation(rootPub, signed, DelegationExpectations{RunNonce: "other"}); err == nil {
+	if err := verifyOrchestratorDelegationAt(rootPub, signed, DelegationExpectations{RunNonce: "other"}, delegationTestNow()); err == nil {
 		t.Fatal("wrong expected run verified")
 	}
-	if err := VerifyOrchestratorDelegation(rootPub, signed, DelegationExpectations{ImageDigest: "sha256:" + strings.Repeat("7", 64)}); err == nil {
+	if err := verifyOrchestratorDelegationAt(rootPub, signed, DelegationExpectations{ImageDigest: "sha256:" + strings.Repeat("7", 64)}, delegationTestNow()); err == nil {
 		t.Fatal("wrong expected image verified")
+	}
+}
+
+func TestOrchestratorDelegationValidityWindow(t *testing.T) {
+	pub, priv := delegationTestKey(0x41)
+	signed, err := SignOrchestratorDelegation(priv, validDelegation(pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyOrchestratorDelegationAt(pub, signed, DelegationExpectations{}, time.Unix(signed.NotBeforeUnix-1, 0)); err == nil {
+		t.Fatal("delegation verified before not_before")
+	}
+	if err := verifyOrchestratorDelegationAt(pub, signed, DelegationExpectations{}, time.Unix(signed.NotBeforeUnix, 0)); err != nil {
+		t.Fatalf("delegation rejected at not_before: %v", err)
+	}
+	if err := verifyOrchestratorDelegationAt(pub, signed, DelegationExpectations{}, time.Unix(signed.ExpiresAtUnix-1, 0)); err != nil {
+		t.Fatalf("delegation rejected before expiry: %v", err)
+	}
+	if err := verifyOrchestratorDelegationAt(pub, signed, DelegationExpectations{}, time.Unix(signed.ExpiresAtUnix, 0)); err == nil {
+		t.Fatal("delegation verified at expiry")
 	}
 }
 
@@ -159,7 +183,7 @@ func TestParseOrchestratorDelegationStrictJSONAndClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyOrchestratorDelegation(pub, tooLong, DelegationExpectations{MaxLifetime: time.Hour}); err == nil {
+	if err := verifyOrchestratorDelegationAt(pub, tooLong, DelegationExpectations{MaxLifetime: time.Hour}, delegationTestNow()); err == nil {
 		t.Fatal("delegation exceeding caller lifetime verified")
 	}
 	overflow := signed
@@ -169,7 +193,7 @@ func TestParseOrchestratorDelegationStrictJSONAndClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyOrchestratorDelegation(pub, overflow, DelegationExpectations{MaxLifetime: time.Hour}); err == nil {
+	if err := verifyOrchestratorDelegationAt(pub, overflow, DelegationExpectations{MaxLifetime: time.Hour}, delegationTestNow()); err == nil {
 		t.Fatal("overflow-sized delegation lifetime verified")
 	}
 	zeroWindow := signed
@@ -242,5 +266,15 @@ func TestLegacyLaunchManifestCanonicalBytesRemainStable(t *testing.T) {
 	signed := SignLaunchManifest(priv, lm)
 	if !VerifyLaunchManifest(priv.Public().(ed25519.PublicKey), signed) {
 		t.Fatal("legacy launch manifest signature no longer verifies")
+	}
+	withDelegationID := signed
+	withDelegationID.DelegationID = strings.Repeat("a", 64)
+	if VerifyLaunchManifest(priv.Public().(ed25519.PublicKey), withDelegationID) {
+		t.Fatal("launch manifest verified after delegation_id mutation")
+	}
+	withImageDigest := signed
+	withImageDigest.ImageDigest = "sha256:" + strings.Repeat("b", 64)
+	if VerifyLaunchManifest(priv.Public().(ed25519.PublicKey), withImageDigest) {
+		t.Fatal("launch manifest verified after image_digest mutation")
 	}
 }

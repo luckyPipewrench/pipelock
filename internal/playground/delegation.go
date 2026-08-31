@@ -186,6 +186,10 @@ func SignOrchestratorDelegation(priv ed25519.PrivateKey, d OrchestratorDelegatio
 
 // VerifyOrchestratorDelegation verifies claims and the root signature.
 func VerifyOrchestratorDelegation(pub ed25519.PublicKey, d OrchestratorDelegation, want DelegationExpectations) error {
+	return verifyOrchestratorDelegationAt(pub, d, want, time.Now().UTC())
+}
+
+func verifyOrchestratorDelegationAt(pub ed25519.PublicKey, d OrchestratorDelegation, want DelegationExpectations, now time.Time) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return fmt.Errorf("delegation root public key has wrong size")
 	}
@@ -196,6 +200,13 @@ func VerifyOrchestratorDelegation(pub ed25519.PublicKey, d OrchestratorDelegatio
 	sig, err := hex.DecodeString(d.Signature)
 	if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, d.SignedBytes(), sig) {
 		return fmt.Errorf("delegation signature invalid under root key")
+	}
+	nowUnix := now.Unix()
+	if nowUnix < d.NotBeforeUnix {
+		return fmt.Errorf("delegation is not valid yet")
+	}
+	if nowUnix >= d.ExpiresAtUnix {
+		return fmt.Errorf("delegation has expired")
 	}
 	return nil
 }

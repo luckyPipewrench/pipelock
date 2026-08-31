@@ -59,6 +59,7 @@ const (
 	hostContainmentWitnessFile = "host-containment-witness.json"
 	verifyInstructionsFile     = "VERIFY.txt"
 	checkManifestSig           = "launch-manifest-signature"
+	checkDelegation            = "orchestrator-delegation"
 	checkPinnedPipelock        = "pinned-pipelock-key"
 	checkAuditPacket           = "audit-packet-chain"
 	checkPinnedCollector       = "pinned-collector-key"
@@ -81,6 +82,7 @@ const (
 // cannot silently produce OK=true.
 var requiredChecks = []string{
 	checkManifestSig,
+	checkDelegation,
 	checkPinnedPipelock,
 	checkAuditPacket,
 	checkPinnedCollector,
@@ -362,7 +364,7 @@ func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (Veri
 		return finalize(rep, required), nil
 	}
 
-	// --- Step 1: Verify launch manifest signature under orchestrator key ---
+	// --- Step 1: Select and authenticate the launch-manifest signer ---
 
 	orchPub, err := hex.DecodeString(orchestratorPubHex)
 	if err != nil || len(orchPub) != ed25519.PublicKeySize {
@@ -373,11 +375,65 @@ func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (Veri
 		})
 		return finalize(rep, required), nil
 	}
-	if !VerifyLaunchManifest(ed25519.PublicKey(orchPub), lm) {
+	manifestPub := ed25519.PublicKey(orchPub)
+	if len(artifacts.OrchestratorDelegation) == 0 {
+		if lm.DelegationID != "" || lm.ImageDigest != "" {
+			rep.Checks = append(rep.Checks, Check{
+				Name:   checkDelegation,
+				OK:     false,
+				Reason: "manifest claims delegated signing but orchestrator-delegation.json is missing",
+			})
+			return finalize(rep, required), nil
+		}
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkDelegation,
+			OK:     true,
+			Reason: "legacy direct-root manifest",
+		})
+	} else {
+		delegation, parseErr := ParseOrchestratorDelegation(artifacts.OrchestratorDelegation)
+		if parseErr != nil {
+			rep.Checks = append(rep.Checks, Check{
+				Name:   checkDelegation,
+				OK:     false,
+				Reason: fmt.Sprintf("invalid orchestrator delegation: %v", parseErr),
+			})
+			return finalize(rep, required), nil
+		}
+		want := DelegationExpectations{RunNonce: lm.RunNonce, ImageDigest: lm.ImageDigest}
+		if verifyErr := VerifyOrchestratorDelegation(ed25519.PublicKey(orchPub), delegation, want); verifyErr != nil {
+			rep.Checks = append(rep.Checks, Check{
+				Name:   checkDelegation,
+				OK:     false,
+				Reason: fmt.Sprintf("orchestrator delegation verification failed: %v", verifyErr),
+			})
+			return finalize(rep, required), nil
+		}
+		if !DelegationBindsLaunchManifest(delegation, lm) {
+			rep.Checks = append(rep.Checks, Check{
+				Name:   checkDelegation,
+				OK:     false,
+				Reason: "orchestrator delegation does not bind the launch manifest",
+			})
+			return finalize(rep, required), nil
+		}
+		sessionPub, decodeErr := hex.DecodeString(delegation.SessionPublicKey)
+		if decodeErr != nil || len(sessionPub) != ed25519.PublicKeySize {
+			rep.Checks = append(rep.Checks, Check{
+				Name:   checkDelegation,
+				OK:     false,
+				Reason: "orchestrator delegation carries an invalid session public key",
+			})
+			return finalize(rep, required), nil
+		}
+		manifestPub = ed25519.PublicKey(sessionPub)
+		rep.Checks = append(rep.Checks, Check{Name: checkDelegation, OK: true})
+	}
+	if !VerifyLaunchManifest(manifestPub, lm) {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkManifestSig,
 			OK:     false,
-			Reason: "launch manifest signature invalid under orchestrator key",
+			Reason: "launch manifest signature invalid under authenticated signing key",
 		})
 		return finalize(rep, required), nil
 	}

@@ -1181,11 +1181,15 @@ func extractToolGeneralText(t ToolDef) string {
 			parts = append(parts, field)
 		}
 	}
-	for _, schema := range []json.RawMessage{t.InputSchema, t.OutputSchema} {
-		if len(schema) > 0 {
-			parts = append(parts, ExtractSchemaDescriptions(schema)...)
-			appendJSONKeys(schema)
-		}
+	// extractToolText already contributes every input-schema value. Keep its
+	// keys here, but do not make every downstream scanner process those values
+	// a second time. Output-schema values are unique to this extractor.
+	if len(t.InputSchema) > 0 {
+		appendJSONKeys(t.InputSchema)
+	}
+	if len(t.OutputSchema) > 0 {
+		parts = append(parts, ExtractSchemaDescriptions(t.OutputSchema)...)
+		appendJSONKeys(t.OutputSchema)
 	}
 	// Metadata is extensible and agent-visible. Its readable strings use the
 	// generic bounded extractor; actual opaque media is rejected before this

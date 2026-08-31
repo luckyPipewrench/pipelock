@@ -26,7 +26,7 @@ const (
 
 // testScanner creates a scanner with default config suitable for tool tests.
 // Mirrors the helper in scan_test.go but lives here since tools/ is a separate package.
-func testScanner(t *testing.T) *scanner.Scanner {
+func testScanner(t testing.TB) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in tests)
@@ -411,6 +411,63 @@ func TestExtractToolText_WithSchemaDescriptions(t *testing.T) {
 	}
 	if !strings.Contains(text, "File encoding") {
 		t.Error("missing second property description")
+	}
+}
+
+func TestToolScanText_EachVisibleFieldAppearsOnce(t *testing.T) {
+	tool := ToolDef{
+		Name:        "tool-name-marker",
+		Title:       "tool title marker",
+		Description: "tool description marker",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"description": "input schema marker",
+			"properties": {
+				"input readable key marker": {
+					"type": "string",
+					"description": "input property marker"
+				}
+			}
+		}`),
+		OutputSchema: json.RawMessage(`{
+			"type": "object",
+			"description": "output schema marker",
+			"properties": {
+				"output readable key marker": {
+					"type": "string",
+					"description": "output property marker"
+				}
+			}
+		}`),
+		Annotations: json.RawMessage(`{"display label marker":"annotation value marker"}`),
+		Meta:        json.RawMessage(`{"meta label marker":"meta value marker"}`),
+		unknown: map[string]json.RawMessage{
+			"extension label marker": json.RawMessage(`{"extension child marker":"extension value marker"}`),
+		},
+	}
+
+	text := strings.Trim(strings.Join([]string{extractToolText(tool), extractToolGeneralText(tool)}, ". "), ". ")
+	for _, marker := range []string{
+		"tool-name-marker",
+		"tool title marker",
+		"tool description marker",
+		"input schema marker",
+		"input readable key marker",
+		"input property marker",
+		"output schema marker",
+		"output readable key marker",
+		"output property marker",
+		"display label marker",
+		"annotation value marker",
+		"meta label marker",
+		"meta value marker",
+		"extension label marker",
+		"extension child marker",
+		"extension value marker",
+	} {
+		if count := strings.Count(text, marker); count != 1 {
+			t.Errorf("scan text contains %q %d times, want exactly once; text=%q", marker, count, text)
+		}
 	}
 }
 
@@ -2071,6 +2128,56 @@ func BenchmarkExtractSchemaDescriptions_AllFields(b *testing.B) {
 	}`)
 	for b.Loop() {
 		ExtractSchemaDescriptions(schema)
+	}
+}
+
+func BenchmarkScanTools_TwentyFourToolListing(b *testing.B) {
+	var tools strings.Builder
+	tools.WriteByte('[')
+	for i := range 24 {
+		if i > 0 {
+			tools.WriteByte(',')
+		}
+		_, _ = fmt.Fprintf(&tools, `{
+			"name":"catalog_lookup_%d",
+			"title":"Catalog lookup %d",
+			"description":"Search the product catalog and return matching records.",
+			"inputSchema":{
+				"type":"object",
+				"description":"Parameters accepted by catalog lookup %d.",
+				"properties":{
+					"query":{"type":"string","description":"Text to search for in product names and descriptions."},
+					"region":{"type":"string","description":"Region used to select the product catalog."},
+					"limit":{"type":"integer","description":"Maximum number of matching records to return."},
+					"include_metadata":{"type":"boolean","description":"Include public catalog metadata in each result."}
+				},
+				"required":["query"]
+			},
+			"outputSchema":{
+				"type":"object",
+				"description":"Catalog lookup result %d.",
+				"properties":{
+					"items":{"type":"array","description":"Matching public catalog records."},
+					"next_cursor":{"type":"string","description":"Cursor for the next page of results."}
+				}
+			},
+			"annotations":{"readOnlyHint":true,"display":"Catalog search"},
+			"_meta":{"category":"catalog","version":"v1"}
+		}`, i, i, i, i)
+	}
+	tools.WriteByte(']')
+
+	line := makeToolsResponse(tools.String())
+	sc := testScanner(b)
+	cfg := &ToolScanConfig{Action: config.ActionBlock}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(line)))
+	b.ResetTimer()
+	for b.Loop() {
+		result := ScanTools(line, sc, cfg)
+		if !result.IsToolsList || !result.Clean {
+			b.Fatalf("representative tools/list did not scan clean: %+v", result)
+		}
 	}
 }
 

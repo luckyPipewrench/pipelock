@@ -9,12 +9,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -61,6 +63,94 @@ func assertDeploymentKeyFile(t *testing.T, path string, purpose signing.KeyPurpo
 	}
 	if kf.CreatedAt == "" {
 		t.Fatalf("%s created_at is empty", path)
+	}
+}
+
+func TestLoadDeploymentSigningKeyRejectsHostileMaterial(t *testing.T) {
+	t.Parallel()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := deploymentKeyFile{
+		SchemaVersion: keyFileSchemaVersion,
+		Purpose:       string(signing.PurposeRemoteKillSigning),
+		KeyID:         remoteKillKeyID,
+		Public:        hex.EncodeToString(pub),
+		Private:       hex.EncodeToString(priv),
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	write := func(t *testing.T, value any) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "key.json")
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	path := write(t, valid)
+	loaded, err := loadDeploymentSigningKey(path, remoteKillKeyID)
+	if err != nil {
+		t.Fatalf("load valid deployment key: %v", err)
+	}
+	if !bytes.Equal(loaded, priv) {
+		t.Fatal("loaded private key differs from generated key")
+	}
+	zeroPrivateKey(loaded)
+	if !bytes.Equal(loaded, make([]byte, ed25519.PrivateKeySize)) {
+		t.Fatal("zeroPrivateKey left private-key bytes behind")
+	}
+
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*deploymentKeyFile)
+		want   string
+	}{
+		{name: "wrong schema", mutate: func(k *deploymentKeyFile) { k.SchemaVersion++ }, want: "schema"},
+		{name: "wrong id", mutate: func(k *deploymentKeyFile) { k.KeyID = remoteKillSecondKeyID }, want: "want"},
+		{name: "wrong purpose", mutate: func(k *deploymentKeyFile) { k.Purpose = string(signing.PurposePolicyBundleSigning) }, want: "purpose"},
+		{name: "malformed public", mutate: func(k *deploymentKeyFile) { k.Public = "zz" }, want: "malformed public"},
+		{name: "malformed private", mutate: func(k *deploymentKeyFile) { k.Private = "zz" }, want: "malformed private"},
+		{name: "inconsistent private", mutate: func(k *deploymentKeyFile) { k.Private = strings.Repeat("00", ed25519.PrivateKeySize) }, want: "inconsistent"},
+		{name: "mismatched halves", mutate: func(k *deploymentKeyFile) { k.Private = hex.EncodeToString(otherPriv) }, want: "does not match"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			keyFile := valid
+			tc.mutate(&keyFile)
+			_, err := loadDeploymentSigningKey(write(t, keyFile), remoteKillKeyID)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("loadDeploymentSigningKey() error = %v, want text %q", err, tc.want)
+			}
+		})
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := loadDeploymentSigningKey(missing, remoteKillKeyID); err == nil || !strings.Contains(err.Error(), "read deployment key") {
+		t.Fatalf("missing key error = %v", err)
+	}
+	oversized := filepath.Join(t.TempDir(), "oversized.json")
+	if err := os.WriteFile(oversized, bytes.Repeat([]byte(" "), deploymentKeyMaxSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDeploymentSigningKey(oversized, remoteKillKeyID); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized key error = %v", err)
+	}
+	malformed := filepath.Join(t.TempDir(), "malformed.json")
+	if err := os.WriteFile(malformed, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDeploymentSigningKey(malformed, remoteKillKeyID); err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("malformed key error = %v", err)
 	}
 }
 
@@ -193,6 +283,7 @@ func TestRun_StandsUpVerifyingFleet(t *testing.T) {
 		res.Layout.FollowerClientCertPath, res.Layout.FollowerClientKeyPath,
 		res.Layout.FollowerAuditKeyPath, res.Layout.FollowerConfigPath,
 		res.Layout.TrustRosterPath, res.Layout.PolicySigningKeyPath, res.Layout.LicenseTokenPath,
+		res.Layout.RemoteKillKeyPath, res.Layout.RemoteKillSecondKeyPath,
 		res.Layout.PublisherTokenPath, res.Layout.AuditorTokenPath, res.Layout.AdminTokenPath,
 		res.Layout.AuditBatchPath, res.Layout.ManifestPath,
 	}
@@ -208,13 +299,31 @@ func TestRun_StandsUpVerifyingFleet(t *testing.T) {
 	assertDeploymentKeyFile(t, res.Layout.RosterRootKeyPath, signing.PurposeRosterRoot, rosterRootKeyID)
 	assertDeploymentKeyFile(t, res.Layout.PolicySigningKeyPath, signing.PurposePolicyBundleSigning, policySigningKeyID)
 	assertDeploymentKeyFile(t, res.Layout.RemoteKillKeyPath, signing.PurposeRemoteKillSigning, remoteKillKeyID)
+	assertDeploymentKeyFile(t, res.Layout.RemoteKillSecondKeyPath, signing.PurposeRemoteKillSigning, remoteKillSecondKeyID)
 	assertDeploymentKeyFile(t, res.Layout.RollbackKeyPath, signing.PurposePolicyBundleRollback, rollbackKeyID)
+	roster, err := signing.LoadRoster(res.Layout.TrustRosterPath, res.RootFingerprint)
+	if err != nil {
+		t.Fatalf("load bootstrap trust roster: %v", err)
+	}
+	firstKillKey, err := roster.ResolveKey(remoteKillKeyID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("resolve first remote-kill key: %v", err)
+	}
+	secondKillKey, err := roster.ResolveKey(remoteKillSecondKeyID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("resolve second remote-kill key: %v", err)
+	}
+	if firstKillKey.PublicKeyHex == secondKillKey.PublicKeyHex {
+		t.Fatal("bootstrap trust roster maps both remote-kill ids to one public key")
+	}
 
 	// Quickstart output makes the honest claim and never prints a token value.
 	q := out.String()
 	for _, want := range []string{
 		"verifying fleet stood up", "DEPLOYMENT-ENFORCED", "pipelock conductor serve", "pipelock run -c",
 		"--publisher-org 'org-local'", "--auditor-org 'org-local'", "--admin-org 'org-local'",
+		"conductor-remote-kill-1", "conductor-remote-kill-2", "pipelock conductor kill", "pipelock conductor resume",
+		"--signing-key '" + res.Layout.RemoteKillKeyPath + "'", "--signing-key '" + res.Layout.RemoteKillSecondKeyPath + "'",
 	} {
 		if !strings.Contains(q, want) {
 			t.Errorf("quickstart output missing %q", want)

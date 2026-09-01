@@ -9,11 +9,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 )
@@ -56,10 +59,108 @@ func TestStartConductor_FailsClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := startConductor(context.Background(), filepath.Join(scratch, "conductor"), opts, m); err == nil {
+			if _, err := startConductor(context.Background(), layout, filepath.Join(scratch, "conductor"), opts, m); err == nil {
 				t.Fatalf("startConductor (%s) should fail closed", c.name)
 			}
 		})
+	}
+}
+
+func TestRemoteKillProofHelpersFailClosed(t *testing.T) {
+	layout, opts, identity, material := freshMaterial(t)
+	now := opts.Now().UTC()
+
+	resolver, err := bootstrapRemoteKillKeyResolver(layout)
+	if err != nil {
+		t.Fatalf("bootstrapRemoteKillKeyResolver: %v", err)
+	}
+	if _, err := resolver("unknown-kill-key"); err == nil {
+		t.Fatal("remote-kill resolver accepted an unknown key")
+	}
+
+	missingPublic := layout
+	missingPublic.RemoteKillSecondPubPath = filepath.Join(layout.Dir, "missing-second.pub")
+	if _, err := bootstrapRemoteKillKeyResolver(missingPublic); err == nil {
+		t.Fatal("remote-kill resolver accepted missing threshold key")
+	}
+	scratch := filepath.Join(layout.Dir, "missing-key-proof")
+	if _, err := startConductor(context.Background(), missingPublic, scratch, opts, material); err == nil {
+		t.Fatal("Conductor proof started without the second remote-kill key")
+	}
+
+	if _, err := bootstrapRosterKeyResolver(layout, "wrong-root-fingerprint", now); err == nil {
+		t.Fatal("roster resolver accepted the wrong root fingerprint")
+	}
+	rosterResolver, err := bootstrapRosterKeyResolver(layout, material.rootFingerprint, now)
+	if err != nil {
+		t.Fatalf("bootstrapRosterKeyResolver: %v", err)
+	}
+	if _, err := rosterResolver("unknown-kill-key"); err == nil {
+		t.Fatal("roster resolver accepted an unknown key")
+	}
+
+	keys, err := loadBootstrapRemoteKillKeys(layout)
+	if err != nil {
+		t.Fatalf("loadBootstrapRemoteKillKeys: %v", err)
+	}
+	defer func() {
+		for _, key := range keys {
+			zeroPrivateKey(key.private)
+		}
+	}()
+	message, err := bootstrapRemoteKillMessage(identity, conductorcore.KillSwitchActive, 1, "wrong-audience", "negative test", now, keys)
+	if err != nil {
+		t.Fatalf("bootstrapRemoteKillMessage: %v", err)
+	}
+	wrongIdentity := identity
+	wrongIdentity.InstanceID = "other-instance"
+	if err := verifyBootstrapRemoteKillForFollower(message, wrongIdentity, now, rosterResolver); err == nil {
+		t.Fatal("follower verification accepted a remote kill for another instance")
+	}
+
+	missingPrivate := layout
+	missingPrivate.RemoteKillSecondKeyPath = filepath.Join(layout.Dir, "missing-second.key")
+	if _, err := loadBootstrapRemoteKillKeys(missingPrivate); err == nil {
+		t.Fatal("remote-kill loader accepted one private signer")
+	}
+	missingFirst := layout
+	missingFirst.RemoteKillKeyPath = filepath.Join(layout.Dir, "missing-first.key")
+	if err := proveRemoteKillLifecycle(context.Background(), missingFirst, opts, identity, material.rootFingerprint, material.adminToken, &proofCaller{}); err == nil {
+		t.Fatal("remote-kill lifecycle accepted missing signer material")
+	}
+	if err := proveRemoteKillLifecycle(context.Background(), layout, opts, identity, "wrong-root-fingerprint", material.adminToken, &proofCaller{}); err == nil {
+		t.Fatal("remote-kill lifecycle accepted the wrong roster root")
+	}
+
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rejected", http.StatusUnauthorized)
+	}))
+	defer rejecting.Close()
+	caller := &proofCaller{client: rejecting.Client(), baseURL: rejecting.URL}
+	if err := caller.publishRemoteKill(context.Background(), material.adminToken, message); err == nil || !strings.Contains(err.Error(), "status 401") {
+		t.Fatalf("publishRemoteKill rejection error = %v", err)
+	}
+	oversized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(strings.Repeat("x", (1<<16)+1)))
+	}))
+	defer oversized.Close()
+	oversizedCaller := &proofCaller{client: oversized.Client(), baseURL: oversized.URL}
+	if err := oversizedCaller.publishRemoteKill(context.Background(), material.adminToken, message); err == nil || !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("publishRemoteKill oversized response error = %v", err)
+	}
+	if err := proveRemoteKillLifecycle(context.Background(), layout, opts, identity, material.rootFingerprint, material.adminToken, caller); err == nil || !strings.Contains(err.Error(), "publish remote kill") {
+		t.Fatalf("remote-kill lifecycle publish error = %v", err)
+	}
+
+	badCaller := &proofCaller{client: http.DefaultClient, baseURL: "://bad-url"}
+	if err := badCaller.publishRemoteKill(context.Background(), material.adminToken, message); err == nil {
+		t.Fatal("publishRemoteKill accepted an invalid endpoint")
+	}
+
+	// Keep the imported purpose bound to the behavior this test exercises.
+	if _, err := loadDeploymentSigningKey(layout.RemoteKillKeyPath, remoteKillKeyID); err != nil {
+		t.Fatalf("load first remote-kill signer: %v", err)
 	}
 }
 

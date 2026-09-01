@@ -136,6 +136,9 @@ func TestWriteQuickstartIncludesIdentityFlags(t *testing.T) {
 			AuditorTokenPath:        "/fleet/conductor/auditor.token",
 			AdminTokenPath:          "/fleet/conductor/admin.token",
 			RemoteKillPubPath:       "/fleet/trust/remote-kill.pub",
+			RemoteKillKeyPath:       "/fleet/trust/remote-kill.key",
+			RemoteKillSecondPubPath: "/fleet/trust/remote-kill-2.pub",
+			RemoteKillSecondKeyPath: "/fleet/trust/remote-kill-2.key",
 			RollbackPubPath:         "/fleet/trust/rollback.pub",
 			FollowerConfigPath:      "/fleet/follower/follower.yaml",
 			LicenseTokenPath:        "/fleet/license/license.token",
@@ -152,6 +155,12 @@ func TestWriteQuickstartIncludesIdentityFlags(t *testing.T) {
 		"--conductor-id conductor-dev",
 		"--follower-trust-domain custom.example",
 		"spiffe://custom.example/orgs/org/fleets/fleet/instances/inst/environments/dev",
+		"id=conductor-remote-kill-1,purpose=remote-kill-signing,file=/fleet/trust/remote-kill.pub",
+		"id=conductor-remote-kill-2,purpose=remote-kill-signing,file=/fleet/trust/remote-kill-2.pub",
+		"--signing-key '/fleet/trust/remote-kill.key'",
+		"--signing-key '/fleet/trust/remote-kill-2.key'",
+		"--counter 1 --ttl 15m",
+		"--counter 2 --ttl 15m",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("quickstart missing %q\n%s", want, got)

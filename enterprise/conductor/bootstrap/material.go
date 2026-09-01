@@ -34,10 +34,11 @@ import (
 )
 
 const (
-	rosterRootKeyID    = "fleet-roster-root"
-	policySigningKeyID = "conductor-policy-bundle-signing-1"
-	remoteKillKeyID    = "conductor-remote-kill-1"
-	rollbackKeyID      = "conductor-rollback-1"
+	rosterRootKeyID       = "fleet-roster-root"
+	policySigningKeyID    = "conductor-policy-bundle-signing-1"
+	remoteKillKeyID       = "conductor-remote-kill-1"
+	remoteKillSecondKeyID = "conductor-remote-kill-2"
+	rollbackKeyID         = "conductor-rollback-1"
 
 	certPEMType   = "CERTIFICATE"
 	ecKeyPEMType  = "EC PRIVATE KEY"
@@ -45,6 +46,7 @@ const (
 
 	ed25519SigPrefix     = "ed25519:"
 	keyFileSchemaVersion = 1
+	deploymentKeyMaxSize = 16 << 10
 
 	licenseEmail = "fleet-bootstrap@pipelock.local"
 	licenseTier  = "enterprise"
@@ -245,6 +247,10 @@ func generateTrust(layout Layout, opts Options) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generate remote-kill key: %w", err)
 	}
+	rkSecondPub, rkSecondKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", fmt.Errorf("generate second remote-kill key: %w", err)
+	}
 	psPub, psKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", fmt.Errorf("generate policy bundle signing key: %w", err)
@@ -265,6 +271,7 @@ func generateTrust(layout Layout, opts Options) (string, error) {
 		{rootKey, rootPub, rosterRootKeyID, signing.PurposeRosterRoot, layout.RosterRootKeyPath, layout.RosterRootPubPath},
 		{psKey, psPub, policySigningKeyID, signing.PurposePolicyBundleSigning, layout.PolicySigningKeyPath, ""},
 		{rkKey, rkPub, remoteKillKeyID, signing.PurposeRemoteKillSigning, layout.RemoteKillKeyPath, layout.RemoteKillPubPath},
+		{rkSecondKey, rkSecondPub, remoteKillSecondKeyID, signing.PurposeRemoteKillSigning, layout.RemoteKillSecondKeyPath, layout.RemoteKillSecondPubPath},
 		{rbKey, rbPub, rollbackKeyID, signing.PurposePolicyBundleRollback, layout.RollbackKeyPath, layout.RollbackPubPath},
 	} {
 		if err := writeDeploymentKeyFile(kp.keyPath, kp.purpose, kp.id, kp.pub, kp.priv, createdAt); err != nil {
@@ -302,6 +309,14 @@ func generateTrust(layout Layout, opts Options) (string, error) {
 				KeyID:        remoteKillKeyID,
 				KeyPurpose:   string(signing.PurposeRemoteKillSigning),
 				PublicKeyHex: hex.EncodeToString(rkPub),
+				ValidFrom:    createdAt,
+				Status:       contract.KeyStatusActive,
+				Principal:    "conductor",
+			},
+			{
+				KeyID:        remoteKillSecondKeyID,
+				KeyPurpose:   string(signing.PurposeRemoteKillSigning),
+				PublicKeyHex: hex.EncodeToString(rkSecondPub),
 				ValidFrom:    createdAt,
 				Status:       contract.KeyStatusActive,
 				Principal:    "conductor",
@@ -500,6 +515,54 @@ func writeDeploymentKeyFile(path string, purpose signing.KeyPurpose, keyID strin
 	}
 	data = append(data, '\n')
 	return writeFile(path, data)
+}
+
+func loadDeploymentSigningKey(path, expectedKeyID string) (ed25519.PrivateKey, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("read deployment key %s: %w", path, err)
+	}
+	if len(data) > deploymentKeyMaxSize {
+		return nil, fmt.Errorf("deployment key %s exceeds %d bytes", path, deploymentKeyMaxSize)
+	}
+	var keyFile deploymentKeyFile
+	if err := contract.DecodeStrictJSON(data, &keyFile); err != nil {
+		return nil, fmt.Errorf("decode deployment key %s: %w", path, err)
+	}
+	if keyFile.SchemaVersion != keyFileSchemaVersion {
+		return nil, fmt.Errorf("deployment key %s schema %d, want %d", path, keyFile.SchemaVersion, keyFileSchemaVersion)
+	}
+	if keyFile.KeyID != expectedKeyID {
+		return nil, fmt.Errorf("deployment key %s id %q, want %q", path, keyFile.KeyID, expectedKeyID)
+	}
+	if signing.KeyPurpose(keyFile.Purpose) != signing.PurposeRemoteKillSigning {
+		return nil, fmt.Errorf("deployment key %s purpose %q, want %q", path, keyFile.Purpose, signing.PurposeRemoteKillSigning)
+	}
+	pub, err := hex.DecodeString(keyFile.Public)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("deployment key %s has malformed public key", path)
+	}
+	private, err := hex.DecodeString(keyFile.Private)
+	if err != nil || len(private) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("deployment key %s has malformed private key", path)
+	}
+	key := ed25519.PrivateKey(private)
+	if err := signing.ValidatePrivateKeyConsistency(key); err != nil {
+		zeroPrivateKey(key)
+		return nil, fmt.Errorf("deployment key %s: %w", path, err)
+	}
+	derived, ok := key.Public().(ed25519.PublicKey)
+	if !ok || !strings.EqualFold(hex.EncodeToString(derived), hex.EncodeToString(pub)) {
+		zeroPrivateKey(key)
+		return nil, fmt.Errorf("deployment key %s private key does not match public key", path)
+	}
+	return key, nil
+}
+
+func zeroPrivateKey(key ed25519.PrivateKey) {
+	for i := range key {
+		key[i] = 0
+	}
 }
 
 func writePublicKey(path string, key ed25519.PublicKey) error {

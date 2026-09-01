@@ -43,14 +43,16 @@ type Layout struct {
 	FollowerRecorderDir    string
 
 	// Trust roster + its root keypair + the Conductor control keys it pins.
-	TrustRosterPath      string
-	RosterRootKeyPath    string
-	RosterRootPubPath    string
-	PolicySigningKeyPath string
-	RemoteKillKeyPath    string
-	RemoteKillPubPath    string
-	RollbackKeyPath      string
-	RollbackPubPath      string
+	TrustRosterPath         string
+	RosterRootKeyPath       string
+	RosterRootPubPath       string
+	PolicySigningKeyPath    string
+	RemoteKillKeyPath       string
+	RemoteKillPubPath       string
+	RemoteKillSecondKeyPath string
+	RemoteKillSecondPubPath string
+	RollbackKeyPath         string
+	RollbackPubPath         string
 
 	// Dev license keypair + fleet-flagged token.
 	LicenseKeyPath   string
@@ -94,14 +96,16 @@ func newLayout(dir string) (Layout, error) {
 		FollowerQueueKeyring:   j("follower-secrets", "audit-queue-keyring.json"),
 		FollowerRecorderDir:    j("follower", "recorder"),
 
-		TrustRosterPath:      j("trust", "trust-roster.json"),
-		RosterRootKeyPath:    j("trust", "roster-root.key"),
-		RosterRootPubPath:    j("trust", "roster-root.pub"),
-		PolicySigningKeyPath: j("trust", "policy-bundle-signing.key"),
-		RemoteKillKeyPath:    j("trust", "remote-kill.key"),
-		RemoteKillPubPath:    j("trust", "remote-kill.pub"),
-		RollbackKeyPath:      j("trust", "rollback.key"),
-		RollbackPubPath:      j("trust", "rollback.pub"),
+		TrustRosterPath:         j("trust", "trust-roster.json"),
+		RosterRootKeyPath:       j("trust", "roster-root.key"),
+		RosterRootPubPath:       j("trust", "roster-root.pub"),
+		PolicySigningKeyPath:    j("trust", "policy-bundle-signing.key"),
+		RemoteKillKeyPath:       j("trust", "remote-kill.key"),
+		RemoteKillPubPath:       j("trust", "remote-kill.pub"),
+		RemoteKillSecondKeyPath: j("trust", "remote-kill-2.key"),
+		RemoteKillSecondPubPath: j("trust", "remote-kill-2.pub"),
+		RollbackKeyPath:         j("trust", "rollback.key"),
+		RollbackPubPath:         j("trust", "rollback.pub"),
 
 		LicenseKeyPath:   j("license", "license.key"),
 		LicensePubPath:   j("license", "license.pub"),

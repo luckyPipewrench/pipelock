@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,7 +80,7 @@ func runProof(ctx context.Context, layout Layout, opts Options, identity control
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
 
-	srv, err := startConductor(ctx, filepath.Join(scratch, "conductor"), opts, material)
+	srv, err := startConductor(ctx, layout, filepath.Join(scratch, "conductor"), opts, material)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +99,9 @@ func runProof(ctx context.Context, layout Layout, opts Options, identity control
 	}
 	if err := caller.enroll(ctx, opts, identity, material.adminToken, auditPub); err != nil {
 		return nil, fmt.Errorf("follower enrollment: %w", err)
+	}
+	if err := proveRemoteKillLifecycle(ctx, layout, opts, identity, material.rootFingerprint, material.adminToken, caller); err != nil {
+		return nil, fmt.Errorf("remote-kill lifecycle: %w", err)
 	}
 
 	batch, err := produceSignedBatch(ctx, filepath.Join(scratch, "queue"), filepath.Join(scratch, "recorder"), opts, identity, material.auditKey, auditPub)
@@ -176,7 +180,7 @@ func (s *conductorServer) shutdown() {
 	}
 }
 
-func startConductor(ctx context.Context, storageDir string, opts Options, material *materialSet) (*conductorServer, error) {
+func startConductor(ctx context.Context, layout Layout, storageDir string, opts Options, material *materialSet) (*conductorServer, error) {
 	if err := os.MkdirAll(storageDir, dirPerm); err != nil {
 		return nil, fmt.Errorf("create proof storage dir: %w", err)
 	}
@@ -194,6 +198,16 @@ func startConductor(ctx context.Context, storageDir string, opts Options, materi
 		return nil, fmt.Errorf("open enrollment store: %w", err)
 	}
 	identityResolver, err := controlplane.MTLSFollowerIdentityResolver(opts.TrustDomain)
+	if err != nil {
+		_ = auditStore.Close()
+		return nil, err
+	}
+	emergencyControls, err := controlplane.OpenFileEmergencyStore(filepath.Join(storageDir, "emergency-controls"))
+	if err != nil {
+		_ = auditStore.Close()
+		return nil, err
+	}
+	emergencyKeys, err := bootstrapRemoteKillKeyResolver(layout)
 	if err != nil {
 		_ = auditStore.Close()
 		return nil, err
@@ -229,6 +243,7 @@ func startConductor(ctx context.Context, storageDir string, opts Options, materi
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
 		Store:               store,
 		Capabilities:        controlplane.DefaultCapabilities(opts.ConductorID),
+		Now:                 opts.Now,
 		FollowerIdentity:    identityResolver,
 		AuthorizePublisher:  publisherAuth,
 		AuthorizeBundle:     bundleAuth,
@@ -237,6 +252,8 @@ func startConductor(ctx context.Context, storageDir string, opts Options, materi
 		AuditSink:           auditStore,
 		AuditKeys:           controlplane.CompositeAuditKeyResolver(enrollments, nil),
 		Enrollments:         enrollments,
+		EmergencyControls:   emergencyControls,
+		EmergencyKeys:       emergencyKeys,
 		Metrics:             metrics.New(),
 	})
 	if err != nil {
@@ -291,6 +308,161 @@ func newFollowerHTTPClient(material *materialSet, serverName string) *http.Clien
 			},
 		},
 	}
+}
+
+func bootstrapRemoteKillKeyResolver(layout Layout) (conductorcore.SignatureKeyResolver, error) {
+	keys := make(map[string]conductorcore.SignatureKey, conductorcore.RequiredCatastrophicSigners)
+	for _, key := range []struct {
+		id   string
+		path string
+	}{
+		{id: remoteKillKeyID, path: layout.RemoteKillPubPath},
+		{id: remoteKillSecondKeyID, path: layout.RemoteKillSecondPubPath},
+	} {
+		pub, err := signing.LoadPublicKeyFile(key.path)
+		if err != nil {
+			return nil, fmt.Errorf("load remote-kill public key %q: %w", key.id, err)
+		}
+		keys[key.id] = conductorcore.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeRemoteKillSigning,
+		}
+	}
+	return func(keyID string) (conductorcore.SignatureKey, error) {
+		key, ok := keys[keyID]
+		if !ok {
+			return conductorcore.SignatureKey{}, conductorcore.ErrSignatureVerification
+		}
+		return key, nil
+	}, nil
+}
+
+func proveRemoteKillLifecycle(ctx context.Context, layout Layout, opts Options, identity controlplane.FollowerIdentity, rootFingerprint, adminToken string, caller *proofCaller) error {
+	keys, err := loadBootstrapRemoteKillKeys(layout)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, key := range keys {
+			zeroPrivateKey(key.private)
+		}
+	}()
+
+	now := opts.Now().UTC()
+	rosterResolver, err := bootstrapRosterKeyResolver(layout, rootFingerprint, now)
+	if err != nil {
+		return err
+	}
+	oneSigner, err := bootstrapRemoteKillMessage(identity, conductorcore.KillSwitchActive, 1, "bootstrap-remote-kill-one-signer", "bootstrap threshold rejection", now, keys[:1])
+	if err != nil {
+		return fmt.Errorf("build one-signer remote kill: %w", err)
+	}
+	if err := oneSigner.Validate(); !errors.Is(err, conductorcore.ErrThresholdRequired) {
+		return fmt.Errorf("one-signer remote kill error = %w, want threshold rejection", err)
+	}
+
+	kill, err := bootstrapRemoteKillMessage(identity, conductorcore.KillSwitchActive, 1, "bootstrap-remote-kill-active", "bootstrap emergency exercise", now, keys)
+	if err != nil {
+		return fmt.Errorf("build remote kill: %w", err)
+	}
+	if err := caller.publishRemoteKill(ctx, adminToken, kill); err != nil {
+		return fmt.Errorf("publish remote kill: %w", err)
+	}
+	if err := verifyBootstrapRemoteKillForFollower(kill, identity, now, rosterResolver); err != nil {
+		return fmt.Errorf("verify remote kill for follower: %w", err)
+	}
+	resume, err := bootstrapRemoteKillMessage(identity, conductorcore.KillSwitchInactive, 2, "bootstrap-remote-kill-resume", "bootstrap emergency exercise complete", now, keys)
+	if err != nil {
+		return fmt.Errorf("build remote-kill resume: %w", err)
+	}
+	if err := caller.publishRemoteKill(ctx, adminToken, resume); err != nil {
+		return fmt.Errorf("publish remote-kill resume: %w", err)
+	}
+	if err := verifyBootstrapRemoteKillForFollower(resume, identity, now, rosterResolver); err != nil {
+		return fmt.Errorf("verify remote-kill resume for follower: %w", err)
+	}
+	return nil
+}
+
+func bootstrapRosterKeyResolver(layout Layout, rootFingerprint string, now time.Time) (conductorcore.SignatureKeyResolver, error) {
+	roster, err := signing.LoadRoster(layout.TrustRosterPath, rootFingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("load bootstrap trust roster: %w", err)
+	}
+	return func(keyID string) (conductorcore.SignatureKey, error) {
+		key, err := roster.ResolveKey(keyID, now)
+		if err != nil {
+			return conductorcore.SignatureKey{}, err
+		}
+		pub, err := signing.ParsePublicKey(key.PublicKeyHex)
+		if err != nil {
+			return conductorcore.SignatureKey{}, err
+		}
+		return conductorcore.SignatureKey{PublicKey: pub, KeyPurpose: signing.KeyPurpose(key.KeyPurpose)}, nil
+	}, nil
+}
+
+func verifyBootstrapRemoteKillForFollower(message conductorcore.RemoteKillMessage, identity controlplane.FollowerIdentity, now time.Time, resolver conductorcore.SignatureKeyResolver) error {
+	if err := message.ValidateForFollower(identity.OrgID, identity.FleetID, identity.InstanceID, nil); err != nil {
+		return err
+	}
+	return message.VerifySignaturesAt(now, resolver)
+}
+
+type bootstrapRemoteKillKey struct {
+	id      string
+	private ed25519.PrivateKey
+}
+
+func loadBootstrapRemoteKillKeys(layout Layout) ([]bootstrapRemoteKillKey, error) {
+	keys := make([]bootstrapRemoteKillKey, 0, conductorcore.RequiredCatastrophicSigners)
+	for _, key := range []struct {
+		id   string
+		path string
+	}{
+		{id: remoteKillKeyID, path: layout.RemoteKillKeyPath},
+		{id: remoteKillSecondKeyID, path: layout.RemoteKillSecondKeyPath},
+	} {
+		private, err := loadDeploymentSigningKey(key.path, key.id)
+		if err != nil {
+			for _, loaded := range keys {
+				zeroPrivateKey(loaded.private)
+			}
+			return nil, err
+		}
+		keys = append(keys, bootstrapRemoteKillKey{id: key.id, private: private})
+	}
+	return keys, nil
+}
+
+func bootstrapRemoteKillMessage(identity controlplane.FollowerIdentity, state conductorcore.KillSwitchState, counter uint64, messageID, reason string, now time.Time, keys []bootstrapRemoteKillKey) (conductorcore.RemoteKillMessage, error) {
+	message := conductorcore.RemoteKillMessage{
+		SchemaVersion: conductorcore.SchemaVersion,
+		MessageID:     messageID,
+		OrgID:         identity.OrgID,
+		FleetID:       identity.FleetID,
+		Audience:      conductorcore.Audience{InstanceIDs: []string{identity.InstanceID}},
+		State:         state,
+		Counter:       counter,
+		Reason:        reason,
+		CreatedAt:     now,
+		NotBefore:     now.Add(-time.Minute),
+		ExpiresAt:     now.Add(time.Hour),
+	}
+	preimage, err := message.SignablePreimage()
+	if err != nil {
+		return conductorcore.RemoteKillMessage{}, err
+	}
+	message.Signatures = make([]conductorcore.SignatureProof, 0, len(keys))
+	for _, key := range keys {
+		message.Signatures = append(message.Signatures, conductorcore.SignatureProof{
+			SignerKeyID: key.id,
+			KeyPurpose:  signing.PurposeRemoteKillSigning,
+			Algorithm:   conductorcore.SignatureAlgorithmEd25519,
+			Signature:   conductorcore.SignaturePrefixEd25519 + hex.EncodeToString(ed25519.Sign(key.private, preimage)),
+		})
+	}
+	return message, nil
 }
 
 // --- producing a real signed audit batch --------------------------------
@@ -553,6 +725,22 @@ func (c *proofCaller) queryBatch(ctx context.Context, identity controlplane.Foll
 		return false, fmt.Errorf("queried audit batches do not include proof batch %q", batchID)
 	}
 	return false, errors.New("proof batch id is empty")
+}
+
+func (c *proofCaller) publishRemoteKill(ctx context.Context, adminToken string, message conductorcore.RemoteKillMessage) error {
+	resp, err := c.do(ctx, http.MethodPost, controlplane.RemoteKillPath, adminToken, map[string]any{"message": message})
+	if err != nil {
+		return err
+	}
+	body, readErr := readProofResponse(resp.Body, 1<<16)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read remote-kill response: %w", readErr)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("remote-kill status %d: %s", resp.StatusCode, snippet(body))
+	}
+	return nil
 }
 
 func readProofResponse(body io.Reader, maxBytes int64) ([]byte, error) {

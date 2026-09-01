@@ -94,6 +94,7 @@ func TestBootstrapCmd_StandsUpFleet(t *testing.T) {
 		"fleets/demo/",
 		"--follower-trust-domain demo.example",
 		"--conductor-id conductor-demo",
+		"--publisher-org 'org-local'",
 		"--auditor-org 'org-local'",
 		"--admin-org 'org-local'",
 	} {

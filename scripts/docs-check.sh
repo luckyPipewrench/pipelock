@@ -49,9 +49,21 @@ check_conductor_serve_scope() {
 			failed = 1
 			exit 1
 		}
+		function reset_serve() {
+			serve = 0
+			publisher_scope = 0
+			auditor_scope = 0
+			admin_scope = 0
+		}
+		function finish_serve(prefix) {
+			if (serve && (!publisher_scope || !auditor_scope || !admin_scope)) {
+				scope_error(prefix)
+			}
+			reset_serve()
+		}
 		/^```/ {
-			if (in_fence && shell_fence && serve && (!publisher_scope || !auditor_scope || !admin_scope)) {
-				scope_error("")
+			if (in_fence && shell_fence) {
+				finish_serve("")
 			}
 			if (in_fence) {
 				in_fence = 0
@@ -60,25 +72,40 @@ check_conductor_serve_scope() {
 				in_fence = 1
 				shell_fence = ($0 ~ /^```(bash|sh|shell|console)[[:space:]]*$/)
 			}
-			serve = 0
-			publisher_scope = 0
-			auditor_scope = 0
-			admin_scope = 0
+			reset_serve()
 			next
 		}
-		shell_fence && $0 !~ /--help/ && is_serve_command($0) { serve = 1 }
-		shell_fence && /--publisher-org([[:space:]\\]|$)/ { publisher_scope = 1 }
-		shell_fence && /--auditor-org([[:space:]\\]|$)/ { auditor_scope = 1 }
-		shell_fence && /--admin-org([[:space:]\\]|$)/ { admin_scope = 1 }
+		shell_fence && $0 !~ /--help/ && is_serve_command($0) {
+			finish_serve("")
+			serve = 1
+		}
+		serve && /--publisher-org([[:space:]\\]|$)/ { publisher_scope = 1 }
+		serve && /--auditor-org([[:space:]\\]|$)/ { auditor_scope = 1 }
+		serve && /--admin-org([[:space:]\\]|$)/ { admin_scope = 1 }
+		serve && $0 !~ /\\[[:space:]]*$/ { finish_serve("") }
 		END {
-			if (!failed && in_fence && shell_fence && serve && (!publisher_scope || !auditor_scope || !admin_scope)) {
-				scope_error("unterminated ")
+			if (!failed && in_fence && shell_fence) {
+				finish_serve("unterminated ")
 			}
 		}
 	' "$file"; then
-		exit 1
+		return 1
 	fi
 }
+
+if check_conductor_serve_scope <(
+	printf '%s\n' \
+		'```bash' \
+		'pipelock conductor serve \' \
+		'  --publisher-org org-a \' \
+		'  --auditor-org org-a' \
+		'pipelock conductor serve \' \
+		'  --admin-org org-b' \
+		'```'
+) 2>/dev/null; then
+	echo "docs-check: failed: cross-command scopes satisfied separate conductor serve examples" >&2
+	exit 1
+fi
 
 echo "docs-check: checking for stale public doc claims"
 

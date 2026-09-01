@@ -3261,6 +3261,9 @@ func TestForwardScanned_ConfusedDeputy_UnsolicitedResponseBlocked(t *testing.T) 
 	var out, log bytes.Buffer
 
 	tracker := NewRequestTracker()
+	// Keep the tracker seeded: method-only server notifications are not
+	// result/error envelopes and must remain forwardable after a request.
+	tracker.Track(json.RawMessage(`1`))
 	// Track ID 1, but server sends response with ID 99.
 	tracker.Track(json.RawMessage(`1`))
 
@@ -3380,7 +3383,7 @@ func TestForwardScanned_ConfusedDeputy_NilTrackerDisabled(t *testing.T) {
 	}
 }
 
-func TestForwardScanned_ConfusedDeputy_NullIDResponsePassedThrough(t *testing.T) {
+func TestForwardScanned_ConfusedDeputy_PreSeedNullIDResponsePassedThrough(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	var out, log bytes.Buffer
 
@@ -3398,6 +3401,32 @@ func TestForwardScanned_ConfusedDeputy_NullIDResponsePassedThrough(t *testing.T)
 
 	if strings.Contains(log.String(), "confused deputy") {
 		t.Error("null ID response should not trigger confused deputy")
+	}
+}
+
+func TestRunProxy_ConfusedDeputy_SeededNullIDResponseBlocked(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+
+	// The child cannot send its response until it receives the request, so the
+	// proxy has registered the request ID before this null-ID result arrives.
+	serverScript := `IFS= read -r _; printf '%s\n' '{"jsonrpc":"2.0","id":null,"result":{"owned":"attack"}}'`
+	err := RunProxy(
+		context.Background(),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n"),
+		&out,
+		&log,
+		[]string{"sh", "-c", serverScript},
+		testOpts(sc),
+	)
+	if err != nil {
+		t.Fatalf("RunProxy: %v", err)
+	}
+	if strings.Contains(out.String(), `"owned":"attack"`) {
+		t.Fatalf("uncorrelated response reached client: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "no correlatable ID") {
+		t.Fatalf("stdout = %q, want confused-deputy block", out.String())
 	}
 }
 

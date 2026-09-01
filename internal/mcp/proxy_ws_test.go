@@ -192,6 +192,39 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 	}
 }
 
+func TestRunWSProxy_ConfusedDeputy_SeededNullIDResponseBlocked(t *testing.T) {
+	responseSent := make(chan struct{})
+	srv := wsRespondServer(t, []byte(`{"jsonrpc":"2.0","id":null,"result":{"owned":"attack"}}`), responseSent)
+	defer srv.Close()
+
+	pr, pw := io.Pipe()
+	var stdout, stderr lockedHTTPBuffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var proxyErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: testScannerForWS(t)})
+	}()
+
+	_, _ = pw.Write([]byte(jsonToolsCallEcho + "\n"))
+	waitForResponse(t, responseSent)
+	testwait.For(t, time.Second, func() bool {
+		return stdout.contains("no correlatable ID")
+	}, "null-ID WS response blocked")
+	_ = pw.Close()
+	wg.Wait()
+	if proxyErr != nil {
+		t.Fatalf("RunWSProxy: %v", proxyErr)
+	}
+	if stdout.contains(`"owned":"attack"`) {
+		t.Fatalf("uncorrelated response reached client: %s", stdout.String())
+	}
+}
+
 func TestRunWSProxy_SignedAgentCardUsesHTTPEquivalentOrigin(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

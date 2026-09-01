@@ -180,6 +180,25 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	if err := publisher(bearerRequest(t, PublishPolicyBundlePath, "publish-token"), wrongFleet); !errors.Is(err, ErrPublisherForbidden) {
 		t.Fatalf("publisher(wrong fleet) error = %v, want ErrPublisherForbidden", err)
 	}
+	wrongOrg := bundle
+	wrongOrg.OrgID = "org-other"
+	if err := publisher(bearerRequest(t, PublishPolicyBundlePath, "publish-token"), wrongOrg); !errors.Is(err, ErrPublisherForbidden) {
+		t.Fatalf("publisher(wrong org) error = %v, want ErrPublisherForbidden", err)
+	}
+	orgWidePublisher, err := ScopedBearerBundleAuthorizer([]ScopedBearerCredential{{
+		Token: "org-publisher-token",
+		Role:  RolePublisher,
+		OrgID: "org-main",
+	}})
+	if err != nil {
+		t.Fatalf("ScopedBearerBundleAuthorizer(org-wide) error = %v", err)
+	}
+	if err := orgWidePublisher(bearerRequest(t, PublishPolicyBundlePath, "org-publisher-token"), wrongFleet); err != nil {
+		t.Fatalf("org-wide publisher(sibling fleet) error = %v, want nil", err)
+	}
+	if err := orgWidePublisher(bearerRequest(t, PublishPolicyBundlePath, "org-publisher-token"), wrongOrg); !errors.Is(err, ErrPublisherForbidden) {
+		t.Fatalf("org-wide publisher(other org) error = %v, want ErrPublisherForbidden", err)
+	}
 	if err := publisher(bearerRequest(t, PublishPolicyBundlePath, "audit-token"), bundle); !errors.Is(err, ErrPublisherForbidden) {
 		t.Fatalf("publisher(auditor token) error = %v, want ErrPublisherForbidden", err)
 	}
@@ -234,6 +253,22 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	}
 	if wide.Allows("org-other", "prod") {
 		t.Fatal("org-wide admin reached another organization")
+	}
+}
+
+func TestScopedBearerBundleAuthorizerRejectsUnscopedPublisher(t *testing.T) {
+	for _, orgID := range []string{"", " \t "} {
+		_, err := ScopedBearerBundleAuthorizer([]ScopedBearerCredential{{
+			Token: "publisher-token",
+			Role:  RolePublisher,
+			OrgID: orgID,
+		}})
+		if !errors.Is(err, ErrPublisherForbidden) {
+			t.Fatalf("ScopedBearerBundleAuthorizer(unscoped publisher %q) error = %v, want ErrPublisherForbidden", orgID, err)
+		}
+		if !strings.Contains(err.Error(), "org_id required for publisher credential") {
+			t.Fatalf("ScopedBearerBundleAuthorizer(unscoped publisher %q) error = %v, want publisher scope guidance", orgID, err)
+		}
 	}
 }
 

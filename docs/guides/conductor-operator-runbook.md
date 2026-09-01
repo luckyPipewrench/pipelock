@@ -173,8 +173,11 @@ Start Conductor (source-verified from bootstrap quickstart and `conductor serve 
   --tls-key "$FLEET_DIR/conductor/server.key" \
   --client-ca "$FLEET_DIR/ca/ca.crt" \
   --publisher-token-file "$FLEET_DIR/conductor/publisher.token" \
+  --publisher-org org-local \
   --auditor-token-file "$FLEET_DIR/conductor/auditor.token" \
+  --auditor-org org-local \
   --admin-token-file "$FLEET_DIR/conductor/admin.token" \
+  --admin-org org-local \
   --trusted-control-key id=conductor-remote-kill-1,purpose=remote-kill-signing,file="$FLEET_DIR/trust/remote-kill.pub" \
   --trusted-control-key id=conductor-rollback-1,purpose=policy-bundle-rollback,file="$FLEET_DIR/trust/rollback.pub" \
   --probe-listen 127.0.0.1:9092

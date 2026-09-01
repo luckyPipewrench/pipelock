@@ -51,6 +51,24 @@ spec:
             - {{ .Values.conductor.conductorID | quote }}
             - --follower-trust-domain
             - {{ .Values.conductor.followerTrustDomain | quote }}
+            - --publisher-org
+            - {{ required "conductor.orgID is required in conductor mode" .Values.conductor.orgID | quote }}
+            {{- with .Values.conductor.fleetID }}
+            - --publisher-fleet
+            - {{ . | quote }}
+            {{- end }}
+            - --auditor-org
+            - {{ required "conductor.orgID is required in conductor mode" .Values.conductor.orgID | quote }}
+            {{- with .Values.conductor.fleetID }}
+            - --auditor-fleet
+            - {{ . | quote }}
+            {{- end }}
+            - --admin-org
+            - {{ required "conductor.orgID is required in conductor mode" .Values.conductor.orgID | quote }}
+            {{- with .Values.conductor.fleetID }}
+            - --admin-fleet
+            - {{ . | quote }}
+            {{- end }}
             - --tls-cert
             - {{ printf "%s/tls.crt" .Values.conductor.tls.serverSecretRef.mountPath | quote }}
             - --tls-key

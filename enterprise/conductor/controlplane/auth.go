@@ -162,6 +162,11 @@ func ScopedBearerBundleAuthorizer(creds []ScopedBearerCredential) (BundleAuthori
 	if err != nil {
 		return nil, err
 	}
+	for _, cred := range normalized {
+		if cred.Role == RolePublisher && cred.OrgID == "" {
+			return nil, fmt.Errorf("%w: org_id required for publisher credential", ErrPublisherForbidden)
+		}
+	}
 	return func(r *http.Request, bundle conductor.PolicyBundle) error {
 		cred, ok := matchBearerCredential(r, normalized)
 		if !ok || cred.Role != RolePublisher || !scopedCredentialAllows(cred, bundle.OrgID, bundle.FleetID) {

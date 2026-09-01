@@ -23,6 +23,8 @@ license:
 conductor:
   conductorID: conductor-prod-1
   followerTrustDomain: pipelock.local
+  orgID: org-prod
+  fleetID: fleet-prod
   service:
     type: ClusterIP
     port: 8895

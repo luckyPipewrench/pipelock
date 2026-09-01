@@ -107,8 +107,11 @@ pipelock conductor serve \
   --tls-cert conductor.crt --tls-key conductor.key \
   --client-ca followers-ca.pem \
   --publisher-token-file publisher.token \
+  --publisher-org org-acme \
   --auditor-token-file auditor.token \
+  --auditor-org org-acme \
   --admin-token-file admin.token \
+  --admin-org org-acme \
   --trusted-audit-key 'id=follower-1,org=org-acme,file=/keys/follower-1.pub'
 ```
 
@@ -120,8 +123,14 @@ pipelock conductor serve \
 | `--conductor-id` | `conductor` | Conductor ID advertised in capabilities. |
 | `--follower-trust-domain` | `pipelock.local` | SPIFFE trust domain for follower mTLS identities. |
 | `--publisher-token-file` | (required) | File holding the bearer token required to publish policy bundles. Sufficient for a normal publish to a healthy fleet, and **not** sufficient to override a fleet-skew preflight block: `--allow-fleet-skew` is admin-only, so a publish that needs it must present the admin token instead. `pipelock conductor publish` has no separate admin-token flag, so point its own `--publisher-token-file` at the admin token file for that one publish. |
+| `--publisher-org` | (required) | Organization scope for the publisher bearer token. |
+| `--publisher-fleet` | (optional) | Fleet scope for the publisher bearer token; omit to authorize that publisher across every fleet in `--publisher-org`. |
 | `--auditor-token-file` | (required) | File holding the bearer token required to query audit metadata. |
+| `--auditor-org` | (required) | Organization scope for the auditor bearer token. |
+| `--auditor-fleet` | (optional) | Fleet scope for the auditor bearer token. |
 | `--admin-token-file` | (required) | File holding the bearer token required for Conductor admin requests. |
+| `--admin-org` | (required) | Organization scope for the admin bearer token. |
+| `--admin-fleet` | (optional) | Fleet scope for the admin bearer token. |
 | `--audit-retention` | `0` (keep forever) | Duration to keep audit evidence; older batches are pruned at startup. |
 | `--trusted-audit-key` | (repeatable) | Trusted follower audit signing key: `id=ID,(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]`. `inline=` accepts a raw 64-hex Ed25519 public key or the versioned `pipelock-ed25519-public-v1` format. `org=` is required for `pipelock conductor serve`. |
 | `--trusted-control-key` | (repeatable) | Trusted emergency control key: `id=ID,purpose=(remote-kill-signing\|policy-bundle-rollback),(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)`. `inline=` accepts a raw 64-hex Ed25519 public key or the versioned `pipelock-ed25519-public-v1` format. |

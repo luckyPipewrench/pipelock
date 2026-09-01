@@ -214,7 +214,7 @@ func TestRun_StandsUpVerifyingFleet(t *testing.T) {
 	q := out.String()
 	for _, want := range []string{
 		"verifying fleet stood up", "DEPLOYMENT-ENFORCED", "pipelock conductor serve", "pipelock run -c",
-		"--auditor-org org-local", "--admin-org org-local",
+		"--publisher-org org-local", "--auditor-org org-local", "--admin-org org-local",
 	} {
 		if !strings.Contains(q, want) {
 			t.Errorf("quickstart output missing %q", want)

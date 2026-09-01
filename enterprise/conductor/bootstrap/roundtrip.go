@@ -204,7 +204,7 @@ func startConductor(ctx context.Context, storageDir string, opts Options, materi
 		return nil, err
 	}
 	bundleAuth, err := controlplane.ScopedBearerBundleAuthorizer([]controlplane.ScopedBearerCredential{
-		{Token: material.publisherToken, Role: controlplane.RolePublisher},
+		{Token: material.publisherToken, Role: controlplane.RolePublisher, OrgID: opts.OrgID},
 	})
 	if err != nil {
 		_ = auditStore.Close()

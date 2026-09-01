@@ -66,6 +66,7 @@ PIPELOCK_LICENSE_KEY= pipelock conductor serve \
   --tls-key /etc/pipelock/conductor/tls.key \
   --client-ca /etc/pipelock/conductor/client-ca.crt \
   --publisher-token-file /etc/pipelock/tokens/publisher \
+  --publisher-org org-acme \
   --auditor-token-file /etc/pipelock/tokens/auditor \
   --admin-token-file /etc/pipelock/tokens/admin \
   --auditor-org org-acme \

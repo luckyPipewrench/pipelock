@@ -47,6 +47,8 @@ type serveOptions struct {
 	conductorID           string
 	followerTrustDomain   string
 	publisherTokenFile    string
+	publisherOrgID        string
+	publisherFleetID      string
 	auditorTokenFile      string
 	adminTokenFile        string
 	auditorOrgID          string
@@ -153,6 +155,8 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.conductorID, "conductor-id", opts.conductorID, "Conductor ID advertised in capabilities")
 	cmd.Flags().StringVar(&opts.followerTrustDomain, "follower-trust-domain", opts.followerTrustDomain, "SPIFFE trust domain for follower mTLS identities")
 	cmd.Flags().StringVar(&opts.publisherTokenFile, "publisher-token-file", "", "file containing bearer token required for policy publish requests")
+	cmd.Flags().StringVar(&opts.publisherOrgID, "publisher-org", "", "org scope for the publisher bearer token on policy publish requests (required)")
+	cmd.Flags().StringVar(&opts.publisherFleetID, "publisher-fleet", "", "optional fleet scope for the publisher bearer token on policy publish requests")
 	cmd.Flags().StringVar(&opts.auditorTokenFile, "auditor-token-file", "", "file containing bearer token required for audit metadata query requests")
 	cmd.Flags().StringVar(&opts.adminTokenFile, "admin-token-file", "", "file containing bearer token required for Conductor admin requests")
 	cmd.Flags().StringVar(&opts.auditorOrgID, "auditor-org", "", "org scope for the auditor bearer token on audit/follower read requests (required)")
@@ -304,6 +308,9 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (*serveHandler, h
 	if strings.TrimSpace(opts.auditorOrgID) == "" {
 		return nil, nil, nil, errors.New("--auditor-org is required")
 	}
+	if strings.TrimSpace(opts.publisherOrgID) == "" {
+		return nil, nil, nil, errors.New("--publisher-org is required")
+	}
 	if strings.TrimSpace(opts.adminOrgID) == "" {
 		return nil, nil, nil, errors.New("--admin-org is required")
 	}
@@ -338,7 +345,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (*serveHandler, h
 		return nil, nil, nil, err
 	}
 	publishAuthorizer, err := controlplane.ScopedBearerBundleAuthorizer([]controlplane.ScopedBearerCredential{
-		{Token: publisherToken, Role: controlplane.RolePublisher},
+		{Token: publisherToken, Role: controlplane.RolePublisher, OrgID: opts.publisherOrgID, FleetID: opts.publisherFleetID},
 		{Token: adminToken, Role: controlplane.RolePublisher, OrgID: opts.adminOrgID, FleetID: opts.adminFleetID},
 	})
 	if err != nil {

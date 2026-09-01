@@ -270,6 +270,7 @@ func newPublishServer(t *testing.T) string {
 	bundleAuth, err := controlplane.ScopedBearerBundleAuthorizer([]controlplane.ScopedBearerCredential{{
 		Token: testPubToken,
 		Role:  controlplane.RolePublisher,
+		OrgID: testOrg,
 	}})
 	if err != nil {
 		t.Fatalf("ScopedBearerBundleAuthorizer: %v", err)

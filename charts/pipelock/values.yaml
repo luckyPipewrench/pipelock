@@ -180,6 +180,11 @@ conductor:
   replicaCount: 1
   conductorID: "conductor"
   followerTrustDomain: "pipelock.local"
+  # Tenant scope for publisher, auditor, and admin bearer credentials.
+  # orgID is required in conductor mode; omit fleetID to scope credentials to
+  # every fleet in this organization.
+  orgID: ""
+  fleetID: ""
   service:
     type: ClusterIP
     port: 8895

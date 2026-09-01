@@ -235,6 +235,26 @@ func TestRunHTTPProxy_ForwardsCleanRequest(t *testing.T) {
 	}
 }
 
+func TestRunHTTPProxy_ConfusedDeputy_SeededMissingIDResponseBlocked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{"owned":"attack"}}`))
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	err := RunHTTPProxy(context.Background(), strings.NewReader(jsonToolsCallEcho+"\n"), &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+	if strings.Contains(stdout.String(), `"owned":"attack"`) {
+		t.Fatalf("uncorrelated response reached client: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "no correlatable ID") {
+		t.Fatalf("stdout = %q, want confused-deputy block", stdout.String())
+	}
+}
+
 func TestRunHTTPProxy_UpstreamUsesConfiguredDialContext(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	errDialBlocked := errors.New("sentinel dial blocked")

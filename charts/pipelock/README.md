@@ -91,6 +91,8 @@ Enterprise server modes use the license Secret as `PIPELOCK_LICENSE_KEY` because
 |---|---|---|
 | `conductor.service.port` | `8895` | Follower mTLS API listener |
 | `conductor.service.probePort` | `9092` | Plain HTTP health/readiness/metrics probe listener |
+| `conductor.orgID` | `""` | Required organization scope shared by publisher, auditor, and admin bearer credentials |
+| `conductor.fleetID` | `""` | Optional fleet scope shared by publisher, auditor, and admin bearer credentials; empty covers every fleet in `conductor.orgID` |
 | `conductor.tls.serverSecretRef.name` | `""` | Existing TLS Secret with `tls.crt` and `tls.key` |
 | `conductor.tls.clientCASecretRef.name` | `""` | Existing Secret with the follower client CA bundle |
 | `conductor.tokens.publisher.secretRef.name` | `""` | Existing Secret for publisher bearer token file |

@@ -49,6 +49,28 @@ func TestServeCmd_NoFleetLicenseFailsClosed(t *testing.T) {
 	}
 }
 
+func TestServeCmdPublisherScopeFlags(t *testing.T) {
+	cmd := serveCmd()
+	if err := cmd.ParseFlags([]string{"--publisher-org", "org-main", "--publisher-fleet", "prod"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	for name, want := range map[string]string{"publisher-org": "org-main", "publisher-fleet": "prod"} {
+		got, err := cmd.Flags().GetString(name)
+		if err != nil || got != want {
+			t.Fatalf("%s value = %q, %v; want %q, nil", name, got, err, want)
+		}
+	}
+	for _, name := range []string{"publisher-org", "publisher-fleet"} {
+		flag := cmd.Flags().Lookup(name)
+		if flag == nil {
+			t.Fatalf("%s flag is not registered", name)
+		}
+		if !strings.Contains(flag.Usage, "publisher bearer token") {
+			t.Fatalf("%s flag usage = %q, want publisher scope guidance", name, flag.Usage)
+		}
+	}
+}
+
 func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -78,6 +100,8 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		conductorID:         "conductor-test",
 		followerTrustDomain: defaultTrustDomain,
 		publisherTokenFile:  tokenPath,
+		publisherOrgID:      "org-main",
+		publisherFleetID:    "prod",
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 		auditorOrgID:        "org-main",
@@ -111,6 +135,36 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("capabilities status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name          string
+		orgID         string
+		fleetID       string
+		wantForbidden bool
+	}{
+		{name: "matching scope", orgID: "org-main", fleetID: "prod"},
+		{name: "other org", orgID: "org-other", fleetID: "prod", wantForbidden: true},
+		{name: "other fleet", orgID: "org-main", fleetID: "staging", wantForbidden: true},
+	} {
+		t.Run("publisher scope/"+tc.name, func(t *testing.T) {
+			body, err := json.Marshal(struct {
+				Bundle conductorcore.PolicyBundle `json:"bundle"`
+			}{Bundle: conductorcore.PolicyBundle{OrgID: tc.orgID, FleetID: tc.fleetID}})
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, controlplane.PublishPolicyEvaluatePath, bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer secret-token")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if tc.wantForbidden && w.Code != http.StatusForbidden {
+				t.Fatalf("scope status = %d body=%s, want 403", w.Code, w.Body.String())
+			}
+			if !tc.wantForbidden && w.Code == http.StatusForbidden {
+				t.Fatalf("matching scope status = %d body=%s, want non-403", w.Code, w.Body.String())
+			}
+		})
 	}
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, controlplane.ReadyzPath, nil)
@@ -231,6 +285,8 @@ func TestBuildServeHandlerFleetSkewOverrideUsesAdminCredential(t *testing.T) {
 		conductorID:         "conductor-test",
 		followerTrustDomain: defaultTrustDomain,
 		publisherTokenFile:  publisherTokenPath,
+		publisherOrgID:      testOrg,
+		publisherFleetID:    testFleet,
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 		auditorOrgID:        testOrg,
@@ -342,6 +398,7 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		tlsKey:              "server.key",
 		clientCA:            caPath,
 		publisherTokenFile:  tokenPath,
+		publisherOrgID:      "org-main",
 		auditorTokenFile:    auditorTokenPath,
 	})
 	if err == nil || err.Error() != "--admin-token-file is required" {
@@ -375,6 +432,21 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		adminTokenFile:      adminTokenPath,
 		auditorOrgID:        "org-main",
 	})
+	if err == nil || err.Error() != "--publisher-org is required" {
+		t.Fatalf("buildServeHandler(missing publisher org) error = %v, want --publisher-org required", err)
+	}
+	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
+		storageDir:          filepath.Join(dir, "store"),
+		followerTrustDomain: defaultTrustDomain,
+		tlsCert:             "server.pem",
+		tlsKey:              "server.key",
+		clientCA:            caPath,
+		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        "org-main",
+		publisherOrgID:      "org-main",
+	})
 	if err == nil || err.Error() != "--admin-org is required" {
 		t.Fatalf("buildServeHandler(missing admin org) error = %v, want --admin-org required", err)
 	}
@@ -385,6 +457,7 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		tlsKey:              "server.key",
 		clientCA:            caPath,
 		publisherTokenFile:  tokenPath,
+		publisherOrgID:      "org-main",
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 		auditorOrgID:        "org-main",
@@ -404,6 +477,7 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		tlsKey:              "server.key",
 		clientCA:            caPath,
 		publisherTokenFile:  tokenPath,
+		publisherOrgID:      "org-main",
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 		auditorOrgID:        "org-main",
@@ -452,6 +526,7 @@ func TestBuildServeHandlerRejectsNegativeAuditRetention(t *testing.T) {
 		tlsKey:              "server.key",
 		clientCA:            caPath,
 		publisherTokenFile:  tokenPath,
+		publisherOrgID:      "org-main",
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 		auditRetention:      -time.Second,
@@ -494,6 +569,7 @@ func TestBuildServeHandlerPrunesAuditRetention(t *testing.T) {
 		tlsKey:              "server.key",
 		clientCA:            caPath,
 		publisherTokenFile:  tokenPath,
+		publisherOrgID:      "org-main",
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 		auditorOrgID:        "org-main",
@@ -570,6 +646,7 @@ func TestRunServeReturnsTLSLoadError(t *testing.T) {
 		conductorID:         "conductor-test",
 		followerTrustDomain: defaultTrustDomain,
 		publisherTokenFile:  tokenPath,
+		publisherOrgID:      "org-main",
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 		auditorOrgID:        "org-main",

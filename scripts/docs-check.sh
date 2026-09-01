@@ -32,6 +32,39 @@ check_no_match() {
 	fi
 }
 
+check_conductor_serve_scope() {
+	local file="$1"
+	if ! awk -v file="$file" '
+		/^```/ {
+			if (in_fence && shell_fence && serve && !publisher_scope) {
+				printf "docs-check: failed: conductor serve example in %s lacks --publisher-org\n", file > "/dev/stderr"
+				failed = 1
+				exit 1
+			}
+			if (in_fence) {
+				in_fence = 0
+				shell_fence = 0
+			} else {
+				in_fence = 1
+				shell_fence = ($0 ~ /^```(bash|sh|shell|console)[[:space:]]*$/)
+			}
+			serve = 0
+			publisher_scope = 0
+			next
+		}
+		shell_fence && $0 !~ /--help/ && /^[[:space:]]*(pipelock|\/tmp\/pipelock-ent)[[:space:]]+conductor[[:space:]]+serve([[:space:]]|$)/ { serve = 1 }
+		shell_fence && /--publisher-org([[:space:]\\]|$)/ { publisher_scope = 1 }
+		END {
+			if (!failed && in_fence && shell_fence && serve && !publisher_scope) {
+				printf "docs-check: failed: unterminated conductor serve example in %s lacks --publisher-org\n", file > "/dev/stderr"
+				exit 1
+			}
+		}
+	' "$file"; then
+		exit 1
+	fi
+}
+
 echo "docs-check: checking for stale public doc claims"
 
 python3 scripts/render_brand.py --check
@@ -53,6 +86,15 @@ check_no_match 'timeline (lists|of) every mediated decision' 'unprovable evidenc
 check_no_match 'stale_policy\.(grace_multiplier|after_grace).*\| Reserved' 'stale-policy-as-reserved claim'
 check_no_match 'Every signed bundle hash is written to an append-only transparency log' 'unshipped universal transparency-log claim'
 check_no_match 'No implementation should start until these are accepted' 'obsolete Conductor pre-implementation gate'
+
+for conductor_doc in \
+	docs/guides/conductor.md \
+	docs/guides/conductor-operator-runbook.md \
+	docs/guides/conductor-production-runbook.md \
+	docs/guides/enterprise-license-issuance-runbook.md \
+	docs/specs/pipelock-conductor-audit-sink.md; do
+	check_conductor_serve_scope "$conductor_doc"
+done
 
 echo "docs-check: printing canonical local stats"
 make stats

@@ -254,8 +254,11 @@ pipelock conductor serve \
   --tls-key /etc/pipelock/conductor/tls/server/tls.key \
   --client-ca /etc/pipelock/conductor/tls/client-ca/ca.crt \
   --publisher-token-file /etc/pipelock/conductor/tokens/publisher/token \
+  --publisher-org org-acme \
   --auditor-token-file /etc/pipelock/conductor/tokens/auditor/token \
+  --auditor-org org-acme \
   --admin-token-file /etc/pipelock/conductor/tokens/admin/token \
+  --admin-org org-acme \
   --trusted-audit-key "id=edge-01-audit,org=org-acme,inline=$(jq -r .public /etc/pipelock/fleet-keys/edge-01-audit.json)" \
   --trusted-control-key "id=kill-approver-1,purpose=remote-kill-signing,inline=$(jq -r .public /etc/pipelock/fleet-keys/kill-approver-1.json)" \
   --trusted-control-key "id=rollback-approver-1,purpose=policy-bundle-rollback,inline=$(jq -r .public /etc/pipelock/fleet-keys/rollback-approver-1.json)" \

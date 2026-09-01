@@ -292,8 +292,11 @@ pipelock conductor serve \
   --tls-key /etc/pipelock/conductor/server.key \
   --client-ca /etc/pipelock/conductor/follower-ca.pem \
   --publisher-token-file /etc/pipelock/conductor/publisher-token \
+  --publisher-org org-main \
   --auditor-token-file /etc/pipelock/conductor/auditor-token \
+  --auditor-org org-main \
   --admin-token-file /etc/pipelock/conductor/admin-token \
+  --admin-org org-main \
   --trusted-control-key id=remote-key-1,purpose=remote-kill-signing,file=/etc/pipelock/conductor/remote-kill.pub \
   --trusted-control-key id=rollback-key-1,purpose=policy-bundle-rollback,file=/etc/pipelock/conductor/rollback.pub \
   --remote-kill-max-validity 72h \

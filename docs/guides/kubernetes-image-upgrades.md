@@ -138,7 +138,18 @@ pods, and the digest the node reported after pulling the image.
 ```bash
 kubectl -n pipelock get deployment pipelock -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\t"}{.image}{"\n"}{end}'
 kubectl -n pipelock rollout status deployment/pipelock --timeout=5m
-PIPELOCK_SELECTOR="$(kubectl -n pipelock get deployment pipelock -o json | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
+PIPELOCK_SELECTOR="$(kubectl -n pipelock get deployment pipelock -o json | jq -er '
+  [
+    (.spec.selector.matchLabels // {} | to_entries[] | "\(.key)=\(.value)"),
+    (.spec.selector.matchExpressions // [] | .[] |
+      if .operator == "In" then "\(.key) in (\(.values | join(",")))"
+      elif .operator == "NotIn" then "\(.key) notin (\(.values | join(",")))"
+      elif .operator == "Exists" then .key
+      elif .operator == "DoesNotExist" then "!\(.key)"
+      else error("unsupported workload selector operator: \(.operator)")
+      end)
+  ] | join(",")
+')"
 test -n "$PIPELOCK_SELECTOR"
 kubectl -n pipelock wait --for=condition=Ready pod -l "$PIPELOCK_SELECTOR" --timeout=5m
 kubectl -n pipelock get pods -l "$PIPELOCK_SELECTOR" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.initContainerStatuses[*]}{.name}{"\t"}{.imageID}{"\n"}{end}{range .status.containerStatuses[*]}{.name}{"\t"}{.imageID}{"\n"}{end}{end}'

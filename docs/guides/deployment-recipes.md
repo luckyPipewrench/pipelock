@@ -60,7 +60,7 @@ networks:
 
 services:
   pipelock:
-    image: ghcr.io/luckypipewrench/pipelock:3.5.0
+    image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
     command: run --config /config/pipelock.yaml --listen 0.0.0.0:8888
     volumes:
       - ./pipelock.yaml:/config/pipelock.yaml:ro
@@ -206,7 +206,7 @@ spec:
       containers:
         # Pipelock sidecar
         - name: pipelock
-          image: ghcr.io/luckypipewrench/pipelock:3.5.0
+          image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
           args:
             - run
             - --config
@@ -474,7 +474,7 @@ Topology assumption: service-routed Docker Compose, same as the earlier Compose 
 ```yaml
 services:
   pipelock:
-    image: ghcr.io/luckypipewrench/pipelock:3.5.0
+    image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
     command: run --config /config/pipelock.yaml --listen 0.0.0.0:8888
     volumes:
       - ./pipelock.yaml:/config/pipelock.yaml:ro
@@ -523,7 +523,7 @@ Mount both into the pipelock sidecar, and the CA (not the key) into the agent co
 ```yaml
 containers:
   - name: pipelock
-    image: ghcr.io/luckypipewrench/pipelock:3.5.0
+    image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
     args: ["run", "--config", "/etc/pipelock/pipelock.yaml"]
     volumeMounts:
       - name: pipelock-config

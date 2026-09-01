@@ -158,6 +158,8 @@ func TestRunGenKeyFailsWhenStdoutWriteFails(t *testing.T) {
 }
 
 func TestRunRejectsMissingInputs(t *testing.T) {
+	t.Setenv("RELEASE_KEYRING_HEX", "")
+
 	tests := []struct {
 		name string
 		args []string

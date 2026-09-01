@@ -91,11 +91,11 @@ image.
 image:
   repository: ghcr.io/luckypipewrench/pipelock
   tag: ""
-  digest: "sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098"
+  digest: "sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965"
 ```
 
-That digest only shows the required shape. Replace it with the `pipelock`
-digest from the release bundle you verified.
+That is the v3.5.0 digest. For another release, replace it with the `pipelock`
+digest from that release's verified bundle.
 
 Render the exact values before applying them:
 
@@ -118,16 +118,16 @@ separate on purpose and are not configured by the Pipelock Helm chart.
 ```yaml
 initContainers:
   - name: pipelock-init
-    image: ghcr.io/luckypipewrench/pipelock-init@sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098
+    image: ghcr.io/luckypipewrench/pipelock-init@sha256:0d54825d0ddf820edd9627cc08253ed838aebd43f7a62938505f6eae7955d714
     args: ["cp", "/pipelock", "/shared-bin/pipelock"]
 
 containers:
   - name: license-service
-    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098
+    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:68553cea16b32bdaa4251b65531c2e2ad9502ad9b4a9e4fa8e616ed69deaf5e0
 ```
 
-Those digests also show shape only. Replace each with its matching entry from
-the release bundle.
+Those are the v3.5.0 digests. For another release, replace each with its
+matching entry from that release's verified bundle.
 
 ## Prove the cluster changed
 

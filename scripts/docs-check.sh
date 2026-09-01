@@ -18,8 +18,12 @@ fi
 check_no_match() {
 	local pattern="$1"
 	local label="$2"
+	local targets=("${scope[@]}")
+	if (($# > 2)); then
+		targets=("${@:3}")
+	fi
 
-	if rg -n --color=never "$pattern" "${scope[@]}"; then
+	if rg -n --color=never "$pattern" "${targets[@]}"; then
 		echo
 		echo "docs-check: failed: found stale ${label}"
 		exit 1
@@ -29,6 +33,43 @@ check_no_match() {
 			echo "docs-check: failed: rg could not check ${label} (exit ${status})" >&2
 			exit "$status"
 		fi
+	fi
+}
+
+check_pipelock_workflow_version() {
+	local workflow="$1"
+	if ! awk '
+		function finish_step() {
+			if (in_pipelock_step && !has_expected_version) {
+				exit 1
+			}
+		}
+		/^[[:space:]]{6}-[[:space:]]/ {
+			finish_step()
+			in_pipelock_step = 0
+			has_expected_version = 0
+			in_with = 0
+		}
+		/^[[:space:]]{8}uses:[[:space:]]+luckyPipewrench\/pipelock@/ {
+			in_pipelock_step = 1
+			found_pipelock_step = 1
+		}
+		in_pipelock_step && /^[[:space:]]{8}with:[[:space:]]*$/ {
+			in_with = 1
+			next
+		}
+		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*'\''3\.5\.0'\''[[:space:]]*$/ {
+			has_expected_version = 1
+		}
+		END {
+			finish_step()
+			if (!found_pipelock_step) {
+				exit 1
+			}
+		}
+	' "$workflow"; then
+		echo "docs-check: failed: $workflow does not pin version 3.5.0 in the Pipelock action with block" >&2
+		exit 1
 	fi
 }
 
@@ -156,11 +197,7 @@ check_no_match 'No implementation should start until these are accepted' 'obsole
 check_no_match 'releases/latest/download/pipelock_(linux|darwin|windows)' 'unversioned release archive URL'
 check_no_match 'go install github\.com/luckyPipewrench/pipelock/cmd/pipelock@' 'Go install command that cannot address the v3 module line'
 check_no_match 'ghcr\.io/luckypipewrench/pipelock(-init)?:latest' 'moving Pipelock image tag in an operator example'
-if rg -n --color=never 'image:[[:space:]]+ghcr\.io/luckypipewrench/pipelock:[^[:space:]]+' docs/guides/deployment-recipes.md; then
-	echo
-	echo 'docs-check: failed: deployment recipe uses a mutable Pipelock image tag'
-	exit 1
-fi
+check_no_match 'image:[[:space:]]+ghcr\.io/luckypipewrench/pipelock(-init|-license-service)?:[^[:space:]]+' 'mutable Pipelock image tag in deployment recipe' docs/guides/deployment-recipes.md
 check_no_match 'release_tag=.*releases/latest' 'moving latest-release archive install command'
 check_no_match 'pipelock_3\.4\.0_linux_amd64\.tar\.gz|pipelock:3\.4\.0' 'stale v3.4 release verification command'
 check_no_match 'app\.kubernetes\.io/name=pipelock --timeout=5m' 'hard-coded Kubernetes pod selector'
@@ -168,10 +205,7 @@ check_no_match '4c748ab986d611138ce202ab800b16eca6fb589f' 'v3.4 GitHub Action pi
 check_no_match '"version": "v3\.1\.0"' 'v3.1 health-response example'
 
 for workflow in examples/ci-workflow.yaml examples/ci-workflow-advanced.yaml; do
-	if ! rg -q --fixed-strings "version: '3.5.0'" "$workflow"; then
-		echo "docs-check: failed: $workflow does not pin the downloaded Pipelock version" >&2
-		exit 1
-	fi
+	check_pipelock_workflow_version "$workflow"
 done
 
 for conductor_doc in \

@@ -49,6 +49,11 @@ check_conductor_serve_scope() {
 			failed = 1
 			exit 1
 		}
+		function chaining_error() {
+			printf "docs-check: failed: conductor serve example in %s uses same-line semicolon chaining\n", file > "/dev/stderr"
+			failed = 1
+			exit 1
+		}
 		function reset_serve() {
 			serve = 0
 			publisher_scope = 0
@@ -74,6 +79,9 @@ check_conductor_serve_scope() {
 			}
 			reset_serve()
 			next
+		}
+		shell_fence && $0 !~ /--help/ && /conductor[[:space:]]+serve/ && /;/ {
+			chaining_error()
 		}
 		shell_fence && $0 !~ /--help/ && is_serve_command($0) {
 			finish_serve("")
@@ -104,6 +112,16 @@ if check_conductor_serve_scope <(
 		'```'
 ) 2>/dev/null; then
 	echo "docs-check: failed: cross-command scopes satisfied separate conductor serve examples" >&2
+	exit 1
+fi
+
+if check_conductor_serve_scope <(
+	printf '%s\n' \
+		'```bash' \
+		'pipelock conductor serve --publisher-org org-a --auditor-org org-a --admin-org org-a; pipelock conductor serve' \
+		'```'
+) 2>/dev/null; then
+	echo "docs-check: failed: same-line conductor serve chaining bypassed scope validation" >&2
 	exit 1
 fi
 

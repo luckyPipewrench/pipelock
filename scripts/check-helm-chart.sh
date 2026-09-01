@@ -132,8 +132,11 @@ grep -q -- "- conductor" "$render_dir/values-enterprise-conductor.yaml"
 grep -q -- "- serve" "$render_dir/values-enterprise-conductor.yaml"
 grep -q -- "--probe-listen" "$render_dir/values-enterprise-conductor.yaml"
 grep -q -- "--publisher-token-file" "$render_dir/values-enterprise-conductor.yaml"
-for scope_flag in publisher-org publisher-fleet auditor-org auditor-fleet admin-org admin-fleet; do
-	grep -A1 -- "- --${scope_flag}" "$render_dir/values-enterprise-conductor.yaml" | grep -q -- 'org-prod\|fleet-prod'
+for scope_flag in publisher-org auditor-org admin-org; do
+	grep -A1 -- "- --${scope_flag}" "$render_dir/values-enterprise-conductor.yaml" | grep -q -- 'org-prod'
+done
+for scope_flag in publisher-fleet auditor-fleet admin-fleet; do
+	grep -A1 -- "- --${scope_flag}" "$render_dir/values-enterprise-conductor.yaml" | grep -q -- 'fleet-prod'
 done
 grep -q -- "pipelock-conductor-probes" "$render_dir/values-enterprise-conductor.yaml"
 

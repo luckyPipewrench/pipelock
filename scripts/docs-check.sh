@@ -35,11 +35,23 @@ check_no_match() {
 check_conductor_serve_scope() {
 	local file="$1"
 	if ! awk -v file="$file" '
+		function is_serve_command(line, fields, count, i) {
+			gsub(/^[[:space:]]+/, "", line)
+			count = split(line, fields, /[[:space:]]+/)
+			i = 1
+			while (i <= count && fields[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+				i++
+			}
+			return i + 2 <= count && (fields[i] == "pipelock" || fields[i] == "/tmp/pipelock-ent") && fields[i + 1] == "conductor" && fields[i + 2] == "serve"
+		}
+		function scope_error(prefix) {
+			printf "docs-check: failed: %sconductor serve example in %s lacks required publisher, auditor, or admin organization scope\n", prefix, file > "/dev/stderr"
+			failed = 1
+			exit 1
+		}
 		/^```/ {
-			if (in_fence && shell_fence && serve && !publisher_scope) {
-				printf "docs-check: failed: conductor serve example in %s lacks --publisher-org\n", file > "/dev/stderr"
-				failed = 1
-				exit 1
+			if (in_fence && shell_fence && serve && (!publisher_scope || !auditor_scope || !admin_scope)) {
+				scope_error("")
 			}
 			if (in_fence) {
 				in_fence = 0
@@ -50,14 +62,17 @@ check_conductor_serve_scope() {
 			}
 			serve = 0
 			publisher_scope = 0
+			auditor_scope = 0
+			admin_scope = 0
 			next
 		}
-		shell_fence && $0 !~ /--help/ && /^[[:space:]]*(pipelock|\/tmp\/pipelock-ent)[[:space:]]+conductor[[:space:]]+serve([[:space:]]|$)/ { serve = 1 }
+		shell_fence && $0 !~ /--help/ && is_serve_command($0) { serve = 1 }
 		shell_fence && /--publisher-org([[:space:]\\]|$)/ { publisher_scope = 1 }
+		shell_fence && /--auditor-org([[:space:]\\]|$)/ { auditor_scope = 1 }
+		shell_fence && /--admin-org([[:space:]\\]|$)/ { admin_scope = 1 }
 		END {
-			if (!failed && in_fence && shell_fence && serve && !publisher_scope) {
-				printf "docs-check: failed: unterminated conductor serve example in %s lacks --publisher-org\n", file > "/dev/stderr"
-				exit 1
+			if (!failed && in_fence && shell_fence && serve && (!publisher_scope || !auditor_scope || !admin_scope)) {
+				scope_error("unterminated ")
 			}
 		}
 	' "$file"; then

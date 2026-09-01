@@ -58,6 +58,9 @@ check_pipelock_workflow_version() {
 			in_with = 1
 			next
 		}
+		in_pipelock_step && in_with && /^[[:space:]]{8}[[:alnum:]_-]+:[[:space:]]*/ {
+			in_with = 0
+		}
 		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*'\''3\.5\.0'\''[[:space:]]*$/ {
 			has_expected_version = 1
 		}
@@ -197,7 +200,7 @@ check_no_match 'No implementation should start until these are accepted' 'obsole
 check_no_match 'releases/latest/download/pipelock_(linux|darwin|windows)' 'unversioned release archive URL'
 check_no_match 'go install github\.com/luckyPipewrench/pipelock/cmd/pipelock@' 'Go install command that cannot address the v3 module line'
 check_no_match 'ghcr\.io/luckypipewrench/pipelock(-init)?:latest' 'moving Pipelock image tag in an operator example'
-check_no_match 'image:[[:space:]]+ghcr\.io/luckypipewrench/pipelock(-init|-license-service)?:[^[:space:]]+' 'mutable Pipelock image tag in deployment recipe' docs/guides/deployment-recipes.md
+check_no_match "^[[:space:]]*image:[[:space:]]+[\"']?ghcr\.io/luckypipewrench/pipelock(-init|-license-service)?:[^[:space:]\"']+" 'mutable Pipelock image tag in deployment recipe' docs/guides/deployment-recipes.md
 check_no_match 'release_tag=.*releases/latest' 'moving latest-release archive install command'
 check_no_match 'pipelock_3\.4\.0_linux_amd64\.tar\.gz|pipelock:3\.4\.0' 'stale v3.4 release verification command'
 check_no_match 'app\.kubernetes\.io/name=pipelock --timeout=5m' 'hard-coded Kubernetes pod selector'

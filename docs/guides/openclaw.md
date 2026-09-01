@@ -22,8 +22,10 @@ Pipelock blocks the post-compromise steps of this chain: tool policy blocks dang
 # From source (Go 1.25+)
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
-# Or download binary
-curl -fsSL https://github.com/luckyPipewrench/pipelock/releases/latest/download/pipelock_linux_amd64.tar.gz | tar xz
+# Or download the latest binary
+release_tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/luckyPipewrench/pipelock/releases/latest)
+release_tag=${release_tag##*/}
+curl -fsSL "https://github.com/luckyPipewrench/pipelock/releases/download/${release_tag}/pipelock_${release_tag#v}_linux_amd64.tar.gz" | tar xz
 sudo mv pipelock /usr/local/bin/
 
 # Or Homebrew (macOS)

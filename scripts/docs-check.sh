@@ -153,6 +153,7 @@ check_no_match 'timeline (lists|of) every mediated decision' 'unprovable evidenc
 check_no_match 'stale_policy\.(grace_multiplier|after_grace).*\| Reserved' 'stale-policy-as-reserved claim'
 check_no_match 'Every signed bundle hash is written to an append-only transparency log' 'unshipped universal transparency-log claim'
 check_no_match 'No implementation should start until these are accepted' 'obsolete Conductor pre-implementation gate'
+check_no_match 'releases/latest/download/pipelock_(linux|darwin|windows)' 'unversioned release archive URL'
 
 for conductor_doc in \
 	docs/guides/conductor.md \

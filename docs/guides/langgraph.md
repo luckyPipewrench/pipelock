@@ -197,7 +197,7 @@ Use `dockerfile_lines` in `langgraph.json` to install Pipelock into the image:
     "env": ".env",
     "dockerfile_lines": [
         "RUN apt-get update && apt-get install -y curl",
-        "RUN curl -fsSL https://github.com/luckyPipewrench/pipelock/releases/latest/download/pipelock_linux_amd64.tar.gz | tar xz -C /usr/local/bin/",
+        "RUN release_tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/luckyPipewrench/pipelock/releases/latest) && release_tag=${release_tag##*/} && curl -fsSL \"https://github.com/luckyPipewrench/pipelock/releases/download/${release_tag}/pipelock_${release_tag#v}_linux_amd64.tar.gz\" | tar xz -C /usr/local/bin/",
         "COPY pipelock-config.yaml /etc/pipelock/config.yaml"
     ]
 }

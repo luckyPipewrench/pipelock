@@ -157,14 +157,36 @@ func TestWriteQuickstartIncludesIdentityFlags(t *testing.T) {
 		"spiffe://custom.example/orgs/org/fleets/fleet/instances/inst/environments/dev",
 		"id=conductor-remote-kill-1,purpose=remote-kill-signing,file=/fleet/trust/remote-kill.pub",
 		"id=conductor-remote-kill-2,purpose=remote-kill-signing,file=/fleet/trust/remote-kill-2.pub",
-		"--signing-key '/fleet/trust/remote-kill.key'",
-		"--signing-key '/fleet/trust/remote-kill-2.key'",
-		"--counter 1 --ttl 15m",
-		"--counter 2 --ttl 15m",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("quickstart missing %q\n%s", want, got)
 		}
+	}
+	killStart := strings.Index(got, "  pipelock conductor kill")
+	resumeStart := strings.Index(got, "\n  pipelock conductor resume")
+	proofStart := strings.Index(got, "\n\n── What this proves")
+	if killStart < 0 || resumeStart <= killStart || proofStart <= resumeStart {
+		t.Fatalf("quickstart remote-kill command boundaries are malformed\n%s", got)
+	}
+	commandBlocks := map[string]string{
+		"kill":   got[killStart:resumeStart],
+		"resume": got[resumeStart:proofStart],
+	}
+	for name, block := range commandBlocks {
+		for _, keyPath := range []string{
+			"--signing-key '/fleet/trust/remote-kill.key'",
+			"--signing-key '/fleet/trust/remote-kill-2.key'",
+		} {
+			if !strings.Contains(block, keyPath) {
+				t.Errorf("%s command missing %q\n%s", name, keyPath, block)
+			}
+		}
+	}
+	if !strings.Contains(commandBlocks["kill"], "--counter 1 --ttl 15m") {
+		t.Errorf("kill command missing counter 1\n%s", commandBlocks["kill"])
+	}
+	if !strings.Contains(commandBlocks["resume"], "--counter 2 --ttl 15m") {
+		t.Errorf("resume command missing counter 2\n%s", commandBlocks["resume"])
 	}
 }
 

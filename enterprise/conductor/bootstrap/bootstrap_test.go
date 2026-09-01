@@ -138,6 +138,10 @@ func TestLoadDeploymentSigningKeyRejectsHostileMaterial(t *testing.T) {
 	if _, err := loadDeploymentSigningKey(missing, remoteKillKeyID); err == nil || !strings.Contains(err.Error(), "read deployment key") {
 		t.Fatalf("missing key error = %v", err)
 	}
+	unreadable := t.TempDir()
+	if _, err := loadDeploymentSigningKey(unreadable, remoteKillKeyID); err == nil || !strings.Contains(err.Error(), "read deployment key") {
+		t.Fatalf("unreadable key error = %v", err)
+	}
 	oversized := filepath.Join(t.TempDir(), "oversized.json")
 	if err := os.WriteFile(oversized, bytes.Repeat([]byte(" "), deploymentKeyMaxSize+1), 0o600); err != nil {
 		t.Fatal(err)

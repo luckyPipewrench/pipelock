@@ -132,6 +132,15 @@ func TestRemoteKillProofHelpersFailClosed(t *testing.T) {
 		t.Fatal("remote-kill lifecycle accepted the wrong roster root")
 	}
 
+	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer accepting.Close()
+	acceptingCaller := &proofCaller{client: accepting.Client(), baseURL: accepting.URL}
+	if err := proveRemoteKillLifecycle(context.Background(), layout, opts, identity, material.rootFingerprint, material.adminToken, acceptingCaller); err == nil || !strings.Contains(err.Error(), "one-signer remote kill was accepted") {
+		t.Fatalf("remote-kill lifecycle accepted one signer: %v", err)
+	}
+
 	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "rejected", http.StatusUnauthorized)
 	}))

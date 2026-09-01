@@ -360,6 +360,9 @@ func proveRemoteKillLifecycle(ctx context.Context, layout Layout, opts Options, 
 	if err := oneSigner.Validate(); !errors.Is(err, conductorcore.ErrThresholdRequired) {
 		return fmt.Errorf("one-signer remote kill error = %w, want threshold rejection", err)
 	}
+	if err := caller.publishRemoteKill(ctx, adminToken, oneSigner); err == nil {
+		return errors.New("one-signer remote kill was accepted by Conductor")
+	}
 
 	kill, err := bootstrapRemoteKillMessage(identity, conductorcore.KillSwitchActive, 1, "bootstrap-remote-kill-active", "bootstrap emergency exercise", now, keys)
 	if err != nil {

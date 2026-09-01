@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -518,7 +519,12 @@ func writeDeploymentKeyFile(path string, purpose signing.KeyPurpose, keyID strin
 }
 
 func loadDeploymentSigningKey(path, expectedKeyID string) (ed25519.PrivateKey, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("read deployment key %s: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, deploymentKeyMaxSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read deployment key %s: %w", path, err)
 	}

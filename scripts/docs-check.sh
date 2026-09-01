@@ -154,6 +154,13 @@ check_no_match 'stale_policy\.(grace_multiplier|after_grace).*\| Reserved' 'stal
 check_no_match 'Every signed bundle hash is written to an append-only transparency log' 'unshipped universal transparency-log claim'
 check_no_match 'No implementation should start until these are accepted' 'obsolete Conductor pre-implementation gate'
 check_no_match 'releases/latest/download/pipelock_(linux|darwin|windows)' 'unversioned release archive URL'
+check_no_match 'go install github\.com/luckyPipewrench/pipelock/cmd/pipelock@' 'Go install command that cannot address the v3 module line'
+check_no_match 'ghcr\.io/luckypipewrench/pipelock(-init)?:latest' 'moving Pipelock image tag in an operator example'
+check_no_match 'release_tag=.*releases/latest' 'moving latest-release archive install command'
+check_no_match 'pipelock_3\.4\.0_linux_amd64\.tar\.gz|pipelock:3\.4\.0' 'stale v3.4 release verification command'
+check_no_match 'app\.kubernetes\.io/name=pipelock --timeout=5m' 'hard-coded Kubernetes pod selector'
+check_no_match '4c748ab986d611138ce202ab800b16eca6fb589f' 'v3.4 GitHub Action pin'
+check_no_match '"version": "v3\.1\.0"' 'v3.1 health-response example'
 
 for conductor_doc in \
 	docs/guides/conductor.md \

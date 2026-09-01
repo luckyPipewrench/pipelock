@@ -5,7 +5,8 @@
 # Pipelock Demo — shows DLP blocking, domain blocking, and integrity detection.
 #
 # Prerequisites:
-#   go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+#   git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+#   make -C pipelock install
 #
 # Usage:
 #   ./examples/demo.sh
@@ -116,4 +117,6 @@ echo "  3. A legitimate fetch to example.com succeeded"
 echo "  4. Integrity monitoring detected a tampered workspace file"
 echo "  5. Git diff scanning caught a secret in a code change"
 echo ""
-echo "Try it yourself: go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest"
+echo "Try it yourself:"
+echo "  git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git"
+echo "  make -C pipelock install"

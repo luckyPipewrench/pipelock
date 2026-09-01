@@ -53,7 +53,7 @@ in the process argument list.
 5. Confirm the release contains both files:
 
    ```bash
-   gh release view v3.4.0 --json assets --jq '.assets[].name' | sort
+   gh release view v3.5.0 --json assets --jq '.assets[].name' | sort
    ```
 
 The client verification path is unchanged: `pipelock update` downloads

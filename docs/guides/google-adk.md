@@ -9,7 +9,8 @@ and Docker Compose deployment.
 
 ```bash
 # 1. Install pipelock
-go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+make -C pipelock install
 
 # 2. Generate a config (or copy a preset)
 pipelock generate config --preset balanced > pipelock.yaml
@@ -285,7 +286,7 @@ networks:
 services:
   pipelock:
     # Pin to a specific version for production. See https://github.com/luckyPipewrench/pipelock/releases for available tags.
-    image: ghcr.io/luckypipewrench/pipelock:latest
+    image: ghcr.io/luckypipewrench/pipelock:3.5.0
     networks:
       - pipelock-internal
       - pipelock-external

@@ -15,13 +15,13 @@ updates your cluster.
 
 ## Get the exact image set
 
-This downloads the immutable image set for v3.4.0 into the current directory.
+This downloads the immutable image set for v3.5.0 into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash
-mkdir -p pipelock-v3.4.0
-gh release download v3.4.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.4.0
-cat pipelock-v3.4.0/release-images.json
+mkdir -p pipelock-v3.5.0
+gh release download v3.5.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.5.0
+cat pipelock-v3.5.0/release-images.json
 ```
 
 Verify the bundle before you use an image from it. This checks the selected
@@ -30,7 +30,7 @@ then verifies the main Pipelock image named in the bundle. It requires a current
 GitHub CLI login and registry access when the image is not public:
 
 ```bash
-PIPELOCK_RELEASE=v3.4.0
+PIPELOCK_RELEASE=v3.5.0
 PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
 PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
@@ -65,7 +65,7 @@ The file has this shape:
 ```json
 {
   "schema": "pipelock-release-images-v1",
-  "tag": "v3.4.0",
+  "tag": "v3.5.0",
   "commit": "the release commit",
   "images": [
     {
@@ -77,7 +77,7 @@ The file has this shape:
 }
 ```
 
-Use a `repository@digest` reference. A tag such as `:3.4.0` can be moved; a
+Use a `repository@digest` reference. A tag such as `:3.5.0` can be moved; a
 manifest digest cannot.
 
 ## Helm chart
@@ -100,9 +100,9 @@ digest from the release bundle you verified.
 Render the exact values before applying them:
 
 ```bash
-helm lint charts/pipelock -f values-pipelock-v3.4.0.yaml
-helm template pipelock charts/pipelock -f values-pipelock-v3.4.0.yaml > rendered-pipelock-v3.4.0.yaml
-grep 'image:' rendered-pipelock-v3.4.0.yaml
+helm lint charts/pipelock -f values-pipelock-v3.5.0.yaml
+helm template pipelock charts/pipelock -f values-pipelock-v3.5.0.yaml > rendered-pipelock-v3.5.0.yaml
+grep 'image:' rendered-pipelock-v3.5.0.yaml
 ```
 
 The output must contain `ghcr.io/luckypipewrench/pipelock@sha256:`. It must not
@@ -138,8 +138,10 @@ pods, and the digest the node reported after pulling the image.
 ```bash
 kubectl -n pipelock get deployment pipelock -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\t"}{.image}{"\n"}{end}'
 kubectl -n pipelock rollout status deployment/pipelock --timeout=5m
-kubectl -n pipelock wait --for=condition=Ready pod -l app.kubernetes.io/name=pipelock --timeout=5m
-kubectl -n pipelock get pods -l app.kubernetes.io/name=pipelock -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.initContainerStatuses[*]}{.name}{"\t"}{.imageID}{"\n"}{end}{range .status.containerStatuses[*]}{.name}{"\t"}{.imageID}{"\n"}{end}{end}'
+PIPELOCK_SELECTOR="$(kubectl -n pipelock get deployment pipelock -o json | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
+test -n "$PIPELOCK_SELECTOR"
+kubectl -n pipelock wait --for=condition=Ready pod -l "$PIPELOCK_SELECTOR" --timeout=5m
+kubectl -n pipelock get pods -l "$PIPELOCK_SELECTOR" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.initContainerStatuses[*]}{.name}{"\t"}{.imageID}{"\n"}{end}{range .status.containerStatuses[*]}{.name}{"\t"}{.imageID}{"\n"}{end}{end}'
 ```
 
 Compare every desired `image:` reference and every reported `imageID` to the

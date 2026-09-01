@@ -72,5 +72,6 @@ pause
 # --- Done ---
 echo ""
 echo -e "${GREEN}Single binary. Ordered scanner pipeline. DLP, DNS exfil, SSRF, and more.${RESET}"
-echo -e "${GREEN}go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest${RESET}"
+echo -e "${GREEN}git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git${RESET}"
+echo -e "${GREEN}make -C pipelock install${RESET}"
 echo ""

@@ -8,7 +8,8 @@ This guide covers both the `mcps=` DSL and the `MCPServerAdapter` approach.
 
 ```bash
 # 1. Install pipelock
-go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+make -C pipelock install
 
 # 2. Generate a config (or copy a preset)
 pipelock generate config --preset generic-agent > pipelock.yaml
@@ -217,7 +218,7 @@ networks:
 
 services:
   pipelock:
-    image: ghcr.io/luckypipewrench/pipelock:latest
+    image: ghcr.io/luckypipewrench/pipelock:3.5.0
     networks:
       - pipelock-internal
       - pipelock-external

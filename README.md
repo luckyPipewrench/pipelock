@@ -107,8 +107,9 @@ The full argument for why proof beats promises is in [demonstration over attesta
 ## Quick Start
 
 ```bash
-# Install from source (Go 1.25+)
-go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+# Build the current release from source (Community edition, Go 1.25+)
+git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+make -C pipelock install
 
 # Set up local agent integrations and generate a config
 pipelock init
@@ -126,7 +127,7 @@ pipelock check --url "https://docs.python.org/3/"                # allowed
 # See https://github.com/luckyPipewrench/pipelock/releases
 
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:latest
+docker pull ghcr.io/luckypipewrench/pipelock:3.5.0
 
 # Homebrew on macOS
 brew install luckyPipewrench/tap/pipelock
@@ -138,11 +139,11 @@ brew install luckyPipewrench/tap/pipelock
 <summary>Verify release integrity</summary>
 
 ```bash
-gh attestation verify pipelock_3.4.0_linux_amd64.tar.gz --owner luckyPipewrench
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.4.0 --owner luckyPipewrench
+gh attestation verify pipelock_3.5.0_linux_amd64.tar.gz --owner luckyPipewrench
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.5.0 --owner luckyPipewrench
 ```
 
-Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images. Source builds with `go install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
+Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images. Source builds made with `make build` or `make install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
 
 </details>
 
@@ -550,9 +551,9 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 
 ```bash
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:latest
+docker pull ghcr.io/luckypipewrench/pipelock:3.5.0
 docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
-  ghcr.io/luckypipewrench/pipelock:latest \
+  ghcr.io/luckypipewrench/pipelock:3.5.0 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Network-isolated agent with Docker Compose
@@ -560,7 +561,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
 # Kubernetes with Helm (published chart, Helm 3.8+)
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock
+helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.5.0
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**
@@ -571,7 +572,7 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@4c748ab986d611138ce202ab800b16eca6fb589f # v3.4.0
+- uses: luckyPipewrench/pipelock@ca05ed06f360f5aac5518ab6ea2b11d729b70bee # v3.5.0
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -776,7 +777,7 @@ The open-source core works independently without paid features. All scanning, de
 and single-agent protection is free.
 
 Pre-built release artifacts (Homebrew, GitHub releases, Docker images) include paid-tier
-code that activates with a valid license key. Building from source with `go install` or the
+code that activates with a valid license key. Building from source with `make build`, `make install`, or the
 repository `Dockerfile` produces a Community-only binary.
 
 See [LICENSE](LICENSE) for the Apache 2.0 text and [enterprise/LICENSE](enterprise/LICENSE) for the ELv2 text.

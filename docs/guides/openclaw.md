@@ -20,13 +20,14 @@ Pipelock blocks the post-compromise steps of this chain: tool policy blocks dang
 
 ```bash
 # From source (Go 1.25+)
-go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+make -C pipelock install
 
-# Or download the latest binary
-release_tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/luckyPipewrench/pipelock/releases/latest)
-release_tag=${release_tag##*/}
-curl -fsSL "https://github.com/luckyPipewrench/pipelock/releases/download/${release_tag}/pipelock_${release_tag#v}_linux_amd64.tar.gz" | tar xz
-sudo mv pipelock /usr/local/bin/
+# Or download the v3.5.0 Linux amd64 archive
+gh release download v3.5.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.5.0_linux_amd64.tar.gz
+gh attestation verify pipelock_3.5.0_linux_amd64.tar.gz --owner luckyPipewrench
+tar xzf pipelock_3.5.0_linux_amd64.tar.gz
+sudo install -m 0755 pipelock /usr/local/bin/pipelock
 
 # Or Homebrew (macOS)
 brew install luckyPipewrench/tap/pipelock
@@ -194,7 +195,7 @@ spec:
     spec:
       initContainers:
         - name: pipelock-init
-          image: ghcr.io/luckypipewrench/pipelock-init:latest
+          image: ghcr.io/luckypipewrench/pipelock-init:3.5.0
           command: ["cp", "/pipelock", "/shared-bin/pipelock"]
           volumeMounts:
             - name: shared-bin
@@ -215,7 +216,7 @@ spec:
               readOnly: true
 
         - name: pipelock
-          image: ghcr.io/luckypipewrench/pipelock:latest
+          image: ghcr.io/luckypipewrench/pipelock:3.5.0
           args: ["run", "--listen", "0.0.0.0:8888"]
           ports:
             - containerPort: 8888

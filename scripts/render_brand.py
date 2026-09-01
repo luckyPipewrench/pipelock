@@ -46,7 +46,7 @@ def favicon() -> str:
 
 
 def lockup() -> str:
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="465" height="112" viewBox="0 0 465 112" role="img" aria-label="Pipelock logo lockup">
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="465" height="112" viewBox="-32 0 465 112" role="img" aria-label="Pipelock logo lockup">
   <g transform="scale(.4666667)">{mark()}</g>
   <text x="140" y="70" font-family="{MONO}" font-size="52" font-weight="700" letter-spacing="-.02em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
   <text x="143" y="94" font-family="{SANS}" font-size="14" fill="{MUTED}" letter-spacing=".286em">AGENT FIREWALL</text>

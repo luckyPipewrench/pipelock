@@ -40,11 +40,11 @@ func TestEvaluate_FetchOnlyDenyListMissesUnlistedMethods(t *testing.T) {
 		Action: config.ActionBlock,
 		Route: config.RequestPolicyRoute{
 			Hosts:   []string{"registry.vendor.example"},
-			Methods: []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"},
+			Methods: []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"},
 		},
 	})
 
-	blocked := []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"}
+	blocked := []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"}
 	for _, method := range blocked {
 		got := m.Evaluate(RequestMeta{Host: "registry.vendor.example", Method: method, Path: "/pkg"})
 		if got.Action != config.ActionBlock || !got.Enforced() {
@@ -53,10 +53,11 @@ func TestEvaluate_FetchOnlyDenyListMissesUnlistedMethods(t *testing.T) {
 	}
 
 	// request_policy is allow-by-default: a method absent from the deny list
-	// reaches the host. OPTIONS and TRACE are valid configured methods that
-	// this recipe does not name. LOCK cannot be configured at all, but an
-	// inbound request can still use it and must not be treated as blocked.
-	unlisted := []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace, "LOCK"}
+	// reaches the host. Only reads and metadata verbs belong here. A
+	// state-changing method that this recipe fails to name is a gap in the
+	// recipe, not a property to assert, so LOCK and UNLOCK are in the blocked
+	// set above rather than here.
+	unlisted := []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace}
 	for _, method := range unlisted {
 		got := m.Evaluate(RequestMeta{Host: "registry.vendor.example", Method: method, Path: "/pkg"})
 		if got.Matched() {

@@ -2063,10 +2063,13 @@ func validHTTPMethod(m string) bool {
 		// safe method that carries a request body; recognize it so operators
 		// can write request_policy rules that target QUERY requests.
 		methodQuery,
-		// WebDAV methods used by package-registry publish/relocate flows.
-		// Needed so a fetch-only registry recipe can name them in
-		// request_policy without failing validation.
-		"MKCOL", "MOVE", "COPY", "PROPPATCH":
+		// State-changing WebDAV methods (RFC 4918), used by package-registry
+		// publish and relocate flows. Needed so a fetch-only registry recipe
+		// can name them in request_policy without failing validation. LOCK and
+		// UNLOCK belong here for the same reason the others do: both write
+		// server state, so a recipe that cannot name them cannot refuse them.
+		// PROPFIND is deliberately absent, being a read.
+		"MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK":
 		return true
 	default:
 		return false

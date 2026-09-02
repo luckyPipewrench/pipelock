@@ -112,7 +112,12 @@ func TestProxy_ReloadScanNestedURLs_MovesEnforcementBothWays(t *testing.T) {
 	if got.Allowed {
 		t.Fatal("reload back to true left the relaxed scanner installed")
 	}
-	if got.Scanner != scanner.ScannerSSRF && got.Scanner != scanner.ScannerCoreSSRF {
+	// The destination is a metadata address, so any of the three SSRF labels is
+	// a correct attribution. Pinning two of them would fail on a legitimate
+	// verdict rather than on a regression.
+	switch got.Scanner {
+	case scanner.ScannerSSRF, scanner.ScannerSSRFMetadata, scanner.ScannerCoreSSRF:
+	default:
 		t.Fatalf("re-enabled block came from %q, want an SSRF scanner", got.Scanner)
 	}
 }

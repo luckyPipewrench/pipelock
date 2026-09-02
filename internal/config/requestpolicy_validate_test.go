@@ -99,8 +99,11 @@ func TestValidateRequestPolicy_Errors(t *testing.T) {
 			want: "not a valid HTTP method",
 		},
 		{
-			name: "unknown inbound-looking method rejected at load",
-			cfg:  enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Methods: []string{"LOCK"}}}),
+			// PROPFIND is a real WebDAV method and a read, so validate.go
+			// leaves it out of the accepted set on purpose. Rejecting it at
+			// load is that decision under test.
+			name: "unaccepted WebDAV read method rejected at load",
+			cfg:  enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Methods: []string{"PROPFIND"}}}),
 			want: "not a valid HTTP method",
 		},
 		{
@@ -158,7 +161,7 @@ func TestValidHTTPMethodRecognizesOptionsAndTrace(t *testing.T) {
 }
 
 func TestValidHTTPMethodRecognizesWebDAV(t *testing.T) {
-	for _, method := range []string{"MKCOL", "MOVE", "COPY", "PROPPATCH"} {
+	for _, method := range []string{"MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"} {
 		if !validHTTPMethod(method) {
 			t.Fatalf("validHTTPMethod(%q) = false, want true for fetch-only registry recipes", method)
 		}
@@ -215,8 +218,18 @@ func TestFetchOnlyRegistryRecipeLoads(t *testing.T) {
 	if len(cfg.RequestPolicy.Rules) != 1 {
 		t.Fatalf("recipe rules = %d, want 1", len(cfg.RequestPolicy.Rules))
 	}
-	got := cfg.RequestPolicy.Rules[0].Route.Methods
-	want := []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"}
+	rule := cfg.RequestPolicy.Rules[0]
+	// Assert the parsed rule, not the YAML text. Without this the test passes
+	// on a recipe that only warns, or one aimed at a different host, because
+	// the method list alone says nothing about what the rule does.
+	if rule.Action != ActionBlock {
+		t.Fatalf("recipe action = %q, want %q", rule.Action, ActionBlock)
+	}
+	if len(rule.Route.Hosts) != 1 || rule.Route.Hosts[0] != "registry.vendor.example" {
+		t.Fatalf("recipe hosts = %v, want [registry.vendor.example]", rule.Route.Hosts)
+	}
+	got := rule.Route.Methods
+	want := []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("methods = %v, want %v", got, want)
 	}

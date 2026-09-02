@@ -206,7 +206,7 @@ request_policy:
       reason: "registry.vendor.example is allowlisted for package fetch only; write methods are a publish/relay channel"
       route:
         hosts: ["registry.vendor.example"]
-        methods: ["POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"]
+        methods: ["POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"]
 ```
 
 Read that rule as "these write methods are refused", not as "only fetch is permitted".

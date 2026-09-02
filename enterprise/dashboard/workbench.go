@@ -348,6 +348,7 @@ func (v DecisionReplayView) DivergenceClass() string {
 func (v DecisionReplayView) ArtifactHashDisplay() string { return displayFleetString(v.ArtifactHash) }
 func (v DecisionReplayView) ResultHashDisplay() string   { return displayFleetString(v.ResultHash) }
 func (v DecisionReplayView) RecordedHashDisplay() string { return displayFleetString(v.RecordedHash) }
+
 func (v DecisionReplayView) DivergenceReasonDisplay() string {
 	return displayFleetString(v.DivergenceReason)
 }

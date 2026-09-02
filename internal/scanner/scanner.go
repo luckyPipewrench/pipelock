@@ -1009,14 +1009,6 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		return result
 	}
 
-	// Nested URL destinations in query parameters. Runs after the outer
-	// allowlist/blocklist/core-SSRF floor so a nested host must clear the
-	// same destination checks, and before SigV4/DLP/DNS so a nested private
-	// target is refused with no network I/O.
-	if result := s.checkNestedURLs(ctx, parsed); !result.Allowed {
-		return result
-	}
-
 	// SigV4 presigned URL carve-out. Detect once before content-scanning
 	// stages so core DLP, main DLP, and query-entropy all see the same
 	// scrubbed URL. The scrub replaces ONLY the AKIA component of a
@@ -1073,6 +1065,18 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	// Subdomain entropy check - catches base64/hex encoded data in subdomains
 	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
 	if result := s.checkSubdomainEntropy(hostname); !result.Allowed {
+		return result
+	}
+
+	// Nested URL destinations in query parameters. Deliberately placed AFTER the
+	// no-I/O content scanners (core DLP, DLP, entropy) and immediately before
+	// DNS-based SSRF on the outer host. An earlier revision ran this before DLP,
+	// which let a request carrying both a credential and several slow nested
+	// hostnames return a nested-resolution timeout before DLP ever ran: the
+	// secret was still refused, but the DLP finding never reached audit and the
+	// timeout is adaptive-neutral, so nothing was recorded. Content findings that
+	// need no network must be established before any check that can time out.
+	if result := s.checkNestedURLs(ctx, parsed); !result.Allowed {
 		return result
 	}
 
@@ -1376,37 +1380,6 @@ type nestedURLCandidate struct {
 	text string
 }
 
-// schemeRelativeNamesHost reports whether a "//..." reference names something
-// host-shaped: a bracketed IPv6 literal, an IP literal, or a dotted name. A
-// single label such as "//tmp/x" is a filesystem path far more often than a
-// host, and treating it as a destination is a false positive.
-func schemeRelativeNamesHost(text string) bool {
-	authority := strings.TrimPrefix(text, "//")
-	if i := strings.IndexAny(authority, "/?#"); i >= 0 {
-		authority = authority[:i]
-	}
-	if at := strings.LastIndex(authority, "@"); at >= 0 {
-		authority = authority[at+1:]
-	}
-	if authority == "" {
-		return false
-	}
-	if strings.HasPrefix(authority, "[") {
-		return true
-	}
-	host := authority
-	if i := strings.LastIndex(host, ":"); i >= 0 {
-		host = host[:i]
-	}
-	if host == "" {
-		return false
-	}
-	if destination.ParseIPLiteral(host) != nil {
-		return true
-	}
-	return strings.Contains(strings.TrimSuffix(host, "."), ".")
-}
-
 // nestedURLCandidates enumerates every query component that could hide a nested
 // destination. It reads RawQuery directly rather than url.URL.Query(): Query()
 // percent-decodes and folds '+' to space, which destroys IPv6 zone ids (%25) and
@@ -1422,13 +1395,14 @@ func nestedURLCandidates(rawQuery string, maxLen int) []nestedURLCandidate {
 			return
 		}
 		if strings.HasPrefix(text, "//") {
-			// Complete a scheme-relative reference only when what follows looks
-			// like a host. Without this, an ordinary unix path in a query value
-			// ("//tmp/x") becomes https://tmp/x, and with SSRF configured its
-			// failed lookup refuses a request that carried no destination.
-			if !schemeRelativeNamesHost(text) {
-				return
-			}
+			// A network-path reference names an authority (RFC 3986 4.2), so
+			// complete it and let the same parser the destination checks use
+			// decide whether a host is present. An earlier revision gated this
+			// on "contains an ASCII dot or parses as an IP literal", which read
+			// as caution and was a detection hole: it skipped every single-label
+			// internal name (localhost, consul, vault) and every host spelled
+			// with a non-ASCII dot. Deciding what is NOT a destination is an
+			// allow gate, and an invented shape rule for one is a bypass.
 			text = "https:" + text
 		}
 		out = append(out, nestedURLCandidate{key: key, text: text})
@@ -1495,7 +1469,6 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 				Scanner: ScannerSSRF,
 				Score:   1.0,
 				Class:   ClassInfrastructureError,
-				Hint:    nestedURLBudgetHint,
 			}
 		}
 		return result

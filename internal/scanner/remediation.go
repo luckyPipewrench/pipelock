@@ -638,6 +638,15 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// knobs that cannot exempt these targets. Route those reason-specific SSRF
 	// blocks to the non-overridable guidance regardless of which SSRF label
 	// carried them.
+	// A nested-destination timeout is an availability condition wearing an SSRF
+	// label. Route it before the SSRF knobs below, which would otherwise offer
+	// ssrf.ip_allowlist and trusted_domains for a block no allowlist can lift.
+	if strings.Contains(reason, nestedURLBudgetReason) {
+		return RemediationGuidance{
+			OperatorKnob: nestedURLBudgetOperatorKnob,
+			AgentReason:  nestedURLBudgetAgentReason,
+		}, true
+	}
 	if label == ScannerSSRF || label == ScannerSSRFMetadata || label == ScannerCoreSSRF {
 		if strings.Contains(reason, "metadata") {
 			return RemediationGuidance{
@@ -657,16 +666,24 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	return GuidanceFor(label)
 }
 
-// nestedURLBudgetHint explains a nested-destination resolution timeout. It
-// deliberately names no allowlist: no allowlist entry can make a resolver
-// answer faster, and pointing an operator at one teaches them that policy
-// changed when nothing did.
-const nestedURLBudgetHint = "nested URL destinations could not be resolved within the shared resolution budget; the request was refused because a destination was left unverified. This is a resolver-availability condition, not a detection. Check resolver health and latency; to stop evaluating query-parameter destinations entirely, set fetch_proxy.monitoring.scan_nested_urls to false."
+// nestedURLBudgetReason is the substring that identifies a nested-destination
+// resolution timeout. Guidance for it must never name an allowlist: no allowlist
+// entry makes a resolver answer faster, and naming one teaches an operator that
+// policy changed when nothing did.
+const nestedURLBudgetReason = "shared resolution budget"
+
+const nestedURLBudgetOperatorKnob = "Nested query destinations could not be resolved within the shared resolution budget, so the request was refused with a destination left unverified. This is resolver availability, not detection: check resolver health and latency for the hostnames named in the request. To stop evaluating query-parameter destinations entirely, set `fetch_proxy.monitoring.scan_nested_urls` to false."
+
+const nestedURLBudgetAgentReason = "a destination named inside this request could not be verified in time"
 
 func annotateNestedURLGuidance(g RemediationGuidance, label, reason string) RemediationGuidance {
 	lower := strings.ToLower(reason)
-	if !strings.Contains(lower, "nested url in query parameter") &&
-		!strings.Contains(lower, "shared resolution budget") {
+	// A resolution timeout already carries its own guidance and must not be
+	// annotated with the destination-knob sentence: no allowlist lifts a timeout.
+	if strings.Contains(lower, strings.ToLower(nestedURLBudgetReason)) {
+		return g
+	}
+	if !strings.Contains(lower, "nested url in query parameter") {
 		return g
 	}
 	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings."

@@ -432,13 +432,20 @@ func TestScan_NestedURLBudgetExhaustionIsInfrastructureNotThreat(t *testing.T) {
 	if !result.IsAdaptiveNeutral() {
 		t.Fatal("budget exhaustion must be adaptive-neutral so resolver wobble cannot drive lockdown")
 	}
-	// The hint must not tell an operator to edit an allowlist: no allowlist entry
-	// makes a resolver answer faster.
-	if strings.Contains(result.Hint, "ip_allowlist") {
-		t.Fatalf("hint names an inert control for a timeout: %q", result.Hint)
+	// result.Hint is the AGENT surface and must stay terse: no knob, no path.
+	for _, knob := range []string{"ip_allowlist", "scan_nested_urls", "config"} {
+		if strings.Contains(result.Hint, knob) {
+			t.Fatalf("agent hint leaks remediation %q: %q", knob, result.Hint)
+		}
 	}
-	if !strings.Contains(result.Hint, "resolution budget") {
-		t.Fatalf("hint does not name the budget: %q", result.Hint)
+	// The operator surface is where the budget is explained, and it must not
+	// name an allowlist: no allowlist entry makes a resolver answer faster.
+	op := OperatorHintForResult(result.Scanner, result.Reason)
+	if strings.Contains(op, "ip_allowlist") {
+		t.Fatalf("operator hint names an inert control for a timeout: %q", op)
+	}
+	if !strings.Contains(op, "resolution budget") {
+		t.Fatalf("operator hint does not name the budget: %q", op)
 	}
 }
 
@@ -469,10 +476,11 @@ func TestScan_NestedURLDeduplicatesDestinations(t *testing.T) {
 	}
 }
 
-// Round 2 finding 3: a unix path in a query value is not a destination. Completing
-// "//tmp/x" to https://tmp/x made a failed lookup refuse a request that carried no
-// destination at all.
-func TestScan_NestedURLSchemeRelativeOnlyCompletesHosts(t *testing.T) {
+// Round 3 finding 1: deciding what is NOT a destination is an allow gate, and the
+// round-2 shape rule ("ASCII dot or IP literal") was a detection hole. Every
+// single-label internal name and every non-ASCII-dot spelling walked through it.
+// The gate is now the same parser the destination checks use.
+func TestScan_NestedURLSchemeRelativeFollowsTheParser(t *testing.T) {
 	t.Parallel()
 	cfg := nestedURLSSRFConfig()
 	for _, tc := range []struct {
@@ -480,15 +488,21 @@ func TestScan_NestedURLSchemeRelativeOnlyCompletesHosts(t *testing.T) {
 		value       string
 		wantAllowed bool
 	}{
-		{"unix path is not a host", "//tmp/x", true},
-		{"single label is not a host", "//localdir/sub", true},
-		{"dotted name is a host", "//169.254.169.254/latest/", false},
+		{"single label resolves to loopback", "//localhost/admin", false},
+		{"single label with port", "//localhost:8080/", false},
+		{"single label with userinfo", "//user@localhost/", false},
+		{"metadata literal", "//169.254.169.254/latest/", false},
+		{"metadata literal without trailing slash", "//169.254.169.254", false},
+		{"alt-form literal", "//0x7f000001/", false},
+		{"bracketed ipv6", "//[::1]/", false},
+		{"unresolvable single label is still a destination", "//tmp/x", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			raw := nestedURLOuterHost + "?u=" + url.QueryEscape(tc.value)
 			result := scanNestedWith(t, cfg, raw, &countingResolver{hosts: map[string][]string{
 				"mirror.vendor.example": {"93.184.216.34"},
+				"localhost":             {"127.0.0.1"},
 			}})
 			if result.Allowed != tc.wantAllowed {
 				t.Fatalf("%s: allowed = %v, want %v (reason %q)", tc.name, result.Allowed, tc.wantAllowed, result.Reason)
@@ -583,4 +597,60 @@ func scanNestedWith(t *testing.T, cfg *config.Config, raw string, r Resolver) Re
 	t.Cleanup(s.Close)
 	s.resolver = r
 	return s.Scan(context.Background(), raw)
+}
+
+// Round 3 finding 2 and 3: audit and explain do not read result.Hint. They call
+// GuidanceForResult(scanner, reason). A timeout must not be explained with an
+// allowlist on either surface, and the agent-facing hint must stay terse.
+func TestGuidanceForNestedBudgetNamesNoAllowlist(t *testing.T) {
+	t.Parallel()
+	reason := "nested URL destinations exceeded the shared resolution budget (5s)"
+	g, ok := GuidanceForResult(ScannerSSRF, reason)
+	if !ok {
+		t.Fatal("no guidance for a nested budget block")
+	}
+	for _, inert := range []string{"ip_allowlist", "trusted_domains", "dns.host_overrides"} {
+		if strings.Contains(g.OperatorKnob, inert) {
+			t.Fatalf("operator guidance names %q, which cannot lift a resolver timeout: %q", inert, g.OperatorKnob)
+		}
+	}
+	if !strings.Contains(g.OperatorKnob, "scan_nested_urls") {
+		t.Fatalf("operator guidance does not name the control that governs this check: %q", g.OperatorKnob)
+	}
+	// The agent-facing reason must not hand the agent a remediation knob.
+	for _, knob := range []string{"scan_nested_urls", "ip_allowlist", "config", "set "} {
+		if strings.Contains(g.AgentReason, knob) {
+			t.Fatalf("agent reason leaks remediation %q: %q", knob, g.AgentReason)
+		}
+	}
+	if got := OperatorHintForResult(ScannerSSRF, reason); strings.Contains(got, "ip_allowlist") {
+		t.Fatalf("operator hint surface still names an inert control: %q", got)
+	}
+}
+
+// Round 3 finding 4: a nested-resolution timeout is adaptive-neutral, so it must
+// not be able to run BEFORE the no-I/O content scanners. If it did, a request
+// carrying a credential plus several slow nested hostnames would return the
+// timeout, the DLP finding would never reach audit, and nothing would be
+// recorded against the session.
+func TestScan_NestedURLCannotMaskCredentialFindings(t *testing.T) {
+	setNestedURLResolveBudgetForTest(t, 30*time.Millisecond)
+	cfg := nestedURLSSRFConfig()
+	cfg.DLP = config.Defaults().DLP
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	s.resolver = blockingResolver{}
+	raw := nestedURLOuterHost + "?key=" + url.QueryEscape("AKIA"+"IOSFODNN7EXAMPLE") +
+		"&a=" + url.QueryEscape("https://one.example.net/") +
+		"&b=" + url.QueryEscape("https://two.example.net/")
+	result := s.Scan(context.Background(), raw)
+	if result.Allowed {
+		t.Fatal("credential in the query was allowed")
+	}
+	if strings.Contains(result.Reason, "shared resolution budget") {
+		t.Fatalf("a nested resolution timeout preempted the credential finding: %q", result.Reason)
+	}
+	if result.IsAdaptiveNeutral() {
+		t.Fatalf("a credential block was reported as adaptive-neutral: scanner=%s reason=%q", result.Scanner, result.Reason)
+	}
 }

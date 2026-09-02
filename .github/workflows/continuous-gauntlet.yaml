@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  AEB_REF: 1dfb4f0ec5e0cc911c65b9cf3ccfaf3d2e7e15d7
+  AEB_REF: efda9aa26d6b3cacc711450c31d784d0c725155d
 
 jobs:
   candidate:

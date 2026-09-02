@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
-EXPECTED_AEB_REF = "1dfb4f0ec5e0cc911c65b9cf3ccfaf3d2e7e15d7"
+EXPECTED_AEB_REF = "efda9aa26d6b3cacc711450c31d784d0c725155d"
 GAUNTLET_WORKFLOW_URL = (
     "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
 )

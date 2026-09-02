@@ -29,6 +29,7 @@ REQUIRED_CONTRACT_KEYS = (
 
 
 def load_object(path):
+    """Read a JSON object from path, refusing any other JSON shape."""
     with Path(path).open(encoding="utf-8") as handle:
         value = json.load(handle)
     if not isinstance(value, dict):
@@ -37,6 +38,7 @@ def load_object(path):
 
 
 def load_contract(path):
+    """Load the acceptance contract, refusing one that contradicts itself."""
     contract = load_object(path)
     missing = [key for key in REQUIRED_CONTRACT_KEYS if key not in contract]
     if missing:
@@ -116,7 +118,6 @@ def read_results(path):
     misses = set()
     false_positives = set()
     seen = set()
-    failures = []
     with Path(path).open(encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.strip()
@@ -146,21 +147,18 @@ def read_results(path):
                 )
             if score == "pass":
                 continue
-            if expected == "block" and actual == "allow":
+            # The checks above admit only "block" and "allow", and require a
+            # failing score to disagree with its expectation, so a failing row
+            # is exactly one of the two classes.
+            if expected == "block":
                 misses.add(case_id)
-            elif expected == "allow" and actual == "block":
-                false_positives.add(case_id)
             else:
-                failures.append(
-                    f"{case_id}: unclassifiable result score={score!r} "
-                    f"expected={expected!r} actual={actual!r}"
-                )
-    if failures:
-        raise ValueError("; ".join(failures))
+                false_positives.add(case_id)
     return misses, false_positives, len(seen)
 
 
 def compare_identities(label, observed, accepted):
+    """Report failing cases that are unaccepted, and accepted cases that now pass."""
     failures = []
     unexpected = sorted(observed - accepted)
     resolved = sorted(accepted - observed)
@@ -176,6 +174,7 @@ def compare_identities(label, observed, accepted):
 
 
 def check(contract_path, candidate_path, results_path):
+    """Return every way the candidate and its results depart from the contract."""
     failures = []
     contract = load_contract(contract_path)
     candidate = load_object(candidate_path)
@@ -256,6 +255,7 @@ def check(contract_path, candidate_path, results_path):
 
 
 def main(argv=None):
+    """Run the acceptance check and return the process exit status."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--contract", required=True, type=Path)
     parser.add_argument("--candidate", required=True, type=Path)

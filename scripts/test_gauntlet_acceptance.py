@@ -190,7 +190,7 @@ class AcceptanceCheckerTest(unittest.TestCase):
         failures = self.run_check(rows=rows)
         self.assertTrue(any("cases" in failure for failure in failures), failures)
 
-    def test_unclassifiable_result_fails_closed(self):
+    def test_unknown_score_fails_closed(self):
         rows = results_rows()
         rows[-1] = dict(rows[-1], score="error", actual_verdict="error")
         with self.assertRaises(ValueError):

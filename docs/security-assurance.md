@@ -133,10 +133,17 @@ canonicalization, the current order is:
 9. Configured DLP
 10. Path entropy
 11. Subdomain entropy
-12. DNS-based SSRF, private-address, metadata, and rebinding checks
-13. Rate limiting
-14. Data budget
-15. Final context check
+12. Nested URL destinations named inside query components
+13. DNS-based SSRF, private-address, metadata, and rebinding checks
+14. Rate limiting
+15. Data budget
+16. Final context check
+
+Step 12 evaluates a URL-shaped query key or value as a destination in its own
+right, running the same allowlist, blocklist, and SSRF checks the outer host
+receives. It closes the case where an allowed host fetches a target the caller
+names. It is placed after every check that needs no network so that a content
+finding is always established before any check that can time out.
 
 Core and configured DLP run before DNS resolution, so a detected secret can be
 blocked before the proxy performs a destination lookup. Response, body,

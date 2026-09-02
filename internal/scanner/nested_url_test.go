@@ -654,3 +654,35 @@ func TestScan_NestedURLCannotMaskCredentialFindings(t *testing.T) {
 		t.Fatalf("a credential block was reported as adaptive-neutral: scanner=%s reason=%q", result.Scanner, result.Reason)
 	}
 }
+
+// Round 4: the annotation skip must test the STRIPPED reason. The raw reason
+// carries the query key, which the client chooses, so matching on it let a
+// parameter named after the budget suppress the nested-destination sentence on a
+// genuine destination block. Not a fail-open, but the same class as round 2: the
+// caller must not be able to steer what the operator is told.
+func TestGuidanceForNestedResultKeyCannotSuppressAnnotation(t *testing.T) {
+	t.Parallel()
+	private := Result{
+		Allowed: false,
+		Reason:  "SSRF blocked: 10.0.0.12 is an internal IP",
+		Scanner: ScannerSSRF,
+	}
+	for _, key := range []string{"target", "shared resolution budget", "SHARED RESOLUTION BUDGET"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			blocked := prefixNestedURLResult(key, private)
+			g, ok := GuidanceForResult(blocked.Scanner, blocked.Reason)
+			if !ok {
+				t.Fatal("no guidance for a nested SSRF block")
+			}
+			if !strings.Contains(g.OperatorKnob, "scan_nested_urls") {
+				t.Fatalf("query key %q suppressed the nested-destination sentence: %q", key, g.OperatorKnob)
+			}
+		})
+	}
+	// A genuine budget block still gets budget guidance and no allowlist.
+	g, ok := GuidanceForResult(ScannerSSRF, "nested URL destinations exceeded the shared resolution budget (5s)")
+	if !ok || strings.Contains(g.OperatorKnob, "ip_allowlist") {
+		t.Fatalf("budget guidance regressed: ok=%v knob=%q", ok, g.OperatorKnob)
+	}
+}

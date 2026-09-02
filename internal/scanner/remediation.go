@@ -402,7 +402,7 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	reason = stripNestedURLReasonPrefix(reason)
 	defer func() {
 		if ok {
-			g = annotateNestedURLGuidance(g, label, nested)
+			g = annotateNestedURLGuidance(g, label, nested, reason)
 		}
 	}()
 	// Some transports retain historical audit labels for the same enforcing
@@ -676,14 +676,16 @@ const nestedURLBudgetOperatorKnob = "Nested query destinations could not be reso
 
 const nestedURLBudgetAgentReason = "a destination named inside this request could not be verified in time"
 
-func annotateNestedURLGuidance(g RemediationGuidance, label, reason string) RemediationGuidance {
-	lower := strings.ToLower(reason)
+func annotateNestedURLGuidance(g RemediationGuidance, label, reason, stripped string) RemediationGuidance {
 	// A resolution timeout already carries its own guidance and must not be
 	// annotated with the destination-knob sentence: no allowlist lifts a timeout.
-	if strings.Contains(lower, strings.ToLower(nestedURLBudgetReason)) {
+	// Test the STRIPPED reason, never the raw one. The raw reason still carries
+	// the query key, which the client chooses, so matching on it let a parameter
+	// named after the budget suppress the sentence on a genuine destination block.
+	if strings.Contains(strings.ToLower(stripped), strings.ToLower(nestedURLBudgetReason)) {
 		return g
 	}
-	if !strings.Contains(lower, "nested url in query parameter") {
+	if !strings.Contains(strings.ToLower(reason), "nested url in query parameter") {
 		return g
 	}
 	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings."

@@ -100,16 +100,20 @@ Three proxy modes share the main listener:
 4. Strict-mode allowlist
 5. Domain blocklist
 6. Core SSRF literal-IP floor, including private and metadata IP literals
-7. Nested URL destinations in query parameters (allowlist, blocklist, SSRF on URL-shaped values)
-8. SigV4 presigned-URL credential carve-out
-9. Core DLP immutable floor
-10. DLP (65 built-in credential patterns + checksum validators + env/file leak detection)
-11. Path entropy analysis
-12. Subdomain entropy analysis
+7. SigV4 presigned-URL credential carve-out
+8. Core DLP immutable floor
+9. DLP (65 built-in credential patterns + checksum validators + env/file leak detection)
+10. Path entropy analysis
+11. Subdomain entropy analysis
+12. Nested URL destinations in query parameters (allowlist, blocklist, SSRF on URL-shaped values)
 13. SSRF / DNS resolution for private IPs, metadata, and rebinding
 14. Rate limiting
 15. Data budget
 16. Final context check
+
+Nested destinations sit after every check that needs no network and before the
+first that does. A check that can time out must not run ahead of one that cannot,
+or a slow resolver decides the request before the content findings are made.
 
 Core and configured DLP run before DNS resolution; SSRF/DNS runs after them. `cfg.Internal = nil` disables DNS-based configured SSRF checks, not the literal-IP core SSRF floor.
 

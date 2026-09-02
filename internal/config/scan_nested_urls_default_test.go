@@ -39,8 +39,8 @@ func TestScanNestedURLsParsingMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			if got := cfg.FetchProxy.Monitoring.NestedURLScanningEnabled(); got != tc.want {
-				t.Fatalf("NestedURLScanningEnabled = %v, want %v (ptr=%v)", got, tc.want, cfg.FetchProxy.Monitoring.ScanNestedURLs)
+			if got := cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(); got != tc.want {
+				t.Fatalf("ScanNestedURLsEnabled = %v, want %v (ptr=%v)", got, tc.want, cfg.FetchProxy.Monitoring.ScanNestedURLs)
 			}
 		})
 	}
@@ -68,16 +68,16 @@ func TestScanNestedURLsReloadBothDirections(t *testing.T) {
 		return cfg
 	}
 
-	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: false\n").FetchProxy.Monitoring.NestedURLScanningEnabled(); got {
+	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: false\n").FetchProxy.Monitoring.ScanNestedURLsEnabled(); got {
 		t.Fatalf("initial load = %v, want false", got)
 	}
-	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: true\n").FetchProxy.Monitoring.NestedURLScanningEnabled(); !got {
+	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: true\n").FetchProxy.Monitoring.ScanNestedURLsEnabled(); !got {
 		t.Fatalf("reload to true = %v, want true", got)
 	}
-	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: true\n").FetchProxy.Monitoring.NestedURLScanningEnabled(); !got {
+	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: true\n").FetchProxy.Monitoring.ScanNestedURLsEnabled(); !got {
 		t.Fatalf("reload with no change = %v, want true", got)
 	}
-	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: false\n").FetchProxy.Monitoring.NestedURLScanningEnabled(); got {
+	if got := write("mode: balanced\nfetch_proxy:\n  monitoring:\n    scan_nested_urls: false\n").FetchProxy.Monitoring.ScanNestedURLsEnabled(); got {
 		t.Fatalf("reload back to false = %v, want false; a relaxed posture must not persist", got)
 	}
 }

@@ -151,6 +151,17 @@ func TestValidHTTPMethodRecognizesWebDAV(t *testing.T) {
 	}
 }
 
+// A method rail is fail-closed: an unrecognised spelling must be rejected at
+// load rather than silently matching nothing at request time.
+func TestValidHTTPMethodRejectsNearMissWebDAV(t *testing.T) {
+	t.Parallel()
+	for _, m := range []string{"mkcol", "MKCOL ", " MKCOL", "MKCOLL", "MKCOL\t", "MOVE;", "COPY\n", "PROPATCH", "PROPPATCHH", ""} {
+		if validHTTPMethod(m) {
+			t.Errorf("validHTTPMethod(%q) = true, want false", m)
+		}
+	}
+}
+
 func TestFetchOnlyRegistryRecipeLoads(t *testing.T) {
 	body := readDocAccuracyFile(t, repoRootForDocsAccuracy(t), "docs/guides/request-policy.md")
 	marker := "## Fetch-only package registries"

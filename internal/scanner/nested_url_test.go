@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -238,13 +239,16 @@ func TestScan_NestedURLDestinations(t *testing.T) {
 	}
 }
 
-// setNestedURLResolveBudgetForTest shrinks the shared nested-DNS budget so a
-// test can exhaust it without waiting on the production ceiling.
-func setNestedURLResolveBudgetForTest(t *testing.T, d time.Duration) {
+// newScannerWithBudget builds a scanner whose nested-resolution budget is short
+// enough to exhaust without waiting on the production ceiling. The budget is
+// per-Scanner state, so this is safe in a parallel test: nothing is shared.
+func newScannerWithBudget(t *testing.T, cfg *config.Config, d time.Duration, r Resolver) *Scanner {
 	t.Helper()
-	prev := nestedURLResolveBudget
-	nestedURLResolveBudget = d
-	t.Cleanup(func() { nestedURLResolveBudget = prev })
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	s.nestedURLResolveBudget = d
+	s.resolver = r
+	return s
 }
 
 // blockingResolver never answers; it returns only when the caller's context
@@ -292,11 +296,8 @@ func TestScan_NestedURLNoCountCap(t *testing.T) {
 // Exhausting the shared resolution budget must refuse the request, never
 // forward it with nested destinations left unverified.
 func TestScan_NestedURLResolveBudgetExhaustionFailsClosed(t *testing.T) {
-	setNestedURLResolveBudgetForTest(t, 50*time.Millisecond)
-	cfg := nestedURLSSRFConfig()
-	s := MustNew(cfg)
-	t.Cleanup(s.Close)
-	s.resolver = blockingResolver{}
+	t.Parallel()
+	s := newScannerWithBudget(t, nestedURLSSRFConfig(), 50*time.Millisecond, blockingResolver{})
 	raw := nestedURLOuterHost + "?a=" + url.QueryEscape("https://one.example.net/") +
 		"&b=" + url.QueryEscape("https://two.example.net/") +
 		"&c=" + url.QueryEscape("https://three.example.net/")
@@ -330,6 +331,7 @@ func TestScan_NestedURLDecodingParity(t *testing.T) {
 		{"url_in_key", nestedURLOuterHost + "?" + url.QueryEscape(meta) + "=x"},
 		{"base64_value", nestedURLOuterHost + "?u=" + base64.StdEncoding.EncodeToString([]byte(meta))},
 		{"hex_value", nestedURLOuterHost + "?u=" + hex.EncodeToString([]byte(meta))},
+		{"base32_value", nestedURLOuterHost + "?u=" + base32.StdEncoding.EncodeToString([]byte(meta))},
 		{"scheme_relative", nestedURLOuterHost + "?u=" + url.QueryEscape("//169.254.169.254/latest/")},
 		{"leading_space", nestedURLOuterHost + "?u=" + url.QueryEscape("  "+meta)},
 		{"ipv6_zone_id", nestedURLOuterHost + "?u=http://[fe80::1%25eth0]/"},
@@ -415,11 +417,8 @@ func TestOperatorHintForNestedURLNamesConsultedKnob(t *testing.T) {
 // accumulate adaptive-enforcement signal until a session is locked down, which is
 // the same defect checkSSRF already avoids for the outer host.
 func TestScan_NestedURLBudgetExhaustionIsInfrastructureNotThreat(t *testing.T) {
-	setNestedURLResolveBudgetForTest(t, 50*time.Millisecond)
-	cfg := nestedURLSSRFConfig()
-	s := MustNew(cfg)
-	t.Cleanup(s.Close)
-	s.resolver = blockingResolver{}
+	t.Parallel()
+	s := newScannerWithBudget(t, nestedURLSSRFConfig(), 50*time.Millisecond, blockingResolver{})
 	raw := nestedURLOuterHost + "?a=" + url.QueryEscape("https://one.example.net/") +
 		"&b=" + url.QueryEscape("https://two.example.net/")
 	result := s.Scan(context.Background(), raw)
@@ -634,12 +633,10 @@ func TestGuidanceForNestedBudgetNamesNoAllowlist(t *testing.T) {
 // timeout, the DLP finding would never reach audit, and nothing would be
 // recorded against the session.
 func TestScan_NestedURLCannotMaskCredentialFindings(t *testing.T) {
-	setNestedURLResolveBudgetForTest(t, 30*time.Millisecond)
+	t.Parallel()
 	cfg := nestedURLSSRFConfig()
 	cfg.DLP = config.Defaults().DLP
-	s := MustNew(cfg)
-	t.Cleanup(s.Close)
-	s.resolver = blockingResolver{}
+	s := newScannerWithBudget(t, cfg, 30*time.Millisecond, blockingResolver{})
 	raw := nestedURLOuterHost + "?key=" + url.QueryEscape("AKIA"+"IOSFODNN7EXAMPLE") +
 		"&a=" + url.QueryEscape("https://one.example.net/") +
 		"&b=" + url.QueryEscape("https://two.example.net/")
@@ -684,5 +681,38 @@ func TestGuidanceForNestedResultKeyCannotSuppressAnnotation(t *testing.T) {
 	g, ok := GuidanceForResult(ScannerSSRF, "nested URL destinations exceeded the shared resolution budget (5s)")
 	if !ok || strings.Contains(g.OperatorKnob, "ip_allowlist") {
 		t.Fatalf("budget guidance regressed: ok=%v knob=%q", ok, g.OperatorKnob)
+	}
+}
+
+// The config-level matrix in internal/config proves Load parses the field. It
+// cannot prove the value reaches the component that enforces it: a reloader that
+// built a new Config and kept the old scanner would pass it. Hot reload rebuilds
+// the scanner from config, so exercise that rebuild in both directions and assert
+// the nested destination verdict actually moves. A relaxed posture must not
+// survive a re-tighten, which is the direction that matters.
+func TestScan_NestedURLReloadMovesEnforcementBothWays(t *testing.T) {
+	t.Parallel()
+	metadata := nestedURLOuterHost + "?u=" + url.QueryEscape(nestedURLMetadataPath)
+
+	rebuild := func(enabled bool) Result {
+		cfg := nestedURLConfig()
+		cfg.SSRF.IPAllowlist = nil
+		cfg.FetchProxy.Monitoring.ScanNestedURLs = &enabled
+		s := MustNew(cfg)
+		t.Cleanup(s.Close)
+		s.resolver = failOnLookupResolver{t: t}
+		return s.Scan(context.Background(), metadata)
+	}
+
+	if r := rebuild(true); r.Allowed {
+		t.Fatal("enabled: nested metadata destination was allowed")
+	}
+	if r := rebuild(false); !r.Allowed {
+		t.Fatalf("disabled: expected the check to be off, got scanner=%s reason=%q", r.Scanner, r.Reason)
+	}
+	// Re-tightening has to take effect without a restart. If it did not, an
+	// operator who relaxed the setting once would keep the relaxed posture.
+	if r := rebuild(true); r.Allowed {
+		t.Fatal("re-enabled: the relaxed posture survived a reload")
 	}
 }

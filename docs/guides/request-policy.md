@@ -209,6 +209,21 @@ request_policy:
         methods: ["POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"]
 ```
 
+### What this rule does and does not cover
+
+`request_policy` rules are a deny-list: a request forwards unless a rule matches
+it. This recipe therefore refuses exactly the methods it names. It is not an
+allow-only rail, and there is no `methods_except` form today. A method outside
+the list, including `OPTIONS` or any verb a future registry adds, is still
+forwarded.
+
+That is usually the right trade for a package mirror, because the risk being
+closed is publish and relocate rather than read. Name every write verb the
+registry actually accepts, and revisit the list when the registry's API changes.
+If a host genuinely needs read-only enforcement rather than a deny-list, put it
+behind an allowlist that names the paths it may serve instead of enumerating the
+methods it may not.
+
 ## Enforcement, audit, and receipts
 
 A matched rule records a decision metric and an audit event with bounded,

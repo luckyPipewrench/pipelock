@@ -437,7 +437,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	if old.FetchProxy.Monitoring.NestedURLScanningEnabled() && !updated.FetchProxy.Monitoring.NestedURLScanningEnabled() {
+	if old.FetchProxy.Monitoring.ScanNestedURLsEnabled() && !updated.FetchProxy.Monitoring.ScanNestedURLsEnabled() {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "fetch_proxy.monitoring.scan_nested_urls",
 			Message: "nested URL destination scanning disabled — query-parameter destinations will not be evaluated",

@@ -92,7 +92,9 @@ func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
 }
 
 func TestInterceptTunnel_NestedMetadataURLBlocked(t *testing.T) {
+	var hits atomic.Int32
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -109,6 +111,11 @@ func TestInterceptTunnel_NestedMetadataURLBlocked(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status=%d want 403", resp.StatusCode)
+	}
+	// A 403 alone is satisfied by a proxy that forwards first and refuses after.
+	// The destination must never be contacted.
+	if hits.Load() != 0 {
+		t.Fatalf("upstream contacted %d time(s) despite a nested metadata destination", hits.Load())
 	}
 }
 

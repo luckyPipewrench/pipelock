@@ -234,7 +234,8 @@ type Scanner struct {
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
 	queryParamExclusions       map[queryEntropyParamExclusionKey]struct{}
-	scanNestedURLs             bool // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
+	scanNestedURLs             bool          // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
+	nestedURLResolveBudget     time.Duration // shared deadline for all nested lookups in one request
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
 	// already governs with a request_policy route (explicit host + path
 	// constraints). A nil or disabled matcher keeps path entropy fully active.
@@ -392,7 +393,8 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
-		scanNestedURLs:            cfg.FetchProxy.Monitoring.NestedURLScanningEnabled(),
+		scanNestedURLs:            cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
+		nestedURLResolveBudget:    defaultNestedURLResolveBudget,
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
 		destinationGrants:         opts.DestinationGrants,
 	}
@@ -1369,7 +1371,10 @@ const ssrfLookupCeiling = 5 * time.Second
 // need no I/O and are bounded by the outer URL length, so there is deliberately
 // no cap on how many query values are examined; a count cap was a fail-open
 // (pad past it, then relay).
-var nestedURLResolveBudget = ssrfLookupCeiling
+// The value lives on the Scanner rather than in a package variable. A mutable
+// global would be shared by every concurrent scan, and a test that shortened it
+// would race every other test in the package.
+const defaultNestedURLResolveBudget = ssrfLookupCeiling
 
 const nestedURLReasonPrefix = "nested URL in query parameter"
 
@@ -1444,7 +1449,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 		return Result{Allowed: true}
 	}
 	runDNSSSRF := len(s.internalCIDRs) > 0 || s.destinationGrants.Len() > 0
-	nestedCtx, cancel := context.WithTimeout(ctx, nestedURLResolveBudget)
+	nestedCtx, cancel := context.WithTimeout(ctx, s.nestedURLResolveBudget)
 	defer cancel()
 	// One verdict per distinct destination. The same callback URL repeated
 	// across parameters, or reached through several encodings, is one
@@ -1465,7 +1470,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 			// how checkSSRF already classifies an outer-host resolver failure.
 			return Result{
 				Allowed: false,
-				Reason:  fmt.Sprintf("nested URL destinations exceeded the shared resolution budget (%s)", nestedURLResolveBudget),
+				Reason:  fmt.Sprintf("nested URL destinations exceeded the shared resolution budget (%s)", s.nestedURLResolveBudget),
 				Scanner: ScannerSSRF,
 				Score:   1.0,
 				Class:   ClassInfrastructureError,

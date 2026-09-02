@@ -207,7 +207,8 @@ parameter as a destination of its own. After iterative percent-decoding, a
 value that parses as an absolute `http`/`https` URL with a hostname is run
 through the same allowlist, blocklist, and SSRF checks as the outer host.
 The check is one level deep: a nested URL that itself contains a nested URL
-is not expanded. Relative paths, bare words, `mailto:`, and `data:` values
+is not expanded. Relative paths, bare words, `mailto:` values, and `data:`
+values are ignored, because none of them names an `http` or `https` destination.
 There is no cap on how many query components are examined; parsing and literal-IP
 checks need no I/O and are bounded by the URL length limit. Every nested DNS lookup a
 request needs shares one resolution budget equal to the single-lookup SSRF ceiling, and
@@ -218,7 +219,8 @@ scheme-relative `//host/...` value is evaluated as an https destination.
 
 CONNECT is out of scope: the CONNECT handler scans a synthetic `https://host/`
 URL with no query string, so nested query destinations never appear on that
-surface. Fetch, forward absolute-URI, TLS intercept, redirect follow, and
+surface. Fetch, forward absolute-URI, TLS intercept, redirect follow, WebSocket
+(the `/ws?url=...` handler passes the caller-supplied URL to `Scan`), and
 reverse-proxy submit profile all call `Scan` on the real URL and inherit the
 check.
 

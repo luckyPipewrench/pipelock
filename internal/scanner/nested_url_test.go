@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -406,4 +408,179 @@ func TestOperatorHintForNestedURLNamesConsultedKnob(t *testing.T) {
 	if !strings.Contains(blockHint, "blocklist") {
 		t.Fatalf("blocklist nested hint missing inner knob: %s", blockHint)
 	}
+}
+
+// Round 2 finding 1: budget exhaustion is a resolver-availability condition, not
+// evidence of an adversary. Classifying it as a threat would let resolver wobble
+// accumulate adaptive-enforcement signal until a session is locked down, which is
+// the same defect checkSSRF already avoids for the outer host.
+func TestScan_NestedURLBudgetExhaustionIsInfrastructureNotThreat(t *testing.T) {
+	setNestedURLResolveBudgetForTest(t, 50*time.Millisecond)
+	cfg := nestedURLSSRFConfig()
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	s.resolver = blockingResolver{}
+	raw := nestedURLOuterHost + "?a=" + url.QueryEscape("https://one.example.net/") +
+		"&b=" + url.QueryEscape("https://two.example.net/")
+	result := s.Scan(context.Background(), raw)
+	if result.Allowed {
+		t.Fatal("budget exhaustion allowed the request")
+	}
+	if result.Class != ClassInfrastructureError {
+		t.Fatalf("class = %v, want ClassInfrastructureError: a timeout resolved no destination and is not threat evidence", result.Class)
+	}
+	if !result.IsAdaptiveNeutral() {
+		t.Fatal("budget exhaustion must be adaptive-neutral so resolver wobble cannot drive lockdown")
+	}
+	// The hint must not tell an operator to edit an allowlist: no allowlist entry
+	// makes a resolver answer faster.
+	if strings.Contains(result.Hint, "ip_allowlist") {
+		t.Fatalf("hint names an inert control for a timeout: %q", result.Hint)
+	}
+	if !strings.Contains(result.Hint, "resolution budget") {
+		t.Fatalf("hint does not name the budget: %q", result.Hint)
+	}
+}
+
+// Round 2 finding 2: one verdict per distinct destination. The same callback URL
+// repeated across parameters is one destination and must cost one lookup.
+func TestScan_NestedURLDeduplicatesDestinations(t *testing.T) {
+	t.Parallel()
+	cfg := nestedURLSSRFConfig()
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	counting := &countingResolver{hosts: map[string][]string{
+		"mirror.vendor.example": {"93.184.216.34"},
+		"app.example.com":       {"93.184.216.34"},
+	}}
+	s.resolver = counting
+	var b strings.Builder
+	b.WriteString(nestedURLOuterHost)
+	for i := range 10 {
+		fmt.Fprintf(&b, "%cu%d=%s", map[bool]rune{true: '?', false: '&'}[i == 0], i,
+			url.QueryEscape("https://app.example.com/cb"))
+	}
+	result := s.Scan(context.Background(), b.String())
+	if !result.Allowed {
+		t.Fatalf("ten copies of one public callback were refused: %s", result.Reason)
+	}
+	if got := counting.count("app.example.com"); got != 1 {
+		t.Fatalf("lookups for the repeated host = %d, want 1", got)
+	}
+}
+
+// Round 2 finding 3: a unix path in a query value is not a destination. Completing
+// "//tmp/x" to https://tmp/x made a failed lookup refuse a request that carried no
+// destination at all.
+func TestScan_NestedURLSchemeRelativeOnlyCompletesHosts(t *testing.T) {
+	t.Parallel()
+	cfg := nestedURLSSRFConfig()
+	for _, tc := range []struct {
+		name        string
+		value       string
+		wantAllowed bool
+	}{
+		{"unix path is not a host", "//tmp/x", true},
+		{"single label is not a host", "//localdir/sub", true},
+		{"dotted name is a host", "//169.254.169.254/latest/", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw := nestedURLOuterHost + "?u=" + url.QueryEscape(tc.value)
+			result := scanNestedWith(t, cfg, raw, &countingResolver{hosts: map[string][]string{
+				"mirror.vendor.example": {"93.184.216.34"},
+			}})
+			if result.Allowed != tc.wantAllowed {
+				t.Fatalf("%s: allowed = %v, want %v (reason %q)", tc.name, result.Allowed, tc.wantAllowed, result.Reason)
+			}
+		})
+	}
+}
+
+// Round 2 finding 4: the query key is attacker-chosen and must not steer operator
+// guidance. A parameter named "metadata" must not turn a private-IP block into the
+// immutable cloud-metadata explanation that says there is no allow knob.
+func TestGuidanceForNestedResultRoutesOnInnerReason(t *testing.T) {
+	t.Parallel()
+	private := Result{
+		Allowed: false,
+		Reason:  "SSRF blocked: 10.0.0.12 is an internal IP",
+		Scanner: ScannerSSRF,
+	}
+	hostile := prefixNestedURLResult("metadata", private)
+	g, ok := GuidanceForResult(hostile.Scanner, hostile.Reason)
+	if !ok {
+		t.Fatal("no guidance for a nested SSRF block")
+	}
+	if g.Immutable {
+		t.Fatalf("a parameter named %q routed a private-IP block to immutable metadata guidance: %q", "metadata", g.OperatorKnob)
+	}
+	genuine := prefixNestedURLResult("target", Result{
+		Allowed: false,
+		Reason:  "SSRF blocked: 169.254.169.254 is a cloud metadata endpoint",
+		Scanner: ScannerSSRF,
+	})
+	gm, ok := GuidanceForResult(genuine.Scanner, genuine.Reason)
+	if !ok || !gm.Immutable {
+		t.Fatalf("a genuine nested metadata block lost its immutable guidance: ok=%v immutable=%v", ok, gm.Immutable)
+	}
+}
+
+// Coverage for the early returns in the nested path: a query with no candidate,
+// a parsed URL with no host, and an alternative-form literal carrying a port.
+func TestScan_NestedURLEdgeShapes(t *testing.T) {
+	t.Parallel()
+	cfg := nestedURLConfig()
+	cfg.SSRF.IPAllowlist = nil
+	for _, tc := range []struct {
+		name        string
+		raw         string
+		wantAllowed bool
+	}{
+		{"query with no url-shaped candidate", nestedURLOuterHost + "?a=1&b=2", true},
+		{"scheme without host", nestedURLOuterHost + "?u=" + url.QueryEscape("http:///etc/passwd"), true},
+		{"alt-form literal with port", nestedURLOuterHost + "?u=" + url.QueryEscape("http://0x7f000001:8080/"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := scanNested(t, cfg, tc.raw)
+			if result.Allowed != tc.wantAllowed {
+				t.Fatalf("%s: allowed = %v, want %v (scanner %s reason %q)", tc.name, result.Allowed, tc.wantAllowed, result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+// countingResolver records how many times each host was looked up.
+type countingResolver struct {
+	mu    sync.Mutex
+	hosts map[string][]string
+	seen  map[string]int
+}
+
+func (c *countingResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seen == nil {
+		c.seen = map[string]int{}
+	}
+	c.seen[host]++
+	if ips, ok := c.hosts[host]; ok {
+		return ips, nil
+	}
+	return nil, errors.New("no such host")
+}
+
+func (c *countingResolver) count(host string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seen[host]
+}
+
+func scanNestedWith(t *testing.T, cfg *config.Config, raw string, r Resolver) Result {
+	t.Helper()
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	s.resolver = r
+	return s.Scan(context.Background(), raw)
 }

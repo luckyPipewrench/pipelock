@@ -1202,7 +1202,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, dest destination.Destination) R
 
 	// Resolve hostname to IP for SSRF check.
 	// Fail closed: if we can't resolve DNS, we can't verify the IP is safe.
-	dnsCtx, dnsCancel := context.WithTimeout(ctx, 5*time.Second) // 5s: DNS resolution ceiling; inherits caller cancellation
+	dnsCtx, dnsCancel := context.WithTimeout(ctx, ssrfLookupCeiling) // inherits caller cancellation
 	defer dnsCancel()
 	ips, err := s.resolver.LookupHost(dnsCtx, hostname)
 	if err != nil {
@@ -1347,15 +1347,25 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// nestedURLResolveBudget bounds the total resolver time one request may spend
-// on nested destinations. It equals the single-lookup ceiling checkSSRF already
-// applies to the outer host, so a request carrying many nested hostnames cannot
-// hold more resolver time than one ordinary lookup. Exhausting the budget fails
-// CLOSED: a nested destination that could not be resolved in time is refused,
-// never forwarded. Parsing and literal-IP checks need no I/O and are bounded by
-// the outer URL length, so there is deliberately no cap on how many query values
-// are examined; a count cap was a fail-open (pad past it, then relay).
-var nestedURLResolveBudget = 5 * time.Second
+// ssrfLookupCeiling is the deadline one SSRF hostname resolution may take. The
+// outer host and the nested-destination budget share it so the two cannot drift.
+const ssrfLookupCeiling = 5 * time.Second
+
+// nestedURLResolveBudget bounds the total resolver time one request may spend on
+// nested destinations. It equals one lookup ceiling, so a request carrying nested
+// hostnames cannot hold more resolver time than one ordinary outer lookup. What
+// makes one ceiling sufficient in practice is that distinct destinations are
+// resolved once per request (see the seen set in checkNestedURLs): the common
+// shape, one callback URL repeated, costs a single lookup. A request naming many
+// DISTINCT slow hostnames can still exhaust it, which is why exhaustion is
+// classified as an infrastructure error rather than a threat.
+//
+// Exhausting the budget fails CLOSED: a nested destination that could not be
+// resolved in time is refused, never forwarded. Parsing and literal-IP checks
+// need no I/O and are bounded by the outer URL length, so there is deliberately
+// no cap on how many query values are examined; a count cap was a fail-open
+// (pad past it, then relay).
+var nestedURLResolveBudget = ssrfLookupCeiling
 
 const nestedURLReasonPrefix = "nested URL in query parameter"
 
@@ -1364,6 +1374,37 @@ const nestedURLReasonPrefix = "nested URL in query parameter"
 type nestedURLCandidate struct {
 	key  string
 	text string
+}
+
+// schemeRelativeNamesHost reports whether a "//..." reference names something
+// host-shaped: a bracketed IPv6 literal, an IP literal, or a dotted name. A
+// single label such as "//tmp/x" is a filesystem path far more often than a
+// host, and treating it as a destination is a false positive.
+func schemeRelativeNamesHost(text string) bool {
+	authority := strings.TrimPrefix(text, "//")
+	if i := strings.IndexAny(authority, "/?#"); i >= 0 {
+		authority = authority[:i]
+	}
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		authority = authority[at+1:]
+	}
+	if authority == "" {
+		return false
+	}
+	if strings.HasPrefix(authority, "[") {
+		return true
+	}
+	host := authority
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	if host == "" {
+		return false
+	}
+	if destination.ParseIPLiteral(host) != nil {
+		return true
+	}
+	return strings.Contains(strings.TrimSuffix(host, "."), ".")
 }
 
 // nestedURLCandidates enumerates every query component that could hide a nested
@@ -1381,6 +1422,13 @@ func nestedURLCandidates(rawQuery string, maxLen int) []nestedURLCandidate {
 			return
 		}
 		if strings.HasPrefix(text, "//") {
+			// Complete a scheme-relative reference only when what follows looks
+			// like a host. Without this, an ordinary unix path in a query value
+			// ("//tmp/x") becomes https://tmp/x, and with SSRF configured its
+			// failed lookup refuses a request that carried no destination.
+			if !schemeRelativeNamesHost(text) {
+				return
+			}
 			text = "https:" + text
 		}
 		out = append(out, nestedURLCandidate{key: key, text: text})
@@ -1424,20 +1472,30 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	runDNSSSRF := len(s.internalCIDRs) > 0 || s.destinationGrants.Len() > 0
 	nestedCtx, cancel := context.WithTimeout(ctx, nestedURLResolveBudget)
 	defer cancel()
+	// One verdict per distinct destination. The same callback URL repeated
+	// across parameters, or reached through several encodings, is one
+	// destination and must cost one resolution, not one per occurrence.
+	seen := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
-		result := s.checkNestedURLValue(nestedCtx, c.key, c.text, runDNSSSRF)
+		result := s.checkNestedURLValue(nestedCtx, c.key, c.text, runDNSSSRF, seen)
 		if result.Allowed {
 			continue
 		}
 		if nestedCtx.Err() != nil && ctx.Err() == nil {
 			// The shared budget ran out before every nested destination was
-			// resolved. Refuse the request: an unverified nested destination
-			// is exactly what this step exists to stop.
+			// resolved. Refuse the request, because an unverified nested
+			// destination is exactly what this step exists to stop. Classify it
+			// as an infrastructure error, not a threat: nothing was resolved, so
+			// there is no evidence of an adversary, and adaptive enforcement must
+			// not accumulate lockdown signal from resolver wobble. This matches
+			// how checkSSRF already classifies an outer-host resolver failure.
 			return Result{
 				Allowed: false,
-				Reason:  fmt.Sprintf("%s %q: nested URL destinations exceeded the shared resolution budget (%s)", nestedURLReasonPrefix, c.key, nestedURLResolveBudget),
+				Reason:  fmt.Sprintf("nested URL destinations exceeded the shared resolution budget (%s)", nestedURLResolveBudget),
 				Scanner: ScannerSSRF,
 				Score:   1.0,
+				Class:   ClassInfrastructureError,
+				Hint:    nestedURLBudgetHint,
 			}
 		}
 		return result
@@ -1445,7 +1503,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	return Result{Allowed: true}
 }
 
-func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, runDNSSSRF bool) Result {
+func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, runDNSSSRF bool, seen map[string]struct{}) Result {
 	nestedParsed, err := url.Parse(text)
 	if err != nil {
 		return Result{Allowed: true}
@@ -1472,6 +1530,15 @@ func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, run
 	if !ok {
 		// Bad port: treat as not a URL rather than blocking.
 		return Result{Allowed: true}
+	}
+	// Key on host and port: the same name on a different port is a different
+	// destination for allowlist and grant purposes.
+	dedupKey := fmt.Sprintf("%s:%d", nestedDest.Host, nestedDest.Port)
+	if seen != nil {
+		if _, done := seen[dedupKey]; done {
+			return Result{Allowed: true}
+		}
+		seen[dedupKey] = struct{}{}
 	}
 	if result := s.checkAllowlist(nestedDest); !result.Allowed {
 		return prefixNestedURLResult(key, result)

@@ -364,10 +364,45 @@ func OperatorHintFor(label string) string {
 // entropy, while ScannerDenialOfWallet distinguishes budget-limit reasons.
 // Every other label falls through to the label-keyed table. This is the single
 // place that disambiguation lives, so explain, audit, and future consumers agree.
+// stripNestedURLReasonPrefix removes the "nested URL in query parameter %q: "
+// prefix so guidance routes on the INNER scanner reason. The parameter key is
+// attacker-chosen, and the SSRF routing below matches substrings such as
+// "metadata"; without this, a request naming its parameter "metadata" would be
+// explained with the immutable cloud-metadata guidance no matter what the
+// nested destination actually was.
+func stripNestedURLReasonPrefix(reason string) string {
+	open := nestedURLReasonPrefix + " \""
+	if !strings.HasPrefix(reason, open) {
+		return reason
+	}
+	rest := reason[len(open):]
+	// The key is %q-quoted, so the terminating quote is the first one not
+	// preceded by an odd number of backslashes.
+	for i := 0; i < len(rest); i++ {
+		if rest[i] != '"' {
+			continue
+		}
+		slashes := 0
+		for j := i - 1; j >= 0 && rest[j] == '\\'; j-- {
+			slashes++
+		}
+		if slashes%2 == 1 {
+			continue
+		}
+		if strings.HasPrefix(rest[i:], "\": ") {
+			return rest[i+3:]
+		}
+		return reason
+	}
+	return reason
+}
+
 func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
+	nested := reason
+	reason = stripNestedURLReasonPrefix(reason)
 	defer func() {
 		if ok {
-			g = annotateNestedURLGuidance(g, label, reason)
+			g = annotateNestedURLGuidance(g, label, nested)
 		}
 	}()
 	// Some transports retain historical audit labels for the same enforcing
@@ -622,8 +657,16 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	return GuidanceFor(label)
 }
 
+// nestedURLBudgetHint explains a nested-destination resolution timeout. It
+// deliberately names no allowlist: no allowlist entry can make a resolver
+// answer faster, and pointing an operator at one teaches them that policy
+// changed when nothing did.
+const nestedURLBudgetHint = "nested URL destinations could not be resolved within the shared resolution budget; the request was refused because a destination was left unverified. This is a resolver-availability condition, not a detection. Check resolver health and latency; to stop evaluating query-parameter destinations entirely, set fetch_proxy.monitoring.scan_nested_urls to false."
+
 func annotateNestedURLGuidance(g RemediationGuidance, label, reason string) RemediationGuidance {
-	if !strings.Contains(strings.ToLower(reason), "nested url in query parameter") {
+	lower := strings.ToLower(reason)
+	if !strings.Contains(lower, "nested url in query parameter") &&
+		!strings.Contains(lower, "shared resolution budget") {
 		return g
 	}
 	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings."

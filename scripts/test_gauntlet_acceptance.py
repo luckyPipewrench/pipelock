@@ -190,6 +190,51 @@ class AcceptanceCheckerTest(unittest.TestCase):
         failures = self.run_check(rows=rows)
         self.assertTrue(any("cases" in failure for failure in failures), failures)
 
+    def test_moving_a_case_between_populations_is_rejected(self):
+        """Totals and identities still agree; the evaluated population does not."""
+        rows = results_rows()
+        moved = next(
+            row for row in rows if row["expected_verdict"] == "block" and row["score"] == "pass"
+        )
+        moved.update(expected_verdict="allow", actual_verdict="allow")
+        failures = self.run_check(rows=rows)
+        self.assertTrue(
+            any("expecting 'block'" in failure for failure in failures), failures
+        )
+        self.assertTrue(
+            any("expecting 'allow'" in failure for failure in failures), failures
+        )
+
+    def test_unhashable_verdict_fails_closed_without_a_traceback(self):
+        for field in ("expected_verdict", "actual_verdict", "score"):
+            for value in ([], {}, 7, None):
+                with self.subTest(field=field, value=value):
+                    rows = results_rows()
+                    rows[0] = dict(rows[0], **{field: value})
+                    with self.assertRaises(ValueError):
+                        self.run_check(rows=rows)
+
+    def test_main_reports_a_nonzero_exit_on_malformed_verdicts(self):
+        rows = results_rows()
+        rows[0] = dict(rows[0], expected_verdict=[])
+        candidate_path = self.directory / "candidate.json"
+        results_path = self.directory / "results.jsonl"
+        candidate_path.write_text(json.dumps(candidate_document()), encoding="utf-8")
+        results_path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        exit_code = checker.main(
+            [
+                "--contract",
+                str(CONTRACT_PATH),
+                "--candidate",
+                str(candidate_path),
+                "--results",
+                str(results_path),
+            ]
+        )
+        self.assertEqual(exit_code, 1)
+
     def test_unknown_score_fails_closed(self):
         rows = results_rows()
         rows[-1] = dict(rows[-1], score="error", actual_verdict="error")

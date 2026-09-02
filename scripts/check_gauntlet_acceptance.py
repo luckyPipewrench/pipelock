@@ -109,15 +109,17 @@ def load_contract(path):
 
 
 def read_results(path):
-    """Return observed containment misses, false positives, and the case count.
+    """Return the observed misses, false positives, and per-expectation counts.
 
     Every record must be classifiable. An unrecognized verdict pair is a
     failure rather than an ignored row, so a runner change cannot silently
-    drop a failing case out of the comparison.
+    drop a failing case out of the comparison, and the counts let the caller
+    check that the result file evaluated the population the contract names.
     """
     misses = set()
     false_positives = set()
     seen = set()
+    expected_counts = {"block": 0, "allow": 0}
     with Path(path).open(encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.strip()
@@ -135,12 +137,16 @@ def read_results(path):
             expected = record.get("expected_verdict")
             actual = record.get("actual_verdict")
             score = record.get("score")
-            if expected not in {"block", "allow"}:
+            # A JSON array or object is unhashable, so the string check must
+            # come first or set membership raises TypeError and escapes the
+            # fail-closed diagnostic in main().
+            if not isinstance(expected, str) or expected not in {"block", "allow"}:
                 raise ValueError(f"{path}:{line_number} has invalid expected_verdict")
-            if actual not in {"block", "allow"}:
+            if not isinstance(actual, str) or actual not in {"block", "allow"}:
                 raise ValueError(f"{path}:{line_number} has invalid actual_verdict")
-            if score not in {"pass", "fail"}:
+            if not isinstance(score, str) or score not in {"pass", "fail"}:
                 raise ValueError(f"{path}:{line_number} has invalid score")
+            expected_counts[expected] += 1
             if (score == "pass") != (actual == expected):
                 raise ValueError(
                     f"{path}:{line_number} score does not match expected and actual verdicts"
@@ -154,7 +160,7 @@ def read_results(path):
                 misses.add(case_id)
             else:
                 false_positives.add(case_id)
-    return misses, false_positives, len(seen)
+    return misses, false_positives, len(seen), expected_counts
 
 
 def compare_identities(label, observed, accepted):
@@ -235,12 +241,22 @@ def check(contract_path, candidate_path, results_path):
                         f"contract accepts {expected[field]}"
                     )
 
-    misses, false_positives, observed_cases = read_results(results_path)
+    misses, false_positives, observed_cases, expected_counts = read_results(results_path)
     if observed_cases != contract["active_case_count"]:
         failures.append(
             f"results carry {observed_cases} cases, contract accepts "
             f"{contract['active_case_count']}"
         )
+    # The row total alone cannot see a case moved between populations, which
+    # would evaluate a different corpus while every other number still agrees.
+    for verdict, metric in (("block", "containment"), ("allow", "false_positives")):
+        observed_population = expected_counts[verdict]
+        accepted_population = contract[metric]["denominator"]
+        if observed_population != accepted_population:
+            failures.append(
+                f"results carry {observed_population} cases expecting {verdict!r}, "
+                f"contract accepts {accepted_population}"
+            )
     failures.extend(
         compare_identities(
             "containment misses", misses, set(contract["accepted_containment_misses"])

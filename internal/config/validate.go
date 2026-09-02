@@ -2062,7 +2062,11 @@ func validHTTPMethod(m string) bool {
 		// The HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body) is a
 		// safe method that carries a request body; recognize it so operators
 		// can write request_policy rules that target QUERY requests.
-		methodQuery:
+		methodQuery,
+		// WebDAV methods used by package-registry publish/relocate flows.
+		// Needed so a fetch-only registry recipe can name them in
+		// request_policy without failing validation.
+		"MKCOL", "MOVE", "COPY", "PROPPATCH":
 		return true
 	default:
 		return false

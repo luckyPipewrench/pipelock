@@ -1068,6 +1068,13 @@ type Monitoring struct {
 	// heuristic. DLP, SSRF, path/subdomain entropy, query-key entropy, adjacent
 	// parameters, rate limits, data budgets, and every other scanner still run.
 	QueryEntropyParamExclusions []QueryEntropyParamExclusion `yaml:"query_entropy_param_exclusions,omitempty"`
+
+	// ScanNestedURLs evaluates URL-shaped query parameter values as destinations
+	// in their own right, running the allowlist, blocklist, and SSRF checks on the
+	// nested host. It closes the relay class where an allowed host fetches an
+	// attacker-named target. nil = enabled. Set false only for an endpoint whose
+	// contract legitimately carries private or blocklisted URLs in query strings.
+	ScanNestedURLs *bool `yaml:"scan_nested_urls"`
 }
 
 // QueryEntropyParamExclusion is a narrow query-value entropy exemption for one

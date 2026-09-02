@@ -42,6 +42,10 @@ fetch_proxy:
       - "files.pythonhosted.org"
       - "pypi.org"
       - "objects.githubusercontent.com"
+    # Evaluate URL-shaped query values as destinations (allowlist, blocklist,
+    # SSRF). Default enabled (nil). Set false only for an endpoint whose
+    # contract legitimately carries private or blocklisted URLs in query strings.
+    # scan_nested_urls: true
 
 forward_proxy:
   enabled: true

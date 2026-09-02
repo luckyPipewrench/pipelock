@@ -437,6 +437,13 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	if old.FetchProxy.Monitoring.NestedURLScanningEnabled() && !updated.FetchProxy.Monitoring.NestedURLScanningEnabled() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.scan_nested_urls",
+			Message: "nested URL destination scanning disabled — query-parameter destinations will not be evaluated",
+		})
+	}
+
 	// Trusted domains expanded (SSRF protection scope reduced)
 	if added := passthroughDomainsAdded(old.TrustedDomains, updated.TrustedDomains); len(added) > 0 {
 		warnings = append(warnings, ReloadWarning{

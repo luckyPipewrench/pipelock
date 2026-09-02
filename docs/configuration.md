@@ -133,6 +133,7 @@ fetch_proxy:
       - "files.pythonhosted.org"
       - "pypi.org"
       - "objects.githubusercontent.com"
+    # scan_nested_urls: true  # default (nil); URL-shaped query values are destinations
 ```
 
 | Field | Default | Description |
@@ -147,6 +148,7 @@ fetch_proxy:
 | `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
 | `monitoring.blocklist` | 6 domains | Blocked exfiltration targets |
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
+| `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
 | `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply |
 
@@ -198,6 +200,29 @@ fetch_proxy:
   monitoring:
     query_entropy_exclusions:
       - "provider.example"
+```
+
+**Nested URL destination scanning** treats an `http`/`https` URL in a query
+parameter as a destination of its own. After iterative percent-decoding, a
+value that parses as an absolute `http`/`https` URL with a hostname is run
+through the same allowlist, blocklist, and SSRF checks as the outer host.
+The check is one level deep: a nested URL that itself contains a nested URL
+is not expanded. Relative paths, bare words, `mailto:`, and `data:` values
+are ignored. At most 32 query values are inspected per request; remaining
+values are skipped while the outer pipeline continues. Default is enabled
+(`nil` or `true`). Set `false` only for an endpoint whose contract
+legitimately carries private or blocklisted URLs in query strings.
+
+CONNECT is out of scope: the CONNECT handler scans a synthetic `https://host/`
+URL with no query string, so nested query destinations never appear on that
+surface. Fetch, forward absolute-URI, TLS intercept, redirect follow, and
+reverse-proxy submit profile all call `Scan` on the real URL and inherit the
+check.
+
+```yaml
+fetch_proxy:
+  monitoring:
+    scan_nested_urls: true
 ```
 
 **Path entropy and governed API routes.** Path entropy is *also* skipped

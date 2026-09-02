@@ -352,7 +352,10 @@ const (
 	// presigned URL and therefore belongs in the policy identity.
 	// Re-bumped for issuer-backed GitHub stateless-token and decoded Azure SAS
 	// coverage in the default DLP pattern set.
-	goldenHashDefaults = "88d9b0f0909023d23017f4982737d7cf771bae3cd71261e079a670a35d6b276e"
+	// Re-bumped for fetch_proxy.monitoring.scan_nested_urls: nested query
+	// destinations are an enforcement floor, so mixed versions must not
+	// report the same policy identity.
+	goldenHashDefaults = "6be082af03f853f5e7f70b737e94440b1ab616a1a8997bcb704d824b1171905c"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -531,7 +534,10 @@ const (
 	// Re-bumped for route-scoped SigV4 body credentials: see goldenHashDefaults.
 	// Re-bumped for issuer-backed GitHub stateless-token and decoded Azure SAS
 	// coverage: the rich fixture inherits the default DLP pattern set.
-	goldenHashRichConfig = "9028a9d0f3902660b84acee629ea483e9454cfc4197738596b5e2efec6ec7fba"
+	// Re-bumped for fetch_proxy.monitoring.scan_nested_urls: see
+	// goldenHashDefaults. The rich fixture omits the field, so nil (enabled)
+	// flows into ph identically to Defaults().
+	goldenHashRichConfig = "c56ab6b21a273b026b9d0ee492256933eb016cca4617ee90988e0f3b5f7eabee"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

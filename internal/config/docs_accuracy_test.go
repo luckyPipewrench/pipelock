@@ -26,6 +26,8 @@ func TestDocsDeclareLiveStatsAndDefaults(t *testing.T) {
 		mustContain(t, configDoc, "request_body_scanning:\n  enabled: true")
 		mustContain(t, configDoc, "| `enabled` | `true` | Enable request body/header DLP scanning")
 		mustContain(t, configDoc, "Omitting `request_body_scanning.enabled` or `request_body_scanning.scan_headers` defaults both to `true`")
+		mustContain(t, configDoc, "`monitoring.scan_nested_urls`")
+		mustContain(t, configDoc, "CONNECT is out of scope")
 		mustNotContain(t, configDoc, "omitting the field from your YAML file gives `false`")
 	})
 
@@ -45,6 +47,7 @@ func TestDocsDeclareLiveStatsAndDefaults(t *testing.T) {
 		mustContain(t, agentDoc, fmt.Sprintf("DLP (%d built-in credential patterns", dlpCount))
 		mustContain(t, agentDoc, "Path entropy analysis")
 		mustContain(t, agentDoc, "Subdomain entropy analysis")
+		mustContain(t, agentDoc, "Nested URL destinations in query parameters")
 		mustContain(t, agentDoc, "Run `make stats` before citing the current direct-dependency count")
 		mustNotContain(t, agentDoc, "48 regex patterns")
 		mustNotContain(t, agentDoc, "20 direct dependencies")

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -234,6 +235,7 @@ type Scanner struct {
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
 	queryParamExclusions       map[queryEntropyParamExclusionKey]struct{}
+	scanNestedURLs             bool // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
 	// already governs with a request_policy route (explicit host + path
 	// constraints). A nil or disabled matcher keeps path entropy fully active.
@@ -391,6 +393,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
+		scanNestedURLs:            cfg.FetchProxy.Monitoring.NestedURLScanningEnabled(),
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
 		destinationGrants:         opts.DestinationGrants,
 	}
@@ -1007,6 +1010,14 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		return result
 	}
 
+	// Nested URL destinations in query parameters. Runs after the outer
+	// allowlist/blocklist/core-SSRF floor so a nested host must clear the
+	// same destination checks, and before SigV4/DLP/DNS so a nested private
+	// target is refused with no network I/O.
+	if result := s.checkNestedURLs(ctx, parsed); !result.Allowed {
+		return result
+	}
+
 	// SigV4 presigned URL carve-out. Detect once before content-scanning
 	// stages so core DLP, main DLP, and query-entropy all see the same
 	// scrubbed URL. The scrub replaces ONLY the AKIA component of a
@@ -1335,6 +1346,109 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 		}
 	}
 	return Result{Allowed: true}
+}
+
+// maxNestedURLQueryValues caps how many query values are inspected as nested
+// destinations per request. Values past the cap are not expanded; outer-host
+// checks still run. Fail-open on the cap is acceptable only because of that.
+const maxNestedURLQueryValues = 32
+
+const nestedURLReasonPrefix = "nested URL in query parameter"
+
+// checkNestedURLs evaluates URL-shaped query parameter values as destinations
+// in their own right. Decode is at most one level of nesting: a nested URL
+// that itself contains a nested URL is not expanded. Schemeless host/path
+// strings, relative paths, and non-http(s) schemes are ignored.
+func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
+	if !s.scanNestedURLs || parsed == nil || parsed.RawQuery == "" {
+		return Result{Allowed: true}
+	}
+	query := parsed.Query()
+	if len(query) == 0 {
+		return Result{Allowed: true}
+	}
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	runDNSSSRF := len(s.internalCIDRs) > 0 || s.destinationGrants.Len() > 0
+	scanned := 0
+	for _, key := range keys {
+		for _, value := range query[key] {
+			if scanned >= maxNestedURLQueryValues {
+				// Remaining query values are not expanded as nested
+				// destinations. The outer pipeline continues.
+				return Result{Allowed: true}
+			}
+			scanned++
+			if result := s.checkNestedURLValue(ctx, key, value, runDNSSSRF); !result.Allowed {
+				return result
+			}
+		}
+	}
+	return Result{Allowed: true}
+}
+
+func (s *Scanner) checkNestedURLValue(ctx context.Context, key, value string, runDNSSSRF bool) Result {
+	if s.maxURLLength > 0 && len(value) > s.maxURLLength {
+		return Result{Allowed: true}
+	}
+	decoded := IterativeDecode(value)
+	if decoded == "" {
+		return Result{Allowed: true}
+	}
+	if s.maxURLLength > 0 && len(decoded) > s.maxURLLength {
+		return Result{Allowed: true}
+	}
+	nestedParsed, err := url.Parse(decoded)
+	if err != nil {
+		return Result{Allowed: true}
+	}
+	scheme := strings.ToLower(nestedParsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return Result{Allowed: true}
+	}
+	nestedHost := strings.ToLower(nestedParsed.Hostname())
+	if nestedHost == "" {
+		return Result{Allowed: true}
+	}
+	// Canonicalize alternative IPv4 forms the same way scan does for the outer host.
+	if altIP := destination.ParseIPLiteral(nestedHost); altIP != nil && altIP.To4() != nil && net.ParseIP(nestedHost) == nil {
+		nestedHost = altIP.String()
+		port := nestedParsed.Port()
+		if port != "" {
+			nestedParsed.Host = nestedHost + ":" + port
+		} else {
+			nestedParsed.Host = nestedHost
+		}
+	}
+	nestedDest, ok := urlDestination(nestedParsed, nestedHost)
+	if !ok {
+		// Bad port: treat as not a URL rather than blocking.
+		return Result{Allowed: true}
+	}
+	if result := s.checkAllowlist(nestedDest); !result.Allowed {
+		return prefixNestedURLResult(key, result)
+	}
+	if result := s.checkBlocklist(nestedHost); !result.Allowed {
+		return prefixNestedURLResult(key, result)
+	}
+	if result := s.checkCoreSSRFLiteral(nestedDest); !result.Allowed {
+		return prefixNestedURLResult(key, result)
+	}
+	if runDNSSSRF {
+		if result := s.checkSSRF(ctx, nestedDest); !result.Allowed {
+			return prefixNestedURLResult(key, result)
+		}
+	}
+	return Result{Allowed: true}
+}
+
+func prefixNestedURLResult(key string, result Result) Result {
+	result.Reason = fmt.Sprintf(nestedURLReasonPrefix+" %q: %s", key, result.Reason)
+	return result
 }
 
 // checkCRLF detects CRLF injection sequences in URLs. CR+LF bytes in a URL

@@ -180,6 +180,35 @@ A `shadow` match never enforces; an enforced match always wins over a shadow mat
 of equal strictness. Promote to `action: block` (and drop `shadow`) once the logs
 show the rule matches only what you intend.
 
+## Fetch-only package registries
+
+An allowlisted helper with any-method access is a publish and relay channel: `GET`
+and `HEAD` are the package fetch, but `POST`/`PUT`/`PATCH`/`DELETE` and the WebDAV
+verbs that registries use to create or move artifacts turn the same host into a
+write path. That is operator intent about one host, not a scanner default. Defaulting
+the rail to "fetch only" would break `npm publish` and dataset pushes for operators
+who actually need those methods.
+
+The rail sees the method only with TLS interception on and the host not in
+`passthrough_domains`. Config validation already warns when a rule needs inner HTTP
+that the deployment cannot see.
+
+```yaml
+version: 1
+mode: balanced
+request_policy:
+  enabled: true
+  on_parse_error: block
+  on_opaque_operation: block
+  rules:
+    - name: "fetch-only-vendor-registry"
+      action: block
+      reason: "registry.vendor.example is allowlisted for package fetch only; write methods are a publish/relay channel"
+      route:
+        hosts: ["registry.vendor.example"]
+        methods: ["POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"]
+```
+
 ## Enforcement, audit, and receipts
 
 A matched rule records a decision metric and an audit event with bounded,

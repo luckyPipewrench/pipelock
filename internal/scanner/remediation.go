@@ -364,7 +364,12 @@ func OperatorHintFor(label string) string {
 // entropy, while ScannerDenialOfWallet distinguishes budget-limit reasons.
 // Every other label falls through to the label-keyed table. This is the single
 // place that disambiguation lives, so explain, audit, and future consumers agree.
-func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
+func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
+	defer func() {
+		if ok {
+			g = annotateNestedURLGuidance(g, label, reason)
+		}
+	}()
 	// Some transports retain historical audit labels for the same enforcing
 	// family. Normalize them before reason routing so alternate labels cannot
 	// drift to a less accurate hint.
@@ -615,6 +620,21 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 		}
 	}
 	return GuidanceFor(label)
+}
+
+func annotateNestedURLGuidance(g RemediationGuidance, label, reason string) RemediationGuidance {
+	if !strings.Contains(strings.ToLower(reason), "nested url in query parameter") {
+		return g
+	}
+	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings."
+	switch label {
+	case ScannerSSRF, ScannerCoreSSRF:
+		if !g.Immutable {
+			nestedKnob += " The nested host consults `ssrf.ip_allowlist`, `trusted_domains`, and `dns.host_overrides` because it reuses the same destination checks as the outer host."
+		}
+	}
+	g.OperatorKnob += nestedKnob
+	return g
 }
 
 // OperatorHintForResult is OperatorHintFor with Reason-based disambiguation. Use

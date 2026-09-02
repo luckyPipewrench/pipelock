@@ -43,6 +43,23 @@ def load_contract(path):
         raise ValueError(f"acceptance contract missing required keys: {missing!r}")
     if contract["schema_version"] != 1:
         raise ValueError("acceptance contract schema_version must be 1")
+    for key in ("pipelock_version", "corpus_version"):
+        if not isinstance(contract[key], str) or not contract[key]:
+            raise ValueError(f"acceptance contract {key} must be a non-empty string")
+    bench_release_commit = contract["bench_release_commit"]
+    if (
+        not isinstance(bench_release_commit, str)
+        or len(bench_release_commit) != 40
+        or any(character not in "0123456789abcdef" for character in bench_release_commit)
+    ):
+        raise ValueError("acceptance contract bench_release_commit must be a lower-case Git SHA")
+    active_case_count = contract["active_case_count"]
+    if (
+        isinstance(active_case_count, bool)
+        or not isinstance(active_case_count, int)
+        or active_case_count < 1
+    ):
+        raise ValueError("acceptance contract active_case_count must be a positive integer")
     for key in ("accepted_containment_misses", "accepted_false_positives"):
         identifiers = contract[key]
         if not isinstance(identifiers, list) or not all(
@@ -62,6 +79,30 @@ def load_contract(path):
                 raise ValueError(
                     f"acceptance contract {key}.{field} must be a non-negative integer"
                 )
+        if fraction["denominator"] < 1:
+            raise ValueError(f"acceptance contract {key}.denominator must be positive")
+        if fraction["numerator"] > fraction["denominator"]:
+            raise ValueError(
+                f"acceptance contract {key}.numerator cannot exceed its denominator"
+            )
+    if len(contract["accepted_containment_misses"]) != (
+        contract["containment"]["denominator"] - contract["containment"]["numerator"]
+    ):
+        raise ValueError(
+            "acceptance contract accepted_containment_misses must match containment counts"
+        )
+    if len(contract["accepted_false_positives"]) != contract["false_positives"]["numerator"]:
+        raise ValueError(
+            "acceptance contract accepted_false_positives must match false-positive counts"
+        )
+    if (
+        contract["containment"]["denominator"]
+        + contract["false_positives"]["denominator"]
+        != active_case_count
+    ):
+        raise ValueError(
+            "acceptance contract metric denominators must equal active_case_count"
+        )
     return contract
 
 
@@ -93,6 +134,16 @@ def read_results(path):
             expected = record.get("expected_verdict")
             actual = record.get("actual_verdict")
             score = record.get("score")
+            if expected not in {"block", "allow"}:
+                raise ValueError(f"{path}:{line_number} has invalid expected_verdict")
+            if actual not in {"block", "allow"}:
+                raise ValueError(f"{path}:{line_number} has invalid actual_verdict")
+            if score not in {"pass", "fail"}:
+                raise ValueError(f"{path}:{line_number} has invalid score")
+            if (score == "pass") != (actual == expected):
+                raise ValueError(
+                    f"{path}:{line_number} score does not match expected and actual verdicts"
+                )
             if score == "pass":
                 continue
             if expected == "block" and actual == "allow":

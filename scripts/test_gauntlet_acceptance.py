@@ -196,6 +196,22 @@ class AcceptanceCheckerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_check(rows=rows)
 
+    def test_passing_score_cannot_hide_an_opposite_verdict(self):
+        rows = results_rows()
+        passing_block = next(
+            row for row in rows if row["expected_verdict"] == "block" and row["score"] == "pass"
+        )
+        passing_block["actual_verdict"] = "allow"
+        with self.assertRaisesRegex(ValueError, "score does not match"):
+            self.run_check(rows=rows)
+
+    def test_unknown_score_cannot_preserve_an_accepted_miss(self):
+        rows = results_rows()
+        accepted_miss = next(row for row in rows if row["case_id"] == MISSES[0])
+        accepted_miss["score"] = "error"
+        with self.assertRaisesRegex(ValueError, "invalid score"):
+            self.run_check(rows=rows)
+
     def test_repeated_case_identifier_fails_closed(self):
         rows = results_rows()
         rows.append(dict(rows[0]))
@@ -262,6 +278,22 @@ class ContractShapeTest(unittest.TestCase):
             path = Path(directory) / "contract.json"
             path.write_text(json.dumps(dict(CONTRACT, schema_version=2)), encoding="utf-8")
             with self.assertRaises(ValueError):
+                checker.load_contract(path)
+
+    def test_contract_rejects_non_integer_active_case_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(json.dumps(dict(CONTRACT, active_case_count=249.0)), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "active_case_count"):
+                checker.load_contract(path)
+
+    def test_contract_rejects_counts_that_disagree_with_accepted_identities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            broken = dict(CONTRACT)
+            broken["containment"] = dict(CONTAINMENT, numerator=CONTAINMENT["numerator"] - 1)
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "accepted_containment_misses"):
                 checker.load_contract(path)
 
     def test_shipped_contract_loads(self):

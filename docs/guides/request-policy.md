@@ -209,6 +209,16 @@ request_policy:
         methods: ["POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"]
 ```
 
+Read that rule as "these write methods are refused", not as "only fetch is permitted".
+`request_policy` is allow-by-default and has no allow-only method predicate, so a method
+absent from the list still reaches the host: `TRACE` and `OPTIONS` are accepted by
+validation, and any verb the validator does not recognise is rejected at load rather than
+silently blocked. A rule naming the write verbs a registry actually uses is the posture
+this rail can express today. If you need a true fetch-only boundary, terminate it where
+an allow-list exists, such as the registry's own credentials or an upstream gateway, and
+treat this rule as defence in depth rather than the boundary itself.
+
+
 ### What this rule does and does not cover
 
 `request_policy` rules are a deny-list: a request forwards unless a rule matches

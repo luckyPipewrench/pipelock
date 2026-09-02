@@ -208,10 +208,13 @@ value that parses as an absolute `http`/`https` URL with a hostname is run
 through the same allowlist, blocklist, and SSRF checks as the outer host.
 The check is one level deep: a nested URL that itself contains a nested URL
 is not expanded. Relative paths, bare words, `mailto:`, and `data:` values
-are ignored. At most 32 query values are inspected per request; remaining
-values are skipped while the outer pipeline continues. Default is enabled
-(`nil` or `true`). Set `false` only for an endpoint whose contract
-legitimately carries private or blocklisted URLs in query strings.
+There is no cap on how many query components are examined; parsing and literal-IP
+checks need no I/O and are bounded by the URL length limit. Every nested DNS lookup a
+request needs shares one resolution budget equal to the single-lookup SSRF ceiling, and
+exhausting that budget refuses the request rather than forwarding it with nested
+destinations unverified. Both query keys and values are examined, in raw form, after
+percent-decoding, and through the same hex, base64, and base32 layers DLP applies; a
+scheme-relative `//host/...` value is evaluated as an https destination.
 
 CONNECT is out of scope: the CONNECT handler scans a synthetic `https://host/`
 URL with no query string, so nested query destinations never appear on that

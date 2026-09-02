@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1348,61 +1347,106 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// maxNestedURLQueryValues caps how many query values are inspected as nested
-// destinations per request. Values past the cap are not expanded; outer-host
-// checks still run. Fail-open on the cap is acceptable only because of that.
-const maxNestedURLQueryValues = 32
+// nestedURLResolveBudget bounds the total resolver time one request may spend
+// on nested destinations. It equals the single-lookup ceiling checkSSRF already
+// applies to the outer host, so a request carrying many nested hostnames cannot
+// hold more resolver time than one ordinary lookup. Exhausting the budget fails
+// CLOSED: a nested destination that could not be resolved in time is refused,
+// never forwarded. Parsing and literal-IP checks need no I/O and are bounded by
+// the outer URL length, so there is deliberately no cap on how many query values
+// are examined; a count cap was a fail-open (pad past it, then relay).
+var nestedURLResolveBudget = 5 * time.Second
 
 const nestedURLReasonPrefix = "nested URL in query parameter"
 
-// checkNestedURLs evaluates URL-shaped query parameter values as destinations
-// in their own right. Decode is at most one level of nesting: a nested URL
-// that itself contains a nested URL is not expanded. Schemeless host/path
-// strings, relative paths, and non-http(s) schemes are ignored.
+// nestedURLCandidate is one query component text that may be a nested URL, with
+// the parameter key it came from for the block reason.
+type nestedURLCandidate struct {
+	key  string
+	text string
+}
+
+// nestedURLCandidates enumerates every query component that could hide a nested
+// destination. It reads RawQuery directly rather than url.URL.Query(): Query()
+// percent-decodes and folds '+' to space, which destroys IPv6 zone ids (%25) and
+// hides the encodings the DLP query loop already sees. Both keys and values are
+// candidates, in raw form, iteratively percent-decoded, and through the same
+// hex/base64/base32 layers DLP applies. A scheme-relative "//host/..." is
+// completed with https so the host is evaluated like any other destination.
+func nestedURLCandidates(rawQuery string, maxLen int) []nestedURLCandidate {
+	var out []nestedURLCandidate
+	add := func(key, text string) {
+		text = strings.TrimSpace(text)
+		if text == "" || (maxLen > 0 && len(text) > maxLen) {
+			return
+		}
+		if strings.HasPrefix(text, "//") {
+			text = "https:" + text
+		}
+		out = append(out, nestedURLCandidate{key: key, text: text})
+	}
+	for _, pair := range strings.Split(rawQuery, "&") {
+		if pair == "" {
+			continue
+		}
+		key, value, _ := strings.Cut(pair, "=")
+		decodedKey := IterativeDecode(key)
+		for _, component := range []string{key, value} {
+			if component == "" {
+				continue
+			}
+			add(decodedKey, component)
+			decoded := IterativeDecode(component)
+			if decoded != component {
+				add(decodedKey, decoded)
+			}
+			for _, d := range decodeEncodingsRecursive(decoded) {
+				add(decodedKey, d.text)
+			}
+		}
+	}
+	return out
+}
+
+// checkNestedURLs evaluates URL-shaped query components as destinations in
+// their own right, running the same allowlist, blocklist, and SSRF checks the
+// outer host receives. Decode is at most one level of nesting: a nested URL that
+// itself carries a nested URL is not expanded. Non-URL text, relative paths, and
+// non-http(s) schemes are ignored. All nested DNS lookups share one deadline.
 func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	if !s.scanNestedURLs || parsed == nil || parsed.RawQuery == "" {
 		return Result{Allowed: true}
 	}
-	query := parsed.Query()
-	if len(query) == 0 {
+	candidates := nestedURLCandidates(parsed.RawQuery, s.maxURLLength)
+	if len(candidates) == 0 {
 		return Result{Allowed: true}
 	}
-	keys := make([]string, 0, len(query))
-	for key := range query {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-
 	runDNSSSRF := len(s.internalCIDRs) > 0 || s.destinationGrants.Len() > 0
-	scanned := 0
-	for _, key := range keys {
-		for _, value := range query[key] {
-			if scanned >= maxNestedURLQueryValues {
-				// Remaining query values are not expanded as nested
-				// destinations. The outer pipeline continues.
-				return Result{Allowed: true}
-			}
-			scanned++
-			if result := s.checkNestedURLValue(ctx, key, value, runDNSSSRF); !result.Allowed {
-				return result
+	nestedCtx, cancel := context.WithTimeout(ctx, nestedURLResolveBudget)
+	defer cancel()
+	for _, c := range candidates {
+		result := s.checkNestedURLValue(nestedCtx, c.key, c.text, runDNSSSRF)
+		if result.Allowed {
+			continue
+		}
+		if nestedCtx.Err() != nil && ctx.Err() == nil {
+			// The shared budget ran out before every nested destination was
+			// resolved. Refuse the request: an unverified nested destination
+			// is exactly what this step exists to stop.
+			return Result{
+				Allowed: false,
+				Reason:  fmt.Sprintf("%s %q: nested URL destinations exceeded the shared resolution budget (%s)", nestedURLReasonPrefix, c.key, nestedURLResolveBudget),
+				Scanner: ScannerSSRF,
+				Score:   1.0,
 			}
 		}
+		return result
 	}
 	return Result{Allowed: true}
 }
 
-func (s *Scanner) checkNestedURLValue(ctx context.Context, key, value string, runDNSSSRF bool) Result {
-	if s.maxURLLength > 0 && len(value) > s.maxURLLength {
-		return Result{Allowed: true}
-	}
-	decoded := IterativeDecode(value)
-	if decoded == "" {
-		return Result{Allowed: true}
-	}
-	if s.maxURLLength > 0 && len(decoded) > s.maxURLLength {
-		return Result{Allowed: true}
-	}
-	nestedParsed, err := url.Parse(decoded)
+func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, runDNSSSRF bool) Result {
+	nestedParsed, err := url.Parse(text)
 	if err != nil {
 		return Result{Allowed: true}
 	}

@@ -5,10 +5,13 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -233,29 +236,111 @@ func TestScan_NestedURLDestinations(t *testing.T) {
 	}
 }
 
-func TestScan_NestedURLQueryValueCap(t *testing.T) {
+// setNestedURLResolveBudgetForTest shrinks the shared nested-DNS budget so a
+// test can exhaust it without waiting on the production ceiling.
+func setNestedURLResolveBudgetForTest(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := nestedURLResolveBudget
+	nestedURLResolveBudget = d
+	t.Cleanup(func() { nestedURLResolveBudget = prev })
+}
+
+// blockingResolver never answers; it returns only when the caller's context
+// ends, which is how a stalled resolver behaves against a real request.
+type blockingResolver struct{}
+
+func (blockingResolver) LookupHost(ctx context.Context, _ string) ([]string, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A count cap was a fail-open: pad past it, then relay. There is no count cap.
+// The metadata URL must block wherever it sits in the query string.
+func TestScan_NestedURLNoCountCap(t *testing.T) {
 	t.Parallel()
 	cfg := nestedURLConfig()
-	var b strings.Builder
-	b.WriteString(nestedURLOuterHost)
-	b.WriteByte('?')
-	for i := range 40 {
-		if i > 0 {
-			b.WriteByte('&')
-		}
-		fmt.Fprintf(&b, "n%02d=", i)
-		if i == 39 {
-			b.WriteString(url.QueryEscape(nestedURLMetadataPath))
-		} else {
-			b.WriteByte('x')
-		}
+	for _, position := range []int{0, 31, 32, 39} {
+		t.Run(fmt.Sprintf("metadata_at_index_%d_of_40", position), func(t *testing.T) {
+			t.Parallel()
+			var b strings.Builder
+			b.WriteString(nestedURLOuterHost)
+			b.WriteByte('?')
+			for i := range 40 {
+				if i > 0 {
+					b.WriteByte('&')
+				}
+				fmt.Fprintf(&b, "n%02d=", i)
+				if i == position {
+					b.WriteString(url.QueryEscape(nestedURLMetadataPath))
+				} else {
+					b.WriteByte('x')
+				}
+			}
+			result := scanNested(t, cfg, b.String())
+			if result.Allowed {
+				t.Fatalf("metadata URL at index %d was allowed; a positional gap is a fail-open", position)
+			}
+			if !strings.Contains(result.Reason, nestedURLReasonPrefix) {
+				t.Fatalf("reason %q does not name the nested parameter", result.Reason)
+			}
+		})
 	}
-	result := scanNested(t, cfg, b.String())
-	// Cap is 32 query values. Keys sort as n00..n39, so the metadata URL is
-	// the 40th value and is not expanded. Fail-open on the cap is acceptable
-	// only because outer-host checks still run.
-	if !result.Allowed {
-		t.Fatalf("40th nested metadata value should pass the cap, got scanner=%s reason=%s", result.Scanner, result.Reason)
+}
+
+// Exhausting the shared resolution budget must refuse the request, never
+// forward it with nested destinations left unverified.
+func TestScan_NestedURLResolveBudgetExhaustionFailsClosed(t *testing.T) {
+	setNestedURLResolveBudgetForTest(t, 50*time.Millisecond)
+	cfg := nestedURLSSRFConfig()
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	s.resolver = blockingResolver{}
+	raw := nestedURLOuterHost + "?a=" + url.QueryEscape("https://one.example.net/") +
+		"&b=" + url.QueryEscape("https://two.example.net/") +
+		"&c=" + url.QueryEscape("https://three.example.net/")
+	result := s.Scan(context.Background(), raw)
+	if result.Allowed {
+		t.Fatal("budget exhaustion allowed the request; nested destinations were never verified")
+	}
+	if !strings.Contains(result.Reason, "shared resolution budget") {
+		t.Fatalf("reason %q does not name the exhausted budget", result.Reason)
+	}
+	if result.Scanner != ScannerSSRF {
+		t.Fatalf("scanner = %q, want %q", result.Scanner, ScannerSSRF)
+	}
+}
+
+// Decoding parity with the DLP query loop: keys as well as values, hex and
+// base64 layers, scheme-relative references, IPv6 zone ids, and stray
+// whitespace must all reach the destination checks.
+func TestScan_NestedURLDecodingParity(t *testing.T) {
+	t.Parallel()
+	cfg := nestedURLConfig()
+	// testConfig allowlists 127.0.0.0/8 and ::1/128 as an operator override, and
+	// the nested path consults that allowlist exactly as the outer path does.
+	// Clear it so these rows measure decoding parity rather than the override.
+	cfg.SSRF.IPAllowlist = nil
+	meta := nestedURLMetadataPath
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"url_in_key", nestedURLOuterHost + "?" + url.QueryEscape(meta) + "=x"},
+		{"base64_value", nestedURLOuterHost + "?u=" + base64.StdEncoding.EncodeToString([]byte(meta))},
+		{"hex_value", nestedURLOuterHost + "?u=" + hex.EncodeToString([]byte(meta))},
+		{"scheme_relative", nestedURLOuterHost + "?u=" + url.QueryEscape("//169.254.169.254/latest/")},
+		{"leading_space", nestedURLOuterHost + "?u=" + url.QueryEscape("  "+meta)},
+		{"ipv6_zone_id", nestedURLOuterHost + "?u=http://[fe80::1%25eth0]/"},
+		{"ipv6_loopback", nestedURLOuterHost + "?u=" + url.QueryEscape("http://[::1]/")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := scanNested(t, cfg, tc.raw)
+			if result.Allowed {
+				t.Fatalf("%s: nested private destination was allowed", tc.name)
+			}
+		})
 	}
 }
 

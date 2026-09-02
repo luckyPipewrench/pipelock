@@ -15,7 +15,9 @@ permissions:
   contents: read
 
 env:
-  AEB_REF: efda9aa26d6b3cacc711450c31d784d0c725155d
+  # Agent Egress Bench v0.1.1, the released revision. Prefer an exact
+  # released commit over a transient main pin.
+  AEB_REF: a3d56890487aed5fc5a01f46e8732d2ad73fcf53
 
 jobs:
   candidate:
@@ -33,6 +35,8 @@ jobs:
             echo "AEB_ROOT=$GITHUB_WORKSPACE/_agent-egress-bench"
             echo "GAUNTLET_ARTIFACT_DIR=$RUNNER_TEMP/pipelock-gauntlet-candidate"
             echo "PIPELOCK_RELEASE_PIN=$GITHUB_WORKSPACE/benchmark/gauntlet-release.env"
+            echo "PIPELOCK_GAUNTLET_BASELINE=$GITHUB_WORKSPACE/benchmark/gauntlet-baseline.json"
+            echo "PIPELOCK_GAUNTLET_ACCEPTANCE=$GITHUB_WORKSPACE/benchmark/gauntlet-acceptance.json"
           } >> "$GITHUB_ENV"
 
       - name: Check out Pipelock release policy
@@ -61,8 +65,10 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C "$AEB_ROOT" rev-parse HEAD)" = "$AEB_REF"
-          test ! -L "$PIPELOCK_RELEASE_PIN"
-          test -f "$PIPELOCK_RELEASE_PIN"
+          for policy in "$PIPELOCK_RELEASE_PIN" "$PIPELOCK_GAUNTLET_BASELINE" "$PIPELOCK_GAUNTLET_ACCEPTANCE"; do
+            test ! -L "$policy"
+            test -f "$policy"
+          done
 
       - name: Run portable canonical benchmark
         shell: bash
@@ -107,7 +113,7 @@ jobs:
           set -euo pipefail
           python3 "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" evaluate \
             --candidate "$ARTIFACT_JSON" \
-            --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+            --baseline "$PIPELOCK_GAUNTLET_BASELINE" \
             --evidence "raw_summary=$GAUNTLET_ARTIFACT_DIR/raw-summary.json" \
             --evidence "results=$GAUNTLET_ARTIFACT_DIR/results.jsonl" \
             --evidence "runner_stderr=$GAUNTLET_ARTIFACT_DIR/runner.stderr" \
@@ -143,7 +149,7 @@ jobs:
               evaluation_exit=0
               python3 "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" evaluate \
                 --candidate "$candidate_path" \
-                --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+                --baseline "$PIPELOCK_GAUNTLET_BASELINE" \
                 --evidence "raw_summary=$GAUNTLET_ARTIFACT_DIR/raw-summary.json" \
                 --evidence "results=$GAUNTLET_ARTIFACT_DIR/results.jsonl" \
                 --evidence "runner_stderr=$GAUNTLET_ARTIFACT_DIR/runner.stderr" \
@@ -229,7 +235,7 @@ jobs:
           decision_exit=0
           python3 "$AEB_ROOT/scripts/evaluate_gauntlet_candidate.py" enforce "$DECISION_PATH" \
             --candidate "$ARTIFACT_JSON" \
-            --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+            --baseline "$PIPELOCK_GAUNTLET_BASELINE" \
             --result "$GAUNTLET_ARTIFACT_DIR/enforcement-result.json" \
             --evidence "raw_summary=$GAUNTLET_ARTIFACT_DIR/raw-summary.json" \
             --evidence "results=$GAUNTLET_ARTIFACT_DIR/results.jsonl" \
@@ -250,6 +256,19 @@ jobs:
             --evidence "run_bundle=$GAUNTLET_ARTIFACT_DIR/run-bundle.json" || decision_exit=$?
           exit "$decision_exit"
 
+      # Aggregate floors cannot tell an equal score with different failures
+      # from the accepted result, so Pipelock enforces the exact accepted
+      # case identities itself. Runs after upload so evidence survives a block.
+      - name: Enforce Pipelock acceptance contract
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/scripts/check_gauntlet_acceptance.py" \
+            --contract "$PIPELOCK_GAUNTLET_ACCEPTANCE" \
+            --candidate "$ARTIFACT_JSON" \
+            --results "$GAUNTLET_ARTIFACT_DIR/results.jsonl"
+
       - name: Render owner-facing run summary
         if: ${{ !cancelled() }}
         shell: bash
@@ -265,7 +284,7 @@ jobs:
             python3 "$AEB_ROOT/scripts/render_gauntlet_run_summary.py" \
               --candidate "$candidate_path" \
               --decision "$decision_path" \
-              --baseline "$AEB_ROOT/ci/gauntlet-baseline.json" \
+              --baseline "$PIPELOCK_GAUNTLET_BASELINE" \
               --enforcement-result "$GAUNTLET_ARTIFACT_DIR/enforcement-result.json" \
               --repository "$GITHUB_REPOSITORY" \
               --run-url "$run_url" > "$summary_path" || summary_exit=$?

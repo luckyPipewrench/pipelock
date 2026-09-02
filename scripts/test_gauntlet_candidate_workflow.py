@@ -4,6 +4,7 @@
 
 """Structural tests for the Pipelock-owned candidate-only Gauntlet lane."""
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -13,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
-EXPECTED_AEB_REF = "efda9aa26d6b3cacc711450c31d784d0c725155d"
+BASELINE = ROOT / "benchmark" / "gauntlet-baseline.json"
+ACCEPTANCE = ROOT / "benchmark" / "gauntlet-acceptance.json"
+EXPECTED_AEB_REF = "a3d56890487aed5fc5a01f46e8732d2ad73fcf53"
 GAUNTLET_WORKFLOW_URL = (
     "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
 )
@@ -106,6 +109,79 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertRegex(assignments["PIPELOCK_ASSET_SHA256_AMD64"], r"^[0-9a-f]{64}$")
         self.assertRegex(assignments["PIPELOCK_ASSET_SHA256_ARM64"], r"^[0-9a-f]{64}$")
         self.assertNotIn("v3.3.0", self.workflow)
+
+    def test_acceptance_policy_is_owned_by_pipelock_not_the_benchmark(self):
+        """Product acceptance must never be read from the neutral benchmark repo."""
+        self.assertNotIn("ci/gauntlet-baseline.json", self.workflow)
+        self.assertNotIn("$AEB_ROOT/ci/", self.workflow)
+        for policy in (BASELINE, ACCEPTANCE):
+            self.assertTrue(policy.is_file(), policy)
+            self.assertEqual(policy.parent.name, "benchmark")
+        self.assertIn(
+            'PIPELOCK_GAUNTLET_BASELINE=$GITHUB_WORKSPACE/benchmark/gauntlet-baseline.json',
+            self.workflow,
+        )
+        self.assertIn(
+            'PIPELOCK_GAUNTLET_ACCEPTANCE=$GITHUB_WORKSPACE/benchmark/gauntlet-acceptance.json',
+            self.workflow,
+        )
+        verify = step_block(self.workflow, "Verify immutable inputs")
+        for variable in ("$PIPELOCK_GAUNTLET_BASELINE", "$PIPELOCK_GAUNTLET_ACCEPTANCE"):
+            self.assertIn(variable, verify)
+        for step in (
+            "Evaluate candidate without publishing",
+            "Ensure fail-closed decision exists",
+            "Enforce candidate decision",
+            "Render owner-facing run summary",
+        ):
+            self.assertIn('--baseline "$PIPELOCK_GAUNTLET_BASELINE"', step_block(self.workflow, step))
+
+    def test_acceptance_contract_is_enforced_after_evidence_upload(self):
+        """A blocked acceptance result must still leave the evidence inspectable."""
+        upload = self.workflow.index("      - name: Upload candidate evidence")
+        enforce = self.workflow.index("      - name: Enforce Pipelock acceptance contract")
+        self.assertLess(upload, enforce)
+        block = step_block(self.workflow, "Enforce Pipelock acceptance contract")
+        self.assertIn("set -euo pipefail", block)
+        self.assertIn("scripts/check_gauntlet_acceptance.py", block)
+        self.assertIn('--contract "$PIPELOCK_GAUNTLET_ACCEPTANCE"', block)
+        self.assertIn('--results "$GAUNTLET_ARTIFACT_DIR/results.jsonl"', block)
+
+    def test_owned_policy_files_agree_with_each_other_and_the_release_pin(self):
+        """Two files state the same result; nothing fails when they disagree unless checked."""
+        baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+        acceptance = json.loads(ACCEPTANCE.read_text(encoding="utf-8"))
+        self.assertEqual(baseline["pipelock_version"], acceptance["pipelock_version"])
+        self.assertIn(
+            "PIPELOCK_VERSION=" + baseline["pipelock_version"], self.release_pin
+        )
+        self.assertEqual(baseline["corpus_version"], acceptance["corpus_version"])
+        self.assertEqual(baseline["corpus_git_sha"], acceptance["bench_release_commit"])
+        self.assertEqual(baseline["corpus_git_sha"], EXPECTED_AEB_REF)
+        self.assertEqual(
+            baseline["observed_case_count"]["total"], acceptance["active_case_count"]
+        )
+        self.assertEqual(
+            baseline["observed_case_count"]["applicable"], acceptance["active_case_count"]
+        )
+        containment = acceptance["containment"]
+        false_positives = acceptance["false_positives"]
+        self.assertEqual(
+            len(acceptance["accepted_containment_misses"]),
+            containment["denominator"] - containment["numerator"],
+        )
+        self.assertEqual(
+            len(acceptance["accepted_false_positives"]), false_positives["numerator"]
+        )
+        for scope in ("full", "applicable"):
+            self.assertAlmostEqual(
+                baseline["score_floors"][scope]["containment"],
+                containment["numerator"] / containment["denominator"],
+            )
+        self.assertAlmostEqual(
+            baseline["score_ceilings"]["applicable"]["false_positive_rate"],
+            false_positives["numerator"] / false_positives["denominator"],
+        )
 
     def test_shipped_portable_runner_is_the_only_execution_path(self):
         run = step_block(self.workflow, "Run portable canonical benchmark")

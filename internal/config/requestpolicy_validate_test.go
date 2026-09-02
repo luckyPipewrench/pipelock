@@ -99,6 +99,11 @@ func TestValidateRequestPolicy_Errors(t *testing.T) {
 			want: "not a valid HTTP method",
 		},
 		{
+			name: "unknown inbound-looking method rejected at load",
+			cfg:  enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Methods: []string{"LOCK"}}}),
+			want: "not a valid HTTP method",
+		},
+		{
 			name: "invalid path pattern",
 			cfg:  enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{PathPatterns: []string{"("}}}),
 			want: "invalid path_pattern",
@@ -140,6 +145,15 @@ func TestValidHTTPMethodRecognizesQuery(t *testing.T) {
 	}
 	if validHTTPMethod("FOO") {
 		t.Fatal("validHTTPMethod(FOO) = true, want false")
+	}
+}
+
+func TestValidHTTPMethodRecognizesOptionsAndTrace(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"OPTIONS", "TRACE"} {
+		if !validHTTPMethod(method) {
+			t.Fatalf("validHTTPMethod(%q) = false, want true", method)
+		}
 	}
 }
 

@@ -101,6 +101,12 @@ func TestProxy_ReloadScanNestedURLs_MovesEnforcementBothWays(t *testing.T) {
 		t.Fatalf("unchanged reload flipped enforcement back on: reason=%q", got.Reason)
 	}
 
+	// Removing the override must restore the secure default. Reloading to
+	// explicit true would still pass if nil kept the previous false value.
+	if got := reloadInto(t, p, nil); got.Allowed {
+		t.Fatal("removing scan_nested_urls override left nested scanning disabled")
+	}
+
 	// Re-enable through reload: enforcement must return without a restart.
 	got := reloadInto(t, p, &enabled)
 	if got.Allowed {

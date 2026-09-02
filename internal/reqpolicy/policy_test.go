@@ -33,6 +33,38 @@ func apiWriteRule() config.RequestPolicyRule {
 	}
 }
 
+func TestEvaluate_FetchOnlyDenyListMissesUnlistedMethods(t *testing.T) {
+	t.Parallel()
+	m := mustMatcher(t, config.RequestPolicyRule{
+		Name:   "fetch-only-vendor-registry",
+		Action: config.ActionBlock,
+		Route: config.RequestPolicyRoute{
+			Hosts:   []string{"registry.vendor.example"},
+			Methods: []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"},
+		},
+	})
+
+	blocked := []string{"POST", "PUT", "PATCH", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH"}
+	for _, method := range blocked {
+		got := m.Evaluate(RequestMeta{Host: "registry.vendor.example", Method: method, Path: "/pkg"})
+		if got.Action != config.ActionBlock || !got.Enforced() {
+			t.Fatalf("method %q: want enforced block, got %+v", method, got)
+		}
+	}
+
+	// request_policy is allow-by-default: a method absent from the deny list
+	// reaches the host. OPTIONS and TRACE are valid configured methods that
+	// this recipe does not name. LOCK cannot be configured at all, but an
+	// inbound request can still use it and must not be treated as blocked.
+	unlisted := []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace, "LOCK"}
+	for _, method := range unlisted {
+		got := m.Evaluate(RequestMeta{Host: "registry.vendor.example", Method: method, Path: "/pkg"})
+		if got.Matched() {
+			t.Fatalf("unlisted method %q matched the write-method deny list: %+v", method, got)
+		}
+	}
+}
+
 func TestEvaluate_RouteMatch(t *testing.T) {
 	m := mustMatcher(t, apiWriteRule())
 	tests := []struct {

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
-EXPECTED_AEB_REF = "2d6cb1d6e1a6d8a11b8e5a1649e7dee1c6e56aea"
+EXPECTED_AEB_REF = "1dfb4f0ec5e0cc911c65b9cf3ccfaf3d2e7e15d7"
 GAUNTLET_WORKFLOW_URL = (
     "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
 )
@@ -92,13 +92,13 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
             assignments,
             {
                 "PIPELOCK_REPO": "luckyPipewrench/pipelock",
-                "PIPELOCK_TAG": "v3.4.0",
-                "PIPELOCK_VERSION": "3.4.0",
+                "PIPELOCK_TAG": "v3.5.0",
+                "PIPELOCK_VERSION": "3.5.0",
                 "PIPELOCK_ASSET_SHA256_AMD64": (
-                    "37c267a9c7a5472324e3bb07def179e810a5ae7c8e761537ad1e9b2e32e9abac"
+                    "0e9fe1461107e8fc6a7f7969c87e7810824b019eaabd6fa7318f642ca9e4b858"
                 ),
                 "PIPELOCK_ASSET_SHA256_ARM64": (
-                    "9f956e9bee7c7a8dc7530addd9017fb96cf88ba68075b55ad54c870ad99ab9ac"
+                    "e7a72741ef6ac679d74656ae438262b5638934a34616adb6ac87d2c8634216c6"
                 ),
             },
         )

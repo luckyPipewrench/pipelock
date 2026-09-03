@@ -66,16 +66,15 @@ func TestScanner_BeginUse_FailsAfterClose(t *testing.T) {
 	}
 }
 
+// closeOpportunityWindow is how long a wrongly-unblocked Close is given to
+// return before a test concludes it is genuinely blocked. It cannot cause a
+// spurious failure, because a correct Close stays blocked however long the wait.
+const closeOpportunityWindow = 250 * time.Millisecond
+
 // TestScanner_Close_BlocksUntilDrain verifies the core drain invariant:
 // Close does not return until every outstanding BeginUse caller has
 // invoked its release func. Without the WaitGroup drain, a future
 // destructive Close would race with mid-scan callers.
-//
-// closeOpportunityWindow is how long a wrongly-unblocked Close is given to
-// return before the test concludes it is genuinely blocked. It cannot cause a
-// spurious failure, because a correct Close stays blocked however long the wait.
-const closeOpportunityWindow = 250 * time.Millisecond
-
 func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

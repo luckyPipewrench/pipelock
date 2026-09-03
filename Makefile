@@ -139,7 +139,7 @@ check-lint-version:
 	  printf 'warning: could not read the pinned golangci-lint version from the CI workflow, so local and CI formatting are unchecked.\n' >&2; \
 	  exit 0; \
 	fi; \
-	have=$$(golangci-lint --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -1); \
+	have=$$(golangci-lint --version 2>/dev/null | sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -1); \
 	if [ -z "$$have" ]; then \
 	  printf 'warning: could not read the local golangci-lint version; CI pins %s.\n' "$$pin" >&2; \
 	elif [ "$$have" != "$$pin" ]; then \

@@ -57,7 +57,7 @@ make test           # Run the OSS race suite as sequential CI-shaped shards
 make test-cover     # Write coverage.html
 make lint           # go vet + golangci-lint v2 + gofumpt check
 make bench          # Scanner and MCP benchmarks
-make fmt            # gofumpt -w .
+make fmt            # gofumpt via the pinned golangci-lint formatter
 make vet            # Static analysis
 make tidy-check     # Verify go.mod/go.sum
 make docker         # Docker image

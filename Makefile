@@ -128,7 +128,12 @@ bench-egress-release:
 	bash bench/egress/run-all.sh --release
 
 fmt:
-	gofumpt -w .
+	# Format with the gofumpt that golangci-lint bundles, not whatever
+	# gofumpt happens to be on PATH. A standalone binary drifts from the
+	# pinned one and then disagrees with CI in both directions: a newer
+	# local gofumpt reports files CI accepts, and an older one accepts
+	# files CI rejects.
+	golangci-lint fmt ./...
 
 vet:
 	go vet ./...

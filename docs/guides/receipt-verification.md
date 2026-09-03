@@ -223,11 +223,12 @@ CHAIN BROKEN: /tmp/.../evidence-proxy-0.tampered.jsonl
   Broke at: seq 2
 ```
 
-Receipt-chain verification covers the signed `action_record` (including the
-action, policy hash, verdict, target, and chain linkage), but not outer
-flight-recorder metadata such as a JSONL entry's `seq`, `type`, or `summary`.
-Changing an outer field therefore is not a tamper demonstration for this
-verification mode.
+Receipt-chain verification authenticates the signed `action_record` (including
+the action, policy hash, verdict, target, and chain linkage), not the outer
+flight-recorder hash chain. An entry's `seq` and `summary` are not checked in
+this mode. Its `type` is not signed, but it does select whether the entry is
+extracted as an action receipt; unknown types fail closed. Changing an outer
+field is therefore not a tamper demonstration for receipt-chain verification.
 
 ### Compacting an over-cap recorder directory
 

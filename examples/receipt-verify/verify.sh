@@ -147,9 +147,13 @@ for record in records:
         detail = json.loads(detail)
     action_record = detail.get("action_record") if isinstance(detail, dict) else None
     if isinstance(action_record, dict) and action_record.get("verdict") == "block":
+        chain_seq = action_record.get("chain_seq")
+        if not isinstance(chain_seq, int):
+            raise SystemExit("blocked action_receipt has no numeric chain_seq")
         action_record["verdict"] = "allow"
         if was_string:
             record["detail"] = json.dumps(detail, separators=(",", ":"))
+        print(chain_seq)
         break
 else:
     raise SystemExit("no blocked action_receipt record")
@@ -265,11 +269,12 @@ fi
 # -- Test 5 -------------------------------------------------------------------
 step "Test 5: tampered captured record fails verification (required)"
 TAMPERED="$WORK/evidence-proxy-0.tampered.jsonl"
-tamper_captured_record "$EVIDENCE" "$TAMPERED"
+TAMPERED_RECEIPT_SEQ="$(tamper_captured_record "$EVIDENCE" "$TAMPERED")"
 if "$PIPELOCK" verify-receipt "$TAMPERED" --key "$PUB" >"$WORK/verify-tampered.out" 2>"$WORK/verify-tampered.err"; then
   fail "tampered captured record unexpectedly verified"
 elif grep -q '^CHAIN BROKEN:' "$WORK/verify-tampered.out" \
-  && grep -q 'signature verification failed' "$WORK/verify-tampered.out"; then
+  && grep -q "^  Error:    seq ${TAMPERED_RECEIPT_SEQ}: signature: signature verification failed$" "$WORK/verify-tampered.out" \
+  && grep -q "^  Broke at: seq ${TAMPERED_RECEIPT_SEQ}$" "$WORK/verify-tampered.out"; then
   cat "$WORK/verify-tampered.out"
   pass "tampered captured record rejected by verify-receipt"
 else

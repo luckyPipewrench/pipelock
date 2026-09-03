@@ -339,11 +339,12 @@ func filterDefensiveCredentialSolicitationMatches(content string, matches []Resp
 	return filtered
 }
 
-// isDocumentationPromptInjectionExample recognizes a local documentation frame
-// around the matched imperative: a quote/code span, a table row, or language
-// that says the text is an example an attacker may write. It intentionally runs
-// inside every normalization pass, before a pass becomes a hit, so a filtered
-// documentation example cannot mask a later encoded instruction.
+// isDocumentationPromptInjectionExample recognizes a narrowly-local
+// documentation frame around the matched imperative. A delimiter must close,
+// a table row must be part of a Markdown table, and prose must make an explicit
+// documentation claim. It intentionally runs inside every normalization pass,
+// before a pass becomes a hit, so a filtered documentation example cannot mask
+// a later encoded instruction.
 func isDocumentationPromptInjectionExample(content string, match ResponseMatch) bool {
 	start := match.Position
 	if start < 0 || start > len(content) {
@@ -363,17 +364,102 @@ func isDocumentationPromptInjectionExample(content string, match ResponseMatch) 
 		lineEnd = end + lineEndOffset
 	}
 	line := strings.ToLower(content[lineStart:lineEnd])
-	prefix := strings.ToLower(content[max(0, start-96):start])
-	if strings.Count(line, "|") >= 2 || strings.Count(content[lineStart:start], "`")%2 == 1 {
+	lineMatchStart, lineMatchEnd := start-lineStart, end-lineStart
+	prefix := strings.TrimSpace(line[:lineMatchStart])
+	if isPromptInjectionDirectedAtModel(prefix) ||
+		isPromptInjectionDirectedAtModel(content[max(0, start-96):start]) {
+		return false
+	}
+	if isDelimitedPromptInjectionExample(line, lineMatchStart, lineMatchEnd) ||
+		isFencedPromptInjectionExample(content, start, end) ||
+		isMarkdownTablePromptInjectionExample(content, lineStart, lineEnd) {
 		return true
 	}
-	if strings.Count(content[lineStart:start], "\"")%2 == 1 || strings.Count(content[lineStart:start], "'")%2 == 1 {
-		return true
+
+	sentenceStart := strings.LastIndexAny(line[:lineMatchStart], ".!?\n\r") + 1
+	sentenceEnd := len(line)
+	if offset := strings.IndexAny(line[lineMatchEnd:], ".!?\n\r"); offset >= 0 {
+		sentenceEnd = lineMatchEnd + offset
 	}
-	for _, frame := range []string{"attacker may write", "attack pattern", "attack example", "example attack", "example phrase", "phrase \"", "phrase '", "describes the phrase", "may contain", "test fixture", "test coverage", "identify"} {
-		if strings.Contains(prefix, frame) {
+	sentencePrefix := strings.TrimSpace(line[sentenceStart:lineMatchStart])
+	sentenceSuffix := strings.TrimSpace(line[lineMatchEnd:sentenceEnd])
+	return isExplicitPromptInjectionDocumentationFrame(sentencePrefix, sentenceSuffix)
+}
+
+func isPromptInjectionDirectedAtModel(prefix string) bool {
+	prefix = strings.ToLower(strings.TrimSpace(strings.TrimRight(prefix, "`\"“")))
+	for _, target := range []string{"assistant", "agent", "model", "you"} {
+		for _, delimiter := range []string{",", ":", "-", "—"} {
+			if foldedHasSuffix(prefix, target+delimiter) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isDelimitedPromptInjectionExample(line string, start, end int) bool {
+	prefix, suffix := line[:start], line[end:]
+	for _, delimiter := range []string{`"`, "`"} {
+		if strings.Count(prefix, delimiter)%2 == 1 && strings.Contains(suffix, delimiter) {
 			return true
 		}
+	}
+	for _, delimiter := range [][2]string{{"“", "”"}, {"«", "»"}, {"「", "」"}} {
+		if strings.LastIndex(prefix, delimiter[0]) > strings.LastIndex(prefix, delimiter[1]) && strings.Contains(suffix, delimiter[1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFencedPromptInjectionExample(content string, start, end int) bool {
+	return strings.Count(content[:start], "```")%2 == 1 && strings.Contains(content[end:], "```")
+}
+
+func isMarkdownTablePromptInjectionExample(content string, lineStart, lineEnd int) bool {
+	line := strings.TrimSpace(content[lineStart:lineEnd])
+	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") || strings.Count(line, "|") < 2 {
+		return false
+	}
+	previousEnd := lineStart - 1
+	if previousEnd < 0 {
+		return false
+	}
+	previousStart := strings.LastIndexByte(content[:previousEnd], '\n') + 1
+	return isMarkdownTableSeparator(content[previousStart:previousEnd])
+}
+
+func isMarkdownTableSeparator(line string) bool {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
+		return false
+	}
+	cells := strings.Split(strings.Trim(line, "|"), "|")
+	if len(cells) < 2 {
+		return false
+	}
+	for _, cell := range cells {
+		cell = strings.Trim(strings.TrimSpace(cell), ":")
+		if len(cell) < 3 || strings.Trim(cell, "-") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isExplicitPromptInjectionDocumentationFrame(prefix, suffix string) bool {
+	for _, frame := range []string{"attacker may write:", "attacker may say:"} {
+		if foldedContains(prefix, frame) {
+			return true
+		}
+	}
+	if foldedContains(prefix, "parameter may contain") &&
+		(foldedContains(suffix, "test coverage") || foldedContains(suffix, "test fixture")) {
+		return true
+	}
+	if foldedContains(prefix, "detection should identify") && foldedContains(suffix, "untrusted input") {
+		return true
 	}
 	return false
 }

@@ -510,6 +510,11 @@ func TestCheckDelegatedSigningFailsClosed(t *testing.T) {
 	if !called {
 		t.Fatal("self-check skipped the visitor verification path")
 	}
+
+	err = checkDelegatedSigning(root, digest, time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "self-check mint") {
+		t.Fatalf("self-check mint error = %v", err)
+	}
 }
 
 func TestNewServerRefusesFailedSigningSelfCheck(t *testing.T) {

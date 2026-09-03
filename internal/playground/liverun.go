@@ -297,19 +297,27 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		// The manifest records the delegation regardless of which signer is
 		// selected, so a delegation without its session key would produce a
 		// run claiming an authorization its actual signer never held.
-		return nil, fmt.Errorf("delegation requires the session signing key it authorizes")
+		//
+		// Each refusal below assigns the named err before returning, because
+		// the deferred cleanup keys on it; a bare return would skip lr.Close()
+		// and leave this run's context attached to its parent.
+		err = fmt.Errorf("delegation requires the session signing key it authorizes")
+		return nil, err
 	case len(opts.SessionPrivateKey) != 0:
-		if err := signing.ValidatePrivateKeyConsistency(opts.SessionPrivateKey); err != nil {
-			return nil, fmt.Errorf("session signing key: %w", err)
+		if keyErr := signing.ValidatePrivateKeyConsistency(opts.SessionPrivateKey); keyErr != nil {
+			err = fmt.Errorf("session signing key: %w", keyErr)
+			return nil, err
 		}
 		if opts.Delegation == nil {
-			return nil, fmt.Errorf("session signing key requires a root-signed delegation")
+			err = fmt.Errorf("session signing key requires a root-signed delegation")
+			return nil, err
 		}
 		// Verify at the signing boundary too. A direct caller reaches this
 		// path without passing through the server's check, and an unverified
 		// delegation would sign a run no published key authorized.
-		if err := VerifySessionDelegation(opts.SessionPrivateKey, *opts.Delegation, opts.RunNonce); err != nil {
-			return nil, fmt.Errorf("session delegation: %w", err)
+		if delErr := VerifySessionDelegation(opts.SessionPrivateKey, *opts.Delegation, opts.RunNonce); delErr != nil {
+			err = fmt.Errorf("session delegation: %w", delErr)
+			return nil, err
 		}
 		lr.orchestratorPriv = opts.SessionPrivateKey
 		lr.orchestratorPub = lr.orchestratorPriv.Public().(ed25519.PublicKey)

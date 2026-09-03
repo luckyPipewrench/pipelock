@@ -842,6 +842,12 @@ func gateErrStatus(err error) int {
 	}
 }
 
+// verifySessionDelegation is the package's single verification entry point. It
+// is a variable only so tests can observe that the request's own run nonce is
+// what reaches verification; nothing outside this package can replace it, so no
+// deployment can weaken the check.
+var verifySessionDelegation = playground.VerifySessionDelegation
+
 func parseSessionDelegation(body createReq, required bool) (ed25519.PrivateKey, *playground.OrchestratorDelegation, error) {
 	if len(body.SessionSigningKey) == 0 && len(body.OrchestratorDelegation) == 0 {
 		if required {
@@ -870,7 +876,7 @@ func parseSessionDelegation(body createReq, required bool) (ed25519.PrivateKey, 
 	// Parsing only proves the delegation is well formed. Verify it against the
 	// compiled published root, never against a root the delegation names, or a
 	// caller holding an invite code could authorize its own session key.
-	if err := playground.VerifySessionDelegation(priv, d, body.RunNonce); err != nil {
+	if err := verifySessionDelegation(priv, d, body.RunNonce); err != nil {
 		return nil, nil, err
 	}
 	return priv, &d, nil

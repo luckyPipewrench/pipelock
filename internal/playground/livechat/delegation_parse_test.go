@@ -4,8 +4,10 @@
 package livechat
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -119,3 +121,89 @@ func TestParseSessionDelegation_MalformedDelegationRefused(t *testing.T) {
 		t.Fatal("a malformed delegation must be refused")
 	}
 }
+
+// The parser must hand verification the run nonce from THIS request. If it ever
+// passed the delegation's own nonce instead, the binding check would compare a
+// value against itself and always succeed, so this asserts the propagation
+// directly rather than through a delegation the trusted root cannot sign here.
+func TestParseSessionDelegation_PassesRequestNonceToVerification(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	minted, err := playground.MintSessionDelegation(root, "delegation-own-nonce", digest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+	raw, err := json.Marshal(minted.Delegation)
+	if err != nil {
+		t.Fatalf("marshal delegation: %v", err)
+	}
+
+	var gotNonce string
+	prev := verifySessionDelegation
+	verifySessionDelegation = func(_ ed25519.PrivateKey, _ playground.OrchestratorDelegation, runNonce string) error {
+		gotNonce = runNonce
+		return nil
+	}
+	t.Cleanup(func() { verifySessionDelegation = prev })
+
+	body := createReq{
+		RunNonce:               "request-nonce",
+		SessionSigningKey:      hex.EncodeToString(priv),
+		OrchestratorDelegation: raw,
+	}
+	if _, _, err := parseSessionDelegation(body, true); err != nil {
+		t.Fatalf("parseSessionDelegation: %v", err)
+	}
+	if gotNonce != "request-nonce" {
+		t.Fatalf("verification received nonce %q, want the request nonce %q", gotNonce, "request-nonce")
+	}
+	if gotNonce == minted.Delegation.RunNonce {
+		t.Fatal("verification must not receive the delegation's own nonce")
+	}
+}
+
+// A refusal from verification is surfaced, not swallowed.
+func TestParseSessionDelegation_PropagatesVerificationRefusal(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	minted, err := playground.MintSessionDelegation(root, "a-run", digest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+	raw, err := json.Marshal(minted.Delegation)
+	if err != nil {
+		t.Fatalf("marshal delegation: %v", err)
+	}
+
+	prev := verifySessionDelegation
+	verifySessionDelegation = func(ed25519.PrivateKey, playground.OrchestratorDelegation, string) error {
+		return errRefusedForTest
+	}
+	t.Cleanup(func() { verifySessionDelegation = prev })
+
+	body := createReq{
+		RunNonce:               "a-run",
+		SessionSigningKey:      hex.EncodeToString(priv),
+		OrchestratorDelegation: raw,
+	}
+	_, _, err = parseSessionDelegation(body, true)
+	if !errors.Is(err, errRefusedForTest) {
+		t.Fatalf("parse error = %v, want the verification refusal to be surfaced", err)
+	}
+}
+
+var errRefusedForTest = errors.New("refused for test")

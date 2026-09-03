@@ -596,6 +596,38 @@ func TestServerHealthCORSKillAndResume(t *testing.T) {
 	}
 }
 
+func TestServerHealthReportsVerifiedSigningState(t *testing.T) {
+	provider := &serverFakeProvider{}
+
+	t.Run("development_without_root", func(t *testing.T) {
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+		health := getBrokerHealth(t, ts)
+		if health["signing_ready"] != false {
+			t.Fatalf("signing_ready = %v, want false", health["signing_ready"])
+		}
+		if health["published_signing_root"] != playground.PublishedOrchestratorPubKeyHex {
+			t.Fatalf("published_signing_root = %v", health["published_signing_root"])
+		}
+	})
+
+	t.Run("verified_root", func(t *testing.T) {
+		_, root, err := signing.GenerateKeyPair()
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := verifySessionDelegation
+		verifySessionDelegation = func(_ ed25519.PrivateKey, _ playground.OrchestratorDelegation, _ string) error { return nil }
+		t.Cleanup(func() { verifySessionDelegation = previous })
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{
+			OrchestratorRoot: root,
+			ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
+		})
+		if health := getBrokerHealth(t, ts); health["signing_ready"] != true {
+			t.Fatalf("signing_ready = %v, want true", health["signing_ready"])
+		}
+	})
+}
+
 func TestServerHealthProviderFieldsByState(t *testing.T) {
 	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

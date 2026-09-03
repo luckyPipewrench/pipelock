@@ -83,6 +83,12 @@ Secrets are loaded from files or environment variables and are never printed by
 the broker. Do not pass model keys, provider tokens, Turnstile secrets, or invite
 codes through public logs or shell history in real deployments.
 
+The public health response includes `signing_ready`. Production startup succeeds
+only after the broker mints a throwaway delegation and verifies it through the
+same published-root path used by visitor VMs, so `true` means that signing path
+passed. `published_signing_root` identifies the public key already compiled into
+the shipped verifiers. Neither field contains a private key or secret value.
+
 ### Optional counts-only analytics
 
 `--analytics-project-key` enables `POST /api/live/analytics`, a same-origin

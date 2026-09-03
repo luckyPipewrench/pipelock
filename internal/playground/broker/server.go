@@ -174,6 +174,7 @@ type Server struct {
 	client   *http.Client
 
 	vmReadyTimeout time.Duration
+	signingReady   bool
 
 	killed atomic.Bool
 
@@ -432,6 +433,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		global:         livechat.NewDailyBudget(cfg.GlobalDailyBudget),
 		client:         client,
 		vmReadyTimeout: vmReadyTimeout,
+		signingReady:   len(cfg.OrchestratorRoot) != 0,
 		bundleCache:    newArtifactCache(artifactCacheTTL),
 		tokens:         make(map[string]*tokenLease),
 		bySess:         make(map[string]string),
@@ -539,6 +541,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// body, not the status line.
 	writeBrokerJSON(w, http.StatusOK, map[string]any{
 		"ok":                         s.cfg.Gate.Open() && s.global.Open() && !s.killed.Load(),
+		"signing_ready":              s.signingReady,
+		"published_signing_root":     playground.PublishedOrchestratorPubKeyHex,
 		"provider_ok":                ph.OK,
 		"provider_state":             string(ph.State),
 		"provider_failures":          ph.ConsecutiveFailures,

@@ -411,6 +411,9 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, PerIPDailyBudget: -1}); err == nil {
 		t.Fatal("negative daily budget should error")
 	}
+	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, RequireDelegatedSigning: true}); err == nil {
+		t.Fatal("required delegated signing without a root should error")
+	}
 	if _, err := NewServer(ServerConfig{
 		Leases:     lm,
 		Gate:       gate,

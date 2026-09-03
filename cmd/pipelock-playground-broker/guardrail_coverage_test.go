@@ -25,6 +25,20 @@ func TestResolveOrchestratorRoot_MalformedFailsClosed(t *testing.T) {
 	}
 }
 
+// Production derives delegated-signing enforcement from the existing session
+// secret policy. An absent root must name the default deployment variable so
+// the operator can repair the startup refusal directly.
+func TestResolveOrchestratorRoot_MissingProductionRootNamesEnvironment(t *testing.T) {
+	t.Setenv(envOrchestratorRoot, "")
+	_, err := resolveOrchestratorRoot(&serveFlags{requireSessionSecrets: true})
+	if err == nil {
+		t.Fatal("an absent production orchestrator root must fail closed")
+	}
+	if !strings.Contains(err.Error(), envOrchestratorRoot) {
+		t.Fatalf("error %v must name %s", err, envOrchestratorRoot)
+	}
+}
+
 // The digest is what binds a delegation to one immutable image, so a value
 // that merely looks digest-shaped must be refused.
 func TestResolveImageDigest_RejectsNonCanonical(t *testing.T) {

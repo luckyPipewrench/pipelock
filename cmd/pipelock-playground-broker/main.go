@@ -470,12 +470,16 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		GlobalDailyBudget:  f.globalDailyBudget,
 		SessionEnv:         sessionEnv,
 		OrchestratorRoot:   rootKey,
-		ImageDigest:        imageDigest,
-		InternalPort:       f.internalPort,
-		DeadlineGrace:      f.deadlineGrace,
-		TrustForwardedFor:  f.trustForwardedFor,
-		AllowOrigin:        f.allowOrigin,
-		ProviderHealth:     providerHealth,
+		// The existing production secret policy is also the signing policy: when
+		// session secrets are required, every visitor must use a root-authorized
+		// delegated key. Development keeps both optional through the same switch.
+		RequireDelegatedSigning: f.requireSessionSecrets,
+		ImageDigest:             imageDigest,
+		InternalPort:            f.internalPort,
+		DeadlineGrace:           f.deadlineGrace,
+		TrustForwardedFor:       f.trustForwardedFor,
+		AllowOrigin:             f.allowOrigin,
+		ProviderHealth:          providerHealth,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -1917,7 +1921,7 @@ func resolveSessionSecret(file, envName, flagName, defaultEnv string, required b
 			return v, nil
 		}
 		if required {
-			return "", fmt.Errorf("%s or --%s-env is required", flagName, strings.TrimPrefix(strings.TrimPrefix(flagName, "--"), "-"))
+			return "", fmt.Errorf("%s, %s, or --%s-env is required", defaultEnv, flagName, strings.TrimPrefix(strings.TrimPrefix(flagName, "--"), "-"))
 		}
 		return "", nil
 	}

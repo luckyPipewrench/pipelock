@@ -125,6 +125,10 @@ type ServerConfig struct {
 	// OrchestratorRoot is the broker-held durable signing root. When set, each
 	// session receives a short-lived delegated key instead of this value.
 	OrchestratorRoot ed25519.PrivateKey
+	// RequireDelegatedSigning makes a usable OrchestratorRoot mandatory. The
+	// broker CLI derives this from its existing production-secret requirement;
+	// local development can leave both disabled.
+	RequireDelegatedSigning bool
 	// ImageDigest is the immutable VM image bound into each session
 	// delegation. Required when OrchestratorRoot is set.
 	ImageDigest string
@@ -378,6 +382,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		if _, found := source.env["PLAYGROUND_ORCHESTRATOR_"+"KEY"]; found {
 			return nil, fmt.Errorf("broker: %s must not carry the durable orchestrator key", source.name)
 		}
+	}
+	if cfg.RequireDelegatedSigning && len(cfg.OrchestratorRoot) == 0 {
+		return nil, errors.New("broker: OrchestratorRoot is required when delegated signing is required")
 	}
 	if len(cfg.OrchestratorRoot) != 0 {
 		if _, err := playground.ParseOrchestratorPrivateKeyHex(hex.EncodeToString(cfg.OrchestratorRoot)); err != nil {

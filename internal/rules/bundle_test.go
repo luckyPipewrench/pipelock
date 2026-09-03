@@ -1413,11 +1413,10 @@ func TestParseBundle_ValidationRejectsMissingRequiredFields(t *testing.T) {
 	}
 }
 
-// TestCheckMinPipelock_UnversionedCompatibilitySetting does not allow the
-// retained setting to suppress the warning signal. The loader consumes only
-// ErrUnverifiableVersion as its warn-and-load case; a released build below the
-// gate and a malformed version remain refusals.
-func TestCheckMinPipelock_UnversionedCompatibilitySetting(t *testing.T) {
+// TestCheckMinPipelock_UnversionedSettingKeepsTheUnknownSignal proves the
+// checker keeps returning ErrUnverifiableVersion for either setting value. The
+// loader, not this shared checker, decides whether to load with a warning.
+func TestCheckMinPipelock_UnversionedSettingKeepsTheUnknownSignal(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1427,12 +1426,12 @@ func TestCheckMinPipelock_UnversionedCompatibilitySetting(t *testing.T) {
 		allow      bool
 		wantErr    bool
 	}{
-		{"source build reports warning signal", "3.0.0", "0.0.0-dev.unknown", false, true},
-		{"source build setting cannot suppress warning signal", "3.0.0", "0.0.0-dev.unknown", true, true},
-		{"devel reports warning signal", "3.0.0", "devel", false, true},
-		{"devel setting cannot suppress warning signal", "3.0.0", "devel", true, true},
-		{"unset reports warning signal", "3.0.0", "", false, true},
-		{"unset setting cannot suppress warning signal", "3.0.0", "", true, true},
+		{"source build strict opt-in signals unknown", "3.0.0", "0.0.0-dev.unknown", false, true},
+		{"source build warning setting signals unknown", "3.0.0", "0.0.0-dev.unknown", true, true},
+		{"devel strict opt-in signals unknown", "3.0.0", "devel", false, true},
+		{"devel warning setting signals unknown", "3.0.0", "devel", true, true},
+		{"unset strict opt-in signals unknown", "3.0.0", "", false, true},
+		{"unset warning setting signals unknown", "3.0.0", "", true, true},
 
 		// The override only covers the unprovable-version case.
 		{"real release below min still refused with override", "3.0.0", "2.9.0", true, true},

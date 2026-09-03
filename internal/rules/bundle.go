@@ -431,8 +431,8 @@ func CheckMinPipelock(minVersion, currentVersion string, _ bool) error {
 
 	if isDevelopmentCurrentVersion(effectiveVersion) {
 		// A source build carries no release stamp, so the requirement cannot
-		// be verified. The loader names this as a warning and keeps detection
-		// available; genuine compatibility and integrity failures still refuse.
+		// be verified. The loader decides whether its explicit setting accepts
+		// this availability case as a warning or refuses it.
 		return fmt.Errorf(
 			"%w: this build does not report a released version (%q), so the bundle requirement min_pipelock %q cannot be verified",
 			ErrUnverifiableVersion, currentVersion, minVersion)

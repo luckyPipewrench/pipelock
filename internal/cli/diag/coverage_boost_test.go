@@ -132,6 +132,43 @@ func TestCheckCmd_ScanURLAllowed(t *testing.T) {
 	}
 }
 
+func TestCheckCmd_ScanURLReportsUnverifiableBundleVersion(t *testing.T) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("OK"))
+	}))
+	mock.Listener = ln
+	mock.Start()
+	defer mock.Close()
+
+	dir := t.TempDir()
+	rulesDir := filepath.Join(dir, "rules")
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	mockHost, _, _ := net.SplitHostPort(strings.TrimPrefix(mock.URL, "http://"))
+	configYAML := fmt.Sprintf("mode: audit\ninternal: []\nssrf:\n  ip_allowlist:\n    - 127.0.0.0/8\napi_allowlist:\n  - %s\nrules:\n  rules_dir: %s\n", mockHost, rulesDir)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	root := &cobra.Command{Use: "pipelock"}
+	root.AddCommand(CheckCmd())
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"check", "--config", configPath, "--url", mock.URL})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("check: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "loaded although min_pipelock") {
+		t.Fatalf("check did not report the unprovable-version warning:\n%s", out.String())
+	}
+}
+
 func TestCheckCmd_ScanURLBlocked(t *testing.T) {
 	root := &cobra.Command{Use: "pipelock"}
 	root.AddCommand(CheckCmd())

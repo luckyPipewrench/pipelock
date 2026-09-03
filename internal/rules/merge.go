@@ -147,9 +147,7 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		TrustedKeys:         cfg.Rules.TrustedKeys,
 		SkipEmbeddedKeys:    !cfg.Rules.TrustEmbeddedKeys,
 		PipelockVersion:     pipelockVersion,
-		// Without this the runtime ignores the override, so an operator who
-		// follows the refusal's own advice to set it would see no change. The
-		// knob has to reach the path that produced the message.
+		// This retains the strict opt-in for unprovable versions.
 		AllowUnversionedLoad: cfg.Rules.AllowUnversionedBundleLoad,
 		TierKeyMapping:       buildTierKeyMapping(cfg.Rules.TrustedKeys),
 	})

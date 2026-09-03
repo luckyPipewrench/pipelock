@@ -208,9 +208,9 @@ type Rules struct {
 	IncludeExperimental bool   `yaml:"include_experimental"`
 	AllowDegraded       bool   `yaml:"allow_degraded" json:"-"`
 	TrustEmbeddedKeys   bool   `yaml:"trust_embedded_keys"`
-	// AllowUnversionedBundleLoad is retained for configuration compatibility.
-	// Builds that cannot prove their version load min_pipelock bundles with a
-	// warning regardless of this value.
+	// AllowUnversionedBundleLoad defaults to true, so builds that cannot prove
+	// their version load min_pipelock bundles with a warning. Set it to false to
+	// retain the strict refusal for an unprovable version.
 	AllowUnversionedBundleLoad bool         `yaml:"allow_unversioned_bundle_load"`
 	Disabled                   []string     `yaml:"disabled"`
 	TrustedKeys                []TrustedKey `yaml:"trusted_keys"`

@@ -28,11 +28,13 @@ func TestMergeIntoConfigUnprovableVersionWarnsAndLoadsAcrossReloads(t *testing.T
 		mutate      func()
 		wantLoaded  bool
 		wantWarning bool
+		wantError   bool
 	}{
-		{name: "first load", version: unprovable, wantLoaded: true, wantWarning: true},
-		{name: "first reload", version: unprovable, wantLoaded: true, wantWarning: true},
+		{name: "first load uses default", version: unprovable, wantLoaded: true, wantWarning: true},
+		{name: "strict opt-in refuses", version: unprovable, mutate: func() { cfg.Rules.AllowUnversionedBundleLoad = false }, wantError: true},
+		{name: "reload to warn and load", version: unprovable, mutate: func() { cfg.Rules.AllowUnversionedBundleLoad = true }, wantLoaded: true, wantWarning: true},
 		{name: "unrelated reload", version: unprovable, mutate: func() { cfg.KillSwitch.APIToken = "rotated-token" }, wantLoaded: true, wantWarning: true},
-		{name: "released binary below minimum", version: "0.0.0", wantLoaded: false},
+		{name: "released binary below minimum", version: "0.0.0", wantError: true},
 	}
 
 	for _, tc := range tests {
@@ -46,6 +48,9 @@ func TestMergeIntoConfigUnprovableVersionWarnsAndLoadsAcrossReloads(t *testing.T
 			}
 			if got := len(result.Warnings) > 0; got != tc.wantWarning {
 				t.Fatalf("warnings = %v, want warning = %v", result.Warnings, tc.wantWarning)
+			}
+			if got := len(result.Errors) > 0; got != tc.wantError {
+				t.Fatalf("errors = %v, want error = %v", errorStrings(result), tc.wantError)
 			}
 			if tc.wantWarning {
 				warning := strings.Join(result.Warnings, " ")

@@ -77,6 +77,9 @@ Examples:
 				for _, e := range bundleResult.Errors {
 					cmd.PrintErrf("pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 				}
+				for _, w := range bundleResult.Warnings {
+					cmd.PrintErrf("pipelock: %s\n", w)
+				}
 				sc, err := scanner.New(cfg)
 				if err != nil {
 					return cliutil.ExitCodeError(2, fmt.Errorf("create scanner: %w", err))

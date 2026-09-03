@@ -2555,7 +2555,7 @@ rules:
   include_experimental: false     # only load stable rules by default
   allow_degraded: false           # emergency strict-mode degraded startup/reload override
   trust_embedded_keys: true       # trust the compiled official rules keyring
-  allow_unversioned_bundle_load: false  # retained for configuration compatibility
+  allow_unversioned_bundle_load: true   # warn and load when this build cannot prove its version
   trusted_keys:                   # additional signing keys (beyond embedded keyring)
     - name: "vendor-security"
       public_key: "64-char-hex-encoded-ed25519-public-key"
@@ -2567,7 +2567,7 @@ rules:
 | `min_confidence` | `""` (all) | Skip rules below this confidence level |
 | `include_experimental` | `false` | Include experimental rules from bundles |
 | `allow_degraded` | `false` | Explicit emergency override that lets strict mode start or reload with degraded rule-bundle integrity/coverage after emitting warnings and audit events |
-| `allow_unversioned_bundle_load` | `false` | Retained for configuration compatibility. A build that cannot prove its released version loads a bundle with `min_pipelock` and emits a warning regardless of this value. |
+| `allow_unversioned_bundle_load` | `true` | Warn and load a bundle with `min_pipelock` when the running build cannot prove its released version. Set `false` to refuse that bundle until the binary reports a released version. |
 | `trust_embedded_keys` | `true` | Trust the compiled official rules keyring. Set to `false` for private-root-only deployments that trust only `trusted_keys`; unsigned local bundles are rejected in this mode. |
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
 

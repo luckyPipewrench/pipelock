@@ -37,7 +37,7 @@ type LoadOptions struct {
 	TrustedKeys          []config.TrustedKey // additional trusted signing keys
 	SkipEmbeddedKeys     bool                // exclude compiled official keyring from trust
 	PipelockVersion      string              // current binary version for min_pipelock check
-	AllowUnversionedLoad bool                // load min_pipelock bundles on a build with no released version
+	AllowUnversionedLoad bool                // load min_pipelock bundles with a warning on an unprovable version
 	AllowStale           bool                // accept expired bundles with warning
 	TierKeyMapping       map[string]string   // tier → expected signing key fingerprint
 	saveFreshnessState   func(string, *FreshnessState) error
@@ -393,10 +393,10 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	bundleWarnings := make([]string, 0, 1)
 
 	// Check min_pipelock version requirement. An unprovable development version
-	// is an availability warning: keep the bundle's detection rules loaded, but
-	// make the unchecked gate visible. All checked compatibility failures refuse.
+	// warns and loads by default, while the strict opt-in and all checked
+	// compatibility failures refuse.
 	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion, opts.AllowUnversionedLoad); err != nil {
-		if !errors.Is(err, ErrUnverifiableVersion) {
+		if !errors.Is(err, ErrUnverifiableVersion) || !opts.AllowUnversionedLoad {
 			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassAvailability})
 			return
 		}

@@ -93,6 +93,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.FlightRecorder.Enabled = true
 		cfg.Defer.Enabled = true
 		cfg.Rules.TrustEmbeddedKeys = true
+		cfg.Rules.AllowUnversionedBundleLoad = true
 		return
 	}
 
@@ -138,6 +139,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 
 	rules, _ := raw["rules"].(map[string]interface{})
 	setBoolDefault(rules, "trust_embedded_keys", &cfg.Rules.TrustEmbeddedKeys)
+	setBoolDefault(rules, "allow_unversioned_bundle_load", &cfg.Rules.AllowUnversionedBundleLoad)
 
 	// A2A scanning: detection booleans default to true (full scanning when enabled).
 	a2a, _ := raw["a2a_scanning"].(map[string]interface{})

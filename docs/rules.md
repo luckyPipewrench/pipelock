@@ -102,7 +102,7 @@ Bundle rules cannot override or disable built-in patterns. They are additive onl
 
 | Bundle check | Outcome |
 |---|---|
-| The running build version cannot be proven against `min_pipelock` | Warn and load the bundle. |
+| The running build version cannot be proven against `min_pipelock` | Warn and load the bundle by default. Set `rules.allow_unversioned_bundle_load: false` to refuse it. |
 | A released running version is below `min_pipelock` | Refuse the bundle. |
 | The bundle format is incompatible | Refuse the bundle. |
 

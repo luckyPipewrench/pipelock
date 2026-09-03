@@ -9,9 +9,8 @@ import (
 	"testing"
 )
 
-// allow_unversioned_bundle_load remains accepted so existing configuration does
-// not fail validation. The loader now warns and loads unprovable development
-// builds regardless of this retained compatibility value.
+// allow_unversioned_bundle_load defaults to warn-and-load for a build whose
+// version cannot be proven. Explicit false retains a strict refusal.
 func TestAllowUnversionedBundleLoadParsingMatrix(t *testing.T) {
 	t.Parallel()
 
@@ -20,10 +19,10 @@ func TestAllowUnversionedBundleLoadParsingMatrix(t *testing.T) {
 		yaml string
 		want bool
 	}{
-		{name: "omitted preserves false", yaml: "mode: balanced\nrules:\n  rules_dir: /tmp/x\n", want: false},
-		{name: "yaml null preserves false", yaml: "mode: balanced\nrules:\n  allow_unversioned_bundle_load:\n", want: false},
-		{name: "explicit false remains accepted", yaml: "mode: balanced\nrules:\n  allow_unversioned_bundle_load: false\n", want: false},
-		{name: "explicit true remains accepted", yaml: "mode: balanced\nrules:\n  allow_unversioned_bundle_load: true\n", want: true},
+		{name: "omitted defaults to warn and load", yaml: "mode: balanced\nrules:\n  rules_dir: /tmp/x\n", want: true},
+		{name: "yaml null defaults to warn and load", yaml: "mode: balanced\nrules:\n  allow_unversioned_bundle_load:\n", want: true},
+		{name: "explicit false retains strict refusal", yaml: "mode: balanced\nrules:\n  allow_unversioned_bundle_load: false\n", want: false},
+		{name: "explicit true warns and loads", yaml: "mode: balanced\nrules:\n  allow_unversioned_bundle_load: true\n", want: true},
 	}
 
 	for _, tc := range cases {
@@ -44,7 +43,7 @@ func TestAllowUnversionedBundleLoadParsingMatrix(t *testing.T) {
 	}
 }
 
-// Reload preserves the accepted compatibility value in both directions.
+// Reload preserves the warn-and-load default and strict opt-in in both directions.
 func TestAllowUnversionedBundleLoadReloadBothDirections(t *testing.T) {
 	t.Parallel()
 
@@ -63,16 +62,16 @@ func TestAllowUnversionedBundleLoadReloadBothDirections(t *testing.T) {
 		return cfg
 	}
 
+	if got := write("mode: balanced\nrules:\n").Rules.AllowUnversionedBundleLoad; !got {
+		t.Fatalf("initial load = %v, want true", got)
+	}
 	if got := write("mode: balanced\nrules:\n  allow_unversioned_bundle_load: false\n").Rules.AllowUnversionedBundleLoad; got {
-		t.Fatalf("initial load = %v, want false", got)
+		t.Fatalf("reload to strict refusal = %v, want false", got)
 	}
 	if got := write("mode: balanced\nrules:\n  allow_unversioned_bundle_load: true\n").Rules.AllowUnversionedBundleLoad; !got {
-		t.Fatalf("reload to true = %v, want true", got)
+		t.Fatalf("reload back to warn and load = %v, want true", got)
 	}
 	if got := write("mode: balanced\nrules:\n  allow_unversioned_bundle_load: true\n").Rules.AllowUnversionedBundleLoad; !got {
 		t.Fatalf("reload with no change = %v, want true", got)
-	}
-	if got := write("mode: balanced\nrules:\n  allow_unversioned_bundle_load: false\n").Rules.AllowUnversionedBundleLoad; got {
-		t.Fatalf("reload back to false = %v, want false; a relaxed posture must not persist", got)
 	}
 }

@@ -157,6 +157,11 @@ const (
 )
 
 const (
+	// PromptInjectionRegex identifies the imperative phrase. The response
+	// matcher adds documentation-context filtering per normalization pass so
+	// quoted or described examples cannot mask later encoded instructions.
+	PromptInjectionRegex = `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`
+
 	// authMaterialRequirementHandoverAlt is the direction-cue alternation that
 	// anchors AuthMaterialRequirementRegex to an actual hand-over request,
 	// mirroring the direction cues in CredentialSolicitationRegex. A bare
@@ -372,7 +377,7 @@ func Defaults() *Config {
 				MaxEventBytes: 64 * 1024,
 			},
 			Patterns: []ResponseScanPattern{
-				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`},
+				{Name: "Prompt Injection", Regex: PromptInjectionRegex},
 				{Name: "System Override", Regex: `(?im)^\s*system\s*:`},
 				{Name: "Role Override", Regex: `(?i)you\s+are\s+(now\s+)?(a\s+)?((?-i:\bDAN\b)|evil|unrestricted|jailbroken|unfiltered)`},
 				{Name: "New Instructions", Regex: NewInstructionsRegex},

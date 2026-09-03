@@ -331,9 +331,51 @@ func filterDefensiveCredentialSolicitationMatches(content string, matches []Resp
 		if isSecretAskPattern(match.PatternName) && isDefensiveCredentialSolicitation(content, match) {
 			continue
 		}
+		if match.PatternName == patternNamePromptInjection && isDocumentationPromptInjectionExample(content, match) {
+			continue
+		}
 		filtered = append(filtered, match)
 	}
 	return filtered
+}
+
+// isDocumentationPromptInjectionExample recognizes a local documentation frame
+// around the matched imperative: a quote/code span, a table row, or language
+// that says the text is an example an attacker may write. It intentionally runs
+// inside every normalization pass, before a pass becomes a hit, so a filtered
+// documentation example cannot mask a later encoded instruction.
+func isDocumentationPromptInjectionExample(content string, match ResponseMatch) bool {
+	start := match.Position
+	if start < 0 || start > len(content) {
+		return false
+	}
+	end := start + match.matchLength
+	if match.matchLength == 0 {
+		end = start + len(match.MatchText)
+	}
+	if end < start || end > len(content) {
+		end = len(content)
+	}
+	lineStart := strings.LastIndexByte(content[:start], '\n') + 1
+	lineEndOffset := strings.IndexByte(content[end:], '\n')
+	lineEnd := len(content)
+	if lineEndOffset >= 0 {
+		lineEnd = end + lineEndOffset
+	}
+	line := strings.ToLower(content[lineStart:lineEnd])
+	prefix := strings.ToLower(content[max(0, start-96):start])
+	if strings.Count(line, "|") >= 2 || strings.Count(content[lineStart:start], "`")%2 == 1 {
+		return true
+	}
+	if strings.Count(content[lineStart:start], "\"")%2 == 1 || strings.Count(content[lineStart:start], "'")%2 == 1 {
+		return true
+	}
+	for _, frame := range []string{"attacker may write", "attack pattern", "attack example", "example attack", "example phrase", "phrase \"", "phrase '", "describes the phrase", "may contain", "test fixture", "test coverage", "identify"} {
+		if strings.Contains(prefix, frame) {
+			return true
+		}
+	}
+	return false
 }
 
 func isSecretAskPattern(name string) bool {

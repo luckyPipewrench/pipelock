@@ -81,7 +81,7 @@ func coreResponsePatternDefs() []coreResponsePattern {
 	return []coreResponsePattern{
 		{
 			name:  patternNamePromptInjection,
-			regex: `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`,
+			regex: config.PromptInjectionRegex,
 		},
 		{
 			name:  "System Override",

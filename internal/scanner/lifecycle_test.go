@@ -6,7 +6,6 @@ package scanner_test
 import (
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,48 +75,62 @@ func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	cfg.Internal = nil
 	sc := scanner.MustNew(cfg)
 
-	release, ok := sc.BeginUse()
+	// Two in-flight users, so the drain can be exercised in two steps. Releasing
+	// one is a real drain event that a correct Close must observe and keep
+	// waiting through; a single user cannot distinguish "still draining" from
+	// "never drained".
+	releaseFirst, ok := sc.BeginUse()
 	if !ok {
 		t.Fatal("BeginUse on fresh scanner returned ok=false")
 	}
+	releaseSecond, ok := sc.BeginUse()
+	if !ok {
+		t.Fatal("second BeginUse on fresh scanner returned ok=false")
+	}
 
-	// Start Close in a goroutine. It must block on the in-flight user.
-	//
-	// Record whether release had already been invoked at the moment Close
-	// returned. That ordering IS the property under test, and observing it
-	// directly removes every wall-clock guess: no window can be too short on a
-	// loaded machine, and none can be long enough to hide an early return.
-	var released atomic.Bool
-	sawReleased := make(chan bool, 1)
 	closeReturned := make(chan struct{})
 	go func() {
 		sc.Close()
-		sawReleased <- released.Load()
 		close(closeReturned)
 	}()
 
-	// Wait for closed=true to be published rather than assuming the goroutine is
-	// scheduled inside a fixed window; under load that window expires first and
-	// the test fails for a scheduling artifact. The timeout is a hang backstop,
-	// not the assertion. Publication is required only for the newcomer check
-	// below: it does NOT prove Close reached the drain, because closed=true is
-	// published before the drain begins.
+	// Wait for closed=true rather than sleeping: under load a fixed window
+	// expires before the goroutine is scheduled, which fails the test for a
+	// scheduling artifact. The timeout is a hang backstop, not the assertion.
+	//
+	// This is also what makes the two negative checks below sound rather than
+	// timing guesses. Close publishes closed=true BEFORE it starts draining, so
+	// once publication is observable, a Close that does not drain has already
+	// reached its return path. Waiting on publication therefore gives a broken
+	// implementation its full opportunity to return early.
 	testwait.For(t, 5*time.Second, sc.Closed, "Close goroutine did not publish closed=true")
 
-	if release2, ok2 := sc.BeginUse(); ok2 {
+	if release3, ok3 := sc.BeginUse(); ok3 {
 		t.Error("BeginUse succeeded while Close was draining")
-		release2()
+		release3()
 	}
 
-	released.Store(true)
-	release()
+	select {
+	case <-closeReturned:
+		t.Fatal("Close returned with two users still in flight")
+	default:
+	}
+
+	// Partial drain: the in-flight count drops but does not reach zero, so Close
+	// must still be blocked. This catches a Close that waits for the first
+	// release rather than for all of them.
+	releaseFirst()
+	select {
+	case <-closeReturned:
+		t.Fatal("Close returned after a partial drain, with one user still in flight")
+	default:
+	}
+
+	releaseSecond()
 	select {
 	case <-closeReturned:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Close did not return after in-flight release was invoked")
-	}
-	if !<-sawReleased {
-		t.Fatal("Close returned before in-flight release was invoked")
+		t.Fatal("Close did not return after the final in-flight release")
 	}
 }
 

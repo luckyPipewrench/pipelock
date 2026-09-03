@@ -15,9 +15,12 @@ permissions:
   contents: read
 
 env:
-  # Agent Egress Bench v0.1.1, the released revision. Prefer an exact
-  # released commit over a transient main pin.
-  AEB_REF: a3d56890487aed5fc5a01f46e8732d2ad73fcf53
+  # Agent Egress Bench main at the commit that introduced promoted-record
+  # schema v4. The released v0.1.1 predates it and its promoter rejects the
+  # source-baseline-origin argument the site promotion now supplies, so a
+  # released pin is not yet available. Move this back to a release tag when
+  # the next benchmark release carries v4.
+  AEB_REF: 12107c32ad7a80b8c60c499b26bd01eb2450ac8f
 
 jobs:
   candidate:

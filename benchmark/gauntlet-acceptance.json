@@ -3,8 +3,7 @@
   "schema_version": 1,
   "recorded_on": "2026-09-02",
   "pipelock_version": "3.5.0",
-  "bench_release_tag": "v0.1.1",
-  "bench_release_commit": "a3d56890487aed5fc5a01f46e8732d2ad73fcf53",
+  "bench_commit": "12107c32ad7a80b8c60c499b26bd01eb2450ac8f",
   "corpus_version": "v2.7.0",
   "active_case_count": 249,
   "containment": {

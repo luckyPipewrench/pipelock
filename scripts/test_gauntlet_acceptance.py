@@ -33,7 +33,7 @@ def candidate_document(**overrides):
     document = {
         "pipelock_version": CONTRACT["pipelock_version"],
         "corpus_version": CONTRACT["corpus_version"],
-        "corpus_git_sha": CONTRACT["bench_release_commit"],
+        "corpus_git_sha": CONTRACT["bench_commit"],
         "case_count": {
             "total": CONTRACT["active_case_count"],
             "applicable": CONTRACT["active_case_count"],

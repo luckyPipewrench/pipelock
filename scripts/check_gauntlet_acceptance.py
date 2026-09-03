@@ -18,7 +18,7 @@ from pathlib import Path
 REQUIRED_CONTRACT_KEYS = (
     "schema_version",
     "pipelock_version",
-    "bench_release_commit",
+    "bench_commit",
     "corpus_version",
     "active_case_count",
     "containment",
@@ -48,13 +48,13 @@ def load_contract(path):
     for key in ("pipelock_version", "corpus_version"):
         if not isinstance(contract[key], str) or not contract[key]:
             raise ValueError(f"acceptance contract {key} must be a non-empty string")
-    bench_release_commit = contract["bench_release_commit"]
+    bench_commit = contract["bench_commit"]
     if (
-        not isinstance(bench_release_commit, str)
-        or len(bench_release_commit) != 40
-        or any(character not in "0123456789abcdef" for character in bench_release_commit)
+        not isinstance(bench_commit, str)
+        or len(bench_commit) != 40
+        or any(character not in "0123456789abcdef" for character in bench_commit)
     ):
-        raise ValueError("acceptance contract bench_release_commit must be a lower-case Git SHA")
+        raise ValueError("acceptance contract bench_commit must be a lower-case Git SHA")
     active_case_count = contract["active_case_count"]
     if (
         isinstance(active_case_count, bool)
@@ -191,10 +191,10 @@ def check(contract_path, candidate_path, results_path):
                 f"candidate {field}={candidate.get(field)!r}, contract accepts "
                 f"{contract[field]!r}"
             )
-    if candidate.get("corpus_git_sha") != contract["bench_release_commit"]:
+    if candidate.get("corpus_git_sha") != contract["bench_commit"]:
         failures.append(
             f"candidate corpus_git_sha={candidate.get('corpus_git_sha')!r}, contract accepts "
-            f"{contract['bench_release_commit']!r}"
+            f"{contract['bench_commit']!r}"
         )
 
     case_count = candidate.get("case_count")

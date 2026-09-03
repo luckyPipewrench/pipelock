@@ -16,7 +16,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
 BASELINE = ROOT / "benchmark" / "gauntlet-baseline.json"
 ACCEPTANCE = ROOT / "benchmark" / "gauntlet-acceptance.json"
-EXPECTED_AEB_REF = "a3d56890487aed5fc5a01f46e8732d2ad73fcf53"
+EXPECTED_AEB_REF = "12107c32ad7a80b8c60c499b26bd01eb2450ac8f"
 GAUNTLET_WORKFLOW_URL = (
     "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
 )
@@ -156,7 +156,7 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
             "PIPELOCK_VERSION=" + baseline["pipelock_version"], self.release_pin
         )
         self.assertEqual(baseline["corpus_version"], acceptance["corpus_version"])
-        self.assertEqual(baseline["corpus_git_sha"], acceptance["bench_release_commit"])
+        self.assertEqual(baseline["corpus_git_sha"], acceptance["bench_commit"])
         self.assertEqual(baseline["corpus_git_sha"], EXPECTED_AEB_REF)
         self.assertEqual(
             baseline["observed_case_count"]["total"], acceptance["active_case_count"]

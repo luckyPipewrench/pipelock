@@ -121,6 +121,32 @@ def run_install(
         sys.exit(f"install did not wrap the expected count: {result.stdout!r}")
 
 
+def warm_upstream_package(env: dict[str, str]) -> None:
+    """Fetch the upstream server package into the hermetic npm cache first.
+
+    The hermetic home starts with an empty npm cache, so the first ``npx``
+    of the package downloads it and its dependencies. Doing that inside the
+    timed MCP handshake made a slow registry look like a hung proxy, with an
+    empty stderr tail that could not tell the two apart. The warm-up is
+    untimed apart from a generous ceiling and ignores the package's own exit
+    status: it exists only to populate the cache, so the handshake budget
+    below measures the proxy and the server, not the network.
+    """
+    print("\n[1b] warm the upstream package cache")
+    try:
+        result = subprocess.run(
+            ["npx", "-y", EVERYTHING_PACKAGE, "--version"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=300,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit("warm-up: npx did not finish fetching the upstream package within 300s")
+    print(f"  npx exit={result.returncode} (package fetched; a non-zero exit here is the server rejecting --version, not a fetch failure)")
+
+
 def extract_wrapped_argv(cfg_path: Path):
     data = json.loads(cfg_path.read_text())
     entry = data["mcpServers"]["everything"]
@@ -254,6 +280,8 @@ def main():
         cmd, args = extract_wrapped_argv(cfg_path)
         print(f"  wrapped command: {cmd}")
         print(f"  wrapped args head: {' '.join(args[:6])} ...")
+
+        warm_upstream_package(runtime_env)
 
         print("\n[2] spawn wrapped subprocess and drive MCP handshake")
         proc = subprocess.Popen(

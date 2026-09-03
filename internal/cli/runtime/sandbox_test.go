@@ -126,6 +126,64 @@ func TestSandboxCmdDryRunRejectsInvalidBestEffortOverride(t *testing.T) {
 	}
 }
 
+func TestSandboxCmdDryRunValidatesEnvFlags(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "empty key", args: []string{"--env", "=value"}, wantErr: "non-empty variable name"},
+		{name: "dangerous key", args: []string{"--env", "LD_PRELOAD=/tmp/x.so"}, wantErr: "subvert sandbox containment"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := SandboxCmd()
+			cmd.SilenceUsage = true
+			cmd.SetArgs(append(append([]string{"--dry-run"}, tt.args...), "--", "echo", "ok"))
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("SandboxCmd(%v) error = %v, want %q", tt.args, err, tt.wantErr)
+			}
+			if bytes.Contains(out.Bytes(), []byte("CAPABILITIES_OK")) {
+				t.Fatalf("dry-run reported launchable capabilities despite a rejected --env: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestSandboxCmdDryRunAcceptsEnvAndFilesystemPolicy(t *testing.T) {
+	t.Setenv("PIPELOCK_SANDBOX_TEST_INHERIT", "inherited")
+	workspace := t.TempDir()
+	extraRead := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	cfg := "sandbox:\n  filesystem:\n    allow_read:\n      - " + extraRead + "\n"
+	if err := os.WriteFile(configPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cmd := SandboxCmd()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{
+		"--dry-run", "--json", "--config", configPath, "--workspace", workspace,
+		"--env", "PIPELOCK_SANDBOX_TEST_INHERIT", "--env", "PIPELOCK_SANDBOX_TEST_UNSET", "--env", "FOO=bar",
+		"--", "echo", "ok",
+	})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.Execute()
+	// The preflight verdict depends on the host's namespace support; what this
+	// test pins is that valid --env forms and a merged filesystem policy reach
+	// the preflight instead of being refused as flag or configuration errors.
+	if err != nil && (strings.Contains(err.Error(), "--env") || strings.Contains(err.Error(), "config")) {
+		t.Fatalf("dry-run refused valid --env or fs policy: %v", err)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"status"`)) {
+		t.Fatalf("dry-run produced no preflight JSON: %s", out.String())
+	}
+}
+
 func TestSandboxCmdRejectsMixedBestEffortProvenance(t *testing.T) {
 	for _, tt := range []struct {
 		name     string

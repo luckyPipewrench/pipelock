@@ -13247,6 +13247,31 @@ func TestValidateReload_SandboxBestEffortMetadataChanged(t *testing.T) {
 	}
 }
 
+func TestValidate_SandboxBestEffortRequiresReasonAndExpiry(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		reason  string
+		expiry  string
+		wantErr string
+	}{
+		{name: "missing reason", reason: "", expiry: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), wantErr: "best_effort_reason is required"},
+		{name: "missing expiry", reason: "container user namespaces disabled", expiry: "", wantErr: "best_effort_expiry is required"},
+		{name: "blank expiry", reason: "container user namespaces disabled", expiry: "   ", wantErr: "best_effort_expiry is required"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
+			cfg.Sandbox.BestEffort = true
+			cfg.Sandbox.BestEffortReason = tt.reason
+			cfg.Sandbox.BestEffortExpiry = tt.expiry
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateReload_SandboxBestEffortUnchangedDoesNotWarn(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	old := Defaults()

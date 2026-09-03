@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -364,6 +365,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 			return nil, fmt.Errorf("broker: %s must be >= 0", c.name)
 		}
 	}
+	// SessionEnv reaches every visitor VM. Keep an owned copy so a caller cannot
+	// add the durable root after this validation completes.
+	cfg.SessionEnv = maps.Clone(cfg.SessionEnv)
 	for _, source := range []struct {
 		name string
 		env  map[string]string

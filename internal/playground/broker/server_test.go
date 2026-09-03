@@ -907,6 +907,22 @@ func TestServer_EndToEndProxyAndRelease(t *testing.T) {
 	}
 }
 
+func TestNewServerOwnsSessionEnv(t *testing.T) {
+	vm := newFakeVM(t, "vm-owned-session-env")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	sessionEnv := map[string]string{"PLAYGROUND_MODEL_" + "KEY": "model-test-key"}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{SessionEnv: sessionEnv})
+	sessionEnv["PLAYGROUND_ORCHESTRATOR_"+"KEY"] = "durable-root"
+
+	if status, _ := postBrokerSession(t, ts); status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	env := provider.createdEnv(0)
+	if _, found := env["PLAYGROUND_ORCHESTRATOR_"+"KEY"]; found {
+		t.Fatal("lease inherited a SessionEnv mutation made after server construction")
+	}
+}
+
 func TestServerRouteRejectionsAndTokenHelpers(t *testing.T) {
 	vm := newFakeVM(t, "route-token")
 	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}

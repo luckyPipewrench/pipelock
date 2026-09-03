@@ -121,6 +121,31 @@ func TestLeaseSuccess(t *testing.T) {
 	}
 }
 
+func TestNewLeaseManagerOwnsBaseEnv(t *testing.T) {
+	baseEnv := map[string]string{"PLAYGROUND_LISTEN": "0.0.0.0:8080"}
+	fp := &fakeProvider{}
+	lm, err := NewLeaseManager(LeaseConfig{
+		Provider:    fp,
+		Concurrency: livechat.NewConcurrencyLimiter(1),
+		Image:       "registry.fly.io/playground:test",
+		BaseEnv:     baseEnv,
+	})
+	if err != nil {
+		t.Fatalf("NewLeaseManager: %v", err)
+	}
+	baseEnv["PLAYGROUND_ORCHESTRATOR_"+"KEY"] = "durable-root"
+
+	if _, err := lm.Lease(context.Background(), "sess-1", nil); err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+	fp.mu.Lock()
+	spec := fp.created[0]
+	fp.mu.Unlock()
+	if _, found := spec.Env["PLAYGROUND_ORCHESTRATOR_"+"KEY"]; found {
+		t.Fatal("lease inherited a BaseEnv mutation made after manager construction")
+	}
+}
+
 func TestLeaseAtCapacity(t *testing.T) {
 	fp := &fakeProvider{}
 	lm := newManager(t, fp, 1)

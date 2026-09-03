@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
@@ -72,6 +73,9 @@ func NewLeaseManager(cfg LeaseConfig) (*LeaseManager, error) {
 	if cfg.Image == "" {
 		return nil, errors.New("broker: LeaseConfig.Image is required")
 	}
+	// BaseEnv reaches every visitor VM. Retain a broker-owned copy so a caller
+	// cannot change the configuration after validation and construction.
+	cfg.BaseEnv = maps.Clone(cfg.BaseEnv)
 	return &LeaseManager{cfg: cfg, leases: make(map[string]*Lease)}, nil
 }
 

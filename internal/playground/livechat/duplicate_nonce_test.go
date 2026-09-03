@@ -102,6 +102,13 @@ func TestServer_ConcurrentDuplicateNonceConsumesOneAllocation(t *testing.T) {
 
 	reserved := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
+		}
+	}()
 	srv.beforeGateRedeem = func() {
 		close(reserved)
 		<-releaseFirst

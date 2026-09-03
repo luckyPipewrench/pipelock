@@ -83,6 +83,18 @@ Secrets are loaded from files or environment variables and are never printed by
 the broker. Do not pass model keys, provider tokens, Turnstile secrets, or invite
 codes through public logs or shell history in real deployments.
 
+Deploy automation can ask the exact configured command which environment names
+it depends on without reading their values:
+
+```bash
+pipelock-playground-broker serve [the deployed flags] --print-required-env
+```
+
+The command validates the non-secret flags and static UI, prints one variable
+name per line, and exits before it resolves a secret or contacts the machine
+provider. A deployment should refuse to start when any reported name is absent
+or empty.
+
 The public health response includes `signing_ready`. Production startup succeeds
 only after the broker mints a throwaway delegation and verifies it through the
 same published-root path used by visitor VMs, so `true` means that signing path

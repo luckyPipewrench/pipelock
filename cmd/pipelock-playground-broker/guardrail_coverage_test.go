@@ -114,6 +114,37 @@ func TestRunServeCheckConfig_PassesWithCleanEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunServePrintRequiredEnvReportsNamesWithoutReadingValues(t *testing.T) {
+	f := testServeFlags(t, 0)
+	f.printRequiredEnv = true
+	f.requireSessionSecrets = true
+	f.flyTokenFile = ""
+	f.flyTokenEnv = "BROKER_FLY_TOKEN"
+	f.turnstileSecretEnv = "BROKER_TURNSTILE_SECRET"
+	f.unsafeNoHumanGate = false
+	f.turnstileSitekey = "site-key"
+	f.turnstileExpectedHostname = "playground.example"
+	f.turnstileExpectedAction = "playground-session"
+	f.image = "registry.example/playground@sha256:" + strings.Repeat("a", 64)
+	f.vmImageDigest = "sha256:" + strings.Repeat("a", 64)
+	t.Setenv("BROKER_FLY_TOKEN", "must-not-be-read-or-printed")
+
+	cmd := newServeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runServe(cmd, f); err != nil {
+		t.Fatalf("print required env: %v", err)
+	}
+	got := strings.Fields(out.String())
+	want := []string{"BROKER_FLY_TOKEN", "BROKER_TURNSTILE_SECRET", envModelKey, envOrchestratorRoot}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("required env = %q, want %q", got, want)
+	}
+	if strings.Contains(out.String(), "must-not-be-read-or-printed") {
+		t.Fatal("required-env report exposed an environment value")
+	}
+}
+
 // An unreadable root file fails closed at resolution. Starting without a usable
 // root would mint nothing, and every session would then run unsigned.
 func TestResolveOrchestratorRoot_UnreadableFileFailsClosed(t *testing.T) {

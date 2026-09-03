@@ -4,8 +4,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,5 +53,57 @@ func TestBuildServer_RefusesGuestFacingRootSecret(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), envOrchestratorRoot) {
 		t.Fatalf("error %v must point the operator at %s", err, envOrchestratorRoot)
+	}
+}
+
+// The check-config path resolves flags without touching secrets or a provider,
+// so it must still refuse a broker environment that would leak the root to
+// guests. An operator validating a config needs that answer before deploying.
+func TestRunServeCheckConfig_RefusesGuestFacingRootSecret(t *testing.T) {
+	f := testServeFlags(t, 0)
+	f.checkConfig = true
+	f.vmImageDigest = "sha256:" + strings.Repeat("a", 64)
+	t.Setenv(envOrchestratorKey, "deadbeef")
+
+	cmd := newServeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := runServe(cmd, f)
+	if err == nil {
+		t.Fatal("check-config must refuse while the guest-facing root secret is set")
+	}
+	if !strings.Contains(err.Error(), envOrchestratorRoot) {
+		t.Fatalf("error %v must point the operator at %s", err, envOrchestratorRoot)
+	}
+}
+
+// With a clean environment the same path reports the config valid, so the
+// refusal above is the guard firing rather than an unrelated failure.
+func TestRunServeCheckConfig_PassesWithCleanEnvironment(t *testing.T) {
+	f := testServeFlags(t, 0)
+	f.checkConfig = true
+	f.vmImageDigest = "sha256:" + strings.Repeat("a", 64)
+	t.Setenv(envOrchestratorKey, "")
+
+	cmd := newServeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runServe(cmd, f); err != nil {
+		t.Fatalf("clean check-config rejected: %v", err)
+	}
+	if !strings.Contains(out.String(), "valid") {
+		t.Fatalf("check-config output = %q, want a validity statement", out.String())
+	}
+}
+
+// An unreadable root file fails closed at resolution. Starting without a usable
+// root would mint nothing, and every session would then run unsigned.
+func TestResolveOrchestratorRoot_UnreadableFileFailsClosed(t *testing.T) {
+	f := &serveFlags{
+		orchestratorKeyFile:   filepath.Join(t.TempDir(), "absent-root.key"),
+		requireSessionSecrets: true,
+	}
+	if _, err := resolveOrchestratorRoot(f); err == nil {
+		t.Fatal("an unreadable orchestrator root must fail closed")
 	}
 }

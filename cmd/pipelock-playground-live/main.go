@@ -112,12 +112,7 @@ func newServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Run the live-chat server",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// --dev keeps the historical ephemeral-key behavior unless the
-			// operator asks for delegation explicitly. Public serves cannot
-			// opt out; validateServeSafety refuses that below.
-			if f.dev && !cmd.Flags().Changed("require-delegated-signing") {
-				f.requireDelegated = false
-			}
+			resolveDelegationDefault(f, cmd.Flags().Changed("require-delegated-signing"))
 			return runServe(cmd, f)
 		},
 	}
@@ -318,6 +313,17 @@ func containedProxyPort(port int) int {
 		return playground.DefaultContainedProxyPort
 	}
 	return port
+}
+
+// resolveDelegationDefault settles whether this serve demands a broker-minted
+// delegation. --dev keeps the historical ephemeral-key behavior unless the
+// operator asks for delegation explicitly, because a dev run has no broker to
+// mint one. A public serve cannot opt out at all; validateServeSafety refuses
+// that separately, so this only relaxes the dev case.
+func resolveDelegationDefault(f *serveFlags, explicit bool) {
+	if f.dev && !explicit {
+		f.requireDelegated = false
+	}
 }
 
 func validateServeSafety(f *serveFlags, modelBacked bool) error {

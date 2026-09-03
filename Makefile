@@ -134,10 +134,17 @@ GOLANGCI_LINT_PIN := $(shell sed -n 's/[[:space:]]*version:[[:space:]]*v\([0-9][
 
 .PHONY: check-lint-version
 check-lint-version:
-	@have=$$(golangci-lint --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -1); \
-	if [ -n "$(GOLANGCI_LINT_PIN)" ] && [ -n "$$have" ] && [ "$$have" != "$(GOLANGCI_LINT_PIN)" ]; then \
+	@pin='$(GOLANGCI_LINT_PIN)'; \
+	if [ -z "$$pin" ]; then \
+	  printf 'warning: could not read the pinned golangci-lint version from the CI workflow, so local and CI formatting are unchecked.\n' >&2; \
+	  exit 0; \
+	fi; \
+	have=$$(golangci-lint --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -1); \
+	if [ -z "$$have" ]; then \
+	  printf 'warning: could not read the local golangci-lint version; CI pins %s.\n' "$$pin" >&2; \
+	elif [ "$$have" != "$$pin" ]; then \
 	  printf 'warning: golangci-lint %s locally, CI pins %s. Formatting and lint results can differ from CI.\n' \
-	    "$$have" "$(GOLANGCI_LINT_PIN)" >&2; \
+	    "$$have" "$$pin" >&2; \
 	fi
 
 fmt: check-lint-version

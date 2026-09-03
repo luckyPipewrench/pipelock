@@ -157,9 +157,8 @@ const (
 )
 
 const (
-	// PromptInjectionRegex identifies the imperative phrase. The response
-	// matcher adds documentation-context filtering per normalization pass so
-	// quoted or described examples cannot mask later encoded instructions.
+	// PromptInjectionRegex identifies the imperative phrase shared by the core
+	// scanner and the default response-scanning configuration.
 	PromptInjectionRegex = `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`
 
 	// authMaterialRequirementHandoverAlt is the direction-cue alternation that

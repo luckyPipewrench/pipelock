@@ -975,8 +975,6 @@ response_scanning:
 
 **Built-in patterns (33):** Prompt-injection and state/control poisoning coverage includes jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation, credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, covert-action directives, silent credential handling, and CJK-language override patterns. All patterns use DOTALL mode to match across newlines in multiline tool output.
 
-The core Prompt Injection matcher recognizes local documentation framing around quoted, tabular, code-span, and descriptive attack examples, so those examples are not treated as instructions to the reading model.
-
 **Actions:**
 - **block:** reject the response entirely, agent gets an error
 - **strip:** redact matched text, return cleaned content

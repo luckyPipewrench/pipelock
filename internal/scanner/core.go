@@ -335,8 +335,8 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string, suppress
 	content = normalize.ForMatching(content)
 
 	// Each pass drops defensive anti-solicitation matches (e.g. "never send
-	// your password to us"), educational quoted examples, and operator
-	// suppressions BEFORE treating the pass as a hit, so an all-filtered pass
+	// your password to us") and operator suppressions BEFORE treating the pass
+	// as a hit, so an all-filtered pass
 	// falls through to the later encoded passes. Filtering here, not in the
 	// caller, closes masking bypasses where an early false-positive decoy
 	// short-circuits the scan and hides a later normalized/base64 finding.

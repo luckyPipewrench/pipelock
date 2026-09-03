@@ -329,7 +329,9 @@ Unprivileged process containment uses OS-native primitives. Linux uses Landlock 
 
 ```bash
 pipelock sandbox --config pipelock.yaml -- python agent.py
-pipelock sandbox --best-effort -- python agent.py
+pipelock sandbox --best-effort \
+  --best-effort-reason "container user namespaces disabled" \
+  --best-effort-expiry 30m -- python agent.py
 pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 ```
 

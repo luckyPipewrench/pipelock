@@ -59,7 +59,7 @@ instead of kernel-enforced isolation and may be bypassed by direct egress.
 Examples:
   pipelock sandbox -- python agent.py
   pipelock sandbox --workspace /home/user/project -- node server.js
-  pipelock sandbox --best-effort -- python agent.py  # inside containers
+  pipelock sandbox --best-effort --best-effort-reason "container user namespaces disabled" --best-effort-expiry 30m -- python agent.py
   pipelock sandbox --config pipelock.yaml -- bash -c "curl https://example.com"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dashIdx := cmd.ArgsLenAtDash()

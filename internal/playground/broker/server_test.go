@@ -512,6 +512,28 @@ func TestCheckDelegatedSigningFailsClosed(t *testing.T) {
 	}
 }
 
+func TestNewServerRefusesFailedSigningSelfCheck(t *testing.T) {
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := verifySessionDelegation
+	verifySessionDelegation = func(_ ed25519.PrivateKey, _ playground.OrchestratorDelegation, _ string) error {
+		return errors.New("published root mismatch")
+	}
+	t.Cleanup(func() { verifySessionDelegation = previous })
+
+	_, err = NewServer(ServerConfig{
+		Leases:           testLeaseManager(t, &serverFakeProvider{}),
+		Gate:             testBrokerGate(t),
+		OrchestratorRoot: root,
+		ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
+	})
+	if err == nil || !strings.Contains(err.Error(), "published root mismatch") {
+		t.Fatalf("NewServer signing self-check error = %v", err)
+	}
+}
+
 func TestServerHealthCORSKillAndResume(t *testing.T) {
 	vm := newFakeVM(t, "health-token")
 	destroyed := make(chan string, 1)

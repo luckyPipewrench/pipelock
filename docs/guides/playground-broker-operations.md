@@ -264,7 +264,8 @@ visitor to a broker that does not recognize its token.
 
 Deploy sequence:
 
-1. Build both images with `deploy/fly-playground/build-images.sh`. The build
+1. Build both images with `deploy/fly-playground/build-images.sh`. Use `--only
+   vm` or `--only broker` when only one image changed. The build
    runs `serve --check-config` inside the broker image and refuses to publish
    when the baked viewer is incompatible with its CSP or the non-secret
    configuration is invalid.

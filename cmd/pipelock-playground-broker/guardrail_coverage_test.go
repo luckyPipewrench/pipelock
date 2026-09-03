@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/hex"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +17,78 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestBuildImagesBrokerPreflightArgumentsPassCheckConfig(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "fly-playground", "build-images.sh"))
+	if err != nil {
+		t.Fatalf("read build-images.sh: %v", err)
+	}
+	const start = "BROKER_PREFLIGHT_ARGS=("
+	section := string(raw)
+	startAt := strings.Index(section, start)
+	if startAt < 0 {
+		t.Fatal("build-images.sh has no broker preflight argument array")
+	}
+	section = section[startAt+len(start):]
+	endAt := strings.Index(section, "\n)")
+	if endAt < 0 {
+		t.Fatal("broker preflight argument array is not terminated")
+	}
+	args := strings.Fields(section[:endAt])
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<!doctype html><title>preflight</title>"), 0o600); err != nil {
+		t.Fatalf("write preflight UI: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "/srv/ui" {
+			args[i] = staticDir
+		}
+	}
+
+	t.Setenv(envOrchestratorKey, "")
+	cmd := newRootCmd()
+	cmd.SetArgs(args)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("shipped broker preflight rejected by --check-config: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "valid") {
+		t.Fatalf("preflight output = %q, want validity statement", out.String())
+	}
+}
+
+func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
+	tmp := t.TempDir()
+	dockerLog := filepath.Join(tmp, "docker.log")
+	dockerPath := filepath.Join(tmp, "docker")
+	dockerStub := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$DOCKER_LOG\"\n"
+	if err := os.WriteFile(dockerPath, []byte(dockerStub), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+	script := filepath.Join("..", "..", "deploy", "fly-playground", "build-images.sh")
+	cmd := exec.Command("bash", script, "--only", "vm")
+	cmd.Env = append(os.Environ(),
+		"PATH="+tmp+":"+os.Getenv("PATH"),
+		"DOCKER_LOG="+dockerLog,
+		"PLAYGROUND_REGISTRY=registry.example/playground",
+		"PLAYGROUND_UI_DIR=",
+		"PLAYGROUND_PUSH=",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("VM-only build failed: %v\n%s", err, output)
+	}
+	logBytes, err := os.ReadFile(dockerLog)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "Dockerfile") || strings.Contains(logText, "Dockerfile.broker") || strings.Contains(logText, " run ") {
+		t.Fatalf("VM-only docker calls = %q", logText)
+	}
+}
 
 // A malformed root must fail closed. Serving with an unusable signing root
 // would mint delegations nothing can verify.

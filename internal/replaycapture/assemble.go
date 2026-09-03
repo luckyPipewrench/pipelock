@@ -48,12 +48,47 @@ type AssembleResult struct {
 	Receipts  int
 }
 
+// Audience names who an assembled packet is for. It is the only thing that
+// decides whether the public-safe gates run, because those gates answer a
+// publication question, not a correctness one.
+//
+// The zero value is AudiencePublicGallery, so a caller that says nothing gets
+// the strict path. Adding an audience must never be a way to weaken a packet by
+// omission.
+type Audience int
+
+const (
+	// AudiencePublicGallery is a packet published for anyone to read. Every
+	// receipt and the envelope must pass the public-safe allowlist: a target
+	// hostname can be sensitive whatever the verdict was, and a published
+	// artifact outlives the session that produced it.
+	AudiencePublicGallery Audience = iota
+
+	// AudienceSessionOwner is a packet handed back to the one visitor whose
+	// session produced it, over a short-lived authorized channel. They already
+	// watched every decision, including its target, so withholding the same
+	// facts from their own signed evidence protects nobody and denies them the
+	// proof the run exists to provide. The chain is delivered exactly as
+	// signed; nothing is scrubbed and no receipt is dropped.
+	AudienceSessionOwner
+)
+
 // AssemblePacket gates a captured scenario through the public-safe allowlist,
 // builds an Audit Packet v0 from safe constants and the real receipt chain,
 // validates it (schema + envelope safety), and writes the packet directory
 // (packet.json, evidence.jsonl, verifier.txt, summary.md). generatedAt is
 // injected so callers control the stamp (and tests stay deterministic).
+//
+// This is the public-publication path and stays the default for every caller
+// that does not name an audience.
 func AssemblePacket(cs *CapturedScenario, outDir string, generatedAt time.Time) (*AssembleResult, error) {
+	return AssemblePacketFor(cs, outDir, generatedAt, AudiencePublicGallery)
+}
+
+// AssemblePacketFor assembles a packet for a named audience. Both audiences get
+// the same signed bytes, the same schema validation, and the same chain; they
+// differ only in whether the public-safe publication gates apply.
+func AssemblePacketFor(cs *CapturedScenario, outDir string, generatedAt time.Time, audience Audience) (*AssembleResult, error) {
 	if cs == nil {
 		return nil, errors.New("assemble: nil captured scenario")
 	}
@@ -62,9 +97,12 @@ func AssemblePacket(cs *CapturedScenario, outDir string, generatedAt time.Time) 
 	}
 
 	// Gate: every receipt must pass the public-safe allowlist BEFORE assembly.
-	for i := range cs.Receipts {
-		if err := ValidateReceiptPublicSafe(cs.Receipts[i].ActionRecord); err != nil {
-			return nil, fmt.Errorf("assemble %s: receipt %d: %w", cs.Scenario.ID, i, err)
+	// Publication only; see Audience.
+	if audience == AudiencePublicGallery {
+		for i := range cs.Receipts {
+			if err := ValidateReceiptPublicSafe(cs.Receipts[i].ActionRecord); err != nil {
+				return nil, fmt.Errorf("assemble %s: receipt %d: %w", cs.Scenario.ID, i, err)
+			}
 		}
 	}
 
@@ -73,8 +111,10 @@ func AssemblePacket(cs *CapturedScenario, outDir string, generatedAt time.Time) 
 	if err := pkt.Validate(); err != nil {
 		return nil, fmt.Errorf("assemble %s: packet schema: %w", cs.Scenario.ID, err)
 	}
-	if err := ValidatePacketEnvelopePublicSafe(pkt); err != nil {
-		return nil, fmt.Errorf("assemble %s: %w", cs.Scenario.ID, err)
+	if audience == AudiencePublicGallery {
+		if err := ValidatePacketEnvelopePublicSafe(pkt); err != nil {
+			return nil, fmt.Errorf("assemble %s: %w", cs.Scenario.ID, err)
+		}
 	}
 
 	packetDir := filepath.Join(outDir, cs.Scenario.ID)

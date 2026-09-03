@@ -644,7 +644,11 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 	// "finish and prove it" semantic. Fail closed if the run did not verify.
 	if err := s.seal(entry); err != nil {
 		s.releaseSessionResources(entry)
-		writeErr(w, http.StatusServiceUnavailable, "session bundle is not available")
+		// Say that nothing partial was released, because the visitor's next
+		// question is whether they were handed a half-made bundle. Do not name
+		// the target, policy, or layer that failed: the reason can itself be
+		// the sensitive part.
+		writeErr(w, http.StatusServiceUnavailable, "we could not create a verifiable bundle for this session; nothing partial was released")
 		return
 	}
 	s.releaseSessionResources(entry)

@@ -781,7 +781,8 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	// manual reset. The manifest/witness JSON files are overwritten in place.
 	_ = os.RemoveAll(filepath.Join(runDir, "packet"))
 	_ = os.RemoveAll(filepath.Join(runDir, sc.ID))
-	asmResult, asmErr := AssembleFromEvidenceWithScenario(
+	// This is the visitor sealing their own run, not a gallery publication.
+	asmResult, asmErr := AssembleSessionOwnerFromEvidence(
 		evidenceFile,
 		hex.EncodeToString(lr.pipelockPub),
 		&sc,

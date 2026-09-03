@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
 )
 
 const rootRequirement = "requires root"
@@ -707,7 +708,7 @@ func TestWitnessVerificationRejectsMalformedInputs(t *testing.T) {
 func TestAssembleFromEvidenceRejectsMissingAndEmptyEvidence(t *testing.T) {
 	t.Parallel()
 
-	if _, err := assembleFromEvidenceCore(filepath.Join(t.TempDir(), "missing.jsonl"), "", nil, t.TempDir(), time.Now()); err == nil {
+	if _, err := assembleFromEvidenceCore(filepath.Join(t.TempDir(), "missing.jsonl"), "", nil, t.TempDir(), time.Now(), replaycapture.AudiencePublicGallery); err == nil {
 		t.Fatal("missing evidence file must fail")
 	}
 
@@ -715,7 +716,7 @@ func TestAssembleFromEvidenceRejectsMissingAndEmptyEvidence(t *testing.T) {
 	if err := os.WriteFile(evidenceFile, nil, 0o600); err != nil {
 		t.Fatalf("write empty evidence: %v", err)
 	}
-	if _, err := assembleFromEvidenceCore(evidenceFile, "", nil, t.TempDir(), time.Now()); err == nil {
+	if _, err := assembleFromEvidenceCore(evidenceFile, "", nil, t.TempDir(), time.Now(), replaycapture.AudiencePublicGallery); err == nil {
 		t.Fatal("empty evidence file must fail")
 	}
 }

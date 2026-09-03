@@ -856,7 +856,7 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 		return VerifyReport{}, fmt.Errorf("verify run: %w", err)
 	}
 	if !rep.OK {
-		return rep, fmt.Errorf("verify run: failed checks")
+		return rep, fmt.Errorf("verify run: %s", rep.FailureSummary())
 	}
 
 	return rep, nil

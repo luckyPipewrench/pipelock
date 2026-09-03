@@ -44,6 +44,29 @@ type VerifyReport struct {
 	OrchestratorKey string `json:"orchestrator_key"`
 }
 
+// FailureSummary names the checks that failed and why. A seal failure that
+// reports only that something failed cannot be acted on: the report already
+// carries the reason, and discarding it turns a one-line diagnosis into a
+// guess. It returns "no failed checks" when nothing failed, so a caller cannot
+// print an empty reason and imply one.
+func (r VerifyReport) FailureSummary() string {
+	var failed []string
+	for _, c := range r.Checks {
+		if c.OK {
+			continue
+		}
+		if c.Reason == "" {
+			failed = append(failed, c.Name)
+			continue
+		}
+		failed = append(failed, c.Name+": "+c.Reason)
+	}
+	if len(failed) == 0 {
+		return "no failed checks"
+	}
+	return "failed checks: " + strings.Join(failed, "; ")
+}
+
 // Run directory layout (produced by the demo runner, consumed by VerifyRun):
 //
 //	<rundir>/

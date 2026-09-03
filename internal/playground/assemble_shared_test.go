@@ -4,10 +4,19 @@
 package playground_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
 )
 
@@ -65,5 +74,90 @@ func TestAssembleFromEvidence_ProducesVerifiablePacket(t *testing.T) {
 	// that the shipped pipelock-verifier uses.
 	if err := replaycapture.VerifyPacketDir(result.PacketDir, engine.PublicKeyHex()); err != nil {
 		t.Fatalf("VerifyPacketDir: %v", err)
+	}
+}
+
+// TestAssembleSessionOwnerFromEvidence_RealHostKeepsValidChain covers the
+// production evidence-file seam with an intact signed receipt, rather than
+// changing an in-memory receipt after capture. The target is evidence only;
+// this test never contacts it.
+func TestAssembleSessionOwnerFromEvidence_RealHostKeepsValidChain(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pubKeyHex := hex.EncodeToString(pub)
+	stamp := time.Date(2026, time.September, 3, 12, 0, 0, 0, time.UTC)
+
+	r, err := receipt.Sign(receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        "visitor-real-host-receipt",
+		ActionType:      receipt.ActionWrite,
+		Principal:       "pipelock-lab",
+		Actor:           "lab-agent",
+		Timestamp:       stamp,
+		Target:          "https://sts.amazonaws.com/",
+		SideEffectClass: receipt.SideEffectExternalWrite,
+		Reversibility:   receipt.ReversibilityUnknown,
+		PolicyHash:      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Verdict:         "block",
+		Transport:       "forward",
+		Method:          "POST",
+		Layer:           "core_dlp",
+		ChainPrevHash:   receipt.GenesisHash,
+		ChainSeq:        0,
+	}, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	evidenceDir := filepath.Join(t.TempDir(), "visitor-real-host")
+	if err := os.MkdirAll(evidenceDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll evidence: %v", err)
+	}
+	evidenceFile := filepath.Join(evidenceDir, "evidence.jsonl")
+	entry := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  0,
+		Timestamp: stamp,
+		SessionID: "visitor-session",
+		Type:      "action_receipt",
+		EventKind: "write",
+		Transport: "forward",
+		Summary:   "signed visitor receipt",
+		Detail:    r,
+		PrevHash:  recorder.GenesisHash,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal evidence entry: %v", err)
+	}
+	if err := os.WriteFile(evidenceFile, append(line, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile evidence: %v", err)
+	}
+
+	// The same valid signed evidence remains unpublishable to the gallery.
+	if _, err := playground.AssembleFromEvidence(evidenceFile, pubKeyHex, t.TempDir(), stamp); err == nil || !strings.Contains(err.Error(), "allowlist") {
+		t.Fatalf("gallery assembly error = %v, want public-safe allowlist refusal", err)
+	}
+
+	result, err := playground.AssembleSessionOwnerFromEvidence(
+		evidenceFile,
+		pubKeyHex,
+		&replaycapture.Scenario{ID: "visitor-real-host"},
+		t.TempDir(),
+		stamp,
+	)
+	if err != nil {
+		t.Fatalf("AssembleSessionOwnerFromEvidence: %v", err)
+	}
+	if err := replaycapture.VerifyPacketDir(result.PacketDir, pubKeyHex); err != nil {
+		t.Fatalf("VerifyPacketDir: %v", err)
+	}
+	if got, want := result.Packet.Summary.DomainsTouched, []string{"sts.amazonaws.com"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("domains_touched = %v, want %v", got, want)
 	}
 }

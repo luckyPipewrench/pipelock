@@ -25,10 +25,9 @@ func AssembleFromEvidenceWithScenario(evidenceFile, pubKeyHex string, sc *replay
 	return assembleFromEvidenceCore(evidenceFile, pubKeyHex, sc, outDir, generatedAt, replaycapture.AudiencePublicGallery)
 }
 
-// AssembleSessionOwnerFromEvidence assembles a visitor's own session evidence.
-// It delivers the exact signed chain, including receipts whose target is a real
-// host, because the visitor watched those decisions live and the alternative is
-// handing them nothing at all.
+// AssembleSessionOwnerFromEvidence assembles a visitor's exact signed session
+// evidence, including receipts whose target is a real host. The caller must
+// authorize delivery over that session's short-lived channel.
 func AssembleSessionOwnerFromEvidence(evidenceFile, pubKeyHex string, sc *replaycapture.Scenario, outDir string, generatedAt time.Time) (*replaycapture.AssembleResult, error) {
 	return assembleFromEvidenceCore(evidenceFile, pubKeyHex, sc, outDir, generatedAt, replaycapture.AudienceSessionOwner)
 }

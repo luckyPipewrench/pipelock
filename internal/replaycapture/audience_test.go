@@ -6,6 +6,7 @@
 package replaycapture
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -78,9 +79,8 @@ func TestAssemblePacket_DefaultRemainsGallery(t *testing.T) {
 	}
 }
 
-// The visitor's own session assembles with the real host intact. They watched
-// that decision stream past live, so withholding the same fact from their signed
-// evidence protects nobody and denies them the proof the run exists to give.
+// The visitor's own authorized session assembles with the real host intact.
+// The signed chain must not be altered merely to make it publicly publishable.
 func TestAssemblePacketFor_SessionOwnerKeepsRealHost(t *testing.T) {
 	cs := captureWithTargetHost(t, "https://sts.amazonaws.com/")
 	want := len(cs.Receipts)
@@ -94,6 +94,36 @@ func TestAssemblePacketFor_SessionOwnerKeepsRealHost(t *testing.T) {
 	}
 	if res.Receipts != want {
 		t.Fatalf("packet carries %d receipts, want all %d; the chain must never be trimmed to make it publishable", res.Receipts, want)
+	}
+}
+
+// Session-owner delivery relaxes publication safety only. It must retain the
+// packet schema gate that makes the evidence independently verifiable.
+func TestAssemblePacketFor_SessionOwnerStillValidatesPacket(t *testing.T) {
+	cs := captureWithTargetHost(t, "https://sts.amazonaws.com/")
+	cs.SignerKeyHex = ""
+
+	_, err := AssemblePacketFor(cs, t.TempDir(), fixedStamp(), AudienceSessionOwner)
+	if err == nil || !strings.Contains(err.Error(), "packet schema") {
+		t.Fatalf("session-owner invalid packet error = %v, want schema refusal", err)
+	}
+}
+
+// Unknown values must not become a future bypass around the gallery gates.
+func TestAssemblePacketFor_RejectsUnknownAudience(t *testing.T) {
+	cs := captureWithTargetHost(t, "https://sts.amazonaws.com/")
+	outDir := t.TempDir()
+
+	_, err := AssemblePacketFor(cs, outDir, fixedStamp(), Audience(99))
+	if err == nil || !strings.Contains(err.Error(), "unknown audience") {
+		t.Fatalf("unknown audience error = %v, want refusal", err)
+	}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("read output directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("unknown audience wrote packet artifacts: %v", entries)
 	}
 }
 

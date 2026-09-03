@@ -64,12 +64,11 @@ const (
 	// artifact outlives the session that produced it.
 	AudiencePublicGallery Audience = iota
 
-	// AudienceSessionOwner is a packet handed back to the one visitor whose
-	// session produced it, over a short-lived authorized channel. They already
-	// watched every decision, including its target, so withholding the same
-	// facts from their own signed evidence protects nobody and denies them the
-	// proof the run exists to provide. The chain is delivered exactly as
-	// signed; nothing is scrubbed and no receipt is dropped.
+	// AudienceSessionOwner is a packet for the visitor whose session produced it.
+	// Callers must authorize delivery over that session's short-lived channel;
+	// selecting this audience does not itself grant access. The chain is
+	// delivered exactly as signed, including real targets: nothing is scrubbed
+	// and no receipt is dropped.
 	AudienceSessionOwner
 )
 
@@ -96,9 +95,18 @@ func AssemblePacketFor(cs *CapturedScenario, outDir string, generatedAt time.Tim
 		return nil, fmt.Errorf("assemble %s: no receipts", cs.Scenario.ID)
 	}
 
+	publicSafe := false
+	switch audience {
+	case AudiencePublicGallery:
+		publicSafe = true
+	case AudienceSessionOwner:
+	default:
+		return nil, fmt.Errorf("assemble %s: unknown audience %d", cs.Scenario.ID, audience)
+	}
+
 	// Gate: every receipt must pass the public-safe allowlist BEFORE assembly.
 	// Publication only; see Audience.
-	if audience == AudiencePublicGallery {
+	if publicSafe {
 		for i := range cs.Receipts {
 			if err := ValidateReceiptPublicSafe(cs.Receipts[i].ActionRecord); err != nil {
 				return nil, fmt.Errorf("assemble %s: receipt %d: %w", cs.Scenario.ID, i, err)
@@ -111,7 +119,7 @@ func AssemblePacketFor(cs *CapturedScenario, outDir string, generatedAt time.Tim
 	if err := pkt.Validate(); err != nil {
 		return nil, fmt.Errorf("assemble %s: packet schema: %w", cs.Scenario.ID, err)
 	}
-	if audience == AudiencePublicGallery {
+	if publicSafe {
 		if err := ValidatePacketEnvelopePublicSafe(pkt); err != nil {
 			return nil, fmt.Errorf("assemble %s: %w", cs.Scenario.ID, err)
 		}

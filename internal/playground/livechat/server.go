@@ -606,6 +606,10 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 // session already torn down) cannot download.
 func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 	s.setCORS(w)
+	// This is the owner-only artifact and can include real targets. The session
+	// token bounds retrieval at this server; no-store prevents an HTTP cache from
+	// extending that delivery channel after the token expires.
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return

@@ -153,6 +153,9 @@ func TestServer_Bundle_DownloadsVerifiableArchive(t *testing.T) {
 	if ct := dl.Header.Get("Content-Type"); ct != "application/gzip" {
 		t.Errorf("bundle Content-Type = %q, want application/gzip", ct)
 	}
+	if cc := dl.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("bundle Cache-Control = %q, want no-store", cc)
+	}
 	if cd := dl.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, ".tar.gz") {
 		t.Errorf("bundle Content-Disposition = %q, want an attachment .tar.gz", cd)
 	}
@@ -213,9 +216,18 @@ func TestServer_Bundle_SealFailureReleasesCapacity(t *testing.T) {
 	// download must fail closed, but the now-terminal session must not keep
 	// holding capacity until TTL.
 	dl := getRaw(t, ts.URL+RouteBundle+"?token="+cr.Token)
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(dl.Body).Decode(&failure); err != nil {
+		t.Fatalf("decode bundle failure: %v", err)
+	}
 	_ = dl.Body.Close()
 	if dl.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("bundle download before verifiable actions = %d, want 503", dl.StatusCode)
+	}
+	if failure.Error != "we could not create a verifiable bundle for this session; nothing partial was released" {
+		t.Fatalf("bundle failure = %q, want generic no-partial-release message", failure.Error)
 	}
 	if got := srv.conc.InUse(); got != 0 {
 		t.Fatalf("failed seal did not release session capacity: in_use=%d", got)

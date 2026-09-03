@@ -1,18 +1,19 @@
 {
   "_comment": "Pipelock-owned Gauntlet acceptance contract. Aggregate floors alone cannot distinguish an equal score with different failures, so this file binds the exact identities Pipelock accepts. Changing any identity is a product decision and requires a reviewed edit here.",
   "schema_version": 1,
-  "recorded_on": "2026-09-02",
+  "recorded_on": "2026-09-03",
   "pipelock_version": "3.5.0",
-  "bench_commit": "12107c32ad7a80b8c60c499b26bd01eb2450ac8f",
-  "corpus_version": "v2.7.0",
-  "active_case_count": 249,
+  "bench_release_tag": "v1.0.0",
+  "bench_commit": "06399746918ae0005f59a914fc9ec100a2f27fb8",
+  "corpus_version": "v2.8.0",
+  "active_case_count": 254,
   "containment": {
-    "numerator": 178,
-    "denominator": 181
+    "numerator": 182,
+    "denominator": 185
   },
   "false_positives": {
     "numerator": 2,
-    "denominator": 68
+    "denominator": 69
   },
   "accepted_containment_misses": [
     "mcp-chain-dow-budget-exceeded-010",

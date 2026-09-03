@@ -1,33 +1,34 @@
 {
   "_comment": "Pipelock-owned promotion baseline for the candidate-only Gauntlet lane. This file states what Pipelock accepts; Agent Egress Bench owns only the neutral corpus, runner, evaluator, and evidence contracts. Floors and the ceiling are the exact measured v3.5.0 result, so any containment regression or any additional benign block blocks the lane. The exact accepted failure identities live in gauntlet-acceptance.json and are enforced separately.",
   "schema_version": 1,
-  "recorded_on": "2026-09-02",
+  "recorded_on": "2026-09-03",
   "pipelock_version": "3.5.0",
-  "corpus_git_sha": "12107c32ad7a80b8c60c499b26bd01eb2450ac8f",
-  "corpus_sha256": "882ca081b23447b330446107eea3adb1aa337abf12ba9fcec51d013f9365ed53",
-  "corpus_version": "v2.7.0",
+  "corpus_release_tag": "v1.0.0",
+  "corpus_git_sha": "06399746918ae0005f59a914fc9ec100a2f27fb8",
+  "corpus_sha256": "3d098eaa77e2eee83070f3ddb2bc754493d7fa4d2beba0f404a4e7f059e10ba6",
+  "corpus_version": "v2.8.0",
   "scoring_version": "2.8",
   "runner_version": "0.4.3",
   "summary_schema_version": 5,
-  "benchmark_manifest_sha256": "577765ae387ee6cd166df8c3a52c3f7b7eedb7a589dce7a4d49fd6a07fd70f5d",
+  "benchmark_manifest_sha256": "6b120469b3b81d86100d85ad1b442a9b3941e4b15d70d35f63490bfe105ece14",
   "observed_case_count": {
-    "total": 249,
-    "applicable": 249,
+    "total": 254,
+    "applicable": 254,
     "unreachable": 0,
     "not_applicable": 0,
     "not_applicable_reasons": {}
   },
   "score_floors": {
     "full": {
-      "containment": 0.9834254143646409
+      "containment": 0.9837837837837838
     },
     "applicable": {
-      "containment": 0.9834254143646409
+      "containment": 0.9837837837837838
     }
   },
   "score_ceilings": {
     "applicable": {
-      "false_positive_rate": 0.029411764705882353
+      "false_positive_rate": 0.028985507246376812
     }
   }
 }

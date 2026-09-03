@@ -91,13 +91,13 @@ func TestMergeSessionAndBaseEnvPrecedenceAndIsolation(t *testing.T) {
 		"PLAYGROUND_MODEL_KEY": "base-must-not-win",
 	}
 	session := map[string]string{
-		"PLAYGROUND_MODEL_KEY":        "session-value",
-		"PLAYGROUND_ORCHESTRATOR_KEY": "orchestrator-value",
+		"PLAYGROUND_MODEL_KEY": "session-value",
+		"PLAYGROUND_EXTRA":     "session-extra",
 	}
 	got := mergeSessionAndBaseEnv(session, base, "vm-code")
 	if got["PLAYGROUND_LISTEN"] != "0.0.0.0:8080" ||
 		got["PLAYGROUND_MODEL_KEY"] != "session-value" ||
-		got["PLAYGROUND_ORCHESTRATOR_KEY"] != "orchestrator-value" ||
+		got["PLAYGROUND_EXTRA"] != "session-extra" ||
 		got["PLAYGROUND_CODE"] != "vm-code" {
 		t.Fatalf("merged environment = %#v", got)
 	}

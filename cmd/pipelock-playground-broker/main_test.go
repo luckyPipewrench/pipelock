@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 type fakeProvider struct{}
@@ -152,7 +154,11 @@ func TestBuildServerWithInjectedProvider(t *testing.T) {
 	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
 	modelFile := writeTestFile(t, dir, "model.key", "model-file-value\n")
-	orchestratorFile := writeTestFile(t, dir, "orchestrator.key", "orchestrator-file-value\n")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestratorFile := writeTestFile(t, dir, "orchestrator.key", hex.EncodeToString(priv)+"\n")
 
 	var gotProvider string
 	var gotToken string
@@ -187,6 +193,7 @@ func TestBuildServerWithInjectedProvider(t *testing.T) {
 		vmDailyTurnBudget:     10,
 		modelKeyFile:          modelFile,
 		orchestratorKeyFile:   orchestratorFile,
+		vmImageDigest:         "sha256:" + strings.Repeat("ab", 32),
 		requireSessionSecrets: true,
 	})
 	if err != nil {
@@ -1799,6 +1806,59 @@ func TestNormalizeCFAccessTeamDomain(t *testing.T) {
 	}
 }
 
+func TestResolveImageDigest(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	got, err := resolveImageDigest(&serveFlags{vmImageDigest: digest, requireSessionSecrets: true})
+	if err != nil {
+		t.Fatalf("flag digest: %v", err)
+	}
+	if got != digest {
+		t.Fatalf("flag digest = %q", got)
+	}
+	got, err = resolveImageDigest(&serveFlags{
+		image:                 "registry.example/playground:vm@" + digest,
+		requireSessionSecrets: true,
+	})
+	if err != nil {
+		t.Fatalf("image digest: %v", err)
+	}
+	if got != digest {
+		t.Fatalf("image digest = %q", got)
+	}
+	if _, err := resolveImageDigest(&serveFlags{requireSessionSecrets: true}); err == nil {
+		t.Fatal("missing digest should fail when session secrets are required")
+	}
+	if _, err := resolveImageDigest(&serveFlags{vmImageDigest: "sha256:deadbeef", requireSessionSecrets: true}); err == nil {
+		t.Fatal("short digest should fail")
+	}
+	got, err = resolveImageDigest(&serveFlags{requireSessionSecrets: false})
+	if err != nil || got != "" {
+		t.Fatalf("optional missing digest = %q err=%v", got, err)
+	}
+}
+
+func TestResolveOrchestratorRoot(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "orch.key", hex.EncodeToString(priv)+"\n")
+	got, err := resolveOrchestratorRoot(&serveFlags{orchestratorKeyFile: path, requireSessionSecrets: true})
+	if err != nil {
+		t.Fatalf("resolveOrchestratorRoot: %v", err)
+	}
+	if hex.EncodeToString(got) != hex.EncodeToString(priv) {
+		t.Fatal("resolved root does not match file")
+	}
+	if _, err := resolveOrchestratorRoot(&serveFlags{orchestratorKeyFile: path, requireSessionSecrets: true}); err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if _, err := resolveOrchestratorRoot(&serveFlags{requireSessionSecrets: false}); err != nil {
+		t.Fatalf("optional missing root: %v", err)
+	}
+}
+
 func TestResolveSessionEnv(t *testing.T) {
 	dir := t.TempDir()
 	modelFile := writeTestFile(t, dir, "model.key", "model-file-value\n")
@@ -1813,8 +1873,8 @@ func TestResolveSessionEnv(t *testing.T) {
 	if env[envModelKey] != "model-file-value" {
 		t.Fatalf("model env = %q", env[envModelKey])
 	}
-	if env[envOrchestratorKey] != "orchestrator-env-value" {
-		t.Fatalf("orchestrator env = %q", env[envOrchestratorKey])
+	if _, ok := env[envOrchestratorKey]; ok {
+		t.Fatal("durable orchestrator key must not be copied into visitor VM env")
 	}
 }
 
@@ -2462,5 +2522,26 @@ func TestBuildVMBaseEnv(t *testing.T) {
 	empty := buildVMBaseEnv(&serveFlags{internalPort: 8080})
 	if len(empty) != 1 || empty["PLAYGROUND_LISTEN"] != "0.0.0.0:8080" {
 		t.Errorf("empty config should yield only PLAYGROUND_LISTEN, got %v", empty)
+	}
+}
+
+// Broker and visitor VMs are one Fly app, so a root stored under the
+// guest-facing name is delivered to every guest. The broker must refuse to
+// build a server while that name is populated.
+func TestRefuseGuestFacingRootSecret(t *testing.T) {
+	t.Setenv(envOrchestratorKey, "deadbeef")
+	err := refuseGuestFacingRootSecret()
+	if err == nil {
+		t.Fatal("broker must refuse to serve while the guest-facing root secret is set")
+	}
+	if !strings.Contains(err.Error(), envOrchestratorRoot) {
+		t.Fatalf("error %v must name the broker-only variable %s", err, envOrchestratorRoot)
+	}
+}
+
+func TestRefuseGuestFacingRootSecret_AllowsCleanEnv(t *testing.T) {
+	t.Setenv(envOrchestratorKey, "")
+	if err := refuseGuestFacingRootSecret(); err != nil {
+		t.Fatalf("clean environment rejected: %v", err)
 	}
 }

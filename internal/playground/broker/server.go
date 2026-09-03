@@ -6,6 +6,7 @@ package broker
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -117,9 +118,18 @@ type ServerConfig struct {
 	PerCodeDailyBudget int
 	GlobalDailyBudget  int
 	// SessionEnv is layered into each per-VM lease along with the generated
-	// single-use VM invite code. It carries operator-provided per-session secret
-	// values such as PLAYGROUND_MODEL_KEY and PLAYGROUND_ORCHESTRATOR_KEY.
+	// single-use VM invite code. It may carry PLAYGROUND_MODEL_KEY. It must
+	// never carry the durable orchestrator private key.
 	SessionEnv map[string]string
+	// OrchestratorRoot is the broker-held durable signing root. When set, each
+	// session receives a short-lived delegated key instead of this value.
+	OrchestratorRoot ed25519.PrivateKey
+	// ImageDigest is the immutable VM image bound into each session
+	// delegation. Required when OrchestratorRoot is set.
+	ImageDigest string
+	// SessionDelegationLifetime bounds minted session keys. Zero uses
+	// playground.DefaultSessionDelegationLifetime.
+	SessionDelegationLifetime time.Duration
 	// InternalPort is the VM server port. Zero uses 8080.
 	InternalPort int
 	// DeadlineGrace extends the VM-reported session expiry before the broker
@@ -311,6 +321,13 @@ type sessionRequest struct {
 	TurnstileToken string `json:"turnstile_token,omitempty"`
 }
 
+type vmSessionRequest struct {
+	Code                   string          `json:"code"`
+	RunNonce               string          `json:"run_nonce,omitempty"`
+	SessionSigningKey      string          `json:"session_signing_key,omitempty"`
+	OrchestratorDelegation json.RawMessage `json:"orchestrator_delegation,omitempty"`
+}
+
 type vmSessionResponse struct {
 	Token     string `json:"token"`
 	SessionID string `json:"session_id"`
@@ -345,6 +362,19 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	} {
 		if c.v < 0 {
 			return nil, fmt.Errorf("broker: %s must be >= 0", c.name)
+		}
+	}
+	for k := range cfg.SessionEnv {
+		if k == "PLAYGROUND_ORCHESTRATOR_"+"KEY" {
+			return nil, errors.New("broker: SessionEnv must not carry the durable orchestrator key")
+		}
+	}
+	if len(cfg.OrchestratorRoot) != 0 {
+		if _, err := playground.ParseOrchestratorPrivateKeyHex(hex.EncodeToString(cfg.OrchestratorRoot)); err != nil {
+			return nil, fmt.Errorf("broker: OrchestratorRoot: %w", err)
+		}
+		if cfg.ImageDigest == "" {
+			return nil, errors.New("broker: ImageDigest is required when OrchestratorRoot is set")
 		}
 	}
 	if cfg.InternalPort == 0 {
@@ -648,7 +678,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, expiresAt, err := s.createVMSession(r.Context(), lease, vmCode)
+	resp, expiresAt, err := s.createVMSession(r.Context(), lease, vmCode, sessionKey)
 	if err != nil {
 		s.cfg.Leases.Release(context.WithoutCancel(r.Context()), sessionKey)
 		undo()
@@ -1018,12 +1048,25 @@ func (s *Server) fetchVMArtifact(ctx context.Context, lease *Lease, vmToken, osP
 	}, nil
 }
 
-func (s *Server) createVMSession(ctx context.Context, lease *Lease, code string) (vmSessionResponse, time.Time, error) {
+func (s *Server) createVMSession(ctx context.Context, lease *Lease, code, runNonce string) (vmSessionResponse, time.Time, error) {
 	target, err := s.targetURL(lease, livechat.RouteSession)
 	if err != nil {
 		return vmSessionResponse{}, time.Time{}, err
 	}
-	reqBody, err := json.Marshal(sessionRequest{Code: code})
+	req := vmSessionRequest{Code: code, RunNonce: runNonce}
+	if len(s.cfg.OrchestratorRoot) != 0 {
+		minted, mintErr := playground.MintSessionDelegation(s.cfg.OrchestratorRoot, runNonce, s.cfg.ImageDigest, time.Now().UTC(), s.cfg.SessionDelegationLifetime)
+		if mintErr != nil {
+			return vmSessionResponse{}, time.Time{}, fmt.Errorf("broker: mint session delegation: %w", mintErr)
+		}
+		delBytes, marshalErr := json.Marshal(minted.Delegation)
+		if marshalErr != nil {
+			return vmSessionResponse{}, time.Time{}, fmt.Errorf("broker: marshal session delegation: %w", marshalErr)
+		}
+		req.SessionSigningKey = hex.EncodeToString(minted.PrivateKey)
+		req.OrchestratorDelegation = delBytes
+	}
+	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return vmSessionResponse{}, time.Time{}, fmt.Errorf("broker: marshal vm session request: %w", err)
 	}

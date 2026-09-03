@@ -57,11 +57,17 @@ SECRET_DIR=/run/playground
 mkdir -p "${SECRET_DIR}"
 chmod 0700 "${SECRET_DIR}"
 
-ORCH_KEY_ARGS=""
+# The durable orchestrator root stays on the broker. Each session is authorized
+# by a short-lived key the broker mints and signs, delivered on the session
+# request. A guest that still receives the durable key is the pre-rotation shape
+# that leaked, so refuse to boot rather than silently accept it: an inherited
+# app-level secret would otherwise turn delegation off with everything green.
 if [ -n "${PLAYGROUND_ORCHESTRATOR_KEY:-}" ]; then
-	umask 077
-	printf '%s' "${PLAYGROUND_ORCHESTRATOR_KEY}" >"${SECRET_DIR}/orchestrator.key"
-	ORCH_KEY_ARGS="--orchestrator-key ${SECRET_DIR}/orchestrator.key"
+	log "FATAL: PLAYGROUND_ORCHESTRATOR_KEY is set on this guest"
+	log "The durable signing root must never reach a visitor VM. Unset the secret"
+	log "(fly secrets unset PLAYGROUND_ORCHESTRATOR_KEY) and redeploy; the broker"
+	log "mints a per-session delegated key instead."
+	exit 1
 fi
 
 MODEL_KEY_ARGS=""
@@ -108,7 +114,7 @@ fi
 
 # --- 4. Serve. One session per VM (--concurrency 1); "$@" allows extra overrides. -
 log "containment proven; starting server on ${LISTEN}"
-# shellcheck disable=SC2086  # word-splitting of ORCH_KEY_ARGS/MODEL_KEY_ARGS/EXTRA_ARGS is intended; secret paths are fixed under /run/playground (no spaces)
+# shellcheck disable=SC2086  # word-splitting of MODEL_KEY_ARGS/EXTRA_ARGS is intended; secret paths are fixed under /run/playground (no spaces)
 exec "${BIN}" serve \
 	--self-managed-containment \
 	--require-model \
@@ -122,7 +128,6 @@ exec "${BIN}" serve \
 	--verifier-bin-linux "${VERIFIER_LINUX}" \
 	--verifier-bin-macos "${VERIFIER_MACOS}" \
 	--verifier-bin-windows "${VERIFIER_WINDOWS}" \
-	${ORCH_KEY_ARGS} \
 	${MODEL_KEY_ARGS} \
 	${EXTRA_ARGS} \
 	"$@"

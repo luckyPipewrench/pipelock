@@ -6,6 +6,7 @@ package livechat
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -77,8 +78,12 @@ type ServerConfig struct {
 	Containment playground.ContainmentVerifier
 	// OrchestratorKeyPath / ToyAgentBin / WebToolBin are forwarded to sessions.
 	OrchestratorKeyPath string
-	ToyAgentBin         string
-	WebToolBin          string
+	// RequireDelegatedSigning refuses a session that does not carry a
+	// broker-minted session key and root-signed delegation. Production VMs
+	// set this so the durable root never has to exist on the guest.
+	RequireDelegatedSigning bool
+	ToyAgentBin             string
+	WebToolBin              string
 	// ProxyPort is the fixed loopback port each session's in-process proxy binds.
 	// It must match the single port the kernel owner-match rule allows the
 	// contained agent uid to reach (`pipelock contain install --proxy-port`). 0 =
@@ -271,7 +276,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 type createReq struct {
-	Code string `json:"code"`
+	Code                   string          `json:"code"`
+	RunNonce               string          `json:"run_nonce,omitempty"`
+	SessionSigningKey      string          `json:"session_signing_key,omitempty"`
+	OrchestratorDelegation json.RawMessage `json:"orchestrator_delegation,omitempty"`
 }
 
 type createResp struct {
@@ -302,12 +310,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body createReq
-	if err := decodeJSON(r, &body, "code"); err != nil {
+	if err := decodeJSON(r, &body, "code", "run_nonce", "session_signing_key", "orchestrator_delegation"); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	if body.Code == "" {
 		writeErr(w, http.StatusUnauthorized, "invite code required")
+		return
+	}
+	sessionPriv, delegation, err := parseSessionDelegation(body, s.cfg.RequireDelegatedSigning)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "session signing required")
 		return
 	}
 	if !s.budget.Open() {
@@ -328,6 +341,9 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		release()
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+	if body.RunNonce != "" {
+		sid = body.RunNonce
 	}
 	token, claims, err := s.cfg.Gate.Redeem(body.Code, sid)
 	if err != nil {
@@ -362,6 +378,8 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		RequireContainment:  s.cfg.RequireContainment,
 		Containment:         s.cfg.Containment,
 		OrchestratorKeyPath: s.cfg.OrchestratorKeyPath,
+		SessionPrivateKey:   sessionPriv,
+		Delegation:          delegation,
 		ToyAgentBin:         s.cfg.ToyAgentBin,
 		WebToolBin:          s.cfg.WebToolBin,
 		ProxyPort:           s.cfg.ProxyPort,
@@ -822,6 +840,30 @@ func gateErrStatus(err error) int {
 		// Unknown / exhausted codes are an auth failure from the client's view.
 		return http.StatusUnauthorized
 	}
+}
+
+func parseSessionDelegation(body createReq, required bool) (ed25519.PrivateKey, *playground.OrchestratorDelegation, error) {
+	if len(body.SessionSigningKey) == 0 && len(body.OrchestratorDelegation) == 0 {
+		if required {
+			return nil, nil, errors.New("session signing required")
+		}
+		return nil, nil, nil
+	}
+	if body.SessionSigningKey == "" || len(body.OrchestratorDelegation) == 0 {
+		return nil, nil, errors.New("session signing key and delegation must both be present")
+	}
+	priv, err := playground.ParseOrchestratorPrivateKeyHex(body.SessionSigningKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	d, err := playground.ParseOrchestratorDelegation(body.OrchestratorDelegation)
+	if err != nil {
+		return nil, nil, err
+	}
+	if body.RunNonce != "" && d.RunNonce != body.RunNonce {
+		return nil, nil, errors.New("delegation run_nonce does not match")
+	}
+	return priv, &d, nil
 }
 
 func decodeJSON(r *http.Request, v any, allowedKeys ...string) error {

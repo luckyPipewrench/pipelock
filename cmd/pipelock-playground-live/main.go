@@ -66,6 +66,7 @@ type serveFlags struct {
 	selfManagedContainment bool
 	dev                    bool
 	orchestratorKey        string
+	requireDelegated       bool
 	toyAgentBin            string
 	webToolBin             string
 	proxyPort              int
@@ -111,6 +112,12 @@ func newServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Run the live-chat server",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// --dev keeps the historical ephemeral-key behavior unless the
+			// operator asks for delegation explicitly. Public serves cannot
+			// opt out; validateServeSafety refuses that below.
+			if f.dev && !cmd.Flags().Changed("require-delegated-signing") {
+				f.requireDelegated = false
+			}
 			return runServe(cmd, f)
 		},
 	}
@@ -123,7 +130,8 @@ func newServeCmd() *cobra.Command {
 	fl.BoolVar(&f.requireModel, "require-model", false, "refuse to serve unless the real model-backed agent is fully configured (public demo guard)")
 	fl.BoolVar(&f.selfManagedContainment, "self-managed-containment", false, "the deployment sets the nft owner-match egress rule itself (e.g. a per-visitor microVM boot entrypoint) instead of `pipelock contain install`; the server proves the agent-uid egress/local escape drops empirically at start and via the signed witness, and does NOT require `pipelock contain verify`")
 	fl.BoolVar(&f.dev, "dev", false, "DEV ONLY: run uncontained (disables --require-containment); never use for public exposure")
-	fl.StringVar(&f.orchestratorKey, "orchestrator-key", "", "path to the published demo signing key (required outside --dev; empty = ephemeral per-run key in --dev)")
+	fl.StringVar(&f.orchestratorKey, "orchestrator-key", "", "path to a durable signing key on this guest; refused outside --dev because the durable root stays on the broker")
+	fl.BoolVar(&f.requireDelegated, "require-delegated-signing", true, "refuse any session that does not carry a broker-minted session key and root-signed delegation")
 	fl.StringVar(&f.toyAgentBin, "toyagent-bin", "", "toy-agent binary path (needed for the contained host-containment witness)")
 	fl.StringVar(&f.webToolBin, "webtool-bin", "", "web-tool binary path (needed for the contained host-containment witness)")
 	fl.IntVar(&f.proxyPort, "proxy-port", 0, "fixed loopback port the in-process proxy binds; must match `pipelock contain install --proxy-port` (defaults to 8888 in contained mode). 0 = ephemeral, dev/test only")
@@ -234,30 +242,36 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 	if err := validateServeSafety(f, llmAgent != nil); err != nil {
 		return nil, nil, err
 	}
-	if !f.dev {
+	// A supplied key is validated at boot in every mode. Outside --dev the flag
+	// is refused outright (validateServeSafety), so this only covers dev runs
+	// that still sign with a durable local key.
+	if strings.TrimSpace(f.orchestratorKey) != "" {
 		if _, err := playground.LoadOrchestratorSigningKey(f.orchestratorKey); err != nil {
 			return nil, nil, fmt.Errorf("--orchestrator-key: %w", err)
 		}
+	}
+	if !f.dev {
 		if err := validateModelAgentRuntime(llmAgent); err != nil {
 			return nil, nil, err
 		}
 	}
 
 	srv, err := livechat.NewServer(livechat.ServerConfig{
-		Gate:                gate,
-		Limits:              livechat.Limits{MaxInputBytes: f.maxInputBytes, SessionTTL: f.sessionTTL},
-		IPRate:              livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
-		CodeRate:            livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
-		MaxConcurrent:       f.concurrency,
-		RequireContainment:  requireContainment,
-		Containment:         verifier,
-		OrchestratorKeyPath: f.orchestratorKey,
-		ToyAgentBin:         f.toyAgentBin,
-		WebToolBin:          f.webToolBin,
-		ProxyPort:           f.proxyPort,
-		TrustForwardedFor:   f.trustForwardedFor,
-		AllowOrigin:         f.allowOrigin,
-		LLMAgent:            llmAgent,
+		Gate:                    gate,
+		Limits:                  livechat.Limits{MaxInputBytes: f.maxInputBytes, SessionTTL: f.sessionTTL},
+		IPRate:                  livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
+		CodeRate:                livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
+		MaxConcurrent:           f.concurrency,
+		RequireContainment:      requireContainment,
+		Containment:             verifier,
+		OrchestratorKeyPath:     f.orchestratorKey,
+		RequireDelegatedSigning: f.requireDelegated,
+		ToyAgentBin:             f.toyAgentBin,
+		WebToolBin:              f.webToolBin,
+		ProxyPort:               f.proxyPort,
+		TrustForwardedFor:       f.trustForwardedFor,
+		AllowOrigin:             f.allowOrigin,
+		LLMAgent:                llmAgent,
 		VerifierBinaries: playground.VerifyKitBinaries{
 			Linux:   f.verifierBinLinux,
 			MacOS:   f.verifierBinMacOS,
@@ -342,8 +356,19 @@ func validateServeSafety(f *serveFlags, modelBacked bool) error {
 	if f.proxyPort < 0 || f.proxyPort > 65535 {
 		return errors.New("--proxy-port must be 0-65535")
 	}
-	if !f.dev && strings.TrimSpace(f.orchestratorKey) == "" {
-		return errors.New("non-dev serve requires --orchestrator-key so bundles verify against the published demo key")
+	// The durable orchestrator root must never exist on a public guest. Before
+	// delegation, the guest held it; the exposure that forced the 2026-09-03
+	// rotation is exactly that copy. Refuse both halves of the old shape:
+	// a public serve that does not demand a delegation, and any serve that
+	// demands one while also being handed a durable key on disk.
+	if !f.dev && !f.requireDelegated {
+		return errors.New("public serve requires --require-delegated-signing so the durable root stays on the broker")
+	}
+	if !f.dev && strings.TrimSpace(f.orchestratorKey) != "" {
+		return errors.New("--orchestrator-key is refused outside --dev; the durable root stays on the broker and each session is delegated")
+	}
+	if f.requireDelegated && strings.TrimSpace(f.orchestratorKey) != "" {
+		return errors.New("--orchestrator-key and --require-delegated-signing are mutually exclusive")
 	}
 	if f.requireModel && !modelBacked {
 		return errors.New("--require-model set but model-backed agent is not configured")

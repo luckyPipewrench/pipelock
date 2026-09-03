@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
@@ -409,6 +411,37 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, PerIPDailyBudget: -1}); err == nil {
 		t.Fatal("negative daily budget should error")
 	}
+	if _, err := NewServer(ServerConfig{
+		Leases:     lm,
+		Gate:       gate,
+		SessionEnv: map[string]string{"PLAYGROUND_ORCHESTRATOR_" + "KEY": "durable-root"},
+	}); err == nil {
+		t.Fatal("SessionEnv carrying the durable orchestrator key should error")
+	}
+	if _, err := NewServer(ServerConfig{
+		Leases:           lm,
+		Gate:             gate,
+		OrchestratorRoot: ed25519.PrivateKey("short"),
+	}); err == nil {
+		t.Fatal("invalid OrchestratorRoot should error")
+	}
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, OrchestratorRoot: root}); err == nil {
+		t.Fatal("OrchestratorRoot without ImageDigest should error")
+	}
+	delegated, err := NewServer(ServerConfig{
+		Leases:           lm,
+		Gate:             gate,
+		OrchestratorRoot: root,
+		ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
+	})
+	if err != nil {
+		t.Fatalf("valid delegated root config rejected: %v", err)
+	}
+	delegated.Close()
 
 	customClient := &http.Client{}
 	srv, err := NewServer(ServerConfig{Leases: lm, Gate: gate, HTTPClient: customClient})

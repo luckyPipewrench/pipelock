@@ -608,7 +608,7 @@ func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (Veri
 	// decision; this proves the kernel owner-match drop from the contained
 	// network position. Required only when the signed manifest says Contained.
 	if lm.Contained {
-		verifyHostContainmentBytes(artifacts.HostContainmentWitness, lm, orchestratorPubHex, &rep)
+		verifyHostContainmentBytes(artifacts.HostContainmentWitness, lm, hex.EncodeToString(manifestPub), &rep)
 	}
 
 	rep.ObservedCount = witness.ObservedCount

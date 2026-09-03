@@ -8,6 +8,7 @@ package playground
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -167,6 +168,10 @@ type LiveSessionConfig struct {
 	// OrchestratorKeyPath loads the published demo signing key (so the run is
 	// verifiable against the published key). Empty => ephemeral per-run key.
 	OrchestratorKeyPath string
+	// SessionPrivateKey and Delegation are the broker-minted session signer.
+	// When set they take precedence over OrchestratorKeyPath.
+	SessionPrivateKey ed25519.PrivateKey
+	Delegation        *OrchestratorDelegation
 	// Agent overrides the LiveAgent. Nil => the deterministic IntentAgent.
 	// Ignored when LLMAgent is set (the model-backed subprocess drives instead).
 	Agent LiveAgent
@@ -291,6 +296,8 @@ func StartLiveSession(ctx context.Context, cfg LiveSessionConfig) (*LiveSession,
 		ScenarioID:          LiveDemoScenarioID,
 		RunNonce:            cfg.RunNonce,
 		OrchestratorKeyPath: cfg.OrchestratorKeyPath,
+		SessionPrivateKey:   cfg.SessionPrivateKey,
+		Delegation:          cfg.Delegation,
 		ToyAgentBin:         cfg.ToyAgentBin,
 		WebToolBin:          cfg.WebToolBin,
 		ProxyPort:           cfg.ProxyPort,

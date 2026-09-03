@@ -99,6 +99,13 @@ type LiveRunOpts struct {
 	// OrchestratorKeyPath, when non-empty, loads the run's orchestrator
 	// (trust-root) signing key from disk instead of generating an ephemeral one.
 	OrchestratorKeyPath string
+	// SessionPrivateKey, when set, is the short-lived session signer minted by
+	// the broker. It takes precedence over OrchestratorKeyPath. The durable
+	// root private key must not be supplied here.
+	SessionPrivateKey ed25519.PrivateKey
+	// Delegation, when set, is written into the run directory and bound into
+	// the launch manifest before signing.
+	Delegation *OrchestratorDelegation
 	// ModelBaseURL, when non-empty, allowlists the model API host in the lab
 	// proxy so a model-backed agent's chat-completions calls can egress through
 	// it. This is the ONLY real-egress destination the lab proxy permits; the
@@ -147,6 +154,7 @@ type LiveRun struct {
 	// Scenario / config
 	scenario    replaycapture.Scenario
 	manifest    LaunchManifest
+	delegation  *OrchestratorDelegation
 	opts        LiveRunOpts
 	evidenceDir string
 	policyHash  string
@@ -281,11 +289,23 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	}()
 
 	// --- Key generation ---
-	// The orchestrator key is the run's trust root. When a stable key path is
-	// supplied, load it (so the run signs under the published demo key and is
-	// verifiable against PublishedOrchestratorPubKeyHex); otherwise generate an
-	// ephemeral per-run key (the dev default).
-	if opts.OrchestratorKeyPath != "" {
+	// Delegated live sessions sign with a broker-minted session key. A path
+	// loads a durable key for local/legacy runs. Empty means an ephemeral
+	// per-run key (dev default).
+	switch {
+	case len(opts.SessionPrivateKey) != 0:
+		if err := signing.ValidatePrivateKeyConsistency(opts.SessionPrivateKey); err != nil {
+			return nil, fmt.Errorf("session signing key: %w", err)
+		}
+		if opts.Delegation == nil {
+			return nil, fmt.Errorf("session signing key requires a root-signed delegation")
+		}
+		lr.orchestratorPriv = opts.SessionPrivateKey
+		lr.orchestratorPub = lr.orchestratorPriv.Public().(ed25519.PublicKey)
+		if hex.EncodeToString(lr.orchestratorPub) != opts.Delegation.SessionPublicKey {
+			return nil, fmt.Errorf("session signing key does not match delegation")
+		}
+	case opts.OrchestratorKeyPath != "":
 		var loadErr error
 		lr.orchestratorPriv, loadErr = LoadOrchestratorSigningKey(opts.OrchestratorKeyPath)
 		if loadErr != nil {
@@ -299,7 +319,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 			err = fmt.Errorf("default orchestrator key %s does not match PublishedOrchestratorPubKeyHex", opts.OrchestratorKeyPath)
 			return nil, err
 		}
-	} else {
+	default:
 		lr.orchestratorPub, lr.orchestratorPriv, err = signing.GenerateKeyPair()
 		if err != nil {
 			return nil, fmt.Errorf("orchestrator keygen: %w", err)
@@ -458,6 +478,12 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		StartedAt:       time.Now().UTC(),
 		Contained:       opts.Contained,
 		AgentKind:       manifestAgentKind(opts.ModelBaseURL),
+	}
+	if opts.Delegation != nil {
+		d := *opts.Delegation
+		lr.delegation = &d
+		lr.manifest.DelegationID = d.DelegationID
+		lr.manifest.ImageDigest = d.ImageDigest
 	}
 	lr.manifest = SignLaunchManifest(lr.orchestratorPriv, lr.manifest)
 
@@ -809,6 +835,16 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	lmPath := filepath.Join(runDir, "launch-manifest.json")
 	if err := os.WriteFile(lmPath, lmBytes, 0o600); err != nil {
 		return VerifyReport{}, fmt.Errorf("write launch manifest: %w", err)
+	}
+	if lr.delegation != nil {
+		dBytes, dErr := json.Marshal(lr.delegation)
+		if dErr != nil {
+			return VerifyReport{}, fmt.Errorf("marshal orchestrator delegation: %w", dErr)
+		}
+		dPath := filepath.Join(runDir, orchestratorDelegationFile)
+		if err := os.WriteFile(dPath, dBytes, 0o600); err != nil {
+			return VerifyReport{}, fmt.Errorf("write orchestrator delegation: %w", err)
+		}
 	}
 
 	// --- Write witness ---

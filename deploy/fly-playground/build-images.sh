@@ -36,8 +36,26 @@ BROKER_TAG="${PLAYGROUND_REGISTRY}:broker"
 
 cd "${REPO_ROOT}"
 
+# Honor the host HTTP proxy for `go mod download` inside the build. On this
+# workstation the proxy is loopback-only, so the build also uses host
+# networking; both are skipped when no proxy is set.
+DOCKER_BUILD_FLAGS=()
+if [ -n "${HTTP_PROXY:-${http_proxy:-}}" ]; then
+	proxy="${HTTP_PROXY:-$http_proxy}"
+	https_proxy_val="${HTTPS_PROXY:-${https_proxy:-$proxy}}"
+	DOCKER_BUILD_FLAGS+=(
+		--network "${DOCKER_BUILD_NETWORK:-host}"
+		--build-arg "HTTP_PROXY=${proxy}"
+		--build-arg "HTTPS_PROXY=${https_proxy_val}"
+		--build-arg "http_proxy=${proxy}"
+		--build-arg "https_proxy=${https_proxy_val}"
+		--build-arg "NO_PROXY=${NO_PROXY:-${no_proxy:-}}"
+		--build-arg "no_proxy=${NO_PROXY:-${no_proxy:-}}"
+	)
+fi
+
 echo "[build-images] building VM image ${VM_TAG}"
-docker build -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
+docker build "${DOCKER_BUILD_FLAGS[@]}" -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
 
 # The viewer's inline "Verify in your browser" button loads a WASM build of the
 # shipped verifier from the served dir. Build it straight into PLAYGROUND_UI_DIR
@@ -61,7 +79,7 @@ if ! find "${PLAYGROUND_UI_DIR}" -type f -name '*.wasm' -newer "${wasm_stamp}" -
 fi
 
 echo "[build-images] building broker image ${BROKER_TAG} (viewer from ${PLAYGROUND_UI_DIR})"
-docker build -f deploy/fly-playground/Dockerfile.broker \
+docker build "${DOCKER_BUILD_FLAGS[@]}" -f deploy/fly-playground/Dockerfile.broker \
 	--build-context "ui=${PLAYGROUND_UI_DIR}" \
 	-t "${BROKER_TAG}" .
 
@@ -71,6 +89,7 @@ docker run --rm "${BROKER_TAG}" serve \
 	--fly-app preflight \
 	--fly-token-env PREFLIGHT_FLY_TOKEN \
 	--image preflight \
+	--vm-image-digest sha256:0000000000000000000000000000000000000000000000000000000000000000 \
 	--global-daily-budget 1 \
 	--vm-daily-turn-budget 1 \
 	--turnstile-secret-env PREFLIGHT_TURNSTILE_SECRET \

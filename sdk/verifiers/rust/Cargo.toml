@@ -21,21 +21,21 @@ name = "pipelock-verifier-rs"
 path = "src/main.rs"
 
 [dependencies]
-base64 = "=0.22.1"
-data-encoding = "=2.11.0"
+base64 = "=0.23.1"
+data-encoding = "=2.11.1"
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
 hex = "=0.4.3"
-html-escape = "=0.2.14"
+html-escape = "=0.2.15"
 hmac = "=0.12.1"
 jsonschema = { version = "=0.18.3", default-features = false, features = ["draft202012"] }
-libc = "=0.2.186"
+libc = "=0.2.189"
 p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "pkcs8"] }
 percent-encoding = "=2.3.2"
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = { version = "=1.0.150", features = ["preserve_order", "unbounded_depth"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order", "unbounded_depth"] }
 sha2 = "=0.11.0"
 sha2_10 = { package = "sha2", version = "=0.10.9" }
-thiserror = "=2.0.18"
+thiserror = "=2.0.20"
 # NFC normalization to match Go's golang.org/x/text/unicode/norm in the AARP
 # JCS canonicalizer (byte-for-byte cross-language parity on string/key values).
 # The evidence-provenance transform profile pins Unicode 15.0.0.

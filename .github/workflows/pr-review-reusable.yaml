@@ -67,7 +67,7 @@ jobs:
       # Pipelock by the caller-provided full SHA so the composite action and
       # runner cannot silently come from a caller's stale local copy.
       - name: Check out immutable Pipelock review source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: luckyPipewrench/pipelock
           ref: ${{ inputs.reviewer_sha }}
@@ -100,7 +100,7 @@ jobs:
       HAS_OPENAI: ${{ secrets.openai_api_key != '' && 'true' || 'false' }}
     steps:
       - name: Check out immutable Pipelock review source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: luckyPipewrench/pipelock
           ref: ${{ inputs.reviewer_sha }}
@@ -108,7 +108,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out immutable reviewed repository head
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ github.repository }}
           ref: ${{ needs.admit.outputs.head_sha }}
@@ -135,7 +135,7 @@ jobs:
       # A second depth-one checkout gives Git the authoritative merge-base
       # snapshot without downloading every branch, tag, and historical object.
       - name: Check out immutable reviewed repository merge base
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ github.repository }}
           ref: ${{ steps.merge-base.outputs.sha }}

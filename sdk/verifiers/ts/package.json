@@ -40,8 +40,8 @@
   },
   "devDependencies": {
     "@types/he": "1.2.3",
-    "@types/node": "24.13.1",
-    "prettier": "3.8.3",
+    "@types/node": "24.13.3",
+    "prettier": "3.9.6",
     "typescript": "5.9.3"
   },
   "engines": {

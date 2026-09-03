@@ -70,6 +70,12 @@ func TestScanner_BeginUse_FailsAfterClose(t *testing.T) {
 // Close does not return until every outstanding BeginUse caller has
 // invoked its release func. Without the WaitGroup drain, a future
 // destructive Close would race with mid-scan callers.
+//
+// closeOpportunityWindow is how long a wrongly-unblocked Close is given to
+// return before the test concludes it is genuinely blocked. It cannot cause a
+// spurious failure, because a correct Close stays blocked however long the wait.
+const closeOpportunityWindow = 250 * time.Millisecond
+
 func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -94,15 +100,17 @@ func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 		close(closeReturned)
 	}()
 
-	// Wait for closed=true rather than sleeping: under load a fixed window
-	// expires before the goroutine is scheduled, which fails the test for a
-	// scheduling artifact. The timeout is a hang backstop, not the assertion.
+	// Wait for closed=true rather than sleeping. The original test slept and
+	// then asserted publication, so under load the window expired before the
+	// goroutine was scheduled and it failed for a scheduling artifact. Waiting
+	// removes that failure; the timeout here is a hang backstop.
 	//
-	// This is also what makes the two negative checks below sound rather than
-	// timing guesses. Close publishes closed=true BEFORE it starts draining, so
-	// once publication is observable, a Close that does not drain has already
-	// reached its return path. Waiting on publication therefore gives a broken
-	// implementation its full opportunity to return early.
+	// Publication does NOT prove Close reached the drain: it is published while
+	// the lock is held, and a Close that skipped the drain could still be
+	// descheduled between unlocking and returning. The two checks below are
+	// therefore bounded OPPORTUNITY windows, not proofs. They are sound in the
+	// direction that matters, because a correct Close stays blocked for any
+	// window length, so a longer wait cannot make them fail spuriously.
 	testwait.For(t, 5*time.Second, sc.Closed, "Close goroutine did not publish closed=true")
 
 	if release3, ok3 := sc.BeginUse(); ok3 {
@@ -113,7 +121,7 @@ func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	select {
 	case <-closeReturned:
 		t.Fatal("Close returned with two users still in flight")
-	default:
+	case <-time.After(closeOpportunityWindow):
 	}
 
 	// Partial drain: the in-flight count drops but does not reach zero, so Close
@@ -123,7 +131,7 @@ func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	select {
 	case <-closeReturned:
 		t.Fatal("Close returned after a partial drain, with one user still in flight")
-	default:
+	case <-time.After(closeOpportunityWindow):
 	}
 
 	releaseSecond()

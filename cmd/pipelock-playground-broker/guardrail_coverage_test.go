@@ -64,11 +64,15 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 	dockerLog := filepath.Join(tmp, "docker.log")
 	dockerPath := filepath.Join(tmp, "docker")
 	dockerStub := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$DOCKER_LOG\"\n"
-	if err := os.WriteFile(dockerPath, []byte(dockerStub), 0o700); err != nil {
+	if err := os.WriteFile(dockerPath, []byte(dockerStub), 0o600); err != nil {
 		t.Fatalf("write docker stub: %v", err)
 	}
-	script := filepath.Join("..", "..", "deploy", "fly-playground", "build-images.sh")
-	cmd := exec.Command("bash", script, "--only", "vm")
+	// The temporary file has to be executable because build-images.sh resolves
+	// docker through PATH. It contains only the fixed test stub above.
+	if err := os.Chmod(dockerPath, 0o700); err != nil { // #nosec G302 -- executable test stub
+		t.Fatalf("make docker stub executable: %v", err)
+	}
+	cmd := exec.Command("bash", "../../deploy/fly-playground/build-images.sh", "--only", "vm")
 	cmd.Env = append(os.Environ(),
 		"PATH="+tmp+":"+os.Getenv("PATH"),
 		"DOCKER_LOG="+dockerLog,
@@ -80,7 +84,7 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VM-only build failed: %v\n%s", err, output)
 	}
-	logBytes, err := os.ReadFile(dockerLog)
+	logBytes, err := os.ReadFile(filepath.Clean(dockerLog))
 	if err != nil {
 		t.Fatalf("read docker log: %v", err)
 	}

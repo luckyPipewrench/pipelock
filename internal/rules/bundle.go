@@ -407,13 +407,11 @@ func NamespacedID(bundleName, ruleID string) string {
 // ErrUnverifiableVersion reports that the running build does not carry a
 // released version, so a bundle's min_pipelock requirement could not be checked
 // either way. It is deliberately distinct from a requirement that was checked
-// and genuinely not met: the runtime load path refuses both, but the operator
-// CLI can downgrade only this one to a warning, because at install time the
-// operator is present to read it. A requirement that IS met or genuinely unmet
-// never produces this error.
+// and genuinely not met: callers load and warn only for this availability case.
+// A requirement that IS met or genuinely unmet never produces this error.
 var ErrUnverifiableVersion = errors.New("check min pipelock")
 
-func CheckMinPipelock(minVersion, currentVersion string, allowUnversioned bool) error {
+func CheckMinPipelock(minVersion, currentVersion string, _ bool) error {
 	if minVersion == "" {
 		return nil
 	}
@@ -433,13 +431,10 @@ func CheckMinPipelock(minVersion, currentVersion string, allowUnversioned bool) 
 
 	if isDevelopmentCurrentVersion(effectiveVersion) {
 		// A source build carries no release stamp, so the requirement cannot
-		// be verified. Refuse by default rather than loading rules whose
-		// prerequisites are unchecked, and name the way out.
-		if allowUnversioned {
-			return nil
-		}
+		// be verified. The loader names this as a warning and keeps detection
+		// available; genuine compatibility and integrity failures still refuse.
 		return fmt.Errorf(
-			"%w: this build does not report a released version (%q), so the bundle requirement min_pipelock %q cannot be verified; install a released binary, or set rules.allow_unversioned_bundle_load: true to load it unverified",
+			"%w: this build does not report a released version (%q), so the bundle requirement min_pipelock %q cannot be verified",
 			ErrUnverifiableVersion, currentVersion, minVersion)
 	}
 	curSemver, err := parseSemverVersion(effectiveVersion)

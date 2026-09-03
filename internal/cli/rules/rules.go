@@ -40,11 +40,9 @@ var (
 
 var discoverRulesConfigPath = cliutil.DiscoverConfigPathStrict
 
-// rulesAllowUnversionedLoad reports whether the operator opted into loading
-// bundles that declare a min_pipelock requirement on a build that cannot prove
-// its version. It mirrors rulesTrustPolicy's config resolution and defaults to
-// false (refuse) when no config is readable, so an unreadable config cannot
-// silently relax the requirement.
+// rulesAllowUnversionedLoad reads the retained compatibility setting for the
+// min-version gate. Unprovable development versions now always load with a
+// warning, so the value no longer changes that outcome.
 func rulesAllowUnversionedLoad(configFile string, stderr io.Writer) bool {
 	cfg, err := loadRulesConfig(configFile, stderr)
 	if err != nil || cfg == nil {
@@ -53,21 +51,11 @@ func rulesAllowUnversionedLoad(configFile string, stderr io.Writer) bool {
 	return cfg.Rules.AllowUnversionedBundleLoad
 }
 
-// warnUnverifiableBundleVersion downgrades an unverifiable-version refusal to a
-// warning on operator-driven CLI paths. Refusing here would block install on a
-// locally built binary for any bundle that declares a minimum, and the operator
-// running the command is present to read a warning.
-//
-// The requirement is not dropped: the runtime load path refuses the same
-// bundle. Note what that refusal actually does, because it is not an abort. The
-// refusal is classed as an availability error, which strict startup tolerates,
-// so the process starts WITHOUT that bundle's rules and reports the shortfall
-// through the rule_bundle_degraded audit event, /stats, and the
-// pipelock_rule_bundles_degraded metric. Hot reload is stricter: it rejects a
-// reload whose bundle errors would drop rules that are already live.
+// warnUnverifiableBundleVersion reports an unchecked development-build gate.
+// The runtime loader makes the same warning and keeps the bundle loaded.
 func warnUnverifiableBundleVersion(w io.Writer, err error) {
 	_, _ = fmt.Fprintf(w, "warning: %v\n", err)
-	_, _ = fmt.Fprintf(w, "warning: the bundle is installed, but this build will refuse to LOAD it at runtime until rules.allow_unversioned_bundle_load is set\n")
+	_, _ = fmt.Fprintf(w, "warning: the bundle remains eligible to load at runtime, but its minimum version was not proven\n")
 }
 
 func warnTestedThroughPipelock(w io.Writer, testedThrough, currentVersion string) error {

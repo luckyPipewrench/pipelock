@@ -98,6 +98,14 @@ At startup, pipelock scans the rules directory for installed bundles. Each bundl
 
 Bundle rules cannot override or disable built-in patterns. They are additive only.
 
+### Version-gate outcomes
+
+| Bundle check | Outcome |
+|---|---|
+| The running build version cannot be proven against `min_pipelock` | Warn and load the bundle. |
+| A released running version is below `min_pipelock` | Refuse the bundle. |
+| The bundle format is incompatible | Refuse the bundle. |
+
 ## Configuration
 
 ```yaml

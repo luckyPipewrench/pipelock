@@ -12,10 +12,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// The refusal message tells the operator to set allow_unversioned_bundle_load.
-// The RUNTIME merge path has to honour it, or that advice is a dead end: the
-// operator changes the config, nothing changes, and the knob reads as broken.
-func TestMergeIntoConfigHonoursUnversionedOverride(t *testing.T) {
+func TestMergeIntoConfigUnprovableVersionWarnsAndLoadsAcrossReloads(t *testing.T) {
 	rulesDir := t.TempDir()
 	writeMinVersionBundle(t, rulesDir)
 
@@ -23,24 +20,42 @@ func TestMergeIntoConfigHonoursUnversionedOverride(t *testing.T) {
 	cfg.Rules.RulesDir = rulesDir
 	cfg.Rules.TrustEmbeddedKeys = true
 
-	// A version that cannot be proven is the condition the override exists for.
 	const unprovable = "0.0.0-dev.unknown"
 
-	refused := MergeIntoConfig(cfg, unprovable)
-	if len(refused.Errors) == 0 {
-		t.Fatal("expected the min_pipelock refusal without the override; got none, so this test cannot prove the override does anything")
-	}
-	if !strings.Contains(strings.Join(errorStrings(refused), " "), "min_pipelock") {
-		t.Fatalf("refusal was not the version gate: %v", errorStrings(refused))
+	tests := []struct {
+		name        string
+		version     string
+		mutate      func()
+		wantLoaded  bool
+		wantWarning bool
+	}{
+		{name: "first load", version: unprovable, wantLoaded: true, wantWarning: true},
+		{name: "first reload", version: unprovable, wantLoaded: true, wantWarning: true},
+		{name: "unrelated reload", version: unprovable, mutate: func() { cfg.KillSwitch.APIToken = "rotated-token" }, wantLoaded: true, wantWarning: true},
+		{name: "released binary below minimum", version: "0.0.0", wantLoaded: false},
 	}
 
-	cfg.Rules.AllowUnversionedBundleLoad = true
-	allowed := MergeIntoConfig(cfg, unprovable)
-	if len(allowed.Errors) != 0 {
-		t.Fatalf("override set but the runtime still refused: %v", errorStrings(allowed))
-	}
-	if len(allowed.Loaded) == 0 {
-		t.Fatal("override set and no error, but no bundle loaded")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.mutate != nil {
+				tc.mutate()
+			}
+			result := MergeIntoConfig(cfg, tc.version)
+			if got := len(result.Loaded) > 0; got != tc.wantLoaded {
+				t.Fatalf("loaded = %v, errors = %v, want loaded = %v", got, errorStrings(result), tc.wantLoaded)
+			}
+			if got := len(result.Warnings) > 0; got != tc.wantWarning {
+				t.Fatalf("warnings = %v, want warning = %v", result.Warnings, tc.wantWarning)
+			}
+			if tc.wantWarning {
+				warning := strings.Join(result.Warnings, " ")
+				for _, want := range []string{"minver", "0.1.0", unprovable} {
+					if !strings.Contains(warning, want) {
+						t.Errorf("warning = %q, want %q", warning, want)
+					}
+				}
+			}
+		})
 	}
 }
 

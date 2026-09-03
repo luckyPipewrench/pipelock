@@ -800,22 +800,18 @@ func TestCheckMinPipelock(t *testing.T) {
 		{"prerelease numeric ordering below", "1.3.0-beta.10", "1.3.0-beta.2", true},
 		{"prerelease numeric ordering above", "1.3.0-beta.2", "1.3.0-beta.10", false},
 		// A non-semver CURRENT version is a development build (git describe,
-		// go install from source, unset) with no orderable release number, so
-		// the bundle's requirement CANNOT be verified. These now REFUSE by
-		// default: a source build silently satisfying any min_pipelock meant
-		// the requirement went unenforced on the primary documented install
-		// path (go install), which stamps no version. The operator opts back
-		// in with rules.allow_unversioned_bundle_load -- see
-		// TestCheckMinPipelock_UnversionedOverride.
-		{"git-describe current refused", "3.0.0", "2-147-gf1c242a0", true},
-		{"tag-distance git-describe current refused", "3.0.0", "2.0.0-147-gf1c242a0", true},
-		{"unknown source-build current refused", "3.0.0", "0.0.0-dev.unknown", true},
-		{"dirty unknown source-build current refused", "3.0.0", "0.0.0-dev.unknown.dirty", true},
-		{"detailed source-build current refused", "3.0.0", "0.0.0-dev.20260721.g680cd0614d2e", true},
-		{"dirty source-build current refused", "3.0.0", "0.0.0-dev.20260721.g680cd0614d2e.dirty", true},
-		{"unknown-date source-build current refused", "3.0.0", "0.0.0-dev.unknown-date.g680cd0614d2e", true},
-		{"go-install devel current refused", "3.0.0", "devel", true},
-		{"empty current refused", "3.0.0", "", true},
+		// source build, unset) with no orderable release number. CheckMinPipelock
+		// returns ErrUnverifiableVersion for the loader to warn and load; it does
+		// not turn that unknown into a successful semantic comparison.
+		{"git-describe current signals warning", "3.0.0", "2-147-gf1c242a0", true},
+		{"tag-distance git-describe current signals warning", "3.0.0", "2.0.0-147-gf1c242a0", true},
+		{"unknown source-build current signals warning", "3.0.0", "0.0.0-dev.unknown", true},
+		{"dirty unknown source-build current signals warning", "3.0.0", "0.0.0-dev.unknown.dirty", true},
+		{"detailed source-build current signals warning", "3.0.0", "0.0.0-dev.20260721.g680cd0614d2e", true},
+		{"dirty source-build current signals warning", "3.0.0", "0.0.0-dev.20260721.g680cd0614d2e.dirty", true},
+		{"unknown-date source-build current signals warning", "3.0.0", "0.0.0-dev.unknown-date.g680cd0614d2e", true},
+		{"go-install devel current signals warning", "3.0.0", "devel", true},
+		{"empty current signals warning", "3.0.0", "", true},
 
 		// A git-describe --dirty build AT AN EXACT TAG reports <tag>-dirty.
 		// Semver orders a prerelease below its release, so before the marker
@@ -853,7 +849,7 @@ func TestCheckMinPipelock_InvalidVersions(t *testing.T) {
 		// version that is NOT a recognized development build (git-describe, -dev,
 		// devel, unset) now also fails closed: a mis-stamped binary must not be
 		// treated as newest and silently load bundles requiring a newer Pipelock.
-		// Recognized dev builds still pass — see TestCheckMinPipelock.
+		// Recognized dev builds return the separate unverifiable signal — see TestCheckMinPipelock.
 		{"invalid min", "abc", "1.3.0"},
 		{"both invalid falls to min", "abc", "def"},
 		{"malformed current fails closed", "1.3.0", "abc"},
@@ -1417,14 +1413,11 @@ func TestParseBundle_ValidationRejectsMissingRequiredFields(t *testing.T) {
 	}
 }
 
-// TestCheckMinPipelock_UnversionedOverride covers the operator escape hatch.
-// A build that cannot prove its version refuses a bundle carrying a
-// min_pipelock requirement, because the requirement cannot be checked; setting
-// rules.allow_unversioned_bundle_load loads it anyway. The override must not
-// leak into any other decision: a build that DOES report a release still gets
-// a real comparison, so it cannot be used to load a bundle the running release
-// genuinely does not satisfy.
-func TestCheckMinPipelock_UnversionedOverride(t *testing.T) {
+// TestCheckMinPipelock_UnversionedCompatibilitySetting does not allow the
+// retained setting to suppress the warning signal. The loader consumes only
+// ErrUnverifiableVersion as its warn-and-load case; a released build below the
+// gate and a malformed version remain refusals.
+func TestCheckMinPipelock_UnversionedCompatibilitySetting(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1434,12 +1427,12 @@ func TestCheckMinPipelock_UnversionedOverride(t *testing.T) {
 		allow      bool
 		wantErr    bool
 	}{
-		{"source build refused by default", "3.0.0", "0.0.0-dev.unknown", false, true},
-		{"source build allowed with override", "3.0.0", "0.0.0-dev.unknown", true, false},
-		{"devel refused by default", "3.0.0", "devel", false, true},
-		{"devel allowed with override", "3.0.0", "devel", true, false},
-		{"unset refused by default", "3.0.0", "", false, true},
-		{"unset allowed with override", "3.0.0", "", true, false},
+		{"source build reports warning signal", "3.0.0", "0.0.0-dev.unknown", false, true},
+		{"source build setting cannot suppress warning signal", "3.0.0", "0.0.0-dev.unknown", true, true},
+		{"devel reports warning signal", "3.0.0", "devel", false, true},
+		{"devel setting cannot suppress warning signal", "3.0.0", "devel", true, true},
+		{"unset reports warning signal", "3.0.0", "", false, true},
+		{"unset setting cannot suppress warning signal", "3.0.0", "", true, true},
 
 		// The override only covers the unprovable-version case.
 		{"real release below min still refused with override", "3.0.0", "2.9.0", true, true},
@@ -1461,16 +1454,16 @@ func TestCheckMinPipelock_UnversionedOverride(t *testing.T) {
 	}
 }
 
-// TestCheckMinPipelock_RefusalNamesTheOverride keeps the refusal actionable. An
-// operator who hits this needs to learn the way out from the error itself.
-func TestCheckMinPipelock_RefusalNamesTheOverride(t *testing.T) {
+// TestCheckMinPipelock_UnverifiableVersionNamesTheGate keeps the warning
+// signal actionable for the loader and CLI.
+func TestCheckMinPipelock_UnverifiableVersionNamesTheGate(t *testing.T) {
 	t.Parallel()
 
 	err := CheckMinPipelock("3.0.0", "0.0.0-dev.unknown", false)
 	if err == nil {
-		t.Fatal("expected a refusal for an unprovable version")
+		t.Fatal("expected an unverifiable-version signal")
 	}
-	for _, want := range []string{"allow_unversioned_bundle_load", "3.0.0"} {
+	for _, want := range []string{"released version", "3.0.0"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not mention %q: %v", want, err)
 		}

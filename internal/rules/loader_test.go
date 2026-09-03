@@ -850,6 +850,97 @@ func TestLoadBundles_MinPipelockTooHigh(t *testing.T) {
 	}
 }
 
+func TestLoadBundles_RefusesCheckedCompatibilityAndIntegrityFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		write func(t *testing.T, dir string)
+		want  string
+	}{
+		{
+			name: "released version below minimum",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				bundle := testBundle("below-minimum", []Rule{testDLPRule("below-minimum-001", confidenceHigh, StatusStable)})
+				bundle.MinPipelock = "9.0.0"
+				bundleDir := filepath.Join(dir, bundle.Name)
+				if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				writeUnsignedBundle(t, bundleDir, bundle)
+			},
+			want: "below minimum",
+		},
+		{
+			name: "incompatible format",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				bundle := testBundle("unsupported-format", []Rule{testDLPRule("unsupported-format-001", confidenceHigh, StatusStable)})
+				bundle.FormatVersion = 3
+				bundleDir := filepath.Join(dir, bundle.Name)
+				if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				writeUnsignedBundle(t, bundleDir, bundle)
+			},
+			want: "format_version must be 1-2",
+		},
+		{
+			name: "signature failure",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				pub, priv, err := ed25519.GenerateKey(nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bundle := testBundle("bad-signature", []Rule{testDLPRule("bad-signature-001", confidenceHigh, StatusStable)})
+				bundleDir := filepath.Join(dir, bundle.Name)
+				if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				writeSignedBundle(t, bundleDir, bundle, pub, priv)
+				if err := os.WriteFile(filepath.Join(bundleDir, bundleFilename), []byte("changed"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "integrity check",
+		},
+		{
+			name: "malformed manifest",
+			write: func(t *testing.T, dir string) {
+				t.Helper()
+				bundleDir := filepath.Join(dir, "malformed-manifest")
+				if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				data := []byte("format_version: 1\n")
+				if err := os.WriteFile(filepath.Join(bundleDir, bundleFilename), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				hash := sha256.Sum256(data)
+				if err := WriteLockFile(filepath.Join(bundleDir, lockFilename), &LockFile{BundleSHA256: hex.EncodeToString(hash[:]), Unsigned: true}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "parse error",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.write(t, dir)
+
+			result := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: testPipelockVersion})
+			if len(result.Loaded) != 0 {
+				t.Fatalf("loaded = %v, want no bundle loaded", result.Loaded)
+			}
+			if len(result.Errors) != 1 || !strings.Contains(result.Errors[0].Reason, tc.want) {
+				t.Fatalf("errors = %v, want refusal containing %q", result.Errors, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadBundles_TestedThroughPipelockWarning(t *testing.T) {
 	t.Parallel()
 

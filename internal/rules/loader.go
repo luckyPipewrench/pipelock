@@ -392,10 +392,17 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	}
 	bundleWarnings := make([]string, 0, 1)
 
-	// Check min_pipelock version requirement.
+	// Check min_pipelock version requirement. An unprovable development version
+	// is an availability warning: keep the bundle's detection rules loaded, but
+	// make the unchecked gate visible. All checked compatibility failures refuse.
 	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion, opts.AllowUnversionedLoad); err != nil {
-		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassAvailability})
-		return
+		if !errors.Is(err, ErrUnverifiableVersion) {
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassAvailability})
+			return
+		}
+		bundleWarnings = append(bundleWarnings, fmt.Sprintf(
+			"bundle %q loaded although min_pipelock %q could not be verified: running version %q is not a released version",
+			bundle.Name, bundle.MinPipelock, opts.PipelockVersion))
 	}
 	if warning, err := TestedThroughPipelockWarning(bundle.TestedThroughPipelock, opts.PipelockVersion); err != nil {
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassIntegrity})

@@ -233,9 +233,7 @@ func TestCheckRules_ValidBundle(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules.RulesDir = rulesDir
 	// The bundle declares a min_pipelock, and a test binary carries no release
-	// stamp, so without this the gate refuses and this test would be measuring
-	// the version gate instead of bundle validity. The refusal itself is pinned
-	// by TestCheckRules_UnverifiableVersionReportsFailure below.
+	// stamp. The retained setting must not alter the warn-and-load outcome.
 	cfg.Rules.AllowUnversionedBundleLoad = true
 
 	result := checkRules("", "", cfg)

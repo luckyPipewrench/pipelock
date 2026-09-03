@@ -1351,16 +1351,16 @@ func TestLoadRulesConfig_ExplicitPathError(t *testing.T) {
 	}
 }
 
-func TestRulesAllowUnversionedLoadFailsClosed(t *testing.T) {
+func TestRulesAllowUnversionedLoadReadsCompatibilitySetting(t *testing.T) {
 	t.Setenv("PIPELOCK_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", t.TempDir())
 
 	if rulesAllowUnversionedLoad("/nonexistent/pipelock.yaml", io.Discard) {
-		t.Fatal("unreadable explicit config must not allow unversioned bundle load")
+		t.Fatal("unreadable explicit config must preserve the false compatibility value")
 	}
 	if rulesAllowUnversionedLoad("", io.Discard) {
-		t.Fatal("missing config must not allow unversioned bundle load")
+		t.Fatal("missing config must preserve the false compatibility value")
 	}
 
 	dir := t.TempDir()
@@ -1369,7 +1369,7 @@ func TestRulesAllowUnversionedLoadFailsClosed(t *testing.T) {
 		t.Fatalf("writing config: %v", err)
 	}
 	if !rulesAllowUnversionedLoad(cfgPath, io.Discard) {
-		t.Fatal("explicit true config should allow unversioned bundle load")
+		t.Fatal("explicit true config should preserve the accepted compatibility value")
 	}
 }
 

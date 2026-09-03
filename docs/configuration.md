@@ -2555,7 +2555,7 @@ rules:
   include_experimental: false     # only load stable rules by default
   allow_degraded: false           # emergency strict-mode degraded startup/reload override
   trust_embedded_keys: true       # trust the compiled official rules keyring
-  allow_unversioned_bundle_load: false  # load min_pipelock bundles on a build with no released version
+  allow_unversioned_bundle_load: false  # retained for configuration compatibility
   trusted_keys:                   # additional signing keys (beyond embedded keyring)
     - name: "vendor-security"
       public_key: "64-char-hex-encoded-ed25519-public-key"
@@ -2567,7 +2567,7 @@ rules:
 | `min_confidence` | `""` (all) | Skip rules below this confidence level |
 | `include_experimental` | `false` | Include experimental rules from bundles |
 | `allow_degraded` | `false` | Explicit emergency override that lets strict mode start or reload with degraded rule-bundle integrity/coverage after emitting warnings and audit events |
-| `allow_unversioned_bundle_load` | `false` | Lets a build that does not report a released version load bundles that declare a `min_pipelock` requirement. An unstamped source build made directly with `go build` has no released version, so the requirement cannot be checked. The runtime **refuses to load** such a bundle by default; `pipelock rules install` still installs it but prints a warning, since an operator is present there to read it and the runtime remains the enforcement point. Set this to load it unverified at runtime. Bundles that declare no `min_pipelock` are unaffected either way |
+| `allow_unversioned_bundle_load` | `false` | Retained for configuration compatibility. A build that cannot prove its released version loads a bundle with `min_pipelock` and emits a warning regardless of this value. |
 | `trust_embedded_keys` | `true` | Trust the compiled official rules keyring. Set to `false` for private-root-only deployments that trust only `trusted_keys`; unsigned local bundles are rejected in this mode. |
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
 

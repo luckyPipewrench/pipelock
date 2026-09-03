@@ -39,7 +39,7 @@ func Load(path string) (*Config, error) {
 // from the current working directory because there is no on-disk config path.
 func LoadBytes(data []byte) (*Config, error) {
 	copied := append([]byte(nil), data...)
-	return loadBytes(copied, "<memory>", ".", loadOptions{resolveLicense: true})
+	return loadBytesAt(copied, "<memory>", ".", loadOptions{resolveLicense: true}, time.Time{})
 }
 
 // LoadPolicyBundleBytes parses, defaults, and validates a signed policy-bundle
@@ -49,11 +49,11 @@ func LoadBytes(data []byte) (*Config, error) {
 // environment, or filesystem.
 func LoadPolicyBundleBytes(data []byte) (*Config, error) {
 	copied := append([]byte(nil), data...)
-	return loadBytes(copied, "<policy-bundle>", ".", loadOptions{
+	return loadBytesAt(copied, "<policy-bundle>", ".", loadOptions{
 		resolveLicense:             false,
 		skipRuntimePathResolution:  true,
 		fullValidateWithoutLicense: true,
-	})
+	}, time.Time{})
 }
 
 // LoadForRules reads config for rules subcommands. It preserves strict YAML
@@ -79,6 +79,7 @@ func LoadForInspection(path string) (*Config, error) {
 
 func load(path string, opts loadOptions) (*Config, error) {
 	var data []byte
+	var configModifiedAt time.Time
 	var err error
 	if path == "-" {
 		data, err = io.ReadAll(os.Stdin)
@@ -86,7 +87,7 @@ func load(path string, opts loadOptions) (*Config, error) {
 			return nil, fmt.Errorf("reading config from stdin: %w", err)
 		}
 	} else {
-		data, err = readStableRegularFile(filepath.Clean(path))
+		data, configModifiedAt, err = readStableRegularFile(filepath.Clean(path))
 		if err != nil {
 			return nil, fmt.Errorf("reading config %s: %w", path, err)
 		}
@@ -95,10 +96,14 @@ func load(path string, opts loadOptions) (*Config, error) {
 	if path != "-" {
 		configDir = filepath.Dir(path)
 	}
-	return loadBytes(data, path, configDir, opts)
+	return loadBytesAt(data, path, configDir, opts, configModifiedAt)
 }
 
 func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Config, error) {
+	return loadBytesAt(data, sourceName, configDir, opts, time.Time{})
+}
+
+func loadBytesAt(data []byte, sourceName, configDir string, opts loadOptions, configModifiedAt time.Time) (*Config, error) {
 	cfg := &Config{}
 	// Strict parse: reject unknown top-level and nested fields so typos like
 	// `sentinel_path` (should be `sentinel_file`) or `escalation_threshold`
@@ -135,6 +140,9 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	applySecurityDefaults(data, cfg)
 
 	cfg.ApplyDefaults()
+	if err := cfg.resolveBestEffortExpiry(configModifiedAt); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 
 	if opts.resolveLicense {
 		// Resolve license key from multiple sources. Priority:
@@ -247,6 +255,25 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	return cfg, nil
 }
 
+// resolveBestEffortExpiry turns a config-relative best-effort duration into a
+// fixed admission deadline. The source file's stable modification time is the
+// authorization event, so restarting a process cannot renew an unchanged
+// configuration. An operator re-authorizes by updating the config.
+func (c *Config) resolveBestEffortExpiry(configModifiedAt time.Time) error {
+	if !c.Sandbox.BestEffort {
+		return nil
+	}
+	duration, err := time.ParseDuration(c.Sandbox.BestEffortExpiry)
+	if err != nil || duration <= 0 {
+		return nil
+	}
+	if configModifiedAt.IsZero() {
+		return errors.New("sandbox: best_effort_expiry duration requires a file-backed config; use RFC3339 for stdin or in-memory config")
+	}
+	c.Sandbox.BestEffortExpiry = configModifiedAt.Add(duration).UTC().Format(time.RFC3339Nano)
+	return nil
+}
+
 // clarifyRemovedDoWField turns yaml.v3's generic unknown-field error into an
 // actionable migration error for limits that were removed because the runtime
 // never enforced them.
@@ -280,32 +307,32 @@ func (c *Config) validateForRules() error {
 	return nil
 }
 
-func readStableRegularFile(path string) ([]byte, error) {
+func readStableRegularFile(path string) ([]byte, time.Time, error) {
 	path = filepath.Clean(path)
 	before, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	if !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("not a regular file")
+		return nil, time.Time{}, fmt.Errorf("not a regular file")
 	}
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	after, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	if !after.Mode().IsRegular() {
-		return nil, fmt.Errorf("not a regular file after read")
+		return nil, time.Time{}, fmt.Errorf("not a regular file after read")
 	}
 	if before.Size() != after.Size() ||
 		!before.ModTime().Equal(after.ModTime()) ||
 		before.Mode().Perm() != after.Mode().Perm() {
-		return nil, fmt.Errorf("file changed while reading; retrying on next reload event")
+		return nil, time.Time{}, fmt.Errorf("file changed while reading; retrying on next reload event")
 	}
-	return data, nil
+	return data, after.ModTime(), nil
 }
 
 // resolveLicenseIntermediate populates LicenseIntermediateCert from

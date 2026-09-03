@@ -13161,6 +13161,52 @@ func TestValidate_SandboxBestEffortRejectsExpiredExpiry(t *testing.T) {
 	}
 }
 
+func TestLoad_SandboxBestEffortRelativeExpiryAnchorsToConfigModification(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	configBody := []byte("sandbox:\n  best_effort: true\n  best_effort_reason: test override\n  best_effort_expiry: 1h\n")
+	if err := os.WriteFile(configPath, configBody, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	modifiedAt := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	if err := os.Chtimes(configPath, modifiedAt, modifiedAt); err != nil {
+		t.Fatalf("set config modification time: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, cfg.Sandbox.BestEffortExpiry)
+	if err != nil {
+		t.Fatalf("resolved expiry %q: %v", cfg.Sandbox.BestEffortExpiry, err)
+	}
+	if want := modifiedAt.Add(time.Hour); !expiresAt.Equal(want) {
+		t.Fatalf("resolved expiry = %s, want config modification time + duration = %s", expiresAt, want)
+	}
+
+	expiredModification := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Hour)
+	if err := os.Chtimes(configPath, expiredModification, expiredModification); err != nil {
+		t.Fatalf("set expired config modification time: %v", err)
+	}
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "has expired") {
+		t.Fatalf("Load() error = %v, want expiry refusal", err)
+	}
+}
+
+func TestLoadBytes_SandboxBestEffortRelativeExpiryRequiresFileBackedConfig(t *testing.T) {
+	_, err := LoadBytes([]byte("sandbox:\n  best_effort: true\n  best_effort_reason: test override\n  best_effort_expiry: 1h\n"))
+	if err == nil || !strings.Contains(err.Error(), "requires a file-backed config") {
+		t.Fatalf("LoadBytes() error = %v, want relative-expiry source refusal", err)
+	}
+}
+
+func TestLoadBytes_SandboxBestEffortRejectsExpiredRelativeExpiry(t *testing.T) {
+	_, err := LoadBytes([]byte("sandbox:\n  best_effort: true\n  best_effort_reason: test override\n  best_effort_expiry: 0s\n"))
+	if err == nil || !strings.Contains(err.Error(), "has expired") {
+		t.Fatalf("LoadBytes() error = %v, want expired override refusal", err)
+	}
+}
+
 func TestValidateReload_SandboxBestEffortMetadataChanged(t *testing.T) {
 	old := Defaults()
 	old.Sandbox.BestEffortReason = "old reason"

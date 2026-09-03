@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -122,6 +123,58 @@ func TestSandboxCmdDryRunRejectsInvalidBestEffortOverride(t *testing.T) {
 		if bytes.Contains(out.Bytes(), []byte("CAPABILITIES_OK")) {
 			t.Fatalf("SandboxCmd(%v) reported launchable capabilities: %s", args, out.String())
 		}
+	}
+}
+
+func TestSandboxCmdRejectsMixedBestEffortProvenance(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		config   string
+		flagArgs []string
+	}{
+		{
+			name:     "command line override with configuration expiry",
+			config:   "sandbox:\n  best_effort: false\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			flagArgs: []string{"--best-effort", "--best-effort-reason", "command line reason"},
+		},
+		{
+			name:     "command line override with configuration reason",
+			config:   "sandbox:\n  best_effort: false\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			flagArgs: []string{"--best-effort", "--best-effort-expiry", "1h"},
+		},
+		{
+			name:     "configuration override with command line reason",
+			config:   "sandbox:\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			flagArgs: []string{"--best-effort-reason", "command line reason"},
+		},
+		{
+			name:     "configuration override with command line expiry",
+			config:   "sandbox:\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			flagArgs: []string{"--best-effort-expiry", "1h"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(configPath, []byte(tt.config), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cmd := SandboxCmd()
+			cmd.SilenceUsage = true
+			args := append([]string{"--dry-run", "--config", configPath}, tt.flagArgs...)
+			args = append(args, "--", "echo", "ok")
+			cmd.SetArgs(args)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "command-line") || !strings.Contains(err.Error(), "configuration") {
+				t.Fatalf("SandboxCmd(%v) error = %v, want command-line/configuration refusal", args, err)
+			}
+			if bytes.Contains(out.Bytes(), []byte("CAPABILITIES_OK")) {
+				t.Fatalf("SandboxCmd(%v) reported launchable capabilities: %s", args, out.String())
+			}
+		})
 	}
 }
 

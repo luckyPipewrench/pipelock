@@ -243,6 +243,7 @@ func TestAppliedLaunchOutcome(t *testing.T) {
 		{name: "full", landlock: activeLandlock, seccomp: activeSeccomp, seccompSupported: true, want: LaunchOutcomeFull},
 		{name: "arm64 partial", landlock: activeLandlock, seccomp: inactiveSeccomp, want: LaunchOutcomePartial},
 		{name: "network advisory override", noNetNS: true, landlock: activeLandlock, seccomp: activeSeccomp, seccompSupported: true, want: LaunchOutcomeAdvisoryOverride},
+		{name: "network advisory override and seccomp partial", noNetNS: true, landlock: activeLandlock, seccomp: inactiveSeccomp, want: LaunchOutcomeAdvisoryOverridePartial},
 		{name: "missing landlock refuses", landlock: inactiveLandlock, seccomp: activeSeccomp, seccompSupported: true, want: LaunchOutcomeRefused, wantErr: true},
 		{name: "unexpected seccomp failure refuses", landlock: activeLandlock, seccomp: inactiveSeccomp, seccompSupported: true, want: LaunchOutcomeRefused, wantErr: true},
 		{name: "strict arm64 refuses", strict: true, landlock: activeLandlock, seccomp: inactiveSeccomp, want: LaunchOutcomeRefused, wantErr: true},
@@ -268,6 +269,7 @@ func TestReportAppliedLaunchOutcome(t *testing.T) {
 		{name: "full", outcome: LaunchOutcomeFull, want: []string{"FULL", "Landlock + seccomp + network namespace applied"}},
 		{name: "partial", outcome: LaunchOutcomePartial, want: []string{"PARTIAL", "seccomp filter unavailable in this build"}},
 		{name: "advisory override", outcome: LaunchOutcomeAdvisoryOverride, want: []string{"ADVISORY-OVERRIDE", "direct egress may bypass Pipelock"}},
+		{name: "advisory override and partial", outcome: LaunchOutcomeAdvisoryOverridePartial, want: []string{"ADVISORY-OVERRIDE (network) + PARTIAL", "seccomp unavailable", "direct egress may bypass Pipelock"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer

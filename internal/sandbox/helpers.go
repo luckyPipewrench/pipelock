@@ -41,10 +41,11 @@ const sandboxReadinessFDEnv = "__PIPELOCK_SANDBOX_READINESS_FD"
 type AppliedLaunchOutcome string
 
 const (
-	LaunchOutcomeFull             AppliedLaunchOutcome = "full"
-	LaunchOutcomePartial          AppliedLaunchOutcome = "partial"
-	LaunchOutcomeAdvisoryOverride AppliedLaunchOutcome = "advisory_override"
-	LaunchOutcomeRefused          AppliedLaunchOutcome = "refused"
+	LaunchOutcomeFull                    AppliedLaunchOutcome = "full"
+	LaunchOutcomePartial                 AppliedLaunchOutcome = "partial"
+	LaunchOutcomeAdvisoryOverride        AppliedLaunchOutcome = "advisory_override"
+	LaunchOutcomeAdvisoryOverridePartial AppliedLaunchOutcome = "advisory_override_partial"
+	LaunchOutcomeRefused                 AppliedLaunchOutcome = "refused"
 )
 
 // IsStrictMode returns true if the child process should enforce strict
@@ -138,6 +139,9 @@ func appliedLaunchOutcome(strict, noNetNS, seccompSupported bool, landlock, secc
 		return LaunchOutcomeRefused, fmt.Errorf("strict mode requires a network namespace")
 	}
 	if noNetNS {
+		if !seccomp.Active {
+			return LaunchOutcomeAdvisoryOverridePartial, nil
+		}
 		return LaunchOutcomeAdvisoryOverride, nil
 	}
 	if !seccomp.Active {
@@ -154,6 +158,8 @@ func reportAppliedLaunchOutcome(w io.Writer, outcome AppliedLaunchOutcome) {
 		_, _ = fmt.Fprintln(w, "[sandbox] launch outcome: PARTIAL (Landlock + network namespace applied; seccomp filter unavailable in this build)")
 	case LaunchOutcomeAdvisoryOverride:
 		_, _ = fmt.Fprintln(w, "[sandbox] launch outcome: ADVISORY-OVERRIDE (no network namespace; direct egress may bypass Pipelock)")
+	case LaunchOutcomeAdvisoryOverridePartial:
+		_, _ = fmt.Fprintln(w, "[sandbox] launch outcome: ADVISORY-OVERRIDE (network) + PARTIAL (seccomp unavailable in this build; direct egress may bypass Pipelock)")
 	}
 }
 

@@ -8,7 +8,7 @@
 |---|---|
 | `full` | Landlock, seccomp, and the network namespace applied. |
 | `partial` | Landlock and the network namespace applied, but the build has no seccomp filter. This is the labelled `linux/arm64` state; it is not full containment. |
-| `advisory-override` | An authorized `--best-effort` launch ran without a network namespace. Direct egress may bypass Pipelock. |
+| `advisory-override` | An authorized `--best-effort` launch ran without a network namespace. Direct egress may bypass Pipelock. If seccomp is also unavailable, the status line reports both `ADVISORY-OVERRIDE (network)` and `PARTIAL (seccomp unavailable)` together. |
 | `refused` | The child did not apply a required layer, so the target does not start. |
 
 Landlock is mandatory for the normal Linux sandbox. A host that cannot apply it refuses the launch because the process would otherwise retain access to host files the sandbox claims to fence off. Use host-level `pipelock contain` when that is the deployment boundary available on an older kernel.
@@ -25,6 +25,6 @@ pipelock sandbox --best-effort \
   --best-effort-expiry 30m -- python agent.py
 ```
 
-`--best-effort-expiry` accepts a duration or an RFC3339 timestamp. An expired override refuses the launch. The status line explicitly warns that direct egress may bypass Pipelock; proxy environment variables still scan cooperative HTTP clients but are not a kernel network boundary.
+`--best-effort-expiry` accepts a duration or an RFC3339 timestamp. It bounds launch admission only: an expired override refuses that launch, it never stops an already running child, and every later launch must be re-authorized. For file-backed YAML, a duration starts at the config file's modification time, so restarting with an unchanged config cannot renew it; update the config to authorize a later launch. Stdin and in-memory config have no stable modification time, so they require RFC3339. Keep the override and both authorization fields in one source: all three command-line flags, or all three YAML fields. The status line explicitly warns that direct egress may bypass Pipelock; proxy environment variables still scan cooperative HTTP clients but are not a kernel network boundary.
 
 The MCP subprocess equivalent is `--sandbox-best-effort`, `--sandbox-best-effort-reason`, and `--sandbox-best-effort-expiry`.

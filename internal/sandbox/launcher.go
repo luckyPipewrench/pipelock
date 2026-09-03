@@ -44,8 +44,9 @@ type LaunchConfig struct {
 	// applied, and seccomp where the build contains a filter, which is
 	// linux/amd64 only. Mutually exclusive with Strict.
 	BestEffort bool
-	// BestEffortReason and BestEffortExpiry authorize a temporary advisory
-	// network override. They are required when BestEffort is true.
+	// BestEffortReason and BestEffortExpiry authorize an advisory network
+	// override at launch admission. Expiry never terminates a running child;
+	// each later launch needs a fresh authorization.
 	BestEffortReason string
 	BestEffortExpiry string
 

@@ -87,19 +87,23 @@ Examples:
 			workspace, _ = filepath.Abs(workspace)
 
 			useStrict := strict || cfg.Sandbox.Strict
-			useBestEffort := bestEffort || cfg.Sandbox.BestEffort
-			useBestEffortReason := bestEffortReason
-			if useBestEffortReason == "" {
-				useBestEffortReason = cfg.Sandbox.BestEffortReason
-			}
-			useBestEffortExpiry := bestEffortExpiry
-			if useBestEffortExpiry == "" {
-				useBestEffortExpiry = cfg.Sandbox.BestEffortExpiry
-			}
-
-			if useStrict && useBestEffort {
+			if useStrict && (bestEffort || cfg.Sandbox.BestEffort) {
 				return errors.New("--strict and --best-effort are mutually exclusive")
 			}
+			useBestEffort, useBestEffortReason, useBestEffortExpiry, err := resolveBestEffortOverride(
+				bestEffort,
+				bestEffortReason,
+				bestEffortExpiry,
+				cmd.Flags().Changed("best-effort-reason"),
+				cmd.Flags().Changed("best-effort-expiry"),
+				cfg.Sandbox.BestEffort,
+				cfg.Sandbox.BestEffortReason,
+				cfg.Sandbox.BestEffortExpiry,
+			)
+			if err != nil {
+				return err
+			}
+
 			if useBestEffort {
 				if _, err := sandbox.ValidateBestEffortOverride(useBestEffortReason, useBestEffortExpiry); err != nil {
 					return err
@@ -210,6 +214,9 @@ Examples:
 				p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
 				launchCfg.Policy = &p
 			}
+			if useBestEffort {
+				reportBestEffortAdmission(cmd.ErrOrStderr())
+			}
 
 			return sandbox.LaunchStandalone(launchCfg)
 		},
@@ -219,8 +226,8 @@ Examples:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().BoolVar(&strict, "strict", false, "strict mode: error if any containment layer is unavailable, mount private /dev/shm, block clone3")
 	cmd.Flags().BoolVar(&bestEffort, "best-effort", false, "degrade gracefully when namespace isolation is unavailable (e.g. inside containers)")
-	cmd.Flags().StringVar(&bestEffortReason, "best-effort-reason", "", "required reason for the temporary best-effort network override")
-	cmd.Flags().StringVar(&bestEffortExpiry, "best-effort-expiry", "", "required duration or RFC3339 expiry for the best-effort network override")
+	cmd.Flags().StringVar(&bestEffortReason, "best-effort-reason", "", "reason for a command-line best-effort override (must be supplied with --best-effort)")
+	cmd.Flags().StringVar(&bestEffortExpiry, "best-effort-expiry", "", "admission-time duration or RFC3339 expiry for a command-line best-effort override; does not stop a running child; later launches require re-authorization")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to sandboxed process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "check sandbox capabilities without launching (exit 0=capabilities ok, 1=degraded, 2=error)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output dry-run result as JSON")

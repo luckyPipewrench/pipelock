@@ -183,6 +183,12 @@ func validateBestEffortOverride(reason, expiry string, now time.Time) (time.Time
 	return expiresAt, nil
 }
 
+// ValidateBestEffortOverride validates a best-effort override against the
+// current time. CLI preflight uses this before reporting a launchable posture.
+func ValidateBestEffortOverride(reason, expiry string) (time.Time, error) {
+	return validateBestEffortOverride(reason, expiry, time.Now())
+}
+
 // removeEnvKey removes all entries with the given key from an env slice.
 func removeEnvKey(env []string, key string) []string {
 	prefix := key + "="

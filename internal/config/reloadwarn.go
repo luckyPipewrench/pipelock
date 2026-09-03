@@ -1237,6 +1237,12 @@ func sandboxChanged(old, updated *Config) bool {
 	if old.Sandbox.BestEffort != updated.Sandbox.BestEffort {
 		return true
 	}
+	if old.Sandbox.BestEffortReason != updated.Sandbox.BestEffortReason {
+		return true
+	}
+	if old.Sandbox.BestEffortExpiry != updated.Sandbox.BestEffortExpiry {
+		return true
+	}
 	if old.Sandbox.Workspace != updated.Sandbox.Workspace {
 		return true
 	}

@@ -31,6 +31,11 @@ type LaunchConfig struct {
 	// no effect on macOS (sandbox-exec doesn't use namespaces).
 	BestEffort bool
 
+	// BestEffortReason and BestEffortExpiry preserve the Linux launcher API.
+	// They have no effect on macOS, where sandbox-exec does not use namespaces.
+	BestEffortReason string
+	BestEffortExpiry string
+
 	ExtraEnv         []string
 	BridgeSocketPath string // Linux-only; ignored by sandbox-exec.
 	GateTargetStart  bool   // Linux-only; no UID/GID mappings on macOS.

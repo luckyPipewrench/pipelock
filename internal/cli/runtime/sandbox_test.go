@@ -103,6 +103,28 @@ func TestSandboxCmdRejectsStrictBestEffortTogether(t *testing.T) {
 	}
 }
 
+func TestSandboxCmdDryRunRejectsInvalidBestEffortOverride(t *testing.T) {
+	for _, args := range [][]string{
+		{"--dry-run", "--best-effort", "--best-effort-expiry", "1h", "--", "echo", "ok"},
+		{"--dry-run", "--best-effort", "--best-effort-reason", "test", "--best-effort-expiry", "0s", "--", "echo", "ok"},
+	} {
+		cmd := SandboxCmd()
+		cmd.SilenceUsage = true
+		cmd.SetArgs(args)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatalf("SandboxCmd(%v) succeeded, want invalid best-effort override rejection", args)
+		}
+		if bytes.Contains(out.Bytes(), []byte("CAPABILITIES_OK")) {
+			t.Fatalf("SandboxCmd(%v) reported launchable capabilities: %s", args, out.String())
+		}
+	}
+}
+
 func TestSandboxCmdDryRunJSON(t *testing.T) {
 	t.Parallel()
 

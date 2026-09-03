@@ -13145,6 +13145,36 @@ func TestValidate_SandboxBestEffortAlone(t *testing.T) {
 	}
 }
 
+func TestValidate_SandboxBestEffortRejectsExpiredExpiry(t *testing.T) {
+	for _, expiry := range []string{"0s", "2000-01-01T00:00:00Z"} {
+		t.Run(expiry, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
+			cfg.Sandbox.BestEffort = true
+			cfg.Sandbox.BestEffortReason = "test override"
+			cfg.Sandbox.BestEffortExpiry = expiry
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "expired") {
+				t.Fatalf("Validate() error = %v, want expired override", err)
+			}
+		})
+	}
+}
+
+func TestValidateReload_SandboxBestEffortMetadataChanged(t *testing.T) {
+	old := Defaults()
+	old.Sandbox.BestEffortReason = "old reason"
+	updated := Defaults()
+	updated.Sandbox.BestEffortReason = "new reason"
+
+	for _, warning := range ValidateReload(old, updated) {
+		if warning.Field == fieldSandbox {
+			return
+		}
+	}
+	t.Fatal("expected sandbox restart warning when best_effort metadata changes")
+}
+
 func TestValidate_SandboxStrictAlone(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil

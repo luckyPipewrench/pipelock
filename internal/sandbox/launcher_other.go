@@ -15,13 +15,15 @@ import (
 // LaunchConfig configures how the sandbox launcher forks the child process.
 // On non-Linux platforms, all launcher functions return ErrUnavailable.
 type LaunchConfig struct {
-	Ctx        context.Context
-	Command    []string
-	Workspace  string
-	Policy     *Policy
-	Strict     bool
-	BestEffort bool
-	ExtraEnv   []string
+	Ctx              context.Context
+	Command          []string
+	Workspace        string
+	Policy           *Policy
+	Strict           bool
+	BestEffort       bool
+	BestEffortReason string
+	BestEffortExpiry string
+	ExtraEnv         []string
 	// BridgeSocketPath is Linux-only.
 	BridgeSocketPath string
 	// GateTargetStart is Linux-only.

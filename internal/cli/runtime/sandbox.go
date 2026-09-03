@@ -100,6 +100,11 @@ Examples:
 			if useStrict && useBestEffort {
 				return errors.New("--strict and --best-effort are mutually exclusive")
 			}
+			if useBestEffort {
+				if _, err := sandbox.ValidateBestEffortOverride(useBestEffortReason, useBestEffortExpiry); err != nil {
+					return err
+				}
+			}
 
 			// Dry-run: preflight check without launching.
 			if dryRun {

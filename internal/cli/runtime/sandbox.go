@@ -110,15 +110,52 @@ Examples:
 				}
 			}
 
+			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer cancel()
+
+			// Resolve --env flags: KEY=VALUE passes as-is, bare KEY inherits from parent.
+			var extraEnv []string
+			for _, e := range envVars {
+				key, _, hasValue := strings.Cut(e, "=")
+				if key == "" {
+					return errors.New("--env requires a non-empty variable name")
+				}
+				if sandbox.IsDangerousEnvKey(key) {
+					return fmt.Errorf("--env %s is blocked: this variable can subvert sandbox containment", key)
+				}
+				if hasValue {
+					extraEnv = append(extraEnv, e)
+				} else if val, found := os.LookupEnv(e); found {
+					extraEnv = append(extraEnv, e+"="+val)
+				}
+			}
+
+			// The launch configuration is assembled before the dry-run exit so a
+			// preflight validates the same --env flags and override fields a real
+			// launch would use; only the proxy handler is attached after the
+			// proxy exists.
+			launchCfg := sandbox.StandaloneLaunchConfig{
+				Ctx:              ctx,
+				Command:          command,
+				Workspace:        workspace,
+				Strict:           useStrict,
+				BestEffort:       useBestEffort,
+				BestEffortReason: useBestEffortReason,
+				BestEffortExpiry: useBestEffortExpiry,
+				ExtraEnv:         extraEnv,
+			}
+
+			// Merge custom filesystem policy from config into defaults.
+			if cfg.Sandbox.FS != nil {
+				p := sandbox.DefaultPolicy(workspace)
+				p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
+				p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
+				launchCfg.Policy = &p
+			}
+
 			// Dry-run: preflight check without launching.
 			if dryRun {
-				result := sandbox.Preflight(workspace, command, nil, useStrict)
-				if cfg.Sandbox.FS != nil {
-					p := sandbox.DefaultPolicy(workspace)
-					p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
-					p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
-					result = sandbox.Preflight(workspace, command, &p, useStrict)
-				}
+				result := sandbox.Preflight(workspace, command, launchCfg.Policy, useStrict)
 				if jsonOutput {
 					if err := printJSON(cmd.OutOrStdout(), result); err != nil {
 						return err
@@ -159,9 +196,6 @@ Examples:
 				"pipelock: launching sandboxed process %v (workspace=%s, mode=%s)\n",
 				command, workspace, cfg.Mode)
 
-			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer cancel()
-
 			// ProxyHandler: each connection from the sandboxed agent goes
 			// through pipelock's full scanner pipeline via an HTTP server
 			// that handles both CONNECT tunnels and plain HTTP forwarding.
@@ -178,42 +212,7 @@ Examples:
 				_ = srv.Serve(&singleConnListener{conn: conn})
 			}
 
-			// Resolve --env flags: KEY=VALUE passes as-is, bare KEY inherits from parent.
-			var extraEnv []string
-			for _, e := range envVars {
-				key, _, hasValue := strings.Cut(e, "=")
-				if key == "" {
-					return errors.New("--env requires a non-empty variable name")
-				}
-				if sandbox.IsDangerousEnvKey(key) {
-					return fmt.Errorf("--env %s is blocked: this variable can subvert sandbox containment", key)
-				}
-				if hasValue {
-					extraEnv = append(extraEnv, e)
-				} else if val, found := os.LookupEnv(e); found {
-					extraEnv = append(extraEnv, e+"="+val)
-				}
-			}
-
-			launchCfg := sandbox.StandaloneLaunchConfig{
-				Ctx:              ctx,
-				Command:          command,
-				Workspace:        workspace,
-				Strict:           useStrict,
-				BestEffort:       useBestEffort,
-				BestEffortReason: useBestEffortReason,
-				BestEffortExpiry: useBestEffortExpiry,
-				ExtraEnv:         extraEnv,
-				ProxyHandler:     proxyHandler,
-			}
-
-			// Merge custom filesystem policy from config into defaults.
-			if cfg.Sandbox.FS != nil {
-				p := sandbox.DefaultPolicy(workspace)
-				p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
-				p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
-				launchCfg.Policy = &p
-			}
+			launchCfg.ProxyHandler = proxyHandler
 			if useBestEffort {
 				reportBestEffortAdmission(cmd.ErrOrStderr())
 			}

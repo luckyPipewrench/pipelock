@@ -13212,17 +13212,57 @@ func TestLoadBytes_SandboxBestEffortRejectsNonPositiveRelativeExpiry(t *testing.
 }
 
 func TestValidateReload_SandboxBestEffortMetadataChanged(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	later := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	tests := []struct {
+		name   string
+		mutate func(old, updated *Config)
+	}{
+		{"reason", func(old, updated *Config) {
+			old.Sandbox.BestEffortReason = "old reason"
+			updated.Sandbox.BestEffortReason = "new reason"
+		}},
+		{"expiry", func(old, updated *Config) {
+			old.Sandbox.BestEffortExpiry = future
+			updated.Sandbox.BestEffortExpiry = later
+		}},
+		{"best_effort toggle", func(old, updated *Config) {
+			updated.Sandbox.BestEffort = true
+			updated.Sandbox.BestEffortReason = "new reason"
+			updated.Sandbox.BestEffortExpiry = future
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := Defaults()
+			updated := Defaults()
+			tt.mutate(old, updated)
+			for _, warning := range ValidateReload(old, updated) {
+				if warning.Field == fieldSandbox {
+					return
+				}
+			}
+			t.Fatalf("expected sandbox restart warning when best_effort %s changes", tt.name)
+		})
+	}
+}
+
+func TestValidateReload_SandboxBestEffortUnchangedDoesNotWarn(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	old := Defaults()
-	old.Sandbox.BestEffortReason = "old reason"
+	old.Sandbox.BestEffort = true
+	old.Sandbox.BestEffortReason = "same reason"
+	old.Sandbox.BestEffortExpiry = future
 	updated := Defaults()
-	updated.Sandbox.BestEffortReason = "new reason"
+	updated.Sandbox.BestEffort = true
+	updated.Sandbox.BestEffortReason = "same reason"
+	updated.Sandbox.BestEffortExpiry = future
 
 	for _, warning := range ValidateReload(old, updated) {
 		if warning.Field == fieldSandbox {
-			return
+			t.Fatalf("unchanged best_effort override must not warn, got %+v", warning)
 		}
 	}
-	t.Fatal("expected sandbox restart warning when best_effort metadata changes")
 }
 
 func TestValidate_SandboxStrictAlone(t *testing.T) {

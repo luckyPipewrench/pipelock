@@ -926,6 +926,33 @@ func TestDashboardAuthDeniedDoesNotWaitForBlockedEventEmitter(t *testing.T) {
 	}
 }
 
+func TestRecordDashboardAuthFailure_SkipsWithoutModeOrEmitter(t *testing.T) {
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil)
+	sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1)}
+	emitter := emit.NewEmitter("dashboard-test", sink)
+
+	// A mode function that classifies nothing means the request was not an
+	// authentication failure this surface owns; no event may be recorded.
+	recordDashboardAuthFailure(emitter, req, func(*http.Request) string { return "" })
+	recordDashboardAuthFailure(nil, req, func(*http.Request) string { return "operator_token" })
+	recordDashboardAuthFailure(emitter, req, nil)
+	select {
+	case ev := <-sink.events:
+		t.Fatalf("unexpected auth-failure event recorded: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	recordDashboardAuthFailure(emitter, req, func(*http.Request) string { return "operator_token" })
+	select {
+	case ev := <-sink.events:
+		if ev.Type != emit.EventDashboardAuthFailed {
+			t.Fatalf("event type = %q, want %q", ev.Type, emit.EventDashboardAuthFailed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected an auth-failure event for a classified failure")
+	}
+}
+
 func TestDashboardServe_RejectsReceiptDirThatIsAFile(t *testing.T) {
 	pub, priv := newDashKeyPair(t)
 	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))

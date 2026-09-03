@@ -233,7 +233,7 @@ func eventTypeAction(eventType string) string {
 		EventTextStego,
 		EventLicenseExpiry,
 		EventRuleBundleDegraded,
-		EventDashboardOperatorTokenFailed:
+		EventDashboardAuthFailed:
 		return conventionActionWarn
 	case EventRedirect, EventToolRedirect:
 		return EventRedirect

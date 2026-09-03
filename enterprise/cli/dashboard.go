@@ -385,7 +385,11 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return dashboardClientCertAuthAuditInfo(clientCertAuth, r)
 		}
 	}
-	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, dashboardEventEmitter, token != "" || rawToken != "", inner)
+	var authFailureMode func(*http.Request) string
+	if clientCertAuth == nil {
+		authFailureMode = authorization.failedAuthMode
+	}
+	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, dashboardEventEmitter, authFailureMode, inner)
 	if oidcAuthenticator != nil {
 		handler = oidcAuthenticator.middleware(handler)
 	}
@@ -571,13 +575,13 @@ func dashboardAuthHandler(
 	authInfo func(*http.Request) dashboard.AuthAuditInfo,
 	auditWriter io.Writer,
 	eventEmitter *emit.Emitter,
-	operatorTokenConfigured bool,
+	authFailureMode func(*http.Request) string,
 	next http.Handler,
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(r) {
 			recordDashboardAuthDenied(auditWriter, r, authInfo)
-			recordDashboardOperatorTokenFailure(eventEmitter, r, operatorTokenConfigured)
+			recordDashboardAuthFailure(eventEmitter, r, authFailureMode)
 			w.Header().Set("WWW-Authenticate", `Basic realm="pipelock dashboard", charset="UTF-8"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
@@ -589,21 +593,26 @@ func dashboardAuthHandler(
 	})
 }
 
-// recordDashboardOperatorTokenFailure sends the structured event outside the
+// recordDashboardAuthFailure sends the structured event outside the
 // request path. Authentication remains available if a sink is slow or fails.
-func recordDashboardOperatorTokenFailure(emitter *emit.Emitter, r *http.Request, operatorTokenConfigured bool) {
-	if emitter == nil || !operatorTokenConfigured {
+func recordDashboardAuthFailure(emitter *emit.Emitter, r *http.Request, authFailureMode func(*http.Request) string) {
+	if emitter == nil || authFailureMode == nil {
+		return
+	}
+	authMode := authFailureMode(r)
+	if authMode == "" {
 		return
 	}
 	fields := map[string]any{
 		"remote_addr":    r.RemoteAddr,
 		"path":           r.URL.Path,
-		"failure_reason": dashboardOperatorTokenFailureReason(r),
+		"failure_reason": dashboardAuthFailureReason(r),
+		"auth_mode":      authMode,
 	}
-	go emitter.Emit(context.Background(), emit.EventDashboardOperatorTokenFailed, fields)
+	go emitter.Emit(context.Background(), emit.EventDashboardAuthFailed, fields)
 }
 
-func dashboardOperatorTokenFailureReason(r *http.Request) string {
+func dashboardAuthFailureReason(r *http.Request) string {
 	if r == nil {
 		return "missing"
 	}

@@ -747,7 +747,7 @@ func TestDashboardAuthDeniedAuditPreservesMissingTokenReason(t *testing.T) {
 		nil,
 		&audit,
 		nil,
-		false,
+		nil,
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}),
@@ -791,15 +791,17 @@ func (s *dashboardAuthEventSink) Emit(_ context.Context, event emit.Event) error
 
 func (*dashboardAuthEventSink) Close() error { return nil }
 
-func TestDashboardAuthDeniedEmitsOperatorTokenEvent(t *testing.T) {
+func TestDashboardAuthDeniedEmitsAuthenticationEvent(t *testing.T) {
+	authorization := newDashboardRequestAuthorization("operator-token", "", nil)
 	for _, tt := range []struct {
-		name   string
-		header string
-		want   string
+		name         string
+		header       string
+		wantReason   string
+		wantAuthMode string
 	}{
-		{name: "missing", want: "missing"},
-		{name: "malformed bearer", header: "Bearer", want: "malformed"},
-		{name: "mismatch", header: "Bearer wrong-token", want: "mismatch"},
+		{name: "no credential", wantReason: "missing", wantAuthMode: "none"},
+		{name: "basic credential", header: "Basic dXNlcjp3cm9uZy10b2tlbg==", wantReason: "mismatch", wantAuthMode: "operator_token"},
+		{name: "bearer mismatch without oidc", header: "Bearer wrong-token", wantReason: "mismatch", wantAuthMode: "operator_token"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1)}
@@ -808,7 +810,7 @@ func TestDashboardAuthDeniedEmitsOperatorTokenEvent(t *testing.T) {
 				func(*http.Request) dashboard.AuthAuditInfo { return dashboard.AuthAuditInfo{} },
 				nil,
 				emit.NewEmitter("dashboard-test", sink),
-				true,
+				authorization.failedAuthMode,
 				http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next called") }),
 			)
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/evidence?token="+"not-a-token", nil)
@@ -825,11 +827,14 @@ func TestDashboardAuthDeniedEmitsOperatorTokenEvent(t *testing.T) {
 				if err != nil {
 					t.Fatalf("marshal event: %v", err)
 				}
-				if event.Type != emit.EventDashboardOperatorTokenFailed {
-					t.Errorf("event type = %q, want %q", event.Type, emit.EventDashboardOperatorTokenFailed)
+				if event.Type != emit.EventDashboardAuthFailed {
+					t.Errorf("event type = %q, want %q", event.Type, emit.EventDashboardAuthFailed)
 				}
-				if event.Fields["failure_reason"] != tt.want {
-					t.Errorf("failure_reason = %v, want %q", event.Fields["failure_reason"], tt.want)
+				if event.Fields["failure_reason"] != tt.wantReason {
+					t.Errorf("failure_reason = %v, want %q", event.Fields["failure_reason"], tt.wantReason)
+				}
+				if event.Fields["auth_mode"] != tt.wantAuthMode {
+					t.Errorf("auth_mode = %v, want %q", event.Fields["auth_mode"], tt.wantAuthMode)
 				}
 				if event.Fields["path"] != "/evidence" {
 					t.Errorf("path = %v, want /evidence", event.Fields["path"])
@@ -856,7 +861,7 @@ func TestDashboardAuthSuccessDoesNotEmitOperatorTokenFailure(t *testing.T) {
 	sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1)}
 	handler := dashboardAuthHandler(
 		func(*http.Request) bool { return true }, nil, nil,
-		emit.NewEmitter("dashboard-test", sink), true,
+		emit.NewEmitter("dashboard-test", sink), func(*http.Request) string { return "operator_token" },
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
 	)
 	rec := httptest.NewRecorder()
@@ -871,7 +876,7 @@ func TestDashboardAuthSuccessDoesNotEmitOperatorTokenFailure(t *testing.T) {
 	}
 }
 
-func TestDashboardOperatorTokenFailureReason(t *testing.T) {
+func TestDashboardAuthFailureReason(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		request *http.Request
@@ -886,8 +891,8 @@ func TestDashboardOperatorTokenFailureReason(t *testing.T) {
 		{name: "unsupported scheme", request: requestWithDashboardAuthorization(t, "Digest credentials"), want: "malformed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := dashboardOperatorTokenFailureReason(tt.request); got != tt.want {
-				t.Errorf("dashboardOperatorTokenFailureReason() = %q, want %q", got, tt.want)
+			if got := dashboardAuthFailureReason(tt.request); got != tt.want {
+				t.Errorf("dashboardAuthFailureReason() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -906,7 +911,7 @@ func TestDashboardAuthDeniedDoesNotWaitForBlockedEventEmitter(t *testing.T) {
 	sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1), block: blocked}
 	handler := dashboardAuthHandler(
 		func(*http.Request) bool { return false }, nil, nil,
-		emit.NewEmitter("dashboard-test", sink), true,
+		emit.NewEmitter("dashboard-test", sink), func(*http.Request) string { return "operator_token" },
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next called") }),
 	)
 	done := make(chan struct{})

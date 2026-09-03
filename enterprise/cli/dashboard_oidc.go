@@ -973,6 +973,19 @@ func (a *dashboardRequestAuthorization) authAuditInfo(r *http.Request) dashboard
 	}
 }
 
+// failedAuthMode attributes a rejected request from server-recorded OIDC
+// failure state. An HTTP client cannot set that context value. OIDC takes
+// precedence because both authenticators use the Bearer scheme.
+func (a *dashboardRequestAuthorization) failedAuthMode(r *http.Request) string {
+	if dashboardOIDCFailureReasonFromRequest(r) != "" {
+		return "oidc"
+	}
+	if dashboardCredentialAttempted(r) {
+		return "operator_token"
+	}
+	return "none"
+}
+
 func dashboardCredentialAttempted(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -985,7 +998,7 @@ func dashboardCredentialAttempted(r *http.Request) bool {
 }
 
 func (a *dashboardRequestAuthorization) wrap(next http.Handler, auditWriter io.Writer) http.Handler {
-	handler := dashboardAuthHandler(a.authenticated, a.authAuditInfo, auditWriter, nil, false, next)
+	handler := dashboardAuthHandler(a.authenticated, a.authAuditInfo, auditWriter, nil, a.failedAuthMode, next)
 	if a.oidc != nil {
 		return a.oidc.middleware(handler)
 	}

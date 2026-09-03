@@ -6,10 +6,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // A malformed root must fail closed. Serving with an unusable signing root
@@ -106,4 +110,54 @@ func TestResolveOrchestratorRoot_UnreadableFileFailsClosed(t *testing.T) {
 	if _, err := resolveOrchestratorRoot(f); err == nil {
 		t.Fatal("an unreadable orchestrator root must fail closed")
 	}
+}
+
+// A malformed digest must stop check-config, not merely be reported later. An
+// operator validating a config before deploying needs the refusal then.
+func TestRunServeCheckConfig_RefusesMalformedImageDigest(t *testing.T) {
+	f := testServeFlags(t, 0)
+	f.checkConfig = true
+	f.vmImageDigest = "sha256:not-a-digest"
+
+	cmd := newServeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runServe(cmd, f); err == nil {
+		t.Fatal("check-config must refuse a malformed image digest")
+	}
+}
+
+// Server construction refuses a root that is not the published identity, and a
+// digest that is not canonical, before anything starts serving.
+func TestBuildServer_RefusesUnusableSigningInputs(t *testing.T) {
+	t.Run("root_is_not_the_published_identity", func(t *testing.T) {
+		_, priv, err := signing.GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair: %v", err)
+		}
+		oldFactory := newMachineProvider
+		newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+			return fakeProvider{}, nil
+		}
+		t.Cleanup(func() { newMachineProvider = oldFactory })
+
+		f := testServeFlags(t, 0)
+		f.orchestratorKeyFile = writeTestFile(t, t.TempDir(), "orch.key", hex.EncodeToString(priv)+"\n")
+		_, _, _, _, err = buildServer(context.Background(), io.Discard, f)
+		if err == nil {
+			t.Fatal("a root that is not the published identity must be refused")
+		}
+		if !strings.Contains(err.Error(), "published orchestrator identity") {
+			t.Fatalf("error %v must name the published identity", err)
+		}
+	})
+
+	t.Run("digest_is_not_canonical", func(t *testing.T) {
+		f := testServeFlags(t, 0)
+		f.vmImageDigest = "sha256:not-a-digest"
+		_, _, _, _, err := buildServer(context.Background(), io.Discard, f)
+		if err == nil {
+			t.Fatal("a malformed image digest must be refused")
+		}
+	})
 }

@@ -36,6 +36,7 @@ func TestParseSessionDelegation_HalvesAreRefused(t *testing.T) {
 // A malformed session key is refused before it can sign anything.
 func TestParseSessionDelegation_MalformedKeyRefused(t *testing.T) {
 	body := createReq{
+		RunNonce:               "a-run",
 		SessionSigningKey:      "not-hex",
 		OrchestratorDelegation: json.RawMessage("{\"format\":\"x\"}"),
 	}
@@ -117,6 +118,7 @@ func TestParseSessionDelegation_MalformedDelegationRefused(t *testing.T) {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 	body := createReq{
+		RunNonce:               "a-run",
 		SessionSigningKey:      hex.EncodeToString(priv),
 		OrchestratorDelegation: json.RawMessage("{\"format\":\"nonsense\"}"),
 	}

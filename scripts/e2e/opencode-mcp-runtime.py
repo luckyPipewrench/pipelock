@@ -141,24 +141,26 @@ def warm_upstream_package(env: dict[str, str]) -> None:
     The hermetic home starts with an empty npm cache, so the first ``npx``
     of the package downloads it and its dependencies. Doing that inside the
     timed MCP handshake made a slow registry look like a hung proxy, with an
-    empty stderr tail that could not tell the two apart. The warm-up is
-    untimed apart from a generous ceiling and ignores the package's own exit
-    status: it exists only to populate the cache, so the handshake budget
-    below measures the proxy and the server, not the network.
+    empty stderr tail that could not tell the two apart. ``npm exec`` installs
+    the package but runs Node instead of the MCP server, so cache preparation
+    cannot block waiting for protocol input. The handshake budget below then
+    measures the proxy and the already-fetched server, not the network.
     """
     print("\n[1b] warm the upstream package cache")
     try:
-        result = subprocess.run(
-            ["npx", "-y", EVERYTHING_PACKAGE, "--version"],
+        subprocess.run(
+            ["npm", "exec", "--yes", f"--package={EVERYTHING_PACKAGE}", "--", "node", "--version"],
             capture_output=True,
             text=True,
             env=env,
             timeout=300,
-            check=False,
+            check=True,
         )
-    except subprocess.TimeoutExpired:
-        sys.exit("warm-up: npx did not finish fetching the upstream package within 300s")
-    print(f"  npx exit={result.returncode} (package fetched; a non-zero exit here is the server rejecting --version, not a fetch failure)")
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit("warm-up: npm did not fetch the upstream package within 300s") from exc
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"warm-up: npm could not fetch the upstream package: {exc.stderr}") from exc
+    print("  package fetched")
 
 
 def extract_wrapped_argv(cfg_path: Path) -> list[str]:

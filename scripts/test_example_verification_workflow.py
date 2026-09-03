@@ -111,6 +111,15 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
             self.assertRegex(result.stdout, r"(?m)^FAIL: 0$")
             self.assertRegex(result.stdout, r"(?m)^SKIP: 1$")
 
+    def test_runtime_warmups_fetch_without_starting_the_mcp_server(self):
+        for path in sorted((ROOT / "scripts" / "e2e").glob("*-mcp-runtime.py")):
+            body = path.read_text(encoding="utf-8")
+            self.assertIn('"npm", "exec", "--yes"', body, path)
+            self.assertIn('"--", "node", "--version"', body, path)
+            self.assertNotIn('EVERYTHING_PACKAGE, "--version"', body, path)
+            self.assertIn("timeout=300", body, path)
+            self.assertIn("check=True", body, path)
+
     def test_quickstart_runs_the_binary_built_from_this_tree(self):
         self.assertIn('local go_binary="${PIPELOCK_VERIFY_GO:-go}"', self.runner)
         self.assertIn('CGO_ENABLED=0 "$go_binary" build -trimpath', self.runner)

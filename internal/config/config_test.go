@@ -13138,7 +13138,7 @@ func TestValidate_SandboxBestEffortAlone(t *testing.T) {
 	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.Sandbox.BestEffort = true
 	cfg.Sandbox.BestEffortReason = "test override"
-	cfg.Sandbox.BestEffortExpiry = "1h"
+	cfg.Sandbox.BestEffortExpiry = time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	cfg.Sandbox.Strict = false
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("best_effort alone should be valid: %v", err)
@@ -13146,64 +13146,68 @@ func TestValidate_SandboxBestEffortAlone(t *testing.T) {
 }
 
 func TestValidate_SandboxBestEffortRejectsExpiredExpiry(t *testing.T) {
-	for _, expiry := range []string{"0s", "2000-01-01T00:00:00Z"} {
-		t.Run(expiry, func(t *testing.T) {
+	for _, tt := range []struct {
+		expiry  string
+		wantErr string
+	}{
+		{expiry: "0s", wantErr: "durations are command-line only"},
+		{expiry: "2000-01-01T00:00:00Z", wantErr: "expired"},
+	} {
+		t.Run(tt.expiry, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.Internal = nil
 			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 			cfg.Sandbox.BestEffort = true
 			cfg.Sandbox.BestEffortReason = "test override"
-			cfg.Sandbox.BestEffortExpiry = expiry
-			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "expired") {
-				t.Fatalf("Validate() error = %v, want expired override", err)
+			cfg.Sandbox.BestEffortExpiry = tt.expiry
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-func TestLoad_SandboxBestEffortRelativeExpiryAnchorsToConfigModification(t *testing.T) {
+func TestLoad_SandboxBestEffortRejectsRelativeExpiryRegardlessOfModificationTime(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
 	configBody := []byte("sandbox:\n  best_effort: true\n  best_effort_reason: test override\n  best_effort_expiry: 1h\n")
 	if err := os.WriteFile(configPath, configBody, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	modifiedAt := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
-	if err := os.Chtimes(configPath, modifiedAt, modifiedAt); err != nil {
-		t.Fatalf("set config modification time: %v", err)
-	}
-
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Load(): %v", err)
-	}
-	expiresAt, err := time.Parse(time.RFC3339Nano, cfg.Sandbox.BestEffortExpiry)
-	if err != nil {
-		t.Fatalf("resolved expiry %q: %v", cfg.Sandbox.BestEffortExpiry, err)
-	}
-	if want := modifiedAt.Add(time.Hour); !expiresAt.Equal(want) {
-		t.Fatalf("resolved expiry = %s, want config modification time + duration = %s", expiresAt, want)
-	}
-
-	expiredModification := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Hour)
-	if err := os.Chtimes(configPath, expiredModification, expiredModification); err != nil {
-		t.Fatalf("set expired config modification time: %v", err)
-	}
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "has expired") {
-		t.Fatalf("Load() error = %v, want expiry refusal", err)
+	for _, tt := range []struct {
+		name        string
+		modifiedAt  time.Time
+		rewriteFile bool
+	}{
+		{name: "restored older file", modifiedAt: time.Now().Add(-2 * time.Hour)},
+		{name: "future modification time", modifiedAt: time.Now().Add(24 * time.Hour)},
+		{name: "byte-identical rewrite", rewriteFile: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.rewriteFile {
+				if err := os.WriteFile(configPath, configBody, 0o600); err != nil {
+					t.Fatalf("rewrite byte-identical config: %v", err)
+				}
+			} else if err := os.Chtimes(configPath, tt.modifiedAt, tt.modifiedAt); err != nil {
+				t.Fatalf("set config modification time: %v", err)
+			}
+			if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "durations are command-line only") {
+				t.Fatalf("Load() error = %v, want relative-expiry refusal", err)
+			}
+		})
 	}
 }
 
-func TestLoadBytes_SandboxBestEffortRelativeExpiryRequiresFileBackedConfig(t *testing.T) {
+func TestLoadBytes_SandboxBestEffortRelativeExpiryRequiresRFC3339(t *testing.T) {
 	_, err := LoadBytes([]byte("sandbox:\n  best_effort: true\n  best_effort_reason: test override\n  best_effort_expiry: 1h\n"))
-	if err == nil || !strings.Contains(err.Error(), "requires a file-backed config") {
-		t.Fatalf("LoadBytes() error = %v, want relative-expiry source refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "durations are command-line only") {
+		t.Fatalf("LoadBytes() error = %v, want relative-expiry refusal", err)
 	}
 }
 
-func TestLoadBytes_SandboxBestEffortRejectsExpiredRelativeExpiry(t *testing.T) {
+func TestLoadBytes_SandboxBestEffortRejectsNonPositiveRelativeExpiry(t *testing.T) {
 	_, err := LoadBytes([]byte("sandbox:\n  best_effort: true\n  best_effort_reason: test override\n  best_effort_expiry: 0s\n"))
-	if err == nil || !strings.Contains(err.Error(), "has expired") {
-		t.Fatalf("LoadBytes() error = %v, want expired override refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "durations are command-line only") {
+		t.Fatalf("LoadBytes() error = %v, want relative-expiry refusal", err)
 	}
 }
 

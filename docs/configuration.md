@@ -2582,7 +2582,7 @@ sandbox:
   enabled: true
   best_effort: false              # temporary advisory network override only
   best_effort_reason: ""          # required when best_effort is true
-  best_effort_expiry: ""          # admission-time duration or RFC3339 timestamp; a config duration starts at its file modification time
+  best_effort_expiry: ""          # admission-time RFC3339 timestamp; command-line flags also accept durations
   strict: false                   # error if any layer unavailable (mutually exclusive with best_effort)
   workspace: /home/user/project   # agent working directory (default: CWD)
   filesystem:                     # optional Landlock overrides (default policy works for most agents)
@@ -2598,7 +2598,7 @@ sandbox:
 | `enabled` | `false` | Enable sandbox containment |
 | `best_effort` | `false` | Temporary advisory override when a network namespace cannot be created. Requires `best_effort_reason` and `best_effort_expiry`. Direct egress may bypass Pipelock. |
 | `best_effort_reason` | `""` | Operator reason for the advisory network override. Required with `best_effort: true`. |
-| `best_effort_expiry` | `""` | Admission-time expiry for the advisory override: a Go duration such as `30m`, or an RFC3339 timestamp. In a file-backed config, a duration starts at the file's modification time, so restarting cannot renew an unchanged authorization; update the config to re-authorize. A duration from stdin or an in-memory config is refused because it has no stable authorization time; use RFC3339 there. An expired override refuses that launch; it does not stop a child already running, and every later launch requires re-authorization. Required with `best_effort: true`. |
+| `best_effort_expiry` | `""` | Admission-time RFC3339 expiry for the advisory override. Command-line flags also accept a Go duration such as `30m`, but configuration requires RFC3339 so copied, touched, or rewritten files cannot renew an authorization through filesystem metadata. An expired override refuses that launch; it does not stop a child already running, and every later launch requires re-authorization. Required with `best_effort: true`. |
 | `strict` | `false` | Error if any containment layer is unavailable. Mutually exclusive with `best_effort`. |
 | `workspace` | CWD | Agent working directory (resolved to absolute at startup) |
 | `filesystem.allow_read` | `[]` | Additional read-only filesystem paths |
@@ -2613,7 +2613,7 @@ If `filesystem` is omitted, the default Landlock policy is used (safe for Python
 
 For sandboxed MCP stdio servers on Linux, the bridge enables forward-proxy handling internally even when `forward_proxy.enabled` is false in YAML. This is scoped to the sandbox bridge only and does not expose the normal forward proxy listener.
 
-In `--best-effort` mode (for containers without user-namespace support), the bridge still scans traffic but network enforcement is cooperative: a child process that clears `HTTP_PROXY` / `HTTPS_PROXY` can bypass Pipelock. This is an advisory override, not a contained launch: supply all three values from one source—`--best-effort`, `--best-effort-reason`, and `--best-effort-expiry`, or the matching YAML fields. Its expiry bounds launch admission only: an expired override refuses that launch, a running child is not stopped at expiry, and every later launch requires re-authorization. A duration in file-backed YAML is measured from the config file's modification time, so an unchanged config cannot renew itself across restarts; stdin and in-memory config require RFC3339.
+In `--best-effort` mode (for containers without user-namespace support), the bridge still scans traffic but network enforcement is cooperative: a child process that clears `HTTP_PROXY` / `HTTPS_PROXY` can bypass Pipelock. This is an advisory override, not a contained launch: supply all three values from one source—`--best-effort`, `--best-effort-reason`, and `--best-effort-expiry`, or the matching YAML fields. Its expiry bounds launch admission only: an expired override refuses that launch, a running child is not stopped at expiry, and every later launch requires re-authorization. YAML requires an RFC3339 expiry; command-line durations are evaluated at admission and are not stored in configuration.
 
 **Usage:**
 ```bash

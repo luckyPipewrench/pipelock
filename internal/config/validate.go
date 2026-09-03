@@ -3736,18 +3736,15 @@ func (c *Config) validateSandbox() error {
 		if strings.TrimSpace(c.Sandbox.BestEffortExpiry) == "" {
 			return errors.New("sandbox: best_effort_expiry is required when best_effort is true")
 		}
-		if duration, err := time.ParseDuration(c.Sandbox.BestEffortExpiry); err == nil {
-			if duration <= 0 {
-				return errors.New("sandbox: best_effort_expiry has expired")
-			}
-		} else {
-			expiresAt, timestampErr := time.Parse(time.RFC3339, c.Sandbox.BestEffortExpiry)
-			if timestampErr != nil {
-				return errors.New("sandbox: best_effort_expiry must be a duration or RFC3339 timestamp")
-			}
-			if !expiresAt.After(time.Now()) {
-				return errors.New("sandbox: best_effort_expiry has expired")
-			}
+		if _, err := time.ParseDuration(c.Sandbox.BestEffortExpiry); err == nil {
+			return errors.New("sandbox: best_effort_expiry in configuration must be an RFC3339 timestamp; durations are command-line only")
+		}
+		expiresAt, timestampErr := time.Parse(time.RFC3339, c.Sandbox.BestEffortExpiry)
+		if timestampErr != nil {
+			return errors.New("sandbox: best_effort_expiry must be an RFC3339 timestamp")
+		}
+		if !expiresAt.After(time.Now()) {
+			return errors.New("sandbox: best_effort_expiry has expired")
 		}
 	}
 

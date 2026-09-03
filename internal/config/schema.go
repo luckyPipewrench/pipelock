@@ -273,9 +273,8 @@ type Sandbox struct {
 	BestEffort       bool   `yaml:"best_effort"` // advisory network override when namespace isolation is unavailable
 	BestEffortReason string `yaml:"best_effort_reason" json:"-"`
 	// BestEffortExpiry bounds admission only: it never terminates an already
-	// running child, and each later launch must be authorized again. A duration
-	// in a file-backed config is anchored to that file's modification time;
-	// stdin and in-memory config must use RFC3339.
+	// running child, and each later launch must be authorized again. Configuration
+	// uses RFC3339 so mutable filesystem metadata cannot renew an authorization.
 	BestEffortExpiry string             `yaml:"best_effort_expiry" json:"-"`
 	Workspace        string             `yaml:"workspace"` // agent working dir; resolved to absolute at startup
 	FS               *SandboxFilesystem `yaml:"filesystem"`

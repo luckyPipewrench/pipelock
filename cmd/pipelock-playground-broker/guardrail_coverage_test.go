@@ -72,7 +72,7 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 	if err := os.Chmod(dockerPath, 0o700); err != nil { // #nosec G302 -- executable test stub
 		t.Fatalf("make docker stub executable: %v", err)
 	}
-	cmd := exec.Command("bash", "../../deploy/fly-playground/build-images.sh", "--only", "vm")
+	cmd := exec.CommandContext(t.Context(), "bash", "../../deploy/fly-playground/build-images.sh", "--only", "vm")
 	cmd.Env = append(os.Environ(),
 		"PATH="+tmp+":"+os.Getenv("PATH"),
 		"DOCKER_LOG="+dockerLog,

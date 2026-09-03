@@ -13,7 +13,7 @@ Fully offline: runtime-generated signing key + metadata-IP `/fetch` block.
 | Block | `/fetch` to `169.254.169.254` returns HTTP 403 |
 | Receipt on disk | `evidence-proxy-0.jsonl` contains a fetch `block` receipt |
 | Verify pass | `pipelock verify-receipt --key` exits 0 |
-| Tamper fails | Flipping one signature byte makes verify exit non-zero |
+| Tamper fails | Changing a captured receipt's signed `action_record.verdict` makes chain verification exit 1 |
 
 ## Prerequisites
 
@@ -34,6 +34,13 @@ From the repository root:
 ```
 
 Or from this directory: `./verify.sh` (with `PIPELOCK_BIN` set if needed).
+
+The script's fifth step changes `detail.action_record.verdict` in a captured
+`action_receipt` record, then runs `verify-receipt` with the generated public
+key. It must print `CHAIN BROKEN` and exit 1. Receipt-chain verification covers
+the signed `action_record` (including the action, policy hash, verdict, target,
+and chain linkage), but not outer flight-recorder metadata such as a JSONL
+entry's `seq`, `type`, or `summary`.
 
 ## Manual Try
 

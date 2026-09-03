@@ -190,6 +190,9 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	for _, e := range bundleResult.Errors {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 	}
+	for _, w := range bundleResult.Warnings {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: %s\n", w)
+	}
 
 	// Build scanner and policy.
 	sc, err := scanner.New(cfg)

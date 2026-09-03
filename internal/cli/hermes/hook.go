@@ -163,6 +163,9 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 			for _, e := range result.Errors {
 				_, _ = fmt.Fprintf(stderr, "pipelock hermes hook: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
+			for _, w := range result.Warnings {
+				_, _ = fmt.Fprintf(stderr, "pipelock hermes hook: warning: %s\n", w)
+			}
 		},
 	}, stderr, "hermes hook")
 

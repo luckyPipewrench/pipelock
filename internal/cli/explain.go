@@ -408,6 +408,9 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 	for _, e := range bundleResult.Errors {
 		report.Notes = append(report.Notes, fmt.Sprintf("rule bundle %s skipped: %s", e.Name, e.Reason))
 	}
+	for _, w := range bundleResult.Warnings {
+		report.Notes = append(report.Notes, "rule bundle warning: "+w)
+	}
 
 	// Disable the hostname-based SSRF layer so explain performs no DNS. The
 	// immutable core SSRF literal check still runs (it inspects IP literals,
@@ -617,6 +620,9 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 	bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)
 	for _, e := range bundleResult.Errors {
 		report.Notes = append(report.Notes, fmt.Sprintf("rule bundle %s skipped: %s", e.Name, e.Reason))
+	}
+	for _, w := range bundleResult.Warnings {
+		report.Notes = append(report.Notes, "rule bundle warning: "+w)
 	}
 
 	sc, err := scanner.New(cfg)

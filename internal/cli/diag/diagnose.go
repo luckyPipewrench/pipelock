@@ -154,6 +154,9 @@ func runDiagnose(cmd *cobra.Command, cfg *config.Config, cfgLabel string, jsonOu
 	for _, e := range bundleResult.Errors {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 	}
+	for _, w := range bundleResult.Warnings {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: %s\n", w)
+	}
 	sc, err := scanner.New(cfg)
 	if err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("create scanner: %w", err))

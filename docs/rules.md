@@ -106,6 +106,7 @@ Bundle rules cannot override or disable built-in patterns. They are additive onl
 | A released running version is below `min_pipelock` | Refuse the bundle. |
 | The bundle format is incompatible | Refuse the bundle. |
 
+During a rolling upgrade, set `allow_unversioned_bundle_load` explicitly on every instance. A binary from before this behavior treats an omitted value as refuse, so an omitted setting reads differently across a mixed fleet and the effective policy hash differs with it.
 ## Configuration
 
 ```yaml

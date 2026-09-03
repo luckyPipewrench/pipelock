@@ -411,7 +411,23 @@ func NamespacedID(bundleName, ruleID string) string {
 // A requirement that IS met or genuinely unmet never produces this error.
 var ErrUnverifiableVersion = errors.New("check min pipelock")
 
-func CheckMinPipelock(minVersion, currentVersion string, _ bool) error {
+// CheckMinPipelock keeps the contract every caller outside the loader relied on before the
+// warn-and-load change: an unprovable running version is ACCEPTED when allowUnversioned is
+// true and REFUSED otherwise. A genuinely unmet or malformed requirement always refuses. The
+// parameter was briefly ignored, which made fleet policy delivery refuse a development
+// follower that used to be accepted; the wrapper restores that behavior exactly.
+func CheckMinPipelock(minVersion, currentVersion string, allowUnversioned bool) error {
+	err := CheckMinPipelockVerdict(minVersion, currentVersion)
+	if err != nil && allowUnversioned && errors.Is(err, ErrUnverifiableVersion) {
+		return nil
+	}
+	return err
+}
+
+// CheckMinPipelockVerdict reports the raw verdict. An unprovable running version returns an
+// error wrapping ErrUnverifiableVersion so the caller can choose between warn-and-load and
+// refusal; the rule-bundle loader is the caller that makes that choice from configuration.
+func CheckMinPipelockVerdict(minVersion, currentVersion string) error {
 	if minVersion == "" {
 		return nil
 	}

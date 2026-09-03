@@ -175,6 +175,9 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 	for _, e := range bundleResult.Errors {
 		report.Notes = append(report.Notes, fmt.Sprintf("rule bundle %s skipped: %s", e.Name, e.Reason))
 	}
+	for _, w := range bundleResult.Warnings {
+		report.Notes = append(report.Notes, "rule bundle warning: "+w)
+	}
 
 	// MCP response scanning does not touch DNS; disabling the SSRF layer keeps
 	// scanner construction self-contained and avoids resolution.

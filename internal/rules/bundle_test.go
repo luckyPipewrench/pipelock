@@ -4,6 +4,7 @@
 package rules
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -1414,8 +1415,9 @@ func TestParseBundle_ValidationRejectsMissingRequiredFields(t *testing.T) {
 }
 
 // TestCheckMinPipelock_UnversionedSettingKeepsTheUnknownSignal proves the
-// checker keeps returning ErrUnverifiableVersion for either setting value. The
-// loader, not this shared checker, decides whether to load with a warning.
+// verdict keeps returning ErrUnverifiableVersion regardless of the loader setting. The
+// loader, not the verdict, decides whether to load with a warning; the CheckMinPipelock
+// wrapper applies the caller-side allowUnversioned contract (see the contract test).
 func TestCheckMinPipelock_UnversionedSettingKeepsTheUnknownSignal(t *testing.T) {
 	t.Parallel()
 
@@ -1444,7 +1446,7 @@ func TestCheckMinPipelock_UnversionedSettingKeepsTheUnknownSignal(t *testing.T) 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := CheckMinPipelock(tc.minVersion, tc.curVersion, tc.allow)
+			err := CheckMinPipelockVerdict(tc.minVersion, tc.curVersion)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("CheckMinPipelock(%q, %q, allow=%v) error = %v, wantErr = %v",
 					tc.minVersion, tc.curVersion, tc.allow, err, tc.wantErr)
@@ -1466,5 +1468,35 @@ func TestCheckMinPipelock_UnverifiableVersionNamesTheGate(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not mention %q: %v", want, err)
 		}
+	}
+}
+
+// The wrapper keeps the contract callers outside the loader depend on: an unprovable running
+// version is accepted only when the caller allows it, and every genuine failure still refuses.
+// Fleet policy delivery passes allowUnversioned=true so a development follower keeps applying
+// policy; a wrapper that ignored the flag refused it, which is the regression this pins.
+func TestCheckMinPipelock_AllowUnversionedContract(t *testing.T) {
+	tests := []struct {
+		name             string
+		current          string
+		allowUnversioned bool
+		wantErr          bool
+		wantUnverifiable bool
+	}{
+		{"dev version accepted when allowed", "0.0.0-dev.unknown", true, false, false},
+		{"dev version refused when not allowed", "0.0.0-dev.unknown", false, true, true},
+		{"released below minimum refused even when allowed", "2.0.0", true, true, false},
+		{"released at minimum accepted", "3.0.0", false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckMinPipelock("3.0.0", tt.current, tt.allowUnversioned)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("CheckMinPipelock(%q, allow=%v) err=%v want error=%v", tt.current, tt.allowUnversioned, err, tt.wantErr)
+			}
+			if errors.Is(err, ErrUnverifiableVersion) != tt.wantUnverifiable {
+				t.Fatalf("unverifiable sentinel mismatch: err=%v want unverifiable=%v", err, tt.wantUnverifiable)
+			}
+		})
 	}
 }

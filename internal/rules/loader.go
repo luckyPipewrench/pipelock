@@ -395,7 +395,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	// Check min_pipelock version requirement. An unprovable development version
 	// warns and loads by default, while the strict opt-in and all checked
 	// compatibility failures refuse.
-	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion, opts.AllowUnversionedLoad); err != nil {
+	if err := CheckMinPipelockVerdict(bundle.MinPipelock, opts.PipelockVersion); err != nil {
 		if !errors.Is(err, ErrUnverifiableVersion) || !opts.AllowUnversionedLoad {
 			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error(), Class: BundleErrorClassAvailability})
 			return

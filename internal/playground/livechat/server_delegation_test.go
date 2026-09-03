@@ -40,7 +40,11 @@ func TestServer_RequireDelegatedSigning_RefusesBareCode(t *testing.T) {
 	}
 }
 
-func TestServer_DelegatedSession_Starts(t *testing.T) {
+// A delegation is only as good as the root that signed it. This server sits
+// outside the package that owns the trusted identity, so it can prove the
+// refusal a foreign root must produce; the accepted path is proven in the
+// playground package where the trusted root can be set.
+func TestServer_DelegatedSession_RefusesForeignRoot(t *testing.T) {
 	t.Parallel()
 	g, err := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "good", MaxSessions: 5}}, TokenTTL: time.Minute})
 	if err != nil {
@@ -79,8 +83,11 @@ func TestServer_DelegatedSession_Starts(t *testing.T) {
 		OrchestratorDelegation: delJSON,
 	})
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("delegated session status = %d", resp.StatusCode)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("a delegation signed by an untrusted root must not start a session")
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("foreign-root session status = %d, want 400", resp.StatusCode)
 	}
 }
 

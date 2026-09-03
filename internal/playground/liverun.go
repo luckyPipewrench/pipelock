@@ -300,11 +300,14 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		if opts.Delegation == nil {
 			return nil, fmt.Errorf("session signing key requires a root-signed delegation")
 		}
+		// Verify at the signing boundary too. A direct caller reaches this
+		// path without passing through the server's check, and an unverified
+		// delegation would sign a run no published key authorized.
+		if err := VerifySessionDelegation(opts.SessionPrivateKey, *opts.Delegation, opts.RunNonce); err != nil {
+			return nil, fmt.Errorf("session delegation: %w", err)
+		}
 		lr.orchestratorPriv = opts.SessionPrivateKey
 		lr.orchestratorPub = lr.orchestratorPriv.Public().(ed25519.PublicKey)
-		if hex.EncodeToString(lr.orchestratorPub) != opts.Delegation.SessionPublicKey {
-			return nil, fmt.Errorf("session signing key does not match delegation")
-		}
 	case opts.OrchestratorKeyPath != "":
 		var loadErr error
 		lr.orchestratorPriv, loadErr = LoadOrchestratorSigningKey(opts.OrchestratorKeyPath)

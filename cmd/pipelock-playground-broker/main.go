@@ -1832,15 +1832,52 @@ func resolveOrchestratorRoot(f *serveFlags) (ed25519.PrivateKey, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	return playground.ParseOrchestratorPrivateKeyHex(raw)
+	priv, err := playground.ParseOrchestratorPrivateKeyHex(raw)
+	if err != nil {
+		return nil, err
+	}
+	// Every shipped verifier, the browser verifier, and the downloadable kits
+	// all pin the published identity. A broker signing under any other root
+	// produces bundles that fail offline verification for every visitor, which
+	// is a silent break that only shows up after someone downloads a kit.
+	if !playground.OrchestratorKeyMatchesPublished(priv) {
+		return nil, fmt.Errorf("%s does not derive the published orchestrator identity; bundles signed by it would fail every shipped verifier", envOrchestratorRoot)
+	}
+	return priv, nil
 }
 
+// imageRefDigest returns the digest a reference is pinned to, or empty when the
+// reference names a mutable tag.
+func imageRefDigest(image string) string {
+	idx := strings.LastIndex(image, "@sha256:")
+	if idx < 0 {
+		return ""
+	}
+	return "sha256:" + image[idx+len("@sha256:"):]
+}
+
+func validateCanonicalDigest(digest string) error {
+	if !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+64 {
+		return fmt.Errorf("image digest %q is not a canonical sha256 digest", digest)
+	}
+	for _, c := range digest[len("sha256:"):] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return fmt.Errorf("image digest %q is not a canonical sha256 digest", digest)
+		}
+	}
+	return nil
+}
+
+// resolveImageDigest returns the immutable image each session delegation binds.
+// The delegation attests which image ran, so the digest has to describe the
+// image the broker actually launches. A mutable --image tag beside an unrelated
+// --vm-image-digest would attest one image while launching another, so both are
+// refused rather than reconciled.
 func resolveImageDigest(f *serveFlags) (string, error) {
 	digest := strings.TrimSpace(f.vmImageDigest)
+	refDigest := imageRefDigest(f.image)
 	if digest == "" {
-		if idx := strings.LastIndex(f.image, "@sha256:"); idx >= 0 {
-			digest = "sha256:" + f.image[idx+len("@sha256:"):]
-		}
+		digest = refDigest
 	}
 	if digest == "" {
 		if f.requireSessionSecrets {
@@ -1848,12 +1885,17 @@ func resolveImageDigest(f *serveFlags) (string, error) {
 		}
 		return "", nil
 	}
-	if !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+64 {
-		return "", fmt.Errorf("image digest %q is not a canonical sha256 digest", digest)
+	if err := validateCanonicalDigest(digest); err != nil {
+		return "", err
 	}
-	for _, c := range digest[len("sha256:"):] {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return "", fmt.Errorf("image digest %q is not a canonical sha256 digest", digest)
+	// Outside dev the launched reference must be pinned to exactly the digest
+	// the delegation attests.
+	if f.requireSessionSecrets {
+		if refDigest == "" {
+			return "", fmt.Errorf("--image %q must be pinned by digest so the delegated image is the image that launches", f.image)
+		}
+		if refDigest != digest {
+			return "", fmt.Errorf("--image is pinned to %s but --vm-image-digest is %s; a delegation would attest an image that never launched", refDigest, digest)
 		}
 	}
 	return digest, nil

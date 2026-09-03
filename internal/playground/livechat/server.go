@@ -852,6 +852,13 @@ func parseSessionDelegation(body createReq, required bool) (ed25519.PrivateKey, 
 	if body.SessionSigningKey == "" || len(body.OrchestratorDelegation) == 0 {
 		return nil, nil, errors.New("session signing key and delegation must both be present")
 	}
+	// The run nonce is what ties this delegation to this run. Without one the
+	// server would mint a random session id and sign a manifest for a run the
+	// delegation never authorized, so an absent nonce is a refusal rather than
+	// a skipped check.
+	if body.RunNonce == "" {
+		return nil, nil, errors.New("delegated session requires a run nonce")
+	}
 	priv, err := playground.ParseOrchestratorPrivateKeyHex(body.SessionSigningKey)
 	if err != nil {
 		return nil, nil, err
@@ -860,8 +867,11 @@ func parseSessionDelegation(body createReq, required bool) (ed25519.PrivateKey, 
 	if err != nil {
 		return nil, nil, err
 	}
-	if body.RunNonce != "" && d.RunNonce != body.RunNonce {
-		return nil, nil, errors.New("delegation run_nonce does not match")
+	// Parsing only proves the delegation is well formed. Verify it against the
+	// compiled published root, never against a root the delegation names, or a
+	// caller holding an invite code could authorize its own session key.
+	if err := playground.VerifySessionDelegation(priv, d, body.RunNonce); err != nil {
+		return nil, nil, err
 	}
 	return priv, &d, nil
 }

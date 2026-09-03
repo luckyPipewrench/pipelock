@@ -19,6 +19,37 @@ import (
 // seal and verify after expiry.
 const DefaultSessionDelegationLifetime = 2 * time.Hour
 
+// trustedDelegationRoot resolves the only root a delegation may be signed by.
+// It is a package variable solely so this package's own tests can mint under a
+// generated root; nothing outside this package can reach it, so no deployment
+// can be configured to trust a different identity.
+var trustedDelegationRoot = PublishedOrchestratorPublicKey
+
+// VerifySessionDelegation checks a delegation against the published root and
+// confirms it authorizes exactly this session key for this run. Parsing alone
+// proves only that a delegation is well formed; without this a caller could
+// present a structurally valid delegation it signed itself.
+func VerifySessionDelegation(priv ed25519.PrivateKey, d OrchestratorDelegation, runNonce string) error {
+	if runNonce == "" {
+		return fmt.Errorf("delegated session requires a run nonce")
+	}
+	root, err := trustedDelegationRoot()
+	if err != nil {
+		return err
+	}
+	if err := VerifyOrchestratorDelegation(root, d, DelegationExpectations{RunNonce: runNonce}); err != nil {
+		return err
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return fmt.Errorf("session signing key has no ed25519 public half")
+	}
+	if hex.EncodeToString(pub) != d.SessionPublicKey {
+		return fmt.Errorf("delegation does not authorize this session signing key")
+	}
+	return nil
+}
+
 // MintedSession is one short-lived signing key plus the root-signed
 // delegation that authorizes it for a single run and image.
 type MintedSession struct {
@@ -34,6 +65,12 @@ func MintSessionDelegation(root ed25519.PrivateKey, runNonce, imageDigest string
 	}
 	if lifetime <= 0 {
 		lifetime = DefaultSessionDelegationLifetime
+	}
+	// The delegation format carries second precision, so a sub-second lifetime
+	// truncates to zero and mints a delegation that expires the instant it is
+	// issued. Refuse rather than emit one nothing can use.
+	if lifetime < time.Second {
+		return MintedSession{}, fmt.Errorf("delegation lifetime %s is below the one-second format precision", lifetime)
 	}
 	sessionPub, sessionPriv, err := signing.GenerateKeyPair()
 	if err != nil {

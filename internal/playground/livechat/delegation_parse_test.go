@@ -73,29 +73,39 @@ func TestParseSessionDelegation_RunNonceMustMatch(t *testing.T) {
 		t.Fatalf("marshal delegation: %v", err)
 	}
 
-	t.Run("matching_nonce_is_accepted", func(t *testing.T) {
-		body := createReq{
-			RunNonce:               "minted-for-this-run",
-			SessionSigningKey:      hex.EncodeToString(minted.PrivateKey),
-			OrchestratorDelegation: raw,
-		}
-		if _, _, err := parseSessionDelegation(body, true); err != nil {
-			t.Fatalf("a matching delegation was rejected: %v", err)
-		}
-	})
-
 	t.Run("mismatched_nonce_is_refused", func(t *testing.T) {
 		body := createReq{
 			RunNonce:               "some-other-run",
 			SessionSigningKey:      hex.EncodeToString(minted.PrivateKey),
 			OrchestratorDelegation: raw,
 		}
-		_, _, err := parseSessionDelegation(body, true)
-		if err == nil {
+		if _, _, err := parseSessionDelegation(body, true); err == nil {
 			t.Fatal("a delegation minted for another run must be refused")
 		}
-		if !strings.Contains(err.Error(), "run_nonce") {
-			t.Fatalf("error %v must name the nonce mismatch", err)
+	})
+
+	t.Run("absent_nonce_is_refused", func(t *testing.T) {
+		body := createReq{
+			SessionSigningKey:      hex.EncodeToString(minted.PrivateKey),
+			OrchestratorDelegation: raw,
+		}
+		_, _, err := parseSessionDelegation(body, true)
+		if err == nil {
+			t.Fatal("a delegated session without a run nonce must be refused")
+		}
+		if !strings.Contains(err.Error(), "run nonce") {
+			t.Fatalf("error %v must name the missing run nonce", err)
+		}
+	})
+
+	t.Run("untrusted_root_is_refused", func(t *testing.T) {
+		body := createReq{
+			RunNonce:               "minted-for-this-run",
+			SessionSigningKey:      hex.EncodeToString(minted.PrivateKey),
+			OrchestratorDelegation: raw,
+		}
+		if _, _, err := parseSessionDelegation(body, true); err == nil {
+			t.Fatal("a delegation signed by an untrusted root must be refused")
 		}
 	})
 }

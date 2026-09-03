@@ -40,8 +40,8 @@ cd "${REPO_ROOT}"
 # workstation the proxy is loopback-only, so the build also uses host
 # networking; both are skipped when no proxy is set.
 DOCKER_BUILD_FLAGS=()
-if [ -n "${HTTP_PROXY:-${http_proxy:-}}" ]; then
-	proxy="${HTTP_PROXY:-$http_proxy}"
+if [ -n "${HTTP_PROXY:-${http_proxy:-${HTTPS_PROXY:-${https_proxy:-}}}}" ]; then
+	proxy="${HTTP_PROXY:-${http_proxy:-${HTTPS_PROXY:-${https_proxy:-}}}}"
 	https_proxy_val="${HTTPS_PROXY:-${https_proxy:-$proxy}}"
 	DOCKER_BUILD_FLAGS+=(
 		--network "${DOCKER_BUILD_NETWORK:-host}"

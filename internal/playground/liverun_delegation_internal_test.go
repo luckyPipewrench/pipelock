@@ -16,12 +16,18 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+// testRunRoot generates a root and makes it the trusted delegation root for
+// the duration of the test. Production always trusts the compiled published
+// identity; this only lets the tests mint delegations that verify.
 func testRunRoot(t *testing.T) ed25519.PrivateKey {
 	t.Helper()
-	_, priv, err := signing.GenerateKeyPair()
+	pub, priv, err := signing.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
+	prev := trustedDelegationRoot
+	trustedDelegationRoot = func() (ed25519.PublicKey, error) { return pub, nil }
+	t.Cleanup(func() { trustedDelegationRoot = prev })
 	return priv
 }
 
@@ -139,7 +145,7 @@ func TestStartLiveRun_RefusesUnauthorizedSessionKey(t *testing.T) {
 		{
 			name: "key_not_named_by_delegation",
 			opts: LiveRunOpts{SessionPrivateKey: minted.PrivateKey, Delegation: &other.Delegation},
-			want: "does not match delegation",
+			want: "does not authorize this session signing key",
 		},
 		{
 			name: "malformed_key",
@@ -163,6 +169,69 @@ func TestStartLiveRun_RefusesUnauthorizedSessionKey(t *testing.T) {
 	}
 }
 
+// A delegation signed by a root the deployment does not trust must be refused
+// even when it is internally consistent. Without this an invite-code holder
+// could sign its own delegation and start an authorized-looking session.
+func TestStartLiveRun_RefusesUntrustedRoot(t *testing.T) {
+	trusted := testRunRoot(t)
+	_ = trusted
+
+	_, foreign, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	const nonce = "foreign-root-nonce"
+	minted, err := MintSessionDelegation(foreign, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	lr, err := StartLiveRun(t.Context(), LiveRunOpts{
+		ScenarioID:        LiveDemoScenarioID,
+		RunNonce:          nonce,
+		SessionPrivateKey: minted.PrivateKey,
+		Delegation:        &minted.Delegation,
+	})
+	if err == nil {
+		lr.Close()
+		t.Fatal("a delegation from an untrusted root must be refused")
+	}
+	if !strings.Contains(err.Error(), "root") {
+		t.Fatalf("error = %v, want it to name the root mismatch", err)
+	}
+}
+
+// A run nonce that the delegation does not name must be refused, and an absent
+// nonce must be refused rather than silently skipping the binding.
+func TestStartLiveRun_RequiresBoundRunNonce(t *testing.T) {
+	root := testRunRoot(t)
+	minted, err := MintSessionDelegation(root, "authorized-run", testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		nonce string
+	}{
+		{name: "different_run", nonce: "some-other-run"},
+		{name: "absent_run_nonce", nonce: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lr, err := StartLiveRun(t.Context(), LiveRunOpts{
+				ScenarioID:        LiveDemoScenarioID,
+				RunNonce:          tc.nonce,
+				SessionPrivateKey: minted.PrivateKey,
+				Delegation:        &minted.Delegation,
+			})
+			if err == nil {
+				lr.Close()
+				t.Fatal("a delegation not bound to this run must be refused")
+			}
+		})
+	}
+}
+
 // A zero lifetime takes the default window rather than minting a delegation
 // that is already expired.
 func TestMintSessionDelegation_ZeroLifetimeUsesDefault(t *testing.T) {
@@ -174,6 +243,15 @@ func TestMintSessionDelegation_ZeroLifetimeUsesDefault(t *testing.T) {
 	window := minted.Delegation.ExpiresAtUnix - minted.Delegation.NotBeforeUnix
 	if want := int64(DefaultSessionDelegationLifetime / time.Second); window != want {
 		t.Fatalf("delegation window = %ds, want %ds", window, want)
+	}
+}
+
+// A sub-second lifetime truncates to a zero-length window in a second-precision
+// format, so it is refused rather than minted already-expired.
+func TestMintSessionDelegation_RejectsSubSecondLifetime(t *testing.T) {
+	root := testRunRoot(t)
+	if _, err := MintSessionDelegation(root, "n", testRunImageDigest, time.Now().UTC(), 500*time.Millisecond); err == nil {
+		t.Fatal("a sub-second delegation lifetime must be refused")
 	}
 }
 

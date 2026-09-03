@@ -260,15 +260,6 @@ func devServeFlags() *serveFlags {
 	}
 }
 
-func testOrchestratorKeyPath(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "demo-signing.key")
-	if _, err := playground.GenerateOrchestratorKey(path, false); err != nil {
-		t.Fatalf("GenerateOrchestratorKey: %v", err)
-	}
-	return path
-}
-
 func testExecutablePath(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pipelock-playground-llm-agent")
@@ -404,7 +395,7 @@ func TestBuildServer_RequireModelFailsClosedWithoutModelConfig(t *testing.T) {
 	f.concurrency = 1
 	f.requireModel = true
 	f.codes = []string{"good"}
-	f.orchestratorKey = testOrchestratorKeyPath(t)
+	f.requireDelegated = true
 
 	var out bytes.Buffer
 	if _, _, err := buildServer(&out, f); err == nil {
@@ -423,7 +414,7 @@ func TestBuildServer_PublicModelValidatesRuntimeFiles(t *testing.T) {
 	f.modelBaseURL = "http://provider.example/v1"
 	f.model = "test-model"
 	f.modelSecretFile = filepath.Join(t.TempDir(), "missing-model.key")
-	f.orchestratorKey = testOrchestratorKeyPath(t)
+	f.requireDelegated = true
 	f.dailyTurnBudget = 10
 
 	var out bytes.Buffer

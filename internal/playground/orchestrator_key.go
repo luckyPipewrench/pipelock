@@ -98,6 +98,21 @@ func LoadOrchestratorSigningKey(path string) (ed25519.PrivateKey, error) {
 	return priv, nil
 }
 
+// PublishedOrchestratorPublicKey decodes the compiled published demo public
+// key. Every delegation is verified against this value rather than against a
+// root supplied by whoever sent the delegation, because a caller-chosen root
+// would let a caller authorize its own session key.
+func PublishedOrchestratorPublicKey() (ed25519.PublicKey, error) {
+	raw, err := hex.DecodeString(PublishedOrchestratorPubKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("published orchestrator key is not hex: %w", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("published orchestrator key has wrong size: got %d bytes, want %d", len(raw), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(raw), nil
+}
+
 // OrchestratorKeyMatchesPublished reports whether priv derives the compiled
 // published demo public key.
 func OrchestratorKeyMatchesPublished(priv ed25519.PrivateKey) bool {

@@ -229,6 +229,11 @@ func TestServer_Bundle_SealFailureReleasesCapacity(t *testing.T) {
 	if failure.Error != "we could not create a verifiable bundle for this session; nothing partial was released" {
 		t.Fatalf("bundle failure = %q, want generic no-partial-release message", failure.Error)
 	}
+	// The failure path is still an owner-scoped response on a short-lived token,
+	// so it carries the same caching guarantee as a successful download.
+	if cc := dl.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("seal-failure Cache-Control = %q, want no-store", cc)
+	}
 	if got := srv.conc.InUse(); got != 0 {
 		t.Fatalf("failed seal did not release session capacity: in_use=%d", got)
 	}

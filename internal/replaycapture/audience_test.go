@@ -6,7 +6,9 @@
 package replaycapture
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,6 +22,13 @@ import (
 // Assembly consumes the in-memory ActionRecord, so this drives the publication
 // gate under test. Chain and signature verification happen upstream of assembly
 // and are covered by the chain tests, not here.
+//
+// The limit worth knowing: evidence.jsonl is copied from the capture's own
+// evidence file, which this rewrite does not touch, so these tests can speak
+// for packet.json and not for that file. The end-to-end property, a genuinely
+// signed real-host receipt surviving into both, is proven by
+// TestAssembleSessionOwnerFromEvidence_RealHostKeepsValidChain in the
+// playground package, which drives the real evidence-file seam.
 func captureWithTargetHost(t *testing.T, target string) *CapturedScenario {
 	t.Helper()
 	eng := newTestEngine(t)
@@ -94,6 +103,16 @@ func TestAssemblePacketFor_SessionOwnerKeepsRealHost(t *testing.T) {
 	}
 	if res.Receipts != want {
 		t.Fatalf("packet carries %d receipts, want all %d; the chain must never be trimmed to make it publishable", res.Receipts, want)
+	}
+
+	// Cardinality alone would pass if the owner path redacted the host, so
+	// assert the target survives into the bytes actually written.
+	packet, err := os.ReadFile(filepath.Clean(filepath.Join(res.PacketDir, artifactPacketName)))
+	if err != nil {
+		t.Fatalf("read packet.json: %v", err)
+	}
+	if !bytes.Contains(packet, []byte("sts.amazonaws.com")) {
+		t.Fatal("the owner's packet must retain the real target rather than redact it")
 	}
 }
 

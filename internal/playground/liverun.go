@@ -293,6 +293,11 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	// loads a durable key for local/legacy runs. Empty means an ephemeral
 	// per-run key (dev default).
 	switch {
+	case opts.Delegation != nil && len(opts.SessionPrivateKey) == 0:
+		// The manifest records the delegation regardless of which signer is
+		// selected, so a delegation without its session key would produce a
+		// run claiming an authorization its actual signer never held.
+		return nil, fmt.Errorf("delegation requires the session signing key it authorizes")
 	case len(opts.SessionPrivateKey) != 0:
 		if err := signing.ValidatePrivateKeyConsistency(opts.SessionPrivateKey); err != nil {
 			return nil, fmt.Errorf("session signing key: %w", err)

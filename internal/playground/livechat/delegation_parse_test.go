@@ -74,17 +74,10 @@ func TestParseSessionDelegation_RunNonceMustMatch(t *testing.T) {
 		t.Fatalf("marshal delegation: %v", err)
 	}
 
-	t.Run("mismatched_nonce_is_refused", func(t *testing.T) {
-		body := createReq{
-			RunNonce:               "some-other-run",
-			SessionSigningKey:      hex.EncodeToString(minted.PrivateKey),
-			OrchestratorDelegation: raw,
-		}
-		if _, _, err := parseSessionDelegation(body, true); err == nil {
-			t.Fatal("a delegation minted for another run must be refused")
-		}
-	})
-
+	// The nonce-mismatch assertion lives in the playground package, where the
+	// trusted root can be set so signature verification succeeds and the nonce
+	// check is the thing under test. From here every minted delegation is
+	// foreign, so that assertion would pass on the root refusal instead.
 	t.Run("absent_nonce_is_refused", func(t *testing.T) {
 		body := createReq{
 			SessionSigningKey:      hex.EncodeToString(minted.PrivateKey),

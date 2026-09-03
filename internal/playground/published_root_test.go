@@ -6,6 +6,7 @@ package playground
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,5 +107,69 @@ func TestMintSessionDelegation_RejectsInvalidClaims(t *testing.T) {
 				t.Fatal("invalid delegation claims must be refused at mint time")
 			}
 		})
+	}
+}
+
+// The launch manifest records the delegation whichever signer is chosen, so a
+// delegation supplied without its session key would produce a run claiming an
+// authorization its signer never held. Both other signer branches must refuse.
+func TestStartLiveRun_RefusesDelegationWithoutSessionKey(t *testing.T) {
+	root := testRunRoot(t)
+	const nonce = "no-session-key-nonce"
+
+	minted, err := MintSessionDelegation(root, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts LiveRunOpts
+	}{
+		{
+			name: "ephemeral_signer_branch",
+			opts: LiveRunOpts{Delegation: &minted.Delegation},
+		},
+		{
+			name: "durable_key_path_branch",
+			opts: LiveRunOpts{Delegation: &minted.Delegation, OrchestratorKeyPath: "/nonexistent/orchestrator.key"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.ScenarioID = LiveDemoScenarioID
+			opts.RunNonce = nonce
+			lr, err := StartLiveRun(t.Context(), opts)
+			if err == nil {
+				lr.Close()
+				t.Fatal("a delegation without its session signing key must be refused")
+			}
+			if !strings.Contains(err.Error(), "session signing key") {
+				t.Fatalf("error = %v, want it to name the missing session signing key", err)
+			}
+		})
+	}
+}
+
+// The nonce binding is asserted here rather than in the livechat package,
+// because only this package can make signature verification succeed first. If
+// the nonce check regressed, this test is what would catch it.
+func TestVerifySessionDelegation_NonceMismatchIsTheRefusal(t *testing.T) {
+	root := testRunRoot(t)
+	minted, err := MintSessionDelegation(root, "authorized-run", testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	if err := VerifySessionDelegation(minted.PrivateKey, minted.Delegation, "authorized-run"); err != nil {
+		t.Fatalf("the authorized run was rejected: %v", err)
+	}
+
+	err = VerifySessionDelegation(minted.PrivateKey, minted.Delegation, "a-different-run")
+	if err == nil {
+		t.Fatal("a delegation minted for another run must be refused")
+	}
+	if !strings.Contains(err.Error(), "run_nonce") {
+		t.Fatalf("error %v must name the nonce mismatch, not some earlier check", err)
 	}
 }

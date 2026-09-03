@@ -154,6 +154,10 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.FlightRecorder = FlightRecorder{RequireReceipts: view.FlightRecorder.RequireReceipts}
 	view.EvidenceProvenance = EvidenceProvenance{}
 	view.Conductor = Conductor{}
+	// The override's existence changes sandbox posture, but its operator note
+	// and expiry do not change request-time scanner decisions.
+	view.Sandbox.BestEffortReason = ""
+	view.Sandbox.BestEffortExpiry = ""
 
 	// License metadata - determines whether a tier feature is available,
 	// but the effective per-agent config that the request-time path

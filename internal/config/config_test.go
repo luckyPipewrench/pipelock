@@ -13137,6 +13137,8 @@ func TestValidate_SandboxBestEffortAlone(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.Sandbox.BestEffort = true
+	cfg.Sandbox.BestEffortReason = "test override"
+	cfg.Sandbox.BestEffortExpiry = "1h"
 	cfg.Sandbox.Strict = false
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("best_effort alone should be valid: %v", err)

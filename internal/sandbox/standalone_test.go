@@ -238,10 +238,12 @@ func TestReadGuardExecutionProofRejectsExecFailureAndTrailingSuccess(t *testing.
 
 func TestLaunchStandalone_RequireNetNSRejectsBestEffort(t *testing.T) {
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:      []string{"true"},
-		Workspace:    t.TempDir(),
-		BestEffort:   true,
-		RequireNetNS: true,
+		Command:          []string{"true"},
+		Workspace:        t.TempDir(),
+		BestEffort:       true,
+		BestEffortReason: "test override",
+		BestEffortExpiry: "1h",
+		RequireNetNS:     true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "network namespace is required") {
 		t.Fatalf("LaunchStandalone error = %v, want required network namespace error", err)

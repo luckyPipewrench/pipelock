@@ -732,6 +732,8 @@ func mcpProxyCmdWithAuditLoggerFactory(newAuditLogger mcpAuditLoggerFactory) *co
 	var sandboxEnabled bool
 	var sandboxStrict bool
 	var sandboxBestEffort bool
+	var sandboxBestEffortReason string
+	var sandboxBestEffortExpiry string
 	var sandboxWorkspace string
 	var captureOutput string
 	var captureEscrowKey string
@@ -1604,19 +1606,29 @@ Key-free evidence capture:
 
 				mcpStrict := sandboxStrict || cfg.Sandbox.Strict
 				mcpBestEffort := sandboxBestEffort || cfg.Sandbox.BestEffort
+				mcpBestEffortReason := sandboxBestEffortReason
+				if mcpBestEffortReason == "" {
+					mcpBestEffortReason = cfg.Sandbox.BestEffortReason
+				}
+				mcpBestEffortExpiry := sandboxBestEffortExpiry
+				if mcpBestEffortExpiry == "" {
+					mcpBestEffortExpiry = cfg.Sandbox.BestEffortExpiry
+				}
 
 				if mcpStrict && mcpBestEffort {
 					return errors.New("--sandbox-strict and --sandbox-best-effort are mutually exclusive")
 				}
 
 				launchCfg := sandbox.LaunchConfig{
-					Ctx:             ctx,
-					Command:         serverCmd,
-					Workspace:       workspace,
-					Strict:          mcpStrict,
-					BestEffort:      mcpBestEffort,
-					ExtraEnv:        extraEnv,
-					GateTargetStart: true,
+					Ctx:              ctx,
+					Command:          serverCmd,
+					Workspace:        workspace,
+					Strict:           mcpStrict,
+					BestEffort:       mcpBestEffort,
+					BestEffortReason: mcpBestEffortReason,
+					BestEffortExpiry: mcpBestEffortExpiry,
+					ExtraEnv:         extraEnv,
+					GateTargetStart:  true,
 				}
 				if cfg.Sandbox.FS != nil {
 					p := sandbox.DefaultPolicy(workspace)
@@ -1894,6 +1906,8 @@ Key-free evidence capture:
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + network namespace on Linux, plus seccomp on linux/amd64)")
 	cmd.Flags().BoolVar(&sandboxStrict, "sandbox-strict", false, "strict sandbox: error on missing layers, private /dev/shm, block clone3 (implies --sandbox)")
 	cmd.Flags().BoolVar(&sandboxBestEffort, "sandbox-best-effort", false, "degrade gracefully when namespace isolation is unavailable (implies --sandbox)")
+	cmd.Flags().StringVar(&sandboxBestEffortReason, "sandbox-best-effort-reason", "", "required reason for the temporary best-effort network override")
+	cmd.Flags().StringVar(&sandboxBestEffortExpiry, "sandbox-best-effort-expiry", "", "required duration or RFC3339 expiry for the best-effort network override")
 	cmd.Flags().StringVar(&sandboxWorkspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	return cmd
 }

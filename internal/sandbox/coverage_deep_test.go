@@ -47,9 +47,11 @@ func TestPrepareSandboxCmd_ReadsExePath(t *testing.T) {
 	workspace := t.TempDir()
 
 	cmd, err := PrepareSandboxCmd(LaunchConfig{
-		Command:    []string{echoCmd, testStr},
-		Workspace:  workspace,
-		BestEffort: true,
+		Command:          []string{echoCmd, testStr},
+		Workspace:        workspace,
+		BestEffort:       true,
+		BestEffortReason: "test override",
+		BestEffortExpiry: "1h",
 	})
 	if err != nil {
 		t.Fatalf("PrepareSandboxCmd: %v", err)
@@ -71,9 +73,11 @@ func TestPrepareSandboxCmd_SetsProcessGroup(t *testing.T) {
 	workspace := t.TempDir()
 
 	cmd, err := PrepareSandboxCmd(LaunchConfig{
-		Command:    []string{echoCmd, testStr},
-		Workspace:  workspace,
-		BestEffort: true,
+		Command:          []string{echoCmd, testStr},
+		Workspace:        workspace,
+		BestEffort:       true,
+		BestEffortReason: "test override",
+		BestEffortExpiry: "1h",
 	})
 	if err != nil {
 		t.Fatalf("PrepareSandboxCmd: %v", err)
@@ -96,12 +100,14 @@ func TestPrepareSandboxCmd_SetsIOStreams(t *testing.T) {
 	var stdin bytes.Buffer
 	var stdout, stderr bytes.Buffer
 	cmd, err := PrepareSandboxCmd(LaunchConfig{
-		Command:    []string{echoCmd, testStr},
-		Workspace:  workspace,
-		BestEffort: true,
-		Stdin:      &stdin,
-		Stdout:     &stdout,
-		Stderr:     &stderr,
+		Command:          []string{echoCmd, testStr},
+		Workspace:        workspace,
+		BestEffort:       true,
+		BestEffortReason: "test override",
+		BestEffortExpiry: "1h",
+		Stdin:            &stdin,
+		Stdout:           &stdout,
+		Stderr:           &stderr,
 	})
 	if err != nil {
 		t.Fatalf("PrepareSandboxCmd: %v", err)
@@ -987,9 +993,11 @@ func TestLaunchStandalone_BestEffortMode(t *testing.T) {
 	workspace := t.TempDir()
 
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:    []string{"true"},
-		Workspace:  workspace,
-		BestEffort: true,
+		Command:          []string{"true"},
+		Workspace:        workspace,
+		BestEffort:       true,
+		BestEffortReason: "test override",
+		BestEffortExpiry: "1h",
 	})
 	if err != nil {
 		t.Fatalf("LaunchStandalone best-effort: %v", err)

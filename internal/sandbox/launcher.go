@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // LaunchConfig configures how the sandbox launcher forks the child process.
@@ -43,6 +44,10 @@ type LaunchConfig struct {
 	// applied, and seccomp where the build contains a filter, which is
 	// linux/amd64 only. Mutually exclusive with Strict.
 	BestEffort bool
+	// BestEffortReason and BestEffortExpiry authorize a temporary advisory
+	// network override. They are required when BestEffort is true.
+	BestEffortReason string
+	BestEffortExpiry string
 
 	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
 	ExtraEnv []string
@@ -230,6 +235,11 @@ func PrepareSandboxLaunch(cfg LaunchConfig) (*PreparedSandboxCmd, error) {
 	// Strict and BestEffort are mutually exclusive - catch misuse by callers.
 	if cfg.Strict && cfg.BestEffort {
 		return nil, fmt.Errorf("sandbox: strict and best_effort are mutually exclusive")
+	}
+	if cfg.BestEffort {
+		if _, err := validateBestEffortOverride(cfg.BestEffortReason, cfg.BestEffortExpiry, time.Now()); err != nil {
+			return nil, err
+		}
 	}
 
 	// Probe namespace support before setting clone flags.

@@ -238,7 +238,7 @@ func runMCPEnvironProofHelper(t *testing.T, mode string) {
 	case "strict":
 		args = append(args, "--sandbox-strict")
 	case "best-effort-with-namespaces", "best-effort-fallback":
-		args = append(args, "--sandbox-best-effort")
+		args = append(args, "--sandbox-best-effort", "--sandbox-best-effort-reason", "integration test", "--sandbox-best-effort-expiry", "1h")
 	default:
 		t.Fatalf("unknown MCP environ proof mode %q", mode)
 	}

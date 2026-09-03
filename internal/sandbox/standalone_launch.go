@@ -136,6 +136,11 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) (returnErr error) {
 	if cfg.Strict && cfg.BestEffort {
 		return fmt.Errorf("sandbox: strict and best_effort are mutually exclusive")
 	}
+	if cfg.BestEffort {
+		if _, err := validateBestEffortOverride(cfg.BestEffortReason, cfg.BestEffortExpiry, time.Now()); err != nil {
+			return err
+		}
+	}
 
 	// Probe namespace support before forking.
 	// Only CLONE_NEWUSER is probed because CLONE_NEWNET requires CLONE_NEWUSER

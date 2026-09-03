@@ -268,11 +268,13 @@ type FileSentry struct {
 // Sandbox config is startup-only and reload-immutable: changing these
 // values in a config reload has no effect on an already-running sandbox.
 type Sandbox struct {
-	Enabled    bool               `yaml:"enabled"`
-	Strict     bool               `yaml:"strict"`      // error if any containment layer is unavailable
-	BestEffort bool               `yaml:"best_effort"` // degrade gracefully when namespace isolation unavailable (e.g. containers)
-	Workspace  string             `yaml:"workspace"`   // agent working dir; resolved to absolute at startup
-	FS         *SandboxFilesystem `yaml:"filesystem"`
+	Enabled          bool               `yaml:"enabled"`
+	Strict           bool               `yaml:"strict"`      // error if any containment layer is unavailable
+	BestEffort       bool               `yaml:"best_effort"` // advisory network override when namespace isolation is unavailable
+	BestEffortReason string             `yaml:"best_effort_reason" json:"-"`
+	BestEffortExpiry string             `yaml:"best_effort_expiry" json:"-"`
+	Workspace        string             `yaml:"workspace"` // agent working dir; resolved to absolute at startup
+	FS               *SandboxFilesystem `yaml:"filesystem"`
 }
 
 // AgentSandboxOverride controls per-agent sandbox settings.

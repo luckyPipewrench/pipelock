@@ -2580,7 +2580,9 @@ Process containment for agent commands using Linux kernel primitives. The agent 
 ```yaml
 sandbox:
   enabled: true
-  best_effort: false              # degrade gracefully when namespace isolation unavailable
+  best_effort: false              # temporary advisory network override only
+  best_effort_reason: ""          # required when best_effort is true
+  best_effort_expiry: ""          # required duration or RFC3339 timestamp
   strict: false                   # error if any layer unavailable (mutually exclusive with best_effort)
   workspace: /home/user/project   # agent working directory (default: CWD)
   filesystem:                     # optional Landlock overrides (default policy works for most agents)
@@ -2594,7 +2596,9 @@ sandbox:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable sandbox containment |
-| `best_effort` | `false` | Skip namespace isolation when unavailable (e.g. containers). Landlock still applies, and seccomp on `linux/amd64`. |
+| `best_effort` | `false` | Temporary advisory override when a network namespace cannot be created. Requires `best_effort_reason` and `best_effort_expiry`. Direct egress may bypass Pipelock. |
+| `best_effort_reason` | `""` | Operator reason for the advisory network override. Required with `best_effort: true`. |
+| `best_effort_expiry` | `""` | Expiry for the advisory override: a Go duration such as `30m`, or an RFC3339 timestamp. Expired overrides refuse launch. Required with `best_effort: true`. |
 | `strict` | `false` | Error if any containment layer is unavailable. Mutually exclusive with `best_effort`. |
 | `workspace` | CWD | Agent working directory (resolved to absolute at startup) |
 | `filesystem.allow_read` | `[]` | Additional read-only filesystem paths |
@@ -2609,7 +2613,7 @@ If `filesystem` is omitted, the default Landlock policy is used (safe for Python
 
 For sandboxed MCP stdio servers on Linux, the bridge enables forward-proxy handling internally even when `forward_proxy.enabled` is false in YAML. This is scoped to the sandbox bridge only and does not expose the normal forward proxy listener.
 
-In `--best-effort` mode (for containers without user-namespace support), the bridge still scans traffic but network enforcement is cooperative: a child process that clears `HTTP_PROXY` / `HTTPS_PROXY` can bypass Pipelock.
+In `--best-effort` mode (for containers without user-namespace support), the bridge still scans traffic but network enforcement is cooperative: a child process that clears `HTTP_PROXY` / `HTTPS_PROXY` can bypass Pipelock. This is an advisory override, not a contained launch: supply a reason and expiry with `--best-effort-reason` and `--best-effort-expiry`, or set the matching YAML fields. An expired override refuses launch.
 
 **Usage:**
 ```bash
@@ -2625,8 +2629,8 @@ pipelock sandbox --config pipelock.yaml -- python agent.py
 # Pass environment variables to sandboxed process
 pipelock sandbox --env API_KEY --env HOME=/app -- node server.js
 
-# Best-effort mode for containers (Landlock, plus seccomp on linux/amd64, no namespace)
-pipelock sandbox --best-effort -- python agent.py
+# Temporary advisory override for containers (Landlock, plus seccomp on linux/amd64, no namespace)
+pipelock sandbox --best-effort --best-effort-reason "container user namespaces disabled" --best-effort-expiry 30m -- python agent.py
 
 # Check sandbox capabilities without launching
 pipelock sandbox --dry-run --json -- python agent.py
@@ -2638,8 +2642,8 @@ pipelock sandbox --dry-run --json -- python agent.py
 |-------------|--------|-------|
 | Bare metal / VM (Linux, amd64) | 3/3 | Full containment: Landlock + seccomp + network namespace |
 | Bare metal / VM (Linux, non-amd64) | 2/3 | Landlock + network namespace. Seccomp reports unavailable; see below. |
-| Containers, amd64 (`--best-effort`) | 2/3 | Landlock + seccomp. Network via HTTP_PROXY + NetworkPolicy. |
-| Containers, non-amd64 (`--best-effort`) | 1/3 | Landlock only. Seccomp reports unavailable; network via HTTP_PROXY + NetworkPolicy. |
+| Containers, amd64 (authorized `--best-effort`) | advisory-override | Landlock + seccomp. Direct egress may bypass Pipelock. |
+| Containers, non-amd64 (authorized `--best-effort`) | advisory-override | Landlock only. Direct egress may bypass Pipelock. |
 | macOS | sandbox-exec | Apple SBPL profiles for filesystem + network restriction |
 
 **Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged on bare metal. macOS 13+ for sandbox-exec. Containers may need `--best-effort` if default seccomp blocks `CLONE_NEWUSER`.

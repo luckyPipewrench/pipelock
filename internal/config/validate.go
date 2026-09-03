@@ -3729,6 +3729,19 @@ func (c *Config) validateSandbox() error {
 	if c.Sandbox.BestEffort && c.Sandbox.Strict {
 		return fmt.Errorf("sandbox: best_effort and strict are mutually exclusive")
 	}
+	if c.Sandbox.BestEffort {
+		if strings.TrimSpace(c.Sandbox.BestEffortReason) == "" {
+			return errors.New("sandbox: best_effort_reason is required when best_effort is true")
+		}
+		if strings.TrimSpace(c.Sandbox.BestEffortExpiry) == "" {
+			return errors.New("sandbox: best_effort_expiry is required when best_effort is true")
+		}
+		if _, err := time.ParseDuration(c.Sandbox.BestEffortExpiry); err != nil {
+			if _, timestampErr := time.Parse(time.RFC3339, c.Sandbox.BestEffortExpiry); timestampErr != nil {
+				return errors.New("sandbox: best_effort_expiry must be a duration or RFC3339 timestamp")
+			}
+		}
+	}
 
 	// Sandbox: validate filesystem paths even when disabled (CLI can override enabled).
 	if c.Sandbox.FS != nil {

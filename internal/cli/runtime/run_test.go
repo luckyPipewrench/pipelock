@@ -925,7 +925,10 @@ logging:
 		select {
 		case err := <-cmdErr:
 			if err != nil {
-				t.Errorf("RunCmd returned error: %v", err)
+				// A different listener can answer the readiness probe after the
+				// test releases mainAddr. Let WithRetry choose a new address when
+				// our command then loses the bind race.
+				return fmt.Errorf("RunCmd returned error after readiness: %w", err)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("RunCmd did not exit within 5s")
@@ -1099,7 +1102,7 @@ logging:
 		select {
 		case err := <-cmdErr:
 			if err != nil {
-				t.Errorf("RunCmd returned error: %v\nstderr:\n%s", err, stderr.String())
+				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("RunCmd did not exit within 5s")
@@ -1195,7 +1198,7 @@ logging:
 		select {
 		case err := <-cmdErr:
 			if err != nil {
-				t.Errorf("RunCmd returned error: %v\nstderr:\n%s", err, stderr.String())
+				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("RunCmd did not exit within 5s")
@@ -1297,7 +1300,7 @@ logging:
 		select {
 		case err := <-cmdErr:
 			if err != nil {
-				t.Errorf("RunCmd returned error: %v\nstderr:\n%s", err, stderr.String())
+				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("RunCmd did not exit within 5s")
@@ -1870,7 +1873,7 @@ logging:
 		select {
 		case err := <-cmdErr:
 			if err != nil {
-				t.Errorf("RunCmd returned error: %v", err)
+				return fmt.Errorf("RunCmd returned error after readiness: %w", err)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("RunCmd did not exit within 5s")

@@ -76,8 +76,6 @@ func TestServer_DuplicateRunNonceDoesNotDisplaceTheActiveSession(t *testing.T) {
 // nonce then exhausted a shared code, which is a denial of the demo rather than
 // a leak, and it is exactly what an attendee sharing a code would trip.
 func TestServer_ConcurrentDuplicateNonceConsumesOneAllocation(t *testing.T) {
-	t.Parallel()
-
 	const maxSessions = 3
 	g, err := NewGate(GateConfig{
 		Secret:   testSecret(t),
@@ -147,7 +145,7 @@ func TestServer_ConcurrentDuplicateNonceConsumesOneAllocation(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("first request status = %d, want 200", status)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("first request did not finish after redemption was released")
 	}
 

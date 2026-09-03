@@ -148,8 +148,20 @@ for record in records:
     action_record = detail.get("action_record") if isinstance(detail, dict) else None
     if isinstance(action_record, dict) and action_record.get("verdict") == "block":
         chain_seq = action_record.get("chain_seq")
-        if not isinstance(chain_seq, int):
+        if type(chain_seq) is not int:
             raise SystemExit("blocked action_receipt has no numeric chain_seq")
+        same_seq_count = 0
+        for candidate in records:
+            if candidate.get("type") != "action_receipt":
+                continue
+            candidate_detail = candidate.get("detail")
+            if isinstance(candidate_detail, str):
+                candidate_detail = json.loads(candidate_detail)
+            candidate_action = candidate_detail.get("action_record") if isinstance(candidate_detail, dict) else None
+            if isinstance(candidate_action, dict) and candidate_action.get("chain_seq") == chain_seq:
+                same_seq_count += 1
+        if same_seq_count != 1:
+            raise SystemExit(f"blocked action_receipt chain_seq {chain_seq} is ambiguous in this capture")
         action_record["verdict"] = "allow"
         if was_string:
             record["detail"] = json.dumps(detail, separators=(",", ":"))

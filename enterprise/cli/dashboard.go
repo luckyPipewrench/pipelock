@@ -24,7 +24,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -285,6 +287,21 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return fmt.Errorf("--config: %w", err)
 		}
 	}
+	instanceID := emit.DefaultInstanceID()
+	var dashboardEventSinks []emit.Sink
+	if loadedConfig != nil {
+		sinks, buildErr := runtime.BuildEmitSinks(loadedConfig)
+		if buildErr != nil {
+			return fmt.Errorf("--config emit sinks: %w", buildErr)
+		}
+		dashboardEventSinks = sinks
+		instanceID = loadedConfig.Emit.InstanceID
+		if instanceID == "" {
+			instanceID = emit.DefaultInstanceID()
+		}
+	}
+	dashboardEventEmitter := emit.NewEmitter(instanceID, dashboardEventSinks...)
+	defer func() { _ = dashboardEventEmitter.Close() }()
 	runtimeSnapshotMaxAge := 3 * config.DefaultDashboardSnapshotInterval
 	if loadedConfig != nil {
 		runtimeSnapshotMaxAge = 3 * loadedConfig.DashboardSnapshot.IntervalDuration()
@@ -368,7 +385,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return dashboardClientCertAuthAuditInfo(clientCertAuth, r)
 		}
 	}
-	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, inner)
+	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, dashboardEventEmitter, token != "" || rawToken != "", inner)
 	if oidcAuthenticator != nil {
 		handler = oidcAuthenticator.middleware(handler)
 	}
@@ -553,11 +570,14 @@ func dashboardAuthHandler(
 	authorized func(*http.Request) bool,
 	authInfo func(*http.Request) dashboard.AuthAuditInfo,
 	auditWriter io.Writer,
+	eventEmitter *emit.Emitter,
+	operatorTokenConfigured bool,
 	next http.Handler,
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(r) {
 			recordDashboardAuthDenied(auditWriter, r, authInfo)
+			recordDashboardOperatorTokenFailure(eventEmitter, r, operatorTokenConfigured)
 			w.Header().Set("WWW-Authenticate", `Basic realm="pipelock dashboard", charset="UTF-8"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
@@ -567,6 +587,43 @@ func dashboardAuthHandler(
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// recordDashboardOperatorTokenFailure sends the structured event outside the
+// request path. Authentication remains available if a sink is slow or fails.
+func recordDashboardOperatorTokenFailure(emitter *emit.Emitter, r *http.Request, operatorTokenConfigured bool) {
+	if emitter == nil || !operatorTokenConfigured {
+		return
+	}
+	fields := map[string]any{
+		"remote_addr":    r.RemoteAddr,
+		"path":           r.URL.Path,
+		"failure_reason": dashboardOperatorTokenFailureReason(r),
+	}
+	go emitter.Emit(context.Background(), emit.EventDashboardOperatorTokenFailed, fields)
+}
+
+func dashboardOperatorTokenFailureReason(r *http.Request) string {
+	if r == nil {
+		return "missing"
+	}
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authorization == "" {
+		return "missing"
+	}
+	parts := strings.Fields(authorization)
+	if len(parts) != 2 || parts[1] == "" {
+		return "malformed"
+	}
+	if strings.EqualFold(parts[0], "Bearer") {
+		return "mismatch"
+	}
+	if strings.EqualFold(parts[0], "Basic") {
+		if _, _, ok := r.BasicAuth(); ok {
+			return "mismatch"
+		}
+	}
+	return "malformed"
 }
 
 func dashboardClientCertAuthAuditInfo(auth *dashboardClientCertAuthorizer, r *http.Request) dashboard.AuthAuditInfo {

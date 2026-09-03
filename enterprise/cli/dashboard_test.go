@@ -34,6 +34,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -745,6 +746,8 @@ func TestDashboardAuthDeniedAuditPreservesMissingTokenReason(t *testing.T) {
 		func(*http.Request) bool { return false },
 		nil,
 		&audit,
+		nil,
+		false,
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}),
@@ -770,6 +773,151 @@ func TestDashboardAuthDeniedAuditPreservesMissingTokenReason(t *testing.T) {
 	}
 	if strings.Contains(log, "reason=no_credential") {
 		t.Fatalf("auth-denied audit used collapsed reason: %s", log)
+	}
+}
+
+type dashboardAuthEventSink struct {
+	events chan emit.Event
+	block  <-chan struct{}
+}
+
+func (s *dashboardAuthEventSink) Emit(_ context.Context, event emit.Event) error {
+	if s.block != nil {
+		<-s.block
+	}
+	s.events <- event
+	return nil
+}
+
+func (*dashboardAuthEventSink) Close() error { return nil }
+
+func TestDashboardAuthDeniedEmitsOperatorTokenEvent(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{name: "missing", want: "missing"},
+		{name: "malformed bearer", header: "Bearer", want: "malformed"},
+		{name: "mismatch", header: "Bearer wrong-token", want: "mismatch"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1)}
+			handler := dashboardAuthHandler(
+				func(*http.Request) bool { return false },
+				func(*http.Request) dashboard.AuthAuditInfo { return dashboard.AuthAuditInfo{} },
+				nil,
+				emit.NewEmitter("dashboard-test", sink),
+				true,
+				http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next called") }),
+			)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/evidence?token="+"not-a-token", nil)
+			req.RemoteAddr = "remote.example:443"
+			req.Header.Set("Authorization", tt.header)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+			select {
+			case event := <-sink.events:
+				serialized, err := json.Marshal(event)
+				if err != nil {
+					t.Fatalf("marshal event: %v", err)
+				}
+				if event.Type != emit.EventDashboardOperatorTokenFailed {
+					t.Errorf("event type = %q, want %q", event.Type, emit.EventDashboardOperatorTokenFailed)
+				}
+				if event.Fields["failure_reason"] != tt.want {
+					t.Errorf("failure_reason = %v, want %q", event.Fields["failure_reason"], tt.want)
+				}
+				if event.Fields["path"] != "/evidence" {
+					t.Errorf("path = %v, want /evidence", event.Fields["path"])
+				}
+				if event.Fields["remote_addr"] != "remote.example:443" {
+					t.Errorf("remote_addr = %v, want remote.example:443", event.Fields["remote_addr"])
+				}
+				if strings.Contains(string(serialized), "wrong-token") || strings.Contains(string(serialized), "not-a-token") {
+					t.Fatalf("serialized event leaked token data: %s", serialized)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for audit event")
+			}
+			select {
+			case event := <-sink.events:
+				t.Fatalf("unexpected second audit event: %+v", event)
+			default:
+			}
+		})
+	}
+}
+
+func TestDashboardAuthSuccessDoesNotEmitOperatorTokenFailure(t *testing.T) {
+	sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1)}
+	handler := dashboardAuthHandler(
+		func(*http.Request) bool { return true }, nil, nil,
+		emit.NewEmitter("dashboard-test", sink), true,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
+	)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	select {
+	case event := <-sink.events:
+		t.Fatalf("success emitted failure event: %+v", event)
+	default:
+	}
+}
+
+func TestDashboardOperatorTokenFailureReason(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		request *http.Request
+		want    string
+	}{
+		{name: "nil request", want: "missing"},
+		{name: "missing credential", request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil), want: "missing"},
+		{name: "bearer mismatch", request: requestWithDashboardAuthorization(t, "Bearer wrong-token"), want: "mismatch"},
+		{name: "basic mismatch", request: requestWithDashboardAuthorization(t, "Basic dXNlcjp3cm9uZy10b2tlbg=="), want: "mismatch"},
+		{name: "bearer missing value", request: requestWithDashboardAuthorization(t, "Bearer"), want: "malformed"},
+		{name: "invalid basic encoding", request: requestWithDashboardAuthorization(t, "Basic not-base64"), want: "malformed"},
+		{name: "unsupported scheme", request: requestWithDashboardAuthorization(t, "Digest credentials"), want: "malformed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dashboardOperatorTokenFailureReason(tt.request); got != tt.want {
+				t.Errorf("dashboardOperatorTokenFailureReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func requestWithDashboardAuthorization(t *testing.T, authorization string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil)
+	req.Header.Set("Authorization", authorization)
+	return req
+}
+
+func TestDashboardAuthDeniedDoesNotWaitForBlockedEventEmitter(t *testing.T) {
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+	sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1), block: blocked}
+	handler := dashboardAuthHandler(
+		func(*http.Request) bool { return false }, nil, nil,
+		emit.NewEmitter("dashboard-test", sink), true,
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next called") }),
+	)
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("blocked event emitter delayed authentication response")
 	}
 }
 

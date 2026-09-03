@@ -1312,7 +1312,7 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 		AuditWriter:         &audit,
 	})
-	handler := auth.middleware(dashboardAuthHandler(metaAuthorized, authorization.authAuditInfo, &audit, inner))
+	handler := auth.middleware(dashboardAuthHandler(metaAuthorized, authorization.authAuditInfo, &audit, nil, false, inner))
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, requestWithBearer(t, p.token(t, p.validClaims(now))))

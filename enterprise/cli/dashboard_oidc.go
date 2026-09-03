@@ -985,7 +985,7 @@ func dashboardCredentialAttempted(r *http.Request) bool {
 }
 
 func (a *dashboardRequestAuthorization) wrap(next http.Handler, auditWriter io.Writer) http.Handler {
-	handler := dashboardAuthHandler(a.authenticated, a.authAuditInfo, auditWriter, next)
+	handler := dashboardAuthHandler(a.authenticated, a.authAuditInfo, auditWriter, nil, false, next)
 	if a.oidc != nil {
 		return a.oidc.middleware(handler)
 	}

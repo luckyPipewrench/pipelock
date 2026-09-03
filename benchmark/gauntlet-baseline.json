@@ -3,7 +3,6 @@
   "schema_version": 1,
   "recorded_on": "2026-09-03",
   "pipelock_version": "3.5.0",
-  "corpus_release_tag": "v1.0.0",
   "corpus_git_sha": "06399746918ae0005f59a914fc9ec100a2f27fb8",
   "corpus_sha256": "3d098eaa77e2eee83070f3ddb2bc754493d7fa4d2beba0f404a4e7f059e10ba6",
   "corpus_version": "v2.8.0",

@@ -6,6 +6,7 @@ package scanner_test
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,33 +82,42 @@ func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	}
 
 	// Start Close in a goroutine. It must block on the in-flight user.
+	//
+	// Record whether release had already been invoked at the moment Close
+	// returned. That ordering IS the property under test, and observing it
+	// directly removes every wall-clock guess: no window can be too short on a
+	// loaded machine, and none can be long enough to hide an early return.
+	var released atomic.Bool
+	sawReleased := make(chan bool, 1)
 	closeReturned := make(chan struct{})
 	go func() {
 		sc.Close()
+		sawReleased <- released.Load()
 		close(closeReturned)
 	}()
 
-	// Allow the goroutine to publish closed=true and start the drain.
-	select {
-	case <-closeReturned:
-		t.Fatal("Close returned before in-flight release was invoked")
-	case <-time.After(50 * time.Millisecond):
-	}
+	// Wait for closed=true to be published rather than assuming the goroutine is
+	// scheduled inside a fixed window; under load that window expires first and
+	// the test fails for a scheduling artifact. The timeout is a hang backstop,
+	// not the assertion. Publication is required only for the newcomer check
+	// below: it does NOT prove Close reached the drain, because closed=true is
+	// published before the drain begins.
+	testwait.For(t, 5*time.Second, sc.Closed, "Close goroutine did not publish closed=true")
 
-	// Once closed=true is published, BeginUse must reject newcomers.
-	if !sc.Closed() {
-		t.Fatal("Close goroutine did not publish closed=true within 50ms")
-	}
 	if release2, ok2 := sc.BeginUse(); ok2 {
 		t.Error("BeginUse succeeded while Close was draining")
 		release2()
 	}
 
+	released.Store(true)
 	release()
 	select {
 	case <-closeReturned:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close did not return after in-flight release was invoked")
+	}
+	if !<-sawReleased {
+		t.Fatal("Close returned before in-flight release was invoked")
 	}
 }
 

@@ -188,3 +188,124 @@ func TestStrictRuleBundleIntegrityError_DisabledEmbeddedKeysFailClosed(t *testin
 		t.Fatal("strict mode must refuse startup when embedded keys are disabled and no trusted key verifies the bundle")
 	}
 }
+
+// TestServer_StrictUnprovableBundleVersionWarnsAndReloadRefusesStrictOptIn
+// exercises the full runtime path, not just MergeIntoConfig: strict startup
+// and a normal reload retain the development-build warning and its bundle
+// rules, while a true-to-false flip refuses before it can drop live coverage.
+func TestServer_StrictUnprovableBundleVersionWarnsAndReloadRefusesStrictOptIn(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	installServerTestUnprovableVersionBundle(t, xdgDataHome)
+
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	loadConfig := func(allowUnversioned bool, token string) *config.Config {
+		t.Helper()
+		body := fmt.Sprintf("version: 1\nmode: strict\napi_allowlist:\n  - api.vendor.example\nkill_switch:\n  api_token: %q\nrules:\n  allow_unversioned_bundle_load: %t\n", token, allowUnversioned)
+		if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+			t.Fatalf("write reload config: %v", err)
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			t.Fatalf("load reload config: %v", err)
+		}
+		return cfg
+	}
+	_ = loadConfig(true, "")
+	buf := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        configPath,
+		Stdout:                            buf,
+		Stderr:                            buf,
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { s.cleanup() })
+	requireUnprovableVersionBundlePattern(t, s.proxy.CurrentConfig())
+	if !buf.contains("loaded although min_pipelock") {
+		t.Fatalf("strict startup did not report the unprovable version warning:\n%s", buf.String())
+	}
+
+	buf.reset()
+	firstReload := loadConfig(true, "first-unprovable-bundle-reload")
+	if err := s.Reload(firstReload); err != nil {
+		t.Fatalf("first reload with warn-and-load default: %v", err)
+	}
+	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken != "first-unprovable-bundle-reload" {
+		t.Fatalf("first reload did not apply unrelated change: api token = %q", live.KillSwitch.APIToken)
+	}
+	requireUnprovableVersionBundlePattern(t, s.proxy.CurrentConfig())
+	if !buf.contains("WARNING: config reload: bundle") {
+		t.Fatalf("first reload did not report the unprovable version warning:\n%s", buf.String())
+	}
+
+	oldLive := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+	buf.reset()
+	strictReload := loadConfig(false, "must-not-activate")
+	err = s.Reload(strictReload)
+	if err == nil || !strings.Contains(err.Error(), "security downgrade from strict mode") {
+		t.Fatalf("true-to-false strict reload error = %v, want strict downgrade rejection", err)
+	}
+	if s.proxy.CurrentConfig() != oldLive {
+		t.Fatal("true-to-false rejected reload changed the live config")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("true-to-false rejected reload swapped the live scanner")
+	}
+	requireUnprovableVersionBundlePattern(t, s.proxy.CurrentConfig())
+	if !buf.contains("allow_unversioned_bundle_load: true") {
+		t.Fatalf("strict refusal did not retain its actionable setting hint:\n%s", buf.String())
+	}
+}
+
+func installServerTestUnprovableVersionBundle(t *testing.T, xdgDataHome string) {
+	t.Helper()
+
+	bundleDir := filepath.Join(xdgDataHome, "pipelock", "rules", "unprovable-version")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir unprovable-version bundle: %v", err)
+	}
+	bundleYAML := []byte(`format_version: 1
+name: unprovable-version
+version: "2026.07.0"
+author: Test Author
+description: Test development-version bundle
+license: Apache-2.0
+min_pipelock: "999.0.0"
+rules:
+  - id: dlp-unprovable-version
+    type: dlp
+    status: stable
+    name: Unprovable Version Secret
+    description: Test rule retained while a development version is unprovable
+    severity: critical
+    confidence: high
+    pattern:
+      regex: 'unprovable-version-secret-[0-9]+'
+`)
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), bundleYAML, 0o600); err != nil {
+		t.Fatalf("write unprovable-version bundle: %v", err)
+	}
+	sum := sha256.Sum256(bundleYAML)
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), &rules.LockFile{
+		InstalledVersion: "2026.07.0",
+		Source:           "test",
+		BundleSHA256:     hex.EncodeToString(sum[:]),
+		Unsigned:         true,
+	}); err != nil {
+		t.Fatalf("write unprovable-version lock: %v", err)
+	}
+}
+
+func requireUnprovableVersionBundlePattern(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	for _, pattern := range cfg.DLP.Patterns {
+		if pattern.Bundle == "unprovable-version" && pattern.Name == "unprovable-version:dlp-unprovable-version" {
+			return
+		}
+	}
+	t.Fatalf("unprovable-version bundle pattern was not live: %+v", cfg.DLP.Patterns)
+}

@@ -91,6 +91,9 @@ func runDemo(cmd *cobra.Command, interactive, color bool, receiptsDir string) er
 		first := bundleResult.Errors[0]
 		return fmt.Errorf("merging community rules: bundle %s: %s", first.Name, first.Reason)
 	}
+	for _, w := range bundleResult.Warnings {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: %s\n", w)
+	}
 	extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
 	sc, err := scanner.New(cfg)

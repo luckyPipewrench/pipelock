@@ -227,6 +227,9 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 		first := bundleResult.Errors[0]
 		return cliutil.ExitCodeError(2, fmt.Errorf("merging community rules: bundle %s: %s", first.Name, first.Reason))
 	}
+	for _, w := range bundleResult.Warnings {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: %s\n", w)
+	}
 
 	// Build scanner and temp proxy.
 	sc, err := scanner.New(cfg)

@@ -360,6 +360,11 @@ func runPrimitiveVerifyInstall(cfg *config.Config, evidenceDir, configFile strin
 		first := bundleResult.Errors[0]
 		return fmt.Errorf("verify-install merging rules: bundle %s: %s", first.Name, first.Reason)
 	}
+	for _, w := range bundleResult.Warnings {
+		// The assessment has no command writer at this depth; stderr is the
+		// operator's channel and never enters the evidence set.
+		_, _ = fmt.Fprintf(os.Stderr, "pipelock: warning: %s\n", w)
+	}
 
 	// Build scanner and temporary proxy.
 	sc, err := scanner.New(&verifyCfg)

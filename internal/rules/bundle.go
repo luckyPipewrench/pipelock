@@ -447,10 +447,12 @@ func CheckMinPipelockVerdict(minVersion, currentVersion string) error {
 
 	if isDevelopmentCurrentVersion(effectiveVersion) {
 		// A source build carries no release stamp, so the requirement cannot
-		// be verified. The loader decides whether its explicit setting accepts
-		// this availability case as a warning or refuses it.
+		// be verified. Keep the actionable refusal text that predated the
+		// warn-and-load loader path: non-loader callers expose this error to
+		// their operators, while the loader turns this sentinel into a warning
+		// when its setting allows the bundle.
 		return fmt.Errorf(
-			"%w: this build does not report a released version (%q), so the bundle requirement min_pipelock %q cannot be verified",
+			"%w: this build does not report a released version (%q), so the bundle requirement min_pipelock %q cannot be verified; install a released binary, or set rules.allow_unversioned_bundle_load: true to load it unverified",
 			ErrUnverifiableVersion, currentVersion, minVersion)
 	}
 	curSemver, err := parseSemverVersion(effectiveVersion)

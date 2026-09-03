@@ -1500,3 +1500,19 @@ func TestCheckMinPipelock_AllowUnversionedContract(t *testing.T) {
 		})
 	}
 }
+
+// A strict caller exposes this error directly (or wraps it), so restoring the
+// allowUnversioned wrapper must preserve the actionable text that callers saw
+// before the loader gained its separate raw verdict path.
+func TestCheckMinPipelock_UnverifiableStrictRefusalPreservesCallerMessage(t *testing.T) {
+	t.Parallel()
+
+	err := CheckMinPipelock("3.0.0", "0.0.0-dev.unknown", false)
+	if !errors.Is(err, ErrUnverifiableVersion) {
+		t.Fatalf("errors.Is(err, ErrUnverifiableVersion) = false (err = %v)", err)
+	}
+	const want = "check min pipelock: this build does not report a released version (\"0.0.0-dev.unknown\"), so the bundle requirement min_pipelock \"3.0.0\" cannot be verified; install a released binary, or set rules.allow_unversioned_bundle_load: true to load it unverified"
+	if got := err.Error(); got != want {
+		t.Fatalf("strict refusal = %q, want %q", got, want)
+	}
+}

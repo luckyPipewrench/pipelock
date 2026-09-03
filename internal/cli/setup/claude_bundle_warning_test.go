@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,13 @@ rules:
 	if !strings.Contains(errOut.String(), `warning: bundle "claude-warn-bundle" loaded although min_pipelock`) {
 		t.Fatalf("claude hook did not print the unprovable-version warning to stderr\nstderr:\n%s", errOut.String())
 	}
-	if strings.Contains(out.String(), "loaded although min_pipelock") {
-		t.Fatalf("warning leaked into the stdout JSON contract:\n%s", out.String())
+	// stdout must remain exactly one hook response: an allow with no leaked
+	// warning text before or after it.
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
+		t.Fatalf("stdout is not a single hook response JSON document: %v\nstdout:\n%s", err, out.String())
+	}
+	if resp.HookSpecificOutput.PermissionDecision != decisionAllow {
+		t.Fatalf("permission decision = %q, want %q", resp.HookSpecificOutput.PermissionDecision, decisionAllow)
 	}
 }

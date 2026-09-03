@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,13 @@ func TestHook_PrintsUnverifiableBundleVersionWarning(t *testing.T) {
 	if !strings.Contains(errOut.String(), `warning: bundle "hook-warn-bundle" loaded although min_pipelock`) {
 		t.Fatalf("hook did not print the unprovable-version warning to stderr\nstderr:\n%s", errOut.String())
 	}
-	if strings.Contains(out.String(), "loaded although min_pipelock") {
-		t.Fatalf("warning leaked into the stdout decision contract:\n%s", out.String())
+	// stdout must remain exactly one decision document: an allow with no
+	// leaked warning text before or after it.
+	var decision HookDecision
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &decision); err != nil {
+		t.Fatalf("stdout is not a single decision JSON document: %v\nstdout:\n%s", err, out.String())
+	}
+	if decision.Decision != "" {
+		t.Fatalf("clean tool call produced decision=%q, want allow", decision.Decision)
 	}
 }

@@ -2135,10 +2135,10 @@ func TestMCPProxyCmdRejectsBestEffortFlagsInRemoteModes(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "upstream with best-effort", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort"}},
-		{name: "upstream with expiry only", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort-expiry", "1h"}},
-		{name: "listen with best-effort metadata", args: []string{"--listen", "127.0.0.1:0", "--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort", "--sandbox-best-effort-reason", "x", "--sandbox-best-effort-expiry", "1h"}},
-		{name: "upstream with reason only", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort-reason", "x"}},
+		{name: "upstream with best-effort", args: []string{"--upstream", "https://mcp.vendor.example/", "--sandbox-best-effort"}},
+		{name: "upstream with expiry only", args: []string{"--upstream", "https://mcp.vendor.example/", "--sandbox-best-effort-expiry", "1h"}},
+		{name: "listen with best-effort metadata", args: []string{"--listen", "127.0.0.1:0", "--upstream", "https://mcp.vendor.example/", "--sandbox-best-effort", "--sandbox-best-effort-reason", "x", "--sandbox-best-effort-expiry", "1h"}},
+		{name: "upstream with reason only", args: []string{"--upstream", "https://mcp.vendor.example/", "--sandbox-best-effort-reason", "x"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := McpCmd()

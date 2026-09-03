@@ -352,6 +352,12 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 }
 
 func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), *broker.Pool, error) {
+	// Refuse before resolving any secret or contacting a provider: a broker
+	// holding the guest-facing signing variable would hand the durable root to
+	// every visitor VM through shared app secrets.
+	if err := refuseGuestFacingRootSecret(); err != nil {
+		return nil, nil, nil, nil, err
+	}
 	if err := validateFlags(f); err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -386,9 +392,6 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	provider = broker.NewHealthTrackingProvider(provider, providerHealth)
 	sessionEnv, err := resolveSessionEnv(f)
 	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	if err := refuseGuestFacingRootSecret(); err != nil {
 		return nil, nil, nil, nil, err
 	}
 	rootKey, err := resolveOrchestratorRoot(f)

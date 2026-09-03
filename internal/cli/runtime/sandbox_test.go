@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
@@ -185,6 +186,7 @@ func TestSandboxCmdDryRunAcceptsEnvAndFilesystemPolicy(t *testing.T) {
 }
 
 func TestSandboxCmdRejectsMixedBestEffortProvenance(t *testing.T) {
+	futureExpiry := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
 	for _, tt := range []struct {
 		name     string
 		config   string
@@ -202,12 +204,12 @@ func TestSandboxCmdRejectsMixedBestEffortProvenance(t *testing.T) {
 		},
 		{
 			name:     "configuration override with command line reason",
-			config:   "sandbox:\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			config:   "sandbox:\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: " + futureExpiry + "\n",
 			flagArgs: []string{"--best-effort-reason", "command line reason"},
 		},
 		{
 			name:     "configuration override with command line expiry",
-			config:   "sandbox:\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			config:   "sandbox:\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: " + futureExpiry + "\n",
 			flagArgs: []string{"--best-effort-expiry", "1h"},
 		},
 	} {

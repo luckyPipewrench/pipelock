@@ -58,6 +58,7 @@ const (
 )
 
 func TestMCPProxyCmdRejectsMixedBestEffortProvenance(t *testing.T) {
+	futureExpiry := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
 	for _, tt := range []struct {
 		name     string
 		config   string
@@ -75,12 +76,12 @@ func TestMCPProxyCmdRejectsMixedBestEffortProvenance(t *testing.T) {
 		},
 		{
 			name:     "configuration override with command line reason",
-			config:   "sandbox:\n  enabled: true\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			config:   "sandbox:\n  enabled: true\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: " + futureExpiry + "\n",
 			flagArgs: []string{"--sandbox-best-effort-reason", "command line reason"},
 		},
 		{
 			name:     "configuration override with command line expiry",
-			config:   "sandbox:\n  enabled: true\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: 2h\n",
+			config:   "sandbox:\n  enabled: true\n  best_effort: true\n  best_effort_reason: configuration reason\n  best_effort_expiry: " + futureExpiry + "\n",
 			flagArgs: []string{"--sandbox-best-effort-expiry", "1h"},
 		},
 	} {
@@ -2126,5 +2127,29 @@ func TestReadHeaderFile_Strict(t *testing.T) {
 	}
 	if hdrs.Get("X-Group") != "ok" {
 		t.Errorf("X-Group = %q, want ok", hdrs.Get("X-Group"))
+	}
+}
+
+func TestMCPProxyCmdRejectsBestEffortFlagsInRemoteModes(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "upstream with best-effort", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort"}},
+		{name: "listen with best-effort metadata", args: []string{"--listen", "127.0.0.1:0", "--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort", "--sandbox-best-effort-reason", "x", "--sandbox-best-effort-expiry", "1h"}},
+		{name: "upstream with reason only", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort-reason", "x"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := McpCmd()
+			cmd.SilenceUsage = true
+			cmd.SetArgs(append([]string{"proxy"}, tt.args...))
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "cannot sandbox a remote server") {
+				t.Fatalf("mcp proxy %v error = %v, want remote-mode sandbox refusal", tt.args, err)
+			}
+		})
 	}
 }

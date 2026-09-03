@@ -953,6 +953,42 @@ func TestRecordDashboardAuthFailure_SkipsWithoutModeOrEmitter(t *testing.T) {
 	}
 }
 
+func TestRecordDashboardAuthFailure_BoundsInflightEmits(t *testing.T) {
+	// Occupy every slot so a flood of failures cannot add goroutines; the
+	// event is dropped, never queued. Release one slot and the next failure
+	// is recorded again.
+	for range dashboardAuthEventMaxInflight {
+		dashboardAuthEventSlots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for len(dashboardAuthEventSlots) > 0 {
+			<-dashboardAuthEventSlots
+		}
+	})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil)
+	sink := &dashboardAuthEventSink{events: make(chan emit.Event, 1)}
+	emitter := emit.NewEmitter("dashboard-test", sink)
+	mode := func(*http.Request) string { return "operator_token" }
+
+	recordDashboardAuthFailure(emitter, req, mode)
+	select {
+	case ev := <-sink.events:
+		t.Fatalf("saturated slots must drop the event, got %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	<-dashboardAuthEventSlots
+	recordDashboardAuthFailure(emitter, req, mode)
+	select {
+	case ev := <-sink.events:
+		if ev.Type != emit.EventDashboardAuthFailed {
+			t.Fatalf("event type = %q, want %q", ev.Type, emit.EventDashboardAuthFailed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected the event once a slot was free")
+	}
+}
+
 func TestDashboardServe_RejectsReceiptDirThatIsAFile(t *testing.T) {
 	pub, priv := newDashKeyPair(t)
 	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))

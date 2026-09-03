@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveBestEffortOverrideRejectsMixedProvenance(t *testing.T) {
@@ -19,6 +20,7 @@ func TestResolveBestEffortOverrideRejectsMixedProvenance(t *testing.T) {
 		{name: "command line override with configuration reason", cliEnabled: true, cliExpirySet: true},
 		{name: "configuration override with command line reason", cliReasonSet: true, configEnabled: true},
 		{name: "configuration override with command line expiry", cliExpirySet: true, configEnabled: true},
+		{name: "both sources fully populated", cliEnabled: true, cliReasonSet: true, cliExpirySet: true, configEnabled: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, _, _, err := resolveBestEffortOverride(
@@ -107,5 +109,33 @@ func TestBestEffortExpiryFlagHelpDescribesAdmission(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAnchorBestEffortExpiryAnchorsDurationsOnce(t *testing.T) {
+	before := time.Now()
+	got, err := anchorBestEffortExpiry("test override", "1h")
+	if err != nil {
+		t.Fatalf("anchorBestEffortExpiry(duration): %v", err)
+	}
+	at, err := time.Parse(time.RFC3339Nano, got)
+	if err != nil {
+		t.Fatalf("anchored expiry %q is not RFC3339: %v", got, err)
+	}
+	if at.Before(before.Add(59*time.Minute)) || at.After(time.Now().Add(61*time.Minute)) {
+		t.Fatalf("anchored expiry %s is not about one hour from validation", at)
+	}
+
+	absolute := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Second)
+	got, err = anchorBestEffortExpiry("test override", absolute.Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("anchorBestEffortExpiry(absolute): %v", err)
+	}
+	if at, _ := time.Parse(time.RFC3339Nano, got); !at.Equal(absolute) {
+		t.Fatalf("absolute expiry changed: got %s, want %s", at, absolute)
+	}
+
+	if _, err := anchorBestEffortExpiry("test override", "0s"); err == nil {
+		t.Fatal("expired duration must be refused at anchoring")
 	}
 }

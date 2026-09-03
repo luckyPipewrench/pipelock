@@ -45,10 +45,34 @@ var discoverRulesConfigPath = cliutil.DiscoverConfigPathStrict
 // warning, so the value no longer changes that outcome.
 func rulesAllowUnversionedLoad(configFile string, stderr io.Writer) bool {
 	cfg, err := loadRulesConfig(configFile, stderr)
-	if err != nil || cfg == nil {
+	if err != nil {
+		// An unreadable configuration cannot prove the operator relaxed the
+		// gate, so the command keeps the strict refusal.
 		return false
 	}
+	if cfg == nil {
+		// No configuration at all means the shipped default applies, exactly
+		// as the runtime loader would apply it.
+		return config.Defaults().Rules.AllowUnversionedBundleLoad
+	}
 	return cfg.Rules.AllowUnversionedBundleLoad
+}
+
+// checkBundleMinVersion applies the same strict-or-warn decision the runtime
+// loader makes: a checked failure refuses, an unprovable running version
+// refuses when the operator kept the strict setting and otherwise warns and
+// continues. Install and update must not stage a bundle the runtime would
+// refuse to load.
+func checkBundleMinVersion(w io.Writer, minPipelock string, allowUnversioned bool) error {
+	err := domrules.CheckMinPipelockVerdict(minPipelock, cliutil.Version)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, domrules.ErrUnverifiableVersion) || !allowUnversioned {
+		return err
+	}
+	warnUnverifiableBundleVersion(w, err)
+	return nil
 }
 
 // warnUnverifiableBundleVersion reports an unchecked development-build gate.
@@ -808,11 +832,8 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned, allo
 		return fmt.Errorf("local unsigned installs support only format_version 1; format_version %d bundles must be signed and installed from HTTPS", bundle.FormatVersion)
 	}
 
-	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version, allowUnversioned); err != nil {
-		if !errors.Is(err, domrules.ErrUnverifiableVersion) {
-			return err
-		}
-		warnUnverifiableBundleVersion(out, err)
+	if err := checkBundleMinVersion(out, bundle.MinPipelock, allowUnversioned); err != nil {
+		return err
 	}
 	if err := warnTestedThroughPipelock(out, bundle.TestedThroughPipelock, cliutil.Version); err != nil {
 		return err
@@ -952,11 +973,8 @@ func installRemote(opts installRemoteOptions) error {
 		return fmt.Errorf("bundle name %q uses reserved prefix %q but signer is not official", bundle.Name, "pipelock-")
 	}
 
-	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version, allowUnversioned); err != nil {
-		if !errors.Is(err, domrules.ErrUnverifiableVersion) {
-			return err
-		}
-		warnUnverifiableBundleVersion(out, err)
+	if err := checkBundleMinVersion(out, bundle.MinPipelock, allowUnversioned); err != nil {
+		return err
 	}
 	if err := warnTestedThroughPipelock(out, bundle.TestedThroughPipelock, cliutil.Version); err != nil {
 		return err
@@ -1443,11 +1461,8 @@ func updateBundle(opts updateBundleOpts) error {
 		return fmt.Errorf("update %s: bundle name %q uses reserved prefix %q but signer is not official", opts.Name, bundle.Name, "pipelock-")
 	}
 
-	if err := domrules.CheckMinPipelock(bundle.MinPipelock, cliutil.Version, opts.AllowUnversioned); err != nil {
-		if !errors.Is(err, domrules.ErrUnverifiableVersion) {
-			return err
-		}
-		warnUnverifiableBundleVersion(opts.Out, err)
+	if err := checkBundleMinVersion(opts.Out, bundle.MinPipelock, opts.AllowUnversioned); err != nil {
+		return err
 	}
 	if err := warnTestedThroughPipelock(opts.Out, bundle.TestedThroughPipelock, cliutil.Version); err != nil {
 		return err

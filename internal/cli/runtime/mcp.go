@@ -828,6 +828,17 @@ Key-free evidence capture:
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
 			}
+			// Any sandbox flag is sandbox intent. Checking here, before the
+			// remote-mode branches, means a best-effort flag on --upstream or
+			// --listen is refused instead of silently ignored.
+			sandboxIntent := sandboxEnabled || sandboxStrict || sandboxBestEffort ||
+				cmd.Flags().Changed("sandbox-best-effort-reason") || cmd.Flags().Changed("sandbox-best-effort-expiry")
+			if sandboxIntent && hasListen {
+				return errors.New("--sandbox cannot be used with --listen (cannot sandbox a remote server)")
+			}
+			if sandboxIntent && hasUpstream {
+				return errors.New("--sandbox cannot be used with --upstream (cannot sandbox a remote server)")
+			}
 			if adaptiveResetFile == "" && (adaptiveResetAuthorityPublicKeyFile != "" || adaptiveResetTarget != "") {
 				return errors.New("--adaptive-reset-authority-public-key-file and --adaptive-reset-target require --adaptive-reset-file")
 			}
@@ -1622,7 +1633,8 @@ Key-free evidence capture:
 					return err
 				}
 				if mcpBestEffort {
-					if _, err := sandbox.ValidateBestEffortOverride(mcpBestEffortReason, mcpBestEffortExpiry); err != nil {
+					mcpBestEffortExpiry, err = anchorBestEffortExpiry(mcpBestEffortReason, mcpBestEffortExpiry)
+					if err != nil {
 						return err
 					}
 				}

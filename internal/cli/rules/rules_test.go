@@ -1359,8 +1359,10 @@ func TestRulesAllowUnversionedLoadReadsCompatibilitySetting(t *testing.T) {
 	if rulesAllowUnversionedLoad("/nonexistent/pipelock.yaml", io.Discard) {
 		t.Fatal("unreadable explicit config must preserve the false compatibility value")
 	}
-	if rulesAllowUnversionedLoad("", io.Discard) {
-		t.Fatal("missing config must preserve the false compatibility value")
+	// No configuration at all applies the shipped default, exactly as the
+	// runtime loader does, so install and update stage what the runtime loads.
+	if got, want := rulesAllowUnversionedLoad("", io.Discard), config.Defaults().Rules.AllowUnversionedBundleLoad; got != want {
+		t.Fatalf("missing config = %v, want the shipped default %v", got, want)
 	}
 
 	dir := t.TempDir()

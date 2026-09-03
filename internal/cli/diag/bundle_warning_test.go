@@ -69,7 +69,9 @@ func TestDemoCmd_PrintsUnverifiableBundleVersionWarning(t *testing.T) {
 	// rules.ResolveRulesDir looks: $XDG_DATA_HOME/pipelock/rules.
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
-	setupUnsignedBundle(t, filepath.Join(dataHome, "pipelock", "rules"), testBundleName, []byte(validBundleYAML))
+	// A distinct directory name proves the warning names the bundle from its
+	// manifest, not from the directory the operator installed it under.
+	setupUnsignedBundle(t, filepath.Join(dataHome, "pipelock", "rules"), "demo-warning-bundle", []byte(validBundleYAML))
 
 	cmd := demoRoot()
 	var out, errOut bytes.Buffer

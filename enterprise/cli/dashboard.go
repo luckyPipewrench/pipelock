@@ -609,8 +609,28 @@ func recordDashboardAuthFailure(emitter *emit.Emitter, r *http.Request, authFail
 		"failure_reason": dashboardAuthFailureReason(r),
 		"auth_mode":      authMode,
 	}
-	go emitter.Emit(context.Background(), emit.EventDashboardAuthFailed, fields)
+	// Bounded: an unauthenticated client can generate failures faster than a
+	// slow sink drains them. When every slot is busy the event is dropped
+	// rather than queued, so a flood cannot grow goroutines without limit.
+	select {
+	case dashboardAuthEventSlots <- struct{}{}:
+	default:
+		return
+	}
+	go func() {
+		defer func() { <-dashboardAuthEventSlots }()
+		emitter.Emit(context.Background(), emit.EventDashboardAuthFailed, fields)
+	}()
 }
+
+// dashboardAuthEventSlots caps in-flight asynchronous auth-failure emits.
+// Delivery already fails open for the HTTP response; this caps its cost.
+var dashboardAuthEventSlots = make(chan struct{}, dashboardAuthEventMaxInflight)
+
+// dashboardAuthEventMaxInflight bounds concurrent failure emits. Sixty-four
+// covers a burst of retries from a misconfigured client while keeping a
+// credential-guessing flood from holding more than a handful of goroutines.
+const dashboardAuthEventMaxInflight = 64
 
 func dashboardAuthFailureReason(r *http.Request) string {
 	if r == nil {

@@ -105,7 +105,8 @@ Examples:
 			}
 
 			if useBestEffort {
-				if _, err := sandbox.ValidateBestEffortOverride(useBestEffortReason, useBestEffortExpiry); err != nil {
+				useBestEffortExpiry, err = anchorBestEffortExpiry(useBestEffortReason, useBestEffortExpiry)
+				if err != nil {
 					return err
 				}
 			}

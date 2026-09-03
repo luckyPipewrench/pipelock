@@ -376,6 +376,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		if cfg.ImageDigest == "" {
 			return nil, errors.New("broker: ImageDigest is required when OrchestratorRoot is set")
 		}
+		// Non-empty is not enough: only a canonical digest names an immutable
+		// image, and minting rejects anything else. Fail here instead of
+		// starting a broker whose every session dies at delegation time.
+		if err := playground.ValidateCanonicalImageDigest(cfg.ImageDigest); err != nil {
+			return nil, fmt.Errorf("broker: %w", err)
+		}
 	}
 	if cfg.InternalPort == 0 {
 		cfg.InternalPort = defaultInternalPort

@@ -135,3 +135,56 @@ func TestServer_CreateVMSession_NoRootSendsNoDelegation(t *testing.T) {
 		t.Fatalf("session token = %q, want %q", session.Token, vm.token)
 	}
 }
+
+// The CLI validates the digest flag, but a library caller reaches NewServer
+// directly. Non-empty alone would let a broker start and then fail every
+// visitor session at mint time, turning a configuration mistake into an outage
+// that only appears once real visitors arrive.
+func TestNewServer_RejectsNonCanonicalImageDigest(t *testing.T) {
+	t.Parallel()
+
+	root, _ := testDelegationRoot(t)
+	for _, tc := range []struct {
+		name   string
+		digest string
+	}{
+		{name: "mutable_tag", digest: "latest"},
+		{name: "missing_algorithm", digest: strings.Repeat("a", 64)},
+		{name: "wrong_length", digest: "sha256:abc123"},
+		{name: "uppercase_hex", digest: "sha256:" + strings.Repeat("A", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gate, err := livechat.NewGate(livechat.GateConfig{
+				Secret:   testBrokerSecret(),
+				Codes:    []livechat.CodeSpec{{Code: brokerTestCode}},
+				TokenTTL: time.Minute,
+			})
+			if err != nil {
+				t.Fatalf("NewGate: %v", err)
+			}
+			lm, err := NewLeaseManager(LeaseConfig{
+				Provider:    &serverFakeProvider{targets: []string{"vm.invalid"}},
+				Concurrency: livechat.NewConcurrencyLimiter(brokerTestCapacity),
+				Image:       brokerTestImage,
+			})
+			if err != nil {
+				t.Fatalf("NewLeaseManager: %v", err)
+			}
+
+			_, err = NewServer(ServerConfig{
+				Leases:           lm,
+				Gate:             gate,
+				IPRate:           livechat.RateConfig{RefillPerSec: 1000, Burst: 1000},
+				CodeRate:         livechat.RateConfig{RefillPerSec: 1000, Burst: 1000},
+				OrchestratorRoot: root,
+				ImageDigest:      tc.digest,
+			})
+			if err == nil {
+				t.Fatal("a non-canonical image digest must be refused at configuration time")
+			}
+			if !strings.Contains(err.Error(), "canonical sha256") {
+				t.Fatalf("error = %v, want it to name the canonical-digest requirement", err)
+			}
+		})
+	}
+}

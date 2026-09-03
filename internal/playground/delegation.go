@@ -119,6 +119,17 @@ func ensureDelegationJSONEOF(dec *json.Decoder) error {
 
 // ValidateOrchestratorDelegationClaims validates intrinsic field constraints
 // plus any broker/verifier expectations supplied by the caller.
+// ValidateCanonicalImageDigest reports whether a digest identifies an immutable
+// image. A delegation attests which image ran, so a non-canonical value cannot
+// bind anything; callers validate with this at configuration time rather than
+// discovering it when a visitor's session fails to mint.
+func ValidateCanonicalImageDigest(digest string) error {
+	if !strings.HasPrefix(digest, "sha256:") || !lowerHex64Pattern.MatchString(strings.TrimPrefix(digest, "sha256:")) {
+		return fmt.Errorf("image_digest must be canonical sha256")
+	}
+	return nil
+}
+
 func ValidateOrchestratorDelegationClaims(d OrchestratorDelegation, want DelegationExpectations) error {
 	if d.Format != OrchestratorDelegationFormat {
 		return fmt.Errorf("delegation format %q, want %q", d.Format, OrchestratorDelegationFormat)
@@ -135,8 +146,8 @@ func ValidateOrchestratorDelegationClaims(d OrchestratorDelegation, want Delegat
 	if !lowerHex64Pattern.MatchString(d.SessionPublicKey) {
 		return fmt.Errorf("session_public_key must be 32-byte lowercase hex")
 	}
-	if !strings.HasPrefix(d.ImageDigest, "sha256:") || !lowerHex64Pattern.MatchString(strings.TrimPrefix(d.ImageDigest, "sha256:")) {
-		return fmt.Errorf("image_digest must be canonical sha256")
+	if err := ValidateCanonicalImageDigest(d.ImageDigest); err != nil {
+		return err
 	}
 	if d.IssuedAtUnix <= 0 || d.NotBeforeUnix <= 0 || d.ExpiresAtUnix <= 0 {
 		return fmt.Errorf("delegation timestamps must be positive Unix seconds")

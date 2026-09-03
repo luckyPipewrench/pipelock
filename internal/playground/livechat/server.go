@@ -184,6 +184,11 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*liveEntry
+	// pending holds run nonces claimed by an in-flight start that does not yet
+	// have a session entry. Redeeming an invite keys its refund record by this
+	// same id, so without the reservation two concurrent starts on one nonce
+	// each consume an allocation while only one refund can find its record.
+	pending map[string]struct{}
 }
 
 // defaultMaxMessagesPerSession bounds one session's model calls when the operator
@@ -241,6 +246,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		maxMsgPerSession: maxMsg,
 		roundTripsPerMsg: roundTripsPerMsg,
 		sessions:         make(map[string]*liveEntry),
+		pending:          make(map[string]struct{}),
 	}, nil
 }
 
@@ -287,6 +293,22 @@ type createResp struct {
 	SessionID string `json:"session_id"`
 	ExpiresAt string `json:"expires_at"`
 	State     string `json:"state"`
+}
+
+// reserveRunNonce claims a run nonce for an in-flight start. It reports false
+// when the nonce already has a live session or another start in flight, which is
+// what keeps a duplicate from consuming a second invite allocation.
+func (s *Server) reserveRunNonce(sid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, live := s.sessions[sid]; live {
+		return false
+	}
+	if _, inflight := s.pending[sid]; inflight {
+		return false
+	}
+	s.pending[sid] = struct{}{}
+	return true
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -345,14 +367,29 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	if body.RunNonce != "" {
 		sid = body.RunNonce
 	}
+	// Claim the nonce before spending any invite budget. Gate.Redeem keys its
+	// refund record by this id, so a duplicate that got as far as redeeming
+	// would leave one of the two allocations permanently unrefundable.
+	if !s.reserveRunNonce(sid) {
+		release()
+		writeErr(w, http.StatusConflict, "a session for this run is already active")
+		return
+	}
+	releaseRunNonce := func() {
+		s.mu.Lock()
+		delete(s.pending, sid)
+		s.mu.Unlock()
+	}
 	token, claims, err := s.cfg.Gate.Redeem(body.Code, sid)
 	if err != nil {
+		releaseRunNonce()
 		release()
 		writeErr(w, gateErrStatus(err), "invite code rejected")
 		return
 	}
 	if !s.codeRate.Allow("code:" + claims.CodeID) {
 		s.cfg.Gate.Refund(claims)
+		releaseRunNonce()
 		release()
 		writeErr(w, http.StatusTooManyRequests, "rate limited")
 		return
@@ -368,6 +405,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.cfg.Gate.Refund(claims)
 		cancel()
+		releaseRunNonce()
 		release()
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -389,6 +427,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		_ = os.RemoveAll(runDir)
 		s.cfg.Gate.Refund(claims)
 		cancel()
+		releaseRunNonce()
 		release()
 		// Containment refusal is the most likely cause and is fail-closed.
 		writeErr(w, http.StatusServiceUnavailable, "session could not be started")
@@ -408,6 +447,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		_ = os.RemoveAll(runDir)
 		s.cfg.Gate.Refund(claims)
 		cancel()
+		releaseRunNonce()
 		release()
 	}
 	ttl := time.Until(claims.ExpiresAt)
@@ -435,6 +475,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "a session for this run is already active")
 		return
 	}
+	delete(s.pending, sid)
 	s.sessions[sid] = entry
 	entry.timer = time.AfterFunc(ttl, func() { s.finalize(sid) })
 	s.mu.Unlock()

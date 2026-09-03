@@ -398,8 +398,12 @@ func TestBuildServer_RequireModelFailsClosedWithoutModelConfig(t *testing.T) {
 	f.requireDelegated = true
 
 	var out bytes.Buffer
-	if _, _, err := buildServer(&out, f); err == nil {
+	_, _, err := buildServer(&out, f)
+	if err == nil {
 		t.Fatal("--require-model without model config should fail closed")
+	}
+	if !strings.Contains(err.Error(), "require-model") {
+		t.Fatalf("error = %v, want the --require-model refusal rather than some earlier check", err)
 	}
 }
 
@@ -418,8 +422,12 @@ func TestBuildServer_PublicModelValidatesRuntimeFiles(t *testing.T) {
 	f.dailyTurnBudget = 10
 
 	var out bytes.Buffer
-	if _, _, err := buildServer(&out, f); err == nil {
+	_, _, err := buildServer(&out, f)
+	if err == nil {
 		t.Fatal("model-backed non-dev server with missing model key should fail before listening")
+	}
+	if !strings.Contains(err.Error(), "model") {
+		t.Fatalf("error = %v, want the missing model-secret refusal rather than some earlier check", err)
 	}
 
 	f.modelSecretFile = testModelSecretPath(t)

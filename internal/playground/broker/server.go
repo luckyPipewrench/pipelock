@@ -80,6 +80,8 @@ const (
 	vmReadyPollInterval = 500 * time.Millisecond
 )
 
+var verifySessionDelegation = playground.VerifySessionDelegation
+
 // ServerConfig configures the public playground broker HTTP front door.
 type ServerConfig struct {
 	// Leases owns VM lifecycle and the global machine concurrency cap. Required.
@@ -399,6 +401,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		if err := playground.ValidateCanonicalImageDigest(cfg.ImageDigest); err != nil {
 			return nil, fmt.Errorf("broker: %w", err)
 		}
+		if err := checkDelegatedSigning(cfg.OrchestratorRoot, cfg.ImageDigest, cfg.SessionDelegationLifetime); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.InternalPort == 0 {
 		cfg.InternalPort = defaultInternalPort
@@ -434,6 +439,20 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	go s.reapLoop()
 	return s, nil
+}
+
+// checkDelegatedSigning exercises the complete visitor verification path before
+// the broker can accept traffic. Any mint or verification error refuses startup.
+func checkDelegatedSigning(root ed25519.PrivateKey, imageDigest string, lifetime time.Duration) error {
+	const nonce = "broker-startup-signing-self-check"
+	minted, err := playground.MintSessionDelegation(root, nonce, imageDigest, time.Now().UTC(), lifetime)
+	if err != nil {
+		return fmt.Errorf("broker: signing self-check mint: %w", err)
+	}
+	if err := verifySessionDelegation(minted.PrivateKey, minted.Delegation, nonce); err != nil {
+		return fmt.Errorf("broker: signing self-check verify against published identity: %w", err)
+	}
+	return nil
 }
 
 // Handler returns the broker's public /api/live/* routes.

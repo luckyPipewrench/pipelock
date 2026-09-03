@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -446,6 +447,9 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	previousVerify := verifySessionDelegation
+	verifySessionDelegation = func(_ ed25519.PrivateKey, _ playground.OrchestratorDelegation, _ string) error { return nil }
+	t.Cleanup(func() { verifySessionDelegation = previousVerify })
 	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, OrchestratorRoot: root}); err == nil {
 		t.Fatal("OrchestratorRoot without ImageDigest should error")
 	}
@@ -479,6 +483,33 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	}
 	srv.Close()
 	srv.Close()
+}
+
+func TestCheckDelegatedSigningFailsClosed(t *testing.T) {
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("ab", 32)
+
+	previous := verifySessionDelegation
+	t.Cleanup(func() { verifySessionDelegation = previous })
+	called := false
+	verifySessionDelegation = func(sessionKey ed25519.PrivateKey, delegation playground.OrchestratorDelegation, nonce string) error {
+		called = true
+		if len(sessionKey) != ed25519.PrivateKeySize || delegation.ImageDigest != digest || nonce == "" {
+			t.Fatal("self-check did not pass the minted delegation to the visitor verification path")
+		}
+		return errors.New("published root mismatch")
+	}
+
+	err = checkDelegatedSigning(root, digest, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "published root mismatch") {
+		t.Fatalf("self-check error = %v, want published-root refusal", err)
+	}
+	if !called {
+		t.Fatal("self-check skipped the visitor verification path")
+	}
 }
 
 func TestServerHealthCORSKillAndResume(t *testing.T) {

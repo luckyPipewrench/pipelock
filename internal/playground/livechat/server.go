@@ -424,6 +424,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "the demo is paused")
 		return
 	}
+	// The session id is the caller-supplied run nonce, so two accepted requests
+	// can carry the same one. Overwriting would orphan the first session: its
+	// timer still closes over this id and would finalize the replacement
+	// instead, leaving the original running with nothing able to reap it.
+	// Refuse the duplicate and let this request's own cleanup run.
+	if _, exists := s.sessions[sid]; exists {
+		s.mu.Unlock()
+		cleanupStartedSession()
+		writeErr(w, http.StatusConflict, "a session for this run is already active")
+		return
+	}
 	s.sessions[sid] = entry
 	entry.timer = time.AfterFunc(ttl, func() { s.finalize(sid) })
 	s.mu.Unlock()

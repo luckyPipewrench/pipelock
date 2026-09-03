@@ -36,6 +36,16 @@ func TestCheckBundleMinVersion(t *testing.T) {
 			t.Fatalf("expected the unprovable-version warning, got %q", out.String())
 		}
 	})
+	t.Run("malformed minimum refuses even when unverifiable versions are allowed", func(t *testing.T) {
+		var out bytes.Buffer
+		err := checkBundleMinVersion(&out, "not-a-version", true)
+		if err == nil || errors.Is(err, domrules.ErrUnverifiableVersion) {
+			t.Fatalf("err = %v, want a malformed-metadata refusal distinct from the unverifiable case", err)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("a refusal must not print the warn-and-continue text, got %q", out.String())
+		}
+	})
 	t.Run("no minimum needs no decision", func(t *testing.T) {
 		var out bytes.Buffer
 		if err := checkBundleMinVersion(&out, "", false); err != nil {

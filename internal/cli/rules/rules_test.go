@@ -1370,6 +1370,13 @@ func TestRulesAllowUnversionedLoadReadsCompatibilitySetting(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte("rules:\n  allow_unversioned_bundle_load: true\n"), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
+	strictPath := filepath.Join(dir, "strict.yaml")
+	if err := os.WriteFile(strictPath, []byte("rules:\n  allow_unversioned_bundle_load: false\n"), 0o600); err != nil {
+		t.Fatalf("writing strict config: %v", err)
+	}
+	if rulesAllowUnversionedLoad(strictPath, io.Discard) {
+		t.Fatal("explicit false config must keep the strict refusal after defaults and normalization")
+	}
 	if !rulesAllowUnversionedLoad(cfgPath, io.Discard) {
 		t.Fatal("explicit true config should preserve the accepted compatibility value")
 	}

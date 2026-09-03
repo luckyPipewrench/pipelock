@@ -84,4 +84,7 @@ func TestDemoCmd_PrintsUnverifiableBundleVersionWarning(t *testing.T) {
 	if !strings.Contains(errOut.String(), unverifiableBundleWarning) {
 		t.Fatalf("demo did not print the unprovable-version warning to stderr\nstderr:\n%s", errOut.String())
 	}
+	if !strings.Contains(errOut.String(), `bundle "`+testBundleName+`"`) || strings.Contains(errOut.String(), "demo-warning-bundle") {
+		t.Fatalf("warning must name the bundle from its manifest (%q), not its directory\nstderr:\n%s", testBundleName, errOut.String())
+	}
 }

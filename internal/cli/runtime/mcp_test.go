@@ -2136,6 +2136,7 @@ func TestMCPProxyCmdRejectsBestEffortFlagsInRemoteModes(t *testing.T) {
 		args []string
 	}{
 		{name: "upstream with best-effort", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort"}},
+		{name: "upstream with expiry only", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort-expiry", "1h"}},
 		{name: "listen with best-effort metadata", args: []string{"--listen", "127.0.0.1:0", "--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort", "--sandbox-best-effort-reason", "x", "--sandbox-best-effort-expiry", "1h"}},
 		{name: "upstream with reason only", args: []string{"--upstream", "http://127.0.0.1:1/", "--sandbox-best-effort-reason", "x"}},
 	} {

@@ -987,6 +987,16 @@ func TestRecordDashboardAuthFailure_BoundsInflightEmits(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expected the event once a slot was free")
 	}
+
+	// Receiving the event does not prove the emit goroutine released its
+	// slot. Wait until a probe send can take that slot, then give it back, so
+	// the cleanup above drains only the slots this test filled.
+	select {
+	case dashboardAuthEventSlots <- struct{}{}:
+		<-dashboardAuthEventSlots
+	case <-time.After(time.Second):
+		t.Fatal("expected the emit goroutine to release its slot")
+	}
 }
 
 func TestDashboardServe_RejectsReceiptDirThatIsAFile(t *testing.T) {

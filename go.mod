@@ -1,6 +1,6 @@
 module github.com/luckyPipewrench/pipelock
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/CycloneDX/cyclonedx-go v0.11.0
@@ -22,7 +22,7 @@ require (
 	github.com/spf13/pflag v1.0.9
 	github.com/spiffe/go-spiffe/v2 v2.7.0
 	go.opentelemetry.io/proto/otlp v1.10.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.41.0

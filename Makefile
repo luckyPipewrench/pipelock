@@ -127,12 +127,24 @@ bench-egress-long:
 bench-egress-release:
 	bash bench/egress/run-all.sh --release
 
-fmt:
-	# Format with the gofumpt that golangci-lint bundles, not whatever
-	# gofumpt happens to be on PATH. A standalone binary drifts from the
-	# pinned one and then disagrees with CI in both directions: a newer
-	# local gofumpt reports files CI accepts, and an older one accepts
-	# files CI rejects.
+# The pinned linter version is read from the workflow rather than repeated here,
+# so the two cannot drift apart. A second copy of a version is a second thing to
+# forget.
+GOLANGCI_LINT_PIN := $(shell sed -n 's/[[:space:]]*version:[[:space:]]*v\([0-9][0-9.]*\).*/\1/p' .github/workflows/ci.yaml | head -1)
+
+.PHONY: check-lint-version
+check-lint-version:
+	@have=$$(golangci-lint --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -1); \
+	if [ -n "$(GOLANGCI_LINT_PIN)" ] && [ -n "$$have" ] && [ "$$have" != "$(GOLANGCI_LINT_PIN)" ]; then \
+	  printf 'warning: golangci-lint %s locally, CI pins %s. Formatting and lint results can differ from CI.\n' \
+	    "$$have" "$(GOLANGCI_LINT_PIN)" >&2; \
+	fi
+
+fmt: check-lint-version
+	# Format with the gofumpt that golangci-lint bundles, not whatever gofumpt
+	# happens to be on PATH. A standalone binary drifts from the pinned one and
+	# then disagrees with CI in both directions: a newer local gofumpt reports
+	# files CI accepts, and an older one accepts files CI rejects.
 	golangci-lint fmt ./...
 
 vet:

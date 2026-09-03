@@ -174,7 +174,7 @@ net.ListenConfig{}.Listen(ctx, ...)   // free port binding
 | gosec | G304 | `filepath.Clean(path)`; validate containment across trust boundaries |
 | noctx | bare listener | `net.ListenConfig{}.Listen(ctx, ...)` |
 | unparam | unused param | `_` prefix |
-| gofumpt | formatting | `gofumpt -w <file>` |
+| gofumpt | formatting | `make fmt` (uses the pinned formatter) |
 
 ## Non-Obvious Task Traps
 

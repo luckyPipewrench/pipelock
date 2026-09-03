@@ -356,14 +356,19 @@ func TestScanResponse_PromptInjectionDocumentationCorpus(t *testing.T) {
 			}
 			for view, content := range views {
 				t.Run(view, func(t *testing.T) {
+					// Assert the prompt-injection rule itself, not merely that
+					// some rule blocked: an overlapping rule could otherwise keep
+					// this corpus green while the injection match silently
+					// disappears.
 					coreMatches := s.ScanCoreResponse(t.Context(), content)
-					coreBlocked := len(coreMatches) > 0
-					configuredBlocked := !configured.ScanResponse(t.Context(), content).Clean
+					coreBlocked := hasPatternMatch(coreMatches, patternNamePromptInjection)
+					configuredResult := configured.ScanResponse(t.Context(), content)
+					configuredBlocked := !configuredResult.Clean && hasPatternMatch(configuredResult.Matches, patternNamePromptInjection)
 					if coreBlocked != tt.blocked {
-						t.Fatalf("core blocked = %t, want %t: %+v", coreBlocked, tt.blocked, coreMatches)
+						t.Fatalf("core prompt-injection match = %t, want %t: %+v", coreBlocked, tt.blocked, coreMatches)
 					}
 					if configuredBlocked != tt.blocked {
-						t.Fatalf("configured blocked = %t, want %t", configuredBlocked, tt.blocked)
+						t.Fatalf("configured prompt-injection match = %t, want %t: %+v", configuredBlocked, tt.blocked, configuredResult.Matches)
 					}
 				})
 			}
@@ -381,10 +386,20 @@ should scan for these patterns in incoming text.
 
 `
 
-	result := s.ScanResponse(context.Background(), content)
-	if result.Clean {
-		t.Fatal("expected documentation example to retain the core prompt-injection match")
+	coreMatches := s.ScanCoreResponse(context.Background(), content)
+	if !hasPatternMatch(coreMatches, patternNamePromptInjection) {
+		t.Fatalf("expected documentation example to retain the core prompt-injection match, got %+v", coreMatches)
 	}
+}
+
+// hasPatternMatch reports whether any match was produced by the named rule.
+func hasPatternMatch(matches []ResponseMatch, name string) bool {
+	for _, m := range matches {
+		if m.PatternName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestScanResponse_EducationalFramingKeepsConfiguredMatch(t *testing.T) {

@@ -418,6 +418,20 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	}); err == nil {
 		t.Fatal("SessionEnv carrying the durable orchestrator key should error")
 	}
+	leaseWithRoot, err := NewLeaseManager(LeaseConfig{
+		Provider:    &serverFakeProvider{},
+		Concurrency: livechat.NewConcurrencyLimiter(brokerTestCapacity),
+		Image:       brokerTestImage,
+		BaseEnv:     map[string]string{"PLAYGROUND_ORCHESTRATOR_" + "KEY": "durable-root"},
+	})
+	if err != nil {
+		t.Fatalf("NewLeaseManager with durable base environment: %v", err)
+	}
+	if _, err := NewServer(ServerConfig{Leases: leaseWithRoot, Gate: gate}); err == nil {
+		t.Fatal("LeaseConfig.BaseEnv carrying the durable orchestrator key should error")
+	} else if !strings.Contains(err.Error(), "LeaseConfig.BaseEnv") {
+		t.Fatalf("error = %v, want the BaseEnv source named", err)
+	}
 	if _, err := NewServer(ServerConfig{
 		Leases:           lm,
 		Gate:             gate,

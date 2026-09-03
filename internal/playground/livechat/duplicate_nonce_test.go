@@ -6,7 +6,6 @@ package livechat
 import (
 	"fmt"
 	"net/http"
-	"sync"
 	"testing"
 	"time"
 )
@@ -101,35 +100,48 @@ func TestServer_ConcurrentDuplicateNonceConsumesOneAllocation(t *testing.T) {
 
 	const nonce = "cc" + "ddeeff00112233445566778899aabb"
 
-	var wg sync.WaitGroup
-	codes := make([]int, 2)
-	start := make(chan struct{})
-	for i := range codes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			resp := postJSON(t, ts+RouteSession, createReq{Code: "good", RunNonce: nonce})
-			_ = resp.Body.Close()
-			codes[i] = resp.StatusCode
-		}()
+	reserved := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	srv.beforeGateRedeem = func() {
+		close(reserved)
+		<-releaseFirst
 	}
-	close(start)
-	wg.Wait()
 
-	var accepted, conflicted int
-	for _, c := range codes {
-		switch c {
-		case http.StatusOK:
-			accepted++
-		case http.StatusConflict:
-			conflicted++
-		default:
-			t.Fatalf("unexpected status %d; want one 200 and one 409", c)
-		}
+	firstDone := make(chan int, 1)
+	go func() {
+		resp := postJSON(t, ts+RouteSession, createReq{Code: "good", RunNonce: nonce})
+		_ = resp.Body.Close()
+		firstDone <- resp.StatusCode
+	}()
+	select {
+	case <-reserved:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not reserve its nonce before redeeming the invite")
 	}
-	if accepted != 1 || conflicted != 1 {
-		t.Fatalf("accepted=%d conflicted=%d, want exactly one of each", accepted, conflicted)
+
+	secondDone := make(chan int, 1)
+	go func() {
+		resp := postJSON(t, ts+RouteSession, createReq{Code: "good", RunNonce: nonce})
+		_ = resp.Body.Close()
+		secondDone <- resp.StatusCode
+	}()
+	select {
+	case status := <-secondDone:
+		if status != http.StatusConflict {
+			t.Fatalf("duplicate status = %d, want 409 before the first request redeems", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("duplicate request reached redemption instead of being refused by the nonce reservation")
+	}
+
+	close(releaseFirst)
+	select {
+	case status := <-firstDone:
+		if status != http.StatusOK {
+			t.Fatalf("first request status = %d, want 200", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first request did not finish after redemption was released")
 	}
 
 	// The refused racer must not have spent budget. Drain the remaining

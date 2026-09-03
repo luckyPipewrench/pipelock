@@ -364,9 +364,15 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 			return nil, fmt.Errorf("broker: %s must be >= 0", c.name)
 		}
 	}
-	for k := range cfg.SessionEnv {
-		if k == "PLAYGROUND_ORCHESTRATOR_"+"KEY" {
-			return nil, errors.New("broker: SessionEnv must not carry the durable orchestrator key")
+	for _, source := range []struct {
+		name string
+		env  map[string]string
+	}{
+		{name: "SessionEnv", env: cfg.SessionEnv},
+		{name: "LeaseConfig.BaseEnv", env: cfg.Leases.cfg.BaseEnv},
+	} {
+		if _, found := source.env["PLAYGROUND_ORCHESTRATOR_"+"KEY"]; found {
+			return nil, fmt.Errorf("broker: %s must not carry the durable orchestrator key", source.name)
 		}
 	}
 	if len(cfg.OrchestratorRoot) != 0 {

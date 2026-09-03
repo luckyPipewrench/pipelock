@@ -189,6 +189,10 @@ type Server struct {
 	// same id, so without the reservation two concurrent starts on one nonce
 	// each consume an allocation while only one refund can find its record.
 	pending map[string]struct{}
+	// beforeGateRedeem provides a test-only rendezvous after a nonce has been
+	// reserved and before the invite allocation is spent. It is nil in every
+	// production server.
+	beforeGateRedeem func()
 }
 
 // defaultMaxMessagesPerSession bounds one session's model calls when the operator
@@ -379,6 +383,9 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		delete(s.pending, sid)
 		s.mu.Unlock()
+	}
+	if s.beforeGateRedeem != nil {
+		s.beforeGateRedeem()
 	}
 	token, claims, err := s.cfg.Gate.Redeem(body.Code, sid)
 	if err != nil {

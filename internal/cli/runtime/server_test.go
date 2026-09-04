@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/posture"
@@ -1400,6 +1401,14 @@ func TestServer_StartRejectsFileSentryBlockWithoutSubprocessChild(t *testing.T) 
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
+	// The refusal must happen before any watcher exists: a constructed watcher
+	// would already be reading the filesystem for a block mode that cannot act.
+	oldNew := newFileSentryWatcher
+	newFileSentryWatcher = func(*config.FileSentry, filesentry.DLPScanner, filesentry.Lineage, func(error)) (filesentry.Watcher, error) {
+		t.Error("file sentry watcher constructed despite the block-mode refusal")
+		return newGatedFileSentryWatcher(nil), nil
+	}
+	t.Cleanup(func() { newFileSentryWatcher = oldNew })
 
 	err := s.Start(context.Background())
 	if err == nil {
@@ -1924,12 +1933,11 @@ func TestServer_ReloadRejectsNilConfig(t *testing.T) {
 	}
 }
 
-// A reload that introduces file_sentry block on the server listener is not
-// rejected: file_sentry is restart-only, so the running settings stay and the
-// rest of the reload (a fleet policy bundle, new DLP patterns) still lands.
-// The operator gets a loud warning that the next start will refuse the config.
-func TestServer_ReloadWarnsFileSentryBlockWithoutSubprocessChild(t *testing.T) {
-	s, buf := newTestServer(t, nil)
+// A reload that asks for file_sentry block on the server listener is rejected
+// atomically: nothing else in that reload lands either, so a policy rollout
+// cannot report success while the enforcement it asked for never arrived.
+func TestServer_ReloadRejectsFileSentryBlockWithoutSubprocessChild(t *testing.T) {
+	s, _ := newTestServer(t, nil)
 	oldCfg := s.proxy.CurrentConfig()
 
 	newCfg := oldCfg.Clone()
@@ -1938,26 +1946,23 @@ func TestServer_ReloadWarnsFileSentryBlockWithoutSubprocessChild(t *testing.T) {
 	newCfg.FileSentry.WatchPaths = []config.WatchPath{{Path: t.TempDir()}}
 	newCfg.DLP.Patterns = append(newCfg.DLP.Patterns, config.DLPPattern{Name: "reload-secret", Regex: `RELOAD_SECRET_[A-Z]+`, Severity: config.SeverityCritical})
 
-	if err := s.Reload(newCfg); err != nil {
-		t.Fatalf("Reload rejected a restart-only file_sentry change: %v", err)
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload accepted file_sentry.action: block without a subprocess child")
 	}
-	for _, want := range []string{"file_sentry.action", "subprocess MCP mode", "pipelock mcp proxy -- COMMAND", "next start will refuse"} {
-		if !buf.contains(want) {
-			t.Errorf("stderr missing %q:\n%s", want, buf.String())
+	for _, want := range []string{"rejected", "file_sentry.action", "subprocess MCP mode", "pipelock mcp proxy -- COMMAND"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Reload error = %q, want substring %q", err, want)
 		}
 	}
 	live := s.proxy.CurrentConfig()
-	if !reflect.DeepEqual(live.FileSentry, oldCfg.FileSentry) {
-		t.Fatalf("file_sentry = %+v, want running settings preserved %+v", live.FileSentry, oldCfg.FileSentry)
+	if live != oldCfg {
+		t.Fatal("rejected reload swapped the live config")
 	}
-	found := false
 	for _, p := range live.DLP.Patterns {
 		if p.Name == "reload-secret" {
-			found = true
+			t.Fatal("rejected reload still applied the DLP change riding alongside it")
 		}
-	}
-	if !found {
-		t.Fatal("reload dropped the DLP change riding alongside the file_sentry warning")
 	}
 }
 

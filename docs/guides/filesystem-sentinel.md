@@ -11,7 +11,7 @@ This catches a class of exfiltration that the network proxy cannot see: an agent
 
 ## Scope
 
-`action: block` applies to **subprocess MCP mode only**. HTTP upstream, WebSocket, and listener modes have no local child process to cancel. `pipelock run` can use file sentry with `action: warn`, but it rejects `file_sentry.action: block` at startup; a reload that introduces it keeps the running settings and warns that the next start will refuse the config.
+`action: block` applies to **subprocess MCP mode only**. HTTP upstream, WebSocket, and listener modes have no local child process to cancel. `pipelock run` can use file sentry with `action: warn`, but it rejects `file_sentry.action: block` at startup and rejects a reload that introduces it.
 
 File sentry detects writes; it doesn't intercept them. With `action: warn` (default), findings are alerted and the agent keeps running. With `action: block`, file sentry fails closed only after it emits a detected, agent-attributed DLP finding. The consumer logs the finding, records the metric, and then cancels the proxy context, terminating the MCP child so the agent cannot continue acting on that detected leak. A skipped, unreadable, ignored, or deleted file doesn't create a finding. If the path is replaced before the scan opens it, the replacement content is scanned and can become a finding. Without a finding, block leaves the child running. Writes before Arm work the same way. A watcher backend failure from `Start()` still cancels the runtime; that is a dead watcher, not a skipped file. For write-time interception, use Landlock or the process sandbox (`--sandbox`).
 
@@ -99,6 +99,6 @@ Attribution is probabilistic: if the writing process has already closed the file
 | Feature | `pipelock integrity` | File Sentry |
 |---------|---------------------|-------------|
 | Timing | On-demand snapshot | Continuous real-time |
-| Scope | Any directory | Subprocess MCP mode only |
+| Scope | Any directory | Any listener with `action: warn`; `action: block` in subprocess MCP mode only |
 | Detection | File hashes + DLP | DLP on write events |
 | Attribution | None | Process tree (Linux) |

@@ -70,13 +70,15 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
-	// file_sentry is restart-only, so a reload never arms a new block mode and
-	// rejecting the whole reload for it would drop the security changes riding
-	// alongside (a fleet policy bundle applied to a follower is the common case).
-	// Warn loudly instead: the running settings stay, and the next start refuses
-	// this config until it is corrected.
+	// Startup refuses block on this listener, so a reload that asks for it is
+	// requesting enforcement this runtime cannot provide. Reject the whole
+	// reload atomically and record it through the reload audit path; applying
+	// the rest while quietly keeping the old file sentry settings would report a
+	// policy rollout as successful when its enforcement never arrived.
 	if fileSentryErr := validateServerFileSentry(newCfg); fileSentryErr != nil {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %v; file_sentry is restart-only, so this reload keeps the running settings and the next start will refuse this config\n", fileSentryErr)
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", fileSentryErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
 	}
 	if s.containmentManaged {
 		if containmentErr := validateContainmentMetricsConfig(newCfg); containmentErr != nil {

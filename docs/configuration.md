@@ -2504,7 +2504,7 @@ At least one chain must be enabled when `address_protection.enabled` is `true`. 
 
 ## File Sentry
 
-Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. `file_sentry.action: block` is supported only in subprocess MCP mode (`pipelock mcp proxy -- COMMAND`), where Pipelock can cancel the child. `pipelock run` can use file sentry with `action: warn`, but refuses `action: block` at startup; a reload that introduces it keeps the running settings and warns that the next start will refuse the config.
+Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. `file_sentry.action: block` is supported only in subprocess MCP mode (`pipelock mcp proxy -- COMMAND`), where Pipelock can cancel the child. `pipelock run` can use file sentry with `action: warn`, but refuses `action: block` at startup and rejects a reload that introduces it, so a policy rollout cannot report success while asking for enforcement that listener cannot provide.
 
 ```yaml
 file_sentry:

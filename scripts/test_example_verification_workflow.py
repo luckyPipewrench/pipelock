@@ -134,11 +134,13 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
             self.assertIn('f"--package={EVERYTHING_PACKAGE}"', warm_body, path)
             self.assertIn('"--", "node", "--version"', warm_body, path)
             self.assertNotIn('EVERYTHING_PACKAGE, "--version"', warm_body, path)
-            self.assertIn("timeout=300", warm_body, path)
+            self.assertIn("timeout=60", warm_body, path)
             self.assertIn("check=True", warm_body, path)
+            self.assertIn('print("SKIP: 1")', warm_body, path)
+            self.assertIn("return False", warm_body, path)
             sequence = (
                 main_body.index("run_install("),
-                main_body.index("warm_upstream_package(runtime_env)"),
+                main_body.index("if not warm_upstream_package(runtime_env):"),
                 main_body.index("proc = subprocess.Popen("),
             )
             self.assertEqual(

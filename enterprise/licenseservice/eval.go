@@ -285,14 +285,16 @@ func (h *WebhookHandler) recordPendingOneTimeTrialRefund(ctx context.Context, or
 		FulfillmentState: fulfillmentRevoked,
 		RevocationState:  revocationPendingNoLicense,
 	}
-	if err := h.db.UpsertEvalOrder(ctx, eo); err != nil {
-		return fmt.Errorf("record pending one-time trial refund: %w", err)
-	}
-	// The audit record lands before the webhook is acknowledged: if the
-	// ledger cannot take it, the provider retries and the pending row above
-	// makes that retry idempotent.
+	// The audit record lands first: if the ledger cannot take it, no pending
+	// row exists yet, so the provider's retry re-enters this same path instead
+	// of finding a row and skipping the audit. A retry after the row is written
+	// but before acknowledgment appends a second ledger line, which the
+	// append-only ledger tolerates.
 	if err := h.ledger.LogError(order.ID, "record pending one-time trial refund", errors.New("refund arrived before fulfillment")); err != nil {
 		return fmt.Errorf("record pending one-time trial refund audit: %w", err)
+	}
+	if err := h.db.UpsertEvalOrder(ctx, eo); err != nil {
+		return fmt.Errorf("record pending one-time trial refund: %w", err)
 	}
 	if err := h.db.MarkWebhookCommitted(ctx, msgID, eventType, order.ID); err != nil {
 		return fmt.Errorf("mark pending one-time trial refund webhook committed: %w", err)
@@ -362,21 +364,24 @@ func (h *WebhookHandler) revokeOneTimeTrialForOrder(ctx context.Context, entitle
 		_ = h.ledger.LogError(order.ID, "revoke one-time trial licenses", err)
 		return fmt.Errorf("revoke one-time trial licenses: %w", err)
 	}
-	// Mirror the Eval path: every revoked license leaves a success entry so an
-	// audit reader can prove the fleet credential was revoked, not only that a
-	// refund arrived.
-	// A revocation the ledger cannot record is not acknowledged: the webhook
-	// stays uncommitted so the provider retries once the ledger is writable,
-	// and the revocation rows written above make the retry idempotent.
-	for _, iss := range issuances {
-		if err := h.ledger.Log(AuditEntry{Event: AuditTrialRefundRevoked, SubscriptionID: order.ID, LicenseID: iss.LicenseID, Detail: reason}); err != nil {
-			return fmt.Errorf("record one-time trial revocation audit for %s: %w", iss.LicenseID, err)
-		}
-	}
+	// The durable security state (license revocations above, entitlement
+	// status here) lands before any fallible audit write, so a ledger outage
+	// can never leave revoked licenses beside an active entitlement.
 	entitlement.Status = statusRevoked
 	entitlement.NextRefreshAt = nil
 	if err := h.db.Upsert(ctx, entitlement); err != nil {
 		return fmt.Errorf("revoke one-time trial entitlement: %w", err)
+	}
+	// Mirror the Eval path: every revoked license leaves a success entry so an
+	// audit reader can prove the fleet credential was revoked, not only that a
+	// refund arrived. A revocation the ledger cannot record is not
+	// acknowledged: the webhook stays uncommitted so the provider retries once
+	// the ledger is writable, and the rows written above make the retry
+	// idempotent.
+	for _, iss := range issuances {
+		if err := h.ledger.Log(AuditEntry{Event: AuditTrialRefundRevoked, SubscriptionID: order.ID, LicenseID: iss.LicenseID, Detail: reason}); err != nil {
+			return fmt.Errorf("record one-time trial revocation audit for %s: %w", iss.LicenseID, err)
+		}
 	}
 	if err := h.db.MarkWebhookCommitted(ctx, msgID, eventType, order.ID); err != nil {
 		return fmt.Errorf("mark one-time trial refund webhook committed: %w", err)

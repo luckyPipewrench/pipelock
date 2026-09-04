@@ -3728,3 +3728,23 @@ func TestHandleOrderEvent_TrialSlotSharedAcrossTiers(t *testing.T) {
 		}
 	})
 }
+
+// A pending refund that the ledger cannot record is not acknowledged: the
+// webhook stays uncommitted so the provider retries once the ledger is back.
+func TestHandleOrderRefund_EnterpriseTrialPendingRefusalFailsWithoutLedger(t *testing.T) {
+	ts := newTestSetup(t)
+	if err := ts.handler.ledger.Close(); err != nil {
+		t.Fatalf("close ledger: %v", err)
+	}
+	event := &PolarWebhookEvent{Type: EventOrderRefunded, Data: json.RawMessage(`{"id":"order_enterprise_trial_refunded"}`)}
+	if err := ts.handler.HandleOrderRefundEvent(t.Context(), event, "msg_enterprise_trial_missing_noledger"); err == nil {
+		t.Fatal("pending refund with a closed ledger must not be acknowledged")
+	}
+	committed, err := ts.db.WebhookCommitted(t.Context(), "msg_enterprise_trial_missing_noledger")
+	if err != nil {
+		t.Fatalf("WebhookCommitted: %v", err)
+	}
+	if committed {
+		t.Fatal("pending refund webhook was committed despite the missing audit record")
+	}
+}

@@ -138,3 +138,60 @@ func TestArchiveReplayCmd_Refusals(t *testing.T) {
 		}
 	})
 }
+
+func TestArchiveReplayOutputHelpersFailClosed(t *testing.T) {
+	t.Run("kit output path must be new directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "already-a-file")
+		if err := os.WriteFile(path, []byte("existing"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f := &archiveReplayFlags{
+			kitOutputDir:    path,
+			linuxVerifier:   "unused",
+			macOSVerifier:   "unused",
+			windowsVerifier: "unused",
+		}
+		if err := writeArchiveVerifyKits(f, nil); err == nil || !strings.Contains(err.Error(), "create kit output directory") {
+			t.Fatalf("existing output file error = %v, want directory creation refusal", err)
+		}
+	})
+
+	t.Run("kit build stops before partial output", func(t *testing.T) {
+		kitDir := filepath.Join(t.TempDir(), "kits")
+		f := &archiveReplayFlags{
+			kitOutputDir:    kitDir,
+			linuxVerifier:   filepath.Join(t.TempDir(), "missing-linux"),
+			macOSVerifier:   filepath.Join(t.TempDir(), "missing-macos"),
+			windowsVerifier: filepath.Join(t.TempDir(), "missing-windows"),
+		}
+		if err := writeArchiveVerifyKits(f, nil); err == nil || !strings.Contains(err.Error(), "build linux verification kit") {
+			t.Fatalf("missing verifier error = %v, want kit-build failure", err)
+		}
+		entries, err := os.ReadDir(kitDir)
+		if err != nil {
+			t.Fatalf("read kit output directory: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("failed kit build wrote partial output: %v", entries)
+		}
+	})
+
+	t.Run("archive file writes exact bytes and never replaces directory", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "replay.tar.gz")
+		want := []byte("replay-bytes")
+		if err := writeNewArchiveFile(path, want); err != nil {
+			t.Fatalf("writeNewArchiveFile: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("read output: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+		if err := writeNewArchiveFile(dir, want); err == nil || !strings.Contains(err.Error(), "create output") {
+			t.Fatalf("directory output error = %v, want create-output refusal", err)
+		}
+	})
+}

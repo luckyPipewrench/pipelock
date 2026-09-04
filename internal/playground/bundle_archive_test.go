@@ -158,6 +158,38 @@ func TestArchiveRunForDownload_FailsClosedOnMissingRequiredArtifact(t *testing.T
 	}
 }
 
+func TestArchiveRunForDownload_FailsClosedOnUnreadableRequiredArtifact(t *testing.T) {
+	dir := t.TempDir()
+	writeRunArtifacts(t, dir, false)
+	witnessPath := filepath.Join(dir, witnessFile)
+	if err := os.Chmod(witnessPath, 0o000); err != nil {
+		t.Fatalf("chmod witness: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(witnessPath, 0o600) })
+
+	_, err := ArchiveRunForDownload(dir, "abc")
+	if err == nil || !strings.Contains(err.Error(), "read artifact "+witnessFile) {
+		t.Fatalf("unreadable witness error = %v, want read failure for %s", err, witnessFile)
+	}
+}
+
+func TestArchiveRunForDownload_FailsClosedWhenRequiredFileIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeRunArtifacts(t, dir, false)
+	manifestPath := filepath.Join(dir, launchManifestFile)
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+	if err := os.Mkdir(manifestPath, 0o750); err != nil {
+		t.Fatalf("replace manifest with directory: %v", err)
+	}
+
+	_, err := ArchiveRunForDownload(dir, "abc")
+	if err == nil || !strings.Contains(err.Error(), "read artifact "+launchManifestFile) {
+		t.Fatalf("directory artifact error = %v, want read failure for %s", err, launchManifestFile)
+	}
+}
+
 func TestArchiveRunForDownload_IsDeterministic(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

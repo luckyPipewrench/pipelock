@@ -60,7 +60,17 @@ func (f *fileSentryRuntimeFailure) get() error {
 	return f.err
 }
 
+func validateServerFileSentry(cfg *config.Config) error {
+	if cfg != nil && cfg.FileSentry.Enabled && cfg.FileSentry.Action == config.ActionBlock {
+		return errors.New("file_sentry.action: block requires subprocess MCP mode (pipelock mcp proxy -- COMMAND); pipelock run has no child process to cancel")
+	}
+	return nil
+}
+
 func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel context.CancelFunc) (func() error, error) {
+	if err := validateServerFileSentry(cfg); err != nil {
+		return nil, err
+	}
 	if cfg == nil || !cfg.FileSentry.Enabled {
 		return func() error { return nil }, nil
 	}

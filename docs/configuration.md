@@ -2504,7 +2504,7 @@ At least one chain must be enabled when `address_protection.enabled` is `true`. 
 
 ## File Sentry
 
-Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. Applies to subprocess MCP mode only (`pipelock mcp proxy -- COMMAND`).
+Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. `file_sentry.action: block` is supported only in subprocess MCP mode (`pipelock mcp proxy -- COMMAND`), where Pipelock can cancel the child. `pipelock run` can use file sentry with `action: warn`, but refuses `action: block` at startup; a reload that introduces it keeps the running settings and warns that the next start will refuse the config.
 
 ```yaml
 file_sentry:
@@ -2531,7 +2531,7 @@ file_sentry:
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `max_file_bytes` | `0` | Max watched-file bytes to read for content scanning. `0` uses the built-in 10 MiB default; negative values are rejected. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
-| `action` | `warn` | Enforcement response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). `block` additionally cancels the proxy context so the MCP child terminates, preventing the agent from continuing after that detected leak. Non-agent writes (editor saves, build output) never trigger the block path. |
+| `action` | `warn` | Response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). In subprocess MCP mode, `block` also cancels the proxy context so the MCP child terminates after that detected leak. `pipelock run` rejects `file_sentry.action: block` because it has no child process to cancel. Non-agent writes (editor saves, build output) never trigger the block path. |
 
 File sentry setup is strict by default: any root or descendant subtree that cannot be watched fails startup after Pipelock reports every skipped subtree. Set `best_effort: true` to keep accessible siblings armed while reporting each skipped root or subtree. Startup still fails when nothing can be armed. `required: true` keeps a configured root strict even in best-effort mode. Root symlinks are rejected and child symlinks are not followed. Unknown fields in mapping entries are rejected so typos such as `require: true` do not silently change the requested behavior.
 

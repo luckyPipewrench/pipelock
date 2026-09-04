@@ -70,6 +70,14 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
+	// file_sentry is restart-only, so a reload never arms a new block mode and
+	// rejecting the whole reload for it would drop the security changes riding
+	// alongside (a fleet policy bundle applied to a follower is the common case).
+	// Warn loudly instead: the running settings stay, and the next start refuses
+	// this config until it is corrected.
+	if fileSentryErr := validateServerFileSentry(newCfg); fileSentryErr != nil {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %v; file_sentry is restart-only, so this reload keeps the running settings and the next start will refuse this config\n", fileSentryErr)
+	}
 	if s.containmentManaged {
 		if containmentErr := validateContainmentMetricsConfig(newCfg); containmentErr != nil {
 			s.containmentMetricsDenied.Store(true)

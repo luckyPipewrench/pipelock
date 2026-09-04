@@ -122,3 +122,39 @@ func TestWebSocketClientMessageBody_SigV4CredentialRoutesNeverMatchFrames(t *tes
 		})
 	}
 }
+
+// A reverse upstream with a base path egresses to the joined path, so a route
+// must name that joined path: the bare inbound path must not exempt a request
+// that actually reaches the base-prefixed path.
+func TestReverseProxy_SigV4CredentialRoutesUseJoinedUpstreamPath(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		routePath string
+		blocked   bool
+	}{
+		{name: "route names the joined upstream path", routePath: "/base/v1/graphql"},
+		{name: "route naming only the inbound path does not match", routePath: "/v1/graphql", blocked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := sigV4CredentialRouteTestConfig()
+			cfg.RequestBodyScanning.SigV4CredentialRoutes[0].Path = tc.routePath
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			upstream, err := url.Parse("https://api.vendor.example/base")
+			if err != nil {
+				t.Fatalf("parse upstream: %v", err)
+			}
+			handler := &ReverseProxyHandler{upstream: upstream, logger: audit.NewNop(), metrics: metrics.New(), captureObs: capture.NopObserver{}}
+			body := `{"url":"` + sigV4CredentialRouteTestURL() + `"}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://proxy.vendor.example/v1/graphql", strings.NewReader(body))
+			req.Header.Set("Content-Type", contentTypeJSON)
+			rec := httptest.NewRecorder()
+			blocked, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: "https://api.vendor.example/base/v1/graphql"})
+			if blocked != tc.blocked {
+				t.Fatalf("blocked = %v, want %v; response=%s", blocked, tc.blocked, rec.Body.String())
+			}
+		})
+	}
+}

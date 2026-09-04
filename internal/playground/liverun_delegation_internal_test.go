@@ -71,6 +71,46 @@ func TestStartLiveRun_DelegatedSessionBindsManifest(t *testing.T) {
 	}
 }
 
+// A delegated run has two identities: its session key signs the manifest, while
+// the root authorizes that session key. Final sealing and a downloaded verifier
+// must receive the latter, or they compare root_key_id against the session key
+// and reject a valid delegation.
+func TestLiveRun_DelegatedSessionReportsDelegationRoot(t *testing.T) {
+	root := testRunRoot(t)
+	const nonce = "delegated-trust-root"
+
+	minted, err := MintSessionDelegation(root, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	lr, err := StartLiveRun(t.Context(), LiveRunOpts{
+		ScenarioID:        LiveDemoScenarioID,
+		RunNonce:          nonce,
+		SessionPrivateKey: minted.PrivateKey,
+		Delegation:        &minted.Delegation,
+	})
+	if err != nil {
+		t.Fatalf("StartLiveRun: %v", err)
+	}
+	defer lr.Close()
+
+	if got, want := lr.OrchestratorPubHex(), hex.EncodeToString(root.Public().(ed25519.PublicKey)); got != want {
+		t.Fatalf("OrchestratorPubHex = %q, want delegation root %q", got, want)
+	}
+	if got := lr.OrchestratorPubHex(); got == minted.Delegation.SessionPublicKey {
+		t.Fatal("delegated session key must not be reported as the delegation trust root")
+	}
+
+	sessionPub := minted.PrivateKey.Public().(ed25519.PublicKey)
+	if err := VerifyOrchestratorDelegation(sessionPub, minted.Delegation, DelegationExpectations{RunNonce: nonce, ImageDigest: testRunImageDigest}); err == nil || !strings.Contains(err.Error(), "root_key_id does not match expected root") {
+		t.Fatalf("session signer verification error = %v, want root key id mismatch", err)
+	}
+	if err := VerifyOrchestratorDelegation(root.Public().(ed25519.PublicKey), minted.Delegation, DelegationExpectations{RunNonce: nonce, ImageDigest: testRunImageDigest}); err != nil {
+		t.Fatalf("delegation root verification: %v", err)
+	}
+}
+
 // The delegation travels with the run directory, so an offline verifier can
 // walk session key back to the published root without contacting anything.
 func TestLiveRun_DelegatedRunWritesDelegationArtifact(t *testing.T) {

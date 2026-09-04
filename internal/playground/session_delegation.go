@@ -30,12 +30,19 @@ var trustedDelegationRoot = PublishedOrchestratorPublicKey
 // proves only that a delegation is well formed; without this a caller could
 // present a structurally valid delegation it signed itself.
 func VerifySessionDelegation(priv ed25519.PrivateKey, d OrchestratorDelegation, runNonce string) error {
-	if runNonce == "" {
-		return fmt.Errorf("delegated session requires a run nonce")
-	}
 	root, err := trustedDelegationRoot()
 	if err != nil {
 		return err
+	}
+	return verifySessionDelegationWithRoot(root, priv, d, runNonce)
+}
+
+// verifySessionDelegationWithRoot verifies a delegated session against the root
+// selected by the caller. Keeping that selected root lets a live run carry the
+// same trust root through its final offline verification and download metadata.
+func verifySessionDelegationWithRoot(root ed25519.PublicKey, priv ed25519.PrivateKey, d OrchestratorDelegation, runNonce string) error {
+	if runNonce == "" {
+		return fmt.Errorf("delegated session requires a run nonce")
 	}
 	if err := VerifyOrchestratorDelegation(root, d, DelegationExpectations{RunNonce: runNonce}); err != nil {
 		return err

@@ -1427,6 +1427,39 @@ func TestVerifyRunJSONFailureExitsNonZero(t *testing.T) {
 	}
 }
 
+func TestVerifyRunArchiveModePrintsItsDifferentSemantics(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"launch-manifest.json",
+		"orchestrator-delegation.json",
+		"replay-archive-authorization.json",
+		"witness.json",
+		"red-witness.json",
+		"host-containment-witness.json",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	packetDir := filepath.Join(dir, "packet")
+	if err := os.Mkdir(packetDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"packet.json", "evidence.jsonl", "manifest.json"} {
+		if err := os.WriteFile(filepath.Join(packetDir, name), []byte("{}"), 0o600); err != nil {
+			t.Fatalf("write packet/%s: %v", name, err)
+		}
+	}
+
+	stdout, _, code := runRoot(t, "verify-run", "--archive", dir)
+	if code == cliutil.ExitOK {
+		t.Fatalf("malformed archive run exited 0: %s", stdout)
+	}
+	if !strings.Contains(stdout, "archive mode: root-authorized permanent replay") {
+		t.Fatalf("archive-mode output omitted its changed semantics: %s", stdout)
+	}
+}
+
 func TestReceipt_V1AllowUnpinned(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 1)

@@ -201,6 +201,25 @@ func VerifyOrchestratorDelegation(pub ed25519.PublicKey, d OrchestratorDelegatio
 }
 
 func verifyOrchestratorDelegationAt(pub ed25519.PublicKey, d OrchestratorDelegation, want DelegationExpectations, now time.Time) error {
+	if err := verifyOrchestratorDelegationSignature(pub, d, want); err != nil {
+		return err
+	}
+	nowUnix := now.Unix()
+	if nowUnix < d.NotBeforeUnix {
+		return fmt.Errorf("delegation is not valid yet")
+	}
+	if nowUnix >= d.ExpiresAtUnix {
+		return fmt.Errorf("delegation has expired")
+	}
+	return nil
+}
+
+// verifyOrchestratorDelegationSignature verifies every intrinsic delegation
+// claim and its root signature, but deliberately does not evaluate time. It is
+// used only after a separate durable replay authorization has bound the exact
+// delegation to a sealed archive. Live callers must use
+// VerifyOrchestratorDelegation instead.
+func verifyOrchestratorDelegationSignature(pub ed25519.PublicKey, d OrchestratorDelegation, want DelegationExpectations) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return fmt.Errorf("delegation root public key has wrong size")
 	}
@@ -211,13 +230,6 @@ func verifyOrchestratorDelegationAt(pub ed25519.PublicKey, d OrchestratorDelegat
 	sig, err := hex.DecodeString(d.Signature)
 	if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, d.SignedBytes(), sig) {
 		return fmt.Errorf("delegation signature invalid under root key")
-	}
-	nowUnix := now.Unix()
-	if nowUnix < d.NotBeforeUnix {
-		return fmt.Errorf("delegation is not valid yet")
-	}
-	if nowUnix >= d.ExpiresAtUnix {
-		return fmt.Errorf("delegation has expired")
 	}
 	return nil
 }

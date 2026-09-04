@@ -17,6 +17,7 @@ func newVerifyRunCmd() *cobra.Command {
 	var (
 		orchKey  string
 		jsonMode bool
+		archive  bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,7 +40,11 @@ The full chain checks:
 Exit code 0 = every check passed. Non-zero = at least one check failed.`,
 		Args: exactOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rep, err := playground.VerifyRun(args[0], orchKey)
+			verify := playground.VerifyRun
+			if archive {
+				verify = playground.VerifyArchivedReplay
+			}
+			rep, err := verify(args[0], orchKey)
 			if err != nil {
 				return err
 			}
@@ -70,6 +75,10 @@ Exit code 0 = every check passed. Non-zero = at least one check failed.`,
 				_, _ = fmt.Fprintln(w)
 			}
 			_, _ = fmt.Fprintln(w)
+			if archive {
+				_, _ = fmt.Fprintln(w, "archive mode: root-authorized permanent replay; delegation time window intentionally not evaluated")
+				_, _ = fmt.Fprintln(w)
+			}
 			if rep.OK {
 				_, _ = fmt.Fprintf(w, "result: VALID  run_nonce=%s observed=%d\n", rep.RunNonce, rep.ObservedCount)
 				return nil
@@ -79,5 +88,6 @@ Exit code 0 = every check passed. Non-zero = at least one check failed.`,
 	}
 	cmd.Flags().StringVar(&orchKey, "orchestrator-key", playground.PublishedOrchestratorPubKeyHex, "hex-encoded orchestrator Ed25519 public key (trust root)")
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit machine-readable JSON output")
+	cmd.Flags().BoolVar(&archive, "archive", false, "verify a root-authorized permanent replay; requires replay-archive-authorization.json")
 	return cmd
 }

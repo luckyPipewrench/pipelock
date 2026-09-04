@@ -93,6 +93,16 @@ var verifyKitOptionalFiles = []string{
 // kit never derives, extracts, or falls back to a key from the bundle -- a
 // tampered bundle cannot ship its own key.
 func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte) ([]byte, string, error) {
+	return buildVerifyKit(osName, verifierPath, sessionTarGz, false)
+}
+
+// BuildPublishedReplayVerifyKit creates an offline kit for a root-authorized,
+// permanent replay. Its script visibly selects archive verification.
+func BuildPublishedReplayVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte) ([]byte, string, error) {
+	return buildVerifyKit(osName, verifierPath, sessionTarGz, true)
+}
+
+func buildVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte, archive bool) ([]byte, string, error) {
 	if verifierPath == "" {
 		return nil, "", errors.New("verifier binary path is not configured")
 	}
@@ -114,7 +124,7 @@ func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []
 	if err := zipFile(zw, root+"/README.txt", []byte(liveKitReadme(osName)), 0o600); err != nil {
 		return nil, "", err
 	}
-	scriptName, scriptBody, err := liveKitScript(osName, trustKey)
+	scriptName, scriptBody, err := liveKitScript(osName, trustKey, archive)
 	if err != nil {
 		return nil, "", err
 	}
@@ -150,8 +160,17 @@ func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []
 			return nil, "", err
 		}
 	}
+	if archive {
+		data, ok := files[replayArchiveAuthorizationFile]
+		if !ok {
+			return nil, "", fmt.Errorf("published replay bundle missing %s", replayArchiveAuthorizationFile)
+		}
+		if err := zipFile(zw, root+"/app/run/"+replayArchiveAuthorizationFile, data, 0o600); err != nil {
+			return nil, "", err
+		}
+	}
 
-	if err := zipFile(zw, root+"/app/run/verifier.txt", []byte(liveKitVerifierTxt(trustKey)), 0o600); err != nil {
+	if err := zipFile(zw, root+"/app/run/verifier.txt", []byte(liveKitVerifierTxt(trustKey, archive)), 0o600); err != nil {
 		return nil, "", err
 	}
 
@@ -176,6 +195,7 @@ func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
 	for _, f := range verifyKitOptionalFiles {
 		want[f] = true
 	}
+	want[replayArchiveAuthorizationFile] = true
 
 	files := make(map[string][]byte)
 	tr := tar.NewReader(gr)
@@ -234,26 +254,34 @@ func liveKitReadme(osName VerifyKitOS) string {
 	}
 }
 
-func liveKitScript(osName VerifyKitOS, orchKey string) (string, string, error) {
+func liveKitScript(osName VerifyKitOS, orchKey string, archive bool) (string, string, error) {
+	mode := ""
+	if archive {
+		mode = " --archive"
+	}
 	switch osName {
 	case VerifyKitOSWindows:
-		return "Verify.bat", "@echo off\r\ncd /d \"%~dp0app\"\r\necho Verifying the full Pipelock playground trust chain, offline...\r\necho.\r\npipelock-verifier.exe verify-run run --orchestrator-key " + orchKey + "\r\necho.\r\necho result: VALID means every signature, the receipt chain, witnesses, and run binding held.\r\necho No network was used.\r\necho.\r\npause\r\n", nil
+		return "Verify.bat", "@echo off\r\ncd /d \"%~dp0app\"\r\necho Verifying the full Pipelock playground trust chain, offline...\r\necho.\r\npipelock-verifier.exe verify-run run --orchestrator-key " + orchKey + mode + "\r\necho.\r\necho result: VALID means every signature, the receipt chain, witnesses, and run binding held.\r\necho No network was used.\r\necho.\r\npause\r\n", nil
 	case VerifyKitOSMacOS:
-		return "Verify.command", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\necho\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + "\necho\necho \"result: VALID means every signature, the receipt chain, witnesses, and run binding held.\"\necho \"No network was used.\"\nread -n 1 -s -r -p \"Press any key to close.\"\n", nil
+		return "Verify.command", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\necho\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + mode + "\necho\necho \"result: VALID means every signature, the receipt chain, witnesses, and run binding held.\"\necho \"No network was used.\"\nread -n 1 -s -r -p \"Press any key to close.\"\n", nil
 	case VerifyKitOSLinux:
-		return "verify.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\necho\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + "\necho\necho \"result: VALID means every signature, the receipt chain, witnesses, and run binding held.\"\necho \"No network was used.\"\n", nil
+		return "verify.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\necho\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + mode + "\necho\necho \"result: VALID means every signature, the receipt chain, witnesses, and run binding held.\"\necho \"No network was used.\"\n", nil
 	default:
 		return "", "", fmt.Errorf("unsupported verify kit OS %q", osName)
 	}
 }
 
-func liveKitVerifierTxt(orchKey string) string {
+func liveKitVerifierTxt(orchKey string, archive bool) string {
+	mode := ""
+	if archive {
+		mode = " --archive"
+	}
 	return fmt.Sprintf(`Pipelock live session - full trust chain verification
 trust_root: %s (published Pipelock Playground orchestrator key)
-verdict: run pipelock-verifier verify-run run --orchestrator-key %s
+verdict: run pipelock-verifier verify-run run --orchestrator-key %s%s
 
 Verify it yourself from this directory:
-  pipelock-verifier verify-run run --orchestrator-key %s
+  pipelock-verifier verify-run run --orchestrator-key %s%s
 
 This performs the full verification chain:
   - Launch manifest signature (orchestrator key)
@@ -261,5 +289,5 @@ This performs the full verification chain:
   - Collector witness signature and run binding
   - Red-case calibration
   - Host-containment witness (if contained)
-`, orchKey, orchKey, orchKey)
+`, orchKey, orchKey, mode, orchKey, mode)
 }

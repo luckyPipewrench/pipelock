@@ -101,7 +101,7 @@ func TestArchiveRunForDownload_IncludesVerifiableArtifacts(t *testing.T) {
 	}
 	// VERIFY.txt names the session trust-root key and the exact verify command.
 	verify := files[downloadArchivePrefix+"/VERIFY.txt"]
-	for _, want := range []string{pubHex, "pipelock-playground-demo verify " + downloadArchivePrefix, "--orchestrator-key"} {
+	for _, want := range []string{pubHex, "pipelock-verifier verify-run " + downloadArchivePrefix, "--orchestrator-key"} {
 		if !strings.Contains(verify, want) {
 			t.Errorf("VERIFY.txt missing %q:\n%s", want, verify)
 		}
@@ -155,6 +155,35 @@ func TestArchiveRunForDownload_FailsClosedOnMissingRequiredArtifact(t *testing.T
 	}
 	if _, err := ArchiveRunForDownload(dir, "abc"); err == nil {
 		t.Fatal("want error when a required artifact is missing, got nil")
+	}
+}
+
+func TestArchiveRunForDownload_FailsClosedOnUnreadableRequiredArtifact(t *testing.T) {
+	dir := t.TempDir()
+	writeRunArtifacts(t, dir, false)
+	witnessPath := filepath.Join(dir, witnessFile)
+	makeUnreadable(t, witnessPath)
+
+	_, err := ArchiveRunForDownload(dir, "abc")
+	if err == nil || !strings.Contains(err.Error(), "read artifact "+witnessFile) {
+		t.Fatalf("unreadable witness error = %v, want read failure for %s", err, witnessFile)
+	}
+}
+
+func TestArchiveRunForDownload_FailsClosedWhenRequiredFileIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeRunArtifacts(t, dir, false)
+	manifestPath := filepath.Join(dir, launchManifestFile)
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+	if err := os.Mkdir(manifestPath, 0o750); err != nil {
+		t.Fatalf("replace manifest with directory: %v", err)
+	}
+
+	_, err := ArchiveRunForDownload(dir, "abc")
+	if err == nil || !strings.Contains(err.Error(), "read artifact "+launchManifestFile) {
+		t.Fatalf("directory artifact error = %v, want read failure for %s", err, launchManifestFile)
 	}
 }
 

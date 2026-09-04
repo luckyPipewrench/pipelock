@@ -7,6 +7,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,6 +57,54 @@ var archiveArtifacts = []struct {
 // It must be called after AssembleAndVerify has written the artifacts; a missing
 // required artifact fails closed with an error rather than a partial bundle.
 func ArchiveRunForDownload(runDir, orchestratorPubHex string) ([]byte, error) {
+	return archiveRunForDownload(runDir, orchestratorPubHex, nil)
+}
+
+// ArchiveRunForPublishedReplay creates a permanently verifiable replay bundle.
+// It is intentionally separate from ArchiveRunForDownload: live downloads must
+// retain strict delegation expiry and never receive archive authorization.
+func ArchiveRunForPublishedReplay(runDir string, root ed25519.PrivateKey) ([]byte, error) {
+	cleanRun := filepath.Clean(runDir)
+	manifestBytes, err := os.ReadFile(filepath.Join(cleanRun, launchManifestFile))
+	if err != nil {
+		return nil, fmt.Errorf("read artifact %s: %w", launchManifestFile, err)
+	}
+	var manifest LaunchManifest
+	if err := unmarshalStrictArtifact(launchManifestFile, manifestBytes, &manifest); err != nil {
+		return nil, err
+	}
+	delegationBytes, err := os.ReadFile(filepath.Join(cleanRun, orchestratorDelegationFile))
+	if err != nil {
+		return nil, fmt.Errorf("read artifact %s: %w", orchestratorDelegationFile, err)
+	}
+	authorization, err := SignReplayArchiveAuthorization(root, manifest, delegationBytes)
+	if err != nil {
+		return nil, err
+	}
+	authorizationBytes, err := json.Marshal(authorization)
+	if err != nil {
+		return nil, fmt.Errorf("marshal replay archive authorization: %w", err)
+	}
+	pub := root.Public().(ed25519.PublicKey)
+	bundle, err := archiveRunForDownload(cleanRun, fmt.Sprintf("%x", pub), authorizationBytes)
+	if err != nil {
+		return nil, err
+	}
+	artifacts, err := ExtractRunArtifactsFromBundle(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("re-read published replay: %w", err)
+	}
+	report, err := VerifyArchivedReplayArtifacts(artifacts, fmt.Sprintf("%x", pub))
+	if err != nil {
+		return nil, fmt.Errorf("verify published replay: %w", err)
+	}
+	if !report.OK {
+		return nil, fmt.Errorf("verify published replay: %s", report.FailureSummary())
+	}
+	return bundle, nil
+}
+
+func archiveRunForDownload(runDir, orchestratorPubHex string, archiveAuthorization []byte) ([]byte, error) {
 	cleanRun := filepath.Clean(runDir)
 
 	var buf bytes.Buffer
@@ -62,13 +112,18 @@ func ArchiveRunForDownload(runDir, orchestratorPubHex string) ([]byte, error) {
 	tw := tar.NewWriter(gz)
 
 	// The verify instructions go first so a visitor who opens the tar sees them.
-	verifyTxt := buildVerifyInstructions(orchestratorPubHex)
+	verifyTxt := buildVerifyInstructions(orchestratorPubHex, len(archiveAuthorization) > 0)
 	if err := writeTarFile(tw, downloadArchivePrefix+"/VERIFY.txt", []byte(verifyTxt)); err != nil {
 		return nil, err
 	}
 
 	for _, f := range archiveArtifacts {
 		if err := addRunFile(tw, cleanRun, f.name, f.required); err != nil {
+			return nil, err
+		}
+	}
+	if len(archiveAuthorization) > 0 {
+		if err := writeTarFile(tw, downloadArchivePrefix+"/"+replayArchiveAuthorizationFile, archiveAuthorization); err != nil {
 			return nil, err
 		}
 	}
@@ -119,7 +174,13 @@ func writeTarFile(tw *tar.Writer, name string, data []byte) error {
 // command, so the proof stands on its own: no server, no account, just the key
 // the verifier is told to trust. In the public demo this key must match the
 // separately published demo key.
-func buildVerifyInstructions(orchestratorPubHex string) string {
+func buildVerifyInstructions(orchestratorPubHex string, archive bool) string {
+	mode := ""
+	archiveNote := ""
+	if archive {
+		mode = " --archive"
+		archiveNote = "\nThis is a root-authorized permanent replay. Archive verification authenticates the exact delegation and its binding, but deliberately does not evaluate that delegation's live expiry window.\n"
+	}
 	return fmt.Sprintf(`Pipelock playground -- verify this session yourself, offline
 ============================================================
 
@@ -132,7 +193,7 @@ vanished tomorrow, the proof still stands on its own math.
      tar xzf pipelock-session.tar.gz
 
 2. Verify (using the SAME binary any customer downloads):
-     pipelock-playground-demo verify %s --orchestrator-key %s
+     pipelock-verifier verify-run %s --orchestrator-key %s%s
 
 A passing run prints OK and the list of checks it ran: receipt-chain
 completeness, sequence gaps, canonical JSON, collector-witness binding, and the
@@ -141,5 +202,5 @@ signed trace is the truth.
 
 Session trust-root (orchestrator) key:
   %s
-`, downloadArchivePrefix, orchestratorPubHex, orchestratorPubHex)
+%s`, downloadArchivePrefix, orchestratorPubHex, mode, orchestratorPubHex, archiveNote)
 }

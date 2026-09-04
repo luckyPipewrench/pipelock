@@ -174,6 +174,17 @@ type serveFlags struct {
 
 type providerFactory func(context.Context, *serveFlags, string) (broker.MachineProvider, error)
 
+type archiveReplayFlags struct {
+	runDir              string
+	output              string
+	kitOutputDir        string
+	linuxVerifier       string
+	macOSVerifier       string
+	windowsVerifier     string
+	orchestratorKeyFile string
+	orchestratorKeyEnv  string
+}
+
 var newMachineProvider providerFactory = defaultMachineProvider
 
 func main() {
@@ -190,8 +201,180 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: false,
 		Version:       cliutil.Version,
 	}
-	root.AddCommand(newServeCmd())
+	root.AddCommand(newServeCmd(), newArchiveReplayCmd())
 	return root
+}
+
+func newArchiveReplayCmd() *cobra.Command {
+	f := &archiveReplayFlags{}
+	cmd := &cobra.Command{
+		Use:   "archive-replay",
+		Short: "Create a permanently verifiable published playground replay",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runArchiveReplay(cmd, f)
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVar(&f.runDir, "run-dir", "", "sealed playground run directory")
+	flags.StringVar(&f.output, "output", "", "new replay bundle output path")
+	flags.StringVar(&f.orchestratorKeyFile, "orchestrator-key-file", "", "path to the broker-held orchestrator root key")
+	flags.StringVar(&f.orchestratorKeyEnv, "orchestrator-key-env", "", "environment variable holding the broker-held orchestrator root key (default "+envOrchestratorRoot+")")
+	flags.StringVar(&f.kitOutputDir, "kit-output-dir", "", "new directory for Linux, macOS, and Windows verification kits (requires all --*-verifier flags)")
+	flags.StringVar(&f.linuxVerifier, "linux-verifier", "", "Linux pipelock-verifier binary for --kit-output-dir")
+	flags.StringVar(&f.macOSVerifier, "macos-verifier", "", "macOS pipelock-verifier binary for --kit-output-dir")
+	flags.StringVar(&f.windowsVerifier, "windows-verifier", "", "Windows pipelock-verifier binary for --kit-output-dir")
+	_ = cmd.MarkFlagRequired("run-dir")
+	_ = cmd.MarkFlagRequired("output")
+	return cmd
+}
+
+func runArchiveReplay(cmd *cobra.Command, f *archiveReplayFlags) error {
+	if err := refuseGuestFacingRootSecret(); err != nil {
+		return err
+	}
+	root, err := resolveOrchestratorRoot(&serveFlags{
+		orchestratorKeyFile:   f.orchestratorKeyFile,
+		orchestratorKeyEnv:    f.orchestratorKeyEnv,
+		requireSessionSecrets: true,
+	})
+	if err != nil {
+		return err
+	}
+	bundle, err := playground.ArchiveRunForPublishedReplay(f.runDir, root)
+	if err != nil {
+		return err
+	}
+	// Build every artifact before publishing any of them. A kit built from a
+	// different bundle than the one shipped is a silent mismatch a visitor only
+	// finds offline, and a half-written artifact set leaves visitors downloading
+	// a bundle whose kits never arrived.
+	kits, err := buildArchiveVerifyKits(f, bundle)
+	if err != nil {
+		return err
+	}
+	if err := publishArchiveArtifacts(f, bundle, kits); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "published replay archive verified and written")
+	return nil
+}
+
+// archiveKit is one built, not-yet-written verification kit.
+type archiveKit struct {
+	name string
+	data []byte
+}
+
+// buildArchiveVerifyKits validates the kit flags and builds every kit in memory.
+// It writes nothing, so a build failure cannot leave output behind.
+func buildArchiveVerifyKits(f *archiveReplayFlags, bundle []byte) ([]archiveKit, error) {
+	paths := []string{f.linuxVerifier, f.macOSVerifier, f.windowsVerifier}
+	if f.kitOutputDir == "" {
+		for _, verifier := range paths {
+			if verifier != "" {
+				return nil, errors.New("--kit-output-dir is required when supplying a verifier binary")
+			}
+		}
+		return nil, nil
+	}
+	for _, verifier := range paths {
+		if verifier == "" {
+			return nil, errors.New("--kit-output-dir requires --linux-verifier, --macos-verifier, and --windows-verifier")
+		}
+	}
+	kits := make([]archiveKit, 0, len(paths))
+	for _, kit := range []struct {
+		osName   playground.VerifyKitOS
+		verifier string
+	}{
+		{playground.VerifyKitOSLinux, f.linuxVerifier},
+		{playground.VerifyKitOSMacOS, f.macOSVerifier},
+		{playground.VerifyKitOSWindows, f.windowsVerifier},
+	} {
+		data, name, err := playground.BuildPublishedReplayVerifyKit(kit.osName, kit.verifier, bundle)
+		if err != nil {
+			return nil, fmt.Errorf("build %s verification kit: %w", kit.osName, err)
+		}
+		kits = append(kits, archiveKit{name: name, data: data})
+	}
+	return kits, nil
+}
+
+// publishArchiveArtifacts writes the bundle and every kit, and removes anything
+// this invocation created if a later write fails. Every path it removes was
+// created here under O_EXCL, so it can never delete a pre-existing artifact.
+func publishArchiveArtifacts(f *archiveReplayFlags, bundle []byte, kits []archiveKit) (err error) {
+	var created []string
+	var createdDir string
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, path := range created {
+			_ = os.Remove(path)
+		}
+		if createdDir != "" {
+			_ = os.Remove(createdDir)
+		}
+	}()
+
+	// Record the path on CREATION, not on success, so a file that failed
+	// mid-write is still rolled back and the kit directory can be removed.
+	madeBundle, writeErr := writeNewArchiveFile(f.output, bundle)
+	if madeBundle {
+		created = append(created, f.output)
+	}
+	if writeErr != nil {
+		err = writeErr
+		return err
+	}
+
+	if len(kits) == 0 {
+		return nil
+	}
+	kitDir := filepath.Clean(f.kitOutputDir)
+	if err = os.Mkdir(kitDir, 0o750); err != nil {
+		return fmt.Errorf("create kit output directory: %w", err)
+	}
+	createdDir = kitDir
+	for _, kit := range kits {
+		path := filepath.Join(kitDir, kit.name)
+		madeKit, kitErr := writeNewArchiveFile(path, kit.data)
+		if madeKit {
+			created = append(created, path)
+		}
+		if kitErr != nil {
+			err = kitErr
+			return err
+		}
+	}
+	return nil
+}
+
+// writeNewArchiveFile exclusively creates path and writes data to it. It reports
+// whether the file was CREATED separately from whether the write succeeded,
+// because those are different facts for rollback: a file created and then failed
+// mid-write still exists and must be removed, while a path that failed to create
+// belongs to someone else and must never be touched.
+func writeNewArchiveFile(path string, data []byte) (created bool, err error) {
+	file, openErr := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if openErr != nil {
+		return false, fmt.Errorf("create output: %w", openErr)
+	}
+	// A close error on a successful write is a real write failure: the data may
+	// never have reached the filesystem. Reporting success there would publish a
+	// truncated artifact.
+	defer func() {
+		closeErr := file.Close()
+		if err == nil && closeErr != nil {
+			err = fmt.Errorf("close output: %w", closeErr)
+		}
+	}()
+	if _, err = file.Write(data); err != nil {
+		return true, fmt.Errorf("write output: %w", err)
+	}
+	return true, nil
 }
 
 func newServeCmd() *cobra.Command {

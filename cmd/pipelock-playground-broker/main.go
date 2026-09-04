@@ -174,6 +174,17 @@ type serveFlags struct {
 
 type providerFactory func(context.Context, *serveFlags, string) (broker.MachineProvider, error)
 
+type archiveReplayFlags struct {
+	runDir              string
+	output              string
+	kitOutputDir        string
+	linuxVerifier       string
+	macOSVerifier       string
+	windowsVerifier     string
+	orchestratorKeyFile string
+	orchestratorKeyEnv  string
+}
+
 var newMachineProvider providerFactory = defaultMachineProvider
 
 func main() {
@@ -190,8 +201,107 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: false,
 		Version:       cliutil.Version,
 	}
-	root.AddCommand(newServeCmd())
+	root.AddCommand(newServeCmd(), newArchiveReplayCmd())
 	return root
+}
+
+func newArchiveReplayCmd() *cobra.Command {
+	f := &archiveReplayFlags{}
+	cmd := &cobra.Command{
+		Use:   "archive-replay",
+		Short: "Create a permanently verifiable published playground replay",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runArchiveReplay(cmd, f)
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVar(&f.runDir, "run-dir", "", "sealed playground run directory")
+	flags.StringVar(&f.output, "output", "", "new replay bundle output path")
+	flags.StringVar(&f.orchestratorKeyFile, "orchestrator-key-file", "", "path to the broker-held orchestrator root key")
+	flags.StringVar(&f.orchestratorKeyEnv, "orchestrator-key-env", "", "environment variable holding the broker-held orchestrator root key (default "+envOrchestratorRoot+")")
+	flags.StringVar(&f.kitOutputDir, "kit-output-dir", "", "new directory for Linux, macOS, and Windows verification kits (requires all --*-verifier flags)")
+	flags.StringVar(&f.linuxVerifier, "linux-verifier", "", "Linux pipelock-verifier binary for --kit-output-dir")
+	flags.StringVar(&f.macOSVerifier, "macos-verifier", "", "macOS pipelock-verifier binary for --kit-output-dir")
+	flags.StringVar(&f.windowsVerifier, "windows-verifier", "", "Windows pipelock-verifier binary for --kit-output-dir")
+	_ = cmd.MarkFlagRequired("run-dir")
+	_ = cmd.MarkFlagRequired("output")
+	return cmd
+}
+
+func runArchiveReplay(cmd *cobra.Command, f *archiveReplayFlags) error {
+	if err := refuseGuestFacingRootSecret(); err != nil {
+		return err
+	}
+	root, err := resolveOrchestratorRoot(&serveFlags{
+		orchestratorKeyFile:   f.orchestratorKeyFile,
+		orchestratorKeyEnv:    f.orchestratorKeyEnv,
+		requireSessionSecrets: true,
+	})
+	if err != nil {
+		return err
+	}
+	bundle, err := playground.ArchiveRunForPublishedReplay(f.runDir, root)
+	if err != nil {
+		return err
+	}
+	if err := writeNewArchiveFile(f.output, bundle); err != nil {
+		return err
+	}
+	if err := writeArchiveVerifyKits(f, bundle); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "published replay archive verified and written")
+	return nil
+}
+
+func writeArchiveVerifyKits(f *archiveReplayFlags, bundle []byte) error {
+	paths := []string{f.linuxVerifier, f.macOSVerifier, f.windowsVerifier}
+	if f.kitOutputDir == "" {
+		for _, verifier := range paths {
+			if verifier != "" {
+				return errors.New("--kit-output-dir is required when supplying a verifier binary")
+			}
+		}
+		return nil
+	}
+	for _, verifier := range paths {
+		if verifier == "" {
+			return errors.New("--kit-output-dir requires --linux-verifier, --macos-verifier, and --windows-verifier")
+		}
+	}
+	if err := os.Mkdir(filepath.Clean(f.kitOutputDir), 0o750); err != nil {
+		return fmt.Errorf("create kit output directory: %w", err)
+	}
+	for _, kit := range []struct {
+		osName   playground.VerifyKitOS
+		verifier string
+	}{
+		{playground.VerifyKitOSLinux, f.linuxVerifier},
+		{playground.VerifyKitOSMacOS, f.macOSVerifier},
+		{playground.VerifyKitOSWindows, f.windowsVerifier},
+	} {
+		data, name, err := playground.BuildPublishedReplayVerifyKit(kit.osName, kit.verifier, bundle)
+		if err != nil {
+			return fmt.Errorf("build %s verification kit: %w", kit.osName, err)
+		}
+		if err := writeNewArchiveFile(filepath.Join(f.kitOutputDir, name), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeNewArchiveFile(path string, data []byte) error {
+	file, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create output: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+	return nil
 }
 
 func newServeCmd() *cobra.Command {

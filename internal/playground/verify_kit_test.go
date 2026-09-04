@@ -191,6 +191,29 @@ func TestBuildLiveVerifyKit_AlwaysUsesPublishedKey(t *testing.T) {
 	}
 }
 
+func TestBuildPublishedReplayVerifyKit_RequiresAuthorizationAndSelectsArchiveMode(t *testing.T) {
+	t.Parallel()
+	files := fullKitSessionFiles()
+	files[replayArchiveAuthorizationFile] = `{"format":"pipelock-playground-replay-archive/v1"}`
+	session := buildKitSession(t, files, false, false)
+	kit, _, err := BuildPublishedReplayVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session)
+	if err != nil {
+		t.Fatalf("BuildPublishedReplayVerifyKit: %v", err)
+	}
+	script := readZipEntry(t, kit, "pipelock-live-verify-linux/verify.sh")
+	if !strings.Contains(script, "--archive") {
+		t.Fatalf("published replay script omitted archive mode: %s", script)
+	}
+	if got := readZipEntry(t, kit, "pipelock-live-verify-linux/app/run/"+replayArchiveAuthorizationFile); got != files[replayArchiveAuthorizationFile] {
+		t.Fatalf("archive authorization = %q, want %q", got, files[replayArchiveAuthorizationFile])
+	}
+
+	delete(files, replayArchiveAuthorizationFile)
+	if _, _, err := BuildPublishedReplayVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), buildKitSession(t, files, false, false)); err == nil {
+		t.Fatal("published replay kit accepted a bundle without archive authorization")
+	}
+}
+
 func TestBuildLiveVerifyKit_FailsClosedWithoutVerifier(t *testing.T) {
 	t.Parallel()
 	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, "", []byte("not-used")); err == nil {
@@ -248,7 +271,7 @@ func TestLiveKitReadmeAndScript_PerOS(t *testing.T) {
 			if readme := liveKitReadme(osName); !strings.Contains(readme, "Pipelock") {
 				t.Fatalf("readme(%q) missing brand: %q", osName, readme)
 			}
-			name, body, err := liveKitScript(osName, orchKey)
+			name, body, err := liveKitScript(osName, orchKey, false)
 			if err != nil {
 				t.Fatalf("liveKitScript(%q): %v", osName, err)
 			}
@@ -263,7 +286,7 @@ func TestLiveKitReadmeAndScript_PerOS(t *testing.T) {
 	if r := liveKitReadme(VerifyKitOS("x86")); !strings.Contains(r, "Linux") {
 		t.Fatalf("default readme should fall back to Linux text: %q", r)
 	}
-	if _, _, err := liveKitScript(VerifyKitOS("x86"), orchKey); err == nil {
+	if _, _, err := liveKitScript(VerifyKitOS("x86"), orchKey, false); err == nil {
 		t.Fatal("liveKitScript with unsupported OS should error")
 	}
 }

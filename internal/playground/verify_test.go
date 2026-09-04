@@ -311,6 +311,111 @@ func TestVerify_DelegatedGood_Passes(t *testing.T) {
 	}
 }
 
+// A published replay may outlive its live delegation, but only when the
+// durable root has separately authorized the exact sealed record. This proves
+// both directions: strict live verification still fails on expiry, and archive
+// verification refuses the same run until the signed authorization is present.
+func TestVerifyArchivedReplay_ExpiredDelegationRequiresRootAuthorization(t *testing.T) {
+	dir, orchPubHex, orchPriv := buildDelegatedRunDir(t)
+	delegationPath := filepath.Join(dir, "orchestrator-delegation.json")
+	raw, err := os.ReadFile(filepath.Clean(delegationPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegation, err := playground.ParseOrchestratorDelegation(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	delegation.NotBeforeUnix = now.Add(-2 * time.Hour).Unix()
+	delegation.IssuedAtUnix = now.Add(-time.Hour).Unix()
+	delegation.ExpiresAtUnix = now.Add(-time.Minute).Unix()
+	delegation, err = playground.SignOrchestratorDelegation(orchPriv, delegation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(delegation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(delegationPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	strict, err := playground.VerifyRun(dir, orchPubHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strict.OK {
+		t.Fatal("expired live delegation verified under strict mode")
+	}
+	strictDelegation := findCheck(t, strict.Checks, "orchestrator-delegation")
+	if strictDelegation.OK || !strings.Contains(strictDelegation.Reason, "has expired") {
+		t.Fatalf("strict delegation check = %+v, want expiry refusal", strictDelegation)
+	}
+
+	archiveWithoutAuthorization, err := playground.VerifyArchivedReplay(dir, orchPubHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archiveWithoutAuthorization.OK {
+		t.Fatal("archive mode accepted an expired live session without root authorization")
+	}
+	archiveCheck := findCheck(t, archiveWithoutAuthorization.Checks, "replay-archive-authorization")
+	if archiveCheck.OK || !strings.Contains(archiveCheck.Reason, "requires") {
+		t.Fatalf("archive authorization check = %+v, want required refusal", archiveCheck)
+	}
+
+	bundle, err := playground.ArchiveRunForPublishedReplay(dir, orchPriv)
+	if err != nil {
+		t.Fatalf("ArchiveRunForPublishedReplay: %v", err)
+	}
+	artifacts, err := playground.ExtractRunArtifactsFromBundle(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := playground.VerifyArchivedReplayArtifacts(artifacts, orchPubHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archive.OK {
+		t.Fatalf("root-authorized expired replay failed: %+v", archive.Checks)
+	}
+	if archive.Mode != "published-replay-archive" {
+		t.Fatalf("archive mode = %q", archive.Mode)
+	}
+	archiveCheck = findCheck(t, archive.Checks, "replay-archive-authorization")
+	if !archiveCheck.OK || !strings.Contains(archiveCheck.Reason, "time window intentionally not evaluated") {
+		t.Fatalf("archive authorization check = %+v", archiveCheck)
+	}
+
+	tamperedAuthorization, err := playground.ParseReplayArchiveAuthorization(artifacts.ReplayArchiveAuthorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedAuthorization.Signature = strings.Repeat("0", ed25519.SignatureSize*2)
+	artifacts.ReplayArchiveAuthorization, err = json.Marshal(tamperedAuthorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered, err := playground.VerifyArchivedReplayArtifacts(artifacts, orchPubHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tampered.OK {
+		t.Fatal("archive mode accepted a tampered root authorization")
+	}
+
+	artifacts.ReplayArchiveAuthorization = nil
+	denied, err := playground.VerifyArchivedReplayArtifacts(artifacts, orchPubHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if denied.OK {
+		t.Fatal("archive mode accepted an expired delegation after authorization removal")
+	}
+}
+
 func TestVerify_DelegationFailuresFailClosed(t *testing.T) {
 	t.Parallel()
 	t.Run("missing", func(t *testing.T) {

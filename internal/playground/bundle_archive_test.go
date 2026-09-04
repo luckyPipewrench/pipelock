@@ -101,7 +101,7 @@ func TestArchiveRunForDownload_IncludesVerifiableArtifacts(t *testing.T) {
 	}
 	// VERIFY.txt names the session trust-root key and the exact verify command.
 	verify := files[downloadArchivePrefix+"/VERIFY.txt"]
-	for _, want := range []string{pubHex, "pipelock-playground-demo verify " + downloadArchivePrefix, "--orchestrator-key"} {
+	for _, want := range []string{pubHex, "pipelock-verifier verify-run " + downloadArchivePrefix, "--orchestrator-key"} {
 		if !strings.Contains(verify, want) {
 			t.Errorf("VERIFY.txt missing %q:\n%s", want, verify)
 		}

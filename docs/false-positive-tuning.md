@@ -106,14 +106,14 @@ Each DLP pattern supports an `exempt_domains` field. To exempt a domain for a sp
 dlp:
   include_defaults: true
   patterns:
-    - name: "AWS Access ID"
-      regex: "(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}"
-      severity: "critical"
+    - name: "Google API Key"
+      regex: 'AIza[0-9A-Za-z\-_]{35}\b'
+      severity: "high"
       exempt_domains:
         - "internal-testing.example.com"
 ```
 
-This keeps the configurable pattern active everywhere else while skipping it for the specified domain. It does not change the compiled core URL floor, which does not consult operator exemptions.
+This keeps the configurable pattern active everywhere else while skipping it for the specified domain. Core safety-floor names (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot carry `exempt_domains`: the compiled core URL floor never consults operator exemptions, so a config that tries is rejected at startup and reload instead of shipping an exemption that does nothing.
 
 ### Suppressing specific findings
 
@@ -240,7 +240,7 @@ cross_request_detection:
 |----------|---------|---------|-----|
 | API returns docs that trigger a non-core response rule | response | Jailbreak Attempt | Add a `suppress` entry for `Jailbreak Attempt` scoped to that host's URLs. Core response floor matches require a pattern precision fix. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
 | URL contains UUID path segments | entropy | (path entropy) | Raise `entropy_threshold` or add to `subdomain_entropy_exclusions` |
-| Base64-encoded JWT in Authorization header | dlp | JWT Token | Add per-pattern `exempt_domains` for the auth provider |
+| Base64-encoded JWT in Authorization header | dlp | JWT Token | Add a `suppress` entry for `JWT Token` scoped to the auth provider's URLs. Header and body DLP read `suppress`; per-pattern `exempt_domains` only affects URL scans |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
 | Service with long hex/base32 subdomain labels | subdomain_entropy | (structural hostname-exfil signal) | Add the host to `subdomain_entropy_exclusions` (raising the threshold does not allow encoded labels) |
 | Internal API keys matching AWS format, in a URL or query | core_dlp | AWS Access ID | The compiled core URL floor does not consult `suppress` or operator `exempt_domains`. Fix the pattern precision; structurally valid S3 presigned URLs already use the narrow built-in carve-out described below |

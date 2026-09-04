@@ -80,6 +80,8 @@ const (
 	vmReadyPollInterval = 500 * time.Millisecond
 )
 
+var verifySessionDelegation = playground.VerifySessionDelegation
+
 // ServerConfig configures the public playground broker HTTP front door.
 type ServerConfig struct {
 	// Leases owns VM lifecycle and the global machine concurrency cap. Required.
@@ -125,6 +127,10 @@ type ServerConfig struct {
 	// OrchestratorRoot is the broker-held durable signing root. When set, each
 	// session receives a short-lived delegated key instead of this value.
 	OrchestratorRoot ed25519.PrivateKey
+	// RequireDelegatedSigning makes a usable OrchestratorRoot mandatory. The
+	// broker CLI derives this from its existing production-secret requirement;
+	// local development can leave both disabled.
+	RequireDelegatedSigning bool
 	// ImageDigest is the immutable VM image bound into each session
 	// delegation. Required when OrchestratorRoot is set.
 	ImageDigest string
@@ -168,6 +174,7 @@ type Server struct {
 	client   *http.Client
 
 	vmReadyTimeout time.Duration
+	signingReady   bool
 
 	killed atomic.Bool
 
@@ -366,8 +373,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		}
 	}
 	// SessionEnv reaches every visitor VM. Keep an owned copy so a caller cannot
-	// add the durable root after this validation completes.
+	// add the durable root after this validation completes. Own the signing key
+	// for the same reason: callers must not be able to erase or replace it after
+	// the startup self-check reports success.
 	cfg.SessionEnv = maps.Clone(cfg.SessionEnv)
+	cfg.OrchestratorRoot = bytes.Clone(cfg.OrchestratorRoot)
 	for _, source := range []struct {
 		name string
 		env  map[string]string
@@ -379,6 +389,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 			return nil, fmt.Errorf("broker: %s must not carry the durable orchestrator key", source.name)
 		}
 	}
+	if cfg.RequireDelegatedSigning && len(cfg.OrchestratorRoot) == 0 {
+		return nil, errors.New("broker: OrchestratorRoot is required when delegated signing is required")
+	}
+	signingVerified := false
 	if len(cfg.OrchestratorRoot) != 0 {
 		if _, err := playground.ParseOrchestratorPrivateKeyHex(hex.EncodeToString(cfg.OrchestratorRoot)); err != nil {
 			return nil, fmt.Errorf("broker: OrchestratorRoot: %w", err)
@@ -392,6 +406,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		if err := playground.ValidateCanonicalImageDigest(cfg.ImageDigest); err != nil {
 			return nil, fmt.Errorf("broker: %w", err)
 		}
+		if err := checkDelegatedSigning(cfg.OrchestratorRoot, cfg.ImageDigest, cfg.SessionDelegationLifetime); err != nil {
+			return nil, err
+		}
+		signingVerified = true
 	}
 	if cfg.InternalPort == 0 {
 		cfg.InternalPort = defaultInternalPort
@@ -420,6 +438,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		global:         livechat.NewDailyBudget(cfg.GlobalDailyBudget),
 		client:         client,
 		vmReadyTimeout: vmReadyTimeout,
+		signingReady:   signingVerified,
 		bundleCache:    newArtifactCache(artifactCacheTTL),
 		tokens:         make(map[string]*tokenLease),
 		bySess:         make(map[string]string),
@@ -427,6 +446,20 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	go s.reapLoop()
 	return s, nil
+}
+
+// checkDelegatedSigning exercises the complete visitor verification path before
+// the broker can accept traffic. Any mint or verification error refuses startup.
+func checkDelegatedSigning(root ed25519.PrivateKey, imageDigest string, lifetime time.Duration) error {
+	const nonce = "broker-startup-signing-self-check"
+	minted, err := playground.MintSessionDelegation(root, nonce, imageDigest, time.Now().UTC(), lifetime)
+	if err != nil {
+		return fmt.Errorf("broker: signing self-check mint: %w", err)
+	}
+	if err := verifySessionDelegation(minted.PrivateKey, minted.Delegation, nonce); err != nil {
+		return fmt.Errorf("broker: signing self-check verify against published identity: %w", err)
+	}
+	return nil
 }
 
 // Handler returns the broker's public /api/live/* routes.
@@ -513,6 +546,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// body, not the status line.
 	writeBrokerJSON(w, http.StatusOK, map[string]any{
 		"ok":                         s.cfg.Gate.Open() && s.global.Open() && !s.killed.Load(),
+		"signing_ready":              s.signingReady,
+		"published_signing_root":     playground.PublishedOrchestratorPubKeyHex,
 		"provider_ok":                ph.OK,
 		"provider_state":             string(ph.State),
 		"provider_failures":          ph.ConsecutiveFailures,

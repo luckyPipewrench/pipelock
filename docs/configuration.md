@@ -433,7 +433,7 @@ request_body_scanning:
 
 **Security hard-blocks:** In enforce mode, immutable core DLP findings in request bodies and headers hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`; they cannot be disabled or downgraded by `pattern_actions`. Request-body prompt-injection findings hard-block with `X-Pipelock-Block-Reason: prompt_injection` on every destination except those listed in `request_body_scanning.trusted_hosts`, where they follow `action`; a fully redacted critical credential follows `action` on a trusted host the same way. Operators that need audit-only rollout for selected non-core critical body-DLP patterns can set those exact names under `request_body_scanning.pattern_actions` with `warn`, or run the deployment with `enforce: false`.
 
-Some APIs accept an AWS presigned URL inside a JSON or form body so the server can fetch an attachment. The URL contains an AWS access-key ID, which belongs to the immutable DLP floor and cannot be handled with `suppress`, `disable_patterns`, or `pattern_actions`. Use `sigv4_credential_routes` only for the exact outbound HTTPS API request carrying that body; the route matches the outer request, not the embedded AWS URL. Pipelock separately requires the embedded URL to use an AWS-owned hostname and a complete SigV4 structure before exempting the key inside `X-Amz-Credential`; the same value anywhere else remains blocked. Long-lived presigned URLs keep the existing `SigV4 Long Expiry` warning.
+Some APIs accept an AWS presigned URL inside a JSON or form body so the server can fetch an attachment. The URL contains an AWS access-key ID, which belongs to the immutable DLP floor and cannot be handled with `suppress`, `disable_patterns`, or `pattern_actions`. Use `sigv4_credential_routes` only for the exact outbound HTTPS API request carrying that body; the route matches the outer request, not the embedded AWS URL. Routes apply to forward-proxy, intercepted CONNECT, and reverse-proxy requests. WebSocket frames never match a route, because a frame has no request method or declared content type; the embedded key stays blocked there. Pipelock separately requires the embedded URL to use an AWS-owned hostname and a complete SigV4 structure before exempting the key inside `X-Amz-Credential`; the same value anywhere else remains blocked. Long-lived presigned URLs keep the existing `SigV4 Long Expiry` warning.
 
 **Adaptive enforcement interaction:** A body/header DLP action of `warn`, including a per-pattern `pattern_actions` downgrade, still enters the existing adaptive enforcement path and can be upgraded to `block` unless the destination is adaptive-exempt. `disable_patterns` removes only the named DLP finding from this request-body/header surface; it does not create a destination exemption and does not affect URL, response, MCP, or file DLP scanning.
 
@@ -787,6 +787,8 @@ dlp:
 ```
 
 For built-in provider-key patterns, the default config already exempts the provider's own API host for URL DLP and adds matching `suppress` entries for request-body and request-header DLP. The same key is still blocked when sent to any other destination. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+
+Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted this way. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through, so a core credential class is blocked on every destination regardless of overrides.
 
 ### Built-in DLP Patterns (65)
 
@@ -2507,7 +2509,7 @@ At least one chain must be enabled when `address_protection.enabled` is `true`. 
 
 ## File Sentry
 
-Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. Applies to subprocess MCP mode only (`pipelock mcp proxy -- COMMAND`).
+Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. `file_sentry.action: block` is supported only in subprocess MCP mode (`pipelock mcp proxy -- COMMAND`), where Pipelock can cancel the child. `pipelock run` can use file sentry with `action: warn`, but refuses `action: block` at startup and rejects a reload that introduces it, so a policy rollout cannot report success while asking for enforcement that listener cannot provide.
 
 ```yaml
 file_sentry:
@@ -2534,7 +2536,7 @@ file_sentry:
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `max_file_bytes` | `0` | Max watched-file bytes to read for content scanning. `0` uses the built-in 10 MiB default; negative values are rejected. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
-| `action` | `warn` | Enforcement response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). `block` additionally cancels the proxy context so the MCP child terminates, preventing the agent from continuing after that detected leak. Non-agent writes (editor saves, build output) never trigger the block path. |
+| `action` | `warn` | Response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). In subprocess MCP mode, `block` also cancels the proxy context so the MCP child terminates after that detected leak. `pipelock run` rejects `file_sentry.action: block` because it has no child process to cancel. Non-agent writes (editor saves, build output) never trigger the block path. |
 
 File sentry setup is strict by default: any root or descendant subtree that cannot be watched fails startup after Pipelock reports every skipped subtree. Set `best_effort: true` to keep accessible siblings armed while reporting each skipped root or subtree. Startup still fails when nothing can be armed. `required: true` keeps a configured root strict even in best-effort mode. Root symlinks are rejected and child symlinks are not followed. Unknown fields in mapping entries are rejected so typos such as `require: true` do not silently change the requested behavior.
 

@@ -331,6 +331,7 @@ type compiledPattern struct {
 	severity            string
 	validate            func(string) bool // post-match checksum (nil = regex-only)
 	exemptDomains       []string          // domains where this pattern is skipped (wildcard supported)
+	core                bool              // name belongs to the immutable floor: exemptDomains is never honored
 	bundle              string            // empty for built-in/config patterns
 	bundleVersion       string
 	warn                bool // true when pattern action is "warn" - matches are informational only
@@ -421,6 +422,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 			re:            re,
 			severity:      p.Severity,
 			exemptDomains: p.ExemptDomains,
+			core:          config.IsCoreDLPPatternName(p.Name),
 			bundle:        p.Bundle,
 			bundleVersion: p.BundleVersion,
 			warn:          p.Action == config.ActionWarn,
@@ -2409,7 +2411,10 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 			p := s.dlpPatterns[idx]
 			if start, end, ok := p.matchSpanInView(cleaned, proseSource); ok {
 				// Skip pattern if the destination domain is explicitly exempted.
-				if len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
+				// A pattern carrying a core floor name never honors an exemption,
+				// matching the body and response filters, so a custom pattern
+				// cannot exempt a core credential class by reusing its name.
+				if !p.core && len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
 					continue
 				}
 				span := newMatchSpan(start, end, target.viewLabel, p.name, p.bundle, p.bundleVersion)
@@ -2632,7 +2637,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 				p := s.dlpPatterns[idx]
 				if start, end, ok := p.matchSpanInView(cleaned, candidate.proseSource); ok {
-					if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
+					if !p.core && len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
 						continue
 					}
 					span := newMatchSpan(start, end, candidate.viewLabel, p.name, p.bundle, p.bundleVersion)

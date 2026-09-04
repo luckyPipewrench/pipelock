@@ -3974,6 +3974,38 @@ func TestEmit_LogResponseScan(t *testing.T) {
 	}
 }
 
+func TestEmit_LogResponseScanSuppressed(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogResponseScanSuppressed(
+		LogContext{method: testMethodGet, url: "https://example.com", clientIP: testClientIP, requestID: "req-suppressed", agent: testAgentName},
+		"new-instructions",
+		"forward",
+		"destination policy",
+	)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventResponseScanSuppressed) {
+		t.Errorf("type = %q, want %q", ev.Type, EventResponseScanSuppressed)
+	}
+	for field, want := range map[string]any{
+		"scanner":         scannerpkg.AuditResponseScan,
+		"mode":            "informational",
+		"pattern":         "new-instructions",
+		"surface":         "forward",
+		"reason":          "destination policy",
+		"mitre_technique": mitreT1059,
+	} {
+		if got := ev.Fields[field]; got != want {
+			t.Errorf("fields[%s] = %v, want %v", field, got, want)
+		}
+	}
+}
+
 func TestEmit_LogForwardHTTP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()

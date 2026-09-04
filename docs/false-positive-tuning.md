@@ -106,14 +106,14 @@ Each DLP pattern supports an `exempt_domains` field. To exempt a domain for a sp
 dlp:
   include_defaults: true
   patterns:
-    - name: "AWS Access ID"
-      regex: "(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}"
-      severity: "critical"
+    - name: "Google API Key"
+      regex: 'AIza[0-9A-Za-z\-_]{35}\b'
+      severity: "high"
       exempt_domains:
         - "internal-testing.example.com"
 ```
 
-This keeps the configurable pattern active everywhere else while skipping it for the specified domain. It does not change the compiled core URL floor, which does not consult operator exemptions.
+This keeps the configurable pattern active everywhere else while skipping it for the specified domain. Core safety-floor names (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot carry `exempt_domains`: the compiled core URL floor never consults operator exemptions, so a config that tries is rejected at startup and reload instead of shipping an exemption that does nothing.
 
 ### Suppressing specific findings
 

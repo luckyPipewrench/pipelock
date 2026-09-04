@@ -966,7 +966,6 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	if err != nil {
 		return fmt.Errorf("load existing entitlement for order %s: %w", order.ID, err)
 	}
-
 	// One active trial per normalized email, mirroring the Enterprise Eval
 	// rule. The entitlement stores the NORMALIZED email (the eval precedent)
 	// so the count comparison and the stored identity share one canonical
@@ -986,6 +985,15 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 			return fmt.Errorf("normalize %s email for order %s: %w", tier, order.ID, err)
 		}
 		customerEmail = email
+		pending, err := h.db.GetEvalOrder(ctx, order.ID)
+		if err != nil {
+			return fmt.Errorf("load one-time trial refund state for order %s: %w", order.ID, err)
+		}
+		if pending != nil && (pending.RefundState != refundStateNone || pending.RevocationState != revocationNone) {
+			err := fmt.Errorf("one-time trial order %s refused: pending refund", order.ID)
+			_ = h.ledger.LogError(order.ID, "one-time trial fulfillment refused: pending refund", err)
+			return err
+		}
 		if existing == nil {
 			active, err := h.db.CountActiveTierForEmail(ctx, tier, email, time.Now())
 			if err != nil {
@@ -1006,7 +1014,12 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 			}
 		}
 	}
-
+	if existing != nil && existing.BillingInterval == billingIntervalOneTime &&
+		(existing.CustomerEmail != customerEmail || existing.Org != org) {
+		err := fmt.Errorf("one-time trial retry identity mismatch")
+		_ = h.ledger.LogError(order.ID, "one-time trial retry identity mismatch", err)
+		return err
+	}
 	var periodEnd time.Time
 	if existing != nil {
 		periodEnd = existing.CurrentPeriodEnd

@@ -262,12 +262,37 @@ func (h *WebhookHandler) HandleOrderRefundEvent(ctx context.Context, event *Pola
 			return h.revokeOneTimeTrialForOrder(ctx, trialEntitlement, order, refundState, msgID, event.Type)
 		}
 		if isTrialTier(order.Product.Metadata["pipelock_tier"]) {
-			return fmt.Errorf("refunded one-time trial %s has no matching entitlement", order.ID)
+			return h.recordPendingOneTimeTrialRefund(ctx, order, refundState, msgID, event.Type)
 		}
 		return h.db.MarkWebhookCommitted(ctx, msgID, event.Type, order.ID)
 	}
 
 	return h.revokeEvalForOrder(ctx, order, refundState, msgID, event.Type)
+}
+
+// recordPendingOneTimeTrialRefund persists an out-of-order refund so a later
+// fulfillment cannot mint a trial token after the refund webhook is acknowledged.
+func (h *WebhookHandler) recordPendingOneTimeTrialRefund(ctx context.Context, order *PolarOrder, refundState, msgID, eventType string) error {
+	eo := &EvalOrder{
+		OrderID:          order.ID,
+		NormalizedEmail:  evalRecordEmail(nil, order),
+		ProductID:        order.Product.ID,
+		TotalAmount:      order.TotalAmount,
+		RefundedAmount:   order.RefundedAmount,
+		Currency:         order.Currency,
+		PolarPaid:        order.Paid,
+		RefundState:      refundState,
+		FulfillmentState: fulfillmentRevoked,
+		RevocationState:  revocationPendingNoLicense,
+	}
+	if err := h.db.UpsertEvalOrder(ctx, eo); err != nil {
+		return fmt.Errorf("record pending one-time trial refund: %w", err)
+	}
+	if err := h.db.MarkWebhookCommitted(ctx, msgID, eventType, order.ID); err != nil {
+		return fmt.Errorf("mark pending one-time trial refund webhook committed: %w", err)
+	}
+	_ = h.ledger.LogError(order.ID, "record pending one-time trial refund", errors.New("refund arrived before fulfillment"))
+	return nil
 }
 
 // revokeEvalForOrder revokes minted licenses for an order and records the refund.

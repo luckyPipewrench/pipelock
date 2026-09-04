@@ -142,6 +142,26 @@ func TestHandleOrderRefundEvent_GetEntitlementFailureIsUncommitted(t *testing.T)
 	assertNoRevocations(t, s.db)
 }
 
+func TestHandleOrderRefundEvent_TrialRefundBeforeFulfillmentStorageFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, s *testSetup)
+	}{
+		{name: "record pending refund", setup: func(t *testing.T, s *testSetup) { createFaultTrigger(t, s.db, "fail_trial_pending_upsert") }},
+		{name: "mark webhook committed", setup: func(t *testing.T, s *testSetup) { createFaultTrigger(t, s.db, "fail_trial_pending_commit") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSetup(t)
+			tc.setup(t, s)
+			msgID := "msg_trial_pending_" + strings.ReplaceAll(tc.name, " ", "_")
+			if err := s.handler.HandleOrderRefundEvent(t.Context(), refundEvent("order_enterprise_trial_refunded"), msgID); err == nil {
+				t.Fatal("HandleOrderRefundEvent succeeded after a storage failure")
+			}
+			assertWebhookUncommitted(t, s.db, msgID)
+		})
+	}
+}
+
 func TestHandleOrderEvent_OneTimeRetryWithoutIssuanceRefuses(t *testing.T) {
 	s := newTestSetup(t)
 	const orderID = "order_enterprise_trial_retry_missing"
@@ -168,6 +188,23 @@ func TestHandleOrderEvent_OneTimeRetryWithoutIssuanceRefuses(t *testing.T) {
 		t.Fatalf("entitlement changed after refused retry = %+v, %v", after, err)
 	}
 	assertNoRevocations(t, s.db)
+}
+
+func TestHandleOrderEvent_TrialRefundStateLookupFailureFailsClosed(t *testing.T) {
+	s := newTestSetup(t)
+	const orderID = "order_enterprise_trial_refund_state_error"
+	renameTable(t, s.db, "eval_orders", "eval_orders_fault")
+	err := s.handler.HandleOrderEvent(t.Context(), enterpriseTrialOrderEvent(t, orderID))
+	if err == nil || !strings.Contains(err.Error(), "load one-time trial refund state") {
+		t.Fatalf("trial refund-state lookup error = %v, want refusal", err)
+	}
+	ent, getErr := s.db.GetBySubscriptionID(t.Context(), orderID)
+	if getErr != nil {
+		t.Fatalf("GetBySubscriptionID: %v", getErr)
+	}
+	if ent != nil {
+		t.Fatalf("trial minted after refund-state lookup failure: %+v", ent)
+	}
 }
 
 func seedRefundEvalOrder(t *testing.T, s *evalTestSetup) {
@@ -207,12 +244,14 @@ func refundEvent(orderID string) *PolarWebhookEvent {
 func createFaultTrigger(t *testing.T, db *EntitlementDB, name string) {
 	t.Helper()
 	queries := map[string]string{
-		"fail_eval_revocation":  "CREATE TRIGGER fail_eval_revocation BEFORE INSERT ON license_revocations BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
-		"fail_eval_upsert":      "CREATE TRIGGER fail_eval_upsert BEFORE UPDATE ON eval_orders BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
-		"fail_eval_commit":      "CREATE TRIGGER fail_eval_commit BEFORE INSERT ON webhook_deliveries BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
-		"fail_trial_revocation": "CREATE TRIGGER fail_trial_revocation BEFORE INSERT ON license_revocations BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
-		"fail_trial_upsert":     "CREATE TRIGGER fail_trial_upsert BEFORE UPDATE ON entitlements BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
-		"fail_trial_commit":     "CREATE TRIGGER fail_trial_commit BEFORE INSERT ON webhook_deliveries BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_eval_revocation":      "CREATE TRIGGER fail_eval_revocation BEFORE INSERT ON license_revocations BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_eval_upsert":          "CREATE TRIGGER fail_eval_upsert BEFORE UPDATE ON eval_orders BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_eval_commit":          "CREATE TRIGGER fail_eval_commit BEFORE INSERT ON webhook_deliveries BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_trial_revocation":     "CREATE TRIGGER fail_trial_revocation BEFORE INSERT ON license_revocations BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_trial_upsert":         "CREATE TRIGGER fail_trial_upsert BEFORE UPDATE ON entitlements BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_trial_commit":         "CREATE TRIGGER fail_trial_commit BEFORE INSERT ON webhook_deliveries BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_trial_pending_upsert": "CREATE TRIGGER fail_trial_pending_upsert BEFORE INSERT ON eval_orders BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
+		"fail_trial_pending_commit": "CREATE TRIGGER fail_trial_pending_commit BEFORE INSERT ON webhook_deliveries BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END",
 	}
 	query, ok := queries[name]
 	if !ok {
@@ -228,6 +267,7 @@ func renameTable(t *testing.T, db *EntitlementDB, from, to string) {
 	queries := map[string]string{
 		"license_issuances/license_issuances_fault": "ALTER TABLE license_issuances RENAME TO license_issuances_fault",
 		"entitlements/entitlements_fault":           "ALTER TABLE entitlements RENAME TO entitlements_fault",
+		"eval_orders/eval_orders_fault":             "ALTER TABLE eval_orders RENAME TO eval_orders_fault",
 	}
 	query, ok := queries[from+"/"+to]
 	if !ok {

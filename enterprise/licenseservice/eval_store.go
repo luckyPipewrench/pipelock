@@ -260,11 +260,11 @@ func (e *EntitlementDB) CountActiveEvalForEmail(ctx context.Context, normalizedE
 	return count, nil
 }
 
-// CountActiveTierForEmail returns the number of active, unexpired entitlements
-// for a trial tier and normalized email. Used to enforce one active trial per
-// email at mint time, mirroring the Enterprise Eval rule. It bounds only
-// same-email repeats; a fresh email is a new trial by design, which is
-// acceptable because trials gate multi-agent coordination and never detection.
+// CountActiveTierForEmail returns the number of active or revoked, unexpired
+// entitlements for a trial tier and normalized email. A refund revokes the
+// token but does not reopen the trial slot before its original period ends.
+// It bounds only same-email repeats; a fresh email is a new trial by design,
+// which is acceptable because trials gate multi-agent coordination and never detection.
 //
 // Matching happens in Go through NormalizeEmail, not SQL LOWER. SQLite's
 // LOWER (and this driver's build, which has no ICU) only folds ASCII, so a
@@ -282,9 +282,9 @@ func (e *EntitlementDB) CountActiveTierForEmail(ctx context.Context, tier, norma
 	}
 	const query = `
 	SELECT customer_email FROM entitlements
-	WHERE tier = ? AND status = ? AND current_period_end > ?
+	WHERE tier = ? AND status IN (?, ?) AND current_period_end > ?
 	`
-	rows, err := e.db.QueryContext(ctx, query, tier, statusActive, now.UTC())
+	rows, err := e.db.QueryContext(ctx, query, tier, statusActive, statusRevoked, now.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("count active %s for %s: %w", tier, normalizedEmail, err)
 	}

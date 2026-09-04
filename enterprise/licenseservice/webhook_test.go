@@ -17,6 +17,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -3236,30 +3237,129 @@ func TestHandleOrderRefund_RevokesMintedEnterpriseTrial(t *testing.T) {
 	}
 
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_replacement")); err != nil {
-		t.Fatalf("replacement enterprise trial: %v", err)
+		t.Fatalf("replacement enterprise trial while original period remains active: %v", err)
 	}
 	replacement, err := ts.db.GetBySubscriptionID(ctx, "order_enterprise_trial_replacement")
 	if err != nil {
 		t.Fatalf("GetBySubscriptionID replacement: %v", err)
 	}
+	if replacement != nil {
+		t.Fatalf("replacement enterprise trial minted before original period ended: %+v", replacement)
+	}
+
+	refunded.CurrentPeriodEnd = time.Now().Add(-time.Minute)
+	if err := ts.db.Upsert(ctx, refunded); err != nil {
+		t.Fatalf("expire revoked enterprise trial: %v", err)
+	}
+	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_replacement_after_expiry")); err != nil {
+		t.Fatalf("replacement enterprise trial after original period expiry: %v", err)
+	}
+	replacement, err = ts.db.GetBySubscriptionID(ctx, "order_enterprise_trial_replacement_after_expiry")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID replacement after expiry: %v", err)
+	}
 	if replacement == nil || replacement.LastLicenseID == "" {
-		t.Fatalf("replacement enterprise trial did not mint: %+v", replacement)
+		t.Fatalf("replacement enterprise trial after original period expiry did not mint: %+v", replacement)
 	}
 }
 
-func TestHandleOrderRefund_EnterpriseTrialWithoutEntitlementFailsClosed(t *testing.T) {
+func TestHandleOrderRefund_EnterpriseTrialWithoutEntitlementPersistsPendingRefusal(t *testing.T) {
 	ts := newTestSetup(t)
 	event := &PolarWebhookEvent{Type: EventOrderRefunded, Data: json.RawMessage(`{"id":"order_enterprise_trial_refunded"}`)}
-	err := ts.handler.HandleOrderRefundEvent(t.Context(), event, "msg_enterprise_trial_missing")
-	if err == nil || !strings.Contains(err.Error(), "no matching entitlement") {
-		t.Fatalf("refund without entitlement error = %v, want matching-entitlement failure", err)
+	if err := ts.handler.HandleOrderRefundEvent(t.Context(), event, "msg_enterprise_trial_missing"); err != nil {
+		t.Fatalf("refund without entitlement: %v", err)
 	}
 	committed, err := ts.db.WebhookCommitted(t.Context(), "msg_enterprise_trial_missing")
 	if err != nil {
 		t.Fatalf("WebhookCommitted: %v", err)
 	}
-	if committed {
-		t.Fatal("unmatched enterprise trial refund was committed")
+	if !committed {
+		t.Fatal("refund without entitlement was not committed")
+	}
+	pending, err := ts.db.GetEvalOrder(t.Context(), "order_enterprise_trial_refunded")
+	if err != nil {
+		t.Fatalf("GetEvalOrder pending refund: %v", err)
+	}
+	if pending == nil || pending.RefundState != refundStateFull || pending.RevocationState != revocationPendingNoLicense {
+		t.Fatalf("pending trial refund = %+v, want full pending-no-license refusal", pending)
+	}
+	entries, err := os.ReadFile(ts.ledger.path)
+	if err != nil {
+		t.Fatalf("read audit ledger: %v", err)
+	}
+	if !strings.Contains(string(entries), "record pending one-time trial refund") {
+		t.Fatalf("audit ledger lacks pending-refund record: %s", entries)
+	}
+
+	paid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"order_enterprise_trial_refunded","billing_reason":"purchase","status":"paid","paid":true,"net_amount":0,"currency":"usd","customer":{"email":"enterprise-trial@example.com","metadata":{}},"product":{"id":"prod_enterprise_trial_free","name":"Pipelock Enterprise Trial","metadata":{"pipelock_tier":"enterprise_trial"}}}`))
+	}))
+	t.Cleanup(paid.Close)
+	ts.handler.polar.baseURL = paid.URL
+	if err := ts.handler.HandleOrderEvent(t.Context(), enterpriseTrialOrderEvent(t, "order_enterprise_trial_refunded")); err == nil || !strings.Contains(err.Error(), "pending refund") {
+		t.Fatalf("later paid delivery error = %v, want pending-refund refusal", err)
+	}
+	ent, err := ts.db.GetBySubscriptionID(t.Context(), "order_enterprise_trial_refunded")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID after pending refund: %v", err)
+	}
+	if ent != nil {
+		t.Fatalf("pending-refunded trial minted an entitlement: %+v", ent)
+	}
+	if issuances := countLicenseIssuances(t, ts.db, "order_enterprise_trial_refunded"); issuances != 0 {
+		t.Fatalf("pending-refunded trial minted %d license issuances", issuances)
+	}
+	entries, err = os.ReadFile(ts.ledger.path)
+	if err != nil {
+		t.Fatalf("read audit ledger after refusal: %v", err)
+	}
+	if !strings.Contains(string(entries), "one-time trial fulfillment refused: pending refund") {
+		t.Fatalf("audit ledger lacks pending-refund refusal: %s", entries)
+	}
+}
+
+func TestHandleOrderEvent_EnterpriseTrialRetryIdentityMismatchRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Entitlement)
+	}{
+		{name: "email", mutate: func(ent *Entitlement) { ent.CustomerEmail = "other@example.com" }},
+		{name: "org", mutate: func(ent *Entitlement) { ent.Org = "other-org" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := newTestSetup(t)
+			issuedAt := time.Now().UTC().Add(-time.Minute)
+			expiresAt := time.Now().UTC().Add(60 * 24 * time.Hour)
+			ent := &Entitlement{
+				SubscriptionID: "order_enterprise_trial_retry",
+				CustomerEmail:  "enterprise-trial@example.com",
+				ProductID:      "prod_enterprise_trial_free",
+				Tier:           tierEnterpriseTrial, BillingInterval: billingIntervalOneTime, Status: statusActive,
+				CurrentPeriodEnd: expiresAt, Features: `[]`, LastLicenseID: "lic_existing",
+				LastLicenseIssuedAt: &issuedAt, LastLicenseExpiresAt: &expiresAt,
+				LastLicensePeriodEnd: &expiresAt, LastLicenseTier: tierEnterpriseTrial,
+				LastLicenseInterval: billingIntervalOneTime, LastLicenseProductID: "prod_enterprise_trial_free",
+				LastDeliveryStatus: "failed",
+			}
+			tc.mutate(ent)
+			if err := ts.db.UpsertWithLicenseIssuance(t.Context(), ent, LicenseIssuance{LicenseID: ent.LastLicenseID, SubscriptionID: ent.SubscriptionID, IssuedAt: issuedAt, ExpiresAt: expiresAt}); err != nil {
+				t.Fatalf("seed one-time trial issuance: %v", err)
+			}
+			if err := ts.handler.HandleOrderEvent(t.Context(), enterpriseTrialOrderEvent(t, ent.SubscriptionID)); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+				t.Fatalf("mismatched one-time trial replay error = %v, want identity-mismatch refusal", err)
+			}
+			if issuances := countLicenseIssuances(t, ts.db, ent.SubscriptionID); issuances != 1 {
+				t.Fatalf("mismatched one-time trial replay minted %d issuances, want 1", issuances)
+			}
+			entries, err := os.ReadFile(ts.ledger.path)
+			if err != nil {
+				t.Fatalf("read audit ledger: %v", err)
+			}
+			if !strings.Contains(string(entries), "one-time trial retry identity mismatch") {
+				t.Fatalf("audit ledger lacks identity-mismatch refusal: %s", entries)
+			}
+		})
 	}
 }
 

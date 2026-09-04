@@ -132,6 +132,15 @@ func isResponseScanExempt(hostname string, exemptDomains []string) bool {
 	return isDomainExempt(hostname, exemptDomains)
 }
 
+// isRequestBodyTrustedHost checks if a destination matches the
+// request_body_scanning.trusted_hosts list. Trusted destinations keep every
+// request-side scan; only the hard-block escalations for injection-shaped
+// request text and for fully redacted critical DLP fall back to the configured
+// action there.
+func isRequestBodyTrustedHost(hostname string, trustedHosts []string) bool {
+	return isDomainExempt(hostname, trustedHosts)
+}
+
 // isResponseSizeExempt checks if a hostname matches the response-size
 // allowance list. Matching hosts may stream responses that exceed the buffered
 // scan ceiling; request-side scanning and cumulative data budgets still apply.
@@ -386,7 +395,10 @@ func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, 
 	if cfg == nil {
 		return true
 	}
-	if isResponseScanExempt(hostname, cfg.ResponseScanning.ExemptDomains) {
+	// Request-side trust is its own list. The response_scanning exemptions
+	// describe inbound trust and are documented as never loosening outbound
+	// controls, so they must not be consulted here.
+	if isRequestBodyTrustedHost(hostname, cfg.RequestBodyScanning.TrustedHosts) {
 		return false
 	}
 	return true
@@ -440,7 +452,7 @@ func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg 
 		result.RedactionReport.Applied &&
 		result.RedactionReport.TotalRedactions > 0 &&
 		cfg != nil &&
-		isResponseScanExempt(hostname, cfg.ResponseScanning.ExemptDomains) {
+		isRequestBodyTrustedHost(hostname, cfg.RequestBodyScanning.TrustedHosts) {
 		return false
 	}
 	return true

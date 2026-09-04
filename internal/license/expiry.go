@@ -22,9 +22,10 @@ const (
 
 	expiryDay = 24 * time.Hour
 
-	trialTier          = "trial"
-	enterpriseEvalTier = "enterprise_eval"
-	pricingURL         = "https://pipelab.org/pricing/"
+	trialTier           = "trial"
+	enterpriseEvalTier  = "enterprise_eval"
+	enterpriseTrialTier = "enterprise_trial"
+	pricingURL          = "https://pipelab.org/pricing/"
 )
 
 type expiryBand struct {
@@ -113,6 +114,8 @@ func (w ExpiryWarning) Message() string {
 	switch w.Tier {
 	case trialTier:
 		return fmt.Sprintf("trial ends in %d day(s) on %s; Pro features stop at expiry. Subscribe at %s", w.DaysRemaining, expiresAt, pricingURL)
+	case enterpriseTrialTier:
+		return fmt.Sprintf("Enterprise trial ends in %d day(s) on %s; Enterprise features stop at expiry. Subscribe at %s", w.DaysRemaining, expiresAt, pricingURL)
 	case enterpriseEvalTier:
 		return fmt.Sprintf("Enterprise evaluation ends in %d day(s) on %s; licensed runtime surfaces stop at expiry. See %s", w.DaysRemaining, expiresAt, pricingURL)
 	default:

@@ -355,7 +355,7 @@ const (
 	// Re-bumped for fetch_proxy.monitoring.scan_nested_urls: nested query
 	// destinations are an enforcement floor, so mixed versions must not
 	// report the same policy identity.
-	goldenHashDefaults = "b2cbc526a28899200dc8b1e23772af79516a1acf9c3dc2a6d866af43b12bc1ba"
+	goldenHashDefaults = "84e6c2924e8c3713f868821583d55d70303f21e613e702984aa26884bee3b77b"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -537,7 +537,7 @@ const (
 	// Re-bumped for fetch_proxy.monitoring.scan_nested_urls: see
 	// goldenHashDefaults. The rich fixture omits the field, so nil (enabled)
 	// flows into ph identically to Defaults().
-	goldenHashRichConfig = "7bd32ed6619a35ca133a57765654c0eefeb222287b96140ec1614146b47b7d77"
+	goldenHashRichConfig = "a1581b6af98fded59cc543f58a253429955518cb0abaa9f4c93bc3d4366d0f0c"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

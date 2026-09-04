@@ -25,6 +25,11 @@ func testDelegationRoot(t *testing.T) (ed25519.PrivateKey, string) {
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
+	previous := verifySessionDelegation
+	verifySessionDelegation = func(sessionKey ed25519.PrivateKey, delegation playground.OrchestratorDelegation, nonce string) error {
+		return playground.VerifyOrchestratorDelegation(priv.Public().(ed25519.PublicKey), delegation, playground.DelegationExpectations{RunNonce: nonce})
+	}
+	t.Cleanup(func() { verifySessionDelegation = previous })
 	return priv, "sha256:" + strings.Repeat("a", 64)
 }
 

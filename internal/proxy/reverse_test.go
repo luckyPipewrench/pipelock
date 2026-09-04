@@ -1149,6 +1149,7 @@ func TestReverseProxy_BodyPromptInjectionProviderExemptWarnMode(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.RequestBodyScanning.Action = config.ActionWarn
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1")
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1")
 
 	var upstreamHit atomic.Bool
 	upstream := func(w http.ResponseWriter, _ *http.Request) {

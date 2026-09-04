@@ -70,6 +70,16 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
+	// Startup refuses block on this listener, so a reload that asks for it is
+	// requesting enforcement this runtime cannot provide. Reject the whole
+	// reload atomically and record it through the reload audit path; applying
+	// the rest while quietly keeping the old file sentry settings would report a
+	// policy rollout as successful when its enforcement never arrived.
+	if fileSentryErr := validateServerFileSentry(newCfg); fileSentryErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", fileSentryErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
 	if s.containmentManaged {
 		if containmentErr := validateContainmentMetricsConfig(newCfg); containmentErr != nil {
 			s.containmentMetricsDenied.Store(true)

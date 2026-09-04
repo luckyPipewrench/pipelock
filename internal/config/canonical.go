@@ -238,6 +238,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	view.RequestBodyScanning.ContentEntropyExclusions = sortedCopy(view.RequestBodyScanning.ContentEntropyExclusions)
+	view.RequestBodyScanning.TrustedHosts = sortedCopy(view.RequestBodyScanning.TrustedHosts)
 	view.RequestBodyScanning.ContentEntropyWarnRoutes = canonicalRequestBodyEntropyWarnRoutes(view.RequestBodyScanning.ContentEntropyWarnRoutes)
 	view.RequestBodyScanning.SigV4CredentialRoutes = canonicalRequestBodySigV4CredentialRoutes(view.RequestBodyScanning.SigV4CredentialRoutes)
 	view.WebSocketProxy.ContentEntropyExclusions = sortedCopy(view.WebSocketProxy.ContentEntropyExclusions)

@@ -247,18 +247,19 @@ func TestLoadConfig_OrderProducts(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_OrderProductsAcceptZeroAmountTrial(t *testing.T) {
-	// A trial is deliberately a zero-amount product; only negative amounts are
-	// rejected for the trial tier, while non-trial one-time products keep the
-	// positive-amount requirement.
-	setRequiredConfigEnv(t)
-	t.Setenv("ORDER_PRODUCTS", "prod_trial_free:trial:0:usd")
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig rejected a zero-amount trial product: %v", err)
-	}
-	if len(cfg.OrderProducts) != 1 || cfg.OrderProducts[0].AmountCents != 0 {
-		t.Fatalf("OrderProducts = %+v, want one zero-amount trial product", cfg.OrderProducts)
+func TestLoadConfig_OrderProductsAcceptZeroAmountTrials(t *testing.T) {
+	for _, tier := range []string{tierTrial, tierEnterpriseTrial} {
+		t.Run(tier, func(t *testing.T) {
+			setRequiredConfigEnv(t)
+			t.Setenv("ORDER_PRODUCTS", "prod_trial_free:"+tier+":0:usd")
+			cfg, err := LoadConfig()
+			if err != nil {
+				t.Fatalf("LoadConfig rejected a zero-amount %s product: %v", tier, err)
+			}
+			if len(cfg.OrderProducts) != 1 || cfg.OrderProducts[0].AmountCents != 0 || cfg.OrderProducts[0].Tier != tier {
+				t.Fatalf("OrderProducts = %+v, want one zero-amount %s product", cfg.OrderProducts, tier)
+			}
+		})
 	}
 }
 
@@ -298,6 +299,7 @@ func TestLoadConfig_SubscriptionProductsRejectMalformed(t *testing.T) {
 		// trial and enterprise_eval are one-time purchases handled by the order
 		// path, so they must not be accepted as recurring subscription products.
 		{name: "one-time trial tier", env: "prod_trial:trial:month:4900:usd"},
+		{name: "one-time enterprise trial tier", env: "prod_enterprise_trial:enterprise_trial:month:4900:usd"},
 		{name: "unknown tier", env: "prod_x:platinum:month:2900:usd"},
 	}
 

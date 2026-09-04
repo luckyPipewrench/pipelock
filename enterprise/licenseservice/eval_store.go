@@ -260,11 +260,11 @@ func (e *EntitlementDB) CountActiveEvalForEmail(ctx context.Context, normalizedE
 	return count, nil
 }
 
-// CountActiveTrialForEmail returns the number of active, unexpired trial
-// entitlements for a normalized email. Used to enforce one active trial per
-// email at mint time, mirroring the Enterprise Eval rule. It bounds only
-// same-email repeats; a fresh email is a new trial by design, which is
-// acceptable because trials gate multi-agent coordination and never detection.
+// CountActiveTierForEmail returns the number of active or revoked, unexpired
+// entitlements for a trial tier and normalized email. A refund revokes the
+// token but does not reopen the trial slot before its original period ends.
+// It bounds only same-email repeats; a fresh email is a new trial by design,
+// which is acceptable because trials gate multi-agent coordination and never detection.
 //
 // Matching happens in Go through NormalizeEmail, not SQL LOWER. SQLite's
 // LOWER (and this driver's build, which has no ICU) only folds ASCII, so a
@@ -273,23 +273,29 @@ func (e *EntitlementDB) CountActiveEvalForEmail(ctx context.Context, normalizedE
 // the webhook writes for new rows. Unparseable stored values are skipped:
 // they cannot be this identity, because the incoming address already
 // survived NormalizeEmail.
-func (e *EntitlementDB) CountActiveTrialForEmail(ctx context.Context, normalizedEmail string, now time.Time) (int, error) {
-	if err := errForceCountActiveTrial; err != nil {
-		return 0, fmt.Errorf("count active trial for %s: %w", normalizedEmail, err)
+func (e *EntitlementDB) CountActiveTierForEmail(ctx context.Context, tier, normalizedEmail string, now time.Time) (int, error) {
+	if !isTrialTier(tier) {
+		return 0, fmt.Errorf("count active tier for %s: tier is not a trial tier", normalizedEmail)
 	}
+	if err := errForceCountActiveTier; err != nil {
+		return 0, fmt.Errorf("count active %s for %s: %w", tier, normalizedEmail, err)
+	}
+	// One trial slot per email across BOTH trial tiers: an active Pro trial
+	// blocks an Enterprise trial and the reverse, so the two zero-dollar
+	// products cannot be stacked or alternated by the same identity.
 	const query = `
 	SELECT customer_email FROM entitlements
-	WHERE tier = ? AND status = ? AND current_period_end > ?
+	WHERE tier IN (?, ?) AND status IN (?, ?) AND current_period_end > ?
 	`
-	rows, err := e.db.QueryContext(ctx, query, tierTrial, statusActive, now.UTC())
+	rows, err := e.db.QueryContext(ctx, query, tierTrial, tierEnterpriseTrial, statusActive, statusRevoked, now.UTC())
 	if err != nil {
-		return 0, fmt.Errorf("count active trial for %s: %w", normalizedEmail, err)
+		return 0, fmt.Errorf("count active %s for %s: %w", tier, normalizedEmail, err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	emails, err := collectTrialEmails(rows)
 	if err != nil {
-		return 0, fmt.Errorf("count active trial for %s: %w", normalizedEmail, err)
+		return 0, fmt.Errorf("count active %s for %s: %w", tier, normalizedEmail, err)
 	}
 	count := 0
 	for _, stored := range emails {
@@ -304,10 +310,20 @@ func (e *EntitlementDB) CountActiveTrialForEmail(ctx context.Context, normalized
 	return count, nil
 }
 
-// errForceCountActiveTrial is set only in tests so HandleOrderEvent can
+// CountActiveTrialForEmail preserves the Pro trial count API for its existing
+// callers. Enterprise trials use CountActiveTierForEmail with their own tier.
+func (e *EntitlementDB) CountActiveTrialForEmail(ctx context.Context, normalizedEmail string, now time.Time) (int, error) {
+	return e.CountActiveTierForEmail(ctx, tierTrial, normalizedEmail, now)
+}
+
+func isTrialTier(tier string) bool {
+	return tier == tierTrial || tier == tierEnterpriseTrial
+}
+
+// errForceCountActiveTier is set only in tests so HandleOrderEvent can
 // exercise the count-error return without closing the database (GetBySubscriptionID
 // would fail first). Production leaves it nil.
-var errForceCountActiveTrial error
+var errForceCountActiveTier error
 
 type trialEmailRows interface {
 	Next() bool

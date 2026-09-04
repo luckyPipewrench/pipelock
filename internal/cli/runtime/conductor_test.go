@@ -841,7 +841,7 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	oldCfg.LicenseRequireIntermediate = &requireIntermediate
 	oldCfg.LicenseRequireIntermediateResolved = true
 	oldCfg.FileSentry.Enabled = true
-	oldCfg.FileSentry.Action = config.ActionBlock
+	oldCfg.FileSentry.Action = config.ActionWarn // block is refused on the server listener; warn is the state a live follower can carry
 	oldCfg.FileSentry.WatchPaths = []config.WatchPath{{Path: "/tmp/pipelock-watch"}}
 	oldCfg.BrowserShield.Enabled = true
 	oldCfg.BrowserShield.Strictness = config.ShieldStrictnessAggressive

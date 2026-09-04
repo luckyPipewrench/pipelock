@@ -63,6 +63,27 @@ use archive verification visibly in their scripts.
 Do not use `archive-replay` for an ordinary visitor download. Live downloads
 must continue to use `ArchiveRunForDownload` and strict `verify-run` semantics.
 
+## The browser verifier decides for itself, and why that is safe
+
+The published bundle has two consumers, not one. The downloadable kits run the
+command-line verifier, where `--archive` is an explicit choice. The viewer's
+"Verify in your browser" button runs the WebAssembly verifier, which has no
+flags and serves both a live session bundle and the published archive from the
+same entry point.
+
+So that path selects on whether a replay archive authorization is present, and
+verifies it in full when it is. A bundle without one takes the strict path and an
+expired delegation still fails closed there.
+
+That is not a bundle choosing its own leniency. The authorization is a root
+signature over this run's exact manifest hash, delegation bytes, run nonce and
+image digest, so only the holder of the published root can produce one, and an
+authorization lifted from another run fails its binding check. An attacker
+cannot mint leniency; at most they can present a genuine root-authorized run,
+which is what the archive is for. Keep both surfaces in step: a change that
+teaches one of them archive semantics and not the other leaves a visitor with a
+kit that passes and a button that fails on a single artifact.
+
 ## Verify before publishing
 
 Extract the proposed archive and run the public verifier against the pinned

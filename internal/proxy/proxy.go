@@ -595,7 +595,11 @@ type FetchResponse struct {
 	BlockReason string `json:"block_reason,omitempty"`
 	Hint        string `json:"hint,omitempty"`
 	Layer       string `json:"layer,omitempty"`
+	// ShieldRewrite is the client-visible summary for a Browser Shield body rewrite.
+	ShieldRewrite string `json:"shield_rewrite,omitempty"`
 }
+
+const shieldRewriteHeader = "X-Pipelock-Shield-Rewrite"
 
 const (
 	adaptiveEnforcementLayer = "adaptive_enforcement"
@@ -3459,6 +3463,43 @@ func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
 	}
 }
 
+// shieldRewriteHeaderValue renders the bounded, client-visible summary for a
+// rewritten Browser Shield response. Extension includes an injected extension
+// defense shim; trap includes SVG active-content removals, which are the
+// shield's SVG-specific trap class.
+func shieldRewriteHeaderValue(summary *receipt.ShieldSummary) string {
+	if summary == nil {
+		return ""
+	}
+	extension := summary.ExtensionProbes
+	if summary.FingerprintShimInjected {
+		extension++
+	}
+	trap := summary.AgentTraps + summary.SVGForeignObjects + summary.SVGEventHandlers + summary.SVGExternalReferences + summary.SVGHiddenText + summary.SVGAnimationInjections
+	parts := make([]string, 0, 3)
+	if extension > 0 {
+		parts = append(parts, "extension="+strconv.Itoa(extension))
+	}
+	if summary.TrackingBeacons > 0 {
+		parts = append(parts, "tracking="+strconv.Itoa(summary.TrackingBeacons))
+	}
+	if trap > 0 {
+		parts = append(parts, "trap="+strconv.Itoa(trap))
+	}
+	return strings.Join(parts, ",")
+}
+
+// setShieldRewriteHeader is deliberately nil-safe because it is invoked at
+// transport boundaries where an upstream response may have no header map.
+func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary) {
+	if headers == nil {
+		return
+	}
+	if value := shieldRewriteHeaderValue(summary); value != "" {
+		headers.Set(shieldRewriteHeader, value)
+	}
+}
+
 func shieldPipelineLabel(pipeline shield.PipelineType) string {
 	switch pipeline {
 	case shield.PipelineHTML:
@@ -5478,7 +5519,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	shieldHost := resp.Request.URL.Hostname()
 	shieldBodyLen := len(body)
 	shieldMaxBytes := shieldMaxBytesForResponse(cfg, shieldHost, TransportFetch)
-	body, _, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
+	body, shieldSummary, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
 	if shieldBlocked {
 		reason := shieldOversizeBlockReason(shieldHost, shieldBodyLen, shieldMaxBytes)
 		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
@@ -5749,14 +5790,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
+	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
+	if shieldRewrite != "" {
+		w.Header().Set(shieldRewriteHeader, shieldRewrite)
+	}
 	writeJSON(w, http.StatusOK, FetchResponse{
-		URL:         displayURL,
-		Agent:       agent,
-		StatusCode:  resp.StatusCode,
-		ContentType: contentType,
-		Title:       title,
-		Content:     content,
-		Blocked:     false,
+		URL:           displayURL,
+		Agent:         agent,
+		StatusCode:    resp.StatusCode,
+		ContentType:   contentType,
+		Title:         title,
+		Content:       content,
+		Blocked:       false,
+		ShieldRewrite: shieldRewrite,
 	})
 	outcomeStatus = strconv.Itoa(resp.StatusCode)
 	outcomeBytes = int64(len(body))

@@ -3373,6 +3373,8 @@ movement, block deltas, and application breakage before moving to the standard
 fail-closed posture. Use `oversize_action: warn` only for short, explicitly
 scoped diagnostics because it returns oversized shieldable bodies unchanged.
 
+When Browser Shield rewrites a response, Pipelock adds `X-Pipelock-Shield-Rewrite` before sending it to the client. Its value lists non-zero rewrite categories in fixed order, for example `extension=1,tracking=1,trap=2`; clean and unchanged responses omit the header. `extension` includes an injected extension-defense shim, and `trap` includes hidden traps plus SVG active-content removals. The fetch endpoint also returns the same value in its `shield_rewrite` JSON field. The header is available on buffered fetch, forward-proxy, TLS-intercepted CONNECT, and reverse-proxy responses; streaming responses are not rewritten and therefore never carry it.
+
 ## Media Policy (v2.1)
 
 Controls how media responses (image, audio, video Content-Type) are handled. Pipelock cannot inspect pixels or audio frames for embedded instructions, so this section reduces exposure by stripping unused media types, enforcing size limits, surgically removing metadata from allowed images, and emitting exposure events.

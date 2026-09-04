@@ -2553,6 +2553,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if shieldSummary != nil {
+			setShieldRewriteHeader(resp.Header, shieldSummary)
 			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
 			resp.Header.Del("ETag")
 			resp.Header.Del("Digest")

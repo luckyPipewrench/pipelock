@@ -2092,6 +2092,7 @@ func newInterceptHandler(
 			// browser/client mismatch. Remove body-derived validators since
 			// the body is no longer the original.
 			if shieldSummary != nil {
+				setShieldRewriteHeader(resp.Header, shieldSummary)
 				resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
 				resp.Header.Del("ETag")
 				resp.Header.Del("Digest")

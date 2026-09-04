@@ -72,3 +72,40 @@ func TestPublishArchiveArtifacts_RollsBackAFileCreatedThenFailedMidWrite(t *test
 		t.Fatal("the kit directory survived rollback")
 	}
 }
+
+// The bundle and the kits are tracked by separate branches, so a bundle-only
+// failure returns before the kit branch ever runs and leaves its tracking
+// untested. This drives the failure into the kit write instead, by sizing the
+// bundle to fit under the limit and the kit to exceed it. An untracked kit file
+// is the worse case of the two: besides surviving, it keeps the kit directory
+// non-empty so that cannot be removed either.
+func TestPublishArchiveArtifacts_RollsBackAKitCreatedThenFailedMidWrite(t *testing.T) {
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, "replay-bundle.tar.gz")
+	kitDir := filepath.Join(dir, "kits")
+	f := &archiveReplayFlags{output: bundlePath, kitOutputDir: kitDir}
+
+	withTinyFileSizeLimit(t, 1)
+
+	// One byte fits the limit, so the bundle publishes and the kit directory is
+	// created; the kit then exceeds it and fails after its own create.
+	bundle := []byte("b")
+	kits := []archiveKit{{name: "kit.zip", data: []byte("this kit exceeds the file size limit")}}
+
+	err := publishArchiveArtifacts(f, bundle, kits)
+	if err == nil {
+		t.Fatal("a kit write that exceeded the file size limit was reported as success")
+	}
+	if !strings.Contains(err.Error(), "write output") && !strings.Contains(err.Error(), "close output") {
+		t.Fatalf("error = %v, want a write or close failure", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(kitDir, "kit.zip")); !os.IsNotExist(statErr) {
+		t.Fatal("a kit created and then failed mid-write survived rollback")
+	}
+	if _, statErr := os.Stat(kitDir); !os.IsNotExist(statErr) {
+		t.Fatal("the kit directory survived rollback, so an untracked kit was left inside it")
+	}
+	if _, statErr := os.Stat(bundlePath); !os.IsNotExist(statErr) {
+		t.Fatal("the successfully written bundle survived a failed publication")
+	}
+}

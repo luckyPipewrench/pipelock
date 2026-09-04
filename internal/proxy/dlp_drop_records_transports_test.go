@@ -164,9 +164,14 @@ func assertDroppedTransportConsumers(t *testing.T, m *metrics.Metrics, auditPath
 	if err != nil {
 		t.Fatalf("read audit: %v", err)
 	}
-	for _, want := range []string{fmt.Sprintf(`"pattern":%q`, pattern), fmt.Sprintf(`"transport":%q`, surface), fmt.Sprintf(`"reason":%q`, reason)} {
-		if !strings.Contains(string(b), want) {
-			t.Fatalf("audit missing %q: %s", want, b)
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode audit entry: %v: %s", err, line)
+		}
+		if entry["event"] == "dlp_warn" && entry["pattern"] == pattern && entry["transport"] == surface && entry["reason"] == reason {
+			return
 		}
 	}
+	t.Fatalf("audit missing correlated dropped-DLP record for pattern=%q transport=%q reason=%q: %s", pattern, surface, reason, b)
 }

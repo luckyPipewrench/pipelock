@@ -143,6 +143,55 @@ func TestMCPStdioSuppressedResponseRecordsDroppedDLP(t *testing.T) {
 	}
 }
 
+func TestMCPStdioLowConfidenceInboundDLPRecordsDropped(t *testing.T) {
+	sc := testScanner(t)
+	lowConfidenceAWS := strings.Join([]string{
+		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"OCR", "context", "for", "assistant", "safety", "review",
+	}, " ")
+	line := []byte(makeResponse(7, lowConfidenceAWS))
+
+	if verdict := ScanResponseOpts(line, sc, MCPProxyOpts{ServerName: "code-assistant"}.responseScanOptions()); !verdict.Clean {
+		t.Fatalf("unobserved low-confidence verdict = %+v, want clean", verdict)
+	}
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	m := metrics.New()
+	opts := MCPProxyOpts{ServerName: "code-assistant", AuditLogger: logger, Metrics: m}.responseScanOptions()
+	if verdict := ScanResponseOpts(line, sc, opts); !verdict.Clean {
+		t.Fatalf("observed low-confidence verdict = %+v, want clean", verdict)
+	}
+	logger.Close()
+
+	metricOut := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(metricOut, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(metricOut.Body.String(), `pipelock_dlp_dropped_matches_total{pattern="AWS Access ID",reason="low_confidence",surface="mcp_stdio"} 1`) {
+		t.Fatalf("dropped DLP metric missing: %s", metricOut.Body.String())
+	}
+	auditData, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if !strings.Contains(string(auditData), `"pattern":"AWS Access ID"`) || !strings.Contains(string(auditData), `"transport":"mcp_stdio"`) || !strings.Contains(string(auditData), `"reason":"low_confidence"`) {
+		t.Fatalf("dropped DLP audit record missing: %s", auditData)
+	}
+}
+
+func TestMCPStdioLowConfidenceInboundDLPNilObservabilityKeepsVerdict(t *testing.T) {
+	sc := testScanner(t)
+	line := []byte(makeResponse(8, strings.Join([]string{
+		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"OCR", "context", "for", "assistant", "safety", "review",
+	}, " ")))
+
+	if verdict := ScanResponseOpts(line, sc, MCPProxyOpts{ServerName: "code-assistant"}.responseScanOptions()); !verdict.Clean {
+		t.Fatalf("nil observability changed low-confidence verdict: %+v", verdict)
+	}
+}
+
 // TestScanResponseOpts_DistinctUnsuppressedPatternStillBlocks proves that
 // suppressing one pattern for a target never masks a DIFFERENT, unsuppressed
 // pattern in the same response (the post-filter masking class).

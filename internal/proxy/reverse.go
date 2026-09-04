@@ -1310,6 +1310,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		PatternActions:   cfg.RequestBodyScanning.PatternActions,
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
+	applySigV4CredentialRouteConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 

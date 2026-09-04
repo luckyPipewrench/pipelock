@@ -1487,6 +1487,7 @@ func reverseRequestContext(resp *http.Response) context.Context {
 
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	responseBodyLimit := rp.responseScanBodyLimit()
+	setShieldRewriteHeader(resp.Header, nil)
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
 	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
 	if cfg == nil || sc == nil {
@@ -2169,6 +2170,7 @@ responseScanning:
 					}
 				}
 				if decision.summary.TotalRewrites > 0 {
+					setShieldRewriteHeader(resp.Header, decision.summary)
 					resp.Header.Del("ETag")
 					resp.Header.Del("Content-MD5")
 					resp.Header.Del("Digest")

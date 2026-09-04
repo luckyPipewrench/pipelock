@@ -48,8 +48,15 @@ func enableShieldRewriteMarkerCategories(cfg *config.Config) {
 func shieldRewriteMarkerUpstream(body []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set(shieldRewriteHeader, "trap=9")
 		_, _ = w.Write(body)
 	}
+}
+
+func shieldRewriteMarkerSSEUpstream(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set(shieldRewriteHeader, "trap=9")
+	_, _ = w.Write([]byte("data: ordinary event\n\n"))
 }
 
 func TestShieldRewriteMarkerNilHeaders(t *testing.T) {
@@ -211,5 +218,89 @@ func TestReverseShieldRewriteMarker(t *testing.T) {
 				t.Fatalf("%s = %q, want %q", shieldRewriteHeader, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestForwardShieldRewriteMarkerStrippedFromSSE(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(shieldRewriteMarkerSSEUpstream))
+	t.Cleanup(upstream.Close)
+	cfg := shieldRewriteMarkerConfig()
+	cfg.BrowserShield.Enabled = false
+	cfg.ForwardProxy.Enabled = true
+	proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+	t.Cleanup(cleanup)
+
+	resp := doGet(t, proxyClient(proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	if got := resp.Header.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("SSE %s = %q, want stripped forged marker", shieldRewriteHeader, got)
+	}
+}
+
+func TestInterceptShieldRewriteMarkerStrippedFromSSE(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(shieldRewriteMarkerSSEUpstream))
+	t.Cleanup(upstream.Close)
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.DLP.Patterns = nil
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = false
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("new proxy: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, request, p)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	if got := resp.Header.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("SSE %s = %q, want stripped forged marker", shieldRewriteHeader, got)
+	}
+}
+
+func TestReverseShieldRewriteMarkerStrippedFromSSE(t *testing.T) {
+	cfg := shieldRewriteMarkerConfig()
+	cfg.BrowserShield.Enabled = false
+	upstream := httptest.NewServer(http.HandlerFunc(shieldRewriteMarkerSSEUpstream))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxy.URL, nil)
+	if err != nil {
+		t.Fatalf("reverse request: %v", err)
+	}
+	resp, err := proxy.Client().Do(req)
+	if err != nil {
+		t.Fatalf("reverse request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	if got := resp.Header.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("SSE %s = %q, want stripped forged marker", shieldRewriteHeader, got)
+	}
+}
+
+func TestReverseShieldRewriteMarkerScanHeadWithoutResponseScanning(t *testing.T) {
+	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeScanHead, false)
+	defer func() { _ = resp.Body.Close() }()
+	if got, want := resp.Header.Get(shieldRewriteHeader), "extension=1,tracking=1"; got != want {
+		t.Fatalf("scan_head %s = %q, want %q", shieldRewriteHeader, got, want)
 	}
 }

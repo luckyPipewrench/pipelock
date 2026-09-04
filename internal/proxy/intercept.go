@@ -1718,6 +1718,7 @@ func newInterceptHandler(
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
+		setShieldRewriteHeader(resp.Header, nil)
 		// The authenticated-artifact exception is verified at the proxy before
 		// bytes reach the client; it is not a route-level response exemption.
 		interceptAuthenticatedArtifact := false

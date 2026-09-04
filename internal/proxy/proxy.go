@@ -3489,12 +3489,15 @@ func shieldRewriteHeaderValue(summary *receipt.ShieldSummary) string {
 	return strings.Join(parts, ",")
 }
 
-// setShieldRewriteHeader is deliberately nil-safe because it is invoked at
-// transport boundaries where an upstream response may have no header map.
+// setShieldRewriteHeader makes the marker authoritative: a transport boundary
+// first removes any upstream value, then restores only a locally computed
+// Browser Shield summary. It is deliberately nil-safe because an upstream
+// response may have no header map.
 func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary) {
 	if headers == nil {
 		return
 	}
+	headers.Del(shieldRewriteHeader)
 	if value := shieldRewriteHeaderValue(summary); value != "" {
 		headers.Set(shieldRewriteHeader, value)
 	}
@@ -5791,9 +5794,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
 	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
-	if shieldRewrite != "" {
-		w.Header().Set(shieldRewriteHeader, shieldRewrite)
-	}
+	setShieldRewriteHeader(w.Header(), shieldSummary)
 	writeJSON(w, http.StatusOK, FetchResponse{
 		URL:           displayURL,
 		Agent:         agent,

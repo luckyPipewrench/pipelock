@@ -288,6 +288,7 @@ func TestInterceptTunnel_Redaction_ProviderCriticalDLPForwardsSanitizedWithEnfor
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, host)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
@@ -380,6 +381,7 @@ func TestInterceptTunnel_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptH
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, host)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
@@ -427,6 +429,7 @@ func TestInterceptTunnel_Redaction_ProviderEnvTokenForwardsSanitizedWithEnforce(
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, host)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
@@ -477,6 +480,7 @@ func TestInterceptTunnel_Redaction_ProviderSeedPhraseForwardsSanitizedWithEnforc
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, host)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)
@@ -552,6 +556,7 @@ func TestInterceptTunnel_Redaction_ProviderKnownFileSecretForwardsSanitizedWithE
 				t.Fatalf("split upstream addr: %v", err)
 			}
 			cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+			cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, host)
 			secret := "KnownProviderSecretValue12345!"
 			cfg.DLP.SecretsFile = writeKnownSecretFile(t, secret)
 			sc := scanner.MustNew(cfg)
@@ -614,6 +619,7 @@ func TestForwardProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost
 		cfg.Enforce = &enforceTrue
 		applyRedactionTestProfile(cfg)
 		cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+		cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, host)
 	})
 	defer cleanup()
 
@@ -679,6 +685,7 @@ func TestReverseProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost
 	cfg.Enforce = &enforceTrue
 	applyRedactionTestProfile(cfg)
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1")
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1")
 
 	var receivedBody atomic.Value // string
 	var upstreamHits atomic.Int32
@@ -771,6 +778,7 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 		cfg.Enforce = &enforceTrue
 		applyRedactionTestProfile(cfg)
 		cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1", backendAddr)
+		cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1")
 	})
 	defer proxyCleanup()
 

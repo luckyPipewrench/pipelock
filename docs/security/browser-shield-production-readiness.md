@@ -35,6 +35,15 @@ This avoids treating large legitimate media responses as shield failures.
   reduce false positives on large rendered reference pages.
 - Signed action receipts include a `shield` summary whenever Browser Shield
   rewrites a response and receipt emission is enabled.
+- Rewritten responses carry `X-Pipelock-Shield-Rewrite`, so a client can tell
+  an altered 200 response from an untouched one. The value contains non-zero
+  categories in fixed `extension`, `tracking`, `trap` order (for example,
+  `extension=1,tracking=1,trap=2`). `extension` includes an injected extension
+  defense shim; `trap` includes hidden traps and SVG active-content removals.
+  Clean responses omit the header. Fetch also includes the same value as
+  `shield_rewrite` in its JSON envelope. The header is emitted on buffered
+  fetch, forward-proxy, TLS-intercepted CONNECT, and reverse-proxy responses;
+  streaming responses are never rewritten, so they have no marker.
 - Adaptive enforcement records a low-weight `SignalShieldRewrite` signal for
   repeated shield interventions. The signal is capped at one signal per
   response body, worth 0.25 points, so one noisy page cannot immediately

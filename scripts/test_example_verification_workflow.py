@@ -121,17 +121,29 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
                 for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name == "warm_upstream_package"
             )
+            main_node = next(
+                node
+                for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "main"
+            )
             warm_body = ast.get_source_segment(body, warm_node)
+            main_body = ast.get_source_segment(body, main_node)
             self.assertIsNotNone(warm_body, path)
+            self.assertIsNotNone(main_body, path)
             self.assertIn('"npm", "exec", "--yes"', warm_body, path)
             self.assertIn('f"--package={EVERYTHING_PACKAGE}"', warm_body, path)
             self.assertIn('"--", "node", "--version"', warm_body, path)
             self.assertNotIn('EVERYTHING_PACKAGE, "--version"', warm_body, path)
             self.assertIn("timeout=300", warm_body, path)
             self.assertIn("check=True", warm_body, path)
-            self.assertLess(
-                body.index("warm_upstream_package(runtime_env)"),
-                body.index("proc = subprocess.Popen("),
+            sequence = (
+                main_body.index("run_install("),
+                main_body.index("warm_upstream_package(runtime_env)"),
+                main_body.index("proc = subprocess.Popen("),
+            )
+            self.assertEqual(
+                sequence,
+                tuple(sorted(sequence)),
                 path,
             )
 

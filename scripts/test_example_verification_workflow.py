@@ -4,6 +4,7 @@
 
 """Structural tests for the advisory example and installation verification."""
 
+import ast
 import os
 import re
 import subprocess
@@ -110,6 +111,41 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
             self.assertRegex(result.stdout, r"(?m)^PASS: 0$")
             self.assertRegex(result.stdout, r"(?m)^FAIL: 0$")
             self.assertRegex(result.stdout, r"(?m)^SKIP: 1$")
+
+    def test_runtime_warmups_fetch_without_starting_the_mcp_server(self):
+        for path in sorted((ROOT / "scripts" / "e2e").glob("*-mcp-runtime.py")):
+            body = path.read_text(encoding="utf-8")
+            tree = ast.parse(body)
+            warm_node = next(
+                node
+                for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "warm_upstream_package"
+            )
+            main_node = next(
+                node
+                for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "main"
+            )
+            warm_body = ast.get_source_segment(body, warm_node)
+            main_body = ast.get_source_segment(body, main_node)
+            self.assertIsNotNone(warm_body, path)
+            self.assertIsNotNone(main_body, path)
+            self.assertIn('"npm", "exec", "--yes"', warm_body, path)
+            self.assertIn('f"--package={EVERYTHING_PACKAGE}"', warm_body, path)
+            self.assertIn('"--", "node", "--version"', warm_body, path)
+            self.assertNotIn('EVERYTHING_PACKAGE, "--version"', warm_body, path)
+            self.assertIn("timeout=300", warm_body, path)
+            self.assertIn("check=True", warm_body, path)
+            sequence = (
+                main_body.index("run_install("),
+                main_body.index("warm_upstream_package(runtime_env)"),
+                main_body.index("proc = subprocess.Popen("),
+            )
+            self.assertEqual(
+                sequence,
+                tuple(sorted(sequence)),
+                path,
+            )
 
     def test_quickstart_runs_the_binary_built_from_this_tree(self):
         self.assertIn('local go_binary="${PIPELOCK_VERIFY_GO:-go}"', self.runner)

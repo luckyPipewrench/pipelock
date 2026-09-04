@@ -1154,6 +1154,25 @@ func TestCore_ResponsePatterns_ExternalDataTransferRegexParity(t *testing.T) {
 	}
 }
 
+func TestCore_ResponsePatterns_PromptInjectionRegexParity(t *testing.T) {
+	t.Parallel()
+
+	surfaces := map[string]string{
+		"default config": responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, patternNamePromptInjection),
+		"core floor":     coreResponsePatternRegex(t, patternNamePromptInjection),
+	}
+	for _, preset := range []string{"audit", "balanced", "claude-code", "cursor", "generic-agent", "hostile-model", "strict"} {
+		surfaces[preset+" yaml"] = yamlResponsePatternRegex(t, "../../configs/"+preset+".yaml", patternNamePromptInjection)
+	}
+	for surface, got := range surfaces {
+		t.Run(surface, func(t *testing.T) {
+			if got != config.PromptInjectionRegex {
+				t.Errorf("regex drifted from config.PromptInjectionRegex")
+			}
+		})
+	}
+}
+
 func TestCore_ResponsePatterns_DecodedDefensiveDecoyDoesNotMaskSolicitation(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()

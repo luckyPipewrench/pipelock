@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -126,7 +127,7 @@ func TestDLPScanWSHeaders_PropagatesWarnContext(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+fakeAPIKey()+" "+testWarnHookToken)
 	cfg := testScannerConfig()
-	blocked, _, _, reason := (&Proxy{}).dlpScanWSHeaders(ctx, headers, sc, cfg, testWSURL)
+	blocked, _, _, reason := (&Proxy{}).dlpScanWSHeaders(ctx, headers, sc, cfg, testWSURL, audit.LogContext{})
 	if !blocked {
 		t.Fatal("expected DLP match in websocket headers")
 	}

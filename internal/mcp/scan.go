@@ -48,6 +48,13 @@ type ResponseScanOptions struct {
 	// TrustClass is the effective response trust class used for operator logs.
 	// Empty is treated as untrusted.
 	TrustClass string
+	// OnDroppedDLP receives a deliberately non-enforced inbound DLP match.
+	// Runtime callers connect it to audit and metrics; nil preserves diagnostic
+	// scan behavior and can never affect the verdict.
+	OnDroppedDLP func(scanner.TextDLPMatch, string)
+	// OnSuppressedResponse receives a response-scanning match removed by a
+	// destination-scoped suppression. It is observational only.
+	OnSuppressedResponse func(scanner.ResponseMatch)
 }
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
@@ -165,9 +172,20 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	}
 
 	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
+	for _, match := range result.SuppressedMatches {
+		if opts.OnSuppressedResponse != nil {
+			opts.OnSuppressedResponse(match)
+		}
+	}
 	var dlpMatches []scanner.TextDLPMatch
 	if includeDLP {
-		dlpMatches = scanner.EnforceableInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
+		var lowConfidence []scanner.TextDLPMatch
+		dlpMatches, lowConfidence = scanner.PartitionInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
+		for _, match := range lowConfidence {
+			if opts.OnDroppedDLP != nil {
+				opts.OnDroppedDLP(match, "low_confidence")
+			}
+		}
 	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
@@ -359,7 +377,17 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 	}
 
 	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
-	dlpMatches := scanner.EnforceableInboundTextDLPMatches(dlpText, sc.ScanTextForDLPInbound(context.Background(), dlpText).Matches)
+	for _, match := range result.SuppressedMatches {
+		if opts.OnSuppressedResponse != nil {
+			opts.OnSuppressedResponse(match)
+		}
+	}
+	dlpMatches, lowConfidence := scanner.PartitionInboundTextDLPMatches(dlpText, sc.ScanTextForDLPInbound(context.Background(), dlpText).Matches)
+	for _, match := range lowConfidence {
+		if opts.OnDroppedDLP != nil {
+			opts.OnDroppedDLP(match, "low_confidence")
+		}
+	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}

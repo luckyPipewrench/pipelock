@@ -556,6 +556,9 @@ type BodyScanRequest struct {
 	DisablePatterns []string
 	// PatternActions maps DLP pattern names to body/header-specific actions.
 	PatternActions map[string]string
+	// OnDroppedDLP receives a match deliberately skipped by a request-body
+	// policy. It is observational only and must never affect the verdict.
+	OnDroppedDLP func(scanner.TextDLPMatch, string)
 	// Content entropy checks catch opaque non-credential-shaped exfiltration.
 	// Destination trust/exclusions are supplied from the parsed upstream
 	// authority, not from user-controlled Host headers.
@@ -629,8 +632,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		// this body cannot be parsed.
 		if extracted.Err == "" {
 			disabled := bodyDLPDisabledSet(req.DisablePatterns)
-			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4)
-			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4)...)
+			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP)
+			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP)...)
 		}
 	}
 
@@ -709,8 +712,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
-	matches := scanBodyTextsForDLP(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4)
-	matches = append(matches, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4)...)
+	matches := scanBodyTextsForDLP(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, req.OnDroppedDLP)
+	matches = append(matches, scanProviderOpaqueTextsForDLP(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, req.OnDroppedDLP)...)
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
 		result.DLPMatches = matches
@@ -1158,12 +1161,12 @@ func applySigV4CredentialRouteConfig(req *BodyScanRequest, cfg *config.Config) {
 	req.SigV4CredentialRoutes = cfg.RequestBodyScanning.SigV4CredentialRoutes
 }
 
-func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool) []scanner.TextDLPMatch {
+func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string)) []scanner.TextDLPMatch {
 	var allMatches []scanner.TextDLPMatch
 	for _, text := range texts {
 		result := scanBodyTextForDLP(ctx, sc, text, allowEmbeddedSigV4)
 		if !result.Clean {
-			if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled); len(matches) > 0 {
+			if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled, onDropped); len(matches) > 0 {
 				allMatches = append(allMatches, matches...)
 			}
 		}
@@ -1176,7 +1179,7 @@ func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []strin
 		result = sc.ScanTextForDLP(ctx, strings.Join(sorted, bodyDLPJoinSeparator))
 	}
 	if !result.Clean {
-		if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled); len(matches) > 0 {
+		if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled, onDropped); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)
 		}
 	}
@@ -1190,11 +1193,11 @@ func scanBodyTextForDLP(ctx context.Context, sc *scanner.Scanner, text string, a
 	return sc.ScanTextForDLP(ctx, text)
 }
 
-func scanProviderOpaqueTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool) []scanner.TextDLPMatch {
+func scanProviderOpaqueTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string)) []scanner.TextDLPMatch {
 	if len(texts) == 0 {
 		return nil
 	}
-	matches := scanBodyTextsForDLP(ctx, sc, texts, target, suppress, disabled, allowEmbeddedSigV4)
+	matches := scanBodyTextsForDLP(ctx, sc, texts, target, suppress, disabled, allowEmbeddedSigV4, onDropped)
 	for i := range matches {
 		matches[i].ProviderOpaque = true
 	}
@@ -1214,7 +1217,7 @@ func (req BodyScanRequest) suppressTarget() string {
 	return req.Host + req.Path
 }
 
-func filterBodyDLPMatches(matches []scanner.TextDLPMatch, target string, suppress []config.SuppressEntry, disabled map[string]struct{}) []scanner.TextDLPMatch {
+func filterBodyDLPMatches(matches []scanner.TextDLPMatch, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, onDropped func(scanner.TextDLPMatch, string)) []scanner.TextDLPMatch {
 	if len(matches) == 0 || len(suppress) == 0 || target == "" {
 		if len(matches) == 0 || len(disabled) == 0 {
 			return matches
@@ -1223,9 +1226,15 @@ func filterBodyDLPMatches(matches []scanner.TextDLPMatch, target string, suppres
 	filtered := matches[:0]
 	for _, match := range matches {
 		if _, skip := disabled[match.PatternName]; skip && !config.IsCoreDLPPatternName(match.PatternName) {
+			if onDropped != nil {
+				onDropped(match, "disabled")
+			}
 			continue
 		}
 		if !config.IsCoreDLPPatternName(match.PatternName) && config.IsSuppressed(match.PatternName, target, suppress) {
+			if onDropped != nil {
+				onDropped(match, "suppressed")
+			}
 			continue
 		}
 		filtered = append(filtered, match)
@@ -1734,20 +1743,20 @@ func isNoisyHeaderName(name string) bool {
 // (no allowlist skip) because agents can exfiltrate secrets in auth headers
 // to any host.
 func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner) *BodyScanResult {
-	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, "", nil)
+	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, "", nil, nil)
 }
 
 func scanRequestHeadersForTarget(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string) *BodyScanResult {
-	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, target, cfg.Suppress)
+	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, target, cfg.Suppress, nil)
 }
 
-func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry) *BodyScanResult {
+func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry, onDropped func(scanner.TextDLPMatch, string)) *BodyScanResult {
 	bodyCfg := cfg.RequestBodyScanning
 	disabled := bodyDLPDisabledSet(bodyCfg.DisablePatterns)
 	var allMatches []scanner.TextDLPMatch
 	matchedHeaders := map[string]struct{}{}
 	addMatches := func(headerName string, matches []scanner.TextDLPMatch) {
-		filtered := filterBodyDLPMatches(matches, target, suppress, disabled)
+		filtered := filterBodyDLPMatches(matches, target, suppress, disabled, onDropped)
 		if len(filtered) == 0 {
 			return
 		}
@@ -1894,7 +1903,12 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 	if metricAgent == "" {
 		metricAgent = e.actx.Agent()
 	}
-	headerResult := scanRequestHeadersForTarget(ctx, e.headers, e.cfg, e.sc, e.target)
+	headerResult := scanRequestHeadersWithSuppress(ctx, e.headers, e.cfg, e.sc, e.target, e.cfg.Suppress, func(match scanner.TextDLPMatch, reason string) {
+		if e.logger != nil {
+			e.logger.LogDLPDropped(e.actx, match.PatternName, match.Severity, "header", reason)
+		}
+		p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
+	})
 	if headerResult == nil {
 		return false, false
 	}

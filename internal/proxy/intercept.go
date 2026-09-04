@@ -1003,6 +1003,12 @@ func newInterceptHandler(
 				Action:           ic.Config.RequestBodyScanning.Action,
 				DisablePatterns:  ic.Config.RequestBodyScanning.DisablePatterns,
 				PatternActions:   ic.Config.RequestBodyScanning.PatternActions,
+				OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+					if ic.Logger != nil {
+						ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "body", reason)
+					}
+					ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+				},
 			}
 			applyContentEntropyConfig(&bodyReq, ic.Config)
 			applySigV4CredentialRouteConfig(&bodyReq, ic.Config)
@@ -1784,6 +1790,12 @@ func newInterceptHandler(
 					ResponseScanExempt: interceptRespExempt,
 					OnFinding: func(err error) {
 						ic.Logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
+					},
+					OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+						if ic.Logger != nil {
+							ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "mcp_sse", reason)
+						}
+						ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_sse", reason)
 					},
 				},
 			}

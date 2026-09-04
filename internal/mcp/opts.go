@@ -424,11 +424,18 @@ func (o MCPProxyOpts) responseTarget() string {
 // responseScanOptions builds the per-server suppression context passed into
 // the stdio response scan (ScanResponseOpts).
 func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
+	auditContext := mustMCPAuditContext(o.AuditLogger, "MCP", o.responseTarget())
 	return ResponseScanOptions{
 		Target:         o.responseTarget(),
 		Suppress:       o.responseSuppress(),
 		ActionOverride: o.responseActionOverride(),
 		TrustClass:     o.responseTrustClass(),
+		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+			if o.AuditLogger != nil {
+				o.AuditLogger.LogDLPDropped(auditContext, match.PatternName, match.Severity, "mcp_stdio", reason)
+			}
+			o.Metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_stdio", reason)
+		},
 	}
 }
 

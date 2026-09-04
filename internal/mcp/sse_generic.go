@@ -70,6 +70,9 @@ type GenericSSEScanOptions struct {
 	// OnFinding is called for warn-mode findings that are forwarded rather
 	// than returned. It must be safe to call inline from the stream loop.
 	OnFinding func(error)
+	// OnDroppedDLP receives DLP matches removed by a scoped suppression. It is
+	// observational only and must not alter stream control flow.
+	OnDroppedDLP func(scanner.TextDLPMatch, string)
 }
 
 // ScanGenericSSEStream handles non-A2A text/event-stream responses with
@@ -214,14 +217,16 @@ func ScanGenericSSEStreamWithOptions(
 				}
 			}
 
-			dlpResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
+			dlpResult, droppedDLP := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
+			recordDroppedSSEDLP(opts, droppedDLP)
 			if dlpResult.Clean {
 				// Keep scanning the joined data payload too. The canonical
 				// wire-shaped text preserves per-line data: prefixes for
 				// metadata visibility, while the joined payload catches
 				// split-secret patterns that are easier to recognize before
 				// those prefixes are reintroduced.
-				dlpResult = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
+				dlpResult, droppedDLP = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
+				recordDroppedSSEDLP(opts, droppedDLP)
 			}
 			if !dlpResult.Clean {
 				findingErr := fmt.Errorf("%w: dlp: %s",
@@ -258,7 +263,8 @@ func ScanGenericSSEStreamWithOptions(
 			resetDLPTail := false
 			if !skipTailDLP && tail != "" {
 				combined := tail + string(event)
-				tailDLPResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+				tailDLPResult, droppedDLP := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+				recordDroppedSSEDLP(opts, droppedDLP)
 				if !tailDLPResult.Clean {
 					findingErr := fmt.Errorf("%w: cross-event dlp: %s",
 						ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
@@ -348,19 +354,31 @@ func passthroughSSE(ctx context.Context, body io.Reader, w io.Writer, flusher ht
 }
 
 // keepUnsuppressedDLP removes suppressed DLP matches and recomputes Clean.
-func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []config.SuppressEntry) scanner.TextDLPResult {
+func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []config.SuppressEntry) (scanner.TextDLPResult, []scanner.TextDLPMatch) {
 	if res.Clean || len(suppress) == 0 {
-		return res
+		return res, nil
 	}
 	var kept []scanner.TextDLPMatch
+	var dropped []scanner.TextDLPMatch
 	for _, m := range res.Matches {
 		if config.IsCoreDLPPatternName(m.PatternName) || !config.IsSuppressed(m.PatternName, target, suppress) {
 			kept = append(kept, m)
+		} else {
+			dropped = append(dropped, m)
 		}
 	}
 	res.Matches = kept
 	res.Clean = len(kept) == 0
-	return res
+	return res, dropped
+}
+
+func recordDroppedSSEDLP(opts GenericSSEScanOptions, matches []scanner.TextDLPMatch) {
+	if opts.OnDroppedDLP == nil {
+		return
+	}
+	for _, match := range matches {
+		opts.OnDroppedDLP(match, "suppressed")
+	}
 }
 
 func sseInjectionNames(matches []scanner.ResponseMatch) string {

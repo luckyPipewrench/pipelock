@@ -57,6 +57,7 @@ type Metrics struct {
 	bodyRedactions     *prometheus.CounterVec
 	headerDLPHits      *prometheus.CounterVec
 	dlpWarnMatches     *prometheus.CounterVec
+	dlpDroppedMatches  *prometheus.CounterVec
 	AddressFindings    *prometheus.CounterVec
 	FileSentryFindings *prometheus.CounterVec
 

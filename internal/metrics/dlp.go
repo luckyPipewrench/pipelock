@@ -44,6 +44,12 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 		Help:      "Total warn-mode DLP matches by pattern and transport.",
 	}, []string{"pattern", "transport"})
 
+	m.dlpDroppedMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "dlp_dropped_matches_total",
+		Help:      "Total deliberately non-enforced DLP matches by pattern, surface, and reason.",
+	}, []string{"pattern", "surface", "reason"})
+
 	m.AddressFindings = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "address_findings_total",
@@ -57,7 +63,7 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 	}, []string{"pattern", "severity", "agent"})
 
 	reg.MustRegister(
-		m.bodyDLPHits, m.bodyEntropyHits, m.bodyInjectionHits, m.bodyRedactions, m.headerDLPHits, m.dlpWarnMatches,
+		m.bodyDLPHits, m.bodyEntropyHits, m.bodyInjectionHits, m.bodyRedactions, m.headerDLPHits, m.dlpWarnMatches, m.dlpDroppedMatches,
 		m.AddressFindings, m.FileSentryFindings,
 	)
 }
@@ -96,6 +102,15 @@ func (m *Metrics) RecordDLPWarnMatch(pattern, transport string) {
 		return
 	}
 	m.dlpWarnMatches.WithLabelValues(pattern, transport).Inc()
+}
+
+// RecordDLPDroppedMatch records a deliberately non-enforced DLP match. It is
+// nil-safe because observability must not affect the scanning verdict.
+func (m *Metrics) RecordDLPDroppedMatch(pattern, surface, reason string) {
+	if m == nil {
+		return
+	}
+	m.dlpDroppedMatches.WithLabelValues(pattern, surface, reason).Inc()
 }
 
 // RecordAddressFinding increments the address findings counter.

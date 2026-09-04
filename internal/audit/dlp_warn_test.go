@@ -74,6 +74,27 @@ func TestLogDLPWarn_EventTypeConstant(t *testing.T) {
 	}
 }
 
+func TestLogDLPDropped_EmitsInformationalReason(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("failed to create logger: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	ctx, err := NewHTTPLogContext("GET", "https://example.test/path", "192.0.2.1", "req-dropped", "")
+	if err != nil {
+		t.Fatalf("NewHTTPLogContext: %v", err)
+	}
+	logger.LogDLPDropped(ctx, "test-pattern", "informational", "fetch", "suppressed")
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &entry); err != nil {
+		t.Fatalf("invalid audit event: %v", err)
+	}
+	if entry["reason"] != "suppressed" || entry["transport"] != "fetch" || entry["pattern"] != "test-pattern" {
+		t.Fatalf("dropped audit fields = %#v", entry)
+	}
+}
+
 func TestLogDLPWarn_EmitterReceivesEvent(t *testing.T) {
 	var buf bytes.Buffer
 	logger, err := New("json", "custom", "", true, true)

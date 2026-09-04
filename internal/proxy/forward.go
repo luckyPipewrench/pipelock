@@ -1372,6 +1372,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Action:           cfg.RequestBodyScanning.Action,
 			DisablePatterns:  cfg.RequestBodyScanning.DisablePatterns,
 			PatternActions:   cfg.RequestBodyScanning.PatternActions,
+			OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+				if p.logger != nil {
+					p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "body", reason)
+				}
+				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
 		applySigV4CredentialRouteConfig(&bodyReq, cfg)
@@ -2185,6 +2191,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					responsePromptHit = true
 					hasFinding = true
 					p.logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
+				},
+				OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+					if p.logger != nil {
+						p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "mcp_sse", reason)
+					}
+					p.metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_sse", reason)
 				},
 			},
 		}

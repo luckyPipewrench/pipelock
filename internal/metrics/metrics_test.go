@@ -2110,6 +2110,21 @@ func TestRecordDLPWarnMatch_NilSafe(t *testing.T) {
 	m.RecordDLPWarnMatch("warn-url", "fetch") // must not panic
 }
 
+func TestRecordDLPDroppedMatch(t *testing.T) {
+	m := New()
+	m.RecordDLPDroppedMatch("test-pattern", "fetch", "suppressed")
+
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `pipelock_dlp_dropped_matches_total{pattern="test-pattern",reason="suppressed",surface="fetch"} 1`) {
+		t.Fatalf("dropped-match metric was not exported: %s", body)
+	}
+}
+
+func TestRecordDLPDroppedMatch_NilSafe(t *testing.T) {
+	var m *Metrics
+	m.RecordDLPDroppedMatch("test-pattern", "fetch", "suppressed")
+}
+
 func scrapeMetrics(t *testing.T, m *Metrics) string {
 	t.Helper()
 	handler := m.PrometheusHandler()

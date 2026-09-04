@@ -1308,6 +1308,12 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		Action:           cfg.RequestBodyScanning.Action,
 		DisablePatterns:  cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:   cfg.RequestBodyScanning.PatternActions,
+		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+			if rp.logger != nil {
+				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), Agent: ""}), match.PatternName, match.Severity, "body", reason)
+			}
+			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+		},
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
@@ -2022,6 +2028,12 @@ responseScanning:
 				ResponseScanExempt: revRespExempt,
 				OnFinding: func(err error) {
 					rp.logger.LogResponseScan(actx, config.ActionWarn, 0, []string{sseLayer + ": " + err.Error()}, nil)
+				},
+				OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+					if rp.logger != nil {
+						rp.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "mcp_sse", reason)
+					}
+					rp.metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_sse", reason)
 				},
 			},
 		}

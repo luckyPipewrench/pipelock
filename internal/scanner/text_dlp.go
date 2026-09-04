@@ -174,13 +174,21 @@ var strictAWSAccessIDRe = regexp.MustCompile(config.AWSAccessIDRegex)
 // returns all evidence; this helper owns the narrower enforcement decision so
 // callers do not need local one-off exceptions.
 func EnforceableInboundTextDLPMatches(text string, matches []TextDLPMatch) []TextDLPMatch {
+	enforceable, _ := PartitionInboundTextDLPMatches(text, matches)
+	return enforceable
+}
+
+// PartitionInboundTextDLPMatches separates enforceable inbound DLP matches
+// from the narrowly-defined low-confidence AWS Access ID false-positive class.
+// Both slices retain pattern metadata and coordinates but never matched bytes.
+func PartitionInboundTextDLPMatches(text string, matches []TextDLPMatch) (enforceable, lowConfidence []TextDLPMatch) {
 	if len(matches) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var awsCtx inboundAWSAccessIDContext
 	haveAWSCtx := false
-	enforceable := make([]TextDLPMatch, 0, len(matches))
+	enforceable = make([]TextDLPMatch, 0, len(matches))
 	for _, match := range matches {
 		if isInboundAWSAccessIDWhitespaceMatch(match) {
 			if !haveAWSCtx {
@@ -188,12 +196,13 @@ func EnforceableInboundTextDLPMatches(text string, matches []TextDLPMatch) []Tex
 				haveAWSCtx = true
 			}
 			if isLowConfidenceInboundAWSAccessID(awsCtx, match) {
+				lowConfidence = append(lowConfidence, match)
 				continue
 			}
 		}
 		enforceable = append(enforceable, match)
 	}
-	return enforceable
+	return enforceable, lowConfidence
 }
 
 // IsLowConfidenceInboundAWSAccessID reports whether match is an inbound-only

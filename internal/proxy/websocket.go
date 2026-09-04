@@ -449,7 +449,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
-	if blocked, hardBlock, action, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL); blocked {
+	if blocked, hardBlock, action, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL, actx); blocked {
 		captureHeaderDLP := func(effectiveAction, skipReason string) {
 			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 				Subsurface:        "dlp_ws_header",
@@ -1141,7 +1141,7 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 // dlpScanWSHeaders runs DLP scanning on all forwarded header values before the
 // upstream handshake. Headers are scanned regardless of destination (no
 // allowlist skip) because agents can exfiltrate secrets in any header value.
-func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, cfg *config.Config, targetURL string) (blocked bool, hardBlock bool, action string, reason string) {
+func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, cfg *config.Config, targetURL string, actx audit.LogContext) (blocked bool, hardBlock bool, action string, reason string) {
 	disabled := bodyDLPDisabledSet(cfg.RequestBodyScanning.DisablePatterns)
 	// Scan all headers that buildWSForwardHeaders may forward. This covers
 	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
@@ -1158,7 +1158,12 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		}
 		result := sc.ScanTextForDLP(ctx, val)
 		if !result.Clean {
-			matches := filterBodyDLPMatches(result.Matches, targetURL, cfg.Suppress, disabled)
+			matches := filterBodyDLPMatches(result.Matches, targetURL, cfg.Suppress, disabled, func(match scanner.TextDLPMatch, dropReason string) {
+				if p.logger != nil {
+					p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", dropReason)
+				}
+				p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", dropReason)
+			})
 			if len(matches) == 0 {
 				continue
 			}
@@ -1366,6 +1371,16 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 		Action:          r.cfg.RequestBodyScanning.Action,
 		DisablePatterns: r.cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:  r.cfg.RequestBodyScanning.PatternActions,
+		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
+			if r.proxy == nil {
+				return
+			}
+			if r.proxy.logger != nil {
+				actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+				r.proxy.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "body", reason)
+			}
+			r.proxy.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+		},
 	}
 	applyWebSocketContentEntropyConfig(&bodyReq, r.cfg)
 	applyBodyScanRedaction(&bodyReq, r.redaction)

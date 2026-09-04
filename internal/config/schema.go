@@ -1322,6 +1322,7 @@ type RequestBodyScanning struct {
 	ContentEntropyExclusions []string                          `yaml:"content_entropy_exclusions"`  // host patterns exempt from per-message content entropy only
 	ContentEntropyWarnRoutes []RequestBodyEntropyWarnRoute     `yaml:"content_entropy_warn_routes"` // exact HTTPS routes where entropy findings warn; all other scanners remain enforced
 	SigV4CredentialRoutes    []RequestBodySigV4CredentialRoute `yaml:"sigv4_credential_routes"`     // exact HTTPS body routes allowed to carry structurally valid presigned URLs
+	TrustedHosts             []string                          `yaml:"trusted_hosts"`               // destinations where request-body injection findings and fully redacted critical DLP follow the configured action instead of hard blocking; scanning still runs
 }
 
 // RequestBodyEntropyWarnRoute is a narrow, expiring operator exception for

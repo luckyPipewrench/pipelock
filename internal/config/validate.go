@@ -2507,6 +2507,11 @@ func (c *Config) validateRequestBodyScanning() error {
 	if err := validateRequestBodySigV4CredentialRoutes(&c.RequestBodyScanning); err != nil {
 		return err
 	}
+	// Validated whether or not request-body scanning is enabled, so a dormant
+	// bad entry cannot activate silently when scanning is switched on.
+	if err := ValidateTrustedDomains(c.RequestBodyScanning.TrustedHosts, "request_body_scanning.trusted_hosts"); err != nil {
+		return err
+	}
 	knownPatterns := c.effectiveBodyDLPPatternNames()
 	disabledPatterns := make(map[string]struct{}, len(c.RequestBodyScanning.DisablePatterns))
 	for i, pattern := range c.RequestBodyScanning.DisablePatterns {

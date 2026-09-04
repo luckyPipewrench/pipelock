@@ -2266,6 +2266,7 @@ func TestInterceptTunnel_BodyPromptInjectionProviderExemptWarnMode(t *testing.T)
 		t.Fatalf("split upstream addr: %v", err)
 	}
 	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, host)
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, host)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 

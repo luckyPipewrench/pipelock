@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -111,6 +112,28 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
             self.assertRegex(result.stdout, r"(?m)^PASS: 0$")
             self.assertRegex(result.stdout, r"(?m)^FAIL: 0$")
             self.assertRegex(result.stdout, r"(?m)^SKIP: 1$")
+
+    def test_missing_npm_is_an_explicit_runtime_skip(self):
+        with tempfile.TemporaryDirectory() as bindir:
+            npx = Path(bindir) / "npx"
+            npx.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            npx.chmod(0o700)
+            env = os.environ.copy()
+            env["PATH"] = bindir
+            env["PIPELOCK_E2E_LIVE_UPSTREAM"] = "1"
+            for path in sorted((ROOT / "scripts" / "e2e").glob("*-mcp-runtime.py")):
+                result = subprocess.run(
+                    [sys.executable, str(path)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(result.returncode, 0, (path, result.stderr))
+                self.assertIn("SKIP: runtime MCP E2E (npm is not available)", result.stdout)
+                self.assertRegex(result.stdout, r"(?m)^PASS: 0$")
+                self.assertRegex(result.stdout, r"(?m)^FAIL: 0$")
+                self.assertRegex(result.stdout, r"(?m)^SKIP: 1$")
 
     def test_runtime_warmups_fetch_without_starting_the_mcp_server(self):
         for path in sorted((ROOT / "scripts" / "e2e").glob("*-mcp-runtime.py")):

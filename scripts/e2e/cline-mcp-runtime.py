@@ -269,6 +269,13 @@ def main():
         print("FAIL: 0")
         print("SKIP: 1")
         return
+    if shutil.which("npm") is None:
+        print("SKIP: runtime MCP E2E (npm is not available)")
+        print("\n=== Summary ===")
+        print("PASS: 0")
+        print("FAIL: 0")
+        print("SKIP: 1")
+        return
 
     workdir = Path(tempfile.mkdtemp(prefix="pipelock-cline-runtime-"))
     print(f"Workdir: {workdir}")

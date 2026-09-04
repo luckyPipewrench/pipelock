@@ -177,13 +177,14 @@ Examples:
 			}
 
 			launchCfg := sandbox.StandaloneLaunchConfig{
-				Ctx:          ctx,
-				Command:      command,
-				Workspace:    workspace,
-				Strict:       useStrict,
-				BestEffort:   useBestEffort,
-				ExtraEnv:     extraEnv,
-				ProxyHandler: proxyHandler,
+				Ctx:                      ctx,
+				Command:                  command,
+				Workspace:                workspace,
+				Strict:                   useStrict,
+				BestEffort:               useBestEffort,
+				ExtraEnv:                 extraEnv,
+				ProxyHandler:             proxyHandler,
+				BridgeIdleTimeoutSeconds: cfg.ForwardProxy.IdleTimeoutSeconds,
 			}
 
 			// Merge custom filesystem policy from config into defaults.

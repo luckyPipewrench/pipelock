@@ -91,6 +91,7 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 		return nil, err
 	}
 	opts.LaunchConfig.BridgeSocketPath = bridge.SocketPath()
+	opts.LaunchConfig.BridgeIdleTimeoutSeconds = opts.Config.ForwardProxy.IdleTimeoutSeconds
 	_, _ = fmt.Fprintf(opts.Stderr,
 		"pipelock: MCP sandbox egress bridge enabled; forward_proxy forced on for sandboxed MCP egress (child loopback -> parent scanner)\n")
 	return bridge.Close, nil

@@ -31,9 +31,10 @@ type LaunchConfig struct {
 	// no effect on macOS (sandbox-exec doesn't use namespaces).
 	BestEffort bool
 
-	ExtraEnv         []string
-	BridgeSocketPath string // Linux-only; ignored by sandbox-exec.
-	GateTargetStart  bool   // Linux-only; no UID/GID mappings on macOS.
+	ExtraEnv                 []string
+	BridgeSocketPath         string // Linux-only; ignored by sandbox-exec.
+	BridgeIdleTimeoutSeconds int    // Linux-only; ignored by sandbox-exec.
+	GateTargetStart          bool   // Linux-only; no UID/GID mappings on macOS.
 	Stdin            io.Reader
 	Stdout           io.Writer
 	Stderr           io.Writer

@@ -510,6 +510,299 @@ func TestBridgeProxy_FailAfterCloseIsDropped(t *testing.T) {
 	}
 }
 
+func TestBridgeProxy_IdleTimeoutClosesStalledConnection(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := ProxySocketPath(dir)
+
+	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = parentLn.Close() }()
+
+	parentAccepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := parentLn.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		close(parentAccepted)
+		// Accept the connection but never write to it or close it: the
+		// connection is idle (no EOF, no bytes), not merely unread. Bound
+		// the block so this goroutine exits on its own well after the idle
+		// timeout fires, rather than leaking for the rest of the test binary.
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 1)
+		_, _ = conn.Read(buf)
+	}()
+
+	bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+	bp.SetIdleTimeout(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = bp.Serve(ctx)
+	}()
+	defer func() {
+		cancel()
+		bp.Close()
+		<-serveDone
+	}()
+
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", bp.Addr())
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case <-parentAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never connected to parent socket")
+	}
+
+	// Neither side ever writes: the watchdog must force-close the connection
+	// once it has sat idle longer than SetIdleTimeout, unblocking this read.
+	readDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, readErr := conn.Read(buf)
+		readDone <- readErr
+	}()
+
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("expected the idle connection to be force-closed, got a successful read")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle bridge connection was not closed within the idle timeout")
+	}
+}
+
+func TestBridgeProxy_IdleTimeoutDisabledLeavesIdleConnectionOpen(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := ProxySocketPath(dir)
+
+	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = parentLn.Close() }()
+
+	parentAccepted := make(chan struct{})
+	releaseParent := make(chan struct{})
+	go func() {
+		conn, acceptErr := parentLn.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		close(parentAccepted)
+		<-releaseParent
+	}()
+
+	bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+	bp.SetIdleTimeout(0) // disabled
+
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = bp.Serve(ctx)
+	}()
+	defer func() {
+		close(releaseParent)
+		cancel()
+		bp.Close()
+		<-serveDone
+	}()
+
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", bp.Addr())
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case <-parentAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never connected to parent socket")
+	}
+
+	// With the watchdog disabled, an idle connection must survive well past
+	// what would otherwise be a short idle timeout.
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	buf := make([]byte, 1)
+	_, err = conn.Read(buf)
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("expected the idle connection to survive (read deadline exceeded), got: %v", err)
+	}
+}
+
+func TestBridgeProxy_ContextCancelClosesActiveConnections(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := ProxySocketPath(dir)
+
+	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = parentLn.Close() }()
+
+	parentAccepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := parentLn.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		close(parentAccepted)
+		// This goroutine's own exit isn't part of the property under test
+		// (which asserts closure from the client/TCP side below) and
+		// whether a Unix-socket peer promptly observes the bridge's Close
+		// as EOF is not a portable timing guarantee to synchronize on, so
+		// bound the block instead of joining on it.
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 1)
+		_, _ = conn.Read(buf)
+	}()
+
+	bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewBridgeProxy: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = bp.Serve(ctx)
+	}()
+	defer func() {
+		bp.Close()
+		_ = parentLn.Close()
+		<-serveDone
+	}()
+
+	// Dial with a context independent of ctx: cancelling ctx below must not
+	// tear down this client connection directly - only the bridge's own
+	// teardown, propagated through the relay's stop channel, may do that.
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", bp.Addr())
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case <-parentAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never connected to parent socket")
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, readErr := conn.Read(buf)
+		readDone <- readErr
+	}()
+
+	// Cancelling ctx - without calling Close - must still tear down this
+	// already-open bridged connection, not just stop the listener from
+	// accepting new ones.
+	cancel()
+
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("expected ctx cancellation to close the active bridge connection")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ctx cancellation did not close the active bridge connection")
+	}
+
+	select {
+	case <-bp.watcherDone:
+	case <-time.After(time.Second):
+		t.Fatal("context watcher did not finish after cancellation")
+	}
+}
+
+func TestBridgeProxy_ContextCancelAndCloseAreRaceSafe(t *testing.T) {
+	// ctx cancellation runs the Serve watcher goroutine's teardown path while
+	// Close runs from the caller, potentially concurrently with an active
+	// bridged connection's watchdog also observing bp.done. None of the three
+	// may panic, double-close, or deadlock. Run under -race to catch data
+	// races on the shared state.
+	for range 50 {
+		dir := shortTempDir(t)
+		socketPath := ProxySocketPath(dir)
+
+		parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+		if err != nil {
+			t.Fatalf("listen unix: %v", err)
+		}
+
+		// Service connections without ever blocking on a read: this test's
+		// property is bridge-side race safety (cancel/Close/watchdog racing
+		// on bp's own state), not peer-observed EOF timing over a Unix
+		// socket, which is not a portable signal to synchronize a test on.
+		go func() {
+			for {
+				conn, acceptErr := parentLn.Accept()
+				if acceptErr != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+
+		bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("NewBridgeProxy: %v", err)
+		}
+		bp.SetIdleTimeout(time.Millisecond)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		serveDone := make(chan struct{})
+		go func() {
+			defer close(serveDone)
+			_ = bp.Serve(ctx)
+		}()
+
+		conn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", bp.Addr())
+		if err != nil {
+			t.Fatalf("dial bridge: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); cancel() }()
+		go func() { defer wg.Done(); bp.Close() }()
+		wg.Wait()
+
+		select {
+		case <-serveDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Serve did not return under concurrent ctx cancel and Close")
+		}
+
+		_ = conn.Close()
+		_ = parentLn.Close()
+	}
+}
+
 func TestBridgeProxy_CloseAndFailAreRaceSafe(t *testing.T) {
 	// fail() runs from a connection handler while Close() runs from the caller.
 	// Neither may panic, double-close, or deadlock, and Serve must always
@@ -533,5 +826,33 @@ func TestBridgeProxy_CloseAndFailAreRaceSafe(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("Serve did not return under concurrent Close and fail")
 		}
+	}
+}
+
+func TestBridgeIdleTimeoutFromEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantOK  bool
+		wantDur time.Duration
+	}{
+		{name: "unset", raw: "", wantOK: false},
+		{name: "non-numeric", raw: "not-a-number", wantOK: false},
+		{name: "zero", raw: "0", wantOK: false},
+		{name: "negative", raw: "-5", wantOK: false},
+		{name: "positive", raw: "45", wantOK: true, wantDur: 45 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(sandboxBridgeIdleTimeoutEnv, tt.raw)
+
+			gotDur, gotOK := bridgeIdleTimeoutFromEnv()
+			if gotOK != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", gotOK, tt.wantOK)
+			}
+			if gotOK && gotDur != tt.wantDur {
+				t.Fatalf("duration = %v, want %v", gotDur, tt.wantDur)
+			}
+		})
 	}
 }

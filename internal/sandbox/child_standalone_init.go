@@ -223,6 +223,9 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %v\n", err)
 		exitSandboxProcess(1)
 	}
+	if idleTimeout, ok := bridgeIdleTimeoutFromEnv(); ok {
+		bridge.SetIdleTimeout(idleTimeout)
+	}
 
 	bridgeErr := make(chan error, 1)
 	go func() { bridgeErr <- bridge.Serve(ctx) }()
@@ -266,7 +269,7 @@ func RunStandaloneInit() {
 		"__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
 		standaloneCommandJSONEnv,
 		sandboxSocketEnv, "__PIPELOCK_SANDBOX_EXTRA_ENV",
-		"__PIPELOCK_SANDBOX_POLICY", noNetNSEnvKey,
+		"__PIPELOCK_SANDBOX_POLICY", noNetNSEnvKey, sandboxBridgeIdleTimeoutEnv,
 		developerEnvironmentControlEnv,
 		standaloneGuardDeclarationEnv, standaloneGuardProfileEnv, standaloneGuardPolicyHashEnv,
 		guardStatusControlEnv,

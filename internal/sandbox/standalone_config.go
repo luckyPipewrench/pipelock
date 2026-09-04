@@ -33,6 +33,10 @@ type StandaloneLaunchConfig struct {
 	RequireNetNS bool
 	// ExtraEnv contains additional KEY=VALUE pairs for the child.
 	ExtraEnv []string
+	// BridgeIdleTimeoutSeconds overrides the bridge proxy's idle timeout,
+	// normally sourced from cfg.ForwardProxy.IdleTimeoutSeconds. A value <= 0
+	// leaves BridgeProxy's own default in place.
+	BridgeIdleTimeoutSeconds int
 	// DeveloperEnvironment is transported over an anonymous pipe.
 	DeveloperEnvironment []string
 	// UseDeveloperEnvironment selects DeveloperEnvironment.

@@ -6,6 +6,8 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 )
 
 // standaloneInitEnv signals the child is in standalone sandbox-init mode
@@ -22,6 +24,28 @@ const (
 // sandboxSocketEnv carries the parent Unix socket path used by sandbox
 // bridge mode. The child-side loopback proxy forwards connections there.
 const sandboxSocketEnv = "__PIPELOCK_SANDBOX_SOCKET"
+
+// sandboxBridgeIdleTimeoutEnv carries the bridge proxy's idle-timeout
+// override in seconds, sourced from cfg.ForwardProxy.IdleTimeoutSeconds at
+// launch time so the child-side bridge matches the parent's configured
+// idle behavior instead of BridgeProxy's own hardcoded default.
+const sandboxBridgeIdleTimeoutEnv = "__PIPELOCK_SANDBOX_BRIDGE_IDLE_TIMEOUT_SECONDS"
+
+// bridgeIdleTimeoutFromEnv parses sandboxBridgeIdleTimeoutEnv into a positive
+// duration. It reports ok=false when the variable is unset, non-numeric, or
+// not strictly positive, so the caller leaves BridgeProxy's own default in
+// place rather than applying a zero or negative override.
+func bridgeIdleTimeoutFromEnv() (time.Duration, bool) {
+	raw := os.Getenv(sandboxBridgeIdleTimeoutEnv)
+	if raw == "" {
+		return 0, false
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
+}
 
 // IsStandaloneInitMode returns true if the current process is a re-exec'd
 // standalone sandbox child.

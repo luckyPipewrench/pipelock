@@ -53,6 +53,12 @@ type LaunchConfig struct {
 	// to this parent Unix socket path.
 	BridgeSocketPath string
 
+	// BridgeIdleTimeoutSeconds overrides the bridge proxy's idle timeout,
+	// normally sourced from cfg.ForwardProxy.IdleTimeoutSeconds. Ignored
+	// when BridgeSocketPath is empty. A value <= 0 leaves BridgeProxy's own
+	// default in place.
+	BridgeIdleTimeoutSeconds int
+
 	// GateTargetStart blocks sandbox-init before it starts or execs Command
 	// when this launch uses UID/GID mappings. The parent must start the
 	// returned PreparedSandboxCmd through StartWithParentHardening so the
@@ -266,6 +272,9 @@ func PrepareSandboxLaunch(cfg LaunchConfig) (*PreparedSandboxCmd, error) {
 	cmd.Env = append(cmd.Env, coverageEnv...)
 	if cfg.BridgeSocketPath != "" {
 		cmd.Env = append(cmd.Env, sandboxSocketEnv+"="+cfg.BridgeSocketPath)
+		if cfg.BridgeIdleTimeoutSeconds > 0 {
+			cmd.Env = append(cmd.Env, sandboxBridgeIdleTimeoutEnv+"="+strconv.Itoa(cfg.BridgeIdleTimeoutSeconds))
+		}
 	}
 	if cfg.Strict {
 		cmd.Env = append(cmd.Env, strictEnvKey+"=1")

@@ -441,6 +441,9 @@ func standaloneInitControlEnv(opts standaloneInitControlOptions) []string {
 		standaloneCommandJSONEnv + "=" + string(commandJSON),
 		sandboxSocketEnv + "=" + opts.SocketPath,
 	}
+	if cfg.BridgeIdleTimeoutSeconds > 0 {
+		env = append(env, sandboxBridgeIdleTimeoutEnv+"="+strconv.Itoa(cfg.BridgeIdleTimeoutSeconds))
+	}
 	env = append(env, subprocessCoverageControlEnv(opts.CoverageEnv)...)
 	if cfg.Strict {
 		env = append(env, strictEnvKey+"=1")

@@ -24,6 +24,8 @@ type LaunchConfig struct {
 	ExtraEnv   []string
 	// BridgeSocketPath is Linux-only.
 	BridgeSocketPath string
+	// BridgeIdleTimeoutSeconds is Linux-only.
+	BridgeIdleTimeoutSeconds int
 	// GateTargetStart is Linux-only.
 	GateTargetStart bool
 	Stdin           io.Reader

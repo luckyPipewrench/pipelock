@@ -219,6 +219,9 @@ func runInitWithBridge(command, env []string, workspace, socketPath string, sigC
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %v\n", err)
 		exitSandboxProcess(1)
 	}
+	if idleTimeout, ok := bridgeIdleTimeoutFromEnv(); ok {
+		bridge.SetIdleTimeout(idleTimeout)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -234,7 +237,7 @@ func runInitWithBridge(command, env []string, workspace, socketPath string, sigC
 	for _, key := range []string{
 		initEnvKey, "__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
 		"__PIPELOCK_SANDBOX_EXTRA_ENV", "__PIPELOCK_SANDBOX_POLICY",
-		sandboxSocketEnv, noNetNSEnvKey,
+		sandboxSocketEnv, noNetNSEnvKey, sandboxBridgeIdleTimeoutEnv,
 	} {
 		env = removeEnvKey(env, key)
 	}

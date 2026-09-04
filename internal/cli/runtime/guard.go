@@ -196,6 +196,7 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		GuardDeclaration:        &declaration,
 		GuardProfile:            opts.Profile,
 		GuardPolicyHash:         configPolicyHash,
+		BridgeIdleTimeoutSeconds: runtimeCfg.ForwardProxy.IdleTimeoutSeconds,
 		GuardAppliedPreExec: func(tempDir string, encoded []byte) error {
 			var proof guardfs.ExecutionProof
 			if err := json.Unmarshal(encoded, &proof); err != nil {

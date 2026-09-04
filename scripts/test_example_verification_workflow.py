@@ -4,6 +4,7 @@
 
 """Structural tests for the advisory example and installation verification."""
 
+import ast
 import os
 import re
 import subprocess
@@ -114,11 +115,25 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
     def test_runtime_warmups_fetch_without_starting_the_mcp_server(self):
         for path in sorted((ROOT / "scripts" / "e2e").glob("*-mcp-runtime.py")):
             body = path.read_text(encoding="utf-8")
-            self.assertIn('"npm", "exec", "--yes"', body, path)
-            self.assertIn('"--", "node", "--version"', body, path)
-            self.assertNotIn('EVERYTHING_PACKAGE, "--version"', body, path)
-            self.assertIn("timeout=300", body, path)
-            self.assertIn("check=True", body, path)
+            tree = ast.parse(body)
+            warm_node = next(
+                node
+                for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "warm_upstream_package"
+            )
+            warm_body = ast.get_source_segment(body, warm_node)
+            self.assertIsNotNone(warm_body, path)
+            self.assertIn('"npm", "exec", "--yes"', warm_body, path)
+            self.assertIn('f"--package={EVERYTHING_PACKAGE}"', warm_body, path)
+            self.assertIn('"--", "node", "--version"', warm_body, path)
+            self.assertNotIn('EVERYTHING_PACKAGE, "--version"', warm_body, path)
+            self.assertIn("timeout=300", warm_body, path)
+            self.assertIn("check=True", warm_body, path)
+            self.assertLess(
+                body.index("warm_upstream_package(runtime_env)"),
+                body.index("proc = subprocess.Popen("),
+                path,
+            )
 
     def test_quickstart_runs_the_binary_built_from_this_tree(self):
         self.assertIn('local go_binary="${PIPELOCK_VERIFY_GO:-go}"', self.runner)

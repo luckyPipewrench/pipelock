@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -411,6 +413,9 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, PerIPDailyBudget: -1}); err == nil {
 		t.Fatal("negative daily budget should error")
 	}
+	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, RequireDelegatedSigning: true}); err == nil {
+		t.Fatal("required delegated signing without a root should error")
+	}
 	if _, err := NewServer(ServerConfig{
 		Leases:     lm,
 		Gate:       gate,
@@ -443,6 +448,7 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	realDelegationVerifier(t, root)
 	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, OrchestratorRoot: root}); err == nil {
 		t.Fatal("OrchestratorRoot without ImageDigest should error")
 	}
@@ -454,6 +460,11 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("valid delegated root config rejected: %v", err)
+	}
+	originalRootByte := delegated.cfg.OrchestratorRoot[0]
+	root[0] ^= 0xff
+	if delegated.cfg.OrchestratorRoot[0] != originalRootByte {
+		t.Fatal("Server retained the caller's mutable orchestrator root")
 	}
 	delegated.Close()
 
@@ -476,6 +487,89 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	}
 	srv.Close()
 	srv.Close()
+}
+
+func TestCheckDelegatedSigningFailsClosed(t *testing.T) {
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("ab", 32)
+
+	previous := verifySessionDelegation
+	t.Cleanup(func() { verifySessionDelegation = previous })
+	called := false
+	verifySessionDelegation = func(sessionKey ed25519.PrivateKey, delegation playground.OrchestratorDelegation, nonce string) error {
+		called = true
+		if len(sessionKey) != ed25519.PrivateKeySize || delegation.ImageDigest != digest || nonce == "" {
+			t.Fatal("self-check did not pass the minted delegation to the visitor verification path")
+		}
+		return errors.New("published root mismatch")
+	}
+
+	err = checkDelegatedSigning(root, digest, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "published root mismatch") {
+		t.Fatalf("self-check error = %v, want published-root refusal", err)
+	}
+	if !called {
+		t.Fatal("self-check skipped the visitor verification path")
+	}
+
+	err = checkDelegatedSigning(root, digest, time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "self-check mint") {
+		t.Fatalf("self-check mint error = %v", err)
+	}
+}
+
+func TestNewServerRefusesFailedSigningSelfCheck(t *testing.T) {
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := verifySessionDelegation
+	verifySessionDelegation = func(_ ed25519.PrivateKey, _ playground.OrchestratorDelegation, _ string) error {
+		return errors.New("published root mismatch")
+	}
+	t.Cleanup(func() { verifySessionDelegation = previous })
+
+	_, err = NewServer(ServerConfig{
+		Leases:           testLeaseManager(t, &serverFakeProvider{}),
+		Gate:             testBrokerGate(t),
+		OrchestratorRoot: root,
+		ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
+	})
+	if err == nil || !strings.Contains(err.Error(), "published root mismatch") {
+		t.Fatalf("NewServer signing self-check error = %v", err)
+	}
+}
+
+// The two self-check tests above stub verifySessionDelegation, so they prove the
+// plumbing rather than the refusal itself. This one runs the REAL shipped
+// verification path with no seam. A freshly generated root is by construction
+// not the published identity, which is exactly the production state that served
+// visitors all day on 2026-09-03: the broker held a root the visitor VMs did not
+// trust, every session ran to completion, and only the final seal failed.
+func TestNewServer_RealVerifierRefusesUnpublishedRoot(t *testing.T) {
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if playground.OrchestratorKeyMatchesPublished(root) {
+		t.Fatal("a generated root must not be the published identity; this test would prove nothing")
+	}
+
+	_, err = NewServer(ServerConfig{
+		Leases:           testLeaseManager(t, &serverFakeProvider{}),
+		Gate:             testBrokerGate(t),
+		OrchestratorRoot: root,
+		ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
+	})
+	if err == nil {
+		t.Fatal("a root that is not the published identity must refuse startup through the real verifier")
+	}
+	if !strings.Contains(err.Error(), "signing self-check") {
+		t.Fatalf("error = %v, want the startup self-check refusal", err)
+	}
 }
 
 func TestServerHealthCORSKillAndResume(t *testing.T) {
@@ -560,6 +654,36 @@ func TestServerHealthCORSKillAndResume(t *testing.T) {
 	if srv.Killed() {
 		t.Fatal("Resume did not clear killed state")
 	}
+}
+
+func TestServerHealthReportsVerifiedSigningState(t *testing.T) {
+	provider := &serverFakeProvider{}
+
+	t.Run("development_without_root", func(t *testing.T) {
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+		health := getBrokerHealth(t, ts)
+		if health["signing_ready"] != false {
+			t.Fatalf("signing_ready = %v, want false", health["signing_ready"])
+		}
+		if health["published_signing_root"] != playground.PublishedOrchestratorPubKeyHex {
+			t.Fatalf("published_signing_root = %v", health["published_signing_root"])
+		}
+	})
+
+	t.Run("verified_root", func(t *testing.T) {
+		_, root, err := signing.GenerateKeyPair()
+		if err != nil {
+			t.Fatal(err)
+		}
+		realDelegationVerifier(t, root)
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{
+			OrchestratorRoot: root,
+			ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
+		})
+		if health := getBrokerHealth(t, ts); health["signing_ready"] != true {
+			t.Fatalf("signing_ready = %v, want true", health["signing_ready"])
+		}
+	})
 }
 
 func TestServerHealthProviderFieldsByState(t *testing.T) {
@@ -2298,4 +2422,32 @@ func TestServer_BundleOversizedDoesNotCache(t *testing.T) {
 	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
 		t.Fatalf("active leases after oversize = %d, want 1 (VM not released on fetch error)", got)
 	}
+}
+
+// realDelegationVerifier installs a delegation hook that actually verifies,
+// rather than returning nil. A success-path test that stubs verification away
+// asserts only that the startup self-check RAN; it would stay green through a
+// signature or session-key binding regression, which is the exact class of
+// vacuous coverage this package exists to prevent.
+func realDelegationVerifier(t *testing.T, root ed25519.PrivateKey) {
+	t.Helper()
+	previous := verifySessionDelegation
+	verifySessionDelegation = func(sessionKey ed25519.PrivateKey, delegation playground.OrchestratorDelegation, nonce string) error {
+		pub, ok := root.Public().(ed25519.PublicKey)
+		if !ok {
+			return errors.New("test root has no ed25519 public half")
+		}
+		if err := playground.VerifyOrchestratorDelegation(pub, delegation, playground.DelegationExpectations{RunNonce: nonce}); err != nil {
+			return err
+		}
+		sessionPub, ok := sessionKey.Public().(ed25519.PublicKey)
+		if !ok {
+			return errors.New("session key has no ed25519 public half")
+		}
+		if hex.EncodeToString(sessionPub) != delegation.SessionPublicKey {
+			return errors.New("delegation does not authorize this session signing key")
+		}
+		return nil
+	}
+	t.Cleanup(func() { verifySessionDelegation = previous })
 }

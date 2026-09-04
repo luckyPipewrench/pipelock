@@ -836,7 +836,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		dlpTarget := *rp.upstream
 		dlpTarget.Path = joinReversePaths(rp.upstream.Path, r.URL.Path)
 		dlpTarget.RawPath = ""
-		headerResult := scanRequestHeadersForTarget(r.Context(), r.Header, cfg, sc, dlpTarget.String())
+		headerResult := scanRequestHeadersForTargetWithDropped(r.Context(), r.Header, cfg, sc, dlpTarget.String(), func(match scanner.TextDLPMatch, reason string) {
+			if rp.logger != nil {
+				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), Agent: ""}), match.PatternName, match.Severity, "header", reason)
+			}
+			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
+		})
 		if headerResult != nil {
 			hasFinding = true
 			action := headerResult.Action
@@ -2388,6 +2393,8 @@ responseScanning:
 	// Scan the response text for injection patterns.
 	result := sc.ScanResponseBodyWithSuppress(resp.Request.Context(), body, resp.Request.URL.String(), cfg.Suppress)
 	recordSuppressedResponseScanExempts(rp.metrics, result.SuppressedMatches, TransportReverse)
+	actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
+	recordDroppedResponseScanMatches(rp.metrics, rp.logger, actx, result.SuppressedMatches, TransportReverse)
 
 	// Capture observer: record reverse proxy response scan verdict for policy replay.
 	// Runs after suppression so the recorded action matches runtime.
@@ -2437,7 +2444,6 @@ responseScanning:
 	for _, m := range result.Matches {
 		patternNames = append(patternNames, m.PatternName)
 	}
-	actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 	rp.logger.LogResponseScan(actx, action, len(patternNames), patternNames, nil)
 
 	// block and ask: unconditional block regardless of enforce mode.

@@ -1268,7 +1268,12 @@ func newInterceptHandler(
 
 		// Request header DLP scanning.
 		if ic.Config.RequestBodyScanning.Enabled && ic.Config.RequestBodyScanning.ScanHeaders {
-			headerResult := scanRequestHeadersForTarget(r.Context(), r.Header, ic.Config, ic.Scanner, targetURL)
+			headerResult := scanRequestHeadersForTargetWithDropped(r.Context(), r.Header, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
+				if ic.Logger != nil {
+					ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", reason)
+				}
+				ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
+			})
 
 			// Capture observer: record intercept header DLP verdict for policy replay.
 			if ic.Proxy != nil {
@@ -2255,6 +2260,7 @@ func newInterceptHandler(
 		if ic.Scanner.ResponseScanningEnabled() && !interceptAuthenticatedArtifact {
 			scanResult := ic.Scanner.ScanResponseBodyWithSuppress(r.Context(), respBody, r.URL.String(), ic.Config.Suppress)
 			recordSuppressedResponseScanExempts(ic.Metrics, scanResult.SuppressedMatches, TransportConnect)
+			recordDroppedResponseScanMatches(ic.Metrics, ic.Logger, actx, scanResult.SuppressedMatches, TransportConnect)
 
 			// Capture observer: record intercept response scan verdict for policy replay.
 			// Runs after suppression so the recorded action matches runtime.

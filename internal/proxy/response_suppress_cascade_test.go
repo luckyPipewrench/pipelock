@@ -107,15 +107,16 @@ func TestFetchSuppressedResponseRecordsDroppedDLP(t *testing.T) {
 	logger.Close()
 	metricOut := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(metricOut, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
-	if !strings.Contains(metricOut.Body.String(), `pipelock_dlp_dropped_matches_total{pattern="New Instructions",reason="suppressed",surface="fetch"} 1`) {
-		t.Fatalf("dropped DLP metric missing: %s", metricOut.Body.String())
-	}
+	assertMetricSampleValue(t, m, `pipelock_response_suppressed_matches_total{pattern="New Instructions",reason="suppressed",surface="fetch"} `, 1)
 	auditData, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatalf("read audit: %v", err)
 	}
-	if !strings.Contains(string(auditData), `"pattern":"New Instructions"`) || !strings.Contains(string(auditData), `"transport":"fetch"`) || !strings.Contains(string(auditData), `"reason":"suppressed"`) {
-		t.Fatalf("dropped DLP audit record missing: %s", auditData)
+	if !strings.Contains(string(auditData), `"event":"response_scan_suppressed"`) || !strings.Contains(string(auditData), `"scanner":"response_scan"`) || !strings.Contains(string(auditData), `"pattern":"New Instructions"`) || !strings.Contains(string(auditData), `"surface":"fetch"`) || !strings.Contains(string(auditData), `"reason":"suppressed"`) {
+		t.Fatalf("suppressed response audit record missing: %s", auditData)
+	}
+	if strings.Contains(string(auditData), `"event":"dlp_warn"`) {
+		t.Fatalf("response suppression was misclassified as DLP: %s", auditData)
 	}
 }
 
@@ -222,11 +223,7 @@ func assertMetricSampleValue(t *testing.T, m *metrics.Metrics, wantPrefix string
 	body := rec.Body.String()
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, wantPrefix) {
-			fields := strings.Fields(line)
-			if len(fields) != 2 {
-				t.Fatalf("metric line %q has %d fields, want 2", line, len(fields))
-			}
-			got, err := strconv.ParseFloat(fields[1], 64)
+			got, err := strconv.ParseFloat(strings.TrimPrefix(line, wantPrefix), 64)
 			if err != nil {
 				t.Fatalf("parse metric sample from %q: %v", line, err)
 			}

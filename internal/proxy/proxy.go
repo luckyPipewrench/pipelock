@@ -5882,9 +5882,9 @@ func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.R
 func recordDroppedResponseScanMatches(m *metrics.Metrics, log *audit.Logger, actx audit.LogContext, matches []scanner.ResponseMatch, surface string) {
 	for _, match := range matches {
 		if log != nil {
-			log.LogDLPDropped(actx, match.PatternName, "informational", surface, "suppressed")
+			log.LogResponseScanSuppressed(actx, match.PatternName, surface, "suppressed")
 		}
-		m.RecordDLPDroppedMatch(match.PatternName, surface, "suppressed")
+		m.RecordResponseSuppressedMatch(match.PatternName, surface, "suppressed")
 	}
 }
 

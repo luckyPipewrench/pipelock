@@ -224,6 +224,7 @@ func eventTypeAction(eventType string) string {
 		EventSessionAnomaly,
 		EventMCPUnknownTool,
 		EventResponseScan,
+		EventResponseScanSuppressed,
 		EventError,
 		EventResponseScanExempt,
 		EventWSScan,

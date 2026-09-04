@@ -56,6 +56,11 @@ func (m *Metrics) registerShieldMetrics(reg *prometheus.Registry) {
 		Name:      "response_scan_exempt_total",
 		Help:      "Total response scan exemption skips by reason and transport.",
 	}, []string{"reason", "transport"})
+	m.responseSuppressedMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "response_suppressed_matches_total",
+		Help:      "Total response-scan findings deliberately suppressed by pattern and surface.",
+	}, []string{"pattern", "surface", "reason"})
 
 	// Labeled by transport only (not host): exempt_domains wildcards can match
 	// unbounded subdomains, so a host label would be a Prometheus cardinality
@@ -69,8 +74,17 @@ func (m *Metrics) registerShieldMetrics(reg *prometheus.Registry) {
 	reg.MustRegister(
 		m.shieldRewrites, m.shieldBytesStripped, m.shieldShimsInjected,
 		m.shieldSkipped, m.shieldOversizeScanHead, m.shieldLatency,
-		m.responseScanExemptTotal, m.responseScanExemptOverCapUnscannedTotal,
+		m.responseScanExemptTotal, m.responseSuppressedMatches, m.responseScanExemptOverCapUnscannedTotal,
 	)
+}
+
+// RecordResponseSuppressedMatch records a response-scan finding deliberately
+// suppressed by policy. It is nil-safe because observability cannot affect the verdict.
+func (m *Metrics) RecordResponseSuppressedMatch(pattern, surface, reason string) {
+	if m == nil {
+		return
+	}
+	m.responseSuppressedMatches.WithLabelValues(pattern, surface, reason).Inc()
 }
 
 // RecordShieldRewrite increments the shield rewrite counter.

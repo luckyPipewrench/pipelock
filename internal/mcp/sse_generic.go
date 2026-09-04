@@ -169,6 +169,7 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		if len(event) > 0 {
+			droppedDLP := newSSEDLPDropRecorder(opts)
 			// SSE is UTF-8 per WHATWG. Invalid UTF-8 in the data: payload
 			// would be silently mapped to U+FFFD by Go's string(...) view
 			// while the original bytes still get re-emitted to the client,
@@ -217,16 +218,16 @@ func ScanGenericSSEStreamWithOptions(
 				}
 			}
 
-			dlpResult, droppedDLP := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
-			recordDroppedSSEDLP(opts, droppedDLP)
+			dlpResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
+			droppedDLP.record(droppedMatches)
 			if dlpResult.Clean {
 				// Keep scanning the joined data payload too. The canonical
 				// wire-shaped text preserves per-line data: prefixes for
 				// metadata visibility, while the joined payload catches
 				// split-secret patterns that are easier to recognize before
 				// those prefixes are reintroduced.
-				dlpResult, droppedDLP = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
-				recordDroppedSSEDLP(opts, droppedDLP)
+				dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
+				droppedDLP.record(droppedMatches)
 			}
 			if !dlpResult.Clean {
 				findingErr := fmt.Errorf("%w: dlp: %s",
@@ -263,8 +264,10 @@ func ScanGenericSSEStreamWithOptions(
 			resetDLPTail := false
 			if !skipTailDLP && tail != "" {
 				combined := tail + string(event)
-				tailDLPResult, droppedDLP := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
-				recordDroppedSSEDLP(opts, droppedDLP)
+				_, priorTailDrops := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail), opts.Target, opts.Suppress)
+				droppedDLP.markSeen(priorTailDrops)
+				tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+				droppedDLP.record(droppedMatches)
 				if !tailDLPResult.Clean {
 					findingErr := fmt.Errorf("%w: cross-event dlp: %s",
 						ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
@@ -379,6 +382,42 @@ func recordDroppedSSEDLP(opts GenericSSEScanOptions, matches []scanner.TextDLPMa
 	for _, match := range matches {
 		opts.OnDroppedDLP(match, "suppressed")
 	}
+}
+
+type sseDLPDropRecorder struct {
+	opts GenericSSEScanOptions
+	seen map[string]struct{}
+}
+
+func newSSEDLPDropRecorder(opts GenericSSEScanOptions) *sseDLPDropRecorder {
+	return &sseDLPDropRecorder{opts: opts, seen: make(map[string]struct{})}
+}
+
+func (r *sseDLPDropRecorder) record(matches []scanner.TextDLPMatch) {
+	if r == nil || r.opts.OnDroppedDLP == nil {
+		return
+	}
+	for _, match := range matches {
+		key := sseDLPDropKey(match)
+		if _, ok := r.seen[key]; ok {
+			continue
+		}
+		r.seen[key] = struct{}{}
+		r.opts.OnDroppedDLP(match, "suppressed")
+	}
+}
+
+func (r *sseDLPDropRecorder) markSeen(matches []scanner.TextDLPMatch) {
+	if r == nil {
+		return
+	}
+	for _, match := range matches {
+		r.seen[sseDLPDropKey(match)] = struct{}{}
+	}
+}
+
+func sseDLPDropKey(match scanner.TextDLPMatch) string {
+	return match.PatternName + "\x00" + match.Bundle + "\x00" + match.BundleVersion
 }
 
 func sseInjectionNames(matches []scanner.ResponseMatch) string {

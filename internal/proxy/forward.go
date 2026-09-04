@@ -2693,6 +2693,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if sc.ResponseScanningEnabled() && !fwdAuthenticatedArtifact {
 			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
+			recordDroppedResponseScanMatches(p.metrics, p.logger, actx, scanResult.SuppressedMatches, TransportForward)
 			if !scanResult.Clean {
 				responsePromptHit = true
 			}

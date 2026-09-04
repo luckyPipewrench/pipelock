@@ -2447,6 +2447,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
 	r.observeUpstreamResponseTaint(!scanResult.Clean)
 	recordSuppressedResponseScanExempts(r.proxy.metrics, scanResult.SuppressedMatches, TransportWS)
+	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+	recordDroppedResponseScanMatches(r.proxy.metrics, r.proxy.logger, actx, scanResult.SuppressedMatches, TransportWS)
 	if scanResult.Clean {
 		return msg, false
 	}

@@ -110,41 +110,42 @@ const EventAdaptiveRecovery = "adaptive_recovery"
 // Event type constants used as keys in EventSeverity. Pulled into named
 // constants so the test suite and OTLP emitter can reference them by name.
 const (
-	EventStartup               = "startup"
-	EventShutdown              = "shutdown"
-	EventAgentListener         = "agent_listener"
-	EventAllowed               = "allowed"
-	EventKillSwitchDeny        = "kill_switch_deny"
-	EventBlocked               = "blocked"
-	EventDLPWarn               = "dlp_warn"
-	EventAddressProtection     = "address_protection"
-	EventBodyDLP               = "body_dlp"
-	EventBodyPromptInjection   = "body_prompt_injection"
-	EventHeaderDLP             = "header_dlp"
-	EventSNIMismatch           = "sni_mismatch"
-	EventTaintDecision         = "taint_decision"
-	EventAirlockEnter          = "airlock_enter"
-	EventAirlockDeny           = "airlock_deny"
-	EventSessionAnomaly        = "session_anomaly"
-	EventMCPUnknownTool        = "mcp_unknown_tool"
-	EventResponseScan          = "response_scan"
-	EventError                 = "error"
-	EventResponseScanExempt    = "response_scan_exempt"
-	EventTunnelClose           = "tunnel_close"
-	EventConfigReload          = "config_reload"
-	EventRedirect              = "redirect"
-	EventForwardHTTP           = "forward_http"
-	EventToolRedirect          = "tool_redirect"
-	EventWSBlocked             = "ws_blocked"
-	EventWSScan                = "ws_scan"
-	EventTunnelOpen            = "tunnel_open"
-	EventWSOpen                = "ws_open"
-	EventWSClose               = "ws_close"
-	EventAirlockDeescalate     = "airlock_deescalate"
-	EventSessionAdmin          = "session_admin"
-	EventShieldRewrite         = "shield_rewrite"
-	EventRuleBundleDegraded    = "rule_bundle_degraded"
-	EventAuthorityVerification = "authority_verification"
+	EventStartup                = "startup"
+	EventShutdown               = "shutdown"
+	EventAgentListener          = "agent_listener"
+	EventAllowed                = "allowed"
+	EventKillSwitchDeny         = "kill_switch_deny"
+	EventBlocked                = "blocked"
+	EventDLPWarn                = "dlp_warn"
+	EventAddressProtection      = "address_protection"
+	EventBodyDLP                = "body_dlp"
+	EventBodyPromptInjection    = "body_prompt_injection"
+	EventHeaderDLP              = "header_dlp"
+	EventSNIMismatch            = "sni_mismatch"
+	EventTaintDecision          = "taint_decision"
+	EventAirlockEnter           = "airlock_enter"
+	EventAirlockDeny            = "airlock_deny"
+	EventSessionAnomaly         = "session_anomaly"
+	EventMCPUnknownTool         = "mcp_unknown_tool"
+	EventResponseScan           = "response_scan"
+	EventResponseScanSuppressed = "response_scan_suppressed"
+	EventError                  = "error"
+	EventResponseScanExempt     = "response_scan_exempt"
+	EventTunnelClose            = "tunnel_close"
+	EventConfigReload           = "config_reload"
+	EventRedirect               = "redirect"
+	EventForwardHTTP            = "forward_http"
+	EventToolRedirect           = "tool_redirect"
+	EventWSBlocked              = "ws_blocked"
+	EventWSScan                 = "ws_scan"
+	EventTunnelOpen             = "tunnel_open"
+	EventWSOpen                 = "ws_open"
+	EventWSClose                = "ws_close"
+	EventAirlockDeescalate      = "airlock_deescalate"
+	EventSessionAdmin           = "session_admin"
+	EventShieldRewrite          = "shield_rewrite"
+	EventRuleBundleDegraded     = "rule_bundle_degraded"
+	EventAuthorityVerification  = "authority_verification"
 	// EventDashboardAuthFailed records a rejected dashboard authentication
 	// attempt without including the credential itself.
 	EventDashboardAuthFailed = "dashboard_auth_failed"
@@ -166,22 +167,23 @@ var EventSeverity = map[string]Severity{
 	// EscalationSeverity / UpgradeSeverity helpers.
 
 	// Warn: suspicious, worth investigating
-	EventBlocked:             SeverityWarn,
-	EventDLPWarn:             SeverityWarn,
-	EventAddressProtection:   SeverityWarn,
-	EventBodyDLP:             SeverityWarn,
-	EventBodyPromptInjection: SeverityWarn,
-	EventHeaderDLP:           SeverityWarn,
-	EventSNIMismatch:         SeverityWarn,
-	EventTaintDecision:       SeverityWarn,
-	EventAirlockEnter:        SeverityWarn,
-	EventAirlockDeny:         SeverityWarn,
-	EventAnomaly:             SeverityWarn,
-	EventSessionAnomaly:      SeverityWarn,
-	EventMCPUnknownTool:      SeverityWarn,
-	EventWSBlocked:           SeverityWarn,
-	EventResponseScan:        SeverityWarn,
-	EventWSScan:              SeverityWarn,
+	EventBlocked:                SeverityWarn,
+	EventDLPWarn:                SeverityWarn,
+	EventAddressProtection:      SeverityWarn,
+	EventBodyDLP:                SeverityWarn,
+	EventBodyPromptInjection:    SeverityWarn,
+	EventHeaderDLP:              SeverityWarn,
+	EventSNIMismatch:            SeverityWarn,
+	EventTaintDecision:          SeverityWarn,
+	EventAirlockEnter:           SeverityWarn,
+	EventAirlockDeny:            SeverityWarn,
+	EventAnomaly:                SeverityWarn,
+	EventSessionAnomaly:         SeverityWarn,
+	EventMCPUnknownTool:         SeverityWarn,
+	EventWSBlocked:              SeverityWarn,
+	EventResponseScan:           SeverityWarn,
+	EventResponseScanSuppressed: SeverityWarn,
+	EventWSScan:                 SeverityWarn,
 	// adaptive_escalation: default warn; overridden to Critical if escalating to block
 	EventAdaptiveEscalation: SeverityWarn,
 	// adaptive_upgrade: default warn; overridden to Critical if upgrading to block

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -131,16 +132,35 @@ func TestMCPStdioSuppressedResponseRecordsDroppedDLP(t *testing.T) {
 
 	metricOut := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(metricOut, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
-	if !strings.Contains(metricOut.Body.String(), `pipelock_dlp_dropped_matches_total{pattern="New Instructions",reason="suppressed",surface="mcp_stdio"} 1`) {
-		t.Fatalf("dropped DLP metric missing: %s", metricOut.Body.String())
-	}
+	assertMCPMetricSampleValue(t, metricOut.Body.String(), `pipelock_response_suppressed_matches_total{pattern="New Instructions",reason="suppressed",surface="mcp_stdio"} `, 1)
 	auditData, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatalf("read audit: %v", err)
 	}
-	if !strings.Contains(string(auditData), `"pattern":"New Instructions"`) || !strings.Contains(string(auditData), `"transport":"mcp_stdio"`) || !strings.Contains(string(auditData), `"reason":"suppressed"`) {
-		t.Fatalf("dropped DLP audit record missing: %s", auditData)
+	if !strings.Contains(string(auditData), `"event":"response_scan_suppressed"`) || !strings.Contains(string(auditData), `"scanner":"response_scan"`) || !strings.Contains(string(auditData), `"pattern":"New Instructions"`) || !strings.Contains(string(auditData), `"surface":"mcp_stdio"`) || !strings.Contains(string(auditData), `"reason":"suppressed"`) {
+		t.Fatalf("suppressed response audit record missing: %s", auditData)
 	}
+	if strings.Contains(string(auditData), `"event":"dlp_warn"`) {
+		t.Fatalf("response suppression was misclassified as DLP: %s", auditData)
+	}
+}
+
+func assertMCPMetricSampleValue(t *testing.T, body, prefix string, want float64) {
+	t.Helper()
+	for line := range strings.SplitSeq(body, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		got, err := strconv.ParseFloat(strings.TrimPrefix(line, prefix), 64)
+		if err != nil {
+			t.Fatalf("parse metric sample %q: %v", line, err)
+		}
+		if got != want {
+			t.Fatalf("metric sample %q = %v, want %v", prefix, got, want)
+		}
+		return
+	}
+	t.Fatalf("metric sample %q missing from:\n%s", prefix, body)
 }
 
 func TestMCPStdioLowConfidenceInboundDLPRecordsDropped(t *testing.T) {
@@ -168,9 +188,7 @@ func TestMCPStdioLowConfidenceInboundDLPRecordsDropped(t *testing.T) {
 
 	metricOut := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(metricOut, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
-	if !strings.Contains(metricOut.Body.String(), `pipelock_dlp_dropped_matches_total{pattern="AWS Access ID",reason="low_confidence",surface="mcp_stdio"} 1`) {
-		t.Fatalf("dropped DLP metric missing: %s", metricOut.Body.String())
-	}
+	assertMCPMetricSampleValue(t, metricOut.Body.String(), `pipelock_dlp_dropped_matches_total{pattern="AWS Access ID",reason="low_confidence",surface="mcp_stdio"} `, 1)
 	auditData, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatalf("read audit: %v", err)

@@ -2635,6 +2635,65 @@ func TestScanRequestHeadersForTarget_SuppressedValueDoesNotMaskLaterUnsuppressed
 	}
 }
 
+func TestScanBodyTextsForDLP_DeduplicatesDroppedMatches(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	key := fakeAnthropicKey()
+	var dropped []scanner.TextDLPMatch
+	matches := scanBodyTextsForDLP(
+		context.Background(),
+		sc,
+		[]string{key},
+		"https://api.vendor.example/v1/messages",
+		[]config.SuppressEntry{{Rule: "Anthropic API Key", Path: "https://api.vendor.example/*", Reason: "test"}},
+		nil,
+		false,
+		func(match scanner.TextDLPMatch, reason string) {
+			if reason != "suppressed" {
+				t.Fatalf("drop reason = %q, want suppressed", reason)
+			}
+			dropped = append(dropped, match)
+		},
+	)
+	if len(matches) != 0 {
+		t.Fatalf("enforceable matches = %+v, want none", matches)
+	}
+	if len(dropped) != 1 {
+		t.Fatalf("dropped callbacks = %d, want 1 logical finding: %+v", len(dropped), dropped)
+	}
+}
+
+func TestScanRequestHeadersForTargetWithDropped_ReportsSuppressedMatch(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.Suppress = []config.SuppressEntry{{Rule: "Anthropic API Key", Path: "https://api.vendor.example/*", Reason: "test"}}
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	headers := http.Header{"Authorization": []string{"Bearer " + fakeAnthropicKey()}}
+	var dropped []scanner.TextDLPMatch
+	result := scanRequestHeadersForTargetWithDropped(
+		context.Background(),
+		headers,
+		cfg,
+		sc,
+		"https://api.vendor.example/v1/messages",
+		func(match scanner.TextDLPMatch, reason string) {
+			if reason != "suppressed" {
+				t.Fatalf("drop reason = %q, want suppressed", reason)
+			}
+			dropped = append(dropped, match)
+		},
+	)
+	if result != nil && !result.Clean {
+		t.Fatalf("suppressed header remained enforceable: %+v", result.DLPMatches)
+	}
+	if len(dropped) == 0 {
+		t.Fatal("suppressed targeted header did not trigger the dropped-match callback")
+	}
+}
+
 func TestScanRequestHeadersForTarget_CoreDLPIgnoresInjectedSuppress(t *testing.T) {
 	cfg := testScannerConfig()
 	cfg.Suppress = []config.SuppressEntry{

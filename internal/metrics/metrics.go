@@ -113,6 +113,7 @@ type Metrics struct {
 	shieldOversizeScanHead                  *prometheus.CounterVec
 	shieldLatency                           *prometheus.HistogramVec
 	responseScanExemptTotal                 *prometheus.CounterVec
+	responseSuppressedMatches               *prometheus.CounterVec
 	responseScanExemptOverCapUnscannedTotal *prometheus.CounterVec
 
 	// Capture (capture.go).

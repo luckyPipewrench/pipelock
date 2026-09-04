@@ -1175,10 +1175,14 @@ func applySigV4CredentialRouteConfig(req *BodyScanRequest, cfg *config.Config) {
 
 func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string)) []scanner.TextDLPMatch {
 	var allMatches []scanner.TextDLPMatch
+	var dropped []droppedBodyDLPMatch
+	collectDropped := func(match scanner.TextDLPMatch, reason string) {
+		dropped = append(dropped, droppedBodyDLPMatch{match: match, reason: reason})
+	}
 	for _, text := range texts {
 		result := scanBodyTextForDLP(ctx, sc, text, allowEmbeddedSigV4)
 		if !result.Clean {
-			if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled, onDropped); len(matches) > 0 {
+			if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled, collectDropped); len(matches) > 0 {
 				allMatches = append(allMatches, matches...)
 			}
 		}
@@ -1191,11 +1195,32 @@ func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []strin
 		result = sc.ScanTextForDLP(ctx, strings.Join(sorted, bodyDLPJoinSeparator))
 	}
 	if !result.Clean {
-		if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled, onDropped); len(matches) > 0 {
+		if matches := filterBodyDLPMatches(result.Matches, target, suppress, disabled, collectDropped); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)
 		}
 	}
+	recordUniqueBodyDLPDrops(dropped, onDropped)
 	return uniqueBodyDLPMatches(allMatches)
+}
+
+type droppedBodyDLPMatch struct {
+	match  scanner.TextDLPMatch
+	reason string
+}
+
+func recordUniqueBodyDLPDrops(dropped []droppedBodyDLPMatch, onDropped func(scanner.TextDLPMatch, string)) {
+	if onDropped == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(dropped))
+	for _, drop := range dropped {
+		key := drop.match.PatternName + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		onDropped(drop.match, drop.reason)
+	}
 }
 
 func scanBodyTextForDLP(ctx context.Context, sc *scanner.Scanner, text string, allowEmbeddedSigV4 bool) scanner.TextDLPResult {
@@ -1272,7 +1297,7 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 	seen := make(map[string]struct{}, len(matches))
 	unique := make([]scanner.TextDLPMatch, 0, len(matches))
 	for _, match := range matches {
-		key := match.PatternName + "\x00" + match.Encoded + "\x00" + strconv.FormatBool(match.Warn) + "\x00" + strconv.FormatBool(match.ProviderOpaque)
+		key := bodyDLPMatchKey(match)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -1280,6 +1305,10 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 		unique = append(unique, match)
 	}
 	return unique
+}
+
+func bodyDLPMatchKey(match scanner.TextDLPMatch) string {
+	return match.PatternName + "\x00" + match.Encoded + "\x00" + strconv.FormatBool(match.Warn) + "\x00" + strconv.FormatBool(match.ProviderOpaque)
 }
 
 func requestBodyDLPAction(matches []scanner.TextDLPMatch, defaultAction string, patternActions map[string]string) string {
@@ -1759,7 +1788,11 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 }
 
 func scanRequestHeadersForTarget(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string) *BodyScanResult {
-	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, target, cfg.Suppress, nil)
+	return scanRequestHeadersForTargetWithDropped(ctx, headers, cfg, sc, target, nil)
+}
+
+func scanRequestHeadersForTargetWithDropped(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, onDropped func(scanner.TextDLPMatch, string)) *BodyScanResult {
+	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, target, cfg.Suppress, onDropped)
 }
 
 func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry, onDropped func(scanner.TextDLPMatch, string)) *BodyScanResult {

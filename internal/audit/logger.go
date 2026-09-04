@@ -369,35 +369,36 @@ type EventType string
 
 // Event type constants for structured audit log entries.
 const (
-	EventStartup             EventType = "startup"
-	EventShutdown            EventType = "shutdown"
-	EventAllowed             EventType = "allowed"
-	EventBlocked             EventType = "blocked"
-	EventError               EventType = "error"
-	EventAnomaly             EventType = "anomaly"
-	EventResponseScan        EventType = "response_scan"
-	EventRedirect            EventType = "redirect"
-	EventTunnelOpen          EventType = "tunnel_open"
-	EventTunnelClose         EventType = "tunnel_close"
-	EventForwardHTTP         EventType = "forward_http"
-	EventConfigReload        EventType = "config_reload"
-	EventWSOpen              EventType = "ws_open"
-	EventWSClose             EventType = "ws_close"
-	EventWSBlocked           EventType = "ws_blocked"
-	EventWSScan              EventType = "ws_scan"
-	EventSessionAnomaly      EventType = "session_anomaly"
-	EventAdaptiveEscalation  EventType = "adaptive_escalation"
-	EventAdaptiveRecovery    EventType = "adaptive_recovery"
-	EventMCPUnknownTool      EventType = "mcp_unknown_tool"
-	EventKillSwitchDeny      EventType = "kill_switch_deny"
-	EventSNIMismatch         EventType = "sni_mismatch"
-	EventBodyDLP             EventType = "body_dlp"
-	EventBodyPromptInjection EventType = "body_prompt_injection"
-	EventHeaderDLP           EventType = "header_dlp"
-	EventChainDetection      EventType = "chain_detection"
-	EventAddressProtection   EventType = "address_protection"
-	EventAgentListener       EventType = "agent_listener"
-	EventFileSentryDLP       EventType = "file_sentry_dlp"
+	EventStartup                EventType = "startup"
+	EventShutdown               EventType = "shutdown"
+	EventAllowed                EventType = "allowed"
+	EventBlocked                EventType = "blocked"
+	EventError                  EventType = "error"
+	EventAnomaly                EventType = "anomaly"
+	EventResponseScan           EventType = "response_scan"
+	EventResponseScanSuppressed EventType = "response_scan_suppressed"
+	EventRedirect               EventType = "redirect"
+	EventTunnelOpen             EventType = "tunnel_open"
+	EventTunnelClose            EventType = "tunnel_close"
+	EventForwardHTTP            EventType = "forward_http"
+	EventConfigReload           EventType = "config_reload"
+	EventWSOpen                 EventType = "ws_open"
+	EventWSClose                EventType = "ws_close"
+	EventWSBlocked              EventType = "ws_blocked"
+	EventWSScan                 EventType = "ws_scan"
+	EventSessionAnomaly         EventType = "session_anomaly"
+	EventAdaptiveEscalation     EventType = "adaptive_escalation"
+	EventAdaptiveRecovery       EventType = "adaptive_recovery"
+	EventMCPUnknownTool         EventType = "mcp_unknown_tool"
+	EventKillSwitchDeny         EventType = "kill_switch_deny"
+	EventSNIMismatch            EventType = "sni_mismatch"
+	EventBodyDLP                EventType = "body_dlp"
+	EventBodyPromptInjection    EventType = "body_prompt_injection"
+	EventHeaderDLP              EventType = "header_dlp"
+	EventChainDetection         EventType = "chain_detection"
+	EventAddressProtection      EventType = "address_protection"
+	EventAgentListener          EventType = "agent_listener"
+	EventFileSentryDLP          EventType = "file_sentry_dlp"
 
 	EventCrossRequestEntropyExceeded EventType = "cross_request_entropy_exceeded"
 	EventCrossRequestDLPMatch        EventType = "cross_request_dlp_match"
@@ -1497,6 +1498,34 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventResponseScan), e.fields)
+	}
+}
+
+// LogResponseScanSuppressed records a response-scanner finding deliberately
+// left unenforced by destination-scoped policy.
+func (l *Logger) LogResponseScanSuppressed(ctx LogContext, patternName, surface, reason string) {
+	const scanner = scannerpkg.AuditResponseScan
+	technique := TechniqueForScanner(scanner)
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
+
+	e := newLogEntry(l.zl.Warn(), EventResponseScanSuppressed).
+		optStr("method", ctx.method).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
+		optStr("client_ip", ctx.clientIP).
+		optStr("request_id", ctx.requestID).
+		str("scanner", scanner).
+		str("mode", "informational").
+		str("pattern", patternName).
+		str("surface", surface).
+		str("reason", reason).
+		str("mitre_technique", technique).
+		agentField(ctx.agent, ctx.agentAuth)
+	e.msg("response scan finding suppressed by policy")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventResponseScanSuppressed), e.fields)
 	}
 }
 

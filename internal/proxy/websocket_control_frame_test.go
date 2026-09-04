@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type capturedWSFrame struct {
@@ -476,12 +477,41 @@ func TestWSProxyUpstreamControlResponseAskEmitsOneBlockReceipt(t *testing.T) {
 				ws.StatusCode(binary.BigEndian.Uint16(upstreamClose.payload[:2])) != ws.StatusPolicyViolation {
 				t.Fatalf("upstream frame = (%v, %x), want policy-violation close", upstreamClose.opcode, upstreamClose.payload)
 			}
-			receipts := rph.findReceipts(t)
-			if len(receipts) != 1 {
-				t.Fatalf("%s receipt count = %d, want exactly 1", opCodeLabel(opcode), len(receipts))
+			_ = conn.Close()
+			// The close frame is written before the relay returns to handleWebSocket,
+			// which then emits the terminal session_close receipt. Wait for that
+			// completed lifecycle before closing the recorder: otherwise this test
+			// observes either the response-scan decision alone or its valid terminal
+			// companion depending on scheduling.
+			testwait.For(t, waitForReceiptTimeout, func() bool {
+				for _, rcpt := range extractReceiptsFromDir(t, rph.dir) {
+					if rcpt.ActionRecord.Layer == "session_close" {
+						return true
+					}
+				}
+				return false
+			}, "%s session-close receipt", opCodeLabel(opcode))
+
+			var responseBlocks, sessionCloseBlocks int
+			for _, rcpt := range rph.findReceipts(t) {
+				switch got := rcpt.ActionRecord; got.Layer {
+				case "response_scan":
+					if got.Verdict != config.ActionBlock {
+						t.Fatalf("%s response-scan verdict = %q, want %q", opCodeLabel(opcode), got.Verdict, config.ActionBlock)
+					}
+					responseBlocks++
+				case "session_close":
+					if got.Verdict != config.ActionBlock {
+						t.Fatalf("%s session-close verdict = %q, want %q", opCodeLabel(opcode), got.Verdict, config.ActionBlock)
+					}
+					sessionCloseBlocks++
+				}
 			}
-			if got := receipts[0].ActionRecord; got.Verdict != config.ActionBlock || got.Layer != "response_scan" {
-				t.Fatalf("%s receipt = (%q, %q), want (%q, %q)", opCodeLabel(opcode), got.Verdict, got.Layer, config.ActionBlock, "response_scan")
+			if responseBlocks != 1 {
+				t.Fatalf("%s response-scan block receipt count = %d, want exactly 1", opCodeLabel(opcode), responseBlocks)
+			}
+			if sessionCloseBlocks != 1 {
+				t.Fatalf("%s session-close block receipt count = %d, want exactly 1", opCodeLabel(opcode), sessionCloseBlocks)
 			}
 		})
 	}

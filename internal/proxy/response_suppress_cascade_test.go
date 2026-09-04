@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -112,11 +113,25 @@ func TestFetchSuppressedResponseRecordsDroppedDLP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit: %v", err)
 	}
-	if !strings.Contains(string(auditData), `"event":"response_scan_suppressed"`) || !strings.Contains(string(auditData), `"scanner":"response_scan"`) || !strings.Contains(string(auditData), `"pattern":"New Instructions"`) || !strings.Contains(string(auditData), `"surface":"fetch"`) || !strings.Contains(string(auditData), `"reason":"suppressed"`) {
-		t.Fatalf("suppressed response audit record missing: %s", auditData)
+	foundSuppressed := false
+	for _, line := range strings.Split(strings.TrimSpace(string(auditData)), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode audit line %q: %v", line, err)
+		}
+		if entry["event"] == "dlp_warn" {
+			t.Fatalf("response suppression was misclassified as DLP: %s", auditData)
+		}
+		if entry["event"] == "response_scan_suppressed" &&
+			entry["scanner"] == "response_scan" &&
+			entry["pattern"] == "New Instructions" &&
+			entry["surface"] == "fetch" &&
+			entry["reason"] == "suppressed" {
+			foundSuppressed = true
+		}
 	}
-	if strings.Contains(string(auditData), `"event":"dlp_warn"`) {
-		t.Fatalf("response suppression was misclassified as DLP: %s", auditData)
+	if !foundSuppressed {
+		t.Fatalf("suppressed response audit record missing: %s", auditData)
 	}
 }
 

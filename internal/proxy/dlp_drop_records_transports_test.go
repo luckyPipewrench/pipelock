@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,6 +58,8 @@ func TestInterceptBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
 
 func TestReverseBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
 	cfg := reverseTestConfig()
+	cfg.DefaultAgentIdentity = "deployment/reverse-test"
+	cfg.BindDefaultAgentIdentity = true
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: droppedTransportPattern, Regex: droppedTransportValue})
 	cfg.Suppress = []config.SuppressEntry{{Rule: droppedTransportPattern, Path: "*"}}
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -83,6 +86,19 @@ func TestReverseBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
 	}
 	logger.Close()
 	assertDroppedTransportConsumers(t, handler.metrics, auditPath, "body")
+	auditData, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read reverse audit: %v", err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(auditData, &entry); err != nil {
+		t.Fatalf("decode reverse audit: %v", err)
+	}
+	for _, field := range []string{"client_ip", "request_id", "agent"} {
+		if entry[field] == nil || entry[field] == "" {
+			t.Fatalf("reverse dropped-DLP audit missing %s: %+v", field, entry)
+		}
+	}
 }
 
 func TestWebSocketBodyLowConfidenceDLPRecordsDropped(t *testing.T) {

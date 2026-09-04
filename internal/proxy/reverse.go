@@ -838,7 +838,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		dlpTarget.RawPath = ""
 		headerResult := scanRequestHeadersForTargetWithDropped(r.Context(), r.Header, cfg, sc, dlpTarget.String(), func(match scanner.TextDLPMatch, reason string) {
 			if rp.logger != nil {
-				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), Agent: ""}), match.PatternName, match.Severity, "header", reason)
+				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), match.PatternName, match.Severity, "header", reason)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 		})
@@ -1320,7 +1320,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		PatternActions:   cfg.RequestBodyScanning.PatternActions,
 		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 			if rp.logger != nil {
-				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), Agent: ""}), match.PatternName, match.Severity, "body", reason)
+				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), match.PatternName, match.Severity, "body", reason)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 		},

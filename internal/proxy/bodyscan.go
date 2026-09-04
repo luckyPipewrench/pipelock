@@ -1214,6 +1214,23 @@ func recordUniqueBodyDLPDrops(dropped []droppedBodyDLPMatch, onDropped func(scan
 	}
 	seen := make(map[string]struct{}, len(dropped))
 	for _, drop := range dropped {
+		key := bodyDLPMatchKey(drop.match) + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		onDropped(drop.match, drop.reason)
+	}
+}
+
+// recordUniqueHeaderDLPDrops collapses representation variants produced when
+// the same header credential is scanned alone and again in joined header text.
+func recordUniqueHeaderDLPDrops(dropped []droppedBodyDLPMatch, onDropped func(scanner.TextDLPMatch, string)) {
+	if onDropped == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(dropped))
+	for _, drop := range dropped {
 		key := drop.match.PatternName + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
 		if _, ok := seen[key]; ok {
 			continue
@@ -1799,9 +1816,13 @@ func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cf
 	bodyCfg := cfg.RequestBodyScanning
 	disabled := bodyDLPDisabledSet(bodyCfg.DisablePatterns)
 	var allMatches []scanner.TextDLPMatch
+	var dropped []droppedBodyDLPMatch
+	collectDropped := func(match scanner.TextDLPMatch, reason string) {
+		dropped = append(dropped, droppedBodyDLPMatch{match: match, reason: reason})
+	}
 	matchedHeaders := map[string]struct{}{}
 	addMatches := func(headerName string, matches []scanner.TextDLPMatch) {
-		filtered := filterBodyDLPMatches(matches, target, suppress, disabled, onDropped)
+		filtered := filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 		if len(filtered) == 0 {
 			return
 		}
@@ -1895,6 +1916,7 @@ func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cf
 		}
 	}
 
+	recordUniqueHeaderDLPDrops(dropped, onDropped)
 	allMatches = uniqueBodyDLPMatches(allMatches)
 	if len(allMatches) == 0 {
 		return nil

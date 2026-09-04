@@ -342,14 +342,18 @@ func TestScanGenericSSEStream_DeduplicatesDroppedDLPAcrossPasses(t *testing.T) {
 	if len(dropped) != 1 {
 		t.Fatalf("dropped callbacks = %d, want 1 logical finding: %+v", len(dropped), dropped)
 	}
+	if out.String() != body {
+		t.Fatalf("forwarded stream = %q, want %q", out.String(), body)
+	}
 }
 
 func TestScanGenericSSEStream_CountsRepeatedDroppedDLPEvents(t *testing.T) {
 	key := "sk-ant-api03-" + strings.Repeat("A", 40)
 	body := "data: " + key + "\n\ndata: " + key + "\n\n"
 	dropped := 0
+	var out bytes.Buffer
 	err := ScanGenericSSEStreamWithOptions(
-		context.Background(), strings.NewReader(body), io.Discard, nil, testA2AScanner(t), enabledSSECfg(),
+		context.Background(), strings.NewReader(body), &out, nil, testA2AScanner(t), enabledSSECfg(),
 		GenericSSEScanOptions{
 			Target:       "/stream",
 			Suppress:     []config.SuppressEntry{{Rule: "Anthropic API Key", Path: "/stream", Reason: "test"}},
@@ -361,6 +365,9 @@ func TestScanGenericSSEStream_CountsRepeatedDroppedDLPEvents(t *testing.T) {
 	}
 	if dropped != 2 {
 		t.Fatalf("dropped callbacks = %d, want one per event", dropped)
+	}
+	if out.String() != body {
+		t.Fatalf("forwarded stream = %q, want %q", out.String(), body)
 	}
 }
 

@@ -348,3 +348,88 @@ func TestStartLiveRun_RefusesWhenTrustedRootUnavailable(t *testing.T) {
 		t.Fatalf("error = %v, want the trusted-root failure surfaced", err)
 	}
 }
+
+// A resolver returning bytes that are not an Ed25519 public key must fail
+// closed. It is not enough to reject a resolver error: a partial key is just
+// as incapable of authenticating a delegation.
+func TestStartLiveRun_RefusesMalformedTrustedRoot(t *testing.T) {
+	root := testRunRoot(t)
+	const nonce = "malformed-root-nonce"
+
+	minted, err := MintSessionDelegation(root, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	previous := trustedDelegationRoot
+	trustedDelegationRoot = func() (ed25519.PublicKey, error) {
+		return ed25519.PublicKey("short"), nil
+	}
+	t.Cleanup(func() { trustedDelegationRoot = previous })
+
+	lr, err := StartLiveRun(t.Context(), LiveRunOpts{
+		ScenarioID:        LiveDemoScenarioID,
+		RunNonce:          nonce,
+		SessionPrivateKey: minted.PrivateKey,
+		Delegation:        &minted.Delegation,
+	})
+	if err == nil {
+		lr.Close()
+		t.Fatal("a malformed trusted root must refuse the run")
+	}
+	if !strings.Contains(err.Error(), "delegation root public key has wrong size") {
+		t.Fatalf("error = %v, want malformed-root refusal", err)
+	}
+}
+
+// The delegation root is resolved from a caller-owned byte slice. Retaining
+// that slice would let later mutation change the root shown to the offline
+// verifier after the delegation was authenticated.
+func TestLiveRun_DelegationRootIsCopied(t *testing.T) {
+	root := testRunRoot(t)
+	const nonce = "copied-root-nonce"
+
+	minted, err := MintSessionDelegation(root, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	lr, err := StartLiveRun(t.Context(), LiveRunOpts{
+		ScenarioID:        LiveDemoScenarioID,
+		RunNonce:          nonce,
+		SessionPrivateKey: minted.PrivateKey,
+		Delegation:        &minted.Delegation,
+	})
+	if err != nil {
+		t.Fatalf("StartLiveRun: %v", err)
+	}
+	defer lr.Close()
+
+	want := hex.EncodeToString(root.Public().(ed25519.PublicKey))
+	resolved, err := trustedDelegationRoot()
+	if err != nil {
+		t.Fatalf("trustedDelegationRoot: %v", err)
+	}
+	resolved[0] ^= 0xff
+
+	if got := lr.OrchestratorPubHex(); got != want {
+		t.Fatalf("OrchestratorPubHex after root mutation = %q, want retained root %q", got, want)
+	}
+}
+
+// VerifySessionDelegation is a package entry point as well as StartLiveRun's
+// internal guard. A malformed direct caller must receive a refusal rather than
+// causing PrivateKey.Public to panic before a delegation can be checked.
+func TestVerifySessionDelegation_RefusesMalformedPrivateKey(t *testing.T) {
+	root := testRunRoot(t)
+	const nonce = "malformed-session-private-key"
+
+	minted, err := MintSessionDelegation(root, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	if err := VerifySessionDelegation(ed25519.PrivateKey("short"), minted.Delegation, nonce); err == nil {
+		t.Fatal("a malformed session private key must be refused")
+	}
+}

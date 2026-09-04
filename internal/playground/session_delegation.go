@@ -41,6 +41,9 @@ func VerifySessionDelegation(priv ed25519.PrivateKey, d OrchestratorDelegation, 
 // selected by the caller. Keeping that selected root lets a live run carry the
 // same trust root through its final offline verification and download metadata.
 func verifySessionDelegationWithRoot(root ed25519.PublicKey, priv ed25519.PrivateKey, d OrchestratorDelegation, runNonce string) error {
+	if err := signing.ValidatePrivateKeyConsistency(priv); err != nil {
+		return fmt.Errorf("session signing key: %w", err)
+	}
 	if runNonce == "" {
 		return fmt.Errorf("delegated session requires a run nonce")
 	}

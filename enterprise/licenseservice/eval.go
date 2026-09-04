@@ -352,9 +352,16 @@ func isRefundableOneTimeTrial(entitlement *Entitlement) bool {
 func (h *WebhookHandler) revokeOneTimeTrialForOrder(ctx context.Context, entitlement *Entitlement, order *PolarOrder, refundState, msgID, eventType string) error {
 	now := time.Now().UTC()
 	reason := refundRevocationReason(refundState)
-	if _, err := h.revokeUnexpiredLicenses(ctx, order.ID, reason, now); err != nil {
+	issuances, err := h.revokeUnexpiredLicenses(ctx, order.ID, reason, now)
+	if err != nil {
 		_ = h.ledger.LogError(order.ID, "revoke one-time trial licenses", err)
 		return fmt.Errorf("revoke one-time trial licenses: %w", err)
+	}
+	// Mirror the Eval path: every revoked license leaves a success entry so an
+	// audit reader can prove the fleet credential was revoked, not only that a
+	// refund arrived.
+	for _, iss := range issuances {
+		_ = h.ledger.Log(AuditEntry{Event: AuditTrialRefundRevoked, SubscriptionID: order.ID, LicenseID: iss.LicenseID, Detail: reason})
 	}
 	entitlement.Status = statusRevoked
 	entitlement.NextRefreshAt = nil

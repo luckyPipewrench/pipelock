@@ -3235,6 +3235,13 @@ func TestHandleOrderRefund_RevokesMintedEnterpriseTrial(t *testing.T) {
 	if len(revocations) != 1 || revocations[0].LicenseID != issuance.LicenseID {
 		t.Fatalf("revocations = %+v, want %q", revocations, issuance.LicenseID)
 	}
+	ledgerBytes, err := os.ReadFile(ts.handler.ledger.path)
+	if err != nil {
+		t.Fatalf("read audit ledger: %v", err)
+	}
+	if !strings.Contains(string(ledgerBytes), `"event":"`+AuditTrialRefundRevoked+`"`) || !strings.Contains(string(ledgerBytes), issuance.LicenseID) {
+		t.Fatalf("audit ledger lacks a %s entry for %s:\n%s", AuditTrialRefundRevoked, issuance.LicenseID, ledgerBytes)
+	}
 
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_replacement")); err != nil {
 		t.Fatalf("replacement enterprise trial while original period remains active: %v", err)
@@ -3677,4 +3684,37 @@ func TestHandleOrderEvent_TrialUnnormalizableEmailFailsClosed(t *testing.T) {
 	if ent != nil {
 		t.Fatalf("trial with an unnormalizable email must not mint: %+v", ent)
 	}
+}
+
+// One trial slot per email spans both trial tiers: an active Pro trial blocks an
+// Enterprise trial for the same identity and the reverse, so the two zero-dollar
+// products cannot be stacked.
+func TestHandleOrderEvent_TrialSlotSharedAcrossTiers(t *testing.T) {
+	const email = "enterprise-trial@example.com"
+	t.Run("pro then enterprise", func(t *testing.T) {
+		ts := newTestSetup(t)
+		ctx := t.Context()
+		if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_9_enterprise-trial", email)); err != nil {
+			t.Fatalf("pro trial: %v", err)
+		}
+		if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_cross_second")); err != nil {
+			t.Fatalf("enterprise trial after pro: %v", err)
+		}
+		if ent, err := ts.db.GetBySubscriptionID(ctx, "order_enterprise_trial_cross_second"); err != nil || ent != nil {
+			t.Fatalf("enterprise trial minted despite an active pro trial: ent=%+v err=%v", ent, err)
+		}
+	})
+	t.Run("enterprise then pro", func(t *testing.T) {
+		ts := newTestSetup(t)
+		ctx := t.Context()
+		if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_cross_first")); err != nil {
+			t.Fatalf("enterprise trial: %v", err)
+		}
+		if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_9_enterprise-trial", email)); err != nil {
+			t.Fatalf("pro trial after enterprise: %v", err)
+		}
+		if ent, err := ts.db.GetBySubscriptionID(ctx, "order_free_9_enterprise-trial"); err != nil || ent != nil {
+			t.Fatalf("pro trial minted despite an active enterprise trial: ent=%+v err=%v", ent, err)
+		}
+	})
 }

@@ -280,11 +280,14 @@ func (e *EntitlementDB) CountActiveTierForEmail(ctx context.Context, tier, norma
 	if err := errForceCountActiveTier; err != nil {
 		return 0, fmt.Errorf("count active %s for %s: %w", tier, normalizedEmail, err)
 	}
+	// One trial slot per email across BOTH trial tiers: an active Pro trial
+	// blocks an Enterprise trial and the reverse, so the two zero-dollar
+	// products cannot be stacked or alternated by the same identity.
 	const query = `
 	SELECT customer_email FROM entitlements
-	WHERE tier = ? AND status IN (?, ?) AND current_period_end > ?
+	WHERE tier IN (?, ?) AND status IN (?, ?) AND current_period_end > ?
 	`
-	rows, err := e.db.QueryContext(ctx, query, tier, statusActive, statusRevoked, now.UTC())
+	rows, err := e.db.QueryContext(ctx, query, tierTrial, tierEnterpriseTrial, statusActive, statusRevoked, now.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("count active %s for %s: %w", tier, normalizedEmail, err)
 	}

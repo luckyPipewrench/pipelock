@@ -90,7 +90,8 @@ Deploy automation can ask the exact configured command which environment names
 it depends on without reading their values:
 
 ```bash
-pipelock-playground-broker serve [the deployed flags] --print-required-env
+# Append --print-required-env to the serve command the deployment already runs.
+pipelock-playground-broker serve --print-required-env
 ```
 
 The command validates the non-secret flags and static UI, prints one variable

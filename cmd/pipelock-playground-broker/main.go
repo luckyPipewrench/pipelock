@@ -1954,7 +1954,7 @@ func resolveSessionSecret(file, envName, flagName, defaultEnv string, required b
 			return v, nil
 		}
 		if required {
-			return "", fmt.Errorf("%s, %s, or --%s-env is required", defaultEnv, flagName, strings.TrimPrefix(strings.TrimPrefix(flagName, "--"), "-"))
+			return "", fmt.Errorf("%s, %s, or %s is required", defaultEnv, flagName, strings.TrimSuffix(flagName, "-file")+"-env")
 		}
 		return "", nil
 	}

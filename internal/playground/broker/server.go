@@ -392,6 +392,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.RequireDelegatedSigning && len(cfg.OrchestratorRoot) == 0 {
 		return nil, errors.New("broker: OrchestratorRoot is required when delegated signing is required")
 	}
+	signingVerified := false
 	if len(cfg.OrchestratorRoot) != 0 {
 		if _, err := playground.ParseOrchestratorPrivateKeyHex(hex.EncodeToString(cfg.OrchestratorRoot)); err != nil {
 			return nil, fmt.Errorf("broker: OrchestratorRoot: %w", err)
@@ -408,6 +409,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		if err := checkDelegatedSigning(cfg.OrchestratorRoot, cfg.ImageDigest, cfg.SessionDelegationLifetime); err != nil {
 			return nil, err
 		}
+		signingVerified = true
 	}
 	if cfg.InternalPort == 0 {
 		cfg.InternalPort = defaultInternalPort
@@ -436,7 +438,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		global:         livechat.NewDailyBudget(cfg.GlobalDailyBudget),
 		client:         client,
 		vmReadyTimeout: vmReadyTimeout,
-		signingReady:   len(cfg.OrchestratorRoot) != 0,
+		signingReady:   signingVerified,
 		bundleCache:    newArtifactCache(artifactCacheTTL),
 		tokens:         make(map[string]*tokenLease),
 		bySess:         make(map[string]string),

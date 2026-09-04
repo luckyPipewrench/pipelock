@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -447,9 +448,7 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previousVerify := verifySessionDelegation
-	verifySessionDelegation = func(_ ed25519.PrivateKey, _ playground.OrchestratorDelegation, _ string) error { return nil }
-	t.Cleanup(func() { verifySessionDelegation = previousVerify })
+	realDelegationVerifier(t, root)
 	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, OrchestratorRoot: root}); err == nil {
 		t.Fatal("OrchestratorRoot without ImageDigest should error")
 	}
@@ -676,9 +675,7 @@ func TestServerHealthReportsVerifiedSigningState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		previous := verifySessionDelegation
-		verifySessionDelegation = func(_ ed25519.PrivateKey, _ playground.OrchestratorDelegation, _ string) error { return nil }
-		t.Cleanup(func() { verifySessionDelegation = previous })
+		realDelegationVerifier(t, root)
 		_, ts := newBrokerTestServer(t, provider, ServerConfig{
 			OrchestratorRoot: root,
 			ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
@@ -2425,4 +2422,32 @@ func TestServer_BundleOversizedDoesNotCache(t *testing.T) {
 	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
 		t.Fatalf("active leases after oversize = %d, want 1 (VM not released on fetch error)", got)
 	}
+}
+
+// realDelegationVerifier installs a delegation hook that actually verifies,
+// rather than returning nil. A success-path test that stubs verification away
+// asserts only that the startup self-check RAN; it would stay green through a
+// signature or session-key binding regression, which is the exact class of
+// vacuous coverage this package exists to prevent.
+func realDelegationVerifier(t *testing.T, root ed25519.PrivateKey) {
+	t.Helper()
+	previous := verifySessionDelegation
+	verifySessionDelegation = func(sessionKey ed25519.PrivateKey, delegation playground.OrchestratorDelegation, nonce string) error {
+		pub, ok := root.Public().(ed25519.PublicKey)
+		if !ok {
+			return errors.New("test root has no ed25519 public half")
+		}
+		if err := playground.VerifyOrchestratorDelegation(pub, delegation, playground.DelegationExpectations{RunNonce: nonce}); err != nil {
+			return err
+		}
+		sessionPub, ok := sessionKey.Public().(ed25519.PublicKey)
+		if !ok {
+			return errors.New("session key has no ed25519 public half")
+		}
+		if hex.EncodeToString(sessionPub) != delegation.SessionPublicKey {
+			return errors.New("delegation does not authorize this session signing key")
+		}
+		return nil
+	}
+	t.Cleanup(func() { verifySessionDelegation = previous })
 }

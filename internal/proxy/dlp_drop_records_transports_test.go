@@ -159,11 +159,7 @@ func assertDroppedTransportConsumers(t *testing.T, m *metrics.Metrics, auditPath
 	const reason = "suppressed"
 	pattern := droppedTransportPattern
 	t.Helper()
-	rec := httptest.NewRecorder()
-	m.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
-	if !strings.Contains(rec.Body.String(), fmt.Sprintf(`pipelock_dlp_dropped_matches_total{pattern=%q,reason=%q,surface=%q} `, pattern, reason, surface)) {
-		t.Fatalf("dropped DLP metric missing for %q/%q/%q", pattern, surface, reason)
-	}
+	assertMetricSampleValue(t, m, fmt.Sprintf(`pipelock_dlp_dropped_matches_total{pattern=%q,reason=%q,surface=%q} `, pattern, reason, surface), 1)
 	b, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatalf("read audit: %v", err)

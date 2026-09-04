@@ -1231,7 +1231,11 @@ func recordUniqueHeaderDLPDrops(dropped []droppedBodyDLPMatch, onDropped func(sc
 	}
 	seen := make(map[string]struct{}, len(dropped))
 	for _, drop := range dropped {
-		key := drop.match.PatternName + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
+		keyMatch := drop.match
+		if keyMatch.Encoded == "whitespace" {
+			keyMatch.Encoded = ""
+		}
+		key := bodyDLPMatchKey(keyMatch) + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
 		if _, ok := seen[key]; ok {
 			continue
 		}

@@ -355,9 +355,14 @@ func TestScanGenericSSEStream_CountsRepeatedDroppedDLPEvents(t *testing.T) {
 	err := ScanGenericSSEStreamWithOptions(
 		context.Background(), strings.NewReader(body), &out, nil, testA2AScanner(t), enabledSSECfg(),
 		GenericSSEScanOptions{
-			Target:       "/stream",
-			Suppress:     []config.SuppressEntry{{Rule: "Anthropic API Key", Path: "/stream", Reason: "test"}},
-			OnDroppedDLP: func(scanner.TextDLPMatch, string) { dropped++ },
+			Target:   "/stream",
+			Suppress: []config.SuppressEntry{{Rule: "Anthropic API Key", Path: "/stream", Reason: "test"}},
+			OnDroppedDLP: func(_ scanner.TextDLPMatch, reason string) {
+				if reason != "suppressed" {
+					t.Fatalf("drop reason = %q, want suppressed", reason)
+				}
+				dropped++
+			},
 		},
 	)
 	if err != nil {

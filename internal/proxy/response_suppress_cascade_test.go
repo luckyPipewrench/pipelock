@@ -105,6 +105,13 @@ func TestFetchSuppressedResponseRecordsDroppedDLP(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("suppressed fetch status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
+	var fetchBody map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &fetchBody); err != nil {
+		t.Fatalf("decode suppressed fetch body: %v", err)
+	}
+	if fetchBody["content"] != suppressedResponseFinding {
+		t.Fatalf("suppressed fetch content = %q, want %q", fetchBody["content"], suppressedResponseFinding)
+	}
 	logger.Close()
 	metricOut := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(metricOut, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))

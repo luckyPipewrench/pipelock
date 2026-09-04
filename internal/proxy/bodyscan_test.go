@@ -2677,6 +2677,28 @@ func TestRecordUniqueBodyDLPDrops_PreservesMatchVariants(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("dropped callbacks = %d, want raw and encoded variants", len(got))
 	}
+	encoded := map[string]bool{}
+	for _, match := range got {
+		encoded[match.Encoded] = true
+	}
+	if !encoded[""] || !encoded["base64"] {
+		t.Fatalf("encoded variants = %v, want raw and base64", encoded)
+	}
+}
+
+func TestRecordUniqueHeaderDLPDrops_NormalizesJoinedWhitespaceOnly(t *testing.T) {
+	dropped := []droppedBodyDLPMatch{
+		{match: scanner.TextDLPMatch{PatternName: "API Key"}, reason: "suppressed"},
+		{match: scanner.TextDLPMatch{PatternName: "API Key", Encoded: "whitespace"}, reason: "suppressed"},
+		{match: scanner.TextDLPMatch{PatternName: "API Key", Encoded: "base64"}, reason: "suppressed"},
+	}
+	var got []scanner.TextDLPMatch
+	recordUniqueHeaderDLPDrops(dropped, func(match scanner.TextDLPMatch, _ string) {
+		got = append(got, match)
+	})
+	if len(got) != 2 || got[0].Encoded != "" || got[1].Encoded != "base64" {
+		t.Fatalf("header variants = %+v, want raw and base64", got)
+	}
 }
 
 func TestScanRequestHeadersForTargetWithDropped_ReportsSuppressedMatch(t *testing.T) {

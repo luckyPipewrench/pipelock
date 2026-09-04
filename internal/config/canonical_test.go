@@ -613,6 +613,246 @@ func TestCanonicalPolicyHash_SetLikeSlicesSortedIntoCanonicalOrder(t *testing.T)
 	}
 }
 
+func TestCanonicalPolicyHash_HostSetsCanonicalized(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		lowercase func(*Config)
+		uppercase func(*Config)
+		duplicate func(*Config)
+		trailing  func(*Config)
+		different func(*Config)
+	}{
+		{
+			name: "api allowlist",
+			lowercase: func(c *Config) {
+				c.APIAllowlist = []string{"api.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.APIAllowlist = []string{"API.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.APIAllowlist = []string{"api.vendor.example", "API.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.APIAllowlist = []string{"api.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.APIAllowlist = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name: "trusted domains",
+			lowercase: func(c *Config) {
+				c.TrustedDomains = []string{"trusted.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.TrustedDomains = []string{"TRUSTED.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.TrustedDomains = []string{"trusted.vendor.example", "TRUSTED.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.TrustedDomains = []string{"trusted.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.TrustedDomains = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name:      "response scanning exempt domains",
+			lowercase: func(c *Config) { c.ResponseScanning.ExemptDomains = []string{"trusted.vendor.example"} },
+			uppercase: func(c *Config) { c.ResponseScanning.ExemptDomains = []string{"TRUSTED.VENDOR.EXAMPLE"} },
+			duplicate: func(c *Config) {
+				c.ResponseScanning.ExemptDomains = []string{"trusted.vendor.example", "TRUSTED.VENDOR.EXAMPLE"}
+			},
+			trailing:  func(c *Config) { c.ResponseScanning.ExemptDomains = []string{"trusted.vendor.example."} },
+			different: func(c *Config) { c.ResponseScanning.ExemptDomains = []string{"other.vendor.example"} },
+		},
+		{
+			name: "response size exempt domains",
+			lowercase: func(c *Config) {
+				c.ResponseScanning.SizeExemptDomains = []string{"downloads.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.ResponseScanning.SizeExemptDomains = []string{"DOWNLOADS.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.ResponseScanning.SizeExemptDomains = []string{"downloads.vendor.example", "DOWNLOADS.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.ResponseScanning.SizeExemptDomains = []string{"downloads.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.ResponseScanning.SizeExemptDomains = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name: "request body content entropy exclusions",
+			lowercase: func(c *Config) {
+				c.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.RequestBodyScanning.ContentEntropyExclusions = []string{"UPLOADS.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example", "UPLOADS.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.RequestBodyScanning.ContentEntropyExclusions = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name: "request body trusted hosts",
+			lowercase: func(c *Config) {
+				c.RequestBodyScanning.TrustedHosts = []string{"api.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.RequestBodyScanning.TrustedHosts = []string{"API.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.RequestBodyScanning.TrustedHosts = []string{"api.vendor.example", "API.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.RequestBodyScanning.TrustedHosts = []string{"api.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.RequestBodyScanning.TrustedHosts = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name: "websocket content entropy exclusions",
+			lowercase: func(c *Config) {
+				c.WebSocketProxy.ContentEntropyExclusions = []string{"stream.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.WebSocketProxy.ContentEntropyExclusions = []string{"STREAM.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.WebSocketProxy.ContentEntropyExclusions = []string{"stream.vendor.example", "STREAM.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.WebSocketProxy.ContentEntropyExclusions = []string{"stream.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.WebSocketProxy.ContentEntropyExclusions = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name: "fetch monitoring blocklist",
+			lowercase: func(c *Config) {
+				c.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.FetchProxy.Monitoring.Blocklist = []string{"BLOCKED.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example", "BLOCKED.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.FetchProxy.Monitoring.Blocklist = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name: "fetch monitoring subdomain entropy exclusions",
+			lowercase: func(c *Config) {
+				c.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"uploads.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"UPLOADS.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"uploads.vendor.example", "UPLOADS.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"uploads.vendor.example."}
+			},
+			different: func(c *Config) { c.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"other.vendor.example"} },
+		},
+		{
+			name:      "fetch monitoring query entropy exclusions",
+			lowercase: func(c *Config) { c.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"query.vendor.example"} },
+			uppercase: func(c *Config) { c.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"QUERY.VENDOR.EXAMPLE"} },
+			duplicate: func(c *Config) {
+				c.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"query.vendor.example", "QUERY.VENDOR.EXAMPLE"}
+			},
+			trailing:  func(c *Config) { c.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"query.vendor.example."} },
+			different: func(c *Config) { c.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"other.vendor.example"} },
+		},
+		{
+			name: "redaction unparseable allowlist",
+			lowercase: func(c *Config) {
+				c.Redaction.Enabled = true
+				c.Redaction.AllowlistUnparseable = []string{"api.vendor.example"}
+			},
+			uppercase: func(c *Config) {
+				c.Redaction.Enabled = true
+				c.Redaction.AllowlistUnparseable = []string{"API.VENDOR.EXAMPLE"}
+			},
+			duplicate: func(c *Config) {
+				c.Redaction.Enabled = true
+				c.Redaction.AllowlistUnparseable = []string{"api.vendor.example", "API.VENDOR.EXAMPLE"}
+			},
+			trailing: func(c *Config) {
+				c.Redaction.Enabled = true
+				c.Redaction.AllowlistUnparseable = []string{"api.vendor.example."}
+			},
+			different: func(c *Config) {
+				c.Redaction.Enabled = true
+				c.Redaction.AllowlistUnparseable = []string{"other.vendor.example"}
+			},
+		},
+		{
+			name: "redaction provider host patterns",
+			lowercase: func(c *Config) {
+				c.Redaction = canonicalProviderTestRedaction([]string{"api.vendor.example"}, []string{"/v1"})
+			},
+			uppercase: func(c *Config) {
+				c.Redaction = canonicalProviderTestRedaction([]string{"API.VENDOR.EXAMPLE"}, []string{"/v1"})
+			},
+			duplicate: func(c *Config) {
+				c.Redaction = canonicalProviderTestRedaction([]string{"api.vendor.example", "API.VENDOR.EXAMPLE"}, []string{"/v1"})
+			},
+			trailing: func(c *Config) {
+				c.Redaction = canonicalProviderTestRedaction([]string{"api.vendor.example."}, []string{"/v1"})
+			},
+			different: func(c *Config) {
+				c.Redaction = canonicalProviderTestRedaction([]string{"other.vendor.example"}, []string{"/v1"})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lowercase := canonicalHashOf(t, tt.lowercase)
+			uppercase := canonicalHashOf(t, tt.uppercase)
+			if lowercase != uppercase {
+				t.Fatalf("case-only host configuration changed canonical hash:\n  lowercase = %s\n  uppercase = %s", lowercase, uppercase)
+			}
+			duplicate := canonicalHashOf(t, tt.duplicate)
+			if lowercase != duplicate {
+				t.Fatalf("duplicate host configuration changed canonical hash:\n  single = %s\n  duplicate = %s", lowercase, duplicate)
+			}
+			trailing := canonicalHashOf(t, tt.trailing)
+			if lowercase != trailing {
+				t.Fatalf("trailing-dot host configuration changed canonical hash:\n  bare = %s\n  trailing = %s", lowercase, trailing)
+			}
+
+			different := canonicalHashOf(t, tt.different)
+			if lowercase == different {
+				t.Fatalf("different host configuration did not change canonical hash:\n  same = %s", lowercase)
+			}
+		})
+	}
+}
+
 func TestCanonicalPolicyHash_BehavioralSlicesPreserveOrder(t *testing.T) {
 	t.Parallel()
 

@@ -227,23 +227,27 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 
 	// Set-like string slices: canonicalise to sorted order so two
 	// configs that list the same domains in different order hash equal.
-	view.APIAllowlist = sortedCopy(view.APIAllowlist)
+	view.APIAllowlist = canonicalHostSet(view.APIAllowlist)
 	view.Internal = sortedCopy(view.Internal)
-	view.TrustedDomains = sortedCopy(view.TrustedDomains)
+	view.TrustedDomains = canonicalHostSet(view.TrustedDomains)
 	view.Taint.TrustedMCPServers = sortedCopy(view.Taint.TrustedMCPServers)
 	view.A2AScanning.TrustedAgentCardKeys = canonicalA2ATrustedCardKeys(view.A2AScanning.TrustedAgentCardKeys)
-	view.ResponseScanning.SizeExemptDomains = sortedCopy(view.ResponseScanning.SizeExemptDomains)
+	view.ResponseScanning.ExemptDomains = canonicalHostSet(view.ResponseScanning.ExemptDomains)
+	view.ResponseScanning.SizeExemptDomains = canonicalHostSet(view.ResponseScanning.SizeExemptDomains)
 	view.ResponseScanning.UnscannablePassthrough = canonicalUnscannablePassthrough(view.ResponseScanning.UnscannablePassthrough)
 	view.ResponseScanning.AuthenticatedArtifacts = canonicalAuthenticatedArtifacts(view.ResponseScanning.AuthenticatedArtifacts)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
-	view.RequestBodyScanning.ContentEntropyExclusions = sortedCopy(view.RequestBodyScanning.ContentEntropyExclusions)
-	view.RequestBodyScanning.TrustedHosts = sortedCopy(view.RequestBodyScanning.TrustedHosts)
+	view.FetchProxy.Monitoring.Blocklist = canonicalHostSet(view.FetchProxy.Monitoring.Blocklist)
+	view.FetchProxy.Monitoring.SubdomainEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.SubdomainEntropyExclusions)
+	view.FetchProxy.Monitoring.QueryEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.QueryEntropyExclusions)
+	view.RequestBodyScanning.ContentEntropyExclusions = canonicalHostSet(view.RequestBodyScanning.ContentEntropyExclusions)
+	view.RequestBodyScanning.TrustedHosts = canonicalHostSet(view.RequestBodyScanning.TrustedHosts)
 	view.RequestBodyScanning.ContentEntropyWarnRoutes = canonicalRequestBodyEntropyWarnRoutes(view.RequestBodyScanning.ContentEntropyWarnRoutes)
 	view.RequestBodyScanning.SigV4CredentialRoutes = canonicalRequestBodySigV4CredentialRoutes(view.RequestBodyScanning.SigV4CredentialRoutes)
-	view.WebSocketProxy.ContentEntropyExclusions = sortedCopy(view.WebSocketProxy.ContentEntropyExclusions)
+	view.WebSocketProxy.ContentEntropyExclusions = canonicalHostSet(view.WebSocketProxy.ContentEntropyExclusions)
 	if view.Redaction.Enabled {
-		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
+		view.Redaction.AllowlistUnparseable = canonicalHostSet(view.Redaction.AllowlistUnparseable)
 	} else {
 		view.Redaction.AllowlistUnparseable = nil
 	}
@@ -492,7 +496,7 @@ func canonicalRedactionProviders(enabled bool, providers map[string]redact.Provi
 	out := make(map[string]redact.ProviderSpec, len(providers))
 	for name, spec := range providers {
 		cpy := spec
-		cpy.HostPatterns = sortedCopy(cpy.HostPatterns)
+		cpy.HostPatterns = canonicalHostSet(cpy.HostPatterns)
 		cpy.PathPrefixes = sortedCopy(cpy.PathPrefixes)
 		out[name] = cpy
 	}
@@ -507,6 +511,27 @@ func sortedCopy(s []string) []string {
 	}
 	out := make([]string, len(s))
 	copy(out, s)
+	sort.Strings(out)
+	return out
+}
+
+// canonicalHostSet returns a sorted, lowercase copy of a set-like host or host
+// pattern list. Host matching is case-insensitive, so case-only edits cannot
+// represent a different effective policy or change its canonical hash.
+func canonicalHostSet(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(s))
+	out := make([]string, 0, len(s))
+	for _, host := range s {
+		host = strings.TrimSuffix(strings.ToLower(host), ".")
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
 	sort.Strings(out)
 	return out
 }

@@ -1129,6 +1129,13 @@ func (c *Config) validateDLPPatternConfig() error {
 		if err := ValidateTrustedDomains(p.ExemptDomains, fmt.Sprintf("DLP pattern %q exempt_domains", p.Name)); err != nil {
 			return err
 		}
+		// The immutable floor ignores exemptions, so a pattern that reuses a
+		// core name with exempt_domains would document an allowance the scanner
+		// never grants. Refuse it at load and reload instead of shipping a knob
+		// that silently does nothing for that credential class.
+		if len(p.ExemptDomains) > 0 && IsCoreDLPPatternName(p.Name) {
+			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential classes are blocked on every destination", p.Name)
+		}
 	}
 
 	if err := validateCanaryTokens(c); err != nil {

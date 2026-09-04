@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/hex"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,12 +18,102 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+func TestBuildImagesBrokerPreflightArgumentsPassCheckConfig(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "fly-playground", "build-images.sh"))
+	if err != nil {
+		t.Fatalf("read build-images.sh: %v", err)
+	}
+	const start = "BROKER_PREFLIGHT_ARGS=("
+	section := string(raw)
+	startAt := strings.Index(section, start)
+	if startAt < 0 {
+		t.Fatal("build-images.sh has no broker preflight argument array")
+	}
+	section = section[startAt+len(start):]
+	endAt := strings.Index(section, "\n)")
+	if endAt < 0 {
+		t.Fatal("broker preflight argument array is not terminated")
+	}
+	args := strings.Fields(section[:endAt])
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<!doctype html><title>preflight</title>"), 0o600); err != nil {
+		t.Fatalf("write preflight UI: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "/srv/ui" {
+			args[i] = staticDir
+		}
+	}
+
+	t.Setenv(envOrchestratorKey, "")
+	cmd := newRootCmd()
+	cmd.SetArgs(args)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("shipped broker preflight rejected by --check-config: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "valid") {
+		t.Fatalf("preflight output = %q, want validity statement", out.String())
+	}
+}
+
+func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
+	tmp := t.TempDir()
+	dockerLog := filepath.Join(tmp, "docker.log")
+	dockerPath := filepath.Join(tmp, "docker")
+	dockerStub := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$DOCKER_LOG\"\n"
+	if err := os.WriteFile(dockerPath, []byte(dockerStub), 0o600); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+	// The temporary file has to be executable because build-images.sh resolves
+	// docker through PATH. It contains only the fixed test stub above.
+	if err := os.Chmod(dockerPath, 0o700); err != nil { // #nosec G302 -- executable test stub
+		t.Fatalf("make docker stub executable: %v", err)
+	}
+	cmd := exec.CommandContext(t.Context(), "bash", "../../deploy/fly-playground/build-images.sh", "--only", "vm")
+	cmd.Env = append(os.Environ(),
+		"PATH="+tmp+":"+os.Getenv("PATH"),
+		"DOCKER_LOG="+dockerLog,
+		"PLAYGROUND_REGISTRY=registry.example/playground",
+		"PLAYGROUND_UI_DIR=",
+		"PLAYGROUND_PUSH=",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("VM-only build failed: %v\n%s", err, output)
+	}
+	logBytes, err := os.ReadFile(filepath.Clean(dockerLog))
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "Dockerfile") || strings.Contains(logText, "Dockerfile.broker") || strings.Contains(logText, " run ") {
+		t.Fatalf("VM-only docker calls = %q", logText)
+	}
+}
+
 // A malformed root must fail closed. Serving with an unusable signing root
 // would mint delegations nothing can verify.
 func TestResolveOrchestratorRoot_MalformedFailsClosed(t *testing.T) {
 	t.Setenv(envOrchestratorRoot, "not-hex-at-all")
 	if _, err := resolveOrchestratorRoot(&serveFlags{requireSessionSecrets: true}); err == nil {
 		t.Fatal("a malformed orchestrator root must fail closed")
+	}
+}
+
+// Production derives delegated-signing enforcement from the existing session
+// secret policy. An absent root must name the default deployment variable so
+// the operator can repair the startup refusal directly.
+func TestResolveOrchestratorRoot_MissingProductionRootNamesEnvironment(t *testing.T) {
+	t.Setenv(envOrchestratorRoot, "")
+	_, err := resolveOrchestratorRoot(&serveFlags{requireSessionSecrets: true})
+	if err == nil {
+		t.Fatal("an absent production orchestrator root must fail closed")
+	}
+	if !strings.Contains(err.Error(), envOrchestratorRoot) {
+		t.Fatalf("error %v must name %s", err, envOrchestratorRoot)
 	}
 }
 
@@ -97,6 +189,37 @@ func TestRunServeCheckConfig_PassesWithCleanEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "valid") {
 		t.Fatalf("check-config output = %q, want a validity statement", out.String())
+	}
+}
+
+func TestRunServePrintRequiredEnvReportsNamesWithoutReadingValues(t *testing.T) {
+	f := testServeFlags(t, 0)
+	f.printRequiredEnv = true
+	f.requireSessionSecrets = true
+	f.flyTokenFile = ""
+	f.flyTokenEnv = "BROKER_FLY_TOKEN"
+	f.turnstileSecretEnv = "BROKER_TURNSTILE_SECRET"
+	f.unsafeNoHumanGate = false
+	f.turnstileSitekey = "site-key"
+	f.turnstileExpectedHostname = "playground.example"
+	f.turnstileExpectedAction = "playground-session"
+	f.image = "registry.example/playground@sha256:" + strings.Repeat("a", 64)
+	f.vmImageDigest = "sha256:" + strings.Repeat("a", 64)
+	t.Setenv("BROKER_FLY_TOKEN", "must-not-be-read-or-printed")
+
+	cmd := newServeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runServe(cmd, f); err != nil {
+		t.Fatalf("print required env: %v", err)
+	}
+	got := strings.Fields(out.String())
+	want := []string{"BROKER_FLY_TOKEN", "BROKER_TURNSTILE_SECRET", envModelKey, envOrchestratorRoot}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("required env = %q, want %q", got, want)
+	}
+	if strings.Contains(out.String(), "must-not-be-read-or-printed") {
+		t.Fatal("required-env report exposed an environment value")
 	}
 }
 

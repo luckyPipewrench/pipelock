@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,6 +138,7 @@ type serveFlags struct {
 	turnstileSitekey          string
 	turnstileOrigin           string
 	checkConfig               bool
+	printRequiredEnv          bool
 	sessionTTL                time.Duration
 	deadlineGrace             time.Duration
 	allowOrigin               string
@@ -240,6 +242,7 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.turnstileSitekey, "turnstile-sitekey", "", "public Cloudflare Turnstile site key; reported via /health so the viewer renders the widget (the secret is set separately via --turnstile-secret-*)")
 	fl.StringVar(&f.turnstileOrigin, "turnstile-origin", "", "validated browser origin used by the Turnstile widget and added to CSP only when configured")
 	fl.BoolVar(&f.checkConfig, "check-config", false, "validate flags and static UI compatibility, then exit without resolving secrets or contacting providers")
+	fl.BoolVar(&f.printRequiredEnv, "print-required-env", false, "print required environment variable names, one per line, then exit without reading their values")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", defaultSessionTTL, "VM session token TTL")
 	fl.DurationVar(&f.deadlineGrace, "deadline-grace", defaultGrace, "lease teardown grace after VM session expiry")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser")
@@ -281,6 +284,12 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	}
 	if err := validateStaticUI(f.staticDir, effectiveTurnstileOrigin(f), f.externalScriptOrigins); err != nil {
 		return err
+	}
+	if f.printRequiredEnv {
+		for _, name := range requiredEnvironmentNames(f) {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
+		}
+		return nil
 	}
 	if f.checkConfig {
 		if _, _, err := resolveBrokerCodes(f); err != nil {
@@ -349,6 +358,30 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		return err
 	}
 	return nil
+}
+
+func requiredEnvironmentNames(f *serveFlags) []string {
+	names := make([]string, 0, 6)
+	addEnvUnlessFile := func(file, configuredEnv, defaultEnv string, required bool) {
+		if strings.TrimSpace(file) != "" {
+			return
+		}
+		if name := strings.TrimSpace(configuredEnv); name != "" {
+			names = append(names, name)
+			return
+		}
+		if required && defaultEnv != "" {
+			names = append(names, defaultEnv)
+		}
+	}
+	addEnvUnlessFile(f.flyTokenFile, f.flyTokenEnv, "", true)
+	addEnvUnlessFile(f.gateSecretFile, f.gateSecretEnv, "", false)
+	addEnvUnlessFile(f.turnstileSecretFile, f.turnstileSecretEnv, "", false)
+	addEnvUnlessFile(f.adminTokenFile, f.adminTokenEnv, "", strings.TrimSpace(f.adminListen) != "")
+	addEnvUnlessFile(f.modelKeyFile, f.modelKeyEnv, envModelKey, f.requireSessionSecrets)
+	addEnvUnlessFile(f.orchestratorKeyFile, f.orchestratorKeyEnv, envOrchestratorRoot, f.requireSessionSecrets)
+	slices.Sort(names)
+	return slices.Compact(names)
 }
 
 func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), *broker.Pool, error) {
@@ -470,12 +503,16 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		GlobalDailyBudget:  f.globalDailyBudget,
 		SessionEnv:         sessionEnv,
 		OrchestratorRoot:   rootKey,
-		ImageDigest:        imageDigest,
-		InternalPort:       f.internalPort,
-		DeadlineGrace:      f.deadlineGrace,
-		TrustForwardedFor:  f.trustForwardedFor,
-		AllowOrigin:        f.allowOrigin,
-		ProviderHealth:     providerHealth,
+		// The existing production secret policy is also the signing policy: when
+		// session secrets are required, every visitor must use a root-authorized
+		// delegated key. Development keeps both optional through the same switch.
+		RequireDelegatedSigning: f.requireSessionSecrets,
+		ImageDigest:             imageDigest,
+		InternalPort:            f.internalPort,
+		DeadlineGrace:           f.deadlineGrace,
+		TrustForwardedFor:       f.trustForwardedFor,
+		AllowOrigin:             f.allowOrigin,
+		ProviderHealth:          providerHealth,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -1917,7 +1954,7 @@ func resolveSessionSecret(file, envName, flagName, defaultEnv string, required b
 			return v, nil
 		}
 		if required {
-			return "", fmt.Errorf("%s or --%s-env is required", flagName, strings.TrimPrefix(strings.TrimPrefix(flagName, "--"), "-"))
+			return "", fmt.Errorf("%s, %s, or %s is required", defaultEnv, flagName, strings.TrimSuffix(flagName, "-file")+"-env")
 		}
 		return "", nil
 	}

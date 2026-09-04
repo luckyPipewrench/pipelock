@@ -321,18 +321,27 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		// delegation would sign a run no published key authorized. Retain the
 		// verified root: the session key signs the manifest, but it must never
 		// be presented as the root that signed the delegation at seal time.
-		root, rootErr := trustedDelegationRoot()
+		resolved, rootErr := trustedDelegationRoot()
 		if rootErr != nil {
 			err = rootErr
 			return nil, err
 		}
+		// Copy and size-check BEFORE verifying, then use only the copy. The
+		// resolver hands back a slice this function does not own, so verifying
+		// the caller's slice and retaining a copy taken afterwards would let the
+		// bytes that were authenticated differ from the bytes kept for sealing
+		// and for the trust root stamped into the downloaded archive.
+		// Size is checked downstream by delegation verification, which owns that
+		// error contract; duplicating it here would only give the same refusal
+		// two different messages.
+		root := append(ed25519.PublicKey(nil), resolved...)
 		if delErr := verifySessionDelegationWithRoot(root, opts.SessionPrivateKey, *opts.Delegation, opts.RunNonce); delErr != nil {
 			err = fmt.Errorf("session delegation: %w", delErr)
 			return nil, err
 		}
 		lr.orchestratorPriv = opts.SessionPrivateKey
 		lr.orchestratorPub = lr.orchestratorPriv.Public().(ed25519.PublicKey)
-		lr.delegationRoot = append(ed25519.PublicKey(nil), root...)
+		lr.delegationRoot = root
 	case opts.OrchestratorKeyPath != "":
 		var loadErr error
 		lr.orchestratorPriv, loadErr = LoadOrchestratorSigningKey(opts.OrchestratorKeyPath)

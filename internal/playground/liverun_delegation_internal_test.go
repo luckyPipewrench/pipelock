@@ -433,3 +433,45 @@ func TestVerifySessionDelegation_RefusesMalformedPrivateKey(t *testing.T) {
 		t.Fatal("a malformed session private key must be refused")
 	}
 }
+
+// The resolver hands back a slice the run does not own. Verification and the
+// retained root must therefore read the same immutable bytes: if the run kept a
+// copy taken after verification, a resolver that reused or mutated its buffer
+// could authenticate one key and stamp a different one into the sealed archive.
+func TestStartLiveRun_RetainedRootIgnoresResolverMutation(t *testing.T) {
+	root := testRunRoot(t)
+	const nonce = "resolver-mutation-nonce"
+
+	minted, err := MintSessionDelegation(root, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	// Hand back one shared, mutable buffer on every call.
+	previous := trustedDelegationRoot
+	shared := append(ed25519.PublicKey(nil), root.Public().(ed25519.PublicKey)...)
+	trustedDelegationRoot = func() (ed25519.PublicKey, error) { return shared, nil }
+	t.Cleanup(func() { trustedDelegationRoot = previous })
+
+	want := hex.EncodeToString(shared)
+
+	lr, err := StartLiveRun(t.Context(), LiveRunOpts{
+		ScenarioID:        LiveDemoScenarioID,
+		RunNonce:          nonce,
+		SessionPrivateKey: minted.PrivateKey,
+		Delegation:        &minted.Delegation,
+	})
+	if err != nil {
+		t.Fatalf("StartLiveRun: %v", err)
+	}
+	defer lr.Close()
+
+	// Corrupt the resolver's buffer after the run started.
+	for i := range shared {
+		shared[i] ^= 0xff
+	}
+
+	if got := lr.OrchestratorPubHex(); got != want {
+		t.Fatalf("retained root = %s, want %s; the run kept the resolver's buffer instead of its own copy", got, want)
+	}
+}

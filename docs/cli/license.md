@@ -254,13 +254,18 @@ The public key is resolved in order: `--public-key`, then the embedded build key
 
 ## Enterprise Eval and Enterprise Trial
 
-The time-boxed **Enterprise Eval** and **Enterprise Trial** tiers grant the full
-Enterprise feature set (`agents` + `fleet`) for 60 days, non-renewing, one per
-customer email. They are fulfilled as hosted self-service flows: purchase the
-eval or start the trial, receive a signed token by email, then `pipelock license
-install TOKEN` and confirm with `pipelock license status`. A refund revokes the
-evaluation or trial through the signed revocation list, and the runtime tears
-the paid features back down to free.
+The time-boxed **Enterprise Eval** and **Enterprise Trial** tiers both grant the
+full Enterprise feature set (`agents` + `fleet`) for 60 days with no renewal, and
+both allow one active, unexpired entitlement per normalized customer email. They
+differ in how they are obtained. Enterprise Eval is a paid one-time order that the
+service validates against the provider before minting. Enterprise Trial is a
+zero-dollar one-time order; after a trial's 60 days end, the same email may start
+another. Both are fulfilled as hosted self-service flows: purchase the eval or
+start the trial, receive a signed token by email, then `pipelock license install
+TOKEN` and confirm with `pipelock license status`. A refund revokes the
+evaluation or trial through the signed revocation list and the runtime tears the
+paid features back down to free; a refunded trial keeps its email's slot occupied
+until the original 60 days would have ended.
 
 ## See also
 

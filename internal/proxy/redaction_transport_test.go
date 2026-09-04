@@ -778,7 +778,7 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 		cfg.Enforce = &enforceTrue
 		applyRedactionTestProfile(cfg)
 		cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1", backendAddr)
-		cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1", backendAddr)
+		cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1")
 	})
 	defer proxyCleanup()
 

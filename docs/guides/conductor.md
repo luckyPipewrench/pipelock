@@ -73,8 +73,8 @@ authenticate batches for another.
 ## Licensing and gating
 
 Conductor and the fleet control plane are gated by the `fleet` feature, which
-the **Enterprise** tier grants (the time-boxed **Enterprise Eval** tier grants
-the same `fleet` feature for 60 days). The gate is binary-enforced and
+the **Enterprise** tier grants (the time-boxed **Enterprise Eval** and
+**Enterprise Trial** tiers grant the same `fleet` feature for 60 days). The gate is binary-enforced and
 fail-closed: `pipelock conductor serve`, `pipelock conductor bootstrap`,
 `pipelock fleet-sink`, and `pipelock run` with `conductor.enabled: true` all call
 the fleet license check at startup and refuse to proceed without a valid

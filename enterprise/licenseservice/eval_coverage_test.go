@@ -330,6 +330,14 @@ func TestCountActiveTrialForEmailClosedDB(t *testing.T) {
 	}
 }
 
+func TestCountActiveTierForEmailRejectsNonTrialTier(t *testing.T) {
+	db := openTestDB(t)
+	_, err := db.CountActiveTierForEmail(t.Context(), tierEnterprise, "tier@example.com", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "not a trial tier") {
+		t.Fatalf("CountActiveTierForEmail non-trial tier error = %v, want refusal", err)
+	}
+}
+
 func TestCountActiveTrialForEmailCanonicalizesLegacyRows(t *testing.T) {
 	db := openTestDB(t)
 	ctx := t.Context()

@@ -7,6 +7,7 @@ package licenseservice
 
 import (
 	"context"
+	"html/template"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -272,6 +273,7 @@ func TestTierDisplayName(t *testing.T) {
 		{tierPro, "Pro"},
 		{tierEnterprise, "Enterprise"},
 		{tierEnterpriseEval, "Enterprise Eval"},
+		{tierEnterpriseTrial, "Enterprise Trial"},
 		{"unknown", "unknown"},
 	}
 
@@ -343,6 +345,49 @@ func TestEmailSender_SendLicenseDelivery_EnterpriseEvalValidity(t *testing.T) {
 	}
 	if strings.Contains(gotBody, "will be automatically refreshed before expiration") {
 		t.Errorf("enterprise eval email must not claim automatic refresh, body = %s", gotBody)
+	}
+}
+
+func TestEmailSender_SendLicenseDelivery_EnterpriseTrialValidity(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"msg_enterprise_trial"}`))
+	}))
+	defer srv.Close()
+
+	sender := &EmailSender{
+		apiKey:    "re_" + "test_enterprise_trial",
+		fromEmail: "noreply@pipelock.dev",
+		client:    srv.Client(),
+		apiURL:    srv.URL,
+	}
+
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token_enterprise_trial", tierEnterpriseTrial, "test-intermediate-cert")
+	if err != nil {
+		t.Fatalf("SendLicenseDelivery enterprise trial: %v", err)
+	}
+	if !strings.Contains(gotBody, "Your Pipelock Enterprise Trial License") {
+		t.Errorf("enterprise trial subject missing, body = %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "valid for 60 days") || !strings.Contains(gotBody, "This is an Enterprise trial") {
+		t.Errorf("enterprise trial email should state its 60-day Enterprise validity, body = %s", gotBody)
+	}
+	if strings.Contains(gotBody, "will be automatically refreshed before expiration") {
+		t.Errorf("enterprise trial email must not claim automatic refresh, body = %s", gotBody)
+	}
+}
+
+func TestEmailSender_SendLicenseDelivery_RenderFailure(t *testing.T) {
+	original := licenseEmailTmpl
+	licenseEmailTmpl = template.Must(template.New("license").Parse(`{{template "missing"}}`))
+	t.Cleanup(func() { licenseEmailTmpl = original })
+
+	sender := NewEmailSender("re_"+"test_render_failure", "noreply@pipelock.dev")
+	if _, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierEnterpriseTrial, "cert"); err == nil || !strings.Contains(err.Error(), "render license email") {
+		t.Fatalf("SendLicenseDelivery render error = %v, want render failure", err)
 	}
 }
 

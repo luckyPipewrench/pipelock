@@ -206,11 +206,11 @@ func LoadConfig() (*Config, error) {
 		if product.ProductID == "" {
 			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS contains an empty product ID")
 		}
-		// enterprise_eval and trial are one-time purchases handled by the order
+		// enterprise_eval and the trial tiers are one-time purchases handled by the order
 		// path with its own allowlist, so they never belong here. assess is a
 		// live recurring product and must be allowlistable, or an Assess
 		// customer can never be mapped once enforcement is on.
-		if !validTiers[product.Tier] || product.Tier == tierEnterpriseEval || product.Tier == tierTrial {
+		if !validTiers[product.Tier] || product.Tier == tierEnterpriseEval || product.Tier == tierEnterpriseTrial || product.Tier == tierTrial {
 			return nil, fmt.Errorf("SUBSCRIPTION_PRODUCTS product %s has invalid subscription tier %q", product.ProductID, product.Tier)
 		}
 		if product.Interval == "" {
@@ -234,14 +234,11 @@ func LoadConfig() (*Config, error) {
 		if product.ProductID == "" {
 			return nil, fmt.Errorf("ORDER_PRODUCTS contains an empty product ID")
 		}
-		if !validTiers[product.Tier] || product.Tier != tierTrial {
+		if !validTiers[product.Tier] || (product.Tier != tierTrial && product.Tier != tierEnterpriseTrial) {
 			return nil, fmt.Errorf("ORDER_PRODUCTS product %s has invalid one-time tier %q", product.ProductID, product.Tier)
 		}
-		// A trial is deliberately a zero-amount product, and the tier check
-		// above already restricts ORDER_PRODUCTS to the trial tier, so only
-		// negative amounts are invalid here. If a non-trial one-time tier is
-		// ever allowed, it must reinstate a positive-amount requirement so a
-		// misconfigured paid product can never silently become free.
+		// Trial products are deliberately allowed to be zero-dollar orders, so
+		// only negative amounts are invalid here.
 		if product.AmountCents < 0 {
 			return nil, fmt.Errorf("ORDER_PRODUCTS product %s must set a non-negative amount_cents", product.ProductID)
 		}

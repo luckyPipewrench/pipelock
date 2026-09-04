@@ -170,6 +170,11 @@ func TestExpiryWarningMessage(t *testing.T) {
 			want: "Enterprise evaluation ends in 7 day(s) on 2026-06-01; licensed runtime surfaces stop at expiry. See https://pipelab.org/pricing/",
 		},
 		{
+			name: "enterprise trial",
+			tier: "enterprise_trial",
+			want: "Enterprise trial ends in 7 day(s) on 2026-06-01; Enterprise features stop at expiry. Subscribe at https://pipelab.org/pricing/",
+		},
+		{
 			name: "subscription",
 			tier: "pro",
 			want: "license expires in 7 day(s) on 2026-06-01; check billing or token delivery",

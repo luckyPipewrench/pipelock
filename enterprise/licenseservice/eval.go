@@ -254,6 +254,16 @@ func (h *WebhookHandler) HandleOrderRefundEvent(ctx context.Context, event *Pola
 		return fmt.Errorf("load eval order for refund: %w", err)
 	}
 	if existing == nil && !h.isEvalOrderCandidate(order) {
+		trialEntitlement, err := h.db.GetBySubscriptionID(ctx, order.ID)
+		if err != nil {
+			return fmt.Errorf("load entitlement for refund: %w", err)
+		}
+		if trialEntitlement != nil && isRefundableOneTimeTrial(trialEntitlement) {
+			return h.revokeOneTimeTrialForOrder(ctx, trialEntitlement, order, refundState, msgID, event.Type)
+		}
+		if isTrialTier(order.Product.Metadata["pipelock_tier"]) {
+			return fmt.Errorf("refunded one-time trial %s has no matching entitlement", order.ID)
+		}
 		return h.db.MarkWebhookCommitted(ctx, msgID, event.Type, order.ID)
 	}
 
@@ -270,29 +280,18 @@ func (h *WebhookHandler) revokeEvalForOrder(ctx context.Context, order *PolarOrd
 		return fmt.Errorf("load eval order for revoke: %w", err)
 	}
 
-	issuances, err := h.db.ListUnexpiredLicenseIssuances(ctx, order.ID, now)
-	if err != nil {
-		_ = h.ledger.LogError(order.ID, "list issuances for eval revoke", err)
-		return fmt.Errorf("list issuances for eval revoke: %w", err)
-	}
 	reason := refundRevocationReason(refundState)
-	revoked := false
+	issuances, err := h.revokeUnexpiredLicenses(ctx, order.ID, reason, now)
+	if err != nil {
+		_ = h.ledger.LogError(order.ID, "revoke eval licenses", err)
+		return fmt.Errorf("revoke eval licenses: %w", err)
+	}
 	for _, iss := range issuances {
-		if err := h.db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
-			LicenseID:      iss.LicenseID,
-			SubscriptionID: order.ID,
-			Reason:         reason,
-			RevokedAt:      now,
-		}); err != nil {
-			_ = h.ledger.LogError(order.ID, "record eval revocation", err)
-			return fmt.Errorf("record eval revocation: %w", err)
-		}
-		revoked = true
 		_ = h.ledger.Log(AuditEntry{Event: AuditEvalRefundRevoked, SubscriptionID: order.ID, LicenseID: iss.LicenseID, Detail: reason})
 	}
 
 	revocationState := revocationApplied
-	if !revoked {
+	if len(issuances) == 0 {
 		// Refund before any license was minted: remember to refuse a later mint.
 		revocationState = revocationPendingNoLicense
 	}
@@ -319,6 +318,46 @@ func (h *WebhookHandler) revokeEvalForOrder(ctx context.Context, order *PolarOrd
 		return fmt.Errorf("mark refund webhook committed: %w", err)
 	}
 	return nil
+}
+
+func isRefundableOneTimeTrial(entitlement *Entitlement) bool {
+	return entitlement.BillingInterval == billingIntervalOneTime && isTrialTier(entitlement.Tier)
+}
+
+func (h *WebhookHandler) revokeOneTimeTrialForOrder(ctx context.Context, entitlement *Entitlement, order *PolarOrder, refundState, msgID, eventType string) error {
+	now := time.Now().UTC()
+	reason := refundRevocationReason(refundState)
+	if _, err := h.revokeUnexpiredLicenses(ctx, order.ID, reason, now); err != nil {
+		_ = h.ledger.LogError(order.ID, "revoke one-time trial licenses", err)
+		return fmt.Errorf("revoke one-time trial licenses: %w", err)
+	}
+	entitlement.Status = statusRevoked
+	entitlement.NextRefreshAt = nil
+	if err := h.db.Upsert(ctx, entitlement); err != nil {
+		return fmt.Errorf("revoke one-time trial entitlement: %w", err)
+	}
+	if err := h.db.MarkWebhookCommitted(ctx, msgID, eventType, order.ID); err != nil {
+		return fmt.Errorf("mark one-time trial refund webhook committed: %w", err)
+	}
+	return nil
+}
+
+func (h *WebhookHandler) revokeUnexpiredLicenses(ctx context.Context, orderID, reason string, now time.Time) ([]LicenseIssuance, error) {
+	issuances, err := h.db.ListUnexpiredLicenseIssuances(ctx, orderID, now)
+	if err != nil {
+		return nil, fmt.Errorf("list unexpired license issuances: %w", err)
+	}
+	for _, iss := range issuances {
+		if err := h.db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
+			LicenseID:      iss.LicenseID,
+			SubscriptionID: orderID,
+			Reason:         reason,
+			RevokedAt:      now,
+		}); err != nil {
+			return nil, fmt.Errorf("record license revocation: %w", err)
+		}
+	}
+	return issuances, nil
 }
 
 // deliverEvalToken sends the eval license email and records delivery status. On

@@ -252,14 +252,15 @@ The public key is resolved in order: `--public-key`, then the embedded build key
 (if the binary was built with one), then the configured license public key
 (config file or `PIPELOCK_LICENSE_PUBLIC_KEY`).
 
-## Enterprise Eval
+## Enterprise Eval and Enterprise Trial
 
-The time-boxed **Enterprise Eval** tier grants the full Enterprise feature set
-(`agents` + `fleet`) for 60 days, non-renewing, one per customer email. It is
-fulfilled as a hosted self-service flow: purchase the eval, receive a signed
-token by email, then `pipelock license install TOKEN` and confirm with
-`pipelock license status`. A refund revokes the eval through the signed
-revocation list, and the runtime tears the paid features back down to free.
+The time-boxed **Enterprise Eval** and **Enterprise Trial** tiers grant the full
+Enterprise feature set (`agents` + `fleet`) for 60 days, non-renewing, one per
+customer email. They are fulfilled as hosted self-service flows: purchase the
+eval or start the trial, receive a signed token by email, then `pipelock license
+install TOKEN` and confirm with `pipelock license status`. A refund revokes the
+evaluation or trial through the signed revocation list, and the runtime tears
+the paid features back down to free.
 
 ## See also
 

@@ -1406,7 +1406,7 @@ func TestServer_StartRejectsFileSentryBlockWithoutSubprocessChild(t *testing.T) 
 	oldNew := newFileSentryWatcher
 	newFileSentryWatcher = func(*config.FileSentry, filesentry.DLPScanner, filesentry.Lineage, func(error)) (filesentry.Watcher, error) {
 		t.Error("file sentry watcher constructed despite the block-mode refusal")
-		return newGatedFileSentryWatcher(nil), nil
+		return nil, errors.New("test: watcher must not be constructed")
 	}
 	t.Cleanup(func() { newFileSentryWatcher = oldNew })
 

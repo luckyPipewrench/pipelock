@@ -424,7 +424,14 @@ func (o MCPProxyOpts) responseTarget() string {
 // responseScanOptions builds the per-server suppression context passed into
 // the stdio response scan (ScanResponseOpts).
 func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
-	auditContext := mustMCPAuditContext(o.AuditLogger, "MCP", o.responseTarget())
+	// The audit resource falls back to a stable label when no server name is
+	// configured (the HTTP listener path), so building the context never logs
+	// a spurious "resource required" error and the record still names a
+	// surface an operator can search for.
+	auditResource := o.responseTarget()
+	if auditResource == "" {
+		auditResource = "mcp://response"
+	}
 	return ResponseScanOptions{
 		Target:         o.responseTarget(),
 		Suppress:       o.responseSuppress(),
@@ -432,9 +439,11 @@ func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
 		TrustClass:     o.responseTrustClass(),
 		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 			if o.AuditLogger != nil {
-				o.AuditLogger.LogDLPDropped(auditContext, match.PatternName, match.Severity, "mcp_stdio", reason)
+				o.AuditLogger.LogDLPDropped(mustMCPAuditContext(o.AuditLogger, "MCP", auditResource), match.PatternName, match.Severity, "mcp_stdio", reason)
 			}
-			o.Metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_stdio", reason)
+			if o.Metrics != nil {
+				o.Metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_stdio", reason)
+			}
 		},
 	}
 }

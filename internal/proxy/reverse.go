@@ -1292,17 +1292,22 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	maxBytes := reverseRequestScanMaxBytes(cfg)
 
 	bodyReq := BodyScanRequest{
-		Body:             r.Body,
-		Trailer:          r.Trailer,
-		Scheme:           rp.upstream.Scheme,
-		Method:           r.Method,
-		ContentType:      r.Header.Get("Content-Type"),
-		ContentEncoding:  r.Header.Get("Content-Encoding"),
-		MaxBytes:         maxBytes,
-		Scanner:          sc,
-		Host:             rp.upstream.Hostname(),
-		Path:             r.URL.Path,
-		EntropyRoutePath: r.URL.EscapedPath(),
+		Body:            r.Body,
+		Trailer:         r.Trailer,
+		Scheme:          rp.upstream.Scheme,
+		Method:          r.Method,
+		ContentType:     r.Header.Get("Content-Type"),
+		ContentEncoding: r.Header.Get("Content-Encoding"),
+		MaxBytes:        maxBytes,
+		Scanner:         sc,
+		Host:            rp.upstream.Hostname(),
+		Path:            r.URL.Path,
+		// Route exceptions (SigV4 credential routes, entropy warn routes) name
+		// the request as it leaves toward the upstream, so they match the
+		// joined upstream path, not the inbound one: an upstream with a base
+		// path must not let a route for the bare inbound path exempt a request
+		// that actually reaches the base-prefixed path.
+		EntropyRoutePath: joinReversePaths(rp.upstream.EscapedPath(), r.URL.EscapedPath()),
 		Target:           receiptInput.Target,
 		Suppress:         cfg.Suppress,
 		Action:           cfg.RequestBodyScanning.Action,
@@ -1310,6 +1315,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		PatternActions:   cfg.RequestBodyScanning.PatternActions,
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
+	applySigV4CredentialRouteConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 

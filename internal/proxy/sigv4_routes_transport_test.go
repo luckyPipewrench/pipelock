@@ -47,14 +47,22 @@ func sigV4CredentialRouteTestConfig() *config.Config {
 func TestReverseProxy_SigV4CredentialRoutes(t *testing.T) {
 	t.Parallel()
 
+	presigned := `{"url":"` + sigV4CredentialRouteTestURL() + `"}`
 	for _, tc := range []struct {
-		name     string
-		upstream string
-		path     string
-		blocked  bool
+		name        string
+		upstream    string
+		path        string
+		method      string
+		contentType string
+		body        string
+		blocked     bool
 	}{
-		{name: "allows configured route", upstream: "https://api.vendor.example", path: "/v1/graphql"},
-		{name: "blocks outside configured route", upstream: "https://other.vendor.example", path: "/v1/graphql", blocked: true},
+		{name: "allows configured route", upstream: "https://api.vendor.example", path: "/v1/graphql", method: http.MethodPost, contentType: contentTypeJSON, body: presigned},
+		{name: "blocks outside configured route host", upstream: "https://other.vendor.example", path: "/v1/graphql", method: http.MethodPost, contentType: contentTypeJSON, body: presigned, blocked: true},
+		{name: "blocks outside configured route path", upstream: "https://api.vendor.example", path: "/v2/graphql", method: http.MethodPost, contentType: contentTypeJSON, body: presigned, blocked: true},
+		{name: "blocks outside configured route method", upstream: "https://api.vendor.example", path: "/v1/graphql", method: http.MethodPut, contentType: contentTypeJSON, body: presigned, blocked: true},
+		{name: "blocks outside configured route content type", upstream: "https://api.vendor.example", path: "/v1/graphql", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", body: "url=" + url.QueryEscape(sigV4CredentialRouteTestURL()), blocked: true},
+		{name: "matching route still blocks a separate secret", upstream: "https://api.vendor.example", path: "/v1/graphql", method: http.MethodPost, contentType: contentTypeJSON, body: `{"url":"` + sigV4CredentialRouteTestURL() + `","key":"` + fakeAPIKey() + `"}`, blocked: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := sigV4CredentialRouteTestConfig()
@@ -65,9 +73,8 @@ func TestReverseProxy_SigV4CredentialRoutes(t *testing.T) {
 				t.Fatalf("parse upstream: %v", err)
 			}
 			handler := &ReverseProxyHandler{upstream: upstream, logger: audit.NewNop(), metrics: metrics.New(), captureObs: capture.NopObserver{}}
-			body := `{"url":"` + sigV4CredentialRouteTestURL() + `"}`
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://proxy.vendor.example"+tc.path, strings.NewReader(body))
-			req.Header.Set("Content-Type", contentTypeJSON)
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, "https://proxy.vendor.example"+tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
 			rec := httptest.NewRecorder()
 			blocked, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: tc.upstream + tc.path})
 			if blocked != tc.blocked {

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -311,5 +312,39 @@ func TestParseOrchestratorPrivateKeyHex_RejectsMalformedShapes(t *testing.T) {
 				t.Fatalf("%q must be refused", tc.name)
 			}
 		})
+	}
+}
+
+// A delegated run cannot be authorized when the trusted root itself is
+// unreadable. Refusing is the only safe direction: continuing would sign a run
+// under a session key nothing verified, which is the state that produced a
+// bundle no visitor could verify.
+func TestStartLiveRun_RefusesWhenTrustedRootUnavailable(t *testing.T) {
+	root := testRunRoot(t)
+	const nonce = "unreadable-root-nonce"
+
+	minted, err := MintSessionDelegation(root, nonce, testRunImageDigest, time.Now().UTC(), 0)
+	if err != nil {
+		t.Fatalf("MintSessionDelegation: %v", err)
+	}
+
+	previous := trustedDelegationRoot
+	trustedDelegationRoot = func() (ed25519.PublicKey, error) {
+		return nil, errors.New("published root unavailable")
+	}
+	t.Cleanup(func() { trustedDelegationRoot = previous })
+
+	lr, err := StartLiveRun(t.Context(), LiveRunOpts{
+		ScenarioID:        LiveDemoScenarioID,
+		RunNonce:          nonce,
+		SessionPrivateKey: minted.PrivateKey,
+		Delegation:        &minted.Delegation,
+	})
+	if err == nil {
+		lr.Close()
+		t.Fatal("an unreadable trusted root must refuse the run")
+	}
+	if !strings.Contains(err.Error(), "published root unavailable") {
+		t.Fatalf("error = %v, want the trusted-root failure surfaced", err)
 	}
 }

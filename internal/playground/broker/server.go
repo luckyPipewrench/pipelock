@@ -373,8 +373,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		}
 	}
 	// SessionEnv reaches every visitor VM. Keep an owned copy so a caller cannot
-	// add the durable root after this validation completes.
+	// add the durable root after this validation completes. Own the signing key
+	// for the same reason: callers must not be able to erase or replace it after
+	// the startup self-check reports success.
 	cfg.SessionEnv = maps.Clone(cfg.SessionEnv)
+	cfg.OrchestratorRoot = bytes.Clone(cfg.OrchestratorRoot)
 	for _, source := range []struct {
 		name string
 		env  map[string]string

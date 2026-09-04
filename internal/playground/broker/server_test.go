@@ -462,6 +462,11 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid delegated root config rejected: %v", err)
 	}
+	originalRootByte := delegated.cfg.OrchestratorRoot[0]
+	root[0] ^= 0xff
+	if delegated.cfg.OrchestratorRoot[0] != originalRootByte {
+		t.Fatal("Server retained the caller's mutable orchestrator root")
+	}
 	delegated.Close()
 
 	customClient := &http.Client{}

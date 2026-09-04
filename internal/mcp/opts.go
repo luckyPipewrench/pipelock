@@ -445,6 +445,14 @@ func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
 				o.Metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_stdio", reason)
 			}
 		},
+		OnSuppressedResponse: func(match scanner.ResponseMatch) {
+			if o.AuditLogger != nil {
+				o.AuditLogger.LogDLPDropped(mustMCPAuditContext(o.AuditLogger, "MCP", auditResource), match.PatternName, "informational", "mcp_stdio", "suppressed")
+			}
+			if o.Metrics != nil {
+				o.Metrics.RecordDLPDroppedMatch(match.PatternName, "mcp_stdio", "suppressed")
+			}
+		},
 	}
 }
 

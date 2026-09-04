@@ -6,11 +6,17 @@ package mcp
 import (
 	"bytes"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 // nonCoreResponseFinding trips the configurable New Instructions response
@@ -91,6 +97,49 @@ func TestScanResponseOpts_PerServerSuppression(t *testing.T) {
 				t.Fatalf("clean=%v want %v (matches=%v)", v.Clean, tc.wantClean, v.Matches)
 			}
 		})
+	}
+}
+
+func TestMCPStdioSuppressedResponseRecordsDroppedDLP(t *testing.T) {
+	sc := testScanner(t)
+	line := suppressResponse(6)
+	base := ScanResponse(line, sc)
+	if base.Clean {
+		t.Fatal("baseline response must block before suppression")
+	}
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	m := metrics.New()
+	opts := MCPProxyOpts{
+		ServerName:  "code-assistant",
+		AuditLogger: logger,
+		Metrics:     m,
+		Suppress: []config.SuppressEntry{{
+			Rule: base.Matches[0].PatternName,
+			Path: "mcp://code-assistant/response",
+		}},
+	}.responseScanOptions()
+
+	if verdict := ScanResponseOpts(line, sc, opts); !verdict.Clean {
+		t.Fatalf("suppressed response verdict changed: %+v", verdict)
+	}
+	logger.Close()
+
+	metricOut := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(metricOut, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(metricOut.Body.String(), `pipelock_dlp_dropped_matches_total{pattern="New Instructions",reason="suppressed",surface="mcp_stdio"} 1`) {
+		t.Fatalf("dropped DLP metric missing: %s", metricOut.Body.String())
+	}
+	auditData, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if !strings.Contains(string(auditData), `"pattern":"New Instructions"`) || !strings.Contains(string(auditData), `"transport":"mcp_stdio"`) || !strings.Contains(string(auditData), `"reason":"suppressed"`) {
+		t.Fatalf("dropped DLP audit record missing: %s", auditData)
 	}
 }
 

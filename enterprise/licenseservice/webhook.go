@@ -33,6 +33,10 @@ const tokenLifetime = 45 * 24 * time.Hour
 // 30 days matches the one-time purchase duration (no renewal).
 const trialTokenLifetime = 30 * 24 * time.Hour
 
+// enterpriseTrialTokenLifetime is the validity period for Enterprise trial
+// license tokens. Enterprise trials are one-time and never renewed.
+const enterpriseTrialTokenLifetime = 60 * 24 * time.Hour
+
 // evalTokenLifetime is the validity period for Enterprise Eval license tokens.
 // 60 days matches the paid one-time eval window (no renewal). When it expires,
 // Conductor refuses to start; Apache-tier security scanning is unaffected.
@@ -56,24 +60,26 @@ const (
 
 // Tier constants for Pipelock subscription levels.
 const (
-	tierFoundingPro    = "founding_pro"
-	tierPro            = "pro"
-	tierEnterprise     = "enterprise"
-	tierEnterpriseEval = "enterprise_eval"
-	tierTrial          = "trial"
-	tierAssess         = "assess"
+	tierFoundingPro     = "founding_pro"
+	tierPro             = "pro"
+	tierEnterprise      = "enterprise"
+	tierEnterpriseEval  = "enterprise_eval"
+	tierEnterpriseTrial = "enterprise_trial"
+	tierTrial           = "trial"
+	tierAssess          = "assess"
 )
 
 // validTiers is the allowlist of accepted pipelock_tier metadata values.
 // Unknown tier values are rejected to prevent misconfigured Polar products
 // from silently granting paid features.
 var validTiers = map[string]bool{
-	tierFoundingPro:    true,
-	tierPro:            true,
-	tierEnterprise:     true,
-	tierEnterpriseEval: true,
-	tierTrial:          true,
-	tierAssess:         true,
+	tierFoundingPro:     true,
+	tierPro:             true,
+	tierEnterprise:      true,
+	tierEnterpriseEval:  true,
+	tierEnterpriseTrial: true,
+	tierTrial:           true,
+	tierAssess:          true,
 }
 
 // WebhookHandler processes Polar webhook events and coordinates license
@@ -373,6 +379,17 @@ func (h *WebhookHandler) handleActiveDelivery(ctx context.Context, ent *Entitlem
 			return nil
 		}
 		return err
+	}
+	if existing != nil &&
+		!refreshDue &&
+		h.isIdempotent(ent, existing) &&
+		existing.CustomerEmail == ent.CustomerEmail &&
+		existing.Org == ent.Org &&
+		ent.BillingInterval == billingIntervalOneTime {
+		if existing.LastLicenseID == "" || existing.LastLicenseIssuedAt == nil || existing.LastLicenseExpiresAt == nil {
+			return fmt.Errorf("one-time trial retry for %s has no persisted issuance", ent.SubscriptionID)
+		}
+		return h.resendSubscriptionIfNeeded(ctx, ent.SubscriptionID)
 	}
 
 	// Mint a new license token.
@@ -949,7 +966,6 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	if err != nil {
 		return fmt.Errorf("load existing entitlement for order %s: %w", order.ID, err)
 	}
-
 	// One active trial per normalized email, mirroring the Enterprise Eval
 	// rule. The entitlement stores the NORMALIZED email (the eval precedent)
 	// so the count comparison and the stored identity share one canonical
@@ -963,32 +979,47 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	// store, and a database-level constraint for multi-writer deployments is
 	// tracked separately.
 	customerEmail := order.Customer.Email
-	if tier == tierTrial {
+	if tier == tierTrial || tier == tierEnterpriseTrial {
 		email, err := NormalizeEmail(order.Customer.Email)
 		if err != nil {
-			return fmt.Errorf("normalize trial email for order %s: %w", order.ID, err)
+			return fmt.Errorf("normalize %s email for order %s: %w", tier, order.ID, err)
 		}
 		customerEmail = email
+		pending, err := h.db.GetEvalOrder(ctx, order.ID)
+		if err != nil {
+			return fmt.Errorf("load one-time trial refund state for order %s: %w", order.ID, err)
+		}
+		if pending != nil && (pending.RefundState != refundStateNone || pending.RevocationState != revocationNone) {
+			err := fmt.Errorf("one-time trial order %s refused: pending refund", order.ID)
+			_ = h.ledger.LogError(order.ID, "one-time trial fulfillment refused: pending refund", err)
+			return err
+		}
 		if existing == nil {
-			active, err := h.db.CountActiveTrialForEmail(ctx, email, time.Now())
+			active, err := h.db.CountActiveTierForEmail(ctx, tier, email, time.Now())
 			if err != nil {
-				return fmt.Errorf("count active trial for order %s: %w", order.ID, err)
+				return fmt.Errorf("count active %s for order %s: %w", tier, order.ID, err)
 			}
 			if active > 0 {
-				denial := fmt.Errorf("an active trial already exists for this email")
-				if lerr := h.ledger.LogError(order.ID, "trial denied", denial); lerr != nil {
+				denial := fmt.Errorf("an active %s already exists for this email", tier)
+				if lerr := h.ledger.LogError(order.ID, tier+" denied", denial); lerr != nil {
 					h.log.Warn().Err(lerr).
 						Str("order_id", order.ID).
 						Msg("trial denial could not be recorded in the audit ledger")
 				}
 				h.log.Warn().
 					Str("order_id", order.ID).
+					Str("tier", tier).
 					Msg("trial order denied: an active trial already exists for this email")
 				return nil
 			}
 		}
 	}
-
+	if existing != nil && existing.BillingInterval == billingIntervalOneTime &&
+		(existing.CustomerEmail != customerEmail || existing.Org != org) {
+		err := fmt.Errorf("one-time trial retry identity mismatch")
+		_ = h.ledger.LogError(order.ID, "one-time trial retry identity mismatch", err)
+		return err
+	}
 	var periodEnd time.Time
 	if existing != nil {
 		periodEnd = existing.CurrentPeriodEnd
@@ -1144,8 +1175,8 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 	switch tier {
 	case tierFoundingPro, tierPro, tierTrial:
 		return []string{license.FeatureAgents}
-	case tierEnterprise, tierEnterpriseEval:
-		// Enterprise (and the time-boxed Enterprise Eval) carry the fleet control
+	case tierEnterprise, tierEnterpriseEval, tierEnterpriseTrial:
+		// Enterprise, Enterprise Eval, and Enterprise Trial carry the fleet control
 		// plane (Conductor + audit sink) on top of the Pro multi-agent profile
 		// feature. Eval gets the same capabilities as full Enterprise; the only
 		// difference is the 60-day, non-renewing token lifetime. Add additional
@@ -1160,14 +1191,17 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 }
 
 // tokenLifetimeForTier returns the token validity period for a given tier.
-// Trials get 30 days and Enterprise Eval gets 60 days (both one-time, no
-// renewal). All other tiers get 45 days with rolling refresh.
+// Pro trials get 30 days; Enterprise Eval and Enterprise Trial get 60 days.
+// All one-time tiers have no renewal. Other tiers get 45 days with rolling
+// refresh.
 func (h *WebhookHandler) tokenLifetimeForTier(tier string) time.Duration {
 	switch tier {
 	case tierTrial:
 		return trialTokenLifetime
 	case tierEnterpriseEval:
 		return evalTokenLifetime
+	case tierEnterpriseTrial:
+		return enterpriseTrialTokenLifetime
 	default:
 		return tokenLifetime
 	}

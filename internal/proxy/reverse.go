@@ -1292,17 +1292,22 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	maxBytes := reverseRequestScanMaxBytes(cfg)
 
 	bodyReq := BodyScanRequest{
-		Body:             r.Body,
-		Trailer:          r.Trailer,
-		Scheme:           rp.upstream.Scheme,
-		Method:           r.Method,
-		ContentType:      r.Header.Get("Content-Type"),
-		ContentEncoding:  r.Header.Get("Content-Encoding"),
-		MaxBytes:         maxBytes,
-		Scanner:          sc,
-		Host:             rp.upstream.Hostname(),
-		Path:             r.URL.Path,
-		EntropyRoutePath: r.URL.EscapedPath(),
+		Body:            r.Body,
+		Trailer:         r.Trailer,
+		Scheme:          rp.upstream.Scheme,
+		Method:          r.Method,
+		ContentType:     r.Header.Get("Content-Type"),
+		ContentEncoding: r.Header.Get("Content-Encoding"),
+		MaxBytes:        maxBytes,
+		Scanner:         sc,
+		Host:            rp.upstream.Hostname(),
+		Path:            r.URL.Path,
+		// Route exceptions (SigV4 credential routes, entropy warn routes) name
+		// the request as it leaves toward the upstream, so they match the
+		// joined upstream path, not the inbound one: an upstream with a base
+		// path must not let a route for the bare inbound path exempt a request
+		// that actually reaches the base-prefixed path.
+		EntropyRoutePath: joinReversePaths(rp.upstream.EscapedPath(), r.URL.EscapedPath()),
 		Target:           receiptInput.Target,
 		Suppress:         cfg.Suppress,
 		Action:           cfg.RequestBodyScanning.Action,
@@ -1316,6 +1321,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		},
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
+	applySigV4CredentialRouteConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 
@@ -1493,6 +1499,7 @@ func reverseRequestContext(resp *http.Response) context.Context {
 
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	responseBodyLimit := rp.responseScanBodyLimit()
+	stripUpstreamShieldRewriteMarker(resp)
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
 	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
 	if cfg == nil || sc == nil {
@@ -2181,6 +2188,7 @@ responseScanning:
 					}
 				}
 				if decision.summary.TotalRewrites > 0 {
+					setShieldRewriteHeader(resp.Header, decision.summary)
 					resp.Header.Del("ETag")
 					resp.Header.Del("Content-MD5")
 					resp.Header.Del("Digest")
@@ -2308,6 +2316,7 @@ responseScanning:
 
 	// Browser Shield on reverse proxy responses - uses shared pipeline.
 	shieldChanged := false
+	var shieldSummary *receipt.ShieldSummary
 	shieldOutcomeReason := "complete"
 	if shieldActiveForHost {
 		// Oversize handling has to match the other transports. This path
@@ -2328,22 +2337,22 @@ responseScanning:
 			}
 			if decision.shieldable {
 				body = decision.body
+				shieldSummary = decision.summary
 				shieldChanged = decision.summary.TotalRewrites > 0
 				shieldOutcomeReason = decision.outcomeReason
 			}
 		} else {
 			originalBodyBytes := len(body)
-			var summary *receipt.ShieldSummary
-			body, summary = runShieldPipelineSharedResult(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
-			if summary != nil {
+			body, shieldSummary = runShieldPipelineSharedResult(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
+			if shieldSummary != nil {
 				shieldChanged = true
-				summary.BodyBytes = originalBodyBytes
-				summary.ScannedBytes = originalBodyBytes
+				shieldSummary.BodyBytes = originalBodyBytes
+				shieldSummary.ScannedBytes = originalBodyBytes
 				// Reverse proxy currently has no session manager
 				// context, so it reports the configured cap but
 				// records zero adaptive signals.
-				summary.AdaptiveSignalsRecorded = 0
-				summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
+				shieldSummary.AdaptiveSignalsRecorded = 0
+				shieldSummary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
 				emitReverseReceipt(receipt.EmitOpts{
 					ActionID:       receipt.NewActionID(),
 					ParentActionID: actionID,
@@ -2351,7 +2360,7 @@ responseScanning:
 					Layer:          browserShieldLayer,
 					Pattern:        browserShieldPattern,
 					Severity:       browserShieldSeverity,
-					Shield:         summary,
+					Shield:         shieldSummary,
 					Transport:      "reverse",
 					Method:         resp.Request.Method,
 					Target:         shieldReceiptTarget(resp.Request.URL.String()),
@@ -2362,6 +2371,7 @@ responseScanning:
 		}
 	}
 	if shieldChanged {
+		setShieldRewriteHeader(resp.Header, shieldSummary)
 		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 		resp.Header.Del("ETag")
 		resp.Header.Del("Content-MD5")

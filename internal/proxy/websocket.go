@@ -1390,8 +1390,12 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 func applyWebSocketContentEntropyConfig(req *BodyScanRequest, cfg *config.Config) {
 	applyContentEntropyConfig(req, cfg, cfg.WebSocketProxy.ContentEntropyExclusions)
 	// HTTP route exceptions must never become WebSocket frame exceptions if a
-	// future caller starts supplying a ws/wss or normalized HTTPS scheme.
+	// future caller starts supplying a ws/wss or normalized HTTPS scheme. A
+	// frame has no request method or declared content type for an exact route
+	// to match, so the SigV4 presigned-URL routes stay off here too and the DLP
+	// floor keeps blocking the embedded access-key ID.
 	req.ContentEntropyWarnRoutes = nil
+	req.SigV4CredentialRoutes = nil
 }
 
 // enforceClientControlPayload scans Ping and Pong application data without

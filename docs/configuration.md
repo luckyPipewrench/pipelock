@@ -384,6 +384,8 @@ request_body_scanning:
       reason: encrypted customer archives
       owner: storage team
       expires: 2099-12-31
+  trusted_hosts:                       # optional destinations where injection-shaped request text and fully redacted critical DLP follow `action` instead of hard blocking
+    - api.vendor.example
   sigv4_credential_routes:             # optional exact HTTPS body routes that carry presigned URLs
     - host: api.vendor.example
       path: /v1/graphql
@@ -397,7 +399,7 @@ request_body_scanning:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `true` | Enable request body/header DLP scanning and request body prompt-injection scanning |
-| `action` | `warn` | `warn` logs ordinary findings, `block` rejects ordinary findings (requires enforce mode). Immutable core DLP findings and prompt-injection hard-blocks still reject non-provider destinations in enforce mode; non-core DLP findings follow this action or a per-pattern override. |
+| `action` | `warn` | `warn` logs ordinary findings, `block` rejects ordinary findings (requires enforce mode). Immutable core DLP findings still reject in enforce mode on every destination; the one exception is a critical DLP finding whose every match the redactor rewrote (a `redaction` class from the redaction guide, so the forwarded body carries placeholders and no credential) on a host listed in `trusted_hosts`, which follows this action. Prompt-injection hard-blocks reject everywhere except `trusted_hosts`, where they follow this action; non-core DLP findings follow this action or a per-pattern override. |
 | `pattern_actions` | `{}` | Map of exact DLP pattern name to `warn` or `block` for request body/header DLP. The per-pattern action overrides `action` for that pattern only. Unknown pattern names and unsupported actions are rejected at config load. Immutable core DLP patterns cannot be downgraded to `warn`. |
 | `disable_patterns` | `[]` | Exact DLP pattern names to skip for request body/header DLP only. Unknown names are rejected at config load. Immutable core DLP patterns cannot be disabled. Disabling one pattern does not suppress other DLP matches in the same body or header set. |
 | `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |
@@ -412,6 +414,7 @@ request_body_scanning:
 | `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
 | `content_entropy_warn_routes` | `[]` | Exact, expiring HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry; methods are optional. Other findings retain their configured actions; size and redirect limits remain fail-closed. |
 | `sigv4_credential_routes` | `[]` | Exact, expiring HTTPS request-body routes allowed to carry a structurally valid AWS SigV4 presigned URL. Each entry requires one exact host and canonical non-root path, one or more methods and content types, a reason, owner, and expiry. Only the access-key ID inside a complete presigned URL is exempted; bare keys, malformed URLs, extra credentials, headers, and every out-of-route destination still hit the immutable DLP floor. |
+| `trusted_hosts` | `[]` | Destinations where two request-side hard blocks fall back to `action`: injection-shaped text found in a request body, and a critical credential finding that redaction fully rewrote. Every request-side scan still runs, other findings keep their configured actions, and `response_scanning.exempt_domains` never affects request-side decisions. Supports `*.example.com` wildcards. |
 
 **Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
 
@@ -428,9 +431,9 @@ request_body_scanning:
 
 **Header scanning:** Headers are scanned regardless of destination host. An agent can exfiltrate secrets via `Authorization: Bearer <secret>` to any host, including allowlisted ones. The URL allowlist controls URL-level blocking, not header DLP bypass.
 
-**Security hard-blocks:** In enforce mode, immutable core DLP findings in request bodies and headers hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`; they cannot be disabled or downgraded by `pattern_actions`. Request-body prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason: prompt_injection`. Operators that need audit-only rollout for selected non-core critical body-DLP patterns can set those exact names under `request_body_scanning.pattern_actions` with `warn`, or run the deployment with `enforce: false`.
+**Security hard-blocks:** In enforce mode, immutable core DLP findings in request bodies and headers hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`; they cannot be disabled or downgraded by `pattern_actions`. Request-body prompt-injection findings hard-block with `X-Pipelock-Block-Reason: prompt_injection` on every destination except those listed in `request_body_scanning.trusted_hosts`, where they follow `action`; a fully redacted critical credential follows `action` on a trusted host the same way. Operators that need audit-only rollout for selected non-core critical body-DLP patterns can set those exact names under `request_body_scanning.pattern_actions` with `warn`, or run the deployment with `enforce: false`.
 
-Some APIs accept an AWS presigned URL inside a JSON or form body so the server can fetch an attachment. The URL contains an AWS access-key ID, which belongs to the immutable DLP floor and cannot be handled with `suppress`, `disable_patterns`, or `pattern_actions`. Use `sigv4_credential_routes` only for the exact outbound HTTPS API request carrying that body; the route matches the outer request, not the embedded AWS URL. Pipelock separately requires the embedded URL to use an AWS-owned hostname and a complete SigV4 structure before exempting the key inside `X-Amz-Credential`; the same value anywhere else remains blocked. Long-lived presigned URLs keep the existing `SigV4 Long Expiry` warning.
+Some APIs accept an AWS presigned URL inside a JSON or form body so the server can fetch an attachment. The URL contains an AWS access-key ID, which belongs to the immutable DLP floor and cannot be handled with `suppress`, `disable_patterns`, or `pattern_actions`. Use `sigv4_credential_routes` only for the exact outbound HTTPS API request carrying that body; the route matches the outer request, not the embedded AWS URL. Routes apply to forward-proxy, intercepted CONNECT, and reverse-proxy requests. WebSocket frames never match a route, because a frame has no request method or declared content type; the embedded key stays blocked there. Pipelock separately requires the embedded URL to use an AWS-owned hostname and a complete SigV4 structure before exempting the key inside `X-Amz-Credential`; the same value anywhere else remains blocked. Long-lived presigned URLs keep the existing `SigV4 Long Expiry` warning.
 
 **Adaptive enforcement interaction:** A body/header DLP action of `warn`, including a per-pattern `pattern_actions` downgrade, still enters the existing adaptive enforcement path and can be upgraded to `block` unless the destination is adaptive-exempt. `disable_patterns` removes only the named DLP finding from this request-body/header surface; it does not create a destination exemption and does not affect URL, response, MCP, or file DLP scanning.
 
@@ -785,6 +788,8 @@ dlp:
 
 For built-in provider-key patterns, the default config already exempts the provider's own API host for URL DLP and adds matching `suppress` entries for request-body and request-header DLP. The same key is still blocked when sent to any other destination. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
 
+Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted this way. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through, so a core credential class is blocked on every destination regardless of overrides.
+
 ### Built-in DLP Patterns (65)
 
 | Pattern | Regex Prefix | Severity |
@@ -983,7 +988,7 @@ response_scanning:
 
 **MCP required control:** `response_scanning.enabled: false` is currently ignored in `pipelock mcp proxy` and `pipelock mcp scan` modes because MCP response scanning is required. Pipelock runs with default response scanning and prints a warning naming the overridden field. `pipelock mcp scan` scans stdin responses for prompt injection and generic inbound credential patterns. It intentionally skips agent-owned environment and file-secret matching because receiving an agent-owned value is not exfiltration. It does not run tool policy or input scanning. JSON verdicts include `scanned: ["response_injection", "response_dlp"]` to make that scope explicit. This compatibility fallback will become a startup/reload error in a future release; remove the disable to silence the warning.
 
-**Exempt domains:** Trusted response APIs can return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs, and only the response injection scan is skipped. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning; MCP uses `response_scanning.mcp_servers`, and a reasoning-model MCP server can warn only when the enclosing response action is also `warn`.
+**Exempt domains:** Trusted response APIs can return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs, and only the response injection scan is skipped; this list never loosens a request-side control. To let a destination's request bodies follow the configured action instead of the request-side hard blocks, use `request_body_scanning.trusted_hosts`. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning; MCP uses `response_scanning.mcp_servers`, and a reasoning-model MCP server can warn only when the enclosing response action is also `warn`.
 
 **MCP response trust classes:** MCP response scanning defaults to `untrusted`, which blocks response-injection findings even if the generic `response_scanning.action` is `warn`. This protects web-relay servers such as fetch/search/scraping tools. A trust class can tighten the enclosing `response_scanning.action`, but it cannot weaken it. To allow a reasoning-model MCP server to answer security-analysis questions that quote canonical jailbreak strings, set the enclosing action to `warn` and opt in by server name:
 
@@ -2504,7 +2509,7 @@ At least one chain must be enabled when `address_protection.enabled` is `true`. 
 
 ## File Sentry
 
-Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. Applies to subprocess MCP mode only (`pipelock mcp proxy -- COMMAND`).
+Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. `file_sentry.action: block` is supported only in subprocess MCP mode (`pipelock mcp proxy -- COMMAND`), where Pipelock can cancel the child. `pipelock run` can use file sentry with `action: warn`, but refuses `action: block` at startup and rejects a reload that introduces it, so a policy rollout cannot report success while asking for enforcement that listener cannot provide.
 
 ```yaml
 file_sentry:
@@ -2531,7 +2536,7 @@ file_sentry:
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `max_file_bytes` | `0` | Max watched-file bytes to read for content scanning. `0` uses the built-in 10 MiB default; negative values are rejected. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
-| `action` | `warn` | Enforcement response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). `block` additionally cancels the proxy context so the MCP child terminates, preventing the agent from continuing after that detected leak. Non-agent writes (editor saves, build output) never trigger the block path. |
+| `action` | `warn` | Response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). In subprocess MCP mode, `block` also cancels the proxy context so the MCP child terminates after that detected leak. `pipelock run` rejects `file_sentry.action: block` because it has no child process to cancel. Non-agent writes (editor saves, build output) never trigger the block path. |
 
 File sentry setup is strict by default: any root or descendant subtree that cannot be watched fails startup after Pipelock reports every skipped subtree. Set `best_effort: true` to keep accessible siblings armed while reporting each skipped root or subtree. Startup still fails when nothing can be armed. `required: true` keeps a configured root strict even in best-effort mode. Root symlinks are rejected and child symlinks are not followed. Unknown fields in mapping entries are rejected so typos such as `require: true` do not silently change the requested behavior.
 
@@ -3372,6 +3377,8 @@ Then monitor shield receipts, response rewrite metrics, adaptive session score
 movement, block deltas, and application breakage before moving to the standard
 fail-closed posture. Use `oversize_action: warn` only for short, explicitly
 scoped diagnostics because it returns oversized shieldable bodies unchanged.
+
+When Browser Shield rewrites a response, Pipelock adds `X-Pipelock-Shield-Rewrite` before sending it to the client. Its value lists non-zero rewrite categories in fixed order, for example `extension=1,tracking=1,trap=2`; clean and unchanged responses omit the header. `extension` includes an injected extension-defense shim, and `trap` includes hidden traps plus SVG active-content removals. The fetch endpoint also returns the same value in its `shield_rewrite` JSON field. The header is available on buffered fetch, forward-proxy, TLS-intercepted CONNECT, and reverse-proxy responses; streaming responses are not rewritten and therefore never carry it.
 
 ## Media Policy (v2.1)
 

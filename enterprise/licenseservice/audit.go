@@ -41,7 +41,10 @@ const (
 	// Enterprise Eval fulfillment events.
 	AuditEvalMinted        = "eval_minted"
 	AuditEvalRefundRevoked = "eval_refund_revoked"
-	AuditEvalRejected      = "eval_rejected"
+	// AuditTrialRefundRevoked records each one-time trial license revoked by a
+	// refund, so a ledger reader can prove the credential was pulled.
+	AuditTrialRefundRevoked = "trial_refund_revoked"
+	AuditEvalRejected       = "eval_rejected"
 )
 
 // AuditEntry is a single line in the append-only JSONL audit ledger.

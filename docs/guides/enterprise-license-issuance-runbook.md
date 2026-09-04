@@ -11,7 +11,7 @@ license that grants the `fleet` feature.
 ## Feature Mapping
 
 The license service maps commercial tiers to runtime feature flags in
-`enterprise/licenseservice`. The Enterprise and Enterprise Eval tiers must grant:
+`enterprise/licenseservice`. The Enterprise, Enterprise Eval, and Enterprise Trial tiers must grant:
 
 ```text
 agents
@@ -32,7 +32,7 @@ go test -tags enterprise -count=1 ./enterprise/licenseservice ./enterprise/cli .
 
 What this proves:
 
-- Enterprise/Eval tier mapping includes `fleet`.
+- Enterprise/Eval/Enterprise Trial tier mapping includes `fleet`.
 - Pro/agents-only and Assess-only licenses do not unlock fleet features.
 - Missing, malformed, expired, and revoked fleet licenses fail closed.
 - Follower-side Conductor runtime tears down on fleet-license loss while the

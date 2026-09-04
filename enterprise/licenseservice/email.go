@@ -24,12 +24,13 @@ const (
 
 // licenseEmailData is the render context for the license delivery email.
 type licenseEmailData struct {
-	DisplayName      string
-	Token            string
-	IntermediateCert string
-	ValidityDays     int
-	IsTrial          bool
-	IsEval           bool
+	DisplayName       string
+	Token             string
+	IntermediateCert  string
+	ValidityDays      int
+	IsTrial           bool
+	IsEnterpriseTrial bool
+	IsEval            bool
 }
 
 // licenseEmailTmpl renders the license delivery email. html/template auto-escapes
@@ -44,6 +45,8 @@ var licenseEmailTmpl = template.Must(template.New("license").Parse(
 <pre style="background:#f4f4f4;padding:16px;border-radius:4px;overflow-x:auto;font-size:13px;">{{.IntermediateCert}}</pre>
 {{- if .IsTrial}}
 <p>This token is valid for {{.ValidityDays}} days. To continue using Pro features after the trial, subscribe at <a href="https://pipelab.org/pricing/">pipelab.org/pricing</a>.</p>
+{{- else if .IsEnterpriseTrial}}
+<p>This token is valid for {{.ValidityDays}} days. This is an Enterprise trial and is not automatically refreshed. To continue with Enterprise after the trial, see <a href="https://pipelab.org/pricing/">pipelab.org/pricing</a>.</p>
 {{- else if .IsEval}}
 <p>This token is valid for {{.ValidityDays}} days. Enterprise Eval is a one-time evaluation license and is not automatically refreshed. To continue with Enterprise after the evaluation, see <a href="https://pipelab.org/pricing/">pipelab.org/pricing</a>.</p>
 {{- else}}
@@ -100,6 +103,8 @@ func tierDisplayName(tier string) string {
 		return "Enterprise"
 	case tierEnterpriseEval:
 		return "Enterprise Eval"
+	case tierEnterpriseTrial:
+		return "Enterprise Trial"
 	default:
 		return tier
 	}
@@ -121,6 +126,9 @@ func (e *EmailSender) SendLicenseDelivery(ctx context.Context, to, licenseToken,
 	case tierEnterpriseEval:
 		data.IsEval = true
 		data.ValidityDays = int(evalTokenLifetime.Hours()) / hoursPerDay
+	case tierEnterpriseTrial:
+		data.IsEnterpriseTrial = true
+		data.ValidityDays = int(enterpriseTrialTokenLifetime.Hours()) / hoursPerDay
 	default:
 		data.ValidityDays = int(tokenLifetime.Hours()) / hoursPerDay
 	}

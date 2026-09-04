@@ -44,7 +44,8 @@ pipelock-playground-broker serve \
   --provider fly \
   --fly-app playground-example \
   --fly-token-env FLY_API_TOKEN \
-  --image registry.example.com/pipelock/playground-vm:review \
+  --image registry.example.com/pipelock/playground-vm@sha256:REPLACE_WITH_PUBLISHED_VM_IMAGE_DIGEST \
+  --vm-image-digest sha256:REPLACE_WITH_PUBLISHED_VM_IMAGE_DIGEST \
   --region iad \
   --memory-mb 256 \
   --cpus 1 \
@@ -61,6 +62,8 @@ pipelock-playground-broker serve \
   --turnstile-action playground-session \
   --vm-model-base-url https://api.provider.example/v1 \
   --vm-model demo-model \
+  --model-key-env PLAYGROUND_MODEL_KEY \
+  --orchestrator-key-env PLAYGROUND_ORCHESTRATOR_ROOT \
   --vm-model-max-steps 20 \
   --vm-daily-turn-budget 400 \
   --vm-max-messages-per-session 20 \
@@ -70,6 +73,11 @@ pipelock-playground-broker serve \
   --embed-origin https://site.example \
   --public-host playground.example.com
 ```
+
+Before deploying, replace both `REPLACE_WITH_PUBLISHED_VM_IMAGE_DIGEST` values
+with the same immutable digest of the VM image you published. The broker checks
+that the image reference and `--vm-image-digest` agree before it creates a
+delegation.
 
 This example uses Turnstile as the public authorization step and therefore
 needs no invite codes. When no `--code` values are configured, the broker
@@ -82,6 +90,25 @@ apply normally.
 Secrets are loaded from files or environment variables and are never printed by
 the broker. Do not pass model keys, provider tokens, Turnstile secrets, or invite
 codes through public logs or shell history in real deployments.
+
+Deploy automation can ask the exact configured command which environment names
+it depends on without reading their values:
+
+```bash
+# Append --print-required-env to the serve command the deployment already runs.
+pipelock-playground-broker serve --print-required-env
+```
+
+The command validates the non-secret flags and static UI, prints one variable
+name per line, and exits before it resolves a secret or contacts the machine
+provider. A deployment should refuse to start when any reported name is absent
+or empty.
+
+The public health response includes `signing_ready`. Production startup succeeds
+only after the broker mints a throwaway delegation and verifies it through the
+same published-root path used by visitor VMs, so `true` means that signing path
+passed. `published_signing_root` identifies the public key already compiled into
+the shipped verifiers. Neither field contains a private key or secret value.
 
 ### Optional counts-only analytics
 
@@ -246,7 +273,8 @@ visitor to a broker that does not recognize its token.
 
 Deploy sequence:
 
-1. Build both images with `deploy/fly-playground/build-images.sh`. The build
+1. Build both images with `deploy/fly-playground/build-images.sh`. Use `--only
+   vm` or `--only broker` when only one image changed. The build
    runs `serve --check-config` inside the broker image and refuses to publish
    when the baked viewer is incompatible with its CSP or the non-secret
    configuration is invalid.

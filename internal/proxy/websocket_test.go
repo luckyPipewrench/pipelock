@@ -651,6 +651,7 @@ func TestWSProxyBodyPromptInjectionProviderExemptWarnMode(t *testing.T) {
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
 		cfg.RequestBodyScanning.Action = config.ActionWarn
 		cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1", backendAddr)
+		cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1")
 	})
 	defer proxyCleanup()
 

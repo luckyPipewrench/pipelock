@@ -2110,6 +2110,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
+	stripUpstreamShieldRewriteMarker(resp)
 	// An authenticated artifact is not a destination exemption. The proxy
 	// buffers and verifies this exact response before allowing only injection
 	// matching to be skipped; all other response controls remain below.
@@ -2565,6 +2566,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if shieldSummary != nil {
+			setShieldRewriteHeader(resp.Header, shieldSummary)
 			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
 			resp.Header.Del("ETag")
 			resp.Header.Del("Digest")

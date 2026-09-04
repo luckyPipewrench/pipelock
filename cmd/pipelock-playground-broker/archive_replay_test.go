@@ -238,11 +238,39 @@ func TestArchiveReplayOutputHelpersFailClosed(t *testing.T) {
 		}
 	})
 
+	// The writer reports CREATION separately from success, because rollback needs
+	// both facts: a file it created must be removed even if the write failed, and
+	// a path it did not create belongs to someone else and must never be touched.
+	// Collapsing the two is what let a created-then-failed file survive rollback
+	// and then block removal of the kit directory.
+	t.Run("creation is reported separately from write success", func(t *testing.T) {
+		dir := t.TempDir()
+
+		fresh := filepath.Join(dir, "fresh.tar.gz")
+		created, err := writeNewArchiveFile(fresh, []byte("bytes"))
+		if err != nil {
+			t.Fatalf("writeNewArchiveFile: %v", err)
+		}
+		if !created {
+			t.Fatal("a file this call created was not reported as created, so rollback would leave it behind")
+		}
+
+		// A path that already exists was not created here. Reporting it as
+		// created would make rollback delete an artifact serving visitors.
+		created, err = writeNewArchiveFile(fresh, []byte("second"))
+		if err == nil {
+			t.Fatal("writing over an existing path must be refused")
+		}
+		if created {
+			t.Fatal("an existing path was reported as created; rollback would delete an artifact this run did not write")
+		}
+	})
+
 	t.Run("archive file writes exact bytes and never replaces directory", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "replay.tar.gz")
 		want := []byte("replay-bytes")
-		if err := writeNewArchiveFile(path, want); err != nil {
+		if _, err := writeNewArchiveFile(path, want); err != nil {
 			t.Fatalf("writeNewArchiveFile: %v", err)
 		}
 		got, err := os.ReadFile(filepath.Clean(path))
@@ -252,8 +280,12 @@ func TestArchiveReplayOutputHelpersFailClosed(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}
-		if err := writeNewArchiveFile(dir, want); err == nil || !strings.Contains(err.Error(), "create output") {
+		created, err := writeNewArchiveFile(dir, want)
+		if err == nil || !strings.Contains(err.Error(), "create output") {
 			t.Fatalf("directory output error = %v, want create-output refusal", err)
+		}
+		if created {
+			t.Fatal("an existing directory was reported as created")
 		}
 	})
 }

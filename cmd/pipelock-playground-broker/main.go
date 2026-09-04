@@ -319,10 +319,16 @@ func publishArchiveArtifacts(f *archiveReplayFlags, bundle []byte, kits []archiv
 		}
 	}()
 
-	if err = writeNewArchiveFile(f.output, bundle); err != nil {
+	// Record the path on CREATION, not on success, so a file that failed
+	// mid-write is still rolled back and the kit directory can be removed.
+	madeBundle, writeErr := writeNewArchiveFile(f.output, bundle)
+	if madeBundle {
+		created = append(created, f.output)
+	}
+	if writeErr != nil {
+		err = writeErr
 		return err
 	}
-	created = append(created, f.output)
 
 	if len(kits) == 0 {
 		return nil
@@ -334,18 +340,27 @@ func publishArchiveArtifacts(f *archiveReplayFlags, bundle []byte, kits []archiv
 	createdDir = kitDir
 	for _, kit := range kits {
 		path := filepath.Join(kitDir, kit.name)
-		if err = writeNewArchiveFile(path, kit.data); err != nil {
+		madeKit, kitErr := writeNewArchiveFile(path, kit.data)
+		if madeKit {
+			created = append(created, path)
+		}
+		if kitErr != nil {
+			err = kitErr
 			return err
 		}
-		created = append(created, path)
 	}
 	return nil
 }
 
-func writeNewArchiveFile(path string, data []byte) (err error) {
+// writeNewArchiveFile exclusively creates path and writes data to it. It reports
+// whether the file was CREATED separately from whether the write succeeded,
+// because those are different facts for rollback: a file created and then failed
+// mid-write still exists and must be removed, while a path that failed to create
+// belongs to someone else and must never be touched.
+func writeNewArchiveFile(path string, data []byte) (created bool, err error) {
 	file, openErr := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if openErr != nil {
-		return fmt.Errorf("create output: %w", openErr)
+		return false, fmt.Errorf("create output: %w", openErr)
 	}
 	// A close error on a successful write is a real write failure: the data may
 	// never have reached the filesystem. Reporting success there would publish a
@@ -357,9 +372,9 @@ func writeNewArchiveFile(path string, data []byte) (err error) {
 		}
 	}()
 	if _, err = file.Write(data); err != nil {
-		return fmt.Errorf("write output: %w", err)
+		return true, fmt.Errorf("write output: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func newServeCmd() *cobra.Command {

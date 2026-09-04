@@ -505,6 +505,10 @@ func TestWSProxyUpstreamControlResponseAskEmitsOneBlockReceipt(t *testing.T) {
 						t.Fatalf("%s session-close verdict = %q, want %q", opCodeLabel(opcode), got.Verdict, config.ActionBlock)
 					}
 					sessionCloseBlocks++
+				default:
+					// The stream is bounded: exactly one receipt per lifecycle
+					// role and nothing else. Any other record is a regression.
+					t.Fatalf("%s unexpected receipt layer=%q verdict=%q", opCodeLabel(opcode), got.Layer, got.Verdict)
 				}
 			}
 			if responseBlocks != 1 {

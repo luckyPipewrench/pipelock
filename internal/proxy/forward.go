@@ -2104,7 +2104,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
-	setShieldRewriteHeader(resp.Header, nil)
+	stripUpstreamShieldRewriteMarker(resp)
 	// An authenticated artifact is not a destination exemption. The proxy
 	// buffers and verifies this exact response before allowing only injection
 	// matching to be skipped; all other response controls remain below.

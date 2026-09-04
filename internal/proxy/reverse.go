@@ -1487,7 +1487,7 @@ func reverseRequestContext(resp *http.Response) context.Context {
 
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	responseBodyLimit := rp.responseScanBodyLimit()
-	setShieldRewriteHeader(resp.Header, nil)
+	stripUpstreamShieldRewriteMarker(resp)
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
 	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
 	if cfg == nil || sc == nil {

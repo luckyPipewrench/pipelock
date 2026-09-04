@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -302,5 +303,81 @@ func TestReverseShieldRewriteMarkerScanHeadWithoutResponseScanning(t *testing.T)
 	defer func() { _ = resp.Body.Close() }()
 	if got, want := resp.Header.Get(shieldRewriteHeader), "extension=1,tracking=1"; got != want {
 		t.Fatalf("scan_head %s = %q, want %q", shieldRewriteHeader, got, want)
+	}
+}
+
+// The reverse proxy relays upstream trailers after the body, so a forged marker
+// declared as a trailer must be stripped along with the header copy.
+func TestReverseShieldRewriteMarkerStrippedFromTrailer(t *testing.T) {
+	cfg := shieldRewriteMarkerConfig()
+	cfg.BrowserShield.Enabled = false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Trailer", shieldRewriteHeader)
+		w.Header().Set(shieldRewriteHeader, "trap=9")
+		_, _ = w.Write([]byte("ordinary body"))
+		w.Header().Set(shieldRewriteHeader, "trap=7")
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxy.URL, nil)
+	if err != nil {
+		t.Fatalf("reverse request: %v", err)
+	}
+	resp, err := proxy.Client().Do(req)
+	if err != nil {
+		t.Fatalf("reverse request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	if got := resp.Header.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("header %s = %q, want stripped forged marker", shieldRewriteHeader, got)
+	}
+	if got := resp.Trailer.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("trailer %s = %q, want stripped forged marker", shieldRewriteHeader, got)
+	}
+	for _, announced := range resp.Header.Values("Trailer") {
+		if strings.Contains(strings.ToLower(announced), strings.ToLower(shieldRewriteHeader)) {
+			t.Fatalf("Trailer announcement still names the marker: %q", announced)
+		}
+	}
+}
+
+func TestStripUpstreamShieldRewriteMarker(t *testing.T) {
+	stripUpstreamShieldRewriteMarker(nil)
+
+	resp := &http.Response{Header: http.Header{}, Trailer: http.Header{}}
+	resp.Header.Set(shieldRewriteHeader, "trap=9")
+	resp.Header.Add("Trailer", "Foo, "+shieldRewriteHeader)
+	resp.Header.Add("Trailer", shieldRewriteHeader)
+	resp.Trailer.Set(shieldRewriteHeader, "trap=7")
+	stripUpstreamShieldRewriteMarker(resp)
+	if got := resp.Header.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("header = %q, want stripped", got)
+	}
+	if got := resp.Trailer.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("trailer = %q, want stripped", got)
+	}
+	if got := resp.Header.Values("Trailer"); len(got) != 1 || got[0] != "Foo" {
+		t.Fatalf("Trailer announcement = %v, want [Foo]", got)
+	}
+
+	noHeaders := &http.Response{}
+	stripUpstreamShieldRewriteMarker(noHeaders)
+	if noHeaders.Body != nil {
+		t.Fatal("a response without a body must not gain one")
 	}
 }

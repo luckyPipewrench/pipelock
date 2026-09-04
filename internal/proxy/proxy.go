@@ -3493,6 +3493,64 @@ func shieldRewriteHeaderValue(summary *receipt.ShieldSummary) string {
 // first removes any upstream value, then restores only a locally computed
 // Browser Shield summary. It is deliberately nil-safe because an upstream
 // response may have no header map.
+// stripUpstreamShieldRewriteMarker removes every upstream-supplied copy of the
+// marker from a response before any local value is applied: the header, the
+// trailer map, and the marker's name in the announced Trailer list. The reverse
+// proxy relays upstream trailers after the body, so a forged marker there would
+// otherwise survive the header strip.
+func stripUpstreamShieldRewriteMarker(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	if resp.Header != nil {
+		resp.Header.Del(shieldRewriteHeader)
+		if announced := resp.Header.Values("Trailer"); len(announced) > 0 {
+			kept := make([]string, 0, len(announced))
+			for _, value := range announced {
+				var names []string
+				for _, name := range strings.Split(value, ",") {
+					name = strings.TrimSpace(name)
+					if name == "" || strings.EqualFold(name, shieldRewriteHeader) {
+						continue
+					}
+					names = append(names, name)
+				}
+				if len(names) > 0 {
+					kept = append(kept, strings.Join(names, ", "))
+				}
+			}
+			resp.Header.Del("Trailer")
+			for _, value := range kept {
+				resp.Header.Add("Trailer", value)
+			}
+		}
+	}
+	if resp.Trailer != nil {
+		resp.Trailer.Del(shieldRewriteHeader)
+	}
+	// The transport fills resp.Trailer only once the body reaches EOF, and the
+	// reverse proxy copies trailers after the body, so the delete above runs
+	// too early for a real trailer. Wrap the body to delete again at EOF.
+	if resp.Body != nil {
+		resp.Body = &shieldTrailerStrippingBody{ReadCloser: resp.Body, resp: resp}
+	}
+}
+
+// shieldTrailerStrippingBody removes the marker from the response trailer map
+// the moment the body is exhausted, before any relay reads the trailers.
+type shieldTrailerStrippingBody struct {
+	io.ReadCloser
+	resp *http.Response
+}
+
+func (b *shieldTrailerStrippingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && b.resp.Trailer != nil {
+		b.resp.Trailer.Del(shieldRewriteHeader)
+	}
+	return n, err
+}
+
 func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary) {
 	if headers == nil {
 		return

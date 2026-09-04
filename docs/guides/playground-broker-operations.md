@@ -44,8 +44,8 @@ pipelock-playground-broker serve \
   --provider fly \
   --fly-app playground-example \
   --fly-token-env FLY_API_TOKEN \
-  --image registry.example.com/pipelock/playground-vm@sha256:0000000000000000000000000000000000000000000000000000000000000000 \
-  --vm-image-digest sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+  --image registry.example.com/pipelock/playground-vm@sha256:REPLACE_WITH_PUBLISHED_VM_IMAGE_DIGEST \
+  --vm-image-digest sha256:REPLACE_WITH_PUBLISHED_VM_IMAGE_DIGEST \
   --region iad \
   --memory-mb 256 \
   --cpus 1 \
@@ -73,6 +73,11 @@ pipelock-playground-broker serve \
   --embed-origin https://site.example \
   --public-host playground.example.com
 ```
+
+Before deploying, replace both `REPLACE_WITH_PUBLISHED_VM_IMAGE_DIGEST` values
+with the same immutable digest of the VM image you published. The broker checks
+that the image reference and `--vm-image-digest` agree before it creates a
+delegation.
 
 This example uses Turnstile as the public authorization step and therefore
 needs no invite codes. When no `--code` values are configured, the broker

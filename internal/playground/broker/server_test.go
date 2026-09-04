@@ -544,6 +544,35 @@ func TestNewServerRefusesFailedSigningSelfCheck(t *testing.T) {
 	}
 }
 
+// The two self-check tests above stub verifySessionDelegation, so they prove the
+// plumbing rather than the refusal itself. This one runs the REAL shipped
+// verification path with no seam. A freshly generated root is by construction
+// not the published identity, which is exactly the production state that served
+// visitors all day on 2026-09-03: the broker held a root the visitor VMs did not
+// trust, every session ran to completion, and only the final seal failed.
+func TestNewServer_RealVerifierRefusesUnpublishedRoot(t *testing.T) {
+	_, root, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if playground.OrchestratorKeyMatchesPublished(root) {
+		t.Fatal("a generated root must not be the published identity; this test would prove nothing")
+	}
+
+	_, err = NewServer(ServerConfig{
+		Leases:           testLeaseManager(t, &serverFakeProvider{}),
+		Gate:             testBrokerGate(t),
+		OrchestratorRoot: root,
+		ImageDigest:      "sha256:" + strings.Repeat("ab", 32),
+	})
+	if err == nil {
+		t.Fatal("a root that is not the published identity must refuse startup through the real verifier")
+	}
+	if !strings.Contains(err.Error(), "signing self-check") {
+		t.Fatalf("error = %v, want the startup self-check refusal", err)
+	}
+}
+
 func TestServerHealthCORSKillAndResume(t *testing.T) {
 	vm := newFakeVM(t, "health-token")
 	destroyed := make(chan string, 1)

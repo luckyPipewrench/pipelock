@@ -1386,10 +1386,7 @@ func TestServer_StartKeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 	}
 }
 
-func TestServer_StartKeepsFileSentryBlockCancellationNil(t *testing.T) {
-	watcher := newGatedFileSentryWatcher(errors.New("must not be returned after a file sentry block"))
-	installGatedFileSentryWatcher(t, watcher)
-
+func TestServer_StartRejectsFileSentryBlockWithoutSubprocessChild(t *testing.T) {
 	cfgPath := writeServerTestConfig(t, strings.Join([]string{
 		"mode: balanced",
 		"file_sentry:",
@@ -1404,24 +1401,26 @@ func TestServer_StartKeepsFileSentryBlockCancellationNil(t *testing.T) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
-
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	select {
-	case <-watcher.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("file sentry watcher did not start")
+	// The refusal must happen before any watcher exists: a constructed watcher
+	// would already be reading the filesystem for a block mode that cannot act.
+	oldNew := newFileSentryWatcher
+	newFileSentryWatcher = func(*config.FileSentry, filesentry.DLPScanner, filesentry.Lineage, func(error)) (filesentry.Watcher, error) {
+		t.Error("file sentry watcher constructed despite the block-mode refusal")
+		return nil, errors.New("test: watcher must not be constructed")
 	}
-	waitForServerOutput(t, buf, "  Health:")
-	watcher.findings <- filesentry.Finding{Path: "agent-output", PatternName: "test", Severity: "high", IsAgent: true}
+	t.Cleanup(func() { newFileSentryWatcher = oldNew })
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Start error after file sentry block cancellation = %v, want nil", err)
+	err := s.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start accepted file_sentry.action: block without a subprocess child")
+	}
+	for _, want := range []string{"file_sentry.action", "subprocess MCP mode", "pipelock mcp proxy -- COMMAND"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Start error = %q, want substring %q", err, want)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Start did not return after file sentry block cancellation")
+	}
+	if buf.contains("file sentry watching") {
+		t.Fatalf("Start armed file sentry despite refusal:\n%s", buf.String())
 	}
 }
 
@@ -1931,6 +1930,39 @@ func TestServer_ReloadRejectsNilConfig(t *testing.T) {
 	}
 	if live := s.proxy.CurrentConfig(); live != oldCfg {
 		t.Fatal("rejected nil reload changed the live config")
+	}
+}
+
+// A reload that asks for file_sentry block on the server listener is rejected
+// atomically: nothing else in that reload lands either, so a policy rollout
+// cannot report success while the enforcement it asked for never arrived.
+func TestServer_ReloadRejectsFileSentryBlockWithoutSubprocessChild(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+
+	newCfg := oldCfg.Clone()
+	newCfg.FileSentry.Enabled = true
+	newCfg.FileSentry.Action = config.ActionBlock
+	newCfg.FileSentry.WatchPaths = []config.WatchPath{{Path: t.TempDir()}}
+	newCfg.DLP.Patterns = append(newCfg.DLP.Patterns, config.DLPPattern{Name: "reload-secret", Regex: `RELOAD_SECRET_[A-Z]+`, Severity: config.SeverityCritical})
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload accepted file_sentry.action: block without a subprocess child")
+	}
+	for _, want := range []string{"rejected", "file_sentry.action", "subprocess MCP mode", "pipelock mcp proxy -- COMMAND"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Reload error = %q, want substring %q", err, want)
+		}
+	}
+	live := s.proxy.CurrentConfig()
+	if live != oldCfg {
+		t.Fatal("rejected reload swapped the live config")
+	}
+	for _, p := range live.DLP.Patterns {
+		if p.Name == "reload-secret" {
+			t.Fatal("rejected reload still applied the DLP change riding alongside it")
+		}
 	}
 }
 
@@ -3895,7 +3927,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	newCfg.FlightRecorder.SigningKeyPath = "/tmp/new-signing-key"
 	newCfg.FlightRecorder.RequireReceipts = true
 	newCfg.Conductor.ConductorURL = "https://boss-new.example"
-	newCfg.FileSentry.Action = config.ActionBlock // file_sentry is restart-only; this change must be ignored
+	newCfg.FileSentry.Enabled = false // file_sentry is restart-only; this change must be ignored
 	newCfg.DashboardSnapshot.Path = "/tmp/new-runtime-snapshot.json"
 	newCfg.DashboardSnapshot.Interval = "2s"
 	newCfg.ReverseProxy.Listen = "127.0.0.1:28084"

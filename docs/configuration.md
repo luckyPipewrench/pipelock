@@ -785,6 +785,8 @@ dlp:
 
 For built-in provider-key patterns, the default config already exempts the provider's own API host for URL DLP and adds matching `suppress` entries for request-body and request-header DLP. The same key is still blocked when sent to any other destination. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
 
+Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted this way. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through, so a core credential class is blocked on every destination regardless of overrides.
+
 ### Built-in DLP Patterns (65)
 
 | Pattern | Regex Prefix | Severity |
@@ -2504,7 +2506,7 @@ At least one chain must be enabled when `address_protection.enabled` is `true`. 
 
 ## File Sentry
 
-Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. Applies to subprocess MCP mode only (`pipelock mcp proxy -- COMMAND`).
+Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. `file_sentry.action: block` is supported only in subprocess MCP mode (`pipelock mcp proxy -- COMMAND`), where Pipelock can cancel the child. `pipelock run` can use file sentry with `action: warn`, but refuses `action: block` at startup and rejects a reload that introduces it, so a policy rollout cannot report success while asking for enforcement that listener cannot provide.
 
 ```yaml
 file_sentry:
@@ -2531,7 +2533,7 @@ file_sentry:
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `max_file_bytes` | `0` | Max watched-file bytes to read for content scanning. `0` uses the built-in 10 MiB default; negative values are rejected. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
-| `action` | `warn` | Enforcement response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). `block` additionally cancels the proxy context so the MCP child terminates, preventing the agent from continuing after that detected leak. Non-agent writes (editor saves, build output) never trigger the block path. |
+| `action` | `warn` | Response after file sentry detects and attributes a DLP finding to an agent write. `warn` logs the finding + records a metric (current default). In subprocess MCP mode, `block` also cancels the proxy context so the MCP child terminates after that detected leak. `pipelock run` rejects `file_sentry.action: block` because it has no child process to cancel. Non-agent writes (editor saves, build output) never trigger the block path. |
 
 File sentry setup is strict by default: any root or descendant subtree that cannot be watched fails startup after Pipelock reports every skipped subtree. Set `best_effort: true` to keep accessible siblings armed while reporting each skipped root or subtree. Startup still fails when nothing can be armed. `required: true` keeps a configured root strict even in best-effort mode. Root symlinks are rejected and child symlinks are not followed. Unknown fields in mapping entries are rejected so typos such as `require: true` do not silently change the requested behavior.
 

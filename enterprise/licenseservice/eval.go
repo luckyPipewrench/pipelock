@@ -360,8 +360,13 @@ func (h *WebhookHandler) revokeOneTimeTrialForOrder(ctx context.Context, entitle
 	// Mirror the Eval path: every revoked license leaves a success entry so an
 	// audit reader can prove the fleet credential was revoked, not only that a
 	// refund arrived.
+	// A revocation the ledger cannot record is not acknowledged: the webhook
+	// stays uncommitted so the provider retries once the ledger is writable,
+	// and the revocation rows written above make the retry idempotent.
 	for _, iss := range issuances {
-		_ = h.ledger.Log(AuditEntry{Event: AuditTrialRefundRevoked, SubscriptionID: order.ID, LicenseID: iss.LicenseID, Detail: reason})
+		if err := h.ledger.Log(AuditEntry{Event: AuditTrialRefundRevoked, SubscriptionID: order.ID, LicenseID: iss.LicenseID, Detail: reason}); err != nil {
+			return fmt.Errorf("record one-time trial revocation audit for %s: %w", iss.LicenseID, err)
+		}
 	}
 	entitlement.Status = statusRevoked
 	entitlement.NextRefreshAt = nil

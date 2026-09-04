@@ -3239,8 +3239,18 @@ func TestHandleOrderRefund_RevokesMintedEnterpriseTrial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit ledger: %v", err)
 	}
-	if !strings.Contains(string(ledgerBytes), `"event":"`+AuditTrialRefundRevoked+`"`) || !strings.Contains(string(ledgerBytes), issuance.LicenseID) {
-		t.Fatalf("audit ledger lacks a %s entry for %s:\n%s", AuditTrialRefundRevoked, issuance.LicenseID, ledgerBytes)
+	foundRevocationEntry := false
+	for _, line := range strings.Split(strings.TrimSpace(string(ledgerBytes)), "\n") {
+		var entry AuditEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode ledger line %q: %v", line, err)
+		}
+		if entry.Event == AuditTrialRefundRevoked && entry.LicenseID == issuance.LicenseID && entry.SubscriptionID == entitlement.SubscriptionID {
+			foundRevocationEntry = true
+		}
+	}
+	if !foundRevocationEntry {
+		t.Fatalf("audit ledger lacks a %s record for %s:\n%s", AuditTrialRefundRevoked, issuance.LicenseID, ledgerBytes)
 	}
 
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_replacement")); err != nil {

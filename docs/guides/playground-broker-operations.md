@@ -44,7 +44,8 @@ pipelock-playground-broker serve \
   --provider fly \
   --fly-app playground-example \
   --fly-token-env FLY_API_TOKEN \
-  --image registry.example.com/pipelock/playground-vm:review \
+  --image registry.example.com/pipelock/playground-vm@sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+  --vm-image-digest sha256:0000000000000000000000000000000000000000000000000000000000000000 \
   --region iad \
   --memory-mb 256 \
   --cpus 1 \
@@ -61,6 +62,8 @@ pipelock-playground-broker serve \
   --turnstile-action playground-session \
   --vm-model-base-url https://api.provider.example/v1 \
   --vm-model demo-model \
+  --model-key-env PLAYGROUND_MODEL_KEY \
+  --orchestrator-key-env PLAYGROUND_ORCHESTRATOR_ROOT \
   --vm-model-max-steps 20 \
   --vm-daily-turn-budget 400 \
   --vm-max-messages-per-session 20 \

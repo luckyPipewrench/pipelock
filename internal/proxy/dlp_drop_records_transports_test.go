@@ -47,12 +47,12 @@ func TestInterceptBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want allow", resp.StatusCode)
 	}
 	logger.Close()
-	assertDroppedTransportConsumers(t, m, auditPath, droppedTransportPattern, "body", "suppressed")
+	assertDroppedTransportConsumers(t, m, auditPath, "body")
 }
 
 func TestReverseBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
@@ -68,16 +68,21 @@ func TestReverseBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
 	}
 	handler.logger = logger
 	defer logger.Close()
-	resp, err := http.Post(proxyServer.URL+"/upload", "text/plain", strings.NewReader(droppedTransportValue))
+	reverseReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, proxyServer.URL+"/upload", strings.NewReader(droppedTransportValue))
+	if err != nil {
+		t.Fatalf("new reverse request: %v", err)
+	}
+	reverseReq.Header.Set("Content-Type", "text/plain")
+	resp, err := proxyServer.Client().Do(reverseReq)
 	if err != nil {
 		t.Fatalf("reverse request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want allow", resp.StatusCode)
 	}
 	logger.Close()
-	assertDroppedTransportConsumers(t, handler.metrics, auditPath, droppedTransportPattern, "body", "suppressed")
+	assertDroppedTransportConsumers(t, handler.metrics, auditPath, "body")
 }
 
 func TestWebSocketBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
@@ -101,7 +106,7 @@ func TestWebSocketBodyLowConfidenceDLPRecordsDropped(t *testing.T) {
 		t.Fatalf("frame verdict = %+v, want allow", result)
 	}
 	logger.Close()
-	assertDroppedTransportConsumers(t, p.metrics, auditPath, droppedTransportPattern, "body", "suppressed")
+	assertDroppedTransportConsumers(t, p.metrics, auditPath, "body")
 }
 
 func TestInterceptGenericSSELowConfidenceDLPRecordsDropped(t *testing.T) {
@@ -131,10 +136,12 @@ func TestInterceptGenericSSELowConfidenceDLPRecordsDropped(t *testing.T) {
 		t.Fatalf("SSE verdict changed: status=%d body=%q", resp.StatusCode, body)
 	}
 	logger.Close()
-	assertDroppedTransportConsumers(t, m, auditPath, droppedTransportPattern, "mcp_sse", "suppressed")
+	assertDroppedTransportConsumers(t, m, auditPath, "mcp_sse")
 }
 
-func assertDroppedTransportConsumers(t *testing.T, m *metrics.Metrics, auditPath, pattern, surface, reason string) {
+func assertDroppedTransportConsumers(t *testing.T, m *metrics.Metrics, auditPath, surface string) {
+	const reason = "suppressed"
+	pattern := droppedTransportPattern
 	t.Helper()
 	rec := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))

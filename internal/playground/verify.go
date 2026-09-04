@@ -419,7 +419,10 @@ func verifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string, archi
 	// false to skip the checks, or to true on an uncontained run -- breaks the
 	// signature and fails step 1 below, so this can only fail closed.
 	if lm.Contained {
-		required = append(append([]string{}, requiredChecks...), containmentChecks...)
+		// Rebuild from the CURRENT required set, not from requiredChecks: the
+		// archive check was already appended above and must survive here, or a
+		// contained archive run loses it and finalize stops enforcing it.
+		required = append(append([]string{}, required...), containmentChecks...)
 	}
 
 	if len(artifacts.Witness) == 0 {
@@ -466,6 +469,17 @@ func verifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string, archi
 			OK:     true,
 			Reason: "legacy direct-root manifest",
 		})
+		if archive {
+			// An archive authorization binds a delegation artifact, so a
+			// direct-root run cannot carry one and cannot be published as an
+			// archive. Fail closed rather than inheriting the strict-mode pass.
+			rep.Checks = append(rep.Checks, Check{
+				Name:   checkReplayArchive,
+				OK:     false,
+				Reason: "archive verification requires a root-signed replay archive authorization, which a direct-root run cannot carry",
+			})
+			return finalize(rep, required), nil
+		}
 	} else {
 		delegation, parseErr := ParseOrchestratorDelegation(artifacts.OrchestratorDelegation)
 		if parseErr != nil {

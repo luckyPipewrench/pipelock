@@ -162,10 +162,7 @@ func TestArchiveRunForDownload_FailsClosedOnUnreadableRequiredArtifact(t *testin
 	dir := t.TempDir()
 	writeRunArtifacts(t, dir, false)
 	witnessPath := filepath.Join(dir, witnessFile)
-	if err := os.Chmod(witnessPath, 0o000); err != nil {
-		t.Fatalf("chmod witness: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(witnessPath, 0o600) })
+	makeUnreadable(t, witnessPath)
 
 	_, err := ArchiveRunForDownload(dir, "abc")
 	if err == nil || !strings.Contains(err.Error(), "read artifact "+witnessFile) {

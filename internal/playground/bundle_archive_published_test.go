@@ -69,10 +69,7 @@ func TestArchiveRunForPublishedReplay_RefusesUnreadableOrInvalidInputs(t *testin
 			mutate: func(t *testing.T, runDir string) {
 				t.Helper()
 				path := filepath.Join(runDir, "orchestrator-delegation.json")
-				if err := os.Chmod(path, 0o000); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+				makeUnreadable(t, path)
 			},
 			want: "read artifact orchestrator-delegation.json",
 		},

@@ -11,10 +11,19 @@ import (
 	"testing"
 )
 
-// archiveReplayEnv points the publisher at a sealed run and a root key file. The
-// run directory is a real sealed run captured from the live playground, so these
-// tests exercise the publisher against production-shaped evidence rather than a
-// fixture that agrees with the code by construction.
+// archiveReplayEnv points the publisher at a sealed run and a root key file, and
+// skips when they are absent. That skip is deliberate and cannot be engineered
+// away: resolveOrchestratorRoot refuses any key that does not derive the
+// PUBLISHED identity, because a broker signing under another root would produce
+// bundles that fail every shipped verifier. A generated test key is therefore
+// rejected before the command does anything, so this end-to-end path can only
+// run where the real root and a real sealed run are present.
+//
+// It is an extra layer rather than the coverage. The publisher's logic --
+// kit-flag validation, build-before-publish ordering, and all-or-nothing
+// rollback -- is exercised hermetically against buildArchiveVerifyKits and
+// publishArchiveArtifacts in TestArchiveReplayOutputHelpersFailClosed, which
+// runs everywhere including a clean CI checkout.
 func archiveReplayEnv(t *testing.T) (runDir, keyFile string) {
 	t.Helper()
 	runDir = "/tmp/kit-verify/pipelock-live-verify-windows/app/run"
@@ -146,17 +155,21 @@ func TestArchiveReplayOutputHelpersFailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		f := &archiveReplayFlags{
+			output:          filepath.Join(t.TempDir(), "bundle.tar.gz"),
 			kitOutputDir:    path,
 			linuxVerifier:   "unused",
 			macOSVerifier:   "unused",
 			windowsVerifier: "unused",
 		}
-		if err := writeArchiveVerifyKits(f, nil); err == nil || !strings.Contains(err.Error(), "create kit output directory") {
+		kits := []archiveKit{{name: "kit.zip", data: []byte("kit")}}
+		if err := publishArchiveArtifacts(f, []byte("bundle"), kits); err == nil || !strings.Contains(err.Error(), "create kit output directory") {
 			t.Fatalf("existing output file error = %v, want directory creation refusal", err)
 		}
 	})
 
-	t.Run("kit build stops before partial output", func(t *testing.T) {
+	// A build failure must not reach the filesystem at all, because the build
+	// runs before anything is published.
+	t.Run("kit build stops before any output", func(t *testing.T) {
 		kitDir := filepath.Join(t.TempDir(), "kits")
 		f := &archiveReplayFlags{
 			kitOutputDir:    kitDir,
@@ -164,15 +177,64 @@ func TestArchiveReplayOutputHelpersFailClosed(t *testing.T) {
 			macOSVerifier:   filepath.Join(t.TempDir(), "missing-macos"),
 			windowsVerifier: filepath.Join(t.TempDir(), "missing-windows"),
 		}
-		if err := writeArchiveVerifyKits(f, nil); err == nil || !strings.Contains(err.Error(), "build linux verification kit") {
+		kits, err := buildArchiveVerifyKits(f, nil)
+		if err == nil || !strings.Contains(err.Error(), "build linux verification kit") {
 			t.Fatalf("missing verifier error = %v, want kit-build failure", err)
 		}
-		entries, err := os.ReadDir(kitDir)
-		if err != nil {
-			t.Fatalf("read kit output directory: %v", err)
+		if kits != nil {
+			t.Fatalf("a failed build returned kits: %v", kits)
 		}
-		if len(entries) != 0 {
-			t.Fatalf("failed kit build wrote partial output: %v", entries)
+		if _, statErr := os.Stat(kitDir); !os.IsNotExist(statErr) {
+			t.Fatalf("a failed kit build created the output directory: %v", statErr)
+		}
+	})
+
+	// The finding this covers: a later write failure used to leave the bundle and
+	// any earlier kits on disk, so a visitor could download a bundle whose kits
+	// never arrived. Publication is now all-or-nothing.
+	t.Run("a failed kit write removes every artifact this run created", func(t *testing.T) {
+		dir := t.TempDir()
+		bundlePath := filepath.Join(dir, "replay-bundle.tar.gz")
+		kitDir := filepath.Join(dir, "kits")
+		f := &archiveReplayFlags{output: bundlePath, kitOutputDir: kitDir}
+
+		// The second kit collides with the first by name, so its O_EXCL create
+		// fails after the bundle and the first kit are already written.
+		kits := []archiveKit{
+			{name: "same-name.zip", data: []byte("first")},
+			{name: "same-name.zip", data: []byte("second")},
+		}
+		err := publishArchiveArtifacts(f, []byte("bundle"), kits)
+		if err == nil || !strings.Contains(err.Error(), "create output") {
+			t.Fatalf("error = %v, want the duplicate-name create refusal", err)
+		}
+		if _, statErr := os.Stat(bundlePath); !os.IsNotExist(statErr) {
+			t.Fatal("the bundle survived a failed publication")
+		}
+		if _, statErr := os.Stat(filepath.Join(kitDir, "same-name.zip")); !os.IsNotExist(statErr) {
+			t.Fatal("the first kit survived a failed publication")
+		}
+		if _, statErr := os.Stat(kitDir); !os.IsNotExist(statErr) {
+			t.Fatal("the kit directory survived a failed publication")
+		}
+	})
+
+	// Rollback must never touch an artifact it did not create. A pre-existing
+	// output is refused before anything is written, so nothing is removed.
+	t.Run("rollback never removes a pre-existing artifact", func(t *testing.T) {
+		dir := t.TempDir()
+		bundlePath := filepath.Join(dir, "replay-bundle.tar.gz")
+		if err := os.WriteFile(bundlePath, []byte("serving-visitors"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f := &archiveReplayFlags{output: bundlePath, kitOutputDir: filepath.Join(dir, "kits")}
+		kits := []archiveKit{{name: "kit.zip", data: []byte("kit")}}
+		if err := publishArchiveArtifacts(f, []byte("bundle"), kits); err == nil {
+			t.Fatal("publishing over an existing artifact must be refused")
+		}
+		data, err := os.ReadFile(filepath.Clean(bundlePath))
+		if err != nil || string(data) != "serving-visitors" {
+			t.Fatalf("the pre-existing artifact was removed or modified: %q, %v", data, err)
 		}
 	})
 

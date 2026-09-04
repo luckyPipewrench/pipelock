@@ -245,34 +245,45 @@ func runArchiveReplay(cmd *cobra.Command, f *archiveReplayFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := writeNewArchiveFile(f.output, bundle); err != nil {
+	// Build every artifact before publishing any of them. A kit built from a
+	// different bundle than the one shipped is a silent mismatch a visitor only
+	// finds offline, and a half-written artifact set leaves visitors downloading
+	// a bundle whose kits never arrived.
+	kits, err := buildArchiveVerifyKits(f, bundle)
+	if err != nil {
 		return err
 	}
-	if err := writeArchiveVerifyKits(f, bundle); err != nil {
+	if err := publishArchiveArtifacts(f, bundle, kits); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "published replay archive verified and written")
 	return nil
 }
 
-func writeArchiveVerifyKits(f *archiveReplayFlags, bundle []byte) error {
+// archiveKit is one built, not-yet-written verification kit.
+type archiveKit struct {
+	name string
+	data []byte
+}
+
+// buildArchiveVerifyKits validates the kit flags and builds every kit in memory.
+// It writes nothing, so a build failure cannot leave output behind.
+func buildArchiveVerifyKits(f *archiveReplayFlags, bundle []byte) ([]archiveKit, error) {
 	paths := []string{f.linuxVerifier, f.macOSVerifier, f.windowsVerifier}
 	if f.kitOutputDir == "" {
 		for _, verifier := range paths {
 			if verifier != "" {
-				return errors.New("--kit-output-dir is required when supplying a verifier binary")
+				return nil, errors.New("--kit-output-dir is required when supplying a verifier binary")
 			}
 		}
-		return nil
+		return nil, nil
 	}
 	for _, verifier := range paths {
 		if verifier == "" {
-			return errors.New("--kit-output-dir requires --linux-verifier, --macos-verifier, and --windows-verifier")
+			return nil, errors.New("--kit-output-dir requires --linux-verifier, --macos-verifier, and --windows-verifier")
 		}
 	}
-	if err := os.Mkdir(filepath.Clean(f.kitOutputDir), 0o750); err != nil {
-		return fmt.Errorf("create kit output directory: %w", err)
-	}
+	kits := make([]archiveKit, 0, len(paths))
 	for _, kit := range []struct {
 		osName   playground.VerifyKitOS
 		verifier string
@@ -283,22 +294,69 @@ func writeArchiveVerifyKits(f *archiveReplayFlags, bundle []byte) error {
 	} {
 		data, name, err := playground.BuildPublishedReplayVerifyKit(kit.osName, kit.verifier, bundle)
 		if err != nil {
-			return fmt.Errorf("build %s verification kit: %w", kit.osName, err)
+			return nil, fmt.Errorf("build %s verification kit: %w", kit.osName, err)
 		}
-		if err := writeNewArchiveFile(filepath.Join(f.kitOutputDir, name), data); err != nil {
+		kits = append(kits, archiveKit{name: name, data: data})
+	}
+	return kits, nil
+}
+
+// publishArchiveArtifacts writes the bundle and every kit, and removes anything
+// this invocation created if a later write fails. Every path it removes was
+// created here under O_EXCL, so it can never delete a pre-existing artifact.
+func publishArchiveArtifacts(f *archiveReplayFlags, bundle []byte, kits []archiveKit) (err error) {
+	var created []string
+	var createdDir string
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, path := range created {
+			_ = os.Remove(path)
+		}
+		if createdDir != "" {
+			_ = os.Remove(createdDir)
+		}
+	}()
+
+	if err = writeNewArchiveFile(f.output, bundle); err != nil {
+		return err
+	}
+	created = append(created, f.output)
+
+	if len(kits) == 0 {
+		return nil
+	}
+	kitDir := filepath.Clean(f.kitOutputDir)
+	if err = os.Mkdir(kitDir, 0o750); err != nil {
+		return fmt.Errorf("create kit output directory: %w", err)
+	}
+	createdDir = kitDir
+	for _, kit := range kits {
+		path := filepath.Join(kitDir, kit.name)
+		if err = writeNewArchiveFile(path, kit.data); err != nil {
 			return err
 		}
+		created = append(created, path)
 	}
 	return nil
 }
 
-func writeNewArchiveFile(path string, data []byte) error {
-	file, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("create output: %w", err)
+func writeNewArchiveFile(path string, data []byte) (err error) {
+	file, openErr := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if openErr != nil {
+		return fmt.Errorf("create output: %w", openErr)
 	}
-	defer func() { _ = file.Close() }()
-	if _, err := file.Write(data); err != nil {
+	// A close error on a successful write is a real write failure: the data may
+	// never have reached the filesystem. Reporting success there would publish a
+	// truncated artifact.
+	defer func() {
+		closeErr := file.Close()
+		if err == nil && closeErr != nil {
+			err = fmt.Errorf("close output: %w", closeErr)
+		}
+	}()
+	if _, err = file.Write(data); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
 	return nil

@@ -18,6 +18,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+func TestA2AScanVerdictPreservesScanError(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	result := ScanA2AResponseBody(ctx, []byte(`{"message":{"parts":[{"text":"ordinary response"}]}}`), testA2AScanner(t), enabledA2ACfg())
+	verdict := a2aScanToVerdict([]byte(`1`), result)
+	if verdict.Clean || verdict.Action != config.ActionBlock || !strings.Contains(verdict.Error, "response scan failed") || len(verdict.Matches) != 0 || string(verdict.ID) != "1" {
+		t.Fatalf("incomplete A2A scan verdict = %+v", verdict)
+	}
+}
+
 func TestScanA2AResponseBody_CanceledResponseScanIsNotInjection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

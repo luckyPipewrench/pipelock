@@ -808,6 +808,9 @@ func isAgentCardFields(resultFields map[string]json.RawMessage) bool {
 // a2aScanToVerdict converts an A2AScanResult into a jsonrpc.ScanVerdict
 // for use in the standard response forwarding pipeline.
 func a2aScanToVerdict(rpcID json.RawMessage, result A2AScanResult) jsonrpc.ScanVerdict {
+	if result.ScanError != "" {
+		return jsonrpc.ScanVerdict{ID: rpcID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
+	}
 	if result.Clean {
 		return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
 	}

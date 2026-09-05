@@ -18,6 +18,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 func TestA2AScanVerdictPreservesScanError(t *testing.T) {
@@ -389,5 +392,71 @@ func TestBatchPreservesScanErrorBlock(t *testing.T) {
 				t.Fatalf("batch scan failure = %+v, finding=%v", verdict, finding)
 			}
 		})
+	}
+}
+
+func TestForwardScannedPreservesRequestCancellation(t *testing.T) {
+	for _, toolsEnabled := range []bool{false, true} {
+		for _, cancelled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("tools=%t/cancelled=%t", toolsEnabled, cancelled), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if cancelled {
+					cancel()
+				}
+				opts := MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionWarn), WarnContext: ctx}
+				line := `{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"ordinary response"}]}}`
+				if toolsEnabled {
+					opts.ToolCfg = &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: tools.NewToolBaseline()}
+					line = `{"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"lookup","description":"Look up a record."}],"note":"ordinary response"}}`
+				}
+				emitter, recorder, dir, _ := newReceiptTestHarness(t)
+				opts.ReceiptEmitter = emitter
+				tracker := NewRequestTracker()
+				actionID := receipt.NewActionID()
+				tracker.TrackOutcome([]byte(`7`), TrackedRequestOutcome{Receipt: receipt.EmitOpts{ActionID: actionID, Transport: transportMCPStdio, Target: "lookup", MCPMethod: methodToolsCall, ToolName: "lookup"}})
+				var out, log strings.Builder
+				found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line+"\n")), transport.NewStdioWriter(&out), &log, tracker, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cancelled {
+					var response jsonrpc.RPCResponse
+					if err := json.Unmarshal([]byte(out.String()), &response); err != nil {
+						t.Fatal(err)
+					}
+					if len(response.Error) == 0 || string(response.ID) != "7" || strings.Contains(out.String(), "ordinary response") || found || strings.Contains(log.String(), "injection") || !strings.Contains(log.String(), "response scan failed") {
+						t.Fatalf("cancelled forwarding: found=%t output=%s log=%s", found, out.String(), log.String())
+					}
+				} else if strings.TrimSpace(out.String()) != line {
+					t.Fatalf("clean response changed: output=%s log=%s", out.String(), log.String())
+				}
+				if err := recorder.Close(); err != nil {
+					t.Fatal(err)
+				}
+				records := readActionReceipts(t, dir)
+				wantReason := "reason=complete"
+				wantStatus := "status=result"
+				if cancelled {
+					wantReason = "reason=response_scan_error"
+					wantStatus = "status=error"
+				}
+				if len(records) != 1 || records[0].ActionRecord.ActionID != actionID || !strings.Contains(records[0].ActionRecord.Pattern, wantReason) || !strings.Contains(records[0].ActionRecord.Pattern, wantStatus) {
+					t.Fatalf("incorrect tracked outcome: %+v", records)
+				}
+				if toolsEnabled && opts.ToolCfg.Baseline.HasBaseline() == cancelled {
+					t.Fatalf("tool baseline committed=%t after cancelled=%t", opts.ToolCfg.Baseline.HasBaseline(), cancelled)
+				}
+			})
+		}
+	}
+}
+
+func TestForwardScannedCancellationBlockWriteFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(`{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"ordinary"}]}}`+"\n")), transport.NewStdioWriter(&errWriter{limit: 0}), io.Discard, nil, MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionWarn), WarnContext: ctx})
+	if err == nil || !strings.Contains(err.Error(), "writing scan-error block response") {
+		t.Fatalf("write failure lost: %v", err)
 	}
 }

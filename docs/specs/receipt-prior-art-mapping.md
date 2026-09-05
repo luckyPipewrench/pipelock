@@ -22,7 +22,7 @@ Pipelock spec.
 | Flat receipt envelope (`version`, `action_record`, `signature`, `signer_key`) | [Envelope](https://pipelab.org/learn/action-receipt-spec/#envelope) | None 1:1; COSE_Sign1 (RFC 9052, structures; RFC 9053, algorithms) or DSSE wrap the same shape | No standard wrapper today; envelope is custom JSON | SCITT (statement payload), in-toto (DSSE) |
 | Ed25519 signature over SHA-256 digest | [Signing](https://pipelab.org/learn/action-receipt-spec/#signing) | RFC 8032 (Ed25519), FIPS 180-4 (SHA-256) | None | n/a |
 | Canonical JSON in struct-declaration order with HTML-safe escaping | [Canonicalization](https://pipelab.org/learn/action-receipt-spec/#canonicalization) | RFC 8785 (JCS) for the v2 envelope | v1 canonicalization is not RFC 8785; cross-language verifiers must mirror Go struct order | RFC 8785 canonicalization in the next v1 successor; EvidenceReceipt v2 already uses JCS |
-| Hash-chain linkage (`chain_prev_hash`, `chain_seq`) | [Chain linkage](https://pipelab.org/learn/action-receipt-spec/#chain-linkage) | SCITT (transparency ledger), in-toto attestation chains | No inclusion proof; chain is session-local, not anchored to a transparency log | IETF SCITT WG |
+| Hash-chain linkage (`chain_prev_hash`, `chain_seq`) | [Chain linkage](https://pipelab.org/learn/action-receipt-spec/#chain-linkage) | SCITT (transparency ledger), in-toto attestation chains | Base receipt linkage has no inclusion proof; optional checkpoint anchoring is a separate layer | IETF SCITT WG |
 | `action_id` (UUIDv7) | [Action record](https://pipelab.org/learn/action-receipt-spec/#action-record) | RFC 9562 UUID v7 | None | n/a |
 | `action_type` enum (`read`, `write`, `delegate`, `authorize`, `spend`, `commit`, `actuate`, `derive`, `unclassified`) | [Action types](https://pipelab.org/learn/action-receipt-spec/#action-types) | OWASP Agentic Skills Top 10 vocabulary (in development); CSA AARM authority taxonomy | No cross-vendor agreement on action-type names today | OWASP Agentic Skills Top 10; CSA AARM TWG |
 | `principal` and `actor` strings | [Action record](https://pipelab.org/learn/action-receipt-spec/#action-record) | SPIFFE workload identity; Cloudflare Signed Agents (vendor identity) | Identity binding is a loose `type:identifier` string today | SPIFFE SDK integration; cross-reference Signed Agents in the spec |
@@ -61,8 +61,10 @@ design through COSE_Sign1 (RFC 9052/9053) wrapping.
 | Statement payload | The signed action_record (or v2 evidence payload) | A receipt is a SCITT-compatible statement once wrapped in COSE_Sign1. |
 | Issuer | `signer_key` plus org binding | SCITT expects an issuer identity; Pipelock signs from a mediator key bound to the deployment. |
 | Statement hash | `SHA-256(canonical(action_record))` | Same bytes Pipelock uses for `chain_prev_hash` linkage. |
-| Inclusion receipt | Not in scope today | Pipelock chains receipts to each other; SCITT additionally proves inclusion in a transparency log. |
+| Inclusion receipt | Not part of the base receipt format | Optional Rekor checkpoint anchoring provides log inclusion evidence; it is not a SCITT transparency-service Receipt. |
 | Verifier | `pipelock verify-receipt`, `pipelock-verifier`, `sdk/verifiers/*` | Verifies without a transparency log; can compose with one. |
+
+Pipelock’s optional [Rekor anchor path](anchor-bundle-v1.md) verifies a signed entry timestamp, signed checkpoint, and Merkle inclusion proof using a pinned log public key. The local anchor backend is development plumbing, not an operator-independent witness.
 
 **Relationship:** Orthogonal. SCITT is "this statement was recorded publicly and cannot
 be retracted." Receipts are "what's inside the statement." A SCITT transparency service

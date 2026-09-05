@@ -21,13 +21,15 @@ separated:
 | `signer_key` (Ed25519 hex) | Issuer (and its key) | Issuer key |
 | `target` on the action record | Subject | Subject |
 | Pipelock policy bundle digest | Issuance context | Carried in the payload as `action_record.policy_hash` (per `internal/receipt/action.go`); this profile does not lift it into a COSE header parameter. |
-| (none — no inclusion proof today) | Receipt (TS inclusion proof) | **Out of scope of v0.1.** Anchoring is the TS's job. |
+| (none in the base receipt envelope) | Receipt (TS inclusion proof) | **Out of scope of v0.1.** Anchoring is the TS's job. |
 | (combined for relying parties) | Transparent Statement (Signed Statement + Receipt) | Out of scope; produced by the TS after submission. |
 
 **Throughout this document, "Statement" always means a SCITT Signed Statement and
 "Receipt" always means a SCITT transparency-service Receipt.** When Pipelock's
 runtime evidence envelope is meant, the document uses the explicit name
 "ActionReceipt v1" or "EvidenceReceipt v2."
+
+Pipelock’s separate [Rekor checkpoint anchor](anchor-bundle-v1.md) supports inclusion verification under a pinned log public key. That anchor bundle is not a SCITT transparency-service Receipt and does not extend this profile’s scope. The local anchor backend is development plumbing, not an operator-independent witness.
 
 ## What this is
 
@@ -39,6 +41,8 @@ non-repudiation, and downstream verifiable retrieval.
 It is **not** a new content model. The Statement payload carries the same
 `action_record` bytes that Pipelock's ActionReceipt v1 already signs today. The
 COSE_Sign1 wrapper around it is what makes the artifact a SCITT Signed Statement.
+
+Pipelock’s separate [Rekor checkpoint anchor](anchor-bundle-v1.md) supports inclusion verification under a pinned log public key. That anchor bundle is not a SCITT transparency-service Receipt and does not extend this profile’s scope. The local anchor backend is development plumbing, not an operator-independent witness.
 
 ## What this is not
 

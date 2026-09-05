@@ -99,8 +99,8 @@ then preview and re-run the install with `--config`.
 pipelock opencode install --config "$PWD/pipelock.yaml" --dry-run
 
 # Restore only entries previously wrapped by Pipelock.
-pipelock opencode remove --dry-run
-pipelock opencode remove
+pipelock opencode remove --path /path/to/opencode.json --dry-run
+pipelock opencode remove --path /path/to/opencode.json
 ```
 
 Install and remove create a one-version `.bak` backup before a real change.

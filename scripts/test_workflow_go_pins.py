@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Every exact Go toolchain pin agrees with everything that asserts it.
 
 A workflow that pins an exact Go version usually pairs it with a step asserting

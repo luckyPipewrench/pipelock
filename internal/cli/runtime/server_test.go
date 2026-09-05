@@ -2763,11 +2763,13 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 	}
 
 	secondDone := make(chan error, 1)
-	go func() {
+	secondReload := func() {
 		secondDone <- s.Reload(loadServerTestReloadConfig(t, "second-should-not-activate"))
-	}()
+	}
+	secondCaller := runtime.FuncForPC(reflect.ValueOf(secondReload).Pointer()).Name()
+	go secondReload()
 
-	waitForReloadMutexBlock(t, secondDone)
+	waitForReloadMutexBlock(t, secondDone, secondCaller)
 
 	close(releaseFirst)
 	if err := <-firstDone; err != nil {
@@ -2791,16 +2793,16 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 
 // waitForReloadMutexBlock observes the second Reload goroutine stopped in its
 // mutex acquisition. The first reload is paused after proxy publication while
-// still holding reloadMu, so a Reload stack that includes sync.Mutex.Lock can
-// only be waiting for that exclusion. This is stronger than treating a
-// wall-clock interval without completion as evidence of mutual exclusion.
-func waitForReloadMutexBlock(t *testing.T, done <-chan error) {
+// still holding reloadMu. Match the direct Lock -> Reload -> caller frame
+// sequence so an unrelated reload cannot satisfy the observation. A wall-clock
+// interval without completion does not establish mutual exclusion.
+func waitForReloadMutexBlock(t *testing.T, done <-chan error, caller string) {
 	t.Helper()
 
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
 	for {
-		if reloadBlockedOnMutex() {
+		if reloadBlockedOnMutex(caller) {
 			return
 		}
 		select {
@@ -2814,7 +2816,7 @@ func waitForReloadMutexBlock(t *testing.T, done <-chan error) {
 	}
 }
 
-func reloadBlockedOnMutex() bool {
+func reloadBlockedOnMutex(caller string) bool {
 	n, _ := runtime.GoroutineProfile(nil)
 	records := make([]runtime.StackRecord, n)
 	n, ok := runtime.GoroutineProfile(records)
@@ -2824,12 +2826,17 @@ func reloadBlockedOnMutex() bool {
 
 	for _, record := range records[:n] {
 		previousFunction := ""
+		reloadAtLock := false
 		frames := runtime.CallersFrames(record.Stack())
 		for {
 			frame, more := frames.Next()
-			if frame.Function == "github.com/luckyPipewrench/pipelock/internal/cli/runtime.(*Server).Reload" && previousFunction == "sync.(*Mutex).Lock" {
-				return true
+			if reloadAtLock {
+				if frame.Function == caller {
+					return true
+				}
+				break
 			}
+			reloadAtLock = frame.Function == "github.com/luckyPipewrench/pipelock/internal/cli/runtime.(*Server).Reload" && previousFunction == "sync.(*Mutex).Lock"
 			previousFunction = frame.Function
 			if !more {
 				break
@@ -2837,6 +2844,27 @@ func reloadBlockedOnMutex() bool {
 		}
 	}
 	return false
+}
+
+func TestReloadBlockedOnMutexIgnoresOtherCaller(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	s.reloadMu.Lock()
+	done := make(chan error, 1)
+	exited := make(chan struct{})
+	defer func() {
+		s.reloadMu.Unlock()
+		<-exited
+	}()
+	blockedReload := func() {
+		defer close(exited)
+		done <- s.Reload(config.Defaults())
+	}
+	caller := runtime.FuncForPC(reflect.ValueOf(blockedReload).Pointer()).Name()
+	go blockedReload()
+	waitForReloadMutexBlock(t, done, caller)
+	if reloadBlockedOnMutex(caller + ".unrelated") {
+		t.Fatal("reload observation accepted an unrelated caller")
+	}
 }
 
 func loadServerTestReloadConfig(t *testing.T, apiToken string) *config.Config {

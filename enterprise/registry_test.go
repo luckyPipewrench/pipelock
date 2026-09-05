@@ -686,8 +686,8 @@ func TestAgentRegistryResolveFromRequest_ExpiredProfileIsNotBound(t *testing.T) 
 			if id.Name != testProfileClaudeCode {
 				t.Errorf("id.Name = %q, want matched mapping %q kept for audit", id.Name, testProfileClaudeCode)
 			}
-			if id.Auth == envelope.ActorAuthBound || id.Auth.TrustedForIdentity() {
-				t.Errorf("auth = %q, want untrusted after expiry fallback", id.Auth)
+			if id.Auth != envelope.ActorAuthUnknown {
+				t.Errorf("auth = %q, want %q after expiry fallback", id.Auth, envelope.ActorAuthUnknown)
 			}
 		})
 	}

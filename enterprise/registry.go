@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -161,17 +162,23 @@ func (r *AgentRegistry) LookupByName(name string) (*edition.ResolvedAgent, bool)
 // ResolveFromRequest implements the 4-step agent resolution for Edition.ResolveAgent.
 // Priority: context override > CIDR > header/query > fallback.
 func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Request, defaultCfg *config.Config, defaultSc *scanner.Scanner) (*edition.ResolvedAgent, edition.AgentIdentity) {
-	// Context override (set by per-agent listener binding).
+	// Context override (set by per-agent listener binding). The identity was
+	// injected by the listener the connection arrived on, so nothing the
+	// caller wrote into the request can change it: graded bound. Leaving the
+	// grade empty here reads as unknown downstream, which excludes the
+	// strongest identity path from OCSF/CEF identity fields and collapses
+	// per-agent CEE/DoW state keys to the client IP.
 	if profile, ok := edition.AgentOverrideFromContext(ctx); ok {
-		id := edition.AgentIdentity{Name: profile, Profile: profile}
-		return r.Lookup(id.Profile), id
+		return r.resolveInfrastructureIdentity(profile)
 	}
 
-	// Source CIDR match: map client IP to profile.
+	// Source CIDR match: map client IP to profile. The mapping is operator
+	// config applied to the connection's own source address (RemoteAddr,
+	// never a forwarded header), so the caller cannot select a different
+	// agent per request: graded bound like the listener path.
 	if clientIP := extractIP(req); clientIP != nil {
 		if profile, ok := r.MatchCIDR(clientIP); ok {
-			id := edition.AgentIdentity{Name: profile, Profile: profile}
-			return r.Lookup(id.Profile), id
+			return r.resolveInfrastructureIdentity(profile)
 		}
 	}
 
@@ -183,6 +190,22 @@ func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Reques
 	}
 	id := edition.ResolveAgentIdentity(req, known, defaultCfg.DefaultAgentIdentity, defaultCfg.BindDefaultAgentIdentity)
 	return r.Lookup(id.Profile), id
+}
+
+// resolveInfrastructureIdentity grades an identity that infrastructure
+// established (listener binding or source CIDR). It is bound only while the
+// profile it names is the profile whose policy was actually selected. When
+// Lookup falls back because the license expired, the request runs under the
+// fallback policy, and the expired profile's label must not ride into
+// OCSF/CEF identity fields or per-agent CEE/DoW state as a trusted identity,
+// so the grade is unknown and the profile is the fallback's. The name is kept
+// so the audit log still shows which mapping the connection matched.
+func (r *AgentRegistry) resolveInfrastructureIdentity(profile string) (*edition.ResolvedAgent, edition.AgentIdentity) {
+	resolved := r.Lookup(profile)
+	if resolved.Name != profile {
+		return resolved, edition.AgentIdentity{Name: profile, Profile: resolved.Name, Auth: envelope.ActorAuthUnknown}
+	}
+	return resolved, edition.AgentIdentity{Name: profile, Profile: profile, Auth: envelope.ActorAuthBound}
 }
 
 // ProfileForPort returns the agent profile name bound to a listen address.

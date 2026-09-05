@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -245,22 +246,12 @@ func TestConnectAuthorityAllowReachesDialWithoutForwardingRequestHeaders(t *test
 
 func TestWebSocketAuthorityDenyMakesNoUpstreamHandshake(t *testing.T) {
 	t.Parallel()
-	backend, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen backend: %v", err)
-	}
-	defer func() { _ = backend.Close() }()
-	accepted := make(chan struct{}, 1)
-	go func() {
-		conn, acceptErr := backend.Accept()
-		if acceptErr == nil {
-			accepted <- struct{}{}
-			_ = conn.Close()
-		}
-	}()
+	backend := newAuthorityDialBarrier(t)
+	handlerDone := make(chan struct{})
 
-	proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, nil)
+	proxyAddr, p, cleanup := setupWSProxyWithHandlerDone(t, nil, nil, func() { close(handlerDone) })
 	defer cleanup()
+	p.dialer.ControlContext = backend.observeDial
 	receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	p.receiptEmitterPtr.Store(receiptHelper.emitter)
 	var verifierCalls atomic.Int32
@@ -280,34 +271,20 @@ func TestWebSocketAuthorityDenyMakesNoUpstreamHandshake(t *testing.T) {
 	if verifierCalls.Load() != 1 {
 		t.Fatalf("verifier calls = %d, want 1", verifierCalls.Load())
 	}
-	select {
-	case <-accepted:
-		t.Fatal("authority-denied WebSocket reached upstream listener")
-	case <-time.After(100 * time.Millisecond):
-	}
+	backend.assertNoDial(t, handlerDone)
 	assertSingleProxyAuthorityBlockReceipt(t, receiptHelper.findReceipts(t))
 }
 
 func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
 	t.Parallel()
-	backend, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen backend: %v", err)
-	}
-	defer func() { _ = backend.Close() }()
-	accepted := make(chan struct{}, 1)
-	go func() {
-		conn, acceptErr := backend.Accept()
-		if acceptErr == nil {
-			accepted <- struct{}{}
-			_ = conn.Close()
-		}
-	}()
+	backend := newAuthorityDialBarrier(t)
+	handlerDone := make(chan struct{})
 
-	proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+	proxyAddr, p, cleanup := setupWSProxyWithHandlerDone(t, func(cfg *config.Config) {
 		cfg.FlightRecorder.RequireReceipts = true
-	})
+	}, nil, func() { close(handlerDone) })
 	defer cleanup()
+	p.dialer.ControlContext = backend.observeDial
 	receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	p.receiptEmitterPtr.Store(receiptHelper.emitter)
 	var verifierCalls atomic.Int32
@@ -323,12 +300,44 @@ func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
 	if verifierCalls.Load() != 1 {
 		t.Fatalf("verifier calls = %d, want 1", verifierCalls.Load())
 	}
-	select {
-	case <-accepted:
-		t.Fatal("authority-denied WebSocket reached upstream listener")
-	case <-time.After(100 * time.Millisecond):
-	}
+	backend.assertNoDial(t, handlerDone)
 	assertSingleProxyAuthorityBlockReceipt(t, receiptHelper.findReceipts(t))
+}
+
+// authorityDialBarrier counts socket creation attempts before the OS connects.
+// The handler completion signal prevents a delayed dial from escaping the check.
+type authorityDialBarrier struct {
+	listener net.Listener
+	attempts atomic.Int32
+}
+
+func newAuthorityDialBarrier(t *testing.T) *authorityDialBarrier {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return &authorityDialBarrier{listener: listener}
+}
+
+func (b *authorityDialBarrier) Addr() net.Addr { return b.listener.Addr() }
+
+func (b *authorityDialBarrier) observeDial(context.Context, string, string, syscall.RawConn) error {
+	b.attempts.Add(1)
+	return errors.New("test upstream dial observed")
+}
+
+func (b *authorityDialBarrier) assertNoDial(t *testing.T, handlerDone <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-handlerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WebSocket handler did not finish")
+	}
+	if got := b.attempts.Load(); got != 0 {
+		t.Fatalf("authority-denied WebSocket attempted %d upstream connections", got)
+	}
 }
 
 func assertSingleProxyAuthorityBlockReceipt(t *testing.T, receipts []receipt.Receipt) {

@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2734,7 +2735,23 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 
 	firstPaused := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	var reloads sync.WaitGroup
 	var hookCalls atomic.Int32
+	secondAtLock := make(chan struct{})
+	secondAcquiredLock := make(chan struct{})
+	var lockAttempts atomic.Int32
+	var lockAcquisitions atomic.Int32
+	restoreLockHook := setReloadLockHookForTest(func(acquired bool) {
+		if acquired {
+			if lockAcquisitions.Add(1) == 2 {
+				close(secondAcquiredLock)
+			}
+			return
+		}
+		if lockAttempts.Add(1) == 2 {
+			close(secondAtLock)
+		}
+	})
 	restoreHook := setReloadAfterProxySwapHookForTest(func(*Server) {
 		if hookCalls.Add(1) != 1 {
 			return
@@ -2742,11 +2759,23 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 		close(firstPaused)
 		<-releaseFirst
 	})
-	defer restoreHook()
+	defer func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
+		}
+		reloads.Wait()
+		restoreHook()
+		restoreLockHook()
+	}()
 
 	firstDone := make(chan error, 1)
+	firstConfig := loadServerTestReloadConfig(t, "first-clean-tool-poison")
+	reloads.Add(1)
 	go func() {
-		firstDone <- s.Reload(loadServerTestReloadConfig(t, "first-clean-tool-poison"))
+		defer reloads.Done()
+		firstDone <- s.Reload(firstConfig)
 	}()
 
 	<-firstPaused
@@ -2755,17 +2784,39 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 	}
 
 	secondDone := make(chan error, 1)
-	go func() {
-		secondDone <- s.Reload(loadServerTestReloadConfig(t, "second-should-not-activate"))
-	}()
+	secondConfig := loadServerTestReloadConfig(t, "second-should-not-activate")
+	secondReload := func() {
+		defer reloads.Done()
+		secondDone <- s.Reload(secondConfig)
+	}
+	reloads.Add(1)
+	go secondReload()
 
+	testwait.For(t, 5*time.Second, func() bool {
+		select {
+		case <-secondAtLock:
+			return true
+		default:
+			return false
+		}
+	}, "second reload to reach reloadMu")
 	select {
+	case <-secondAcquiredLock:
+		t.Fatal("second reload acquired reloadMu while first reload still held it")
 	case err := <-secondDone:
-		t.Fatalf("second reload completed before first reload refreshed runtime mirrors: %v", err)
-	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("second reload completed before acquiring reloadMu: %v", err)
+	default:
 	}
 
 	close(releaseFirst)
+	testwait.For(t, 5*time.Second, func() bool {
+		select {
+		case <-secondAcquiredLock:
+			return true
+		default:
+			return false
+		}
+	}, "second reload to acquire released reloadMu")
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first clean reload: %v", err)
 	}

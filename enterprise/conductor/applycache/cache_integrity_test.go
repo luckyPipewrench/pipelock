@@ -8,6 +8,7 @@ package applycache
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -924,6 +926,73 @@ func TestUnsupportedMinVersionRejected(t *testing.T) {
 	opts.LocalVersion = "1.2.3"
 	if _, err := cache.storeVerified(bundle, opts); !errors.Is(err, ErrUnsupportedMinVersion) {
 		t.Fatalf("storeVerified(min version) = %v, want ErrUnsupportedMinVersion", err)
+	}
+}
+
+func TestMinPipelockVersionRequiresVerifiableFollowerVersion(t *testing.T) {
+	key := newTestKey(t)
+	cases := []struct {
+		name         string
+		minVersion   string
+		localVersion string
+		wantErr      bool
+	}{
+		{name: "minimum with absent local version", minVersion: "1.2.3", wantErr: true},
+		{name: "minimum with blank local version", minVersion: "1.2.3", localVersion: "  ", wantErr: true},
+		{name: "minimum with development version", minVersion: "1.2.3", localVersion: "0.0.0-dev.unknown", wantErr: true},
+		{name: "minimum with malformed local version", minVersion: "1.2.3", localVersion: "not-a-version", wantErr: true},
+		{name: "minimum with supported local version", minVersion: "1.2.3", localVersion: "1.2.3"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := openTestCache(t)
+			prior := signedTestBundle(t, key, "bundle-prior", 1, "")
+			verified, seedErr := cache.storeVerified(prior, testVerifyOptions(key))
+			if seedErr != nil {
+				t.Fatalf("seed active bundle: %v", seedErr)
+			}
+			bundle := signedTestBundle(t, key, "bundle-2", 2, verified.BundleHash)
+			bundle.MinPipelockVersion = tc.minVersion
+			bundle.Signatures = []conductor.SignatureProof{signProof(t, key, bundle.SignablePreimage)}
+			reloadCalled := false
+			boundary := Boundary{
+				Cache:        cache,
+				Identity:     testIdentity(),
+				Resolver:     testResolver(key),
+				LocalVersion: tc.localVersion,
+				Now:          func() time.Time { return testNow },
+				Reload: func(*config.Config) error {
+					reloadCalled = true
+					return nil
+				},
+			}
+
+			_, err := boundary.Apply(bundle, ApplyOptions{})
+			if got := errors.Is(err, ErrUnsupportedMinVersion); got != tc.wantErr {
+				t.Fatalf("Apply() unsupported minimum error = %v, want %v (err = %v)", got, tc.wantErr, err)
+			}
+			if err != nil && strings.Contains(err.Error(), "allow_unversioned_bundle_load") {
+				t.Fatalf("Apply() recommends a rule-bundle setting that fleet apply does not read: %v", err)
+			}
+			if tc.wantErr {
+				for _, want := range []string{fmt.Sprintf("%q", tc.localVersion), fmt.Sprintf("%q", tc.minVersion), "install a released binary"} {
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Fatalf("Apply() error = %v, missing guidance %q", err, want)
+					}
+				}
+				active, activeErr := cache.Active()
+				if activeErr != nil {
+					t.Fatalf("read retained active bundle: %v", activeErr)
+				}
+				if active.BundleHash != verified.BundleHash {
+					t.Fatalf("rejected apply changed active bundle: got %s, want %s", active.BundleHash, verified.BundleHash)
+				}
+			}
+			if reloadCalled == tc.wantErr {
+				t.Fatalf("Reload called = %v, want %v", reloadCalled, !tc.wantErr)
+			}
+		})
 	}
 }
 

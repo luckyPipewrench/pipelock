@@ -36,8 +36,9 @@ func TestVerifyBundleSignatureGateRunsBeforePolicyHashTolerance(t *testing.T) {
 	// Sanity: as signed, this bundle verifies. Otherwise the negative case below
 	// could pass for an unrelated reason.
 	if err := verifyBundle(testNow, bundle, verifyOptions{
-		Resolver: testResolver(key),
-		Identity: Identity{OrgID: "org-1", FleetID: "fleet-1", InstanceID: "instance-1"},
+		Resolver:     testResolver(key),
+		Identity:     Identity{OrgID: "org-1", FleetID: "fleet-1", InstanceID: "instance-1"},
+		LocalVersion: "1.2.3",
 	}); err != nil {
 		t.Fatalf("verifyBundle(as signed) = %v, want nil", err)
 	}
@@ -50,8 +51,9 @@ func TestVerifyBundleSignatureGateRunsBeforePolicyHashTolerance(t *testing.T) {
 	// The policy_hash is now tolerated, but provenance is broken, so the
 	// signature gate must refuse it.
 	if err := verifyBundle(testNow, bundle, verifyOptions{
-		Resolver: testResolver(key),
-		Identity: Identity{OrgID: "org-1", FleetID: "fleet-1", InstanceID: "instance-1"},
+		Resolver:     testResolver(key),
+		Identity:     Identity{OrgID: "org-1", FleetID: "fleet-1", InstanceID: "instance-1"},
+		LocalVersion: "1.2.3",
 	}); err == nil {
 		t.Fatal("verifyBundle(tolerated policy_hash, broken signature) = nil, want error")
 	}
@@ -74,8 +76,9 @@ func TestVerifyBundleAcceptsForeignPolicyHashWhenProperlySigned(t *testing.T) {
 		t.Fatalf("PolicyHashStatus() = %q, want %q", status, conductor.PolicyHashUnknownUnverified)
 	}
 	if err := verifyBundle(testNow, bundle, verifyOptions{
-		Resolver: testResolver(key),
-		Identity: Identity{OrgID: "org-1", FleetID: "fleet-1", InstanceID: "instance-1"},
+		Resolver:     testResolver(key),
+		Identity:     Identity{OrgID: "org-1", FleetID: "fleet-1", InstanceID: "instance-1"},
+		LocalVersion: "1.2.3",
 	}); err != nil {
 		t.Fatalf("verifyBundle(properly signed, unreproducible policy_hash) = %v, want nil", err)
 	}

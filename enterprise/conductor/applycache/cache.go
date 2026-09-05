@@ -79,18 +79,6 @@ type verifyOptions struct {
 	LocalVersion  string
 	Now           func() time.Time
 	AllowRollback bool
-	// RequireProvenVersion makes a follower that cannot prove its own version
-	// refuse a bundle declaring min_pipelock, instead of accepting it.
-	//
-	// It defaults to false, which keeps the behavior fleet policy delivery has
-	// always had. Release binaries report a version and are compared strictly
-	// either way, so this only decides what an unversioned build does, and for
-	// those the alternative is applying no policy at all. A follower that
-	// silently enforces nothing is the worse failure and is the one this
-	// project has already been bitten by. It is a field rather than a literal
-	// so the choice is named at the call site and an operator-facing strict
-	// mode has somewhere to attach.
-	RequireProvenVersion bool
 }
 
 type Cache struct {
@@ -490,20 +478,11 @@ func verifyBundle(now time.Time, bundle conductor.PolicyBundle, opts verifyOptio
 	if err := bundle.ValidateForFollower(opts.Identity.OrgID, opts.Identity.FleetID, opts.Identity.InstanceID, opts.Identity.Labels); err != nil {
 		return err
 	}
-	if strings.TrimSpace(opts.LocalVersion) != "" {
-		// allowUnversioned is true here on purpose: the refusal added for RULE
-		// bundles is deliberately not extended to fleet policy delivery. A
-		// release binary reports a version and is checked strictly, exactly as
-		// before. Only a build that cannot prove its version is affected, and
-		// for those the choice is between accepting policy it may not fully
-		// support and applying NO policy at all. A follower that silently
-		// enforces nothing is the worse failure, and it is the one this project
-		// has already been burned by twice. This preserves the behavior on
-		// main, where a development build satisfied min_pipelock; it does not
-		// open a new gap.
-		if err := rules.CheckMinPipelock(bundle.MinPipelockVersion, opts.LocalVersion, !opts.RequireProvenVersion); err != nil {
-			return fmt.Errorf("%w: %w", ErrUnsupportedMinVersion, err)
+	if err := rules.CheckMinPipelock(bundle.MinPipelockVersion, opts.LocalVersion, false); err != nil {
+		if errors.Is(err, rules.ErrUnverifiableVersion) {
+			return fmt.Errorf("%w: %w: follower version %q cannot verify policy minimum %q; install a released binary that meets the minimum", ErrUnsupportedMinVersion, rules.ErrUnverifiableVersion, opts.LocalVersion, bundle.MinPipelockVersion)
 		}
+		return fmt.Errorf("%w: follower version %q cannot satisfy policy minimum %q; install a released binary that meets the minimum: %w", ErrUnsupportedMinVersion, opts.LocalVersion, bundle.MinPipelockVersion, err)
 	}
 	return nil
 }

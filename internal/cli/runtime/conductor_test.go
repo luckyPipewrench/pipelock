@@ -1281,6 +1281,11 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 	// conductor.enabled triggers the fleet-license gate; install a real
 	// Enterprise token for the test so the production gate path is exercised.
 	setTestFleetLicense(t)
+	// This serial fixture models a released follower. Restore after server
+	// cleanup so other runtime tests retain the unstamped development version.
+	previousVersion := cliutil.Version
+	cliutil.Version = "1.0.0"
+	t.Cleanup(func() { cliutil.Version = previousVersion })
 	tmp, err := os.MkdirTemp(".", ".runtime-conductor-apply-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)

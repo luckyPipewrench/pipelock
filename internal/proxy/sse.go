@@ -89,6 +89,13 @@ func IsSSEStreamFinding(err error) bool {
 	return errors.Is(err, mcp.ErrA2AStreamFinding) || errors.Is(err, mcp.ErrSSEStreamFinding)
 }
 
+// IsSSEStreamScanError reports whether err represents an incomplete SSE
+// response scan. Unlike a stream finding, this is an enforcement failure and
+// must be recorded as response_scan_error by transport consumers.
+func IsSSEStreamScanError(err error) bool {
+	return errors.Is(err, mcp.ErrSSEStreamScanError)
+}
+
 // LayerA2AStream is the receipt layer label used for A2A streaming
 // findings on the forward proxy. Dashboards and alerts pivot on this
 // label; do not change without coordinating downstream consumers.
@@ -168,14 +175,17 @@ func HijackResponseForSSE(
 		// flushes per write to the client, so the per-event flush behavior
 		// happens downstream of this pipe write.
 		scanErr := DispatchSSEScan(ctx, upstream, pw, nil, sc, opts)
+		_ = upstream.Close()
+		// Reverse-proxy outcomes are emitted after the body copier observes
+		// the pipe close. Publish the final scan state first so an incomplete
+		// scan can replace the provisional streaming outcome before signing.
+		if onComplete != nil {
+			onComplete(scanErr)
+		}
 		if scanErr != nil {
 			_ = pw.CloseWithError(scanErr)
 		} else {
 			_ = pw.Close()
-		}
-		_ = upstream.Close()
-		if onComplete != nil {
-			onComplete(scanErr)
 		}
 	}()
 

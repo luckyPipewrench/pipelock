@@ -1860,7 +1860,24 @@ func newInterceptHandler(
 				// terminate the stream. Generic SSE warn-mode findings are
 				// handled inline by GenericSSEScanOptions.OnFinding and
 				// return nil.
-				if IsSSEStreamFinding(streamErr) && sseAction == config.ActionWarn {
+				if IsSSEStreamScanError(streamErr) {
+					reason := "response scan failed: " + streamErr.Error()
+					ic.Logger.LogError(actx, fmt.Errorf("%s", reason))
+					ic.Metrics.RecordTLSResponseBlocked("response_scan_error")
+					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionBlock,
+						Layer:     "response_scan_error",
+						Pattern:   reason,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					}))
+				} else if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) {
+					ic.Logger.LogError(actx, streamErr)
+				} else if IsSSEStreamFinding(streamErr) && sseAction == config.ActionWarn {
 					ic.Logger.LogAnomaly(actx, sseLayer, streamErr.Error(), 0)
 				} else {
 					ic.Logger.LogBlocked(actx, sseLayer, streamErr.Error())
@@ -1883,6 +1900,10 @@ func newInterceptHandler(
 			// still the upstream status and the close reason carries the block.
 			if streamErr == nil || (IsSSEStreamFinding(streamErr) && sseAction == config.ActionWarn) {
 				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, "sse_stream")
+			} else if IsSSEStreamScanError(streamErr) {
+				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, "response_scan_error")
+			} else if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) {
+				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, "sse_stream_cancelled")
 			} else {
 				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, sseLayer)
 			}

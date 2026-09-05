@@ -283,6 +283,188 @@ func assertResponseScanErrorOutcome(t *testing.T, rph *receiptProxyHelper) {
 	}
 }
 
+type cancelAfterFirstResponseRead struct {
+	io.Reader
+	cancel context.CancelFunc
+	fired  bool
+}
+
+func (r *cancelAfterFirstResponseRead) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 && !r.fired {
+		r.fired = true
+		r.cancel()
+	}
+	return n, err
+}
+
+func (r *cancelAfterFirstResponseRead) Close() error {
+	return nil
+}
+
+func TestSSEScanErrorUsesErrorEvidenceAfterHeadersCommitted(t *testing.T) {
+	for _, transport := range []string{"forward", "intercept"} {
+		t.Run(transport, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.Internal = nil
+			cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
+			cfg.DLP.ScanEnv = false
+			cfg.FlightRecorder.RequireReceipts = true
+			cfg.ResponseScanning.Enabled = true
+			cfg.ResponseScanning.SSEStreaming.Enabled = true
+			cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			m := metrics.New()
+			p, err := New(cfg, audit.NewNop(), sc, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			rph := newReceiptProxyHelperWithMetrics(t, m)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			rt := forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"text/event-stream"}},
+					Body:       &cancelAfterFirstResponseRead{Reader: strings.NewReader("data: ordinary response\n\n"), cancel: cancel},
+					Request:    r,
+				}, nil
+			})
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example/events", nil)
+			w := httptest.NewRecorder()
+			if transport == "forward" {
+				p.client = &http.Client{Transport: rt}
+				p.handleForwardHTTP(w, req)
+			} else {
+				h := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: m, ClientIP: "192.0.2.1", RequestID: "sse-scan-error", Proxy: p}, rt)
+				h.ServeHTTP(w, req)
+			}
+			if w.Code != http.StatusOK {
+				t.Fatalf("stream status = %d, want upstream status %d after headers commit", w.Code, http.StatusOK)
+			}
+			if transport == "forward" {
+				assertMetricsContain(t, m, `pipelock_scanner_hits_total{agent="_default",scanner="response_scan_error"} 1`)
+			} else {
+				assertMetricsContain(t, m, `pipelock_tls_response_blocked_total{reason="response_scan_error"} 1`)
+			}
+			assertCommittedSSEScanErrorEvidence(t, rph)
+		})
+	}
+}
+
+func assertCommittedSSEScanErrorEvidence(t *testing.T, rph *receiptProxyHelper) {
+	t.Helper()
+	var errorReceipt, outcome receipt.Receipt
+	for _, r := range rph.findReceipts(t) {
+		switch r.ActionRecord.Layer {
+		case LayerSSEStream, LayerA2AStream:
+			t.Fatalf("incomplete scan emitted a content-finding receipt: %+v", r.ActionRecord)
+		case "response_scan_error":
+			errorReceipt = r
+		case receiptOutcomeLayer:
+			if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+				outcome = r
+			}
+		}
+	}
+	if errorReceipt.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("scan error receipt = %+v, want block", errorReceipt.ActionRecord)
+	}
+	if outcome.ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome || !strings.Contains(outcome.ActionRecord.Pattern, "status=200") || !strings.Contains(outcome.ActionRecord.Pattern, "reason=response_scan_error") {
+		t.Fatalf("outcome receipt = %+v, want committed status=200 and response_scan_error", outcome.ActionRecord)
+	}
+}
+
+func TestReverseSSEScanErrorRecordsErrorOutcomeAfterStreamClose(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.Internal = nil
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.SSEStreaming.Enabled = true
+	cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	m := metrics.New()
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	rp := NewReverseProxy(nil, &cfgPtr, &scPtr, audit.NewNop(), m, killswitch.New(cfg), nil, nil)
+	rph := newReceiptProxyHelperWithMetrics(t, m)
+	var emitter atomic.Pointer[receipt.Emitter]
+	emitter.Store(rph.emitter)
+	rp.SetReceiptEmitter(&emitter)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example/events", nil)
+	tracker := newReverseOutcomeTracker(cfg, receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: "reverse", Method: req.Method, Target: req.URL.String(),
+	})
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyReverseOutcome, tracker))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       &cancelAfterFirstResponseRead{Reader: strings.NewReader("data: ordinary response\n\n"), cancel: cancel},
+		Request:    req,
+	}
+	if err := rp.modifyResponse(resp); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	tracker.EmitOnce(rp)
+
+	assertMetricsContain(t, m, `pipelock_reverse_proxy_scan_blocked_total{direction="response",reason="scan_error"} 1`)
+	assertCommittedSSEScanErrorEvidence(t, rph)
+}
+
+func TestForwardSSEContextCancellationIsNotScanError(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.Internal = nil
+	cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
+	cfg.DLP.ScanEnv = false
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.SSEStreaming.Enabled = true
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	m := metrics.New()
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	rph := newReceiptProxyHelperWithMetrics(t, m)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: ordinary response\n\n")),
+			Request:    r,
+		}, nil
+	})}
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example/events", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want upstream status %d", w.Code, http.StatusOK)
+	}
+	assertMetricsNotContain(t, m, `pipelock_scanner_hits_total{agent="_default",scanner="response_scan_error"} 1`)
+	for _, r := range rph.findReceipts(t) {
+		if r.ActionRecord.Layer == "response_scan_error" {
+			t.Fatalf("ordinary context cancellation emitted scan-error receipt: %+v", r.ActionRecord)
+		}
+		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && strings.Contains(r.ActionRecord.Pattern, "reason=response_scan_error") {
+			t.Fatalf("ordinary context cancellation emitted scan-error outcome: %+v", r.ActionRecord)
+		}
+	}
+}
+
 type bodyScanCheckpointContext struct {
 	context.Context
 	cancel context.CancelFunc

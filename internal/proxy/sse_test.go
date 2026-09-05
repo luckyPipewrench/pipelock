@@ -134,6 +134,15 @@ func TestIsSSEStreamFinding(t *testing.T) {
 	if IsSSEStreamFinding(nil) {
 		t.Error("nil is not a finding")
 	}
+	if IsSSEStreamFinding(mcp.ErrSSEStreamScanError) {
+		t.Error("incomplete scan is not an SSE finding")
+	}
+	if !IsSSEStreamScanError(mcp.ErrSSEStreamScanError) {
+		t.Error("incomplete scan error must be recognized")
+	}
+	if IsSSEStreamScanError(mcp.ErrSSEStreamFinding) {
+		t.Error("SSE finding is not an incomplete scan error")
+	}
 }
 
 func TestSSEStreamLayer(t *testing.T) {

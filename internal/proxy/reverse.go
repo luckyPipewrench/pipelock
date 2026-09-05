@@ -2053,6 +2053,29 @@ responseScanning:
 			if err == nil {
 				return
 			}
+			if IsSSEStreamScanError(err) {
+				reason := "response scan failed: " + err.Error()
+				rp.logger.LogError(actx, fmt.Errorf("%s", reason))
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "scan_error")
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     "response_scan_error",
+					Pattern:   reason,
+					Transport: "reverse",
+					Method:    resp.Request.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				})
+				recordReverseOutcome(resp.StatusCode, -1, "response_scan_error")
+				return
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				rp.logger.LogError(actx, err)
+				recordReverseOutcome(resp.StatusCode, -1, "sse_stream_cancelled")
+				return
+			}
 			// Only an actual scan finding (DLP / injection / oversize /
 			// invalid-UTF-8) counts as an sse_stream block in audit. The
 			// fixes that landed earlier in this PR - writeSSEEvent now
@@ -2084,6 +2107,8 @@ responseScanning:
 				Agent:     agent,
 			})
 		}
+		// Initialize before the scanner goroutine can publish its terminal result.
+		recordReverseOutcome(resp.StatusCode, -1, "sse_stream")
 		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
 		// SSE is open-ended; the upstream Content-Length (if any) becomes
 		// meaningless once we strip events through the pipe. -1 instructs
@@ -2091,7 +2116,6 @@ responseScanning:
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
-		recordReverseOutcome(resp.StatusCode, -1, "sse_stream")
 		return nil
 	}
 
@@ -2110,23 +2134,24 @@ responseScanning:
 	if err != nil {
 		// Fail-closed: can't read body, can't scan it.
 		_ = resp.Body.Close()
+		reason := "response scan failed: response read error"
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
-		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "read_error")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "scan_error")
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
-		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"response_read_error"}, nil)
+		rp.logger.LogError(actx, fmt.Errorf("%s", reason))
 		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
-			Layer:     LayerReverseResponseBlocked,
-			Pattern:   "response read error",
+			Layer:     "response_scan_error",
+			Pattern:   reason,
 			Transport: "reverse",
 			Method:    resp.Request.Method,
 			Target:    targetURL,
 			RequestID: requestID,
 			Agent:     agent,
 		})
-		replaceWithBlockResponse(resp, []string{"response read error"})
-		recordReverseOutcome(http.StatusForbidden, -1, "response_read_error")
+		replaceWithBlockResponse(resp, []string{"response scan incomplete"})
+		recordReverseOutcome(http.StatusForbidden, -1, "response_scan_error")
 		return nil
 	}
 

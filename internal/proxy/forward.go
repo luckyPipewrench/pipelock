@@ -2256,7 +2256,40 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// mode, A2A findings are logged without an additional receipt.
 			// Generic SSE warn-mode findings are handled inline by
 			// GenericSSEScanOptions.OnFinding and return nil.
-			if IsSSEStreamFinding(err) && sseAction == config.ActionWarn {
+			if IsSSEStreamScanError(err) {
+				reason := "response scan failed: " + err.Error()
+				p.logger.LogError(actx, fmt.Errorf("%s", reason))
+				p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan_error", time.Since(start), agentLabel)
+				emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+					ActionID:            actionID,
+					Verdict:             config.ActionBlock,
+					Layer:               "response_scan_error",
+					Pattern:             reason,
+					Transport:           "forward",
+					Method:              r.Method,
+					Target:              targetURL,
+					RequestID:           requestID,
+					Agent:               agent,
+					SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+					SessionContaminated: forwardTaint.Risk.Contaminated,
+					RecentTaintSources:  forwardTaint.Risk.Sources,
+					SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+					SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+					AuthorityKind:       forwardTaint.Authority.String(),
+					TaintDecision:       forwardTaint.Result.Decision.String(),
+					TaintDecisionReason: forwardTaint.Result.Reason,
+					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+				}))
+				// Streaming headers are already committed. Preserve the
+				// client-visible upstream status and record the incomplete scan
+				// in the outcome reason.
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = "response_scan_error"
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				p.logger.LogError(actx, err)
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = "sse_stream_cancelled"
+			} else if IsSSEStreamFinding(err) && sseAction == config.ActionWarn {
 				p.logger.LogAnomaly(actx, sseLayer, err.Error(), 0)
 				outcomeStatus = strconv.Itoa(resp.StatusCode)
 				outcomeReason = sseLayer

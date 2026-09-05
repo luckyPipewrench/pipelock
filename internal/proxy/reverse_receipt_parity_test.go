@@ -1639,6 +1639,8 @@ func TestReceiptCoverage_ReverseSizeExemptResponseScanBlock_EmitsReceipt(t *test
 // io.ReadAll on the proxy side.
 func TestReceiptCoverage_ReverseReadErrorBlock_EmitsReceipt(t *testing.T) {
 	cfg := reverseTestConfig()
+	disabled := false
+	cfg.MediaPolicy.Enabled = &disabled
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
 		// testing.T.Fatal* is only safe from the goroutine running the
 		// test function; calling it from this httptest handler goroutine
@@ -1680,15 +1682,15 @@ func TestReceiptCoverage_ReverseReadErrorBlock_EmitsReceipt(t *testing.T) {
 	closeRec()
 
 	receipts := extractReceiptsFromDir(t, dir)
-	r := findReceiptByLayer(t, receipts, LayerReverseResponseBlocked)
+	r := findReceiptByLayer(t, receipts, "response_scan_error")
 	if r.ActionRecord.Transport != TransportReverse {
 		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
 	}
-	if !strings.Contains(r.ActionRecord.Pattern, "read error") {
-		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "read error")
+	if !strings.Contains(r.ActionRecord.Pattern, "response scan failed") || !strings.Contains(r.ActionRecord.Pattern, "read error") {
+		t.Errorf("Pattern = %q, expected response scan error", r.ActionRecord.Pattern)
 	}
 }
 

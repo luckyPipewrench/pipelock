@@ -2188,6 +2188,35 @@ class FailureDirectionTest(unittest.TestCase):
                 "budget the judge already needed at high reasoning" % discovery_effort,
             )
 
+    def test_default_discovery_payload_carries_the_effort_and_budget_together(self) -> None:
+        """Assert the shipped request, not the constants that feed it.
+
+        The constants can agree while the payload builder routes a phase down a
+        different branch, so this checks the dict actually sent to the provider
+        for the default discovery phase.
+        """
+        payload = pr_review.build_llm_payload(
+            pr_review.model_for_phase("default", "review-chunk-1"),
+            "system",
+            "user",
+            "default",
+            "review-chunk-1",
+        )
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["max_completion_tokens"], 32_768)
+        self.assertEqual(
+            payload["max_completion_tokens"],
+            pr_review.build_llm_payload(
+                pr_review.model_for_phase("default", "judge"),
+                "system",
+                "user",
+                "default",
+                "judge",
+            )["max_completion_tokens"],
+            "discovery and the candidate judge both run at high reasoning, so "
+            "discovery must not be sent with the smaller allowance",
+        )
+
     def test_candidate_judge_payload_uses_the_phase_specific_model_and_reasoning(self) -> None:
         class Response:
             status_code = 200

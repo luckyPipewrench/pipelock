@@ -83,6 +83,8 @@ type ReverseProxyHandler struct {
 	receiptEmitterPtr    *atomic.Pointer[receipt.Emitter]
 	v2EmitterPtr         *atomic.Pointer[proxydecision.Emitter]
 	contractLoaderPtr    *atomic.Pointer[contractruntime.Loader]
+	editionPtr           *atomic.Pointer[editionSnapshot]
+	agentResolver        func(*http.Request) edition.AgentIdentity
 	reqPolicyFn          func(requestPolicyInput) requestPolicyResult                 // nil = disabled
 	reqPolicyPrepareFn   func(*http.Request, *requestPolicyInput) requestPolicyResult // nil = no body pre-read
 	sizeExemptScanBudget sizeExemptScanBudget
@@ -261,6 +263,26 @@ func (rp *ReverseProxyHandler) SetV2ReceiptEmitter(ptr *atomic.Pointer[proxydeci
 // SetContractLoader sets the atomic pointer to the learn-lock loader.
 func (rp *ReverseProxyHandler) SetContractLoader(ptr *atomic.Pointer[contractruntime.Loader]) {
 	rp.contractLoaderPtr = ptr
+}
+
+// setAgentResolver is a test seam for the OSS fallback resolution path.
+func (rp *ReverseProxyHandler) setAgentResolver(resolver func(*http.Request) edition.AgentIdentity) {
+	rp.agentResolver = resolver
+}
+
+func (rp *ReverseProxyHandler) setEditionPtr(ptr *atomic.Pointer[editionSnapshot]) {
+	rp.editionPtr = ptr
+}
+
+func (rp *ReverseProxyHandler) resolveAgentIdentity(r *http.Request, cfg *config.Config, ed edition.Edition) edition.AgentIdentity {
+	if ed != nil {
+		_, identity := ed.ResolveAgent(r.Context(), r)
+		return identity
+	}
+	if rp.agentResolver != nil {
+		return rp.agentResolver(r)
+	}
+	return edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
 }
 
 // SetRequestPolicyFn wires the request_policy evaluation into the
@@ -514,6 +536,7 @@ func (rp *ReverseProxyHandler) SetRedactionRuntimePtr(ptr *atomic.Pointer[redact
 type reverseRuntimeSnapshot struct {
 	cfg              *config.Config
 	sc               *scanner.Scanner
+	edition          edition.Edition
 	admissionEmitter *envelope.Emitter
 	inboundVerifier  *envelope.Verifier
 	contractLoader   *contractruntime.Loader
@@ -527,6 +550,11 @@ func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
 	snap := reverseRuntimeSnapshot{
 		cfg: rp.cfgPtr.Load(),
 		sc:  rp.scPtr.Load(),
+	}
+	if rp.editionPtr != nil {
+		if editionSnap := rp.editionPtr.Load(); editionSnap != nil {
+			snap.edition = editionSnap.Edition
+		}
 	}
 	if rp.envelopeEmitterPtr != nil {
 		snap.admissionEmitter = rp.envelopeEmitterPtr.Load()
@@ -603,10 +631,11 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	clientIP, requestID := requestMeta(r)
 	agent, _ := r.Context().Value(ctxKeyAgent).(string)
 	agentAuth := agentAuthFromContext(r.Context())
+	resolvedIdentity := edition.AgentIdentity{Name: agent, Auth: envelope.ActorAuth(agentAuth)}
 	if agent == "" {
-		resolved := edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
-		agent = resolved.Name
-		agentAuth = string(resolved.Auth)
+		resolvedIdentity = rp.resolveAgentIdentity(r, cfg, snap.edition)
+		agent = resolvedIdentity.Name
+		agentAuth = string(resolvedIdentity.Auth)
 	}
 	// Put the grade on the request as soon as identity resolves. The collision
 	// audit below builds its context from r.Context(), and the reverse handler
@@ -615,15 +644,18 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// bound agent.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, agentAuth))
 	targetURL := reverseTargetURL(rp.upstream, r)
-	if reservedAgent, ok := edition.RejectedSelfDeclaredReservedControlActor(r, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity); ok {
-		auditAgent := agent
-		if auditAgent == "" {
-			auditAgent = agentAnonymous
+	if envelope.NormalizeActorAuth(agentAuth) != envelope.ActorAuthBound {
+		reservedAgent, ok := edition.RejectedSelfDeclaredReservedControlActor(r, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
+		if ok {
+			auditAgent := agent
+			if auditAgent == "" {
+				auditAgent = agentAnonymous
+			}
+			rp.logger.LogAgentIdentityCollision(
+				newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: audit.RedactContentBearingURL(targetURL), ClientIP: clientIP, RequestID: requestID, Agent: auditAgent}),
+				reservedAgent,
+			)
 		}
-		rp.logger.LogAgentIdentityCollision(
-			newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: audit.RedactContentBearingURL(targetURL), ClientIP: clientIP, RequestID: requestID, Agent: auditAgent}),
-			reservedAgent,
-		)
 	}
 	var reverseGate ContractGateOutput
 	withReverseContractReceipt := func(opts receipt.EmitOpts) receipt.EmitOpts {
@@ -1105,8 +1137,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// same signing decision that ServeHTTP made. Without this, a reload
 	// between here and RoundTrip could flip signing on/off mid-request.
 	if admissionEmitter != nil {
-		actorIdentity := edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
-		actor := actorIdentity.Name
+		actor := resolvedIdentity.Name
 		if actor == "" {
 			actor = "anonymous"
 		}
@@ -1116,7 +1147,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Verdict:    forwardedVerdict,
 			SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
 			Actor:      actor,
-			ActorAuth:  actorIdentity.Auth,
+			ActorAuth:  resolvedIdentity.Auth,
 			PolicyHash: envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyReverseEnvelopeOpts, opts)

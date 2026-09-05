@@ -2138,6 +2138,8 @@ Pipelock resolves the agent name for each request using this priority order:
 
 Listener-based resolution is the only method that cannot be spoofed by the agent. It injects a context override that takes priority over header and query param. Header and query param methods are convenient but trust the caller. Use listeners when isolation matters.
 
+On the reverse-proxy listener, a `source_cidrs` match sets the agent identity used for attribution and the outbound mediation envelope. It does not select per-agent scanner, budget, or policy overrides: reverse-proxy enforcement uses that listener's configured generic policy or `profile: submit` policy.
+
 For MCP proxy mode, the `--agent` flag resolves the profile directly at startup (not through the HTTP resolution chain).
 
 ### Override Fields

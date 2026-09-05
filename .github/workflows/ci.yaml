@@ -541,6 +541,9 @@ jobs:
       - name: secperm OS split (mode checks skipped on Windows)
         run: go test -count=1 ./internal/secperm/...
 
+      - name: Discover classic and packaged desktop configurations
+        run: go test -count=1 -run "TestDiscoverClaudeWindowsLayouts" ./internal/discover/...
+
       - name: Signing key / salt / header-file load at any reported mode (#695)
         run: go test -count=1 -run "TestWindows" ./internal/signing/... ./internal/contract/privacy/... ./internal/cli/runtime/... ./internal/recorder/...
 
@@ -586,6 +589,9 @@ jobs:
       # Unix permission assertions that make a full Windows suite misleading.
       - name: secperm OS split (mode checks skipped on Windows)
         run: go test -count=1 ./internal/secperm/...
+
+      - name: Discover classic and packaged desktop configurations
+        run: go test -count=1 -run "TestDiscoverClaudeWindowsLayouts" ./internal/discover/...
 
       - name: Signing key / salt / header-file load at any reported mode (#695)
         run: go test -count=1 -run "TestWindows" ./internal/signing/... ./internal/contract/privacy/... ./internal/cli/runtime/... ./internal/recorder/...

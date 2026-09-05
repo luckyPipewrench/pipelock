@@ -270,6 +270,10 @@ func setupWSProxyDefaultWithProxy(t *testing.T, cfgMod func(*config.Config)) (st
 }
 
 func setupWSProxyDefaultWithCaptureAndProxy(t *testing.T, cfgMod func(*config.Config), obs capture.CaptureObserver) (string, *Proxy, func()) {
+	return setupWSProxyWithHandlerDone(t, cfgMod, obs, nil)
+}
+
+func setupWSProxyWithHandlerDone(t *testing.T, cfgMod func(*config.Config), obs capture.CaptureObserver, handlerDone func()) (string, *Proxy, func()) {
 	t.Helper()
 
 	cfg := config.Defaults()
@@ -310,7 +314,12 @@ func setupWSProxyDefaultWithCaptureAndProxy(t *testing.T, cfgMod func(*config.Co
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/fetch", p.handleFetch)
-		mux.HandleFunc("/ws", p.handleWebSocket)
+		mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+			if handlerDone != nil {
+				defer handlerDone()
+			}
+			p.handleWebSocket(w, r)
+		})
 		mux.HandleFunc("/health", p.handleHealth)
 
 		handler := p.buildHandler(mux)

@@ -5,7 +5,26 @@ package runtime
 
 import "sync/atomic"
 
-var reloadAfterProxySwapHook atomic.Pointer[func(*Server)]
+var (
+	reloadAfterProxySwapHook atomic.Pointer[func(*Server)]
+	reloadLockHook           atomic.Pointer[func(acquired bool)]
+)
+
+func setReloadLockHookForTest(fn func(acquired bool)) (restore func()) {
+	prev := reloadLockHook.Load()
+	if fn == nil {
+		reloadLockHook.Store(nil)
+	} else {
+		reloadLockHook.Store(&fn)
+	}
+	return func() { reloadLockHook.Store(prev) }
+}
+
+func fireReloadLockHook(acquired bool) {
+	if p := reloadLockHook.Load(); p != nil {
+		(*p)(acquired)
+	}
+}
 
 func setReloadAfterProxySwapHookForTest(fn func(*Server)) (restore func()) {
 	prev := reloadAfterProxySwapHook.Load()

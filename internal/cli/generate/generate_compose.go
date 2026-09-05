@@ -153,6 +153,9 @@ func genericAgentService() string {
       - pipelock-internal    # Can ONLY reach pipelock — no internet
     environment:
       - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
+      - HTTP_PROXY=http://pipelock:8888
+      - HTTPS_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # Add your agent's env vars here.
       # Secrets are safe — this container has no internet access.
@@ -186,6 +189,9 @@ func claudeCodeAgentService() string {
       - pipelock-internal    # Can ONLY reach pipelock — no internet
     environment:
       - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
+      - HTTP_PROXY=http://pipelock:8888
+      - HTTPS_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       - ./workspace:/workspace
@@ -206,6 +212,9 @@ func openhandsAgentService() string {
       - "3000:3000"
     environment:
       - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
+      - HTTP_PROXY=http://pipelock:8888
+      - HTTPS_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
       - LLM_API_KEY=${ANTHROPIC_API_KEY}
       - SANDBOX_NETWORK_MODE=none
       # Route OpenHands HTTP traffic through pipelock:

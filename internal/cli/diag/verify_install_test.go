@@ -49,8 +49,13 @@ func TestVerifyInstallCmd_AllPass(t *testing.T) {
 	cmd := VerifyInstallCmd()
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"--no-color"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("verify-install failed: %v", err)
+	err := cmd.Execute()
+	ctx := testRunContext()
+	if ctx == cliutil.RunContextHost && err != nil {
+		t.Fatalf("verify-install failed on host: %v", err)
+	}
+	if ctx != cliutil.RunContextHost && err == nil {
+		t.Fatal("expected a non-success containment outcome outside host mode")
 	}
 	out := buf.String()
 
@@ -59,7 +64,6 @@ func TestVerifyInstallCmd_AllPass(t *testing.T) {
 		t.Errorf("expected 'Scanning: verified' in output:\n%s", out)
 	}
 
-	ctx := testRunContext()
 	if ctx == cliutil.RunContextHost {
 		if !strings.Contains(out, "Containment: unknown") {
 			t.Errorf("expected 'Containment: unknown' in output:\n%s", out)
@@ -71,8 +75,8 @@ func TestVerifyInstallCmd_AllPass(t *testing.T) {
 			t.Errorf("expected '3 not applicable' in output:\n%s", out)
 		}
 	}
-	// No failures regardless of context (defaults have all protections).
-	if strings.Contains(out, "FAIL") {
+	// Host mode intentionally does not test containment.
+	if ctx == cliutil.RunContextHost && strings.Contains(out, "FAIL") {
 		t.Errorf("unexpected FAIL in output:\n%s", out)
 	}
 }
@@ -82,8 +86,12 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	cmd := VerifyInstallCmd()
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"--json", "--no-color"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("verify-install --json failed: %v", err)
+	err := cmd.Execute()
+	if testRunContext() == cliutil.RunContextHost && err != nil {
+		t.Fatalf("verify-install --json failed on host: %v", err)
+	}
+	if testRunContext() != cliutil.RunContextHost && err == nil {
+		t.Fatal("expected a non-success containment outcome outside host mode")
 	}
 
 	var report VerifyReport
@@ -106,7 +114,7 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	if report.Summary.Scanning != verifyScanningVerified {
 		t.Errorf("expected scanning=verified, got %s", report.Summary.Scanning)
 	}
-	if report.Summary.Failed != 0 {
+	if ctx == cliutil.RunContextHost && report.Summary.Failed != 0 {
 		t.Errorf("expected 0 failed, got %d", report.Summary.Failed)
 	}
 
@@ -223,7 +231,7 @@ func TestVerifyInstallCmd_Help(t *testing.T) {
 		t.Fatalf("help failed: %v", err)
 	}
 	out := buf.String()
-	for _, keyword := range []string{"verify-install", "scanning", "containment", "Ed25519"} {
+	for _, keyword := range []string{"verify-install", "scanning", "containment", "inconclusive", "Ed25519"} {
 		if !strings.Contains(out, keyword) {
 			t.Errorf("expected %q in help output", keyword)
 		}
@@ -273,8 +281,12 @@ func TestVerifyInstallCmd_Sign(t *testing.T) {
 	cmd := VerifyInstallCmd()
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"--json", "--no-color", "--sign", keyPath})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("verify-install --sign failed: %v", err)
+	err = cmd.Execute()
+	if testRunContext() == cliutil.RunContextHost && err != nil {
+		t.Fatalf("verify-install --sign failed on host: %v", err)
+	}
+	if testRunContext() != cliutil.RunContextHost && err == nil {
+		t.Fatal("expected a non-success containment outcome outside host mode")
 	}
 
 	var report VerifyReport
@@ -366,7 +378,7 @@ func (c *mockConn) SetDeadline(_ time.Time) error      { return nil }
 func (c *mockConn) SetReadDeadline(_ time.Time) error  { return nil }
 func (c *mockConn) SetWriteDeadline(_ time.Time) error { return nil }
 
-func TestCheckNoDirectHTTP_Blocked(t *testing.T) {
+func TestCheckNoDirectHTTP_UnattributedFailureIsInconclusive(t *testing.T) {
 	env := &VerifyEnv{
 		RunCtx: cliutil.RunContextContainer,
 		DialTCP: func(_ string) (net.Conn, error) {
@@ -374,8 +386,8 @@ func TestCheckNoDirectHTTP_Blocked(t *testing.T) {
 		},
 	}
 	r := checkNoDirectHTTP(env)
-	if r.Status != verifyStatusPass {
-		t.Errorf("expected pass (blocked), got %s: %s", r.Status, r.Detail)
+	if r.Status != verifyStatusUnknown {
+		t.Errorf("expected unknown, got %s: %s", r.Status, r.Detail)
 	}
 	if r.Evidence["error"] == "" {
 		t.Error("expected error in evidence")
@@ -399,7 +411,7 @@ func TestCheckNoDirectHTTP_Exposed(t *testing.T) {
 	}
 }
 
-func TestCheckNoDirectHTTPS_Blocked(t *testing.T) {
+func TestCheckNoDirectHTTPS_UnattributedFailureIsInconclusive(t *testing.T) {
 	env := &VerifyEnv{
 		RunCtx: cliutil.RunContextPod,
 		DialTCP: func(_ string) (net.Conn, error) {
@@ -407,8 +419,8 @@ func TestCheckNoDirectHTTPS_Blocked(t *testing.T) {
 		},
 	}
 	r := checkNoDirectHTTPS(env)
-	if r.Status != verifyStatusPass {
-		t.Errorf("expected pass (blocked), got %s: %s", r.Status, r.Detail)
+	if r.Status != verifyStatusUnknown {
+		t.Errorf("expected unknown, got %s: %s", r.Status, r.Detail)
 	}
 }
 
@@ -426,7 +438,7 @@ func TestCheckNoDirectHTTPS_Exposed(t *testing.T) {
 	}
 }
 
-func TestCheckNoDirectDNS_DialBlocked(t *testing.T) {
+func TestCheckNoDirectDNS_DialFailureIsInconclusive(t *testing.T) {
 	env := &VerifyEnv{
 		RunCtx: cliutil.RunContextContainer,
 		DialUDP: func(_ string) (net.Conn, error) {
@@ -434,12 +446,12 @@ func TestCheckNoDirectDNS_DialBlocked(t *testing.T) {
 		},
 	}
 	r := checkNoDirectDNS(env)
-	if r.Status != verifyStatusPass {
-		t.Errorf("expected pass (dial blocked), got %s: %s", r.Status, r.Detail)
+	if r.Status != verifyStatusUnknown {
+		t.Errorf("expected unknown, got %s: %s", r.Status, r.Detail)
 	}
 }
 
-func TestCheckNoDirectDNS_WriteBlocked(t *testing.T) {
+func TestCheckNoDirectDNS_WriteFailureIsInconclusive(t *testing.T) {
 	env := &VerifyEnv{
 		RunCtx: cliutil.RunContextContainer,
 		DialUDP: func(_ string) (net.Conn, error) {
@@ -447,15 +459,15 @@ func TestCheckNoDirectDNS_WriteBlocked(t *testing.T) {
 		},
 	}
 	r := checkNoDirectDNS(env)
-	if r.Status != verifyStatusPass {
-		t.Errorf("expected pass (write blocked), got %s: %s", r.Status, r.Detail)
+	if r.Status != verifyStatusUnknown {
+		t.Errorf("expected unknown, got %s: %s", r.Status, r.Detail)
 	}
 	if !strings.Contains(r.Detail, "write failed") {
 		t.Errorf("expected 'write failed' detail, got: %s", r.Detail)
 	}
 }
 
-func TestCheckNoDirectDNS_NoResponse(t *testing.T) {
+func TestCheckNoDirectDNS_NoResponseIsInconclusive(t *testing.T) {
 	env := &VerifyEnv{
 		RunCtx: cliutil.RunContextPod,
 		DialUDP: func(_ string) (net.Conn, error) {
@@ -463,11 +475,11 @@ func TestCheckNoDirectDNS_NoResponse(t *testing.T) {
 		},
 	}
 	r := checkNoDirectDNS(env)
-	if r.Status != verifyStatusPass {
-		t.Errorf("expected pass (no response), got %s: %s", r.Status, r.Detail)
+	if r.Status != verifyStatusUnknown {
+		t.Errorf("expected unknown, got %s: %s", r.Status, r.Detail)
 	}
-	if !strings.Contains(r.Detail, "no response") {
-		t.Errorf("expected 'no response' detail, got: %s", r.Detail)
+	if !strings.Contains(r.Detail, "attribution") {
+		t.Errorf("expected attribution detail, got: %s", r.Detail)
 	}
 }
 
@@ -503,9 +515,12 @@ func TestVerifyStatusIcon(t *testing.T) {
 	if got := verifyStatusIcon(verifyStatusNA, false); got != " N/A" {
 		t.Errorf("expected ' N/A', got %q", got)
 	}
+	if got := verifyStatusIcon(verifyStatusUnknown, false); got != "UNKNOWN" {
+		t.Errorf("expected UNKNOWN, got %q", got)
+	}
 
 	// With color: all statuses should contain ANSI escape.
-	for _, status := range []string{verifyStatusPass, verifyStatusFail, verifyStatusNA} {
+	for _, status := range []string{verifyStatusPass, verifyStatusFail, verifyStatusNA, verifyStatusUnknown} {
 		got := verifyStatusIcon(status, true)
 		if !strings.Contains(got, "\033[") {
 			t.Errorf("expected ANSI escape in colored %s, got %q", status, got)
@@ -904,6 +919,135 @@ func TestBuildVerifyReport_ContainmentContained(t *testing.T) {
 	report := BuildVerifyReport(env, checks, "test")
 	if report.Summary.Containment != verifyContainmentContained {
 		t.Errorf("expected containment=contained, got %s", report.Summary.Containment)
+	}
+}
+
+func TestBuildVerifyReport_InconclusiveContainment(t *testing.T) {
+	env := &VerifyEnv{RunCtx: cliutil.RunContextContainer}
+	checks := []VerifyCheck{
+		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *VerifyEnv) VerifyResult {
+			return VerifyResult{Status: verifyStatusPass}
+		}},
+		{Name: "contain1", Category: verifyCatContainment, Run: func(_ *VerifyEnv) VerifyResult {
+			return VerifyResult{Status: verifyStatusUnknown, Detail: "boundary attribution is unavailable"}
+		}},
+	}
+	report := BuildVerifyReport(env, checks, "test")
+	if report.Summary.Containment != verifyContainmentUnknown {
+		t.Errorf("expected containment=unknown, got %s", report.Summary.Containment)
+	}
+	if report.Summary.Unknown != 1 {
+		t.Errorf("expected 1 unknown, got %d", report.Summary.Unknown)
+	}
+	if report.Summary.Passed != 1 || report.Summary.Failed != 0 {
+		t.Errorf("summary = %+v, want 1 pass / 0 fail", report.Summary)
+	}
+}
+
+func TestBuildVerifyReport_ContainmentOutcomePrecedence(t *testing.T) {
+	env := &VerifyEnv{RunCtx: cliutil.RunContextContainer}
+	passCheck := VerifyCheck{Name: "pass", Category: verifyCatContainment, Run: func(_ *VerifyEnv) VerifyResult {
+		return VerifyResult{Status: verifyStatusPass}
+	}}
+	failCheck := VerifyCheck{Name: "fail", Category: verifyCatContainment, Run: func(_ *VerifyEnv) VerifyResult {
+		return VerifyResult{Status: verifyStatusFail}
+	}}
+	unknownCheck := VerifyCheck{Name: "unknown", Category: verifyCatContainment, Run: func(_ *VerifyEnv) VerifyResult {
+		return VerifyResult{Status: verifyStatusUnknown}
+	}}
+	unsupportedCheck := VerifyCheck{Name: "unsupported", Category: verifyCatContainment, Run: func(_ *VerifyEnv) VerifyResult {
+		return VerifyResult{Status: "future_status"}
+	}}
+	tests := []struct {
+		name        string
+		checks      []VerifyCheck
+		containment string
+		failed      int
+		unknown     int
+	}{
+		{name: "mixed pass and unknown is unknown", checks: []VerifyCheck{passCheck, unknownCheck}, containment: verifyContainmentUnknown, unknown: 1},
+		{name: "failed probe overrides unknown", checks: []VerifyCheck{failCheck, unknownCheck}, containment: verifyContainmentExposed, failed: 1, unknown: 1},
+		{name: "empty containment is unknown", containment: verifyContainmentUnknown},
+		{name: "unexpected containment status is unknown", checks: []VerifyCheck{unsupportedCheck}, containment: verifyContainmentUnknown, unknown: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := BuildVerifyReport(env, tc.checks, "test")
+			if report.Summary.Containment != tc.containment || report.Summary.Failed != tc.failed || report.Summary.Unknown != tc.unknown {
+				t.Errorf("summary = %+v, want containment=%s failed=%d unknown=%d", report.Summary, tc.containment, tc.failed, tc.unknown)
+			}
+		})
+	}
+}
+
+func TestVerifyReportExitError(t *testing.T) {
+	tests := []struct {
+		name   string
+		report VerifyReport
+		want   int
+	}{
+		{name: "passed", report: VerifyReport{}, want: 0},
+		{name: "failed", report: VerifyReport{Summary: VerifyReportSummary{Failed: 1}}, want: 1},
+		{name: "inconclusive", report: VerifyReport{Summary: VerifyReportSummary{Unknown: 1}}, want: 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyReportExitError(tc.report)
+			got := 0
+			if err != nil {
+				got = cliutil.ExitCodeOf(err)
+			}
+			if got != tc.want {
+				t.Errorf("exit code = %d, want %d (error %v)", got, tc.want, err)
+			}
+		})
+	}
+}
+
+func TestSignVerifyReport_PreservesInconclusiveContainment(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating signing key: %v", err)
+	}
+	report := VerifyReport{
+		Checks: []VerifyReportCheck{{
+			Name:     "no_direct_http",
+			Category: verifyCatContainment,
+			Status:   verifyStatusUnknown,
+			Detail:   "boundary attribution is unavailable",
+		}},
+		Summary: VerifyReportSummary{Containment: verifyContainmentUnknown, Unknown: 1},
+	}
+	keyPath := filepath.Join(t.TempDir(), "verify.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("saving signing key: %v", err)
+	}
+	if err := signVerifyReport(&report, keyPath); err != nil {
+		t.Fatalf("signing report: %v", err)
+	}
+
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshalling signed report: %v", err)
+	}
+	var decoded VerifyReport
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshalling signed report: %v", err)
+	}
+	if decoded.Summary.Containment != verifyContainmentUnknown || decoded.Summary.Unknown != 1 || decoded.Checks[0].Status != verifyStatusUnknown {
+		t.Fatalf("inconclusive report changed after JSON round trip: %+v", decoded)
+	}
+	sig, err := base64.StdEncoding.DecodeString(decoded.Signature)
+	if err != nil {
+		t.Fatalf("decoding signature: %v", err)
+	}
+	decoded.Signature = ""
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("marshalling unsigned report: %v", err)
+	}
+	if !ed25519.Verify(pub, canonical, sig) {
+		t.Fatal("signature does not verify after preserving inconclusive containment")
 	}
 }
 

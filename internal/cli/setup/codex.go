@@ -186,11 +186,28 @@ func resolvePipelockBinary() (string, error) {
 
 // codexMCPList shells out to `codex mcp list --json` and parses the result.
 func codexMCPList(ctx context.Context, codexBin string) ([]codexMCPServer, error) {
-	out, err := runCodexCommand(ctx, codexBin, "mcp", "list", "--json")
+	out, err := runCodexMCPListCommand(ctx, codexBin)
 	if err != nil {
 		return nil, fmt.Errorf("codex mcp list: %w", err)
 	}
 	return parseCodexMCPList(out)
+}
+
+// runCodexMCPListCommand returns only stdout because Codex emits the JSON list
+// there. Stderr remains available in a failed-command diagnostic; it must not
+// be mixed into the JSON parser when a successful command prints a warning.
+//
+//nolint:gosec // G204: canonical CLI subprocess invocation; see runCodexCommand.
+func runCodexMCPListCommand(ctx context.Context, codexBin string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, codexBin, "mcp", "list", "--json")
+	cmd.Env = append(os.Environ(), "NO_COLOR=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.Output()
+	if err != nil {
+		return stdout, fmt.Errorf("%w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+	}
+	return stdout, nil
 }
 
 // parseCodexMCPList separates parsing from the shell-out so tests can feed

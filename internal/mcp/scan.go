@@ -266,6 +266,10 @@ func isToolsListResponse(line []byte) bool {
 // A malicious server can also inject into sibling fields like result.note or
 // result.cursor, so those remain in both scan inputs.
 func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	return scanToolsListNonToolFieldsContext(context.Background(), line, sc, opts)
+}
+
+func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
 	trimmed := bytes.TrimSpace(line)
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
@@ -379,7 +383,10 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
+	result := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+	if result.Failed() {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
+	}
 	for _, match := range result.SuppressedMatches {
 		if opts.OnSuppressedResponse != nil {
 			opts.OnSuppressedResponse(match)
@@ -857,6 +864,10 @@ func a2aScanToVerdict(rpcID json.RawMessage, result A2AScanResult) jsonrpc.ScanV
 
 // agentCardToVerdict converts an AgentCardScanResult into a jsonrpc.ScanVerdict.
 func agentCardToVerdict(rpcID json.RawMessage, result AgentCardScanResult, cfg *config.A2AScanning) jsonrpc.ScanVerdict {
+	verdict := a2aScanToVerdict(rpcID, result.Findings)
+	if verdict.Error != "" {
+		return verdict
+	}
 	if result.Clean {
 		return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
 	}
@@ -878,7 +889,6 @@ func agentCardToVerdict(rpcID json.RawMessage, result AgentCardScanResult, cfg *
 		})
 	}
 	// Include field-level findings from the card scan.
-	verdict := a2aScanToVerdict(rpcID, result.Findings)
 	matches = append(matches, verdict.Matches...)
 
 	return jsonrpc.ScanVerdict{

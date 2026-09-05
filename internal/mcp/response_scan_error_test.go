@@ -30,6 +30,49 @@ func TestA2AScanVerdictPreservesScanError(t *testing.T) {
 	}
 }
 
+func TestAlternateResponsePathsPreserveScanError(t *testing.T) {
+	for _, path := range []string{"agent-card", "tools-list-sibling"} {
+		for _, cancelled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cancelled=%v", path, cancelled), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if cancelled {
+					cancel()
+				}
+				sc := testA2AScanner(t)
+				var verdict jsonrpc.ScanVerdict
+				if path == "agent-card" {
+					cfg := enabledA2ACfg()
+					cfg.Action = config.ActionWarn
+					result := ScanAgentCard(ctx, []byte(`{"name":"ordinary","skills":[],"supportedInterfaces":[]}`), sc, nil, cardCacheKey{}, cfg)
+					verdict = agentCardToVerdict([]byte(`7`), result, cfg)
+				} else {
+					verdict = scanToolsListNonToolFieldsContext(ctx, []byte(`{"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"echo","description":"ordinary"}],"note":"ordinary response"}}`), sc, ResponseScanOptions{ActionOverride: config.ActionWarn})
+				}
+				if string(verdict.ID) != "7" || len(verdict.Matches) != 0 || len(verdict.DLPMatches) != 0 {
+					t.Fatalf("unexpected response evidence: %+v", verdict)
+				}
+				if !cancelled {
+					if !verdict.Clean || verdict.Error != "" {
+						t.Fatalf("ordinary response refused: %+v", verdict)
+					}
+					return
+				}
+				if verdict.Clean || verdict.Action != config.ActionBlock || !strings.Contains(verdict.Error, "response scan failed") {
+					t.Fatalf("incomplete response scan lost its error: %+v", verdict)
+				}
+				var output bytes.Buffer
+				if err := writeTextVerdict(&output, verdict); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(output.String(), "[ERROR]") || strings.Contains(output.String(), "INJECTION") {
+					t.Fatalf("incorrect error classification: %s", output.String())
+				}
+			})
+		}
+	}
+}
+
 func TestScanA2AResponseBody_CanceledResponseScanIsNotInjection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -90,8 +133,8 @@ func TestScanRequestCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","result":{"a":"ordinary","b":"content"}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"a":"ordinary","b":"content"}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"a":"ordinary","b":"content"}}`,
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"a":"ordinary","b":"content"}`,
 	} {
+		cancelledCheckpoints := 0
 		for checkpoint := int32(1); checkpoint <= 32; checkpoint++ {
 			t.Run(fmt.Sprintf("%s/checkpoint-%d", input, checkpoint), func(t *testing.T) {
 				base, cancel := context.WithCancel(t.Context())
@@ -101,10 +144,14 @@ func TestScanRequestCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 				if base.Err() == nil {
 					return // This input completed before the selected checkpoint.
 				}
+				cancelledCheckpoints++
 				if verdict.Clean || verdict.Action != config.ActionBlock || verdict.Error == "" || len(verdict.Inject) != 0 {
 					t.Fatalf("cancelled scan returned %+v", verdict)
 				}
 			})
+		}
+		if cancelledCheckpoints == 0 {
+			t.Fatalf("request %s exposed no reachable cancellation checkpoint", input)
 		}
 	}
 }
@@ -129,16 +176,24 @@ func TestMCPListenerHeaderCanceledResponseScanIsParseError(t *testing.T) {
 
 func TestA2ABodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
+	cancelledCheckpoints := 0
 	for checkpoint := int32(1); checkpoint <= 64; checkpoint++ {
 		t.Run(fmt.Sprint(checkpoint), func(t *testing.T) {
 			base, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			ctx := &cancelOnErrorCheck{Context: base, cancel: cancel, after: checkpoint}
 			result := ScanA2AResponseBody(ctx, []byte(`{"message":{"parts":[{"text":"ordinary response"},{"text":"another response"}]}}`), sc, enabledA2ACfg())
-			if base.Err() != nil && (result.Clean || result.Action != config.ActionBlock || result.ScanError == "" || len(result.InjectFindings) != 0) {
+			if base.Err() == nil {
+				return
+			}
+			cancelledCheckpoints++
+			if result.Clean || result.Action != config.ActionBlock || result.ScanError == "" || len(result.InjectFindings) != 0 {
 				t.Fatalf("cancelled A2A body returned %+v", result)
 			}
 		})
+	}
+	if cancelledCheckpoints == 0 {
+		t.Fatal("A2A body exposed no reachable cancellation checkpoint")
 	}
 }
 
@@ -212,16 +267,24 @@ func TestContextTrackerCancelledScanIsIncomplete(t *testing.T) {
 
 func TestRawForwardCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
+	cancelledCheckpoints := 0
 	for checkpoint := int32(1); checkpoint <= 48; checkpoint++ {
 		t.Run(fmt.Sprint(checkpoint), func(t *testing.T) {
 			base, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			ctx := &cancelOnErrorCheck{Context: base, cancel: cancel, after: checkpoint}
 			verdict := scanRawBeforeForward(ctx, []byte(`{"id":1,"a":"ordinary","b":"\u0063ontent"}`), sc, config.ActionWarn)
-			if base.Err() != nil && (verdict.Clean || verdict.Action != config.ActionBlock || verdict.Error == "" || len(verdict.Inject) != 0) {
+			if base.Err() == nil {
+				return
+			}
+			cancelledCheckpoints++
+			if verdict.Clean || verdict.Action != config.ActionBlock || verdict.Error == "" || len(verdict.Inject) != 0 {
 				t.Fatalf("cancelled raw scan returned %+v", verdict)
 			}
 		})
+	}
+	if cancelledCheckpoints == 0 {
+		t.Fatal("raw forward exposed no reachable cancellation checkpoint")
 	}
 }
 

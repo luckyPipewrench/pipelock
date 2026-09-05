@@ -1442,6 +1442,7 @@ func renderSystemUnit(env *installEnv) string {
 		"Group=" + env.proxyUserName,
 		"Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue,
 		"ExecStart=" + env.pipelockTarget + " run --config " + configPath + " --capture-output " + capturePath,
+		"ExecReload=/bin/kill -HUP $MAINPID",
 		"Restart=on-failure",
 		"RestartSec=5",
 		"",

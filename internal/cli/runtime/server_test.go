@@ -1921,6 +1921,107 @@ func TestServer_Reload_StrictRejectsDowngrade(t *testing.T) {
 	}
 }
 
+func TestServer_Reload_TrustedDomainExpansionReportsRefusalAndPreservesLiveConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		required bool
+		widen    func(*config.Config)
+		field    string
+		wantErr  string
+	}{
+		{
+			name:    "global trusted domains",
+			mode:    config.ModeStrict,
+			widen:   func(cfg *config.Config) { cfg.TrustedDomains = []string{"internal.example"} },
+			field:   "trusted_domains",
+			wantErr: "strict mode",
+		},
+		{
+			name: "agent trusted domains",
+			mode: config.ModeStrict,
+			widen: func(cfg *config.Config) {
+				cfg.Agents = map[string]config.AgentProfile{"build": {TrustedDomains: []string{"internal.example"}}}
+			},
+			field:   "agents.build.trusted_domains",
+			wantErr: "strict mode",
+		},
+		{
+			name:    "SSRF IP allowlist",
+			mode:    config.ModeStrict,
+			widen:   func(cfg *config.Config) { cfg.SSRF.IPAllowlist = []string{"10.0.0.0/8"} },
+			field:   "ssrf.ip_allowlist",
+			wantErr: "strict mode",
+		},
+		{
+			name:     "required receipts with global trusted domains",
+			mode:     config.ModeBalanced,
+			required: true,
+			widen:    func(cfg *config.Config) { cfg.TrustedDomains = []string{"internal.example"} },
+			field:    "trusted_domains",
+			wantErr:  "flight_recorder.require_receipts",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, buf := newTestServer(t, func(o *ServerOpts) {
+				o.Mode = tc.mode
+				o.ModeChanged = true
+			})
+			oldCfg := s.proxy.CurrentConfig()
+			oldCfg.FlightRecorder.RequireReceipts = tc.required
+			candidate := oldCfg.Clone()
+			tc.widen(candidate)
+			s.lastReloadAt = time.Time{} // exercise the rejection, not fsnotify/SIGHUP deduplication
+
+			if err := s.Reload(candidate); err == nil {
+				t.Fatal("trusted-domain expansion reload succeeded")
+			} else if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("reload error = %q, want %q", err, tc.wantErr)
+			}
+			for _, want := range []string{
+				"WARNING: config reload: " + tc.field,
+				"WARNING: config reload rejected: " + tc.field + " cannot widen trust at runtime",
+				"previous configuration remains active",
+				"restart Pipelock",
+			} {
+				if !buf.contains(want) {
+					t.Fatalf("stderr missing %q:\n%s", want, buf.String())
+				}
+			}
+			if got := s.proxy.CurrentConfig(); got != oldCfg {
+				t.Fatal("trusted-domain expansion changed the live configuration")
+			}
+		})
+	}
+}
+
+func TestServer_Reload_BalancedAndAuditAcceptTrustedDomainExpansion(t *testing.T) {
+	for _, mode := range []string{config.ModeBalanced, config.ModeAudit} {
+		t.Run(mode, func(t *testing.T) {
+			s, buf := newTestServer(t, func(o *ServerOpts) {
+				o.Mode = mode
+				o.ModeChanged = true
+			})
+			candidate := s.proxy.CurrentConfig().Clone()
+			candidate.TrustedDomains = []string{"internal.example"}
+			s.lastReloadAt = time.Time{} // exercise the reload, not fsnotify/SIGHUP deduplication
+
+			if err := s.Reload(candidate); err != nil {
+				t.Fatalf("ordinary trusted-domain expansion reload: %v", err)
+			}
+			if got := s.proxy.CurrentConfig().TrustedDomains; !reflect.DeepEqual(got, candidate.TrustedDomains) {
+				t.Fatalf("live trusted_domains = %v, want %v", got, candidate.TrustedDomains)
+			}
+			if !buf.contains("WARNING: config reload: trusted_domains") {
+				t.Fatalf("accepted reload did not report trust expansion:\n%s", buf.String())
+			}
+			if buf.contains("config reload rejected") {
+				t.Fatalf("accepted reload reported a refusal:\n%s", buf.String())
+			}
+		})
+	}
+}
+
 func TestServer_ReloadRejectsNilConfig(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	oldCfg := s.proxy.CurrentConfig()

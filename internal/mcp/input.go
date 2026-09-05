@@ -138,6 +138,22 @@ const methodToolsCall = "tools/call"
 // methodResourcesRead is the JSON-RPC method for MCP resource reads.
 const methodResourcesRead = "resources/read"
 
+const methodNotificationsInitialized = "notifications/initialized"
+
+// isRequiredReceiptMetadataMethod reports whether method is part of the
+// ordinary MCP handshake that must receive an action identity when
+// require_receipts is enabled. tools/list has an established ActionRead
+// classification; initialize and notifications/initialized remain
+// ActionUnclassified under the existing receipt schema. None is a tool
+// invocation or envelope-bearing operation.
+func isRequiredReceiptMetadataMethod(method string) bool {
+	return method == "initialize" || method == "tools/list" || method == methodNotificationsInitialized
+}
+
+func isRequiredReceiptHandshakeNotification(method string, id json.RawMessage) bool {
+	return method == methodNotificationsInitialized && isRPCNotification(id)
+}
+
 // errPolicyBlocked is the error message returned when a tool call is denied by policy.
 const errPolicyBlocked = "pipelock: request blocked by tool call policy"
 
@@ -573,15 +589,21 @@ func ForwardScannedInput(
 			})
 		}
 
-		// Pre-generate actionID for receipt-bearing calls only. Metadata methods
-		// (tools/list, initialize) do not produce receipts, while A2A method
-		// calls use the JSON-RPC method as their receipt target.
+		// Pre-generate actionID for receipt-bearing calls. In required-receipt
+		// mode, the ordinary MCP handshake is also mediated action evidence:
+		// tools/list has the established read classification and initialize is
+		// represented by the existing unclassified action type. Neither gains an
+		// envelope because envelopes remain limited to tools/call.
 		actionID := ""
 		receiptTarget := toolCallName
-		receiptBearingMethod := verdict.Method == methodToolsCall
+		receiptBearingMethod := verdict.Method == methodToolsCall ||
+			(opts.requireReceipts() && isRequiredReceiptMetadataMethod(verdict.Method))
 		if receiptTarget == "" && IsA2AMethod(verdict.Method) {
 			receiptTarget = verdict.Method
 			receiptBearingMethod = true
+		}
+		if receiptTarget == "" && isRequiredReceiptMetadataMethod(verdict.Method) {
+			receiptTarget = verdict.Method
 		}
 		if receiptBearingMethod {
 			if pendingActionID != "" {
@@ -956,13 +978,17 @@ func ForwardScannedInput(
 					continue
 				}
 			}
-			if err := emitToolReceipt(config.ActionAllow, contractGate); err != nil {
+			receiptVerdict := config.ActionAllow
+			if isRequiredReceiptHandshakeNotification(verdict.Method, verdict.ID) {
+				receiptVerdict = config.ActionForward
+			}
+			if err := emitToolReceipt(receiptVerdict, contractGate); err != nil {
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     "receipt emission failed",
 					ErrorCode:      -32007,
-					ErrorMessage:   "pipelock: receipt emission failed",
+					ErrorMessage:   requiredReceiptFailureMessage(err),
 					ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
 				}
 				continue

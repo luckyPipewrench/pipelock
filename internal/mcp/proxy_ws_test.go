@@ -192,6 +192,49 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 	}
 }
 
+func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
+	responseSent := make(chan struct{})
+	srv := wsRespondServer(t, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`), responseSent)
+	defer srv.Close()
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	sc := testScannerForWS(t)
+
+	pr, pw := io.Pipe()
+	var stdout, stderr lockedHTTPBuffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{
+			Scanner:         sc,
+			ReceiptEmitter:  emitter,
+			RequireReceipts: true,
+		})
+	}()
+	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}` + "\n"))
+	waitForResponse(t, responseSent)
+	testwait.For(t, time.Second, func() bool {
+		return stdout.contains(`"id":1`)
+	}, "initialize response forwarded to stdout")
+	_ = pw.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("RunWSProxy: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent || receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("phases = %q/%q, want intent/outcome", receipts[0].ActionRecord.DecisionPhase, receipts[1].ActionRecord.DecisionPhase)
+	}
+	if receipts[0].ActionRecord.ActionID != receipts[1].ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %q, want %q", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+}
+
 func TestRunWSProxy_ConfusedDeputy_SeededNullIDResponseBlocked(t *testing.T) {
 	responseSent := make(chan struct{})
 	srv := wsRespondServer(t, []byte(`{"jsonrpc":"2.0","id":null,"result":{"owned":"attack"}}`), responseSent)

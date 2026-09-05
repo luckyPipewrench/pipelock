@@ -129,6 +129,23 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		emitActionID := actionID
 		emitTarget := toolName
 		emitVerdict := receiptVerdict
+		if requireReceipts && result.Blocked == nil && isRequiredReceiptMetadataMethod(mcpMethod) {
+			// initialize and tools/list are ordinary mediated handshake actions.
+			// They do not carry a tool name or an envelope, but strict evidence
+			// still needs an action identity before the HTTP bridge forwards them.
+			if emitActionID == "" {
+				emitActionID = receipt.NewActionID()
+			}
+			if emitTarget == "" {
+				emitTarget = mcpMethod
+			}
+			if emitVerdict == "" {
+				emitVerdict = config.ActionAllow
+				if isRequiredReceiptHandshakeNotification(mcpMethod, frame.ID) {
+					emitVerdict = config.ActionForward
+				}
+			}
+		}
 		if IsA2AMethod(mcpMethod) {
 			if emitActionID == "" {
 				switch {
@@ -193,7 +210,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				IsNotification: isRPCNotification(frame.ID),
 				LogMessage:     "receipt emission failed",
 				ErrorCode:      -32007,
-				ErrorMessage:   "pipelock: receipt emission failed",
+				ErrorMessage:   requiredReceiptFailureMessage(err),
 				ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
 			}
 			return
@@ -225,7 +242,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			if receiptContractGate != nil {
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, *receiptContractGate)
 			}
-			result.Outcome = TrackedRequestOutcome{Receipt: outcomeReceipt}
+			result.Outcome = TrackedRequestOutcome{Receipt: outcomeReceipt, Method: mcpMethod}
 		}
 	}()
 	// Registered after the receipt finalizer so it runs first. A failed

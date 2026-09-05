@@ -1599,7 +1599,12 @@ func RunHTTPListenerProxy(
 		// HTTP attachment alone does not correlate the JSON-RPC envelope. A
 		// hostile upstream can answer request 1 with result 999, or inject a
 		// concurrent request's ID, so validate the exact client request ID.
-		responseTracker := NewStrictRequestTrackerFor(frame.ID, frame.Method)
+		responseTracker := NewStrictRequestTracker()
+		outcome := decision.Outcome
+		if outcome.Method == "" {
+			outcome.Method = frame.Method
+		}
+		responseTracker.TrackOutcome(frame.ID, outcome)
 		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		if setupState && upstreamIsSSE {
 			w.Header().Set("Content-Type", "application/json")

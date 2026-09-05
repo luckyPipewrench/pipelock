@@ -7,11 +7,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -142,6 +144,25 @@ func TestIsSSEStreamFinding(t *testing.T) {
 	}
 	if IsSSEStreamScanError(mcp.ErrSSEStreamFinding) {
 		t.Error("SSE finding is not an incomplete scan error")
+	}
+	for _, tt := range []struct {
+		name    string
+		err     error
+		finding bool
+		scanErr bool
+	}{
+		{name: "wrapped_a2a_finding", err: fmt.Errorf("stream: %w", mcp.ErrA2AStreamFinding), finding: true},
+		{name: "wrapped_generic_finding", err: fmt.Errorf("stream: %w", mcp.ErrSSEStreamFinding), finding: true},
+		{name: "wrapped_scan_error", err: fmt.Errorf("stream: %w", mcp.ErrSSEStreamScanError), scanErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSSEStreamFinding(tt.err); got != tt.finding {
+				t.Fatalf("IsSSEStreamFinding(%v) = %v, want %v", tt.err, got, tt.finding)
+			}
+			if got := IsSSEStreamScanError(tt.err); got != tt.scanErr {
+				t.Fatalf("IsSSEStreamScanError(%v) = %v, want %v", tt.err, got, tt.scanErr)
+			}
+		})
 	}
 }
 
@@ -338,4 +359,64 @@ func TestHijackResponseForSSE_PropagatesFinding(t *testing.T) {
 	if !IsSSEStreamFinding(scanErr) {
 		t.Errorf("onComplete should receive a finding, got %v", scanErr)
 	}
+}
+
+func TestHijackResponseForSSE_PublishesCompletionBeforePipeClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		upstream := &cancelAfterFirstResponseRead{Reader: strings.NewReader("data: ordinary response\n\n"), cancel: cancel}
+		resp := &http.Response{
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:   upstream,
+		}
+		callbackStarted := make(chan struct{})
+		releaseCallback := make(chan struct{})
+		defer func() {
+			select {
+			case <-releaseCallback:
+			default:
+				close(releaseCallback)
+			}
+		}()
+		body := HijackResponseForSSE(
+			ctx,
+			resp,
+			ssetestScanner(t),
+			SSEDispatchOptions{
+				GenericSSE: &config.GenericSSEScanning{Enabled: true, Action: config.ActionBlock, MaxEventBytes: 1024},
+			},
+			func(err error) {
+				if !errors.Is(err, mcp.ErrSSEStreamScanError) {
+					t.Errorf("completion error = %v, want wrapped ErrSSEStreamScanError", err)
+				}
+				close(callbackStarted)
+				<-releaseCallback
+			},
+		)
+
+		readDone := make(chan error, 1)
+		go func() {
+			_, err := io.ReadAll(body)
+			readDone <- err
+		}()
+
+		synctest.Wait()
+		select {
+		case <-callbackStarted:
+		default:
+			t.Fatal("completion callback did not start")
+		}
+		select {
+		case err := <-readDone:
+			t.Fatalf("pipe closed before completion callback published scan error: %v", err)
+		default:
+		}
+
+		close(releaseCallback)
+		synctest.Wait()
+		if err := <-readDone; !errors.Is(err, mcp.ErrSSEStreamScanError) {
+			t.Fatalf("ReadAll error = %v, want wrapped ErrSSEStreamScanError", err)
+		}
+	})
 }

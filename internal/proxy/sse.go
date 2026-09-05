@@ -59,7 +59,8 @@ type SSEDispatchOptions struct {
 
 // DispatchSSEScan picks the appropriate streaming scanner and runs it.
 // Returns nil on clean EOF, a wrapped ErrA2AStreamFinding or
-// ErrSSEStreamFinding on detection, or a wrapped IO error otherwise.
+// ErrSSEStreamFinding on detection, a wrapped ErrSSEStreamScanError on an
+// incomplete scan, or a wrapped IO error otherwise.
 //
 // Caller MUST:
 //   - confirm the response is NOT compressed (use IsSSECompressed first);
@@ -108,7 +109,7 @@ const LayerSSEStream = "sse_stream"
 // LayerReverseResponseBlocked is the receipt layer label used for
 // reverse-proxy fail-closed response blocks that are not finding-driven:
 // compressed bodies the regex pipeline cannot inspect, oversize bodies
-// that exceed the scanning limit, and read errors. The Pattern field
+// that exceed the scanning limit. The Pattern field
 // carries the specific reason. Forward and intercept currently emit the
 // equivalent shape under "tls_response_blocked" / inline pattern strings;
 // "reverse" is split out so dashboards can pivot per transport.

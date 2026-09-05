@@ -74,6 +74,9 @@ func TestResponseScanCancellationIsAnErrorAcrossHTTPHandlers(t *testing.T) {
 				h.ServeHTTP(w, r)
 			}
 			assertScanErrorEvidence(t, obs, rph)
+			if transport == "intercept" {
+				assertMetricsContain(t, m, `pipelock_tls_response_blocked_total{reason="response_scan_error"} 1`)
+			}
 			if w.Code != http.StatusServiceUnavailable {
 				t.Fatalf("status=%d body=%s logs=%s", w.Code, w.Body.String(), logs.String())
 			}
@@ -258,6 +261,62 @@ func TestForwardA2AResponseScanErrorRecordsErrorOutcome(t *testing.T) {
 	}
 	assertMetricsContain(t, m, `pipelock_scanner_hits_total{agent="_default",scanner="response_scan_error"} 1`)
 	assertResponseScanErrorOutcome(t, rph)
+}
+
+func TestInterceptA2AResponseScanErrorBlocksWithoutEnforcement(t *testing.T) {
+	for _, enforce := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enforce_%t", enforce), func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.Internal = nil
+			cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
+			cfg.DLP.ScanEnv = false
+			cfg.Enforce = &enforce
+			cfg.ResponseScanning.Enabled = false
+			cfg.FlightRecorder.RequireReceipts = true
+			cfg.A2AScanning.Enabled = true
+			cfg.A2AScanning.Action = config.ActionWarn
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			m := metrics.New()
+			var logs bytes.Buffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &logs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
+			p, err := New(cfg, logger, sc, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			rph := newReceiptProxyHelperWithMetrics(t, m)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			rt := forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				cancel()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"application/a2a+json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"message":{"parts":[{"text":"ordinary response"}]}}`)),
+					Request:    r,
+				}, nil
+			})
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/message", strings.NewReader(`{"method":"tasks/send"}`))
+			req.Header.Set("Content-Type", "application/a2a+json")
+			w := httptest.NewRecorder()
+			h := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: logger, Metrics: m, ClientIP: "192.0.2.1", RequestID: "a2a-scan-error", Proxy: p}, rt)
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
+			}
+			assertMetricsContain(t, m, `pipelock_tls_response_blocked_total{reason="response_scan_error"} 1`)
+			assertResponseScanErrorOutcome(t, rph)
+			if !strings.Contains(logs.String(), "response scan failed") || strings.Contains(logs.String(), `"event":"anomaly"`) || strings.Contains(logs.String(), "T1059") {
+				t.Fatalf("scan error misclassified: %s", logs.String())
+			}
+		})
+	}
 }
 
 func assertResponseScanErrorOutcome(t *testing.T, rph *receiptProxyHelper) {

@@ -2224,6 +2224,20 @@ func newInterceptHandler(
 			} else {
 				a2aRespResult = mcp.ScanA2AResponseBody(r.Context(), respBody, ic.Scanner, &ic.Config.A2AScanning)
 			}
+			if a2aRespResult.ScanError != "" {
+				reason := "response scan failed: " + a2aRespResult.ScanError
+				ic.Logger.LogError(actx, fmt.Errorf("%s", reason))
+				ic.Metrics.RecordTLSResponseBlocked("response_scan_error")
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID: actionID, Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
+					Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ParseError, "response_scan_error"),
+					"blocked: response scan incomplete", http.StatusServiceUnavailable)
+				emitBlockedPostRoundTripOutcome(http.StatusServiceUnavailable, "response_scan_error")
+				return
+			}
 			if !a2aRespResult.Clean {
 				// Consistency with URL-scan path: infrastructure errors are
 				// score-neutral and must not set the finding flag.
@@ -2316,7 +2330,7 @@ func newInterceptHandler(
 			if scanResult.Failed() {
 				reason := "response scan failed: " + scanResult.ScanError
 				ic.Logger.LogError(actx, fmt.Errorf("%s", reason))
-				ic.Metrics.RecordTLSResponseBlocked("scan_error")
+				ic.Metrics.RecordTLSResponseBlocked("response_scan_error")
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID: actionID, Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
 					Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,

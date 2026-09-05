@@ -3392,7 +3392,8 @@ func TestScanResponse_SplitRunInnerLayer(t *testing.T) {
 	}
 }
 
-// TestScanResponse_CanceledContext ensures fail-closed on context cancellation.
+// TestScanResponse_CanceledContext ensures fail-closed scan errors are not
+// represented as prompt-injection matches.
 func TestScanResponse_CanceledContext(t *testing.T) {
 	s := MustNew(testResponseConfig())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3402,11 +3403,11 @@ func TestScanResponse_CanceledContext(t *testing.T) {
 	if result.Clean {
 		t.Error("expected fail-closed (not clean) when context is canceled")
 	}
-	if len(result.Matches) == 0 {
-		t.Fatal("expected at least one match for canceled context")
+	if !result.Failed() {
+		t.Fatal("expected scan error for canceled context")
 	}
-	if result.Matches[0].PatternName != "context_canceled" {
-		t.Errorf("expected pattern name 'context_canceled', got %q", result.Matches[0].PatternName)
+	if len(result.Matches) != 0 {
+		t.Fatalf("Matches = %v, want no injection matches for canceled context", result.Matches)
 	}
 }
 
@@ -3443,8 +3444,7 @@ func TestScanResponse_PostScanContextExpired(t *testing.T) {
 	content := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 2000)
 
 	// Cancel context in a goroutine after a tiny delay.
-	// If the cancel happens before scanning starts, the pre-scan check catches it
-	// and we get context_canceled too - both paths produce fail-closed behavior.
+	// If the cancel happens before scanning starts, the pre-scan check catches it.
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		cancel()
@@ -3452,18 +3452,17 @@ func TestScanResponse_PostScanContextExpired(t *testing.T) {
 
 	result := s.ScanResponse(ctx, content)
 	// Either the pre-scan or post-scan context check should catch the cancellation.
-	// Both produce fail-closed (not clean) behavior.
 	if result.Clean {
 		// Context may not have been canceled in time on fast machines.
 		// That's acceptable - the test is probabilistic.
 		t.Log("context was not canceled during scan (race condition acceptable)")
 		return
 	}
-	if len(result.Matches) == 0 {
-		t.Fatal("expected at least one match for canceled context")
+	if !result.Failed() {
+		t.Fatal("expected scan error for canceled context")
 	}
-	if result.Matches[0].PatternName != "context_canceled" {
-		t.Errorf("expected pattern name 'context_canceled', got %q", result.Matches[0].PatternName)
+	if len(result.Matches) != 0 {
+		t.Fatalf("Matches = %v, want no injection matches for canceled context", result.Matches)
 	}
 }
 

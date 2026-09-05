@@ -2405,6 +2405,8 @@ responseScanning:
 		}
 		if result.Clean {
 			revAction = config.ActionAllow
+		} else if result.Failed() {
+			revAction = config.ActionBlock
 		}
 		captureAgent := reverseCaptureAgent(resp.Request)
 		rp.captureObs.ObserveResponseVerdict(resp.Request.Context(), &capture.ResponseVerdictRecord{
@@ -2431,6 +2433,19 @@ responseScanning:
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, int64(len(body)), shieldOutcomeReason)
+		return nil
+	}
+	if result.Failed() {
+		reason := "response scan failed: " + result.ScanError
+		rp.logger.LogError(actx, fmt.Errorf("%s", reason))
+		emitReverseReceipt(receipt.EmitOpts{
+			ActionID: actionID, Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
+			Transport: "reverse", Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+		})
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "scan_error")
+		replaceWithBlockReason(resp, reason)
+		recordReverseOutcome(http.StatusForbidden, int64(len(body)), "response_scan_error")
 		return nil
 	}
 

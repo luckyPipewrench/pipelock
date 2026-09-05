@@ -2694,7 +2694,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			recordDroppedResponseScanMatches(p.metrics, p.logger, actx, scanResult.SuppressedMatches, TransportForward)
-			if !scanResult.Clean {
+			if !scanResult.Clean && !scanResult.Failed() {
 				responsePromptHit = true
 			}
 
@@ -2708,6 +2708,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				if scanResult.Clean {
 					fwdRespAction = config.ActionAllow
+				} else if scanResult.Failed() {
+					fwdRespAction = config.ActionBlock
 				}
 				p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_forward",
@@ -2726,6 +2728,22 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					EffectiveAction:   fwdRespAction,
 					Outcome:           captureOutcome(fwdRespAction, scanResult.Clean),
 				})
+			}
+			if scanResult.Failed() {
+				reason := "response scan failed: " + scanResult.ScanError
+				p.logger.LogError(actx, fmt.Errorf("%s", reason))
+				emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+					ActionID: actionID, RequestID: requestID, Agent: agent, Method: r.Method, Target: targetURL,
+					Layer: "response_scan_error", Pattern: reason, Taint: forwardTaint,
+				})))
+				p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan_error", time.Since(start), agentLabel)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ParseError, "response_scan_error"),
+					"blocked: response scan incomplete", http.StatusServiceUnavailable)
+				outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
+				outcomeBytes = int64(len(respBody))
+				outcomeReason = "response_scan_error"
+				return
 			}
 			if !scanResult.Clean {
 				hasFinding = true

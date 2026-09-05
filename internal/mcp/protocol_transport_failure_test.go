@@ -479,8 +479,8 @@ func TestA2AEmptyAndDefaultLimitBoundaries(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		result := ScanA2ARequestBody(ctx, []byte(`{"text":"hello"}`), sc, enabledA2ACfg())
-		if !result.Clean {
-			t.Fatalf("cancelled clean leaf result = %+v", result)
+		if result.Clean || result.Action != config.ActionBlock || result.ScanError != context.Canceled.Error() || len(result.InjectFindings) != 0 {
+			t.Fatalf("cancelled leaf must block without an injection finding: %+v", result)
 		}
 	})
 

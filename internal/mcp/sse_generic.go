@@ -204,6 +204,9 @@ func ScanGenericSSEStreamWithOptions(
 			skipTailInjection := false
 			skipTailDLP := false
 			injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+			if injectResult.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamFinding, injectResult.ScanError)
+			}
 			if !injectResult.Clean {
 				findingErr := fmt.Errorf("%w: injection: %s",
 					ErrSSEStreamFinding, sseInjectionNames(injectResult.Matches))
@@ -247,6 +250,9 @@ func ScanGenericSSEStreamWithOptions(
 			if !skipTailInjection && injectionTail != "" {
 				combined := injectionTail + " " + string(event)
 				tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
+				if tailInjectResult.Failed() {
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamFinding, tailInjectResult.ScanError)
+				}
 				if !tailInjectResult.Clean {
 					findingErr := fmt.Errorf("%w: cross-event injection: %s",
 						ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))

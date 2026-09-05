@@ -749,6 +749,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	}
 	for _, text := range texts {
 		injectionResult := req.Scanner.ScanResponse(ctx, text)
+		if injectionResult.Failed() {
+			return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
+		}
 		if !injectionResult.Clean {
 			result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
 		}
@@ -760,6 +763,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	// for deterministic split-secret detection.
 	joinedInOrder := strings.Join(texts, "\n")
 	injectionResult := req.Scanner.ScanResponse(ctx, joinedInOrder)
+	if injectionResult.Failed() {
+		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
+	}
 	if !injectionResult.Clean {
 		result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
 	}
@@ -769,6 +775,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	sorted := sortedBodyTexts(texts)
 	joined := strings.Join(sorted, "\n")
 	injectionResult = req.Scanner.ScanResponse(ctx, joined)
+	if injectionResult.Failed() {
+		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
+	}
 	if !injectionResult.Clean {
 		result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
 	}

@@ -5757,7 +5757,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
 		recordDroppedResponseScanMatches(p.metrics, log, actx, scanResult.SuppressedMatches, TransportFetch)
-		if !scanResult.Clean {
+		if !scanResult.Clean && !scanResult.Failed() {
 			responsePromptHit = true
 		}
 
@@ -5768,6 +5768,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		if scanResult.Clean {
 			respAction = config.ActionAllow
+		} else if scanResult.Failed() {
+			// An incomplete scan is a fail-closed runtime error, not a
+			// response-scanning match. Keep replay/capture from presenting it
+			// as a warn/allow verdict.
+			respAction = config.ActionBlock
 		}
 		p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 			Subsurface:        "response_fetch",
@@ -5939,6 +5944,19 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	if result.Clean {
 		return false, out, false
+	}
+	if result.Failed() {
+		reason := "response scan failed: " + result.ScanError
+		log.LogError(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), fmt.Errorf("%s", reason))
+		emitResponseReceipt(receipt.EmitOpts{
+			ActionID: actionID, Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
+			Transport: "fetch", Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
+		})
+		writeBlockedJSON(w,
+			blockInfoFor(blockreason.ParseError, "response_scan_error"),
+			http.StatusServiceUnavailable,
+			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
+		return true, "", false
 	}
 
 	patternNames := make([]string, len(result.Matches))

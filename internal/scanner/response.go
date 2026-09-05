@@ -19,8 +19,12 @@ import (
 
 // ResponseScanResult describes the outcome of scanning response content.
 type ResponseScanResult struct {
-	Clean              bool
-	Matches            []ResponseMatch
+	Clean   bool
+	Matches []ResponseMatch
+	// ScanError records why scanning could not complete. It is deliberately
+	// separate from Matches: an incomplete scan must fail closed, but it is not
+	// evidence that response content matched a prompt-injection pattern.
+	ScanError          string
 	SuppressedMatches  []ResponseMatch `json:"-"`
 	TransformedContent string          // set for strip and ask actions
 
@@ -33,6 +37,13 @@ type ResponseScanResult struct {
 	// contract today. Maps to emit.EventTextStego.
 	StegoDetected bool
 	StegoDensity  int // raw combining-mark density on original content
+}
+
+// Failed reports whether the response could not be fully scanned. Failed
+// results are fail-closed and must be reported as scan errors, never as
+// injection detections.
+func (r ResponseScanResult) Failed() bool {
+	return r.ScanError != ""
 }
 
 // ResponseMatch describes a single pattern match in response content.
@@ -80,11 +91,8 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	}
 	if err != nil {
 		return ResponseScanResult{
-			Clean: false,
-			Matches: []ResponseMatch{{
-				PatternName: "image_metadata_invalid",
-				MatchText:   err.Error(),
-			}},
+			Clean:     false,
+			ScanError: fmt.Sprintf("image metadata inspection failed: %v", err),
 		}
 	}
 	if len(metadata) == 0 {
@@ -130,7 +138,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 
 	// Stego exposure signal. Computed on the raw content before normalization
 	// strips combining marks. The deferred setter stamps every return path -
-	// including the context_canceled and clean fast paths - so downstream
+	// including scan-error and clean fast paths - so downstream
 	// consumers (taint/authority layer, audit emitters) can key on the
 	// signal without re-scanning. The signal does NOT flip Clean: the
 	// matching passes already neutralize combining marks via
@@ -147,17 +155,14 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	// Fail-closed: if context is already canceled, block immediately.
 	if ctx != nil && ctx.Err() != nil {
 		return ResponseScanResult{
-			Clean: false,
-			Matches: []ResponseMatch{{
-				PatternName: "context_canceled",
-				MatchText:   ctx.Err().Error(),
-			}},
+			Clean:     false,
+			ScanError: ctx.Err().Error(),
 		}
 	}
 
 	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponse(ctx, content, filterSuppressed); len(coreSet.matches) > 0 {
+	if coreSet := s.scanCoreResponse(content, filterSuppressed); len(coreSet.matches) > 0 {
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreSet.matches,
@@ -258,11 +263,8 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	// Post-scan context check: if context expired during scanning, fail closed.
 	if ctx != nil && ctx.Err() != nil {
 		return ResponseScanResult{
-			Clean: false,
-			Matches: []ResponseMatch{{
-				PatternName: "context_canceled",
-				MatchText:   ctx.Err().Error(),
-			}},
+			Clean:     false,
+			ScanError: ctx.Err().Error(),
 		}
 	}
 

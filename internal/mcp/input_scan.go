@@ -280,6 +280,10 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			}
 		}
 
+		if injResult.Failed() {
+			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
+		}
+
 		// Address poisoning detection. Empty agentID means global allowlist only.
 		var addrFindings []addressprotect.Finding
 		if checker := sc.AddressChecker(); checker != nil {
@@ -379,6 +383,10 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 				break
 			}
 		}
+	}
+
+	if injResult.Failed() {
+		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 	}
 
 	var dlpMatches []scanner.TextDLPMatch
@@ -491,6 +499,10 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 				break
 			}
 		}
+	}
+
+	if injResult.Failed() {
+		return InputVerdict{ID: recoveredID, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 	}
 
 	var dlpMatches []scanner.TextDLPMatch

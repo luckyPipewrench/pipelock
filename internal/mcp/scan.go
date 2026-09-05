@@ -187,6 +187,9 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			}
 		}
 	}
+	if result.Failed() {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
+	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}

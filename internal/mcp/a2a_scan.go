@@ -39,6 +39,7 @@ type A2AScanResult struct {
 	Clean          bool
 	Action         string
 	Reason         string
+	ScanError      string
 	URLFindings    []scanner.Result        // SSRF/URL scanner findings
 	DLPFindings    []scanner.TextDLPMatch  // DLP pattern matches
 	InjectFindings []scanner.ResponseMatch // injection pattern matches
@@ -76,6 +77,9 @@ func ScanA2AResponseBody(ctx context.Context, body []byte, sc *scanner.Scanner, 
 
 // scanA2ABody is the shared implementation for request and response scanning.
 func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning, entropyOpts *A2AContentEntropyOptions) A2AScanResult {
+	if err := ctx.Err(); err != nil {
+		return A2AScanResult{Action: config.ActionBlock, ScanError: err.Error(), Reason: "a2a: response scan incomplete: " + err.Error()}
+	}
 	result := A2AScanResult{Clean: true}
 	budgetExceeded := false
 	var entropyTexts []string
@@ -122,6 +126,8 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 
 		select {
 		case <-ctx.Done():
+			result.Clean = false
+			result.ScanError = ctx.Err().Error()
 			return
 		default:
 		}
@@ -145,6 +151,11 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			}
 			// Injection scanning
 			injectResult := sc.ScanResponse(ctx, value)
+			if injectResult.Failed() {
+				result.Clean = false
+				result.ScanError = injectResult.ScanError
+				return
+			}
 			if !injectResult.Clean {
 				result.Clean = false
 				result.InjectFindings = append(result.InjectFindings, injectResult.Matches...)
@@ -235,12 +246,21 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		result.Clean = false
+		result.ScanError = err.Error()
+	}
 	if !result.Clean {
-		result.Action = action
-		if result.Action == "" {
-			result.Action = defaultFindingAction
+		if result.ScanError != "" {
+			result.Action = config.ActionBlock
+			result.Reason = "a2a: response scan incomplete: " + result.ScanError
+		} else {
+			result.Action = action
+			if result.Action == "" {
+				result.Action = defaultFindingAction
+			}
+			result.Reason = buildA2AReason(result)
 		}
-		result.Reason = buildA2AReason(result)
 	}
 
 	return result
@@ -612,10 +632,16 @@ func (ct *ContextTracker) TrackAndScan(ctx context.Context, contextID, taskID st
 	joined := strings.Join(accumulated, " ")
 	concatResult := sc.ScanResponse(ctx, joined)
 	if !concatResult.Clean {
+		if concatResult.Failed() {
+			return true, "a2a: response scan incomplete: " + concatResult.ScanError
+		}
 		// Check if any individual text also triggers.
 		individualHit := false
 		for _, t := range texts {
 			r := sc.ScanResponse(ctx, t)
+			if r.Failed() {
+				return true, "a2a: response scan incomplete: " + r.ScanError
+			}
 			if !r.Clean {
 				individualHit = true
 				break
@@ -727,6 +753,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// external review finding #2 on the generic SSE path.
 		canonical := canonicalSSEEventText(event, reader)
 		if injResult := sc.ScanResponse(ctx, canonical); !injResult.Clean {
+			if injResult.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrA2AStreamFinding, injResult.ScanError)
+			}
 			return fmt.Errorf("%w: injection in sse metadata: %s",
 				ErrA2AStreamFinding, sseInjectionNames(injResult.Matches))
 		}
@@ -746,6 +775,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			combined := injectionTail + " " + currentText
 			tailResult := sc.ScanResponse(ctx, combined)
 			if !tailResult.Clean {
+				if tailResult.Failed() {
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrA2AStreamFinding, tailResult.ScanError)
+				}
 				return fmt.Errorf("%w: cross-event injection detected", ErrA2AStreamFinding)
 			}
 		}

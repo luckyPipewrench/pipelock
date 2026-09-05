@@ -124,8 +124,8 @@ func TestScanResponseBody_InvalidCompressedMetadataFailsClosed(t *testing.T) {
 			body := pngWithMetadata(t, tt.chunkType, tt.metadata)
 			s := MustNew(testResponseConfig())
 			result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil)
-			if result.Clean || !hasResponsePattern(result.Matches, "image_metadata_invalid") {
-				t.Fatalf("invalid compressed metadata did not fail closed: %+v", result)
+			if result.Clean || !result.Failed() || len(result.Matches) != 0 {
+				t.Fatalf("invalid compressed metadata was not a fail-closed scan error: %+v", result)
 			}
 		})
 	}
@@ -313,8 +313,8 @@ func TestScanResponseBody_CanceledContextFailsClosedForImage(t *testing.T) {
 	cancel()
 	s := MustNew(testResponseConfig())
 	result := s.ScanResponseBodyWithSuppress(ctx, pngWithIsolatedDANPixels(t), "", nil)
-	if result.Clean || !hasResponsePattern(result.Matches, "context_canceled") {
-		t.Fatalf("canceled image scan did not fail closed: %+v", result)
+	if result.Clean || !result.Failed() || len(result.Matches) != 0 {
+		t.Fatalf("canceled image scan was not a fail-closed scan error: %+v", result)
 	}
 }
 

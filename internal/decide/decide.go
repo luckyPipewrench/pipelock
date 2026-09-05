@@ -406,6 +406,9 @@ func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 }
 
 func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) []Evidence {
+	if result.Failed() {
+		return []Evidence{{Scanner: scanner.DecideStructuralLabel, Detail: "response scan failed: " + result.ScanError, Action: config.ActionBlock}}
+	}
 	if result.Clean {
 		return nil
 	}

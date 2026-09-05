@@ -293,7 +293,10 @@ func initCoreScanner() *compiledCoreScanner {
 // Returns filtered matches found by core patterns only; the caller should run
 // the main response scanner separately if enabled.
 func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []ResponseMatch {
-	coreSet := s.scanCoreResponse(ctx, content, nil)
+	if ctx != nil && ctx.Err() != nil {
+		return nil
+	}
+	coreSet := s.scanCoreResponse(content, nil)
 	return coreSet.matches
 }
 
@@ -320,15 +323,9 @@ func hasIdentityByteOffsetMap(source, transformed string) bool {
 	return true
 }
 
-func (s *Scanner) scanCoreResponse(ctx context.Context, content string, suppress coreResponseSuppressor) responseMatchSet {
+func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppressor) responseMatchSet {
 	if s.core == nil {
 		return responseMatchSet{}
-	}
-	if ctx != nil && ctx.Err() != nil {
-		return responseMatchSet{matches: []ResponseMatch{{
-			PatternName: "context_canceled",
-			MatchText:   ctx.Err().Error(),
-		}}, content: normalize.ForMatching(content)}
 	}
 
 	original := content

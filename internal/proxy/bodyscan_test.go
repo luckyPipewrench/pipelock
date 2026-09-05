@@ -55,6 +55,27 @@ func fakeAPIKey() string {
 	return "AKIA" + "IOSFODNN7EXAMPLE"
 }
 
+func TestScanRequestBodyCanceledScanIsNotInjection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sc, err := scanner.New(testScannerConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sc.Close)
+	body, result := scanRequestBody(ctx, BodyScanRequest{
+		Body:        strings.NewReader(`{"message":"ordinary content"}`),
+		ContentType: "application/json", MaxBytes: 1024, Scanner: sc,
+		Action: config.ActionWarn,
+	})
+	if result.Clean || result.Action != config.ActionBlock || !isFailClosedBodyResult(result, body) {
+		t.Fatalf("incomplete scan must block without replayable bytes: %+v", result)
+	}
+	if len(result.InjectionMatches) != 0 || !strings.Contains(result.Reason, "scan failed") {
+		t.Fatalf("incomplete scan misclassified: %+v", result)
+	}
+}
+
 func fakeGitHubToken() string {
 	return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
 }

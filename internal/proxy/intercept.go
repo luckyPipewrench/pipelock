@@ -2271,6 +2271,8 @@ func newInterceptHandler(
 				}
 				if scanResult.Clean {
 					iRespAction = config.ActionAllow
+				} else if scanResult.Failed() {
+					iRespAction = config.ActionBlock
 				}
 				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_intercept",
@@ -2289,6 +2291,20 @@ func newInterceptHandler(
 					EffectiveAction:   iRespAction,
 					Outcome:           captureOutcome(iRespAction, scanResult.Clean),
 				})
+			}
+			if scanResult.Failed() {
+				reason := "response scan failed: " + scanResult.ScanError
+				ic.Logger.LogError(actx, fmt.Errorf("%s", reason))
+				ic.Metrics.RecordTLSResponseBlocked("scan_error")
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID: actionID, Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
+					Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ParseError, "response_scan_error"),
+					"blocked: response scan incomplete", http.StatusServiceUnavailable)
+				emitBlockedPostRoundTripOutcome(http.StatusServiceUnavailable, "response_scan_error")
+				return
 			}
 			if !scanResult.Clean {
 				hasFinding = true

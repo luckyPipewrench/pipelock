@@ -452,6 +452,9 @@ func (re *ReplayEngine) urlResultToReplay(originalAction string, result scanner.
 
 // responseResultToReplay converts a scanner.ResponseScanResult to a ReplayResult.
 func (re *ReplayEngine) responseResultToReplay(originalAction string, result scanner.ResponseScanResult) ReplayResult {
+	if result.Failed() {
+		return ReplayResult{OriginalAction: originalAction, CandidateAction: config.ActionBlock, Changed: originalAction != config.ActionBlock}
+	}
 	candidateAction := config.ActionAllow
 	var findings []Finding
 

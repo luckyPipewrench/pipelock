@@ -282,7 +282,11 @@ func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string
 		}
 	}
 
-	if resp := sc.ScanResponse(ctx, text); !resp.Clean && len(resp.Matches) > 0 {
+	resp := sc.ScanResponse(ctx, text)
+	if resp.Failed() {
+		return blockDecision(fmt.Sprintf("pipelock scan failed on %s: %s", surface, resp.ScanError))
+	}
+	if !resp.Clean && len(resp.Matches) > 0 {
 		first := resp.Matches[0]
 		return blockDecision(fmt.Sprintf("pipelock injection match on %s: %s",
 			surface, first.PatternName))

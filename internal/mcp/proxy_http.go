@@ -71,6 +71,9 @@ func scanMCPListenerHeadersForDLP(
 					return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.BadRequest}
 				}
 				if response := sc.ScanResponse(ctx, decoded); !response.Clean {
+					if response.Failed() {
+						return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.ParseError}
+					}
 					return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.PromptInjection}
 				}
 				decodedParamValues = append(decodedParamValues, namedHeaderValue{name: strings.ToLower(name), value: decoded})

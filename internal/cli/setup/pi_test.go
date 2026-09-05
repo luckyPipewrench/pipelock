@@ -391,6 +391,31 @@ func TestPiProfileValidation(t *testing.T) {
 	}
 }
 
+func TestPiListenerPortBounds(t *testing.T) {
+	for _, port := range []string{"0", "65536", "999999999999999999999"} {
+		t.Run(port, func(t *testing.T) {
+			proxyURL := "http://127.0.0.1:" + port
+			configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+			body := "forward_proxy:\n  enabled: true\nagents:\n  pi:\n    listeners: [127.0.0.1:" + port + "]\n"
+			if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+				t.Fatalf("write invalid listener config: %v", err)
+			}
+			if err := validatePiProfile(configPath, piDefaultProfile, proxyURL); err == nil {
+				t.Fatal("invalid matching listener accepted")
+			}
+		})
+	}
+	for _, port := range []string{"1", "65535"} {
+		t.Run(port, func(t *testing.T) {
+			proxyURL := "http://127.0.0.1:" + port
+			configPath := writePiPipelockConfig(t, proxyURL)
+			if err := validatePiProfile(configPath, piDefaultProfile, proxyURL); err != nil {
+				t.Fatalf("valid matching listener rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestPiProfileValidationConfigurationFailures(t *testing.T) {
 	tests := []struct {
 		name string

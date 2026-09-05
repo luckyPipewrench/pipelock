@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/spf13/cobra"
@@ -296,6 +297,10 @@ func piListenerAddress(proxyURL string) (string, error) {
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil || host == "" || port == "" {
 		return "", errors.New("the Pi proxy URL must include a host and port")
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
+		return "", errors.New("the Pi proxy URL must include a port from 1 to 65535")
 	}
 	return net.JoinHostPort(host, port), nil
 }

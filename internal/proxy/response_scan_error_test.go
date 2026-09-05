@@ -172,6 +172,117 @@ func assertScanErrorEvidence(t *testing.T, obs *reverseDLPRecordObserver, rph *r
 	}
 }
 
+func TestFetchResponseScanErrorRecordsErrorOutcomeForHTMLAndPlain(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{
+			name:        "html_hidden_content",
+			contentType: "text/html",
+			body:        "<!doctype html><html><body><!-- ordinary hidden content --><p>visible response</p></body></html>",
+		},
+		{
+			name:        "plain_content",
+			contentType: "text/plain",
+			body:        "ordinary response",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p, rph := fetchRequireReceiptsLiveProxy(t, func(cfg *config.Config) {
+				cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
+				cfg.DLP.ScanEnv = false
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Action = config.ActionWarn
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				cancel()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {tt.contentType}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})}
+			w := httptest.NewRecorder()
+			p.handleFetch(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "/fetch?url=http://api.vendor.example/content", nil))
+
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+			}
+			assertMetricsContain(t, p.metrics, `pipelock_scanner_hits_total{agent="_default",scanner="response_scan_error"} 1`)
+			assertResponseScanErrorOutcome(t, rph)
+		})
+	}
+}
+
+func TestForwardA2AResponseScanErrorRecordsErrorOutcome(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.Internal = nil
+	cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
+	cfg.DLP.ScanEnv = false
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionWarn
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	m := metrics.New()
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	rph := newReceiptProxyHelperWithMetrics(t, m)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/a2a+json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":{"parts":[{"text":"ordinary response"}]}}`)),
+			Request:    r,
+		}, nil
+	})}
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/message", strings.NewReader(`{"method":"tasks/send"}`))
+	req.Header.Set("Content-Type", "application/a2a+json")
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+	assertMetricsContain(t, m, `pipelock_scanner_hits_total{agent="_default",scanner="response_scan_error"} 1`)
+	assertResponseScanErrorOutcome(t, rph)
+}
+
+func assertResponseScanErrorOutcome(t *testing.T, rph *receiptProxyHelper) {
+	t.Helper()
+	var errorReceipt, outcome receipt.Receipt
+	for _, r := range rph.findReceipts(t) {
+		switch r.ActionRecord.Layer {
+		case "response_scan", "a2a_response":
+			t.Fatalf("scanner failure emitted a content-finding receipt: %+v", r.ActionRecord)
+		case "response_scan_error":
+			errorReceipt = r
+		case receiptOutcomeLayer:
+			if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+				outcome = r
+			}
+		}
+	}
+	if errorReceipt.ActionRecord.Layer == "" || errorReceipt.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("missing response-scan error block receipt: %+v", errorReceipt.ActionRecord)
+	}
+	if outcome.ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome || !strings.Contains(outcome.ActionRecord.Pattern, "status=503") || !strings.Contains(outcome.ActionRecord.Pattern, "reason=response_scan_error") {
+		t.Fatalf("outcome receipt = %+v, want status=503 reason=response_scan_error", outcome.ActionRecord)
+	}
+}
+
 type bodyScanCheckpointContext struct {
 	context.Context
 	cancel context.CancelFunc
@@ -189,7 +300,11 @@ func (c *bodyScanCheckpointContext) Err() error {
 func TestRequestBodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := scanner.MustNew(testScannerConfig())
 	defer sc.Close()
-	for checkpoint := int32(1); checkpoint <= 64; checkpoint++ {
+	const maxCheckpoint = 64
+	cancelledCheckpoints := 0
+	ended := false
+	for checkpoint := int32(1); checkpoint <= maxCheckpoint; checkpoint++ {
+		reached := false
 		t.Run(fmt.Sprint(checkpoint), func(t *testing.T) {
 			base, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -198,9 +313,24 @@ func TestRequestBodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 				Body:        strings.NewReader(`{"a":"ordinary","b":"content"}`),
 				ContentType: "application/json", MaxBytes: 1024, Scanner: sc, Action: config.ActionWarn,
 			})
-			if base.Err() != nil && (result.Clean || result.Action != config.ActionBlock || !isFailClosedBodyResult(result, body) || len(result.InjectionMatches) != 0) {
+			if base.Err() == nil {
+				t.Skipf("checkpoint %d not reached; finite request-body scan completed", checkpoint)
+			}
+			reached = true
+			cancelledCheckpoints++
+			if result.Clean || result.Action != config.ActionBlock || !isFailClosedBodyResult(result, body) || len(result.InjectionMatches) != 0 {
 				t.Fatalf("cancelled body returned %+v", result)
 			}
 		})
+		if !reached {
+			ended = true
+			break
+		}
+	}
+	if cancelledCheckpoints == 0 {
+		t.Fatal("request-body scan exposed no reachable cancellation checkpoint")
+	}
+	if !ended && cancelledCheckpoints == maxCheckpoint {
+		t.Fatalf("request-body scan exceeded bounded checkpoint guard of %d", maxCheckpoint)
 	}
 }

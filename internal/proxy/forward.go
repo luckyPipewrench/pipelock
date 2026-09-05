@@ -2392,10 +2392,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled()) {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-			p.logger.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")
-			p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
+			p.logger.LogBlocked(actx, responseScanLayer, "compressed response cannot be scanned")
+			p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 			writeBlockedError(w,
-				blockInfoFor(blockreason.CompressedResponse, "response_scan"),
+				blockInfoFor(blockreason.CompressedResponse, responseScanLayer),
 				"blocked: compressed response cannot be scanned", http.StatusForbidden)
 			outcomeStatus = strconv.Itoa(http.StatusForbidden)
 			outcomeReason = "compressed_response"
@@ -2412,7 +2412,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if readErr != nil {
 			p.logger.LogError(actx, readErr)
 			writeBlockedError(w,
-				blockInfoFor(blockreason.ParseError, "response_scan"),
+				blockInfoFor(blockreason.ParseError, responseScanLayer),
 				"blocked: response read error", http.StatusForbidden)
 			outcomeStatus = strconv.Itoa(http.StatusForbidden)
 			outcomeReason = "response_read_error"
@@ -2500,21 +2500,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						if scanFailure.Err != nil {
 							p.logger.LogError(actx, scanFailure.Err)
 						}
-						p.logger.LogBlocked(actx, "response_scan", scanFailure.Reason)
+						p.logger.LogBlocked(actx, responseScanLayer, scanFailure.Reason)
 						emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 							ActionID:  actionID,
 							RequestID: requestID,
 							Agent:     agent,
 							Method:    r.Method,
 							Target:    targetURL,
-							Layer:     "response_scan",
+							Layer:     responseScanLayer,
 							Pattern:   scanFailure.Reason,
 							Taint:     forwardTaint,
 						})))
-						p.metrics.RecordBlocked(fwdRespHost, "response_scan", time.Since(start), agentLabel)
-						info := blockInfoFor(blockreason.ResponseSize, "response_scan")
+						p.metrics.RecordBlocked(fwdRespHost, responseScanLayer, time.Since(start), agentLabel)
+						info := blockInfoFor(blockreason.ResponseSize, responseScanLayer)
 						if scanFailure.Kind == sizeExemptReadFailureReadError {
-							info = blockInfoFor(blockreason.ParseError, "response_scan")
+							info = blockInfoFor(blockreason.ParseError, responseScanLayer)
 						}
 						writeBlockedError(w, info, "blocked: "+scanFailure.Reason, http.StatusForbidden)
 						outcomeStatus = strconv.Itoa(http.StatusForbidden)
@@ -2525,20 +2525,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					defer releaseSizeExemptScan()
 				} else {
 					reason := responseSizeBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb", true)
-					p.logger.LogBlocked(actx, "response_scan", reason)
+					p.logger.LogBlocked(actx, responseScanLayer, reason)
 					emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 						ActionID:  actionID,
 						RequestID: requestID,
 						Agent:     agent,
 						Method:    r.Method,
 						Target:    targetURL,
-						Layer:     "response_scan",
+						Layer:     responseScanLayer,
 						Pattern:   reason,
 						Taint:     forwardTaint,
 					})))
-					p.metrics.RecordBlocked(fwdRespHost, "response_scan", time.Since(start), agentLabel)
+					p.metrics.RecordBlocked(fwdRespHost, responseScanLayer, time.Since(start), agentLabel)
 					writeBlockedError(w,
-						blockInfoFor(blockreason.ResponseSize, "response_scan"),
+						blockInfoFor(blockreason.ResponseSize, responseScanLayer),
 						"blocked: "+reason, http.StatusForbidden)
 					outcomeStatus = strconv.Itoa(http.StatusForbidden)
 					outcomeBytes = int64(len(respBody))
@@ -2641,6 +2641,22 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				a2aResult = mcp.ScanA2AResponseBody(r.Context(), respBody, sc, &cfg.A2AScanning)
+			}
+			if a2aResult.ScanError != "" {
+				reason := "response scan failed: " + a2aResult.ScanError
+				p.logger.LogError(actx, fmt.Errorf("%s", reason))
+				emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+					ActionID: actionID, RequestID: requestID, Agent: agent, Method: r.Method, Target: targetURL,
+					Layer: "response_scan_error", Pattern: reason, Taint: forwardTaint,
+				})))
+				p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan_error", time.Since(start), agentLabel)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ParseError, "response_scan_error"),
+					"blocked: response scan incomplete", http.StatusServiceUnavailable)
+				outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
+				outcomeBytes = int64(len(respBody))
+				outcomeReason = "response_scan_error"
+				return
 			}
 			if !a2aResult.Clean {
 				responsePromptHit = true
@@ -2766,30 +2782,30 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
 					if action != originalAction {
 						sessionKey := sessionKeyFor(agent, clientIP)
-						recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(forwardRec.EscalationLevel()), FromAction: originalAction, ToAction: action, Scanner: "response_scan", ClientIP: clientIP, RequestID: requestID})
+						recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(forwardRec.EscalationLevel()), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
 					}
 				}
 
 				switch action {
 				case config.ActionBlock, config.ActionAsk:
-					p.logger.LogBlocked(actx, "response_scan", reason)
+					p.logger.LogBlocked(actx, responseScanLayer, reason)
 					emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 						ActionID:  actionID,
 						RequestID: requestID,
 						Agent:     agent,
 						Method:    r.Method,
 						Target:    targetURL,
-						Layer:     "response_scan",
+						Layer:     responseScanLayer,
 						Pattern:   reason,
 						Taint:     forwardTaint,
 					})))
-					p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
+					p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 					writeBlockedError(w,
-						blockInfoFor(blockreason.PromptInjection, "response_scan"),
+						blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 						"blocked: response contains injection", http.StatusForbidden)
 					outcomeStatus = strconv.Itoa(http.StatusForbidden)
 					outcomeBytes = int64(len(respBody))
-					outcomeReason = "response_scan"
+					outcomeReason = responseScanLayer
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.
@@ -2816,24 +2832,24 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						resp.Header.Del("Digest")
 					} else {
 						stripFailureReason := reason + " (strip failed)"
-						p.logger.LogBlocked(actx, "response_scan", stripFailureReason)
+						p.logger.LogBlocked(actx, responseScanLayer, stripFailureReason)
 						emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 							ActionID:  actionID,
 							RequestID: requestID,
 							Agent:     agent,
 							Method:    r.Method,
 							Target:    targetURL,
-							Layer:     "response_scan",
+							Layer:     responseScanLayer,
 							Pattern:   stripFailureReason,
 							Taint:     forwardTaint,
 						})))
-						p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
+						p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 						writeBlockedError(w,
-							blockInfoFor(blockreason.PromptInjection, "response_scan"),
+							blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 							"blocked: response contains injection", http.StatusForbidden)
 						outcomeStatus = strconv.Itoa(http.StatusForbidden)
 						outcomeBytes = int64(len(respBody))
-						outcomeReason = "response_scan"
+						outcomeReason = responseScanLayer
 						return
 					}
 					p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)

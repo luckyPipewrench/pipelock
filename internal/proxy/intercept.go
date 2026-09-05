@@ -2326,7 +2326,7 @@ func newInterceptHandler(
 					if ic.Proxy != nil {
 						m = ic.Proxy.metrics
 					}
-					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: originalAction, ToAction: action, Scanner: "response_scan", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				}
 				patternNames := make([]string, len(scanResult.Matches))
 				for i, match := range scanResult.Matches {
@@ -2346,12 +2346,12 @@ func newInterceptHandler(
 					if !interceptRespExempt {
 						interceptRecordSignal(ic, session.SignalBlock)
 					}
-					ic.Logger.LogBlocked(actx, "response_scan", reason)
+					ic.Logger.LogBlocked(actx, responseScanLayer, reason)
 					ic.Metrics.RecordTLSResponseBlocked("injection")
 					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
-						Layer:     "response_scan",
+						Layer:     responseScanLayer,
 						Pattern:   reason,
 						Transport: "intercept",
 						Method:    r.Method,
@@ -2360,9 +2360,9 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					writeBlockedError(w,
-						blockInfoFor(blockreason.PromptInjection, "response_scan"),
+						blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 						"blocked: response contains injection", http.StatusForbidden)
-					emitBlockedPostRoundTripOutcome(http.StatusForbidden, "response_scan")
+					emitBlockedPostRoundTripOutcome(http.StatusForbidden, responseScanLayer)
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.

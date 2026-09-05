@@ -1662,7 +1662,7 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 		// params like Content-Disposition: form-data; x-data="<credential>".
 		for name, values := range part.Header {
 			canonical := textproto.CanonicalMIMEHeaderKey(name)
-			if canonical == "Content-Type" || canonical == "Content-Disposition" {
+			if canonical == headerContentType || canonical == "Content-Disposition" {
 				// Parse parameter values from structural headers.
 				// On parse failure, fall back to scanning raw value
 				// so malformed headers don't bypass inspection.

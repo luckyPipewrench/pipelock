@@ -133,7 +133,11 @@ func TestA2ABodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 func TestResponseStreamCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
 	for _, kind := range []string{"generic", "a2a"} {
-		for checkpoint := int32(1); checkpoint <= 64; checkpoint++ {
+		const maxCheckpoint = 64
+		cancelledCheckpoints := 0
+		ended := false
+		for checkpoint := int32(1); checkpoint <= maxCheckpoint; checkpoint++ {
+			reached := false
 			t.Run(fmt.Sprintf("%s/%d", kind, checkpoint), func(t *testing.T) {
 				base, cancel := context.WithCancel(t.Context())
 				defer cancel()
@@ -146,10 +150,38 @@ func TestResponseStreamCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 				} else {
 					err = ScanA2AStream(ctx, strings.NewReader(body), &out, nil, sc, enabledA2ACfg())
 				}
-				if base.Err() != nil && err != nil && strings.Contains(err.Error(), "injection") {
+				if base.Err() == nil {
+					t.Skipf("checkpoint %d not reached; finite stream scan completed", checkpoint)
+				}
+				cancelledCheckpoints++
+				if err == nil {
+					t.Fatal("cancelled response scan returned nil error")
+				}
+				if errors.Is(err, context.Canceled) {
+					// Cancellation before an event scan reaches the stream loop is
+					// returned directly. It is still an incomplete scan, never a
+					// finding.
+					reached = true
+					return
+				}
+				if !errors.Is(err, ErrSSEStreamScanError) {
+					t.Fatalf("cancelled response scan error = %v, want ErrSSEStreamScanError", err)
+				}
+				if errors.Is(err, ErrSSEStreamFinding) || strings.Contains(err.Error(), "injection") {
 					t.Fatalf("cancellation classified as injection: %v", err)
 				}
+				reached = true
 			})
+			if !reached {
+				ended = true
+				break
+			}
+		}
+		if cancelledCheckpoints == 0 {
+			t.Fatalf("%s stream exposed no reachable cancellation checkpoint", kind)
+		}
+		if !ended && cancelledCheckpoints == maxCheckpoint {
+			t.Fatalf("%s stream exceeded bounded checkpoint guard of %d", kind, maxCheckpoint)
 		}
 	}
 }
@@ -187,11 +219,34 @@ func TestScanGenericSSEStream_CanceledDuringResponseScanIsNotInjection(t *testin
 	var out bytes.Buffer
 
 	err := ScanGenericSSEStream(ctx, reader, &out, nil, testA2AScanner(t), enabledSSECfg())
-	if !errors.Is(err, ErrSSEStreamFinding) {
-		t.Fatalf("error = %v, want ErrSSEStreamFinding", err)
+	if !errors.Is(err, ErrSSEStreamScanError) {
+		t.Fatalf("error = %v, want ErrSSEStreamScanError", err)
+	}
+	if errors.Is(err, ErrSSEStreamFinding) {
+		t.Fatalf("error = %v, must not be an SSE finding", err)
 	}
 	if !strings.Contains(err.Error(), "response scan incomplete") {
 		t.Fatalf("error = %q, want response scan error", err)
+	}
+	if strings.Contains(err.Error(), "injection") {
+		t.Fatalf("error = %q, must not classify cancellation as injection", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("forwarded %q after incomplete scan", out.String())
+	}
+}
+
+func TestScanA2AStream_CanceledDuringResponseScanIsNotFinding(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelAfterRead{payload: []byte("data: {\"message\":{\"parts\":[{\"text\":\"ordinary response\"}]}}\n\n"), cancel: cancel}
+	var out bytes.Buffer
+
+	err := ScanA2AStream(ctx, reader, &out, nil, testA2AScanner(t), enabledA2ACfg())
+	if !errors.Is(err, ErrSSEStreamScanError) {
+		t.Fatalf("error = %v, want ErrSSEStreamScanError", err)
+	}
+	if errors.Is(err, ErrA2AStreamFinding) {
+		t.Fatalf("error = %v, must not be an A2A finding", err)
 	}
 	if strings.Contains(err.Error(), "injection") {
 		t.Fatalf("error = %q, must not classify cancellation as injection", err)

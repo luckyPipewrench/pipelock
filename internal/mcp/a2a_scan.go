@@ -743,6 +743,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// Field-walk the event data payload.
 		eventResult := scanA2ABody(ctx, event, sc, cfg, nil)
 		if !eventResult.Clean {
+			if eventResult.ScanError != "" {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, eventResult.ScanError)
+			}
 			return fmt.Errorf("%w: %s", ErrA2AStreamFinding, eventResult.Reason)
 		}
 
@@ -754,7 +757,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		canonical := canonicalSSEEventText(event, reader)
 		if injResult := sc.ScanResponse(ctx, canonical); !injResult.Clean {
 			if injResult.Failed() {
-				return fmt.Errorf("%w: response scan incomplete: %s", ErrA2AStreamFinding, injResult.ScanError)
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injResult.ScanError)
 			}
 			return fmt.Errorf("%w: injection in sse metadata: %s",
 				ErrA2AStreamFinding, sseInjectionNames(injResult.Matches))
@@ -776,7 +779,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			tailResult := sc.ScanResponse(ctx, combined)
 			if !tailResult.Clean {
 				if tailResult.Failed() {
-					return fmt.Errorf("%w: response scan incomplete: %s", ErrA2AStreamFinding, tailResult.ScanError)
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
 				}
 				return fmt.Errorf("%w: cross-event injection detected", ErrA2AStreamFinding)
 			}

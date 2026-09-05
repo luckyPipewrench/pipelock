@@ -38,6 +38,8 @@ import (
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
+const responseScanLayer = "response_scan"
+
 // wsSemaphore limits concurrent WebSocket proxy connections.
 // Capacity is fixed on first use (sync.Once). Config reload changes to
 // max_concurrent_connections require a restart to take effect.
@@ -2431,8 +2433,6 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 // enforceUpstreamTextPayload applies response injection policy to any textual
 // WebSocket payload, including Ping and Pong application data.
 func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Logger, msg []byte, allowTransform bool) ([]byte, bool) {
-	const responseScanLayer = "response_scan"
-
 	if len(msg) == 0 {
 		return msg, false
 	}

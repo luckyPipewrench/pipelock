@@ -5455,12 +5455,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// binary garbage, bypassing both. Forward proxy already runs the same
 	// guard in forward.go; this completes parity on the fetch surface.
 	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-		log.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")
-		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
+		log.LogBlocked(actx, responseScanLayer, "compressed response cannot be scanned")
+		p.metrics.RecordBlocked(parsed.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
-			Layer:     "response_scan",
+			Layer:     responseScanLayer,
 			Pattern:   "compressed_response",
 			Transport: "fetch",
 			Method:    http.MethodGet,
@@ -5469,7 +5469,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.CompressedResponse, "response_scan"),
+			blockInfoFor(blockreason.CompressedResponse, responseScanLayer),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -5670,7 +5670,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			recordDroppedResponseScanMatches(p.metrics, log, actx, rawResult.SuppressedMatches, TransportFetch)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found := p.filterAndActOnResponseScan(responseScanContext{
+			blocked, _, found, scanFailed := p.filterAndActOnResponseScan(responseScanContext{
 				requestContext: r.Context(),
 				writer:         w,
 				result:         rawResult,
@@ -5687,10 +5687,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				exempt:         responseScanExempt,
 			})
 			if blocked {
-				p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
-				outcomeStatus = strconv.Itoa(http.StatusForbidden)
+				outcomeLayer := responseScanLayer
+				outcomeCode := http.StatusForbidden
+				if scanFailed {
+					outcomeLayer = "response_scan_error"
+					outcomeCode = http.StatusServiceUnavailable
+				}
+				p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
+				outcomeStatus = strconv.Itoa(outcomeCode)
 				outcomeBytes = int64(len(body))
-				outcomeReason = "response_scan"
+				outcomeReason = outcomeLayer
 				return
 			}
 			if found {
@@ -5722,12 +5728,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if hiddenInjectionFound && !readabilityOK {
 		responsePromptHit = true
 		reason := "hidden injection detected and readability extraction failed (fail-closed)"
-		log.LogBlocked(actx, "response_scan", reason)
-		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
+		log.LogBlocked(actx, responseScanLayer, reason)
+		p.metrics.RecordBlocked(parsed.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
-			Layer:     "response_scan",
+			Layer:     responseScanLayer,
 			Pattern:   reason,
 			Transport: "fetch",
 			Method:    http.MethodGet,
@@ -5741,7 +5747,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		outcomeStatus = strconv.Itoa(http.StatusForbidden)
 		outcomeBytes = int64(len(body))
-		outcomeReason = "response_scan"
+		outcomeReason = responseScanLayer
 		return
 	}
 
@@ -5794,7 +5800,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-		blocked, newContent, found := p.filterAndActOnResponseScan(responseScanContext{
+		blocked, newContent, found, scanFailed := p.filterAndActOnResponseScan(responseScanContext{
 			requestContext: r.Context(),
 			writer:         w,
 			result:         scanResult,
@@ -5814,10 +5820,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			hasFinding = true
 		}
 		if blocked {
-			p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
-			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeLayer := responseScanLayer
+			outcomeCode := http.StatusForbidden
+			if scanFailed {
+				outcomeLayer = "response_scan_error"
+				outcomeCode = http.StatusServiceUnavailable
+			}
+			p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
+			outcomeStatus = strconv.Itoa(outcomeCode)
 			outcomeBytes = int64(len(body))
-			outcomeReason = "response_scan"
+			outcomeReason = outcomeLayer
 			return
 		}
 		content = newContent
@@ -5921,7 +5933,7 @@ type responseScanContext struct {
 // exempt indicates the domain was in exempt_domains: findings are logged as
 // warn but adaptive scoring is skipped and UpgradeAction is not applied.
 // This preserves operator visibility without triggering escalation death spirals.
-func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool, out string, found bool) {
+func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool, out string, found, scanFailed bool) {
 	reqCtx := in.requestContext
 	w := in.writer
 	result := in.result
@@ -5943,7 +5955,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	}
 
 	if result.Clean {
-		return false, out, false
+		return false, out, false, false
 	}
 	if result.Failed() {
 		reason := "response scan failed: " + result.ScanError
@@ -5956,7 +5968,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			blockInfoFor(blockreason.ParseError, "response_scan_error"),
 			http.StatusServiceUnavailable,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-		return true, "", false
+		return true, "", false, true
 	}
 
 	patternNames := make([]string, len(result.Matches))
@@ -5979,7 +5991,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	}
 	if action != originalAction {
 		sessionKey := sessionKeyFor(agent, clientIP)
-		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: "response_scan", ClientIP: clientIP, RequestID: requestID})
+		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
 	}
 	if action == config.ActionStrip && result.TransformedContent == "" {
 		action = config.ActionBlock
@@ -6014,11 +6026,11 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	case config.ActionBlock:
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-		log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
+		log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), responseScanLayer, reason)
 		emitResponseReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
-			Layer:     "response_scan",
+			Layer:     responseScanLayer,
 			Pattern:   reason,
 			Transport: "fetch",
 			Method:    http.MethodGet,
@@ -6027,19 +6039,19 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.PromptInjection, "response_scan"),
+			blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 			http.StatusForbidden,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-		return true, "", true
+		return true, "", true, false
 	case config.ActionAsk:
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
+			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), responseScanLayer, reason)
 			emitResponseReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
-				Layer:     "response_scan",
+				Layer:     responseScanLayer,
 				Pattern:   reason,
 				Transport: "fetch",
 				Method:    http.MethodGet,
@@ -6048,10 +6060,10 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.PromptInjection, "response_scan"),
+				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, "", true
+			return true, "", true, false
 		}
 		preview := content
 		if len(preview) > 200 {
@@ -6071,27 +6083,27 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			if result.TransformedContent == "" {
 				recordResponseSignal(session.SignalBlock)
 				reason := fmt.Sprintf("response contains prompt injection: %s (strip failed)", strings.Join(patternNames, ", "))
-				log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
+				log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), responseScanLayer, reason)
 				emitResponseReceipt(receipt.EmitOpts{
-					ActionID: actionID, Verdict: config.ActionBlock, Layer: "response_scan", Pattern: reason,
+					ActionID: actionID, Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 					Transport: "fetch", Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
 				})
 				writeBlockedJSON(w,
-					blockInfoFor(blockreason.PromptInjection, "response_scan"),
+					blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 					http.StatusForbidden,
 					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-				return true, "", true
+				return true, "", true, false
 			}
 			out = result.TransformedContent
 			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "response_scan", reason)
+			log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), responseScanLayer, reason)
 			emitResponseReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
-				Layer:     "response_scan",
+				Layer:     responseScanLayer,
 				Pattern:   reason,
 				Transport: "fetch",
 				Method:    http.MethodGet,
@@ -6100,10 +6112,10 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.PromptInjection, "response_scan"),
+				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, "", true
+			return true, "", true, false
 		}
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
@@ -6116,7 +6128,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		recordResponseSignal(session.SignalNearMiss)
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
 	}
-	return false, out, true
+	return false, out, true, false
 }
 
 // stripFetchControlChars removes C0 control characters (0x00-0x1F) and DEL

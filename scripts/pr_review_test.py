@@ -2184,8 +2184,8 @@ class FailureDirectionTest(unittest.TestCase):
             self.assertGreaterEqual(
                 pr_review.DEFAULT_MAX_COMPLETION_TOKENS,
                 pr_review.JUDGE_MAX_COMPLETION_TOKENS,
-                "discovery runs at %s reasoning but its output allowance is below the "
-                "budget the judge already needed at high reasoning" % discovery_effort,
+                f"discovery runs at {discovery_effort} reasoning but its output "
+                "allowance is below the budget the judge already needed at high reasoning",
             )
 
     def test_default_discovery_payload_carries_the_effort_and_budget_together(self) -> None:

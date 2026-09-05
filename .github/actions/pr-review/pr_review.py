@@ -34,6 +34,14 @@ DEFAULT_MODEL_DEEP = "gpt-5.6-terra"
 # candidate, never add one, so anything this phase misses is invisible and the
 # run still publishes as clean. That is the fail-open direction, which is why
 # the cheap phase is the wrong place to economize.
+#
+# Higher effort costs wall-clock, and a chunk that outruns DEFAULT_LLM_TIMEOUT_SECONDS
+# is the availability risk this trades against. It fails in the safe direction:
+# a timed-out chunk sets timed_out, derive_state turns that into `partial`, and
+# the workflow's completeness gate fails the run, so a slow discovery pass shows
+# up as a red review rather than a clean one. Raise the timeout from observed
+# partials, not preemptively; it is reserved at twice its value per call against
+# REVIEW_WALL_CLOCK_SECONDS, so raising it alone buys depth by dropping chunks.
 FAST_REASONING_EFFORT = "high"
 DEEP_REASONING_EFFORT = "xhigh"
 JUDGE_REASONING_EFFORT = "high"
@@ -97,7 +105,7 @@ DEEP_MAX_CHUNKS = 8
 # at high reasoning, so the number is deliberately unchanged here rather than
 # raised on an assumption. Raise it only from observed default-mode runs. Deep
 # mode can take a materially larger slice: the observed 321-unit PR then needs
-# six chunks instead of being capped at 160 units before the token budget is
+# six chunks instead of being capped at 180 units before the token budget is
 # even considered.
 FAST_MAX_UNITS_PER_CHUNK = 30
 DEEP_MAX_UNITS_PER_CHUNK = 60

@@ -150,6 +150,15 @@ jobs:
           check-latest: true
           cache: false
 
+      - name: Verify Go version
+        # Every other Go-pinned release job asserts the resolved toolchain; this
+        # one did not, so a silently different stdlib would have gone unnoticed
+        # here while its neighbours failed loudly.
+        run: |
+          got="$(go env GOVERSION)"
+          echo "GOVERSION=$got"
+          test "$got" = "go1.25.14"
+
       # zizmor 1.29.0 treats the empty cache value as enabled; setup-node treats it as disabled.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0; zizmor: ignore[cache-poisoning]
         with:

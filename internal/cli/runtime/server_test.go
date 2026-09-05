@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -2734,6 +2735,13 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 
 	firstPaused := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
+		}
+	}()
 	var hookCalls atomic.Int32
 	restoreHook := setReloadAfterProxySwapHookForTest(func(*Server) {
 		if hookCalls.Add(1) != 1 {
@@ -2759,11 +2767,7 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 		secondDone <- s.Reload(loadServerTestReloadConfig(t, "second-should-not-activate"))
 	}()
 
-	select {
-	case err := <-secondDone:
-		t.Fatalf("second reload completed before first reload refreshed runtime mirrors: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
+	waitForReloadMutexBlock(t, secondDone)
 
 	close(releaseFirst)
 	if err := <-firstDone; err != nil {
@@ -2783,6 +2787,56 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken != "first-clean-tool-poison" {
 		t.Fatalf("live api token = %q, want first reload preserved", live.KillSwitch.APIToken)
 	}
+}
+
+// waitForReloadMutexBlock observes the second Reload goroutine stopped in its
+// mutex acquisition. The first reload is paused after proxy publication while
+// still holding reloadMu, so a Reload stack that includes sync.Mutex.Lock can
+// only be waiting for that exclusion. This is stronger than treating a
+// wall-clock interval without completion as evidence of mutual exclusion.
+func waitForReloadMutexBlock(t *testing.T, done <-chan error) {
+	t.Helper()
+
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		if reloadBlockedOnMutex() {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("second reload completed before blocking on reload exclusion: %v", err)
+		case <-deadline.C:
+			t.Fatal("second reload did not reach the reload mutex")
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func reloadBlockedOnMutex() bool {
+	n, _ := runtime.GoroutineProfile(nil)
+	records := make([]runtime.StackRecord, n)
+	n, ok := runtime.GoroutineProfile(records)
+	if !ok {
+		return false
+	}
+
+	for _, record := range records[:n] {
+		previousFunction := ""
+		frames := runtime.CallersFrames(record.Stack())
+		for {
+			frame, more := frames.Next()
+			if frame.Function == "github.com/luckyPipewrench/pipelock/internal/cli/runtime.(*Server).Reload" && previousFunction == "sync.(*Mutex).Lock" {
+				return true
+			}
+			previousFunction = frame.Function
+			if !more {
+				break
+			}
+		}
+	}
+	return false
 }
 
 func loadServerTestReloadConfig(t *testing.T, apiToken string) *config.Config {

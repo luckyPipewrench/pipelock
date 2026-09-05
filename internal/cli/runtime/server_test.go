@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2735,13 +2736,7 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 
 	firstPaused := make(chan struct{})
 	releaseFirst := make(chan struct{})
-	defer func() {
-		select {
-		case <-releaseFirst:
-		default:
-			close(releaseFirst)
-		}
-	}()
+	var reloads sync.WaitGroup
 	var hookCalls atomic.Int32
 	restoreHook := setReloadAfterProxySwapHookForTest(func(*Server) {
 		if hookCalls.Add(1) != 1 {
@@ -2750,11 +2745,22 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 		close(firstPaused)
 		<-releaseFirst
 	})
-	defer restoreHook()
+	defer func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
+		}
+		reloads.Wait()
+		restoreHook()
+	}()
 
 	firstDone := make(chan error, 1)
+	firstConfig := loadServerTestReloadConfig(t, "first-clean-tool-poison")
+	reloads.Add(1)
 	go func() {
-		firstDone <- s.Reload(loadServerTestReloadConfig(t, "first-clean-tool-poison"))
+		defer reloads.Done()
+		firstDone <- s.Reload(firstConfig)
 	}()
 
 	<-firstPaused
@@ -2763,10 +2769,13 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 	}
 
 	secondDone := make(chan error, 1)
+	secondConfig := loadServerTestReloadConfig(t, "second-should-not-activate")
 	secondReload := func() {
-		secondDone <- s.Reload(loadServerTestReloadConfig(t, "second-should-not-activate"))
+		defer reloads.Done()
+		secondDone <- s.Reload(secondConfig)
 	}
 	secondCaller := runtime.FuncForPC(reflect.ValueOf(secondReload).Pointer()).Name()
+	reloads.Add(1)
 	go secondReload()
 
 	waitForReloadMutexBlock(t, secondDone, secondCaller)
@@ -2849,22 +2858,38 @@ func reloadBlockedOnMutex(caller string) bool {
 func TestReloadBlockedOnMutexIgnoresOtherCaller(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	s.reloadMu.Lock()
-	done := make(chan error, 1)
-	exited := make(chan struct{})
+	done := make(chan error, 2)
+	exited := make(chan struct{}, 2)
+	startIntended := make(chan struct{})
+	intendedStarted := false
 	defer func() {
+		if !intendedStarted {
+			close(startIntended)
+		}
 		s.reloadMu.Unlock()
 		<-exited
+		<-exited
 	}()
-	blockedReload := func() {
-		defer close(exited)
+	intendedReload := func() {
+		defer func() { exited <- struct{}{} }()
+		<-startIntended
 		done <- s.Reload(config.Defaults())
 	}
-	caller := runtime.FuncForPC(reflect.ValueOf(blockedReload).Pointer()).Name()
-	go blockedReload()
-	waitForReloadMutexBlock(t, done, caller)
-	if reloadBlockedOnMutex(caller + ".unrelated") {
+	otherReload := func() {
+		defer func() { exited <- struct{}{} }()
+		done <- s.Reload(config.Defaults())
+	}
+	intendedCaller := runtime.FuncForPC(reflect.ValueOf(intendedReload).Pointer()).Name()
+	otherCaller := runtime.FuncForPC(reflect.ValueOf(otherReload).Pointer()).Name()
+	go intendedReload()
+	go otherReload()
+	waitForReloadMutexBlock(t, done, otherCaller)
+	if reloadBlockedOnMutex(intendedCaller) {
 		t.Fatal("reload observation accepted an unrelated caller")
 	}
+	close(startIntended)
+	intendedStarted = true
+	waitForReloadMutexBlock(t, done, intendedCaller)
 }
 
 func loadServerTestReloadConfig(t *testing.T, apiToken string) *config.Config {

@@ -238,14 +238,19 @@ services:
       - pipelock-internal
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
+      - HTTP_PROXY=http://pipelock:8888
+      - HTTPS_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
     depends_on:
       pipelock:
         condition: service_healthy
 ```
 
-The agent container can only reach the `pipelock` service. All HTTP traffic goes
-through the fetch proxy. MCP servers running as subprocesses inside the agent
+The agent container can only reach the `pipelock` service. The proxy
+environment variables route HTTP libraries that honor them through Pipelock.
+`PIPELOCK_FETCH_URL` is an application-defined helper value: it is useful only
+when your code explicitly calls the `/fetch` endpoint and does not redirect a
+CrewAI request by itself. MCP servers running as subprocesses inside the agent
 container are wrapped with `pipelock mcp proxy` as shown above.
 
 You can also generate this template with:

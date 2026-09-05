@@ -20,6 +20,39 @@ func TestConfigPathsNotEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigPathsClaudeDesktopPlatforms(t *testing.T) {
+	home := t.TempDir()
+	for _, tt := range []struct {
+		goos string
+		dirs []string
+	}{
+		{goos: "linux", dirs: []string{filepath.Join(home, ".config", "Claude")}},
+		{goos: osDarwin, dirs: []string{filepath.Join(home, "Library", "Application Support", "Claude")}},
+		{goos: osWindows, dirs: []string{
+			filepath.Join(home, "AppData", "Roaming", "Claude"),
+			filepath.Join(home, "AppData", "Local", "Packages", "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude"),
+		}},
+	} {
+		t.Run(tt.goos, func(t *testing.T) {
+			var paths []string
+			for _, cp := range configPathsForOS(home, tt.goos) {
+				if cp.Client == clientClaudeDesktop {
+					paths = append(paths, cp.Path)
+				}
+			}
+			if len(paths) != len(tt.dirs) {
+				t.Fatalf("paths = %v, want %d Claude configs", paths, len(tt.dirs))
+			}
+			for i, dir := range tt.dirs {
+				want := filepath.Join(dir, "claude_desktop_config.json")
+				if paths[i] != want {
+					t.Errorf("path %d = %q, want %q", i, paths[i], want)
+				}
+			}
+		})
+	}
+}
+
 func TestConfigPathsExpandHome(t *testing.T) {
 	paths := configPaths("/home/testuser")
 	for _, p := range paths {

@@ -22,13 +22,23 @@ git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.
 make -C pipelock install
 # or (macOS): brew install luckyPipewrench/tap/pipelock
 
-# 2. Wrap every OpenCode MCP server with pipelock in one shot
-pipelock opencode install
+# 2. Generate a config, then preview the wrapper changes
+pipelock generate config --preset balanced -o pipelock.yaml
+pipelock opencode install --config "$PWD/pipelock.yaml" --dry-run
 
-# 3. Restart OpenCode so it picks up the wrapped MCP entries
+# 3. Apply the same change and restart OpenCode
+pipelock opencode install --config "$PWD/pipelock.yaml"
 ```
 
-`pipelock opencode install` discovers OpenCode's MCP server entries, rewrites each one to launch through `pipelock mcp proxy`, and is idempotent — re-running it on an already-installed setup is a no-op. After adding or removing an MCP server in OpenCode's configuration, re-run the installer to wrap any new entries.
+`pipelock opencode install` reads `OPENCODE_CONFIG` when set, otherwise
+`~/.config/opencode/opencode.json` (or its JSONC variant), rewrites each MCP
+server to launch through `pipelock mcp proxy`, and is idempotent. Pass
+`--path` to target another config. After adding or removing an MCP server in
+OpenCode's configuration, re-run the installer to wrap new entries.
+
+After restarting OpenCode, use `opencode mcp list` and a harmless tool action
+to confirm the server connects. A rewritten config does not by itself prove an
+MCP connection.
 
 ## What Gets Scanned
 
@@ -77,7 +87,27 @@ OpenCode reads MCP servers from its configuration file. Run `opencode mcp list` 
 
 ### A tool call hangs
 
-Bridge-style MCP servers (those that stdio in but call out over HTTPS to a SaaS) need network egress. If you've enabled `sandbox.enabled: true` on the wrap, the proxy will isolate the MCP server in a network namespace and the upstream call will fail. Set `sandbox: false` on bridge servers via the install flag.
+Bridge-style MCP servers (those that stdio in but call out over HTTPS to a SaaS)
+need network egress. `pipelock opencode install` has no per-install sandbox
+flag. Configure sandbox behavior in the Pipelock config used by the wrapper,
+then preview and re-run the install with `--config`.
+
+### Previewing or removing the wrapper
+
+```bash
+# Inspect the change without writing files.
+pipelock opencode install --config "$PWD/pipelock.yaml" --dry-run
+
+# Restore only entries previously wrapped by Pipelock.
+pipelock opencode remove --dry-run
+pipelock opencode remove
+```
+
+Install and remove create a one-version `.bak` backup before a real change.
+Removal restores wrapped entries from their `_pipelock` metadata and leaves
+other entries alone. If removal warns about an invalid entry or header-sidecar
+cleanup, inspect `opencode mcp list` after restarting before changing the
+backup. A backup is not a substitute for checking the active client config.
 
 ### Receipts and audit trail
 

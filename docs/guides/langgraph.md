@@ -27,7 +27,7 @@ from langchain.chat_models import init_chat_model
 async def main():
     model = init_chat_model("anthropic:claude-sonnet-4-20250514")
 
-    async with MultiServerMCPClient(
+    client = MultiServerMCPClient(
         {
             "filesystem": {
                 "transport": "stdio",
@@ -40,12 +40,12 @@ async def main():
                 ],
             }
         }
-    ) as client:
-        tools = await client.get_tools()
-        agent = create_react_agent(model, tools)
-        result = await agent.ainvoke(
-            {"messages": [("user", "List files in /workspace")]}
-        )
+    )
+    tools = await client.get_tools()
+    agent = create_react_agent(model, tools)
+    result = await agent.ainvoke(
+        {"messages": [("user", "List files in /workspace")]}
+    )
 ```
 
 Pipelock intercepts all MCP traffic between LangGraph and the filesystem server,
@@ -78,7 +78,7 @@ from langchain.chat_models import init_chat_model
 
 model = init_chat_model("anthropic:claude-sonnet-4-20250514")
 
-async with MultiServerMCPClient(
+client = MultiServerMCPClient(
     {
         "filesystem": {
             "transport": "stdio",
@@ -93,12 +93,12 @@ async with MultiServerMCPClient(
                      "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
         },
     }
-) as client:
-    tools = await client.get_tools()
-    agent = create_react_agent(model, tools)
-    result = await agent.ainvoke(
-        {"messages": [("user", "What tables exist in the database?")]}
-    )
+)
+tools = await client.get_tools()
+agent = create_react_agent(model, tools)
+result = await agent.ainvoke(
+    {"messages": [("user", "What tables exist in the database?")]}
+)
 ```
 
 Each server gets its own Pipelock proxy instance. A poisoned response from one
@@ -116,7 +116,7 @@ from langchain.chat_models import init_chat_model
 
 model = init_chat_model("anthropic:claude-sonnet-4-20250514")
 
-async with MultiServerMCPClient(
+client = MultiServerMCPClient(
     {
         "filesystem": {
             "transport": "stdio",
@@ -125,23 +125,23 @@ async with MultiServerMCPClient(
                      "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
         }
     }
-) as client:
-    tools = await client.get_tools()
+)
+tools = await client.get_tools()
 
-    def call_model(state: MessagesState):
-        return {"messages": model.bind_tools(tools).invoke(state["messages"])}
+def call_model(state: MessagesState):
+    return {"messages": model.bind_tools(tools).invoke(state["messages"])}
 
-    builder = StateGraph(MessagesState)
-    builder.add_node("agent", call_model)
-    builder.add_node("tools", ToolNode(tools))
-    builder.add_edge(START, "agent")
-    builder.add_conditional_edges("agent", tools_condition)
-    builder.add_edge("tools", "agent")
-    graph = builder.compile()
+builder = StateGraph(MessagesState)
+builder.add_node("agent", call_model)
+builder.add_node("tools", ToolNode(tools))
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", tools_condition)
+builder.add_edge("tools", "agent")
+graph = builder.compile()
 
-    result = await graph.ainvoke(
-        {"messages": [("user", "Read /workspace/config.yaml")]}
-    )
+result = await graph.ainvoke(
+    {"messages": [("user", "Read /workspace/config.yaml")]}
+)
 ```
 
 ### Pattern C: `load_mcp_tools` (single server)
@@ -213,7 +213,7 @@ from langgraph.prebuilt import create_react_agent
 from langchain.chat_models import init_chat_model
 
 async def make_graph():
-    async with MultiServerMCPClient(
+    client = MultiServerMCPClient(
         {
             "filesystem": {
                 "transport": "stdio",
@@ -222,10 +222,10 @@ async def make_graph():
                          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
             }
         }
-    ) as client:
-        tools = await client.get_tools()
-        model = init_chat_model("anthropic:claude-sonnet-4-20250514")
-        return create_react_agent(model, tools)
+    )
+    tools = await client.get_tools()
+    model = init_chat_model("anthropic:claude-sonnet-4-20250514")
+    return create_react_agent(model, tools)
 ```
 
 Build and run:
@@ -296,7 +296,9 @@ services:
       - pipelock-internal
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
+      - HTTP_PROXY=http://pipelock:8888
+      - HTTPS_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
       - DATABASE_URI=postgres://langgraph:${POSTGRES_PASSWORD}@langgraph-postgres:5432/langgraph
       - REDIS_URI=redis://langgraph-redis:6379
     depends_on:
@@ -311,8 +313,11 @@ volumes:
   pgdata:
 ```
 
-The agent container can only reach Pipelock, Postgres, and Redis. All outbound
-HTTP goes through the fetch proxy.
+The agent container can only reach Pipelock, Postgres, and Redis. The proxy
+environment variables route HTTP libraries that honor them through Pipelock.
+`PIPELOCK_FETCH_URL` is an application-defined helper value: it is useful only
+when your code explicitly calls the `/fetch` endpoint and does not redirect
+LangGraph or an SDK's ordinary requests by itself.
 
 You can also generate a base template with:
 

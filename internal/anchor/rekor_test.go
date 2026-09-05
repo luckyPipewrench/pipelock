@@ -578,10 +578,10 @@ func TestRekorSubmissionRecordRequiresMetadata(t *testing.T) {
 		{name: "set whitespace", edit: func(p *Proof) { p.Rekor.SignedEntryTimestamp = " \t" }, want: "signed_entry_timestamp"},
 		{name: "inclusion proof", edit: func(p *Proof) { p.Rekor.InclusionProof = nil }, want: "inclusion_proof"},
 		{name: "inclusion root mismatch", edit: func(p *Proof) { p.Rekor.InclusionProof.RootHash = strings.Repeat("0", 64) }, want: "root_hash"},
-		{name: "inclusion log index mismatch", edit: func(p *Proof) {
+		{name: "inclusion index exceeds entry index", edit: func(p *Proof) {
 			p.Rekor.InclusionProof.TreeSize = 2
 			p.Rekor.InclusionProof.LogIndex = 1
-		}, want: "log_index"},
+		}, want: "exceeds log_index"},
 		{name: "inclusion tree size", edit: func(p *Proof) { p.Rekor.InclusionProof.TreeSize = 0 }, want: "tree_size"},
 		{name: "inclusion checkpoint", edit: func(p *Proof) { p.Rekor.InclusionProof.Checkpoint = "" }, want: "checkpoint"},
 		{name: "inclusion root hash short", edit: func(p *Proof) {
@@ -754,6 +754,49 @@ func TestRekorLogVerifyRejectsForgedSelfConsistentProof(t *testing.T) {
 	report := VerifyBundle(NewBundle(checkpoint, proof), receipts, []string{keyHex}, RekorLog{TrustedLogKeys: []crypto.PublicKey{trustedLogPub}})
 	if report.Valid || !strings.Contains(report.Error, "signed_entry_timestamp") {
 		t.Fatalf("forged Rekor proof report = %+v, want SET verification failure", report)
+	}
+}
+
+func TestRekorLogVerifyAcceptsShardedEntryIndex(t *testing.T) {
+	checkpoint, entrySigner := securityRekorCheckpoint(t)
+	logPublic, logSigner, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey log: %v", err)
+	}
+	proof := selfConsistentRekorProof(t, checkpoint, entrySigner, logSigner)
+
+	bodyBytes, err := base64.StdEncoding.DecodeString(proof.Rekor.Body)
+	if err != nil {
+		t.Fatalf("DecodeString body: %v", err)
+	}
+	const retiredShardEntries = uint64(121_904_262)
+	activeTreeIndex := uint64(1)
+	sibling := rfc6962LeafHash([]byte("another active-shard leaf"))
+	root := rfc6962NodeHash(sibling, rfc6962LeafHash(bodyBytes))
+	proof.LogIndex = retiredShardEntries + activeTreeIndex
+	proof.LogRootHash = hex.EncodeToString(root)
+	proof.Rekor.InclusionProof.RootHash = proof.LogRootHash
+	proof.Rekor.InclusionProof.LogIndex = activeTreeIndex
+	proof.Rekor.InclusionProof.TreeSize = 2
+	proof.Rekor.InclusionProof.Hashes = []string{hex.EncodeToString(sibling)}
+	proof.Rekor.InclusionProof.Checkpoint = signedCheckpointForTest(t, 2, root, logSigner)
+	proof.Rekor.SignedEntryTimestamp = signedEntryTimestampForTest(t, proof.LogID, proof.LogIndex, proof.Rekor.Body, logSigner)
+
+	if err := validateRekorSubmissionRecord(proof, checkpoint); err != nil {
+		t.Fatalf("validate sharded submission record: %v", err)
+	}
+	if err := (RekorLog{TrustedLogKeys: []crypto.PublicKey{logPublic}}).Verify(proof, checkpoint); err != nil {
+		t.Fatalf("Verify sharded proof: %v", err)
+	}
+
+	corrupted := proof
+	corrupted.Rekor = cloneRekorProof(proof.Rekor)
+	corrupted.Rekor.InclusionProof.LogIndex = 0
+	if err := validateRekorSubmissionRecord(corrupted, checkpoint); err != nil {
+		t.Fatalf("validate wrong active-tree index: %v", err)
+	}
+	if err := (RekorLog{TrustedLogKeys: []crypto.PublicKey{logPublic}}).Verify(corrupted, checkpoint); err == nil || !strings.Contains(err.Error(), "computed root does not match proof root") {
+		t.Fatalf("Verify wrong active-tree index error = %v, want RFC 6962 root mismatch", err)
 	}
 }
 

@@ -380,8 +380,11 @@ func validateRekorInclusionProof(proof Proof) error {
 	if inc.TreeSize == 0 {
 		return errors.New("rekor proof inclusion_proof.tree_size required")
 	}
-	if inc.LogIndex != proof.LogIndex {
-		return fmt.Errorf("rekor proof inclusion_proof.log_index %d does not match log_index %d", inc.LogIndex, proof.LogIndex)
+	// Rekor's entry logIndex is virtual across its shards, while the inclusion
+	// proof logIndex is relative to the shard's tree. The active-tree index
+	// therefore cannot exceed the virtual entry index, but need not equal it.
+	if inc.LogIndex > proof.LogIndex {
+		return fmt.Errorf("rekor proof inclusion_proof.log_index %d exceeds log_index %d", inc.LogIndex, proof.LogIndex)
 	}
 	if inc.LogIndex >= inc.TreeSize {
 		return fmt.Errorf("rekor proof inclusion_proof.log_index %d outside tree_size %d", inc.LogIndex, inc.TreeSize)

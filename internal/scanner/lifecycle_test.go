@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -66,79 +67,80 @@ func TestScanner_BeginUse_FailsAfterClose(t *testing.T) {
 	}
 }
 
-// closeOpportunityWindow is how long a wrongly-unblocked Close is given to
-// return before a test concludes it is genuinely blocked. It cannot cause a
-// spurious failure, because a correct Close stays blocked however long the wait.
-const closeOpportunityWindow = 250 * time.Millisecond
-
 // TestScanner_Close_BlocksUntilDrain verifies the core drain invariant:
 // Close does not return until every outstanding BeginUse caller has
 // invoked its release func. Without the WaitGroup drain, a future
 // destructive Close would race with mid-scan callers.
 func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	sc := scanner.MustNew(cfg)
+	synctest.Test(t, func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		sc := scanner.MustNew(cfg)
 
-	// Two in-flight users, so the drain can be exercised in two steps. Releasing
-	// one is a real drain event that a correct Close must observe and keep
-	// waiting through; a single user cannot distinguish "still draining" from
-	// "never drained".
-	releaseFirst, ok := sc.BeginUse()
-	if !ok {
-		t.Fatal("BeginUse on fresh scanner returned ok=false")
-	}
-	releaseSecond, ok := sc.BeginUse()
-	if !ok {
-		t.Fatal("second BeginUse on fresh scanner returned ok=false")
-	}
+		// Two in-flight users let the test prove Close remains blocked after a
+		// partial drain. synctest.Wait returns only when Close and its drain
+		// goroutine are durably blocked, so each check follows a processed
+		// WaitGroup state transition rather than an opportunity window.
+		releaseFirst, ok := sc.BeginUse()
+		if !ok {
+			t.Fatal("BeginUse on fresh scanner returned ok=false")
+		}
+		firstReleased := false
+		defer func() {
+			if !firstReleased {
+				releaseFirst()
+			}
+		}()
 
-	closeReturned := make(chan struct{})
-	go func() {
-		sc.Close()
-		close(closeReturned)
-	}()
+		releaseSecond, ok := sc.BeginUse()
+		if !ok {
+			t.Fatal("second BeginUse on fresh scanner returned ok=false")
+		}
+		secondReleased := false
+		defer func() {
+			if !secondReleased {
+				releaseSecond()
+			}
+		}()
 
-	// Wait for closed=true rather than sleeping. The original test slept and
-	// then asserted publication, so under load the window expired before the
-	// goroutine was scheduled and it failed for a scheduling artifact. Waiting
-	// removes that failure; the timeout here is a hang backstop.
-	//
-	// Publication does NOT prove Close reached the drain: it is published while
-	// the lock is held, and a Close that skipped the drain could still be
-	// descheduled between unlocking and returning. The two checks below are
-	// therefore bounded OPPORTUNITY windows, not proofs. They are sound in the
-	// direction that matters, because a correct Close stays blocked for any
-	// window length, so a longer wait cannot make them fail spuriously.
-	testwait.For(t, 5*time.Second, sc.Closed, "Close goroutine did not publish closed=true")
+		closeReturned := make(chan struct{})
+		go func() {
+			sc.Close()
+			close(closeReturned)
+		}()
 
-	if release3, ok3 := sc.BeginUse(); ok3 {
-		t.Error("BeginUse succeeded while Close was draining")
-		release3()
-	}
+		synctest.Wait()
+		if !sc.Closed() {
+			t.Fatal("Close did not publish closed=true before draining")
+		}
+		if release, began := sc.BeginUse(); began {
+			t.Error("BeginUse succeeded while Close was draining")
+			release()
+		}
+		select {
+		case <-closeReturned:
+			t.Fatal("Close returned with two users still in flight")
+		default:
+		}
 
-	select {
-	case <-closeReturned:
-		t.Fatal("Close returned with two users still in flight")
-	case <-time.After(closeOpportunityWindow):
-	}
+		releaseFirst()
+		firstReleased = true
+		synctest.Wait()
+		select {
+		case <-closeReturned:
+			t.Fatal("Close returned after a partial drain, with one user still in flight")
+		default:
+		}
 
-	// Partial drain: the in-flight count drops but does not reach zero, so Close
-	// must still be blocked. This catches a Close that waits for the first
-	// release rather than for all of them.
-	releaseFirst()
-	select {
-	case <-closeReturned:
-		t.Fatal("Close returned after a partial drain, with one user still in flight")
-	case <-time.After(closeOpportunityWindow):
-	}
-
-	releaseSecond()
-	select {
-	case <-closeReturned:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close did not return after the final in-flight release")
-	}
+		releaseSecond()
+		secondReleased = true
+		synctest.Wait()
+		select {
+		case <-closeReturned:
+		default:
+			t.Fatal("Close did not return after the final in-flight release")
+		}
+	})
 }
 
 // TestScanner_Close_DrainTimeoutDefersTeardown verifies that a hung

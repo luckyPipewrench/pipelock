@@ -36,7 +36,7 @@ Pipelock sits between AI agents and the network. It inspects mediated HTTP, WebS
 
 Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) over content-aware boundary decisions, so a reviewer can verify what Pipelock decided outside the agent runtime. The public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus exercises the detections. The [Gauntlet](https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml) workflow is the product's scheduled candidate exam against a pinned corpus commit; it does not auto-publish a public score. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
 
-**Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Zed · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
+**Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Pi · Zed · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
 <p align="center">
   <a href="#the-problem">Problem</a> ·
@@ -534,6 +534,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[OpenAI Codex](docs/guides/codex.md):** MCP proxy wrapping, forward proxy, sandbox integration
 - **[Cline](docs/guides/cline.md):** MCP proxy wrapping for Cline's `mcp.json`
 - **[OpenCode](docs/guides/opencode.md):** MCP proxy wrapping for OpenCode's local and remote MCP servers
+- **[Pi](docs/guides/pi.md):** global proxy setup with a named agent listener
 - **[Zed](docs/guides/zed.md):** MCP proxy wrapping for Zed's `context_servers` block in `settings.json`
 - **[OpenAI Agents SDK](docs/guides/openai-agents.md):** `MCPServerStdio`, multi-agent handoffs
 - **[Google ADK](docs/guides/google-adk.md):** `McpToolset`, `StdioConnectionParams`

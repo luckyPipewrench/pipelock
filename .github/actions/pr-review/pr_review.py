@@ -30,10 +30,18 @@ import requests
 
 DEFAULT_MODEL_FAST = "gpt-5.6-luna"
 DEFAULT_MODEL_DEEP = "gpt-5.6-terra"
-FAST_REASONING_EFFORT = "low"
+# Discovery recall bounds the entire review: the judge can only keep or drop a
+# candidate, never add one, so anything this phase misses is invisible and the
+# run still publishes as clean. That is the fail-open direction, which is why
+# the cheap phase is the wrong place to economize.
+FAST_REASONING_EFFORT = "high"
 DEEP_REASONING_EFFORT = "xhigh"
 JUDGE_REASONING_EFFORT = "high"
-DEFAULT_MAX_COMPLETION_TOKENS = 8_192
+# Reasoning tokens consume the same output allowance as the findings JSON, and
+# discovery now runs at high reasoning, so the former 8K cap could expire before
+# a single finding was emitted and publish that as a clean review. This mirrors
+# the judge cap below, which was raised for exactly this reason.
+DEFAULT_MAX_COMPLETION_TOKENS = 32_768
 DEEP_MAX_COMPLETION_TOKENS = 64_000
 # Reasoning tokens consume the same output allowance as the compact JSON
 # decision. Deep judge calls use xhigh reasoning, so the 8K discovery cap can
@@ -84,10 +92,13 @@ FAST_INPUT_TOKEN_BUDGET = 12_000
 DEEP_INPUT_TOKEN_BUDGET = 48_000
 FAST_MAX_CHUNKS = 6
 DEEP_MAX_CHUNKS = 8
-# Keep a default review small enough for a low-reasoning model to hold the
-# relationships in one call. Deep mode can take a materially larger slice: the
-# observed 321-unit PR then needs six chunks instead of being capped at 160
-# units before the token budget is even considered.
+# Keep a default review small enough to hold the relationships in one call.
+# This bound was originally sized for low-reasoning discovery; discovery now runs
+# at high reasoning, so the number is deliberately unchanged here rather than
+# raised on an assumption. Raise it only from observed default-mode runs. Deep
+# mode can take a materially larger slice: the observed 321-unit PR then needs
+# six chunks instead of being capped at 160 units before the token budget is
+# even considered.
 FAST_MAX_UNITS_PER_CHUNK = 30
 DEEP_MAX_UNITS_PER_CHUNK = 60
 # Each judge context fetch allows 30 seconds, so an unbounded candidate set

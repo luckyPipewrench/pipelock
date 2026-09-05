@@ -35,13 +35,17 @@ git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.
 make -C pipelock install
 # or (macOS): brew install luckyPipewrench/tap/pipelock
 
-# 2. Wrap every Codex MCP server with pipelock in one shot
-pipelock codex install
-
-# 3. Generate a config to work from
+# 2. Generate a config before installing wrappers
 pipelock generate config --preset balanced -o pipelock.yaml
 
-# 4. Run an assessment before first use
+# 3. Preview, then wrap every registered Codex MCP server
+pipelock codex install --config "$PWD/pipelock.yaml" --dry-run
+pipelock codex install --config "$PWD/pipelock.yaml"
+
+# 4. Restart Codex, then inspect the registered MCP servers
+codex mcp list
+
+# 5. Run an assessment before first use
 pipelock assess init --config pipelock.yaml
 pipelock assess run assessment-*/
 pipelock assess finalize assessment-*/
@@ -55,6 +59,10 @@ The installer validates and embeds an absolute Pipelock config path when you pas
 or `/etc/pipelock/pipelock.yaml`. It prints the selected config source during
 install so the wrapped MCP servers do not depend on Codex's later working
 directory.
+
+Restart Codex after an install or removal and confirm the expected server in
+`codex mcp list`; then run a harmless tool action. A registered server is not
+evidence that the client successfully connected to it.
 
 For manual / per-server control, the original pattern still works:
 
@@ -254,6 +262,23 @@ codex mcp add my-server \
 ```bash
 codex mcp list
 ```
+
+### Previewing, removing, and recovering wrappers
+
+```bash
+# Preview without changing Codex configuration.
+pipelock codex install --config "$PWD/pipelock.yaml" --dry-run
+
+# Restore only MCP servers previously wrapped by Pipelock.
+pipelock codex remove --dry-run
+pipelock codex remove
+```
+
+The installer replaces each server registration and attempts to restore the
+previous registration if that replacement fails. If it reports that rollback
+also failed, stop and inspect `codex mcp list` before retrying or editing the
+server. The remove command leaves registrations it does not recognize as
+Pipelock wrappers unchanged.
 
 ### False positives
 

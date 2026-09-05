@@ -79,6 +79,11 @@ members get the same MCP security configuration.
 }
 ```
 
+Restart Claude Code after changing `.mcp.json`. When Claude Code asks you to
+approve a project MCP server, review the server and make that approval yourself.
+Then use Claude Code's MCP status view and a harmless tool action to confirm it
+connected. A project configuration entry is not itself a connection result.
+
 ### User-Level (`~/.claude.json`)
 
 For personal MCP servers that shouldn't be in git:
@@ -196,6 +201,27 @@ At install time, Pipelock validates the config path, embeds the resolved
 absolute path into the generated hook command, and prints the config source. If
 no standard config is available, the hook is installed with built-in defaults
 and the setup output says so.
+
+`pipelock claude setup` and `pipelock claude remove` modify
+`~/.claude/settings.json` by default; add `--project` for
+`.claude/settings.json` in the current project. Preview the same scope before
+writing it. Both operations preserve unrelated settings and hooks, and a real
+change saves the previous file as a one-version `.bak` backup.
+
+```bash
+# Preview and remove only Pipelock-managed hooks from the user scope.
+pipelock claude remove --dry-run
+pipelock claude remove
+
+# Use this form for the current project's .claude/settings.json.
+pipelock claude remove --project --dry-run
+pipelock claude remove --project
+```
+
+Restart Claude Code and check the affected hooks or MCP connection after a
+change. If the settings file is not usable, inspect the `.bak` alongside that
+same settings file before restoring it; it contains only the version that
+immediately preceded the last real setup or removal.
 
 This registers pipelock as a `PreToolUse` hook for security-relevant tools:
 

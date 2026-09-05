@@ -273,9 +273,13 @@ func fileExists(path string) bool {
 // ~/Library/Application Support/, Windows uses %APPDATA%. Clients that store
 // config in the home directory (claude-code, cursor, continue) work on all platforms.
 func configPaths(home string) []clientPath {
-	appData := appDataDir(home)
+	return configPathsForOS(home, runtime.GOOS)
+}
 
-	return []clientPath{
+func configPathsForOS(home, goos string) []clientPath {
+	appData := appDataDirForOS(home, goos)
+
+	paths := []clientPath{
 		{
 			Client: clientClaudeCode,
 			Path:   filepath.Join(home, ".claude.json"),
@@ -358,6 +362,22 @@ func configPaths(home string) []clientPath {
 		// an explicit project root parameter (future work). Consistent
 		// with VS Code (.vscode/mcp.json also not scanned).
 	}
+	if goos == osWindows {
+		// Packaged desktop apps can redirect Roaming data into their private
+		// LocalCache. Keep both locations: an existing classic installation
+		// can have different entries, and each result retains its source path.
+		// Family and config location verified on Claude Desktop 1.40609.0.0
+		// via Get-AppxPackage (2026-09-04). Windows package data redirection:
+		// https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-behind-the-scenes
+		paths = append(paths, clientPath{
+			Client: clientClaudeDesktop,
+			Path: filepath.Join(home, "AppData", "Local", "Packages",
+				"Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude", "claude_desktop_config.json"),
+			Key:   configKeyMCPServers,
+			Scope: scopeUser,
+		})
+	}
+	return paths
 }
 
 // appDataDir returns the platform-specific application data directory
@@ -366,7 +386,11 @@ func configPaths(home string) []clientPath {
 // Linux: home/.config, macOS: home/Library/Application Support,
 // Windows: home/AppData/Roaming.
 func appDataDir(home string) string {
-	switch runtime.GOOS {
+	return appDataDirForOS(home, runtime.GOOS)
+}
+
+func appDataDirForOS(home, goos string) string {
+	switch goos {
 	case osDarwin:
 		return filepath.Join(home, "Library", "Application Support")
 	case osWindows:

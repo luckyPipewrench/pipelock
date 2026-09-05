@@ -29,6 +29,8 @@ const (
 	taintScopeTask      = "task"
 )
 
+var errMCPReceiptIdentityUnavailable = errors.New("MCP method has no receipt identity")
+
 const (
 	mcpReceiptLayerA2A           = "mcp_a2a_scanning"
 	mcpReceiptLayerAirlock       = "mcp_airlock"
@@ -350,7 +352,7 @@ type mcpToolReceiptOpts struct {
 func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 	if opts.ActionID == "" {
 		if opts.RequireReceipt {
-			err := fmt.Errorf("empty action id: %w", ErrReceiptRequired)
+			err := fmt.Errorf("%w for %q: %w", errMCPReceiptIdentityUnavailable, opts.MCPMethod, ErrReceiptRequired)
 			logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
 			return err
 		}
@@ -407,6 +409,13 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		}
 	}
 	return nil
+}
+
+func requiredReceiptFailureMessage(err error) string {
+	if errors.Is(err, errMCPReceiptIdentityUnavailable) {
+		return "pipelock: required receipt identity is not defined for this MCP method"
+	}
+	return "pipelock: receipt emission failed"
 }
 
 func logReceiptEmitFailure(logW io.Writer, err error, requireReceipts bool, verdict string) {

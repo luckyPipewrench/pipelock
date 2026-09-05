@@ -106,6 +106,79 @@ func TestParseCodexMCPList(t *testing.T) {
 	}
 }
 
+func TestCodexMCPListCommandStreams(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell helper not supported on Windows")
+	}
+
+	const validList = `[{"name":"demo","transport":{"type":"stdio","command":"node"}}]`
+	tests := []struct {
+		name       string
+		stdout     string
+		stderr     string
+		exitCode   int
+		wantErr    bool
+		wantErrSub string
+		wantNames  []string
+	}{
+		{
+			name:      "valid stdout ignores stderr warning",
+			stdout:    validList,
+			stderr:    "warning: helper alias is unavailable",
+			wantNames: []string{"demo"},
+		},
+		{
+			name:       "malformed stdout remains an error",
+			stdout:     `[{"name":`,
+			stderr:     "warning: helper alias is unavailable",
+			wantErr:    true,
+			wantErrSub: "parsing codex mcp list JSON",
+		},
+		{
+			name:       "nonzero command preserves stderr diagnostic",
+			stdout:     validList,
+			stderr:     "Error: Codex configuration is unavailable",
+			exitCode:   1,
+			wantErr:    true,
+			wantErrSub: "Codex configuration is unavailable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			codexBin := filepath.Join(dir, "codex")
+			script := fmt.Sprintf(`#!/bin/sh
+printf '%%s' %q
+printf '%%s' %q >&2
+exit %d
+`, tt.stdout, tt.stderr, tt.exitCode)
+			writeShellScript(t, codexBin, script)
+
+			servers, err := codexMCPList(context.Background(), codexBin)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("error = %v, want it to contain %q", err, tt.wantErrSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("codexMCPList: %v", err)
+			}
+			gotNames := make([]string, 0, len(servers))
+			for _, server := range servers {
+				gotNames = append(gotNames, server.Name)
+			}
+			if !reflect.DeepEqual(gotNames, tt.wantNames) {
+				t.Errorf("server names = %v, want %v", gotNames, tt.wantNames)
+			}
+		})
+	}
+}
+
 func TestClassifyCodexWrapper(t *testing.T) {
 	// The binary that is genuinely mediating is the one running this test, since
 	// that is what an install writes into the config. A path merely NAMED pipelock

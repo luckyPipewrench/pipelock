@@ -40,16 +40,27 @@ Or from this directory: `./verify.sh` (with `PIPELOCK_BIN` set if needed).
 
 ```bash
 "$PIPELOCK_BIN" opencode install --path /path/to/opencode.json \
+  --config examples/opencode-integration/pipelock.yaml --dry-run
+
+"$PIPELOCK_BIN" opencode install --path /path/to/opencode.json \
   --config examples/opencode-integration/pipelock.yaml
 ```
 
 If `pipelock` is already on your `PATH`, you can use `pipelock` instead of `"$PIPELOCK_BIN"`.
 
-Restart OpenCode after install so it picks up the wrapped MCP entries.
+Restart OpenCode after install, then use `opencode mcp list` and a harmless
+tool action to confirm the server connects. The changed config alone is not a
+connection result.
 
 ```bash
+"$PIPELOCK_BIN" opencode remove --path /path/to/opencode.json --dry-run
 "$PIPELOCK_BIN" opencode remove --path /path/to/opencode.json
 ```
+
+Install and remove create a one-version `.bak` backup before a real change.
+Removal restores only Pipelock-wrapped entries from `_pipelock` metadata. If it
+warns about an entry or header-sidecar cleanup, restart OpenCode and inspect the
+MCP list before using the backup.
 
 ## Config Notes
 

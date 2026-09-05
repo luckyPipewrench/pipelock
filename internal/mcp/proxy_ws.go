@@ -244,8 +244,12 @@ func RunWSProxy(
 		// Track request ID before forwarding for confused deputy protection.
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
-		if isRequest(msg) {
-			tracker.TrackRequest(frame.ID, frame.Method)
+		if isTrackableRequest(msg, frame.ID) {
+			if decision.Outcome.Receipt.ActionID != "" {
+				tracker.TrackOutcome(frame.ID, decision.Outcome)
+			} else {
+				tracker.TrackRequest(frame.ID, frame.Method)
+			}
 		}
 
 		// Forward to upstream.

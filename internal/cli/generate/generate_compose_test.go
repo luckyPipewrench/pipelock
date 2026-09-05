@@ -44,6 +44,15 @@ func TestGenerateDockerCompose_AllAgentTypes(t *testing.T) {
 			if !strings.Contains(tmpl, "PIPELOCK_FETCH_URL=http://pipelock:8888/fetch") {
 				t.Error("expected PIPELOCK_FETCH_URL env var in agent service")
 			}
+			for _, proxyEnv := range []string{
+				"HTTP_PROXY=http://pipelock:8888",
+				"HTTPS_PROXY=http://pipelock:8888",
+				"NO_PROXY=localhost,127.0.0.1",
+			} {
+				if !strings.Contains(tmpl, proxyEnv) {
+					t.Errorf("expected %s env var in agent service", proxyEnv)
+				}
+			}
 			if !strings.Contains(tmpl, "condition: service_healthy") {
 				t.Error("expected healthcheck dependency")
 			}

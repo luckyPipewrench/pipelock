@@ -20,6 +20,8 @@ pip install langchain-mcp-adapters langgraph
 ```
 
 ```python
+import asyncio
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 from langchain.chat_models import init_chat_model
@@ -27,7 +29,7 @@ from langchain.chat_models import init_chat_model
 async def main():
     model = init_chat_model("anthropic:claude-sonnet-4-20250514")
 
-    async with MultiServerMCPClient(
+    client = MultiServerMCPClient(
         {
             "filesystem": {
                 "transport": "stdio",
@@ -40,12 +42,14 @@ async def main():
                 ],
             }
         }
-    ) as client:
-        tools = await client.get_tools()
-        agent = create_react_agent(model, tools)
-        result = await agent.ainvoke(
-            {"messages": [("user", "List files in /workspace")]}
-        )
+    )
+    tools = await client.get_tools()
+    agent = create_react_agent(model, tools)
+    result = await agent.ainvoke(
+        {"messages": [("user", "List files in /workspace")]}
+    )
+
+asyncio.run(main())
 ```
 
 Pipelock intercepts all MCP traffic between LangGraph and the filesystem server,
@@ -72,33 +76,37 @@ The `create_react_agent` helper builds a tool-calling agent loop. Set `command`
 to `pipelock` in the `StdioConnection`:
 
 ```python
+import asyncio
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 from langchain.chat_models import init_chat_model
 
-model = init_chat_model("anthropic:claude-sonnet-4-20250514")
-
-async with MultiServerMCPClient(
-    {
-        "filesystem": {
-            "transport": "stdio",
-            "command": "pipelock",
-            "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                     "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-        },
-        "database": {
-            "transport": "stdio",
-            "command": "pipelock",
-            "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                     "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
-        },
-    }
-) as client:
+async def main():
+    model = init_chat_model("anthropic:claude-sonnet-4-20250514")
+    client = MultiServerMCPClient(
+        {
+            "filesystem": {
+                "transport": "stdio",
+                "command": "pipelock",
+                "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                         "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+            },
+            "database": {
+                "transport": "stdio",
+                "command": "pipelock",
+                "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                         "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
+            },
+        }
+    )
     tools = await client.get_tools()
     agent = create_react_agent(model, tools)
     result = await agent.ainvoke(
         {"messages": [("user", "What tables exist in the database?")]}
     )
+
+asyncio.run(main())
 ```
 
 Each server gets its own Pipelock proxy instance. A poisoned response from one
@@ -109,23 +117,25 @@ server doesn't affect the other.
 For full control over the agent loop:
 
 ```python
+import asyncio
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import StateGraph, MessagesState, START
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain.chat_models import init_chat_model
 
-model = init_chat_model("anthropic:claude-sonnet-4-20250514")
-
-async with MultiServerMCPClient(
-    {
-        "filesystem": {
-            "transport": "stdio",
-            "command": "pipelock",
-            "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                     "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+async def main():
+    model = init_chat_model("anthropic:claude-sonnet-4-20250514")
+    client = MultiServerMCPClient(
+        {
+            "filesystem": {
+                "transport": "stdio",
+                "command": "pipelock",
+                "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                         "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+            }
         }
-    }
-) as client:
+    )
     tools = await client.get_tools()
 
     def call_model(state: MessagesState):
@@ -142,6 +152,8 @@ async with MultiServerMCPClient(
     result = await graph.ainvoke(
         {"messages": [("user", "Read /workspace/config.yaml")]}
     )
+
+asyncio.run(main())
 ```
 
 ### Pattern C: `load_mcp_tools` (single server)
@@ -149,28 +161,33 @@ async with MultiServerMCPClient(
 For wrapping a single MCP server without `MultiServerMCPClient`:
 
 ```python
+import asyncio
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langgraph.prebuilt import create_react_agent
 from langchain.chat_models import init_chat_model
 
-server_params = StdioServerParameters(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-)
+async def main():
+    server_params = StdioServerParameters(
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+    )
 
-async with stdio_client(server_params) as (read, write):
-    async with ClientSession(read, write) as session:
-        await session.initialize()
-        tools = await load_mcp_tools(session)
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            tools = await load_mcp_tools(session)
 
-        model = init_chat_model("anthropic:claude-sonnet-4-20250514")
-        agent = create_react_agent(model, tools)
-        result = await agent.ainvoke(
-            {"messages": [("user", "List files in /workspace")]}
-        )
+            model = init_chat_model("anthropic:claude-sonnet-4-20250514")
+            agent = create_react_agent(model, tools)
+            result = await agent.ainvoke(
+                {"messages": [("user", "List files in /workspace")]}
+            )
+
+asyncio.run(main())
 ```
 
 ### Stdio Transport Fields
@@ -213,7 +230,7 @@ from langgraph.prebuilt import create_react_agent
 from langchain.chat_models import init_chat_model
 
 async def make_graph():
-    async with MultiServerMCPClient(
+    client = MultiServerMCPClient(
         {
             "filesystem": {
                 "transport": "stdio",
@@ -222,10 +239,10 @@ async def make_graph():
                          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
             }
         }
-    ) as client:
-        tools = await client.get_tools()
-        model = init_chat_model("anthropic:claude-sonnet-4-20250514")
-        return create_react_agent(model, tools)
+    )
+    tools = await client.get_tools()
+    model = init_chat_model("anthropic:claude-sonnet-4-20250514")
+    return create_react_agent(model, tools)
 ```
 
 Build and run:
@@ -296,7 +313,9 @@ services:
       - pipelock-internal
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
+      - HTTP_PROXY=http://pipelock:8888
+      - HTTPS_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
       - DATABASE_URI=postgres://langgraph:${POSTGRES_PASSWORD}@langgraph-postgres:5432/langgraph
       - REDIS_URI=redis://langgraph-redis:6379
     depends_on:
@@ -311,8 +330,11 @@ volumes:
   pgdata:
 ```
 
-The agent container can only reach Pipelock, Postgres, and Redis. All outbound
-HTTP goes through the fetch proxy.
+The agent container can only reach Pipelock, Postgres, and Redis. The proxy
+environment variables route HTTP libraries that honor them through Pipelock.
+`PIPELOCK_FETCH_URL` is an application-defined helper value: it is useful only
+when your code explicitly calls the `/fetch` endpoint and does not redirect
+LangGraph or an SDK's ordinary requests by itself.
 
 You can also generate a base template with:
 

@@ -63,7 +63,7 @@ type VerifyEnv struct {
 
 // VerifyResult is the outcome of a single check.
 type VerifyResult struct {
-	Status   string            `json:"status"` // pass, fail, not_applicable
+	Status   string            `json:"status"` // pass, fail, not_applicable, unknown
 	Detail   string            `json:"detail,omitempty"`
 	Evidence map[string]string `json:"evidence,omitempty"`
 }
@@ -94,14 +94,16 @@ type VerifyReportSummary struct {
 	Passed        int    `json:"passed"`
 	Failed        int    `json:"failed"`
 	NotApplicable int    `json:"not_applicable"`
+	Unknown       int    `json:"unknown,omitempty"`
 	Scanning      string `json:"scanning"`    // verified, degraded
 	Containment   string `json:"containment"` // contained, exposed, unknown
 }
 
 const (
-	verifyStatusPass = "pass"
-	verifyStatusFail = "fail"
-	verifyStatusNA   = "not_applicable"
+	verifyStatusPass    = "pass"
+	verifyStatusFail    = "fail"
+	verifyStatusNA      = "not_applicable"
+	verifyStatusUnknown = "unknown"
 
 	verifyCatScanning    = "scanning"
 	verifyCatContainment = "containment"
@@ -138,17 +140,23 @@ detection, MCP binary integrity smoke, and MCP tool provenance smoke.
 Containment checks (3): attempt direct HTTP (1.1.1.1:80), DNS (8.8.8.8:53),
 and HTTPS (1.1.1.1:443) egress bypassing the proxy. Only meaningful inside a
 container or pod where network policy should block direct egress. On a host,
-these are marked not_applicable. In air-gapped or enterprise networks where
-these addresses are unreachable, probes may show false passes.
+these are marked not_applicable. A failed connection alone is inconclusive: it
+does not identify the containment boundary that caused it. For managed Linux
+host containment, use pipelock contain verify. Container and pod deployments
+need evidence from their own network-policy boundary.
+
+The current container and pod probes cannot affirm containment. When all
+direct connections fail, they report unknown and exit 2, even if network
+policy is correctly enforcing containment.
 
 Without --config, uses built-in defaults with all protections enabled. With
 --config, verifies the provided config as-is: disabled features are reported
 as failures so you see your actual security posture.
 
 Exit codes:
-  0  All checks passed (not_applicable counts as pass)
+  0  All checks passed (host-mode not_applicable containment checks count as pass)
   1  One or more checks failed
-  2  Config or setup error`,
+  2  Config or setup error, or inconclusive containment probes`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
@@ -296,8 +304,15 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 		printVerifyTable(cmd.OutOrStdout(), report, color)
 	}
 
+	return verifyReportExitError(report)
+}
+
+func verifyReportExitError(report VerifyReport) error {
 	if report.Summary.Failed > 0 {
 		return cliutil.ExitCodeError(1, fmt.Errorf("%d check(s) failed", report.Summary.Failed))
+	}
+	if report.Summary.Unknown > 0 {
+		return cliutil.ExitCodeError(2, fmt.Errorf("%d containment check(s) inconclusive; verification incomplete", report.Summary.Unknown))
 	}
 	return nil
 }
@@ -816,8 +831,8 @@ func checkNoDirectHTTP(env *VerifyEnv) VerifyResult {
 	conn, err := env.DialTCP("1.1.1.1:80")
 	if err != nil {
 		return VerifyResult{
-			Status:   verifyStatusPass,
-			Detail:   "Direct HTTP egress blocked",
+			Status:   verifyStatusUnknown,
+			Detail:   "Direct HTTP probe connection failed, but containment attribution is unavailable",
 			Evidence: map[string]string{"target": "1.1.1.1:80", "error": err.Error()},
 		}
 	}
@@ -842,8 +857,8 @@ func checkNoDirectDNS(env *VerifyEnv) VerifyResult {
 	conn, err := env.DialUDP("8.8.8.8:53")
 	if err != nil {
 		return VerifyResult{
-			Status:   verifyStatusPass,
-			Detail:   "Direct DNS egress blocked (dial failed)",
+			Status:   verifyStatusUnknown,
+			Detail:   "Direct DNS probe dial failed, but containment attribution is unavailable",
 			Evidence: map[string]string{"target": "8.8.8.8:53", "protocol": "udp"},
 		}
 	}
@@ -852,8 +867,8 @@ func checkNoDirectDNS(env *VerifyEnv) VerifyResult {
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if _, err := conn.Write(query); err != nil {
 		return VerifyResult{
-			Status:   verifyStatusPass,
-			Detail:   "Direct DNS egress blocked (write failed)",
+			Status:   verifyStatusUnknown,
+			Detail:   "Direct DNS probe write failed, but containment attribution is unavailable",
 			Evidence: map[string]string{"target": "8.8.8.8:53", "protocol": "udp"},
 		}
 	}
@@ -862,8 +877,8 @@ func checkNoDirectDNS(env *VerifyEnv) VerifyResult {
 	_, err = conn.Read(buf)
 	if err != nil {
 		return VerifyResult{
-			Status:   verifyStatusPass,
-			Detail:   "Direct DNS egress blocked (no response)",
+			Status:   verifyStatusUnknown,
+			Detail:   "Direct DNS probe received no response, but containment attribution is unavailable",
 			Evidence: map[string]string{"target": "8.8.8.8:53", "protocol": "udp"},
 		}
 	}
@@ -885,8 +900,8 @@ func checkNoDirectHTTPS(env *VerifyEnv) VerifyResult {
 	conn, err := env.DialTCP("1.1.1.1:443")
 	if err != nil {
 		return VerifyResult{
-			Status:   verifyStatusPass,
-			Detail:   "Direct HTTPS egress blocked",
+			Status:   verifyStatusUnknown,
+			Detail:   "Direct HTTPS probe connection failed, but containment attribution is unavailable",
 			Evidence: map[string]string{"target": "1.1.1.1:443", "error": err.Error()},
 		}
 	}
@@ -953,7 +968,7 @@ func BuildVerifyReport(env *VerifyEnv, checks []VerifyCheck, cfgLabel string) Ve
 	}
 
 	scanPass, scanFail := 0, 0
-	containPass, containFail, containNA := 0, 0, 0
+	containPass, containFail, containNA, containUnknown := 0, 0, 0, 0
 
 	for _, c := range checks {
 		result := c.Run(env)
@@ -981,6 +996,10 @@ func BuildVerifyReport(env *VerifyEnv, checks []VerifyCheck, cfgLabel string) Ve
 				containFail++
 			case verifyStatusNA:
 				containNA++
+			case verifyStatusUnknown:
+				containUnknown++
+			default:
+				containUnknown++
 			}
 		}
 	}
@@ -990,6 +1009,7 @@ func BuildVerifyReport(env *VerifyEnv, checks []VerifyCheck, cfgLabel string) Ve
 		Passed:        scanPass + containPass,
 		Failed:        scanFail + containFail,
 		NotApplicable: containNA,
+		Unknown:       containUnknown,
 	}
 
 	if scanFail == 0 {
@@ -999,12 +1019,15 @@ func BuildVerifyReport(env *VerifyEnv, checks []VerifyCheck, cfgLabel string) Ve
 	}
 
 	switch {
-	case containNA == 3:
-		report.Summary.Containment = verifyContainmentUnknown
 	case containFail > 0:
 		report.Summary.Containment = verifyContainmentExposed
-	default:
+	case containPass > 0 && containNA == 0 && containUnknown == 0:
+		// Preserve the report contract for affirmative checks supplied by callers.
+		// The built-in connection probes cannot attribute a denial to containment
+		// and therefore never supply a containment pass.
 		report.Summary.Containment = verifyContainmentContained
+	default:
+		report.Summary.Containment = verifyContainmentUnknown
 	}
 
 	return report
@@ -1075,6 +1098,9 @@ func printVerifyTable(w io.Writer, report VerifyReport, color bool) {
 	if report.Summary.NotApplicable > 0 {
 		_, _ = fmt.Fprintf(w, ", %d not applicable", report.Summary.NotApplicable)
 	}
+	if report.Summary.Unknown > 0 {
+		_, _ = fmt.Fprintf(w, ", %d inconclusive", report.Summary.Unknown)
+	}
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintf(w, "Scanning: %s\n", report.Summary.Scanning)
 	_, _ = fmt.Fprintf(w, "Containment: %s\n", report.Summary.Containment)
@@ -1089,11 +1115,15 @@ func verifyStatusIcon(status string, color bool) string {
 			return "\033[31mFAIL\033[0m"
 		case verifyStatusNA:
 			return "\033[33m N/A\033[0m"
+		case verifyStatusUnknown:
+			return "\033[33mUNKNOWN\033[0m"
 		}
 	}
 	switch status {
 	case verifyStatusNA:
 		return " N/A"
+	case verifyStatusUnknown:
+		return "UNKNOWN"
 	default:
 		return strings.ToUpper(status)
 	}

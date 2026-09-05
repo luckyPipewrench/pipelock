@@ -114,7 +114,11 @@ TLS-intercepted CONNECT inner HTTP requests, WebSocket, reverse proxy, MCP
 stdio, and MCP HTTP. Block-path receipts stay best-effort because the action is
 already denied.
 
-Two operational notes:
+MCP startup requests (`initialize` and `tools/list`) receive correlated intent and outcome receipts. The `notifications/initialized` notification receives a durable forwarding receipt and does not claim a server response. Required recording still blocks forwarding when the recorder fails.
+
+Strict MCP recording currently supports startup, tool calls, and supported A2A methods. Other MCP methods, including resource and prompt operations, can be refused because their receipt identity is not defined. The error message distinguishes that limitation from a recorder failure; replacing the signing key does not add method support. Check the methods your client and server need before enabling strict recording.
+
+Operational notes:
 
 - **It needs a live signed recorder.** `require_receipts` has nothing to emit
   unless `enabled`, `dir`, and `signing_key_path` are all set. With no live

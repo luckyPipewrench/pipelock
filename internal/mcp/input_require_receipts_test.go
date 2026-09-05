@@ -137,6 +137,50 @@ func TestForwardScannedInput_RequireReceiptsBlocksEmissionFailure(t *testing.T) 
 	}
 }
 
+func TestForwardScannedInput_RequireReceiptsBlocksResourceReadWithoutIdentity(t *testing.T) {
+	sc := testInputScanner(t)
+	emitter, _, _, _ := newReceiptTestHarness(t)
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///notes.txt"}}`)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		MCPProxyOpts{
+			Scanner:         sc,
+			Transport:       transportMCPStdio,
+			ReceiptEmitter:  emitter,
+			RequireReceipts: true,
+		},
+	)
+	if serverBuf.Len() != 0 {
+		t.Fatalf("resources/read forwarded without required receipt: %s", serverBuf.String())
+	}
+	var blocked *BlockedRequest
+	for item := range blockedCh {
+		item := item
+		blocked = &item
+	}
+	if blocked == nil {
+		t.Fatal("expected resources/read to fail closed without a receipt identity")
+	}
+	if blocked.ErrorCode != -32007 {
+		t.Fatalf("error code = %d, want -32007", blocked.ErrorCode)
+	}
+	if !strings.Contains(string(blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
+		t.Fatalf("error data = %s, want %s", blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+	if blocked.ErrorMessage != "pipelock: required receipt identity is not defined for this MCP method" {
+		t.Fatalf("error message = %q", blocked.ErrorMessage)
+	}
+}
+
 func TestForwardScannedInput_WarnRequireReceiptsDurabilityFailureDoesNotForward(t *testing.T) {
 	sc := testInputScanner(t)
 	msg := makeRequest(5, "tools/call", map[string]string{
@@ -207,6 +251,127 @@ func TestForwardScannedInput_A2ARequireReceiptsEmitsAllowReceipt(t *testing.T) {
 	}
 	if record.Target != "SendMessage" {
 		t.Fatalf("A2A allow receipt target = %q, want SendMessage", record.Target)
+	}
+}
+
+func TestForwardScannedInput_RequireReceiptsRecordsOrdinaryLifecycle(t *testing.T) {
+	sc := testInputScanner(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"notes.txt"}}}`,
+	}, "\n") + "\n"
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	tracker := NewRequestTracker()
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 3)
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(input)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		tracker,
+		MCPProxyOpts{
+			Scanner:         sc,
+			Transport:       transportMCPStdio,
+			ReceiptEmitter:  emitter,
+			RequireReceipts: true,
+		},
+	)
+	for blocked := range blockedCh {
+		t.Fatalf("ordinary lifecycle blocked: %+v", blocked)
+	}
+	var responseBuf bytes.Buffer
+	_, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(strings.Join([]string{
+			`{"jsonrpc":"2.0","id":1,"result":{}}`,
+			`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`,
+			`{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"ok"}]}}`,
+		}, "\n")+"\n")),
+		transport.NewStdioWriter(&responseBuf),
+		&logBuf,
+		tracker,
+		MCPProxyOpts{Scanner: sc, Transport: transportMCPStdio, ReceiptEmitter: emitter},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	for _, method := range []string{"initialize", methodNotificationsInitialized, "tools/list", methodToolsCall} {
+		if !strings.Contains(serverBuf.String(), `"method":"`+method+`"`) {
+			t.Fatalf("forwarded lifecycle missing %q: %s", method, serverBuf.String())
+		}
+	}
+
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 7 {
+		t.Fatalf("receipt count = %d, want 7 lifecycle records", len(receipts))
+	}
+	want := []struct {
+		method     string
+		target     string
+		actionType receipt.ActionType
+	}{
+		{method: "initialize", target: "initialize", actionType: receipt.ActionUnclassified},
+		{method: "tools/list", target: "tools/list", actionType: receipt.ActionRead},
+		{method: methodToolsCall, target: "read_file", actionType: receipt.ActionRead},
+	}
+	intents := make(map[string]receipt.ActionRecord)
+	outcomes := make(map[string]receipt.ActionRecord)
+	var notification *receipt.ActionRecord
+	for _, signed := range receipts {
+		record := signed.ActionRecord
+		switch record.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			intents[record.Target] = record
+		case receipt.DecisionPhaseOutcome:
+			outcomes[record.Target] = record
+		default:
+			if record.Target == methodNotificationsInitialized {
+				record := record
+				notification = &record
+			}
+		}
+	}
+	for _, tt := range want {
+		t.Run(tt.method, func(t *testing.T) {
+			record, ok := intents[tt.target]
+			if !ok {
+				t.Fatalf("missing intent for %q", tt.target)
+			}
+			if record.ActionID == "" {
+				t.Fatal("action_id is empty")
+			}
+			if record.Target != tt.target {
+				t.Fatalf("target = %q, want %q", record.Target, tt.target)
+			}
+			if record.ActionType != tt.actionType {
+				t.Fatalf("action_type = %q, want %q", record.ActionType, tt.actionType)
+			}
+		})
+	}
+	for _, tt := range want {
+		intent := intents[tt.target]
+		outcome, ok := outcomes[tt.target]
+		if !ok {
+			t.Fatalf("missing outcome for %q", tt.target)
+		}
+		if outcome.DecisionPhase != receipt.DecisionPhaseOutcome || outcome.ActionID != intent.ActionID {
+			t.Fatalf("receipt %q has no matching outcome: phase=%q action_id=%q", tt.target, outcome.DecisionPhase, outcome.ActionID)
+		}
+	}
+	if notification == nil {
+		t.Fatal("missing notifications/initialized forwarding receipt")
+	}
+	if notification.ActionID == "" || notification.Verdict != config.ActionForward || notification.DecisionPhase != "" {
+		t.Fatalf("notification receipt = %+v, want durable single-phase forward decision", *notification)
 	}
 }
 

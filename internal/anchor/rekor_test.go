@@ -30,6 +30,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -91,6 +92,270 @@ func TestRekorLogSubmitRecordsSubmissionProof(t *testing.T) {
 	report = VerifyBundle(NewBundle(checkpoint, proof), receipts, []string{keyHex}, RekorLog{TrustedLogKeys: []crypto.PublicKey{logPub}})
 	if !report.Valid {
 		t.Fatalf("VerifyBundle with trusted Rekor key invalid: %s", report.Error)
+	}
+}
+
+func TestRekorLogSubmitRecoversConflictByRetrievingExistingEntry(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 2)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	freshServer, logPub := fakeTrustedRekorServer(t)
+	fresh, err := (RekorLog{URL: freshServer.URL, Signer: signer}).Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("fresh Submit: %v", err)
+	}
+	const uuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	entry := rekorEntryFromProof(fresh)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/log/entries":
+			w.Header().Set("Location", server.URL+"/api/v1/log/entries/"+uuid)
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":409,"message":"an equivalent entry already exists"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/log/entries/"+uuid:
+			_ = json.NewEncoder(w).Encode(entry)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	recovered, err := (RekorLog{URL: server.URL, Signer: signer}).Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("recover Submit: %v", err)
+	}
+	want := fresh
+	want.Rekor = cloneRekorProof(fresh.Rekor)
+	want.Rekor.URL = server.URL
+	want.Rekor.UUID = uuid
+	if !reflect.DeepEqual(recovered, want) {
+		t.Fatalf("recovered proof = %+v, want fresh proof %+v", recovered, want)
+	}
+	if report := VerifyBundle(NewBundle(checkpoint, recovered), receipts, []string{keyHex}, RekorLog{TrustedLogKeys: []crypto.PublicKey{logPub}}); !report.Valid {
+		t.Fatalf("recovered bundle invalid: %s", report.Error)
+	}
+}
+
+func TestRekorLogSubmitConflictWithoutEntryLocationFailsCleanly(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte("{"))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err = (RekorLog{URL: server.URL, Signer: signer}).Submit(checkpoint)
+	if err == nil || !strings.Contains(err.Error(), "no entry Location header") {
+		t.Fatalf("Submit error = %v, want actionable missing Location error", err)
+	}
+}
+
+func TestRekorLogSubmitConflictMissingEntryFails(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	const uuid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Location", server.URL+"/api/v1/log/entries/"+uuid)
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err = (RekorLog{URL: server.URL, Signer: signer}).Submit(checkpoint)
+	if err == nil || !strings.Contains(err.Error(), "retrieve rekor conflict entry") || !strings.Contains(err.Error(), "status 404") {
+		t.Fatalf("Submit error = %v, want missing conflict entry error", err)
+	}
+}
+
+func TestRekorLogSubmitDoesNotRecoverOtherClientErrors(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	var getCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			getCalls++
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":400,"message":"invalid entry"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err = (RekorLog{URL: server.URL, Signer: signer}).Submit(checkpoint)
+	if err == nil || !strings.Contains(err.Error(), "rekor submit status 400") {
+		t.Fatalf("Submit error = %v, want ordinary client error", err)
+	}
+	if getCalls != 0 {
+		t.Fatalf("GET calls = %d, want 0 for non-conflict client error", getCalls)
+	}
+}
+
+func TestRekorLogSubmitConflictRejectsDifferentCheckpoint(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	otherReceipts, otherKeyHex := testReceiptChain(t, 2)
+	otherCheckpoint, err := BuildCheckpoint("proxy", otherReceipts, []string{otherKeyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint other: %v", err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	freshServer, _ := fakeTrustedRekorServer(t)
+	otherProof, err := (RekorLog{URL: freshServer.URL, Signer: signer}).Submit(otherCheckpoint)
+	if err != nil {
+		t.Fatalf("other checkpoint Submit: %v", err)
+	}
+	const uuid = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	entry := rekorEntryFromProof(otherProof)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			w.Header().Set("Location", server.URL+"/api/v1/log/entries/"+uuid)
+			w.WriteHeader(http.StatusConflict)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/log/entries/"+uuid:
+			_ = json.NewEncoder(w).Encode(entry)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	_, err = (RekorLog{URL: server.URL, Signer: signer}).Submit(checkpoint)
+	if err == nil || !strings.Contains(err.Error(), "checkpoint digest") {
+		t.Fatalf("Submit error = %v, want checkpoint binding rejection", err)
+	}
+}
+
+func TestRekorConflictUUIDAcceptsOnlyConfiguredLogEntryLocation(t *testing.T) {
+	const (
+		baseURL = "https://rekor.vendor.example"
+		uuid    = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	)
+	validLocation := baseURL + "/api/v1/log/entries/" + uuid
+	got, err := rekorConflictUUID(validLocation, baseURL)
+	if err != nil {
+		t.Fatalf("rekorConflictUUID valid location: %v", err)
+	}
+	if got != uuid {
+		t.Fatalf("rekorConflictUUID = %q, want %q", got, uuid)
+	}
+	for _, location := range []string{
+		"%",
+		"https://other.vendor.example/api/v1/log/entries/" + uuid,
+		baseURL + "/not-an-entry/" + uuid,
+		baseURL + "/api/v1/log/entries/not-a-uuid",
+		baseURL + "/api/v1/log/entries/" + uuid + "?redirect=elsewhere",
+	} {
+		if _, err := rekorConflictUUID(location, baseURL); err == nil {
+			t.Fatalf("rekorConflictUUID(%q) succeeded, want rejection", location)
+		}
+	}
+}
+
+func TestRekorEntryURL(t *testing.T) {
+	const (
+		baseURL = "https://rekor.vendor.example"
+		uuid    = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	)
+	got, err := rekorEntryURL(baseURL, uuid)
+	if err != nil {
+		t.Fatalf("rekorEntryURL: %v", err)
+	}
+	want := baseURL + "/api/v1/log/entries/" + uuid
+	if got != want {
+		t.Fatalf("rekorEntryURL = %q, want %q", got, want)
+	}
+	if _, err := rekorEntryURL(baseURL, "not-a-uuid"); err == nil {
+		t.Fatal("rekorEntryURL accepted malformed UUID")
+	}
+	if _, err := rekorEntryURL(baseURL+"?unexpected=query", uuid); err == nil {
+		t.Fatal("rekorEntryURL accepted a non-canonical base URL")
+	}
+}
+
+func TestRekorLogGetConflictEntryFailures(t *testing.T) {
+	const uuid = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if _, err := (RekorLog{}).getRekorEntry(context.Background(), "https://rekor.vendor.example", "not-a-uuid"); err == nil {
+		t.Fatal("getRekorEntry accepted malformed UUID")
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "malformed entry", body: []byte("{"), want: "parse rekor conflict entry"},
+		{name: "oversize entry", body: bytes.Repeat([]byte("x"), rekorMaxResponseBytes+1), want: "exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(tc.body)
+			}))
+			t.Cleanup(server.Close)
+			_, err := (RekorLog{}).getRekorEntry(context.Background(), server.URL, uuid)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("getRekorEntry error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		client *http.Client
+		want   string
+	}{
+		{name: "transport", client: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("network unavailable")
+		})}, want: "network unavailable"},
+		{name: "body read", client: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: errorReadCloser{err: errors.New("read failed")}}, nil
+		})}, want: "read failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := (RekorLog{HTTPClient: tc.client}).getRekorEntry(context.Background(), "https://rekor.vendor.example", uuid)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("getRekorEntry error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -1312,6 +1577,25 @@ func fakeRekorServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	server, _ := fakeTrustedRekorServer(t)
 	return server
+}
+
+func rekorEntryFromProof(proof Proof) rekorEntry {
+	return rekorEntry{
+		LogID:          proof.LogID,
+		LogIndex:       proof.LogIndex,
+		IntegratedTime: proof.Rekor.IntegratedTime,
+		Body:           proof.Rekor.Body,
+		Verification: rekorVerification{
+			SignedEntryTimestamp: proof.Rekor.SignedEntryTimestamp,
+			InclusionProof: rekorInclusionProof{
+				RootHash:   proof.Rekor.InclusionProof.RootHash,
+				LogIndex:   proof.Rekor.InclusionProof.LogIndex,
+				TreeSize:   proof.Rekor.InclusionProof.TreeSize,
+				Hashes:     append([]string(nil), proof.Rekor.InclusionProof.Hashes...),
+				Checkpoint: proof.Rekor.InclusionProof.Checkpoint,
+			},
+		},
+	}
 }
 
 func fakeTrustedRekorServer(t *testing.T) (*httptest.Server, ed25519.PublicKey) {

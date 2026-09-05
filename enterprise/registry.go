@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -161,16 +162,24 @@ func (r *AgentRegistry) LookupByName(name string) (*edition.ResolvedAgent, bool)
 // ResolveFromRequest implements the 4-step agent resolution for Edition.ResolveAgent.
 // Priority: context override > CIDR > header/query > fallback.
 func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Request, defaultCfg *config.Config, defaultSc *scanner.Scanner) (*edition.ResolvedAgent, edition.AgentIdentity) {
-	// Context override (set by per-agent listener binding).
+	// Context override (set by per-agent listener binding). The identity was
+	// injected by the listener the connection arrived on, so nothing the
+	// caller wrote into the request can change it: graded bound. Leaving the
+	// grade empty here reads as unknown downstream, which excludes the
+	// strongest identity path from OCSF/CEF identity fields and collapses
+	// per-agent CEE/DoW state keys to the client IP.
 	if profile, ok := edition.AgentOverrideFromContext(ctx); ok {
-		id := edition.AgentIdentity{Name: profile, Profile: profile}
+		id := edition.AgentIdentity{Name: profile, Profile: profile, Auth: envelope.ActorAuthBound}
 		return r.Lookup(id.Profile), id
 	}
 
-	// Source CIDR match: map client IP to profile.
+	// Source CIDR match: map client IP to profile. The mapping is operator
+	// config applied to the connection's own source address (RemoteAddr,
+	// never a forwarded header), so the caller cannot select a different
+	// agent per request: graded bound like the listener path.
 	if clientIP := extractIP(req); clientIP != nil {
 		if profile, ok := r.MatchCIDR(clientIP); ok {
-			id := edition.AgentIdentity{Name: profile, Profile: profile}
+			id := edition.AgentIdentity{Name: profile, Profile: profile, Auth: envelope.ActorAuthBound}
 			return r.Lookup(id.Profile), id
 		}
 	}

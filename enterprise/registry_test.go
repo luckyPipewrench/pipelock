@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -520,6 +521,39 @@ func TestAgentRegistryResolveFromRequest_ContextOverride(t *testing.T) {
 	if ra.Name != testProfileClaudeCode {
 		t.Errorf("name = %q, want %q", ra.Name, testProfileClaudeCode)
 	}
+	// A listener-bound identity is infrastructure-set and spoof-proof; the
+	// grade must say so or every downstream identity consumer (OCSF/CEF
+	// identity fields, CEE/DoW state keys, the audit log) treats the
+	// strongest identity path as untrusted.
+	if id.Auth != envelope.ActorAuthBound {
+		t.Errorf("auth = %q, want %q", id.Auth, envelope.ActorAuthBound)
+	}
+}
+
+func TestAgentRegistryResolveFromRequest_ContextOverrideBeatsSpoofedHeader(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+		testProfileCursor:     {Mode: config.ModeBalanced},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+	r.Header.Set(edition.AgentHeader, testProfileCursor)
+	r = r.WithContext(edition.WithAgentOverride(r.Context(), testProfileClaudeCode))
+
+	_, id := reg.ResolveFromRequest(r.Context(), r, cfg, nil)
+	if id.Name != testProfileClaudeCode {
+		t.Errorf("name = %q, want listener-bound %q despite spoofed header", id.Name, testProfileClaudeCode)
+	}
+	if id.Auth != envelope.ActorAuthBound {
+		t.Errorf("auth = %q, want %q", id.Auth, envelope.ActorAuthBound)
+	}
 }
 
 func TestAgentRegistryResolveFromRequest_CIDR(t *testing.T) {
@@ -536,6 +570,8 @@ func TestAgentRegistryResolveFromRequest_CIDR(t *testing.T) {
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	r.RemoteAddr = "10.0.0.42:12345"
+	// A caller-supplied header must not outrank the operator's network mapping.
+	r.Header.Set(edition.AgentHeader, testProfileCursor)
 
 	ra, id := reg.ResolveFromRequest(context.Background(), r, cfg, nil)
 	if id.Profile != testProfileClaudeCode {
@@ -543,6 +579,11 @@ func TestAgentRegistryResolveFromRequest_CIDR(t *testing.T) {
 	}
 	if ra.Name != testProfileClaudeCode {
 		t.Errorf("name = %q, want %q", ra.Name, testProfileClaudeCode)
+	}
+	// The identity came from the connection's source address matched against
+	// operator config, not from anything the caller wrote into the request.
+	if id.Auth != envelope.ActorAuthBound {
+		t.Errorf("auth = %q, want %q", id.Auth, envelope.ActorAuthBound)
 	}
 }
 
@@ -568,6 +609,10 @@ func TestAgentRegistryResolveFromRequest_Header(t *testing.T) {
 	if ra.Name != testProfileClaudeCode {
 		t.Errorf("name = %q, want %q", ra.Name, testProfileClaudeCode)
 	}
+	// Self-declared, even though the name matches a configured profile.
+	if id.Auth != envelope.ActorAuthMatched {
+		t.Errorf("auth = %q, want %q", id.Auth, envelope.ActorAuthMatched)
+	}
 }
 
 func TestAgentRegistryResolveFromRequest_Fallback(t *testing.T) {
@@ -591,6 +636,9 @@ func TestAgentRegistryResolveFromRequest_Fallback(t *testing.T) {
 	}
 	if ra.Name != edition.ProfileDefault {
 		t.Errorf("name = %q, want %q", ra.Name, edition.ProfileDefault)
+	}
+	if id.Auth != envelope.ActorAuthSelfDeclared {
+		t.Errorf("auth = %q, want %q", id.Auth, envelope.ActorAuthSelfDeclared)
 	}
 }
 

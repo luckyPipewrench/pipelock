@@ -240,7 +240,7 @@ jobs:
             esac
           done <<< "${body}"
           case "${REVIEW_MODE}" in
-            default) profile_pattern='^\*\*Review profile:\*\* `default` with `[A-Za-z0-9._:/-]+` \(`low` reasoning\); candidate judge `[A-Za-z0-9._:/-]+` \(`high` reasoning\)\.$' ;;
+            default) profile_pattern='^\*\*Review profile:\*\* `default` with `[A-Za-z0-9._:/-]+` \(`high` reasoning\); candidate judge `[A-Za-z0-9._:/-]+` \(`high` reasoning\)\.$' ;;
             deep) profile_pattern='^\*\*Review profile:\*\* `deep` with `[A-Za-z0-9._:/-]+` \(`xhigh` reasoning\)\.$' ;;
             *) profile_pattern='a^' ;;
           esac

@@ -2163,13 +2163,59 @@ class WallClockBudgetTest(unittest.TestCase):
 
 
 class FailureDirectionTest(unittest.TestCase):
-    def test_default_uses_fast_discovery_and_stronger_candidate_judgment(self) -> None:
+    def test_default_uses_cheaper_discovery_model_and_stronger_candidate_judgment(self) -> None:
         self.assertEqual(pr_review.model_for_phase("default", "review-chunk-1"), "gpt-5.6-luna")
-        self.assertEqual(pr_review.reasoning_for_phase("default", "review-chunk-1"), "low")
+        self.assertEqual(pr_review.reasoning_for_phase("default", "review-chunk-1"), "high")
         self.assertEqual(pr_review.model_for_phase("default", "judge"), "gpt-5.6-terra")
         self.assertEqual(pr_review.reasoning_for_phase("default", "judge"), "high")
         self.assertEqual(pr_review.model_for_phase("deep", "judge"), "gpt-5.6-terra")
         self.assertEqual(pr_review.reasoning_for_phase("deep", "judge"), "xhigh")
+
+    def test_discovery_output_budget_covers_its_reasoning_effort(self) -> None:
+        """Reasoning tokens are drawn from the same allowance as the findings JSON.
+
+        Raising discovery effort without raising this cap lets the call expire
+        before it emits a single finding, and an empty discovery pass publishes
+        as a clean review rather than as a failure. That is the fail-open
+        direction, so the two constants have to move together.
+        """
+        discovery_effort = pr_review.reasoning_for_phase("default", "review-chunk-1")
+        if discovery_effort in {"high", "xhigh"}:
+            self.assertGreaterEqual(
+                pr_review.DEFAULT_MAX_COMPLETION_TOKENS,
+                pr_review.JUDGE_MAX_COMPLETION_TOKENS,
+                f"discovery runs at {discovery_effort} reasoning but its output "
+                "allowance is below the budget the judge already needed at high reasoning",
+            )
+
+    def test_default_discovery_payload_carries_the_effort_and_budget_together(self) -> None:
+        """Assert the shipped request, not the constants that feed it.
+
+        The constants can agree while the payload builder routes a phase down a
+        different branch, so this checks the dict actually sent to the provider
+        for the default discovery phase.
+        """
+        payload = pr_review.build_llm_payload(
+            pr_review.model_for_phase("default", "review-chunk-1"),
+            "system",
+            "user",
+            "default",
+            "review-chunk-1",
+        )
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["max_completion_tokens"], 32_768)
+        self.assertEqual(
+            payload["max_completion_tokens"],
+            pr_review.build_llm_payload(
+                pr_review.model_for_phase("default", "judge"),
+                "system",
+                "user",
+                "default",
+                "judge",
+            )["max_completion_tokens"],
+            "discovery and the candidate judge both run at high reasoning, so "
+            "discovery must not be sent with the smaller allowance",
+        )
 
     def test_candidate_judge_payload_uses_the_phase_specific_model_and_reasoning(self) -> None:
         class Response:

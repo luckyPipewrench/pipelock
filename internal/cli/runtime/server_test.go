@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -2738,6 +2737,21 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 	releaseFirst := make(chan struct{})
 	var reloads sync.WaitGroup
 	var hookCalls atomic.Int32
+	secondAtLock := make(chan struct{})
+	secondAcquiredLock := make(chan struct{})
+	var lockAttempts atomic.Int32
+	var lockAcquisitions atomic.Int32
+	restoreLockHook := setReloadLockHookForTest(func(acquired bool) {
+		if acquired {
+			if lockAcquisitions.Add(1) == 2 {
+				close(secondAcquiredLock)
+			}
+			return
+		}
+		if lockAttempts.Add(1) == 2 {
+			close(secondAtLock)
+		}
+	})
 	restoreHook := setReloadAfterProxySwapHookForTest(func(*Server) {
 		if hookCalls.Add(1) != 1 {
 			return
@@ -2753,6 +2767,7 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 		}
 		reloads.Wait()
 		restoreHook()
+		restoreLockHook()
 	}()
 
 	firstDone := make(chan error, 1)
@@ -2774,13 +2789,34 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 		defer reloads.Done()
 		secondDone <- s.Reload(secondConfig)
 	}
-	secondCaller := runtime.FuncForPC(reflect.ValueOf(secondReload).Pointer()).Name()
 	reloads.Add(1)
 	go secondReload()
 
-	waitForReloadMutexBlock(t, secondDone, secondCaller)
+	testwait.For(t, 5*time.Second, func() bool {
+		select {
+		case <-secondAtLock:
+			return true
+		default:
+			return false
+		}
+	}, "second reload to reach reloadMu")
+	select {
+	case <-secondAcquiredLock:
+		t.Fatal("second reload acquired reloadMu while first reload still held it")
+	case err := <-secondDone:
+		t.Fatalf("second reload completed before acquiring reloadMu: %v", err)
+	default:
+	}
 
 	close(releaseFirst)
+	testwait.For(t, 5*time.Second, func() bool {
+		select {
+		case <-secondAcquiredLock:
+			return true
+		default:
+			return false
+		}
+	}, "second reload to acquire released reloadMu")
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first clean reload: %v", err)
 	}
@@ -2798,98 +2834,6 @@ func TestServer_Reload_SerializesBundleGateWithRuntimeMirrorRefresh(t *testing.T
 	if live := s.proxy.CurrentConfig(); live.KillSwitch.APIToken != "first-clean-tool-poison" {
 		t.Fatalf("live api token = %q, want first reload preserved", live.KillSwitch.APIToken)
 	}
-}
-
-// waitForReloadMutexBlock observes the second Reload goroutine stopped in its
-// mutex acquisition. The first reload is paused after proxy publication while
-// still holding reloadMu. Match the direct Lock -> Reload -> caller frame
-// sequence so an unrelated reload cannot satisfy the observation. A wall-clock
-// interval without completion does not establish mutual exclusion.
-func waitForReloadMutexBlock(t *testing.T, done <-chan error, caller string) {
-	t.Helper()
-
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	for {
-		if reloadBlockedOnMutex(caller) {
-			return
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("second reload completed before blocking on reload exclusion: %v", err)
-		case <-deadline.C:
-			t.Fatal("second reload did not reach the reload mutex")
-		default:
-			runtime.Gosched()
-		}
-	}
-}
-
-func reloadBlockedOnMutex(caller string) bool {
-	n, _ := runtime.GoroutineProfile(nil)
-	records := make([]runtime.StackRecord, n)
-	n, ok := runtime.GoroutineProfile(records)
-	if !ok {
-		return false
-	}
-
-	for _, record := range records[:n] {
-		previousFunction := ""
-		reloadAtLock := false
-		frames := runtime.CallersFrames(record.Stack())
-		for {
-			frame, more := frames.Next()
-			if reloadAtLock {
-				if frame.Function == caller {
-					return true
-				}
-				break
-			}
-			reloadAtLock = frame.Function == "github.com/luckyPipewrench/pipelock/internal/cli/runtime.(*Server).Reload" && previousFunction == "sync.(*Mutex).Lock"
-			previousFunction = frame.Function
-			if !more {
-				break
-			}
-		}
-	}
-	return false
-}
-
-func TestReloadBlockedOnMutexIgnoresOtherCaller(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	s.reloadMu.Lock()
-	done := make(chan error, 2)
-	exited := make(chan struct{}, 2)
-	startIntended := make(chan struct{})
-	intendedStarted := false
-	defer func() {
-		if !intendedStarted {
-			close(startIntended)
-		}
-		s.reloadMu.Unlock()
-		<-exited
-		<-exited
-	}()
-	intendedReload := func() {
-		defer func() { exited <- struct{}{} }()
-		<-startIntended
-		done <- s.Reload(config.Defaults())
-	}
-	otherReload := func() {
-		defer func() { exited <- struct{}{} }()
-		done <- s.Reload(config.Defaults())
-	}
-	intendedCaller := runtime.FuncForPC(reflect.ValueOf(intendedReload).Pointer()).Name()
-	otherCaller := runtime.FuncForPC(reflect.ValueOf(otherReload).Pointer()).Name()
-	go intendedReload()
-	go otherReload()
-	waitForReloadMutexBlock(t, done, otherCaller)
-	if reloadBlockedOnMutex(intendedCaller) {
-		t.Fatal("reload observation accepted an unrelated caller")
-	}
-	close(startIntended)
-	intendedStarted = true
-	waitForReloadMutexBlock(t, done, intendedCaller)
 }
 
 func loadServerTestReloadConfig(t *testing.T, apiToken string) *config.Config {

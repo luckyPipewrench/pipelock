@@ -34,7 +34,9 @@ import (
 // "proxy kept the previous config" fail-safe path when proxy.Reload aborts its
 // internal swap. Silent no-ops (dedup, restart-only field changes) return nil.
 func (s *Server) Reload(newCfg *config.Config) (err error) {
+	fireReloadLockHook(false)
 	s.reloadMu.Lock()
+	fireReloadLockHook(true)
 	defer s.reloadMu.Unlock()
 	return s.reloadLocked(newCfg)
 }

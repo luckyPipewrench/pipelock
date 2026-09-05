@@ -414,6 +414,13 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, inclu
 		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}, false
 	}
 
+	return scanBatchElements(batch, func(elem []byte) jsonrpc.ScanVerdict {
+		return scanResponseOpts(elem, sc, opts, includeDLP)
+	})
+}
+
+// scanBatchElements preserves element scan outcomes while aggregating a batch.
+func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVerdict) (jsonrpc.ScanVerdict, bool) {
 	if len(batch) == 0 {
 		return jsonrpc.ScanVerdict{Clean: true}, false
 	}
@@ -424,14 +431,18 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, inclu
 	var action string
 	var hasError bool
 	var firstError string
+	var errorAction string
 
 	for _, elem := range batch {
-		v := scanResponseOpts(elem, sc, opts, includeDLP)
+		v := scan(elem)
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
 		}
 		if v.Error != "" {
 			hasError = true
+			if v.Action == config.ActionBlock {
+				errorAction = config.ActionBlock
+			}
 			if firstError == "" {
 				firstError = v.Error
 			}
@@ -446,7 +457,7 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, inclu
 	}
 
 	if hasError {
-		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}, len(allMatches) > 0 || len(allDLPMatches) > 0
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Action: errorAction, Error: firstError}, len(allMatches) > 0 || len(allDLPMatches) > 0
 	}
 	if len(allMatches) == 0 && len(allDLPMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}, false

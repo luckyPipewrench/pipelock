@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
 func TestA2AScanVerdictPreservesScanError(t *testing.T) {
@@ -280,4 +282,49 @@ func (r *cancelAfterRead) Read(p []byte) (int, error) {
 	n := copy(p, r.payload)
 	r.cancel()
 	return n, io.EOF
+}
+
+func TestBatchPreservesScanErrorBlock(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	failed := a2aScanToVerdict([]byte(`2`), ScanA2AResponseBody(ctx, []byte(`{"message":{"parts":[{"text":"ordinary response"}]}}`), testA2AScanner(t), enabledA2ACfg()))
+	if failed.Action != config.ActionBlock || failed.Error == "" {
+		t.Fatalf("producer failed to report scan error: %+v", failed)
+	}
+	for _, input := range []string{
+		`[{"jsonrpc":"2.0","id":1,"result":"ordinary"},{"jsonrpc":"2.0","id":2,"result":"ordinary"}]`,
+		`[{"jsonrpc":"2.0","id":2,"result":"ordinary"},{"jsonrpc":"2.0","id":1,"result":"ordinary"}]`,
+		`[{"id":3},{"jsonrpc":"2.0","id":2,"result":"ordinary"}]`,
+		`[[{"jsonrpc":"2.0","id":2,"result":"ordinary"}],{"jsonrpc":"2.0","id":1,"result":"ordinary"}]`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			var batch []json.RawMessage
+			if err := json.Unmarshal([]byte(input), &batch); err != nil {
+				t.Fatal(err)
+			}
+			var scan func([]byte) jsonrpc.ScanVerdict
+			scan = func(elem []byte) jsonrpc.ScanVerdict {
+				if len(elem) > 0 && elem[0] == '[' {
+					var nested []json.RawMessage
+					if err := json.Unmarshal(elem, &nested); err != nil {
+						t.Fatal(err)
+					}
+					verdict, _ := scanBatchElements(nested, scan)
+					return verdict
+				}
+				var rpc jsonrpc.RPCResponse
+				if err := json.Unmarshal(elem, &rpc); err != nil {
+					t.Fatal(err)
+				}
+				if string(rpc.ID) == "2" {
+					return failed
+				}
+				return ScanResponse(elem, testA2AScanner(t))
+			}
+			verdict, finding := scanBatchElements(batch, scan)
+			if verdict.Clean || verdict.Action != config.ActionBlock || verdict.Error == "" || len(verdict.Matches) != 0 || len(verdict.DLPMatches) != 0 || finding {
+				t.Fatalf("batch scan failure = %+v, finding=%v", verdict, finding)
+			}
+		})
+	}
 }

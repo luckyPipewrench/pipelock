@@ -230,6 +230,9 @@ func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent || receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
 		t.Fatalf("phases = %q/%q, want intent/outcome", receipts[0].ActionRecord.DecisionPhase, receipts[1].ActionRecord.DecisionPhase)
 	}
+	if receipts[0].ActionRecord.ActionID == "" {
+		t.Fatal("intent action_id is empty")
+	}
 	if receipts[0].ActionRecord.ActionID != receipts[1].ActionRecord.ActionID {
 		t.Fatalf("outcome action_id = %q, want %q", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
 	}

@@ -1171,6 +1171,42 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInputDecision_RequiredMetadataDeferIdentity(t *testing.T) {
+	for _, method := range []string{"initialize", "tools/list", methodNotificationsInitialized} {
+		t.Run(method, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "manual-review-marker", Regex: "ordinary-review-marker"}}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			emitter, rec, dir := newTestReceiptEmitter(t)
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 1024})
+			id := `,"id":1`
+			if method == methodNotificationsInitialized {
+				id = ""
+			}
+			msg := []byte(fmt.Sprintf(`{"jsonrpc":"2.0"%s,"method":%q,"params":{"note":"ordinary-review-marker"}}`, id, method))
+			decision := scanHTTPInputDecision(msg, io.Discard, "sess", "orig", MCPProxyOpts{
+				Scanner: sc, InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionDefer, OnParseError: config.ActionBlock},
+				ReceiptEmitter: emitter, RequireReceipts: true, DeferManager: manager, Transport: deferred.SurfaceMCPHTTPUpstream,
+			})
+			if decision.Blocked != nil || decision.Deferred == nil {
+				t.Fatalf("expected deferred metadata, got blocked=%+v deferred=%+v", decision.Blocked, decision.Deferred)
+			}
+			if decision.Deferred.DeferID == "" {
+				t.Fatal("deferred metadata has no correlation identity")
+			}
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			record := findActionReceiptHTTP(t, readReceiptEntriesHTTP(t, dir)).ActionRecord
+			if record.ActionID != decision.Deferred.DeferID || record.DeferID != decision.Deferred.DeferID || record.Target != method || record.DecisionPhase != receipt.DecisionPhaseDefer {
+				t.Fatalf("receipt does not match deferred request: %+v", record)
+			}
+		})
+	}
+}
+
 func TestScanHTTPInputDecision_PolicyDeferEmitsReceipt(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -7771,6 +7807,9 @@ func TestHTTPListener_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 	}
 	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent || receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
 		t.Fatalf("phases = %q/%q, want intent/outcome", receipts[0].ActionRecord.DecisionPhase, receipts[1].ActionRecord.DecisionPhase)
+	}
+	if receipts[0].ActionRecord.ActionID == "" {
+		t.Fatal("intent action_id is empty")
 	}
 	if receipts[0].ActionRecord.ActionID != receipts[1].ActionRecord.ActionID {
 		t.Fatalf("outcome action_id = %q, want %q", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)

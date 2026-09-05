@@ -839,7 +839,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		}
 	}
-	if effectiveAction == config.ActionDefer && actionID == "" && IsA2AMethod(verdict.Method) {
+	// Deferral stores its correlation ID before the receipt finalizer runs.
+	// Metadata must share that ID with the deferred receipt and its resolution.
+	if effectiveAction == config.ActionDefer && actionID == "" &&
+		(IsA2AMethod(verdict.Method) || (requireReceipts && isRequiredReceiptMetadataMethod(verdict.Method))) {
 		actionID = receipt.NewActionID()
 	}
 

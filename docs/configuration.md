@@ -2131,7 +2131,7 @@ agents:
 Pipelock resolves the agent name for each request using this priority order:
 
 1. **Listener binding**: matched by the port the request arrived on (injected as a context override, spoof-proof)
-2. **Source CIDRs**: matched by client IP against `source_cidrs` ranges defined on each agent profile
+2. **Source CIDRs**: matched by client IP against `source_cidrs` ranges defined on each agent profile. The client IP is the connection's own peer address; forwarded-address headers such as `X-Forwarded-For` are ignored, so a deployment behind another proxy sees that proxy's address here
 3. **Header** (`X-Pipelock-Agent`): set by the calling agent or orchestrator
 4. **Query parameter** (`?agent=name`): appended to fetch/WebSocket URLs
 5. **Fallback**: `_default` profile if defined, otherwise base config

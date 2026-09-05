@@ -62,6 +62,17 @@ jobs:
         with:
           go-version: "1.25.14"
 
+      - name: Verify Go version
+        # This job builds the candidate binary the published score is measured
+        # against, so a silently different stdlib would change the result it
+        # reports. Every other exact-pinned job asserts the resolved toolchain;
+        # this one did not until the pin-contract guard demanded it.
+        shell: bash
+        run: |
+          got="$(go env GOVERSION)"
+          echo "GOVERSION=$got"
+          test "$got" = "go1.25.14"
+
       - name: Verify immutable inputs
         shell: bash
         run: |

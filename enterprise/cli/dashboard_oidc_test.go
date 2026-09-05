@@ -597,6 +597,12 @@ func TestDashboardRequestAuthorization_AuthAuditInfoTokenMethodsAndFailures(t *t
 	}
 }
 
+func TestDashboardBearerAttemptedNilRequest(t *testing.T) {
+	if dashboardBearerAttempted(nil) {
+		t.Fatal("nil request reported a bearer credential attempt")
+	}
+}
+
 func TestDashboardCredentialAttemptedNilRequest(t *testing.T) {
 	if dashboardCredentialAttempted(nil) {
 		t.Fatal("nil request reported a credential attempt")
@@ -738,12 +744,16 @@ func TestDashboardOIDC_AuthenticationEventAttributesFailureMode(t *testing.T) {
 		{name: "basic header before bearer header", setHeaders: func(h http.Header) {
 			h.Add("Authorization", "Basic dXNlcjp3cm9uZy10b2tlbg==")
 			h.Add("Authorization", "Bearer not-a-jwt")
-		}, wantStatus: http.StatusUnauthorized, wantAuthMode: "operator_token"},
+		}, wantStatus: http.StatusUnauthorized, wantAuthMode: "none"},
 		{name: "bearer header before basic header", setHeaders: func(h http.Header) {
 			h.Add("Authorization", "Bearer not-a-jwt")
 			h.Add("Authorization", "Basic dXNlcjp3cm9uZy10b2tlbg==")
-		}, wantStatus: http.StatusUnauthorized, wantAuthMode: "oidc"},
+		}, wantStatus: http.StatusUnauthorized, wantAuthMode: "none"},
 		{name: "valid oidc credential", setHeaders: func(h http.Header) { h.Set("Authorization", "Bearer "+validToken) }, wantStatus: http.StatusNoContent},
+		{name: "valid oidc credential with second authorization header", setHeaders: func(h http.Header) {
+			h.Add("Authorization", "Bearer "+validToken)
+			h.Add("Authorization", "Basic dXNlcjp3cm9uZy10b2tlbg==")
+		}, wantStatus: http.StatusUnauthorized, wantAuthMode: "none"},
 	}
 
 	for _, tt := range tests {

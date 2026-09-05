@@ -60,7 +60,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.14"
+
+      - name: Verify Go version
+        # This job builds the candidate binary the published score is measured
+        # against, so a silently different stdlib would change the result it
+        # reports. Every other exact-pinned job asserts the resolved toolchain;
+        # this one did not until the pin-contract guard demanded it.
+        shell: bash
+        run: |
+          got="$(go env GOVERSION)"
+          echo "GOVERSION=$got"
+          test "$got" = "go1.25.14"
 
       - name: Verify immutable inputs
         shell: bash

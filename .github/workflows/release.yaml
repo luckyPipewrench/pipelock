@@ -72,14 +72,14 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25.12'
+          go-version: '1.25.14'
           check-latest: true
 
       - name: Verify Go version
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.25.12"
+          test "$got" = "go1.25.14"
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -146,9 +146,18 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25.12'
+          go-version: '1.25.14'
           check-latest: true
           cache: false
+
+      - name: Verify Go version
+        # Every other Go-pinned release job asserts the resolved toolchain; this
+        # one did not, so a silently different stdlib would have gone unnoticed
+        # here while its neighbours failed loudly.
+        run: |
+          got="$(go env GOVERSION)"
+          echo "GOVERSION=$got"
+          test "$got" = "go1.25.14"
 
       # zizmor 1.29.0 treats the empty cache value as enabled; setup-node treats it as disabled.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0; zizmor: ignore[cache-poisoning]
@@ -193,14 +202,14 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25.12'
+          go-version: '1.25.14'
           check-latest: true
 
       - name: Verify Go version
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.25.12"
+          test "$got" = "go1.25.14"
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -840,11 +849,11 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25.12'
+          go-version: '1.25.14'
           check-latest: true
 
       - name: Verify Go version
-        run: test "$(go env GOVERSION)" = "go1.25.12"
+        run: test "$(go env GOVERSION)" = "go1.25.14"
 
       - name: Download promotion inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

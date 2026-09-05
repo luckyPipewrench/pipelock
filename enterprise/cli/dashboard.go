@@ -636,7 +636,14 @@ func dashboardAuthFailureReason(r *http.Request) string {
 	if r == nil {
 		return "missing"
 	}
-	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	authorization, ok := dashboardAuthorizationHeader(r)
+	if !ok {
+		if dashboardAuthorizationHeaderCount(r) == 0 {
+			return "missing"
+		}
+		return "malformed"
+	}
+	authorization = strings.TrimSpace(authorization)
 	if authorization == "" {
 		return "missing"
 	}
@@ -715,7 +722,10 @@ func dashboardTokenMatches(r *http.Request, token string) bool {
 		return false // fail closed: no configured token means no access
 	}
 	const bearerPrefix = "bearer "
-	auth := r.Header.Get("Authorization")
+	auth, ok := dashboardAuthorizationHeader(r)
+	if !ok {
+		return false
+	}
 	if len(auth) > len(bearerPrefix) && strings.EqualFold(auth[:len(bearerPrefix)], bearerPrefix) {
 		got := strings.TrimSpace(auth[len(bearerPrefix):])
 		return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
@@ -724,6 +734,23 @@ func dashboardTokenMatches(r *http.Request, token string) bool {
 		return subtle.ConstantTimeCompare([]byte(pass), []byte(token)) == 1
 	}
 	return false
+}
+
+// dashboardAuthorizationHeader returns the only Authorization field value.
+// Authentication rejects duplicate values rather than selecting one because a
+// proxy and the dashboard could otherwise authenticate different credentials.
+func dashboardAuthorizationHeader(r *http.Request) (string, bool) {
+	if r == nil || dashboardAuthorizationHeaderCount(r) != 1 {
+		return "", false
+	}
+	return r.Header.Values("Authorization")[0], true
+}
+
+func dashboardAuthorizationHeaderCount(r *http.Request) int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Header.Values("Authorization"))
 }
 
 // dashboardRuntimeHasFeature wraps the boot-time-verified license's feature

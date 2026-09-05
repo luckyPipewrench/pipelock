@@ -889,6 +889,7 @@ func TestDashboardAuthFailureReason(t *testing.T) {
 		{name: "bearer missing value", request: requestWithDashboardAuthorization(t, "Bearer"), want: "malformed"},
 		{name: "invalid basic encoding", request: requestWithDashboardAuthorization(t, "Basic not-base64"), want: "malformed"},
 		{name: "unsupported scheme", request: requestWithDashboardAuthorization(t, "Digest credentials"), want: "malformed"},
+		{name: "multiple authorization headers", request: requestWithDashboardAuthorizations(t, "Bearer valid-token", "Basic dXNlcjp3cm9uZy10b2tlbg=="), want: "malformed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := dashboardAuthFailureReason(tt.request); got != tt.want {
@@ -903,6 +904,65 @@ func requestWithDashboardAuthorization(t *testing.T, authorization string) *http
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil)
 	req.Header.Set("Authorization", authorization)
 	return req
+}
+
+func requestWithDashboardAuthorizations(t *testing.T, authorizations ...string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil)
+	for _, authorization := range authorizations {
+		req.Header.Add("Authorization", authorization)
+	}
+	return req
+}
+
+func TestDashboardAuthorizationHeaderCardinality(t *testing.T) {
+	tests := []struct {
+		name       string
+		request    *http.Request
+		wantCount  int
+		wantHeader string
+		wantOK     bool
+	}{
+		{name: "nil request"},
+		{name: "missing header", request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://dashboard.example/", nil)},
+		{name: "single header", request: requestWithDashboardAuthorization(t, "Bearer operator-token"), wantCount: 1, wantHeader: "Bearer operator-token", wantOK: true},
+		{name: "multiple headers", request: requestWithDashboardAuthorizations(t, "Bearer operator-token", "Basic dXNlcjp3OnRva2Vu"), wantCount: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dashboardAuthorizationHeaderCount(tt.request); got != tt.wantCount {
+				t.Fatalf("header count = %d, want %d", got, tt.wantCount)
+			}
+			gotHeader, gotOK := dashboardAuthorizationHeader(tt.request)
+			if gotHeader != tt.wantHeader || gotOK != tt.wantOK {
+				t.Fatalf("header = (%q, %t), want (%q, %t)", gotHeader, gotOK, tt.wantHeader, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestDashboardAuthDeniedAuditClassifiesMultipleAuthorizationHeadersAsMalformed(t *testing.T) {
+	authorization := newDashboardRequestAuthorization(dashTestToken, "", nil)
+	var audit strings.Builder
+	handler := dashboardAuthHandler(
+		authorization.authenticated,
+		authorization.authAuditInfo,
+		&audit,
+		nil,
+		authorization.failedAuthMode,
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next called") }),
+	)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, requestWithDashboardAuthorizations(t, "Bearer "+dashTestToken, "Basic dXNlcjp3cm9uZy10b2tlbg=="))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	log := audit.String()
+	for _, want := range []string{"auth_method=none", "reason=malformed"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("audit log missing %q: %s", want, log)
+		}
+	}
 }
 
 func TestDashboardAuthDeniedDoesNotWaitForBlockedEventEmitter(t *testing.T) {
@@ -1165,6 +1225,14 @@ func TestDashboardTokenMatches(t *testing.T) {
 		}, true},
 		{"basic password mismatch", dashTestToken, func(r *http.Request) {
 			r.SetBasicAuth("whoever", "nope")
+		}, false},
+		{"multiple bearer values fail closed", dashTestToken, func(r *http.Request) {
+			r.Header.Add("Authorization", "Bearer "+dashTestToken)
+			r.Header.Add("Authorization", "Bearer other-token")
+		}, false},
+		{"basic and bearer values fail closed", dashTestToken, func(r *http.Request) {
+			r.SetBasicAuth("whoever", dashTestToken)
+			r.Header.Add("Authorization", "Bearer "+dashTestToken)
 		}, false},
 		{"token as basic username does not count", dashTestToken, func(r *http.Request) {
 			r.SetBasicAuth(dashTestToken, "")

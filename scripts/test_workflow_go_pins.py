@@ -29,6 +29,18 @@ assertion swapped between jobs both fail. Script assertions are scoped to the
 workflow each script names, so a version pinned only by some unrelated workflow
 cannot satisfy them.
 
+Review then found a third hole in the same shape: the assertion pattern matched
+any `= "goX.Y.Z"` text anywhere in a `run` block, including a commented-out line,
+so commenting out the live check while leaving its text behind still satisfied the
+guard. Reproduced before fixing. Assertions are now collected only from lines that
+are not shell comments, and only from a block that actually runs `go env GOVERSION`,
+so dead text cannot stand in for a live check.
+
+The bound worth knowing: only whole-line shell comments are stripped. A version
+equality hidden in a trailing inline comment after live code would still be
+counted, and closing that needs a shell parser rather than a line filter. The
+`go env GOVERSION` requirement is the second line of defense there.
+
 Floating pins such as '1.25' are deliberately excluded: they carry no exact
 version to reconcile, and a workflow may legitimately mix a float for ordinary
 build jobs with one exact pin for a job that needs a known stdlib.
@@ -70,7 +82,24 @@ def _jobs(workflow: pathlib.Path):
             yield name, job["steps"]
 
 
+def _live_asserted_versions(run: str) -> list[str]:
+    """Versions checked by a live `go env GOVERSION` comparison in this run block.
+
+    Commented-out lines are dropped, so text left behind after a check is deleted
+    cannot stand in for the check. The block must also actually read
+    `go env GOVERSION`, so an unrelated equality on a version-shaped string is not
+    mistaken for a toolchain assertion.
+    """
+    live = "\n".join(
+        line for line in run.splitlines() if not line.strip().startswith("#")
+    )
+    if "go env GOVERSION" not in live:
+        return []
+    return ASSERT_RE.findall(live)
+
+
 def _job_pins_and_asserts(steps) -> tuple[list[str], list[str]]:
+    """Exact Go pins and live version assertions declared by one job's steps."""
     pins: list[str] = []
     asserts: list[str] = []
     for step in steps:
@@ -83,7 +112,7 @@ def _job_pins_and_asserts(steps) -> tuple[list[str], list[str]]:
                 pins.append(version)
         run = step.get("run")
         if isinstance(run, str):
-            asserts.extend(ASSERT_RE.findall(run))
+            asserts.extend(_live_asserted_versions(run))
     return pins, asserts
 
 
@@ -99,10 +128,10 @@ class WorkflowGoPinTest(unittest.TestCase):
                 self.assertEqual(
                     collections.Counter(asserts),
                     collections.Counter(pins),
-                    "%s job %r pins %s but asserts %s; a job that installs one "
-                    "toolchain and checks for another fails after setup, and a "
-                    "missing assertion leaves a wrong stdlib unnoticed"
-                    % (path.name, job_name, sorted(pins), sorted(asserts)),
+                    f"{path.name} job {job_name!r} pins {sorted(pins)} but asserts "
+                    f"{sorted(asserts)}; a job that installs one toolchain and checks "
+                    "for another fails after setup, and a missing assertion leaves a "
+                    "wrong stdlib unnoticed",
                 )
         self.assertGreater(
             checked, 0, "no workflow job pinned or asserted a Go version"
@@ -123,8 +152,8 @@ class WorkflowGoPinTest(unittest.TestCase):
             named = sorted(n for n in workflow_names if n in body)
             self.assertTrue(
                 named,
-                "%s asserts a Go version but names no workflow, so the assertion "
-                "cannot be scoped to what it is meant to guard" % path.name,
+                f"{path.name} asserts a Go version but names no workflow, so the "
+                "assertion cannot be scoped to what it is meant to guard",
             )
             owning_pins: set[str] = set()
             for name in named:
@@ -135,12 +164,37 @@ class WorkflowGoPinTest(unittest.TestCase):
                 self.assertIn(
                     version,
                     owning_pins,
-                    "%s asserts Go %s, which %s does not pin; a contract test "
-                    "left behind by a toolchain bump fails CI without naming the "
-                    "bump that stranded it" % (path.name, version, ", ".join(named)),
+                    f"{path.name} asserts Go {version}, which {', '.join(named)} does "
+                    "not pin; a contract test left behind by a toolchain bump fails CI "
+                    "without naming the bump that stranded it",
                 )
         self.assertGreater(
             checked, 0, "no script asserted a workflow Go pin"
+        )
+
+
+    def test_a_commented_out_assertion_does_not_count_as_a_check(self) -> None:
+        """Dead text must not satisfy the guard that live text satisfies.
+
+        This is the defect the guard shipped with: the pattern matched any
+        `= "goX.Y.Z"` anywhere in a run block, so commenting out the check while
+        leaving its text behind still passed.
+        """
+        live = 'got="$(go env GOVERSION)"\ntest "$got" = "go1.25.14"\n'
+        self.assertEqual(_live_asserted_versions(live), ["1.25.14"])
+
+        commented = 'got="$(go env GOVERSION)"\n# test "$got" = "go1.25.14"\n'
+        self.assertEqual(
+            _live_asserted_versions(commented),
+            [],
+            "a commented-out assertion was counted as a live check",
+        )
+
+        unrelated = 'test "$SOME_OTHER" = "go1.25.14"\n'
+        self.assertEqual(
+            _live_asserted_versions(unrelated),
+            [],
+            "an equality unrelated to go env GOVERSION was counted as a toolchain check",
         )
 
 

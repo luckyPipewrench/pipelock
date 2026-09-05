@@ -642,6 +642,57 @@ func TestAgentRegistryResolveFromRequest_Fallback(t *testing.T) {
 	}
 }
 
+func TestAgentRegistryResolveFromRequest_ExpiredProfileIsNotBound(t *testing.T) {
+	// An expired license makes Lookup fall back to _default. The identity
+	// must fall with it: an infrastructure match on a profile whose policy
+	// was not selected cannot present that profile as a trusted identity.
+	cases := []struct {
+		name  string
+		setup func(r *http.Request) *http.Request
+	}{
+		{"listener", func(r *http.Request) *http.Request {
+			return r.WithContext(edition.WithAgentOverride(r.Context(), testProfileClaudeCode))
+		}},
+		{"cidr", func(r *http.Request) *http.Request {
+			r.RemoteAddr = "10.0.0.42:12345"
+			return r
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Agents = map[string]config.AgentProfile{
+				testProfileClaudeCode: {Mode: config.ModeStrict, SourceCIDRs: []string{"10.0.0.0/24"}},
+				testProfileDefault:    {Mode: config.ModeAudit},
+			}
+			cfg.LicenseExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
+
+			reg, err := NewAgentRegistry(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reg.Close()
+
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+			r = tc.setup(r)
+
+			ra, id := reg.ResolveFromRequest(r.Context(), r, cfg, nil)
+			if ra.Name != testProfileDefault {
+				t.Fatalf("resolved = %q, want fallback %q", ra.Name, testProfileDefault)
+			}
+			if id.Profile != testProfileDefault {
+				t.Errorf("id.Profile = %q, want fallback %q", id.Profile, testProfileDefault)
+			}
+			if id.Name != testProfileClaudeCode {
+				t.Errorf("id.Name = %q, want matched mapping %q kept for audit", id.Name, testProfileClaudeCode)
+			}
+			if id.Auth == envelope.ActorAuthBound || id.Auth.TrustedForIdentity() {
+				t.Errorf("auth = %q, want untrusted after expiry fallback", id.Auth)
+			}
+		})
+	}
+}
+
 func TestAgentRegistryNilClose(t *testing.T) {
 	var reg *AgentRegistry
 	reg.Close() // should not panic

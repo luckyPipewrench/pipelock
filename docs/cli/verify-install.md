@@ -1,6 +1,6 @@
 # `pipelock verify-install`
 
-`pipelock verify-install` runs deterministic smoke checks against the local Pipelock binary and configuration. It is a quick proof that the scanner surfaces are wired and, when run inside a contained environment, that direct egress is blocked.
+`pipelock verify-install` runs deterministic smoke checks against the local Pipelock binary and configuration. It proves the scanner surfaces are wired. Its direct-egress probes report a successful direct connection as exposure, while an unsuccessful connection without boundary attribution is inconclusive.
 
 It complements `pipelock doctor`:
 
@@ -48,19 +48,21 @@ Containment checks:
 
 | Check | What it proves |
 |---|---|
-| `no_direct_http` | The current environment blocks direct HTTP egress. |
-| `no_direct_dns` | The current environment blocks direct DNS egress. |
-| `no_direct_https` | The current environment blocks direct HTTPS egress. |
+| `no_direct_http` | Whether a direct HTTP connection succeeded. A failed connection without containment-boundary evidence is inconclusive. |
+| `no_direct_dns` | Whether a direct DNS exchange succeeded. A failed exchange without containment-boundary evidence is inconclusive. |
+| `no_direct_https` | Whether a direct HTTPS connection succeeded. A failed connection without containment-boundary evidence is inconclusive. |
 
-The containment probes are only meaningful inside a container, pod, or similar network boundary. On a normal host they are reported as not applicable, because the operator account is expected to retain direct network access.
+The containment probes are only meaningful inside a container, pod, or similar network boundary. On a normal host they are reported as not applicable, because the operator account is expected to retain direct network access. A blocked or unavailable public endpoint does not identify the local containment boundary, so it is reported as unknown and exits non-zero. Use `pipelock contain verify` for managed Linux host containment. Container and pod deployments need evidence from their own network-policy boundary.
 
 ## Exit Codes
 
+The current container and pod probes cannot affirm containment. When all direct connections fail, the result is `unknown` with exit code `2`, even when network policy is correctly enforcing containment. This command does not ingest external policy evidence to turn that result into a pass.
+
 | Code | Meaning |
 |---|---|
-| `0` | All required checks passed. Not-applicable containment checks count as pass. |
+| `0` | All required checks passed. Host-mode, not-applicable containment checks count as pass. |
 | `1` | One or more checks failed. |
-| `2` | Config or setup error. |
+| `2` | Config or setup error, or an inconclusive containment probe. |
 
 ## Scope
 

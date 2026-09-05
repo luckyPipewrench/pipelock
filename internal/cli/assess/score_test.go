@@ -155,6 +155,18 @@ func TestScoreDeploymentVerification(t *testing.T) {
 	})
 }
 
+func TestScoreDeploymentVerification_InconclusiveReport(t *testing.T) {
+	var report diag.VerifyReport
+	data := []byte(`{"checks":[{"name":"config_valid","category":"scanning","status":"pass"},{"name":"no_direct_http","category":"containment","status":"unknown"}],"summary":{"passed":1,"unknown":1,"containment":"unknown"}}`)
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	section := scoreDeploymentVerification(&report)
+	if section.Score != 50 || section.Applicable != 2 {
+		t.Fatalf("inconclusive check must earn no passing credit: %+v", section)
+	}
+}
+
 func TestScoreDeploymentVerification_AllNA(t *testing.T) {
 	report := &diag.VerifyReport{
 		Checks: []diag.VerifyReportCheck{

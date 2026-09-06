@@ -20,7 +20,7 @@ notes and output-file confirmations go to stderr.
 
 ## Hot Reload
 
-Config changes are picked up automatically via file watcher or SIGHUP signal (100ms debounce). Most fields reload without restart. Fields that require a restart are marked below.
+Config changes are picked up automatically via a file watcher or a SIGHUP signal (100ms debounce). Most fields reload without restart. Fields that require a restart are marked below. Strict mode and required security controls can reject security downgrades, including expanded `trusted_domains` or `ssrf.ip_allowlist` lists. A rejected reload keeps the running configuration active and logs the refusal. Restart Pipelock to apply a refused trust expansion.
 
 On reload, the scanner and session manager are atomically swapped. Runtime
 kill-switch state is preserved, including the API, signal, Conductor remote,
@@ -1948,6 +1948,8 @@ trusted_domains:
 
 Per-agent `trusted_domains` overrides are available in agent profiles (Pro license).
 
+**Reload:** Strict mode and required security controls can refuse an expanded list, including a per-agent override. A refusal keeps the running configuration active; restart Pipelock to apply the expansion.
+
 ### DNS Host Overrides
 
 Static hostname-to-IP overrides used by SSRF DNS checks and the proxy dial path. Use this for reproducible local fixtures or controlled internal names when you cannot or do not want to modify system DNS.
@@ -2013,6 +2015,8 @@ them.
 **Complementary to `trusted_domains`:** `trusted_domains` is hostname-based trust (the domain resolves to a private IP, but you trust the domain). `ssrf.ip_allowlist` is IP-based trust (you trust the IP range regardless of which domain resolves to it). Either one exempts from SSRF blocking.
 
 **Validation:** Entries must be canonical CIDRs (network address, not host address). `10.0.0.5/24` is rejected because the host bits are set (use `10.0.0.0/24` instead). Catch-all prefixes (`0.0.0.0/0`, `::/0`) are rejected because they would disable SSRF protection entirely.
+
+**Reload:** Strict mode and required security controls can refuse an expanded allowlist. A refusal keeps the running configuration active; restart Pipelock to apply the expansion.
 
 ## Presets
 

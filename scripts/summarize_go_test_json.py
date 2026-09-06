@@ -11,6 +11,8 @@ import collections
 import json
 import math
 import sys
+import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 
@@ -53,7 +55,9 @@ class TestResult(_ActionResult):
     pass
 
 
-def parse_events(lines: list[str]) -> dict[str, PackageResult]:
+def parse_events(
+    lines: Iterable[str], *, output_limit: int = FAILED_OUTPUT_LIMIT
+) -> dict[str, PackageResult]:
     results: dict[str, PackageResult] = {}
 
     for line in lines:
@@ -68,12 +72,16 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
         if not isinstance(package, str) or package == "":
             continue
 
-        result = results.setdefault(package, PackageResult())
+        result = results.setdefault(
+            package, PackageResult(output=collections.deque(maxlen=output_limit))
+        )
         action = event.get("Action")
         test = event.get("Test")
         test_result = None
         if isinstance(test, str) and test != "":
-            test_result = result.tests.setdefault(test, TestResult())
+            test_result = result.tests.setdefault(
+                test, TestResult(output=collections.deque(maxlen=output_limit))
+            )
 
         if action == "output":
             output = event.get("Output")
@@ -83,6 +91,10 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
                     test_result.output.append(output_line)
                 else:
                     result.output.append(output_line)
+            continue
+
+        if action == "run" and test_result is not None:
+            test_result.action = action
             continue
 
         if action in {"pass", "fail", "skip"}:
@@ -111,8 +123,10 @@ def print_summary(
     label: str,
     top: int,
     top_tests: int = 25,
-    out: object = sys.stdout,
+    out: object | None = None,
 ) -> None:
+    if out is None:
+        out = sys.stdout
     packages = [
         (package, result)
         for package, result in results.items()
@@ -174,6 +188,22 @@ def print_summary(
             for line in test_result.output:
                 print(escape_terminal_text(line), file=out)
 
+    interrupted_tests = [
+        (package, test, test_result)
+        for package, result in failures
+        for test, test_result in sorted(result.tests.items())
+        if test_result.action == "run" and test_result.output
+    ]
+    if interrupted_tests:
+        print("interrupted test output:", file=out)
+        for package, test, test_result in interrupted_tests:
+            print(
+                f"--- {escape_terminal_text(package)} {escape_terminal_text(test)} ---",
+                file=out,
+            )
+            for line in test_result.output:
+                print(escape_terminal_text(line), file=out)
+
     package_output_failures = [
         (package, result) for package, result in failures if result.output
     ]
@@ -183,6 +213,88 @@ def print_summary(
             print(f"--- {escape_terminal_text(package)} ---", file=out)
             for line in result.output:
                 print(escape_terminal_text(line), file=out)
+
+
+def print_full_failed_output(lines: Iterable[str], results: dict[str, PackageResult]) -> None:
+    """Replay failed diagnostics from disk without retaining output in memory."""
+    previous = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # Go and its toolchain may write text around the JSON stream. Keep
+            # that evidence too; silently dropping it hides formatter failures.
+            print("unparsed diagnostic: " + escape_terminal_text(line.rstrip("\n")))
+            continue
+        if not isinstance(event, dict):
+            continue
+        package = event.get("Package")
+        if not isinstance(package, str):
+            continue
+        result = results.get(package)
+        output = event.get("Output")
+        if result is None or result.action != "fail" or not isinstance(output, str):
+            continue
+        test = event.get("Test")
+        test = test if isinstance(test, str) else ""
+        if test:
+            test_result = result.tests.get(test)
+            if test_result is None or test_result.action not in {"fail", "run"}:
+                continue
+            heading = "interrupted test output:" if test_result.action == "run" else "failed tests:"
+        else:
+            heading = "failed package output:"
+        key = (package, test)
+        if key != previous:
+            print(heading)
+            name = package + (" " + test if test else "")
+            print(f"--- {escape_terminal_text(name)} ---")
+            previous = key
+        print(escape_terminal_text(output.rstrip("\n")))
+
+
+def rewind_position(lines: Iterable[str]) -> int | None:
+    """Return a replayable input position, or None when the input is a pipe."""
+    seekable = getattr(lines, "seekable", None)
+    if not callable(seekable):
+        return None
+    try:
+        if not seekable():
+            return None
+        position = lines.tell()
+        # Check rewinding before consuming the stream, when a fallback can
+        # still capture it if this is an unusual file-like object.
+        lines.seek(position)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return position
+
+
+def summarize_full_output(lines: Iterable[str], *, label: str, top: int, top_tests: int) -> dict[str, PackageResult]:
+    """Replay failed diagnostics without retaining all output in memory."""
+    position = rewind_position(lines)
+    if position is not None:
+        results = parse_events(lines, output_limit=0)
+        print_summary(results, label=label, top=top, top_tests=top_tests)
+        lines.seek(position)
+        print_full_failed_output(lines, results)
+        return results
+
+    # Pipes cannot be rewound, so capture exactly one temporary copy for the
+    # second pass after package terminal states are known.
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as captured:
+        def capture():
+            for line in lines:
+                captured.write(line)
+                if not line.endswith("\n"):
+                    captured.write("\n")
+                yield line
+
+        results = parse_events(capture(), output_limit=0)
+        print_summary(results, label=label, top=top, top_tests=top_tests)
+        captured.seek(0)
+        print_full_failed_output(captured, results)
+        return results
 
 
 def has_failed_packages(results: dict[str, PackageResult]) -> bool:
@@ -198,6 +310,21 @@ def main() -> int:
     parser.add_argument(
         "--top-tests", type=int, default=25, help="number of slow tests to print"
     )
+    parser.add_argument(
+        "--full-failed-output",
+        action="store_true",
+        help="retain complete output for failed packages instead of bounded tails",
+    )
+    parser.add_argument(
+        "--allow-failed-packages",
+        action="store_true",
+        help="return success after reporting failed packages",
+    )
+    parser.add_argument(
+        "--sanitize-raw",
+        action="store_true",
+        help="escape captured input without parsing it",
+    )
     args = parser.parse_args()
 
     if args.top < 1:
@@ -205,9 +332,17 @@ def main() -> int:
     if args.top_tests < 1:
         parser.error("--top-tests must be at least 1")
 
-    results = parse_events(sys.stdin.readlines())
-    print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
-    if has_failed_packages(results):
+    if args.sanitize_raw:
+        for line in sys.stdin:
+            print(escape_terminal_text(line.rstrip("\n")))
+        return 0
+
+    if args.full_failed_output:
+        results = summarize_full_output(sys.stdin, label=args.label, top=args.top, top_tests=args.top_tests)
+    else:
+        results = parse_events(sys.stdin)
+        print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
+    if has_failed_packages(results) and not args.allow_failed_packages:
         return 1
     return 0
 

@@ -388,6 +388,14 @@ func TestRenderSystemUnit_WithoutFileSentryKeepsHomeInaccessible(t *testing.T) {
 	}
 }
 
+func TestRenderSystemUnit_ReloadSignalsMainProcess(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	body := renderSystemUnit(env)
+	if !strings.Contains(body, "ExecReload=/bin/kill -HUP $MAINPID") {
+		t.Fatalf("system unit does not route reload to the running Pipelock process:\n%s", body)
+	}
+}
+
 func TestRenderSystemUnit_FileSentryPrivateTmpPathIsVisibleReadOnly(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	env.serviceReadOnlyPaths = []string{"/tmp/pipelock-watch", "/var/tmp/pipelock-watch"}

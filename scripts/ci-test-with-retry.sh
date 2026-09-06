@@ -454,6 +454,20 @@ if [ "${#retry_packages[@]}" -eq 0 ]; then
   retry_scope="whole shard; no failed package list was isolated"
 fi
 
+if [ "$retry_kind" = "timeout" ]; then
+  echo "GO TEST TIMEOUT DIAGNOSTICS: first-attempt output follows before retry" >&2
+  # The live formatter intentionally suppresses raw JSON output. Print this
+  # summary before retry can overwrite its JSON file or the job can be canceled.
+  python3 scripts/summarize_go_test_json.py --allow-failed-packages --full-failed-output --label "first-attempt timeout" <"$first_stdout" >&2 || {
+    summary_status=$?
+    echo "ci-test-with-retry: failed to summarize first-attempt timeout diagnostics (status ${summary_status})" >&2
+    echo "GO TEST TIMEOUT DIAGNOSTICS: sanitized raw first-attempt JSON follows" >&2
+    if ! python3 scripts/summarize_go_test_json.py --sanitize-raw <"$first_stdout" >&2; then
+      echo "ci-test-with-retry: failed to sanitize first-attempt timeout diagnostics" >&2
+    fi
+  }
+fi
+
 coverage_profile=""
 first_coverage_profile=""
 cmd_args=("$@")

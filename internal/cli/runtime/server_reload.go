@@ -500,6 +500,11 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		// keep forwarding under a warning-only weakening reload.
 		if reason := reloadDowngradeRejectReason(oldCfg, newCfg, warnings); reason != "" {
 			rejectErr := fmt.Errorf("rejected: security downgrade from %s", reason)
+			if fields := trustExpansionReloadFields(warnings); len(fields) > 0 {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %s cannot widen trust at runtime; previous configuration remains active; restart Pipelock to apply this change\n", strings.Join(fields, ", "))
+			} else {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v; previous configuration remains active\n", rejectErr)
+			}
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 			return rejectErr
 		}
@@ -1032,6 +1037,19 @@ func reloadWarningIsAdvisory(w config.ReloadWarning) bool {
 	default:
 		return false
 	}
+}
+
+// trustExpansionReloadFields identifies trust fields for a rejected reload's
+// diagnostic. It does not decide whether a reload is accepted.
+func trustExpansionReloadFields(warnings []config.ReloadWarning) []string {
+	fields := make([]string, 0, len(warnings))
+	for _, w := range warnings {
+		if w.Field == "trusted_domains" || w.Field == "ssrf.ip_allowlist" ||
+			(strings.HasPrefix(w.Field, "agents.") && strings.HasSuffix(w.Field, ".trusted_domains")) {
+			fields = append(fields, w.Field)
+		}
+	}
+	return fields
 }
 
 func hasNamedAgentProfiles(agents map[string]config.AgentProfile) bool {

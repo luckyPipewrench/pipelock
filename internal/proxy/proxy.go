@@ -1240,6 +1240,19 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // operator reconstructing the enforcement decision after a missing-receipt
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested.
+// emitRecordedReceipt reports whether a receipt for opts was actually
+// recorded. A nil emitter is a legitimate no-op for enforcement, but it never
+// counts as recorded: a caller-facing X-Pipelock-Receipt set from an
+// allocated-but-unrecorded id would be false evidence, so block writers use
+// this and fail toward silence.
+func (p *Proxy) emitRecordedReceipt(opts receipt.EmitOpts) bool {
+	if cfg := p.cfgPtr.Load(); cfg != nil {
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	}
+	e := p.receiptEmitterPtr.Load()
+	return e != nil && p.emitReceiptWithEmitter(opts, e) == nil
+}
+
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
@@ -4177,12 +4190,12 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 					// audit chain unbroken.
 					requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
 					actionID := receipt.NewActionID()
-					if p.emitReceipt(forwardKillSwitchReceiptOpts(
+					if p.emitRecordedReceipt(forwardKillSwitchReceiptOpts(
 						actionID,
 						requestID,
 						r.Method,
 						r.URL.String(),
-					)) == nil {
+					)) {
 						blockreason.SetRecordedReceipt(w.Header(), actionID)
 					}
 					writeBlockedError(w,
@@ -5967,7 +5980,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
-		if p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())) == nil {
+		if p.emitRecordedReceipt(opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}

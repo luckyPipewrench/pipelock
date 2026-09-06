@@ -2650,3 +2650,74 @@ func TestReceiptCoverage_WSAddressPoisoning_EmitsReceipt(t *testing.T) {
 		t.Fatalf("no address_protection block receipt found among %d receipts (layers: %v)", len(receipts), layers)
 	}
 }
+
+// TestCallerReceiptHeader_BlockPathsWithoutEmitterStaySilent covers the
+// production state the parity test above cannot see: enforcement on, receipts
+// disabled. A block still mints an action id, but with no emitter nothing is
+// recorded, so X-Pipelock-Receipt must be absent. With the block writers
+// treating a nil-emitter no-op as success, this test fails.
+func TestCallerReceiptHeader_BlockPathsWithoutEmitterStaySilent(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(*config.Config)
+		request   func() *http.Request
+	}{
+		{
+			name: "fetch_block",
+			request: func() *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://api.vendor.example", nil)
+			},
+		},
+		{
+			name: "forward_block",
+			configure: func(cfg *config.Config) {
+				cfg.ForwardProxy.Enabled = true
+			},
+			request: func() *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://169.254.169.254/latest/meta-data/", nil)
+			},
+		},
+		{
+			name: "kill_switch_block",
+			configure: func(cfg *config.Config) {
+				cfg.KillSwitch.Enabled = true
+				cfg.ForwardProxy.Enabled = true
+			},
+			request: func() *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example/", nil)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.Internal = nil
+			if tc.configure != nil {
+				tc.configure(cfg)
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			t.Cleanup(p.Close)
+			if cfg.KillSwitch.Enabled {
+				p.ks = killswitch.New(cfg)
+			}
+			// No emitter stored: receipts are disabled for this proxy.
+
+			req := tc.request()
+			if tc.name == "fetch_block" {
+				req.Header.Set("Authorization", "Bearer "+"AKIA"+"IOSFODNN7EXAMPLE")
+			}
+			rec := httptest.NewRecorder()
+			p.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 block, got %d", rec.Code)
+			}
+			if got := rec.Header().Get(blockreason.HeaderRecordedReceipt); got != "" {
+				t.Fatalf("%s must be absent when no receipt was recorded, got %q", blockreason.HeaderRecordedReceipt, got)
+			}
+		})
+	}
+}

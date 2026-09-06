@@ -315,6 +315,15 @@ func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, 
 // operator reconstructing an enforcement decision after a missing-receipt
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested. Plain RequestID alone is too thin for that.
+// emitRecordedReceipt reports whether a receipt for opts was actually
+// recorded. See Proxy.emitRecordedReceipt: a nil emitter never counts as
+// recorded, so a block response carries X-Pipelock-Receipt only when the
+// evidence exists.
+func (rp *ReverseProxyHandler) emitRecordedReceipt(opts receipt.EmitOpts) bool {
+	e := rp.receiptEmitter()
+	return e != nil && rp.emitReceiptWithEmitter(opts, e) == nil
+}
+
 func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
 	e := rp.receiptEmitter()
 	if e == nil {
@@ -612,7 +621,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if snap.cfg != nil {
 			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
 		}
-		if rp.emitReceipt(opts) == nil {
+		if rp.emitRecordedReceipt(opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
@@ -1325,7 +1334,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		if rp.emitReceipt(opts) == nil {
+		if rp.emitRecordedReceipt(opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
@@ -2651,7 +2660,7 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		if cfg, _ := r.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config); cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		if rp.emitReceipt(opts) == nil {
+		if rp.emitRecordedReceipt(opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo(), string(ssrfErr.reason))

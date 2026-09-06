@@ -20,7 +20,7 @@ func syslogHealthTransitionCases() []sinkHealthTransitionCase {
 		},
 		{
 			name: "syslog drop", lock: drop.lastErrMu.Lock, unlock: drop.lastErrMu.Unlock,
-			transition: func() { drop.recordDropped("queue_full", nil) }, blockedOn: "(*SyslogSink).recordDropped", count: drop.dropped.Load, stats: drop.Stats, health: drop.SinkHealth,
+			transition: func() { drop.recordDropped() }, blockedOn: "(*SyslogSink).recordDropped", count: drop.dropped.Load, stats: drop.Stats, health: drop.SinkHealth,
 		},
 		{
 			name: "syslog abandon", lock: abandon.lastErrMu.Lock, unlock: abandon.lastErrMu.Unlock,

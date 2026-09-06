@@ -307,7 +307,7 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 		return nil
 	default:
 		s.closeMu.Unlock()
-		s.recordDropped("queue_full", nil)
+		s.recordDropped()
 		return ErrSyslogQueueFull
 	}
 }
@@ -486,15 +486,11 @@ func (s *SyslogSink) recordFailure(reason string, msg syslogMessage, err error) 
 // stderr write (which can block on a stalled pipe/journald) could turn that
 // backpressure into request-path blocking. The drop is observable via
 // Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
-func (s *SyslogSink) recordDropped(reason string, err error) {
-	lastErr := reason
-	if err != nil {
-		lastErr = err.Error()
-	}
+func (s *SyslogSink) recordDropped() {
 	s.lastErrMu.Lock()
 	s.dropped.Add(1)
 	s.degraded.Store(true)
-	s.lastErr = lastErr
+	s.lastErr = "queue_full"
 	s.lastErrMu.Unlock()
 }
 

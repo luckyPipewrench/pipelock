@@ -1053,12 +1053,13 @@ func TestWatcher_ClosedGuardsRejectNewWork(t *testing.T) {
 	t.Run("timer_callback", func(t *testing.T) {
 		sc := &countingDLPScanner{}
 		w := &fsWatcher{
-			cfg:      &config.FileSentry{ScanContent: ptrBool(true)},
-			scanner:  sc,
-			findings: make(chan Finding, 1),
-			overflow: make(chan Finding, 1),
-			timers:   make(map[string]*time.Timer),
-			pidSnap:  make(map[string]bool),
+			cfg:       &config.FileSentry{ScanContent: ptrBool(true)},
+			scanner:   sc,
+			findings:  make(chan Finding, 1),
+			overflow:  make(chan Finding, 1),
+			timers:    make(map[string]*time.Timer),
+			pidSnap:   make(map[string]bool),
+			afterFunc: time.AfterFunc,
 		}
 		w.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
 		w.mu.Lock()
@@ -1273,8 +1274,9 @@ func TestWatcher_CloseWaitsForInFlightDebounceScan(t *testing.T) {
 }
 
 func TestWatcher_DebounceTimerRace(t *testing.T) {
-	// Verify that rapid writes to the same file produce exactly one scan,
-	// not multiple. The timer identity check prevents stale callbacks.
+	// Smoke test over real fsnotify: a write burst still produces a finding
+	// for the written path. The identity check is covered by
+	// TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan.
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
@@ -1294,36 +1296,290 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 
 	armAndStart(t, w, ctx)
 
-	// Write the same file rapidly 10 times. Only the last write's debounce
-	// timer should fire. We should get exactly 1 finding.
+	// Write the same file rapidly and assert what survives scheduling: the
+	// burst produces a finding, and it describes the file that was written.
+	//
+	// This test asserts NO scan count, and that is deliberate. Three count
+	// shapes were tried and each was unsound:
+	//
+	//   "exactly 1" asserted a property of the OS scheduler. The timer is armed
+	//   in handleEvent, so window boundaries are set by when fsnotify delivers
+	//   events, not by when the writer wrote. A burst completed in microseconds
+	//   can still span two windows, which is what reddened CI.
+	//
+	//   A bound derived from the writer's elapsed time reads a different clock
+	//   than the one arming the timers, so it is wrong in both directions.
+	//
+	//   "fewer scans than writes" is vacuous: fsnotify already coalesces the
+	//   writes into fewer events, so disabling the debouncer entirely still
+	//   produced 6 scans for 10 writes and the assertion stayed green.
+	//
+	// The count assertions this test's name implies need control over the
+	// debounce clock, and two tests own that clock through the afterFunc seam:
+	// TestWatcher_BurstCoalescesToOneScan asserts a burst collapses to exactly
+	// one scan, and TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan
+	// asserts the identity check keeps the live scan. This one stays a smoke
+	// check over real fsnotify: it cannot lie about a scan happening, and it
+	// cannot police either count. Removing the identity comparison still leaves
+	// this test green because the missed scan is a lower count.
+	const writes = 10
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	filePath := filepath.Join(dir, "rapid.json")
-	for i := range 10 {
+	for i := range writes {
 		content := fmt.Sprintf("%s-%d", secret, i)
 		if err := os.WriteFile(filePath, []byte(content), 0o600); err != nil {
 			t.Fatalf("WriteFile[%d]: %v", i, err)
 		}
 	}
 
-	// Wait for the single debounced scan.
 	select {
 	case f := <-w.Findings():
 		if f.PatternName == "" {
 			t.Error("expected DLP match")
 		}
+		if f.Path != filePath {
+			t.Errorf("finding path = %q, want %q", f.Path, filePath)
+		}
 	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout waiting for debounced finding")
 	}
 
-	// Verify no additional findings arrive (only 1 scan should fire).
-	select {
-	case f := <-w.Findings():
-		t.Errorf("unexpected extra finding (timer race?): %+v", f)
-	case <-time.After(filesentryNegativeObservation):
-		// Good - only one finding.
+	if got := sc.calls.Load(); got < 1 {
+		t.Fatalf("ScanTextForDLP calls = %d, want the debounced scan to have run", got)
 	}
-	if got := sc.calls.Load(); got != 1 {
-		t.Fatalf("ScanTextForDLP calls = %d, want 1", got)
+}
+
+// A stale debounce callback that lost the replacement race must not delete
+// the live timer's map entry. Without that identity check the live callback
+// finds no timer and skips the scan of the quiet-period content.
+func TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	const firstContent = "first-write-body"
+	const finalContent = "final-write-body"
+	if err := os.WriteFile(path, []byte(firstContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sc := &capturingDLPScanner{}
+	clock := &manualAfterFunc{}
+	w, err := NewWatcher(&config.FileSentry{ScanContent: ptrBool(true)}, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	t.Cleanup(func() {
+		clock.stopAll()
+		_ = w.Close()
+	})
+	fw := w.(*fsWatcher)
+	fw.afterFunc = clock.afterFunc
+
+	fw.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+	if err := os.WriteFile(path, []byte(finalContent), 0o600); err != nil {
+		t.Fatalf("WriteFile final: %v", err)
+	}
+	fw.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+
+	stale, live := clock.callbacks()
+	if stale == nil || live == nil {
+		t.Fatalf("armed callbacks = %d, want 2", clock.len())
+	}
+	if clock.timerAt(0) == clock.timerAt(1) {
+		t.Fatal("replacement reused the first timer pointer")
+	}
+
+	fw.mu.Lock()
+	current := fw.timers[path]
+	fw.mu.Unlock()
+	if current != clock.timerAt(1) {
+		t.Fatal("live timer is not the map entry for the path")
+	}
+
+	stale()
+	if got := sc.scanned(); len(got) != 0 {
+		t.Fatalf("stale callback scanned %#v, want no scan", got)
+	}
+	fw.mu.Lock()
+	current = fw.timers[path]
+	fw.mu.Unlock()
+	if current != clock.timerAt(1) {
+		t.Fatal("stale callback deleted the live timer map entry")
+	}
+
+	live()
+	got := sc.scanned()
+	if len(got) != 1 || got[0] != finalContent {
+		t.Fatalf("live scan = %#v, want one scan of %q", got, finalContent)
+	}
+}
+
+// capturingDLPScanner records the text of every scan, so a test can assert
+// WHICH content was scanned rather than only how many scans ran. The debounce
+// tests turn on that distinction: a stale callback and a live one differ by the
+// file body they see, not by their count.
+type capturingDLPScanner struct {
+	countingDLPScanner
+	mu    sync.Mutex
+	texts []string
+}
+
+// ScanTextForDLP records the scanned text before delegating to the embedded
+// counting scanner, so call count and content stay consistent with each other.
+func (s *capturingDLPScanner) ScanTextForDLP(ctx context.Context, text string) scanner.TextDLPResult {
+	s.mu.Lock()
+	s.texts = append(s.texts, text)
+	s.mu.Unlock()
+	return s.countingDLPScanner.ScanTextForDLP(ctx, text)
+}
+
+// scanned returns a copy of the recorded texts. A copy rather than the slice
+// itself, because the watcher may still be scanning on another goroutine.
+func (s *capturingDLPScanner) scanned() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.texts))
+	copy(out, s.texts)
+	return out
+}
+
+// manualAfterFunc returns real *time.Timer values that never fire on their
+// own so tests can invoke captured callbacks in a chosen order. Production
+// Stop() and pointer identity keep their exact semantics.
+type manualAfterFunc struct {
+	mu     sync.Mutex
+	fns    []func()
+	timers []*time.Timer
+}
+
+// afterFunc stands in for time.AfterFunc. It returns a REAL timer so the
+// production pointer-identity comparison and Stop() keep their exact meaning,
+// and records the callback so the test decides when each window fires.
+func (m *manualAfterFunc) afterFunc(_ time.Duration, cb func()) *time.Timer {
+	// Hour is longer than any test deadline; the test fires cb itself.
+	timer := time.NewTimer(time.Hour)
+	m.mu.Lock()
+	m.fns = append(m.fns, cb)
+	m.timers = append(m.timers, timer)
+	m.mu.Unlock()
+	return timer
+}
+
+// callbacks returns the first two armed callbacks, the stale one and the live
+// one, for the two-event replacement race.
+func (m *manualAfterFunc) callbacks() (stale, live func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.fns) < 2 {
+		return nil, nil
+	}
+	return m.fns[0], m.fns[1]
+}
+
+// A rapid burst must collapse to ONE scan, and this asserts the count without
+// touching the wall clock. The real-fsnotify test above deliberately asserts no
+// count: it observes whatever windows the scheduler happened to produce, so any
+// number it checks is a claim about scheduling rather than about the debouncer.
+// Driving handleEvent through the afterFunc seam fixes the window boundaries,
+// which is what makes a count meaningful here.
+//
+// This is the coalescing guarantee the debouncer actually owns: every event but
+// the last loses the replacement race and its callback must do nothing.
+func TestWatcher_BurstCoalescesToOneScan(t *testing.T) {
+	const writes = 10
+	const finalContent = "final-burst-body"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "burst.txt")
+	if err := os.WriteFile(path, []byte("seed-body"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sc := &capturingDLPScanner{}
+	clock := &manualAfterFunc{}
+	w, err := NewWatcher(&config.FileSentry{ScanContent: ptrBool(true)}, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	t.Cleanup(func() {
+		clock.stopAll()
+		_ = w.Close()
+	})
+	fw := w.(*fsWatcher)
+	fw.afterFunc = clock.afterFunc
+
+	for range writes {
+		fw.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+	}
+	if err := os.WriteFile(path, []byte(finalContent), 0o600); err != nil {
+		t.Fatalf("WriteFile final: %v", err)
+	}
+
+	if got := clock.len(); got != writes {
+		t.Fatalf("armed timers = %d, want %d", got, writes)
+	}
+	fw.mu.Lock()
+	current := fw.timers[path]
+	fw.mu.Unlock()
+	if current != clock.timerAt(writes-1) {
+		t.Fatal("map entry is not the last armed timer")
+	}
+
+	// Fire every window in the order it was armed. The first nine lost the race.
+	for i := range writes {
+		cb := clock.fnAt(i)
+		if cb == nil {
+			t.Fatalf("callback %d missing", i)
+		}
+		cb()
+	}
+
+	got := sc.scanned()
+	if len(got) != 1 || got[0] != finalContent {
+		t.Fatalf("scans = %#v, want exactly one scan of %q", got, finalContent)
+	}
+}
+
+// fnAt returns the callback armed by the i-th event, so a burst test can fire
+// every window in the order the watcher armed them.
+func (m *manualAfterFunc) fnAt(i int) func() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if i < 0 || i >= len(m.fns) {
+		return nil
+	}
+	return m.fns[i]
+}
+
+// timerAt returns the timer handed back for the i-th event, which is what the
+// watcher stores in its map and compares against.
+func (m *manualAfterFunc) timerAt(i int) *time.Timer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if i < 0 || i >= len(m.timers) {
+		return nil
+	}
+	return m.timers[i]
+}
+
+// len reports how many debounce windows the watcher armed.
+func (m *manualAfterFunc) len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.fns)
+}
+
+// stopAll releases every timer the fake handed out. The timers are real, so
+// leaving them armed would keep the runtime holding them for the full hour.
+func (m *manualAfterFunc) stopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, timer := range m.timers {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
 	}
 }
 

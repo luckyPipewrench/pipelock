@@ -97,3 +97,19 @@ func ForContext(t testing.TB, ctx context.Context, cond func() bool, format stri
 		}
 	}
 }
+
+// Deadline returns d scaled for the current environment, for waits that cannot
+// use For because they block on a channel rather than poll a condition.
+//
+// A select that hard-codes its own time.After deadline opts out of the scaling
+// For already applies, so the same contended runner that For rides out fails the
+// select instead. That is not hypothetical: the two sandbox teardown waits in
+// internal/mcp scaled their startup wait through For and then blocked on a raw
+// twenty-second time.After, and both reported a loaded runner as a product
+// failure to reap a process tree.
+//
+// The failure direction is what makes this worth exporting. A deadline that is
+// too short turns scheduling noise into a red build, which trains the operator
+// to re-run rather than to read the failure; a genuine hang still fails the
+// package -timeout, which is the real backstop and is unaffected here.
+func Deadline(d time.Duration) time.Duration { return scaleDeadline(d) }

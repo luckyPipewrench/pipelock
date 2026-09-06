@@ -63,3 +63,48 @@ func TestScaleDeadline(t *testing.T) {
 		})
 	}
 }
+
+// TestDeadline pins the exported wrapper to the same scaling For gets. The two
+// must not drift: the select-based waits call Deadline while the polling waits
+// call For, and a wrapper that quietly stopped scaling would restore exactly the
+// unscaled twenty-second teardown deadline this function exists to remove,
+// while every test still passed on a development host.
+func TestDeadline(t *testing.T) {
+	base := 20 * time.Second
+
+	t.Run("ci scales", func(t *testing.T) {
+		t.Setenv("CI", "true")
+		t.Setenv("PIPELOCK_TEST_DEADLINE_SCALE", "")
+		if got, want := Deadline(base), base*ciDeadlineScale; got != want {
+			t.Errorf("Deadline(%v) under CI = %v, want %v", base, got, want)
+		}
+	})
+
+	t.Run("local is unscaled", func(t *testing.T) {
+		t.Setenv("CI", "")
+		t.Setenv("PIPELOCK_TEST_DEADLINE_SCALE", "")
+		if got := Deadline(base); got != base {
+			t.Errorf("Deadline(%v) locally = %v, want %v", base, got, base)
+		}
+	})
+
+	t.Run("matches For's scaling exactly", func(t *testing.T) {
+		t.Setenv("CI", "true")
+		t.Setenv("PIPELOCK_TEST_DEADLINE_SCALE", "2.5")
+		if got, want := Deadline(base), scaleDeadline(base); got != want {
+			t.Errorf("Deadline(%v) = %v, want scaleDeadline's %v", base, got, want)
+		}
+	})
+
+	// A non-positive result would expire every select immediately and report
+	// timing as product failure, which is the direction this must never fail in.
+	t.Run("stays positive under a hostile override", func(t *testing.T) {
+		for _, scale := range []string{"0", "-1", "5e-324", "bogus", "   "} {
+			t.Setenv("CI", "true")
+			t.Setenv("PIPELOCK_TEST_DEADLINE_SCALE", scale)
+			if got := Deadline(base); got <= 0 {
+				t.Errorf("Deadline(%v) with scale %q = %v, want a positive deadline", base, scale, got)
+			}
+		}
+	})
+}

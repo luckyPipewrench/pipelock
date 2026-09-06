@@ -86,8 +86,10 @@ import json, sys
 from pathlib import Path
 path, proxy = sys.argv[1], sys.argv[2]
 data = json.loads(Path(path).read_text())
-assert data.get("httpProxy") == proxy, data
-assert data.get("theme") == "keep-me", data
+if data.get("httpProxy") != proxy:
+    raise SystemExit(f"unexpected settings: {data!r}")
+if data.get("theme") != "keep-me":
+    raise SystemExit(f"unexpected settings: {data!r}")
 PY
 pass "settings kept theme and set httpProxy"
 
@@ -114,7 +116,8 @@ python3 - <<'PY' "$SETTINGS" "$PROXY"
 import json, sys
 from pathlib import Path
 data = json.loads(Path(sys.argv[1]).read_text())
-assert data.get("httpProxy") == sys.argv[2], data
+if data.get("httpProxy") != sys.argv[2]:
+    raise SystemExit(f"unexpected settings: {data!r}")
 PY
 pass "remove dry-run left httpProxy in place"
 
@@ -131,8 +134,10 @@ python3 - <<'PY' "$SETTINGS"
 import json, sys
 from pathlib import Path
 data = json.loads(Path(sys.argv[1]).read_text())
-assert "httpProxy" not in data, data
-assert data.get("theme") == "keep-me", data
+if "httpProxy" in data:
+    raise SystemExit(f"unexpected settings: {data!r}")
+if data.get("theme") != "keep-me":
+    raise SystemExit(f"unexpected settings: {data!r}")
 PY
 pass "remove dropped httpProxy and kept theme"
 
@@ -153,8 +158,10 @@ python3 - <<'PY' "$SETTINGS" "$PRIOR_PROXY"
 import json, sys
 from pathlib import Path
 data = json.loads(Path(sys.argv[1]).read_text())
-assert data.get("httpProxy") == sys.argv[2], data
-assert data.get("theme") == "keep-me", data
+if data.get("httpProxy") != sys.argv[2]:
+    raise SystemExit(f"unexpected settings: {data!r}")
+if data.get("theme") != "keep-me":
+    raise SystemExit(f"unexpected settings: {data!r}")
 PY
 pass "remove restored prior httpProxy and kept theme"
 

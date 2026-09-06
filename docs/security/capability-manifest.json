@@ -1375,6 +1375,11 @@
     },
     {
       "kind": "command",
+      "value": "pipelock pi",
+      "reason": "Agent integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
       "value": "pipelock presets",
       "reason": "Preset catalog, not a separate protection capability."
     },

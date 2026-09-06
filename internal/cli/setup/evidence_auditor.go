@@ -98,14 +98,27 @@ func installEvidenceCorpusAuditor(ctx context.Context, recorderDir string) (evid
 		AlertPath:   filepath.Join(configDir, "pipelock", "prometheus", "rules", evidenceCorpusAuditorAlert),
 		MetricPath:  filepath.Join(configDir, "pipelock", "prometheus", "textfile", "pipelock_evidence_corpus.prom"),
 	}
-	for _, rendered := range []struct {
+	renderedFiles := []struct {
 		path string
 		body string
 	}{
 		{install.ServicePath, renderEvidenceCorpusAuditorService(pipelockPath, recorderDir, install.MetricPath)},
 		{install.TimerPath, renderEvidenceCorpusAuditorTimer()},
 		{install.AlertPath, renderEvidenceCorpusAuditorAlert()},
-	} {
+	}
+	// Validate the whole managed set before replacing anything. In particular,
+	// init may be running from a temporary binary with a temporary recorder
+	// directory; replacing a durable service with that target makes its next
+	// timer run silently stop producing fresh evidence.
+	for _, rendered := range renderedFiles {
+		if err := validateManagedEvidenceAuditorFile(rendered.path, rendered.body); err != nil {
+			return evidenceCorpusAuditorInstall{}, err
+		}
+	}
+	if err := validateEvidenceCorpusAuditorServiceTarget(renderedFiles[0].path, renderedFiles[0].body); err != nil {
+		return evidenceCorpusAuditorInstall{}, err
+	}
+	for _, rendered := range renderedFiles {
 		if err := writeManagedEvidenceAuditorFile(rendered.path, rendered.body); err != nil {
 			return evidenceCorpusAuditorInstall{}, err
 		}
@@ -123,7 +136,19 @@ func writeManagedEvidenceAuditorFile(path, body string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("creating evidence corpus auditor directory: %w", err)
 	}
-	data := []byte(body)
+	if existing, err := os.ReadFile(filepath.Clean(path)); err == nil && string(existing) == body {
+		return nil
+	}
+	if err := validateManagedEvidenceAuditorFile(path, body); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return fmt.Errorf("writing evidence corpus auditor file %s: %w", path, err)
+	}
+	return nil
+}
+
+func validateManagedEvidenceAuditorFile(path, body string) error {
 	if existing, err := os.ReadFile(filepath.Clean(path)); err == nil {
 		if string(existing) == body {
 			return nil
@@ -134,10 +159,46 @@ func writeManagedEvidenceAuditorFile(path, body string) error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reading evidence corpus auditor file %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("writing evidence corpus auditor file %s: %w", path, err)
+	return nil
+}
+
+func validateEvidenceCorpusAuditorServiceTarget(path, desired string) error {
+	existing, err := os.ReadFile(filepath.Clean(path))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading evidence corpus auditor file %s: %w", path, err)
+	}
+	if !strings.HasPrefix(string(existing), managedEvidenceAuditorHeader) {
+		return fmt.Errorf("refusing to overwrite unmanaged evidence corpus auditor file %s", path)
+	}
+	desiredTarget, ok := evidenceCorpusAuditorServiceTarget(desired)
+	if !ok {
+		return fmt.Errorf("rendering evidence corpus auditor service target for %s", path)
+	}
+	existingTarget, ok := evidenceCorpusAuditorServiceTarget(string(existing))
+	if !ok {
+		return fmt.Errorf("refusing to replace managed evidence corpus auditor service %s because its executable and flight recorder directory cannot be determined", path)
+	}
+	if existingTarget != desiredTarget {
+		return fmt.Errorf("refusing to replace managed evidence corpus auditor service target in %s; rerun the binary and flight_recorder.dir already configured there; to migrate, stop %s with systemctl --user, update this service's ExecStart to the intended binary and recorder directory, run systemctl --user daemon-reload, then rerun init", path, evidenceCorpusAuditorTimer)
 	}
 	return nil
+}
+
+func evidenceCorpusAuditorServiceTarget(service string) (string, bool) {
+	for _, line := range strings.Split(service, "\n") {
+		if !strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		textfileFlag := strings.LastIndex(line, " --prometheus-textfile ")
+		if textfileFlag == -1 {
+			return "", false
+		}
+		return line[:textfileFlag], true
+	}
+	return "", false
 }
 
 func renderEvidenceCorpusAuditorService(pipelockPath, recorderDir, metricPath string) string {
@@ -153,6 +214,7 @@ func renderEvidenceCorpusAuditorAlert() string {
 }
 
 func systemdArgument(value string) string {
-	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "%", "%%")
+	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "%", "%%",
+		"\a", "\\a", "\b", "\\b", "\f", "\\f", "\n", "\\n", "\r", "\\r", "\t", "\\t", "\v", "\\v")
 	return "\"" + replacer.Replace(value) + "\""
 }

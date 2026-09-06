@@ -22,7 +22,10 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("PIPELOCK_CONFIG", cfgPath); err != nil {
 		panic(err)
 	}
-	evidenceAuditorUserConfigDir = func() (string, error) { return filepath.Join(dir, "user-config"), nil }
+	// Each init command needs its own auditor directory. Sharing one directory
+	// makes independent test configs look like attempts to replace a durable
+	// auditor target, which is precisely what production must reject.
+	evidenceAuditorUserConfigDir = func() (string, error) { return os.MkdirTemp(dir, "user-config-") }
 	evidenceAuditorExecutable = func() (string, error) { return "/usr/bin/pipelock", nil }
 	evidenceAuditorSystemctl = func(_ context.Context, _ systemctlOp) error { return nil }
 

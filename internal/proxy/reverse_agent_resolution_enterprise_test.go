@@ -44,9 +44,9 @@ func TestReverseProxySourceCIDRIdentityOverridesAgentHeader(t *testing.T) {
 	var emitterPtr atomic.Pointer[envelope.Emitter]
 	emitterPtr.Store(emitter)
 	handler.SetEnvelopeEmitter(&emitterPtr)
-	var editionPtr atomic.Pointer[editionSnapshot]
-	editionPtr.Store(&editionSnapshot{Edition: ed})
-	handler.setEditionPtr(&editionPtr)
+	identityProxy := &Proxy{}
+	identityProxy.editionPtr.Store(&editionSnapshot{Edition: ed})
+	identityProxy.BindReverseProxyIdentity(handler)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/resource", nil)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestReverseProxySourceCIDRIdentityOverridesAgentHeader(t *testing.T) {
 		t.Fatalf("new reloaded edition: %v", err)
 	}
 	defer reloadedEdition.Close()
-	editionPtr.Store(&editionSnapshot{Edition: reloadedEdition})
+	identityProxy.editionPtr.Store(&editionSnapshot{Edition: reloadedEdition})
 
 	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/resource", nil)
 	if err != nil {

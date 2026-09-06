@@ -94,16 +94,31 @@ func TestRunProxyWithSandbox_AllowsUnmappedCommand(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), "/bin/true")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})
-	}()
-	var err error
-	select {
-	case err = <-errCh:
-	case <-ctx.Done():
-		t.Fatal("unmapped command did not complete; proxy flow blocked")
+	type completion struct {
+		err         error
+		completedAt time.Time
 	}
+	done := make(chan completion, 1)
+	go func() {
+		err := RunProxyWithSandbox(ctx, cmd, strings.NewReader(""), &strings.Builder{}, &strings.Builder{}, MCPProxyOpts{})
+		done <- completion{err: err, completedAt: time.Now()}
+	}()
+	var result completion
+	select {
+	case result = <-done:
+	case <-ctx.Done():
+		// The receiver may resume after both channels became ready.
+		select {
+		case result = <-done:
+		default:
+			t.Fatal("unmapped command did not complete; proxy flow blocked")
+		}
+	}
+	deadline, _ := ctx.Deadline()
+	if !result.completedAt.Before(deadline) {
+		t.Fatal("unmapped command completed after the watchdog expired")
+	}
+	err := result.err
 	if err != nil && strings.Contains(err.Error(), "RunProxyWithSandboxLaunch") {
 		t.Fatalf("unmapped command must not hit the mapped-launch refusal: %v", err)
 	}

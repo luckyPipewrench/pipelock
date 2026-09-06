@@ -769,17 +769,56 @@ func rewriteProfileToolCallsMean(t *testing.T, path string) {
 }
 
 func waitForPath(path string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
+	return waitForPathWithNow(path, timeout, time.Now)
+}
+
+func waitForPathWithNow(path string, timeout time.Duration, now func() time.Time) bool {
+	deadline := now().Add(timeout)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if _, err := os.Stat(filepath.Clean(path)); err == nil {
-			return true
-		}
-		if time.Now().After(deadline) {
+		if !now().Before(deadline) {
 			return false
 		}
+		if _, err := os.Stat(filepath.Clean(path)); err == nil {
+			return now().Before(deadline)
+		}
 		<-ticker.C
+	}
+}
+
+func TestWaitForPathRequiresCompletionBeforeDeadline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ready")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(0, 0)
+	for _, tt := range []struct {
+		name  string
+		times []time.Time
+		want  bool
+	}{
+		{"early", []time.Time{base, base, base}, true},
+		{"completed at deadline", []time.Time{base, base, base.Add(time.Second)}, false},
+		{"already expired", []time.Time{base, base.Add(time.Second)}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			i := 0
+			now := func() time.Time {
+				value := tt.times[min(i, len(tt.times)-1)]
+				i++
+				return value
+			}
+			if got := waitForPathWithNow(path, time.Second, now); got != tt.want {
+				t.Fatalf("completion = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForPathMissingFileExpires(t *testing.T) {
+	if waitForPath(filepath.Join(t.TempDir(), "missing"), 0) {
+		t.Fatal("missing file satisfied the wait")
 	}
 }
 

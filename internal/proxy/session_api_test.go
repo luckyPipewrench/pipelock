@@ -852,9 +852,11 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 
 	select {
 	case <-done:
-		// Success - completed without deadlock.
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("concurrent traffic ended after the watchdog expired: %v", err)
+		}
 	case <-ctx.Done():
-		t.Fatal("deadlock detected: test did not complete within timeout")
+		t.Fatal("concurrent traffic did not complete before the watchdog expired")
 	}
 }
 

@@ -101,6 +101,9 @@ func TestRunProxyWithSandbox_AllowsUnmappedCommand(t *testing.T) {
 	var err error
 	select {
 	case err = <-errCh:
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			t.Fatalf("unmapped command completed after the watchdog expired: %v", ctxErr)
+		}
 	case <-ctx.Done():
 		t.Fatal("unmapped command did not complete; proxy flow blocked")
 	}

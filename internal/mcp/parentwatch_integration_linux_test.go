@@ -230,7 +230,9 @@ func TestSessionExit_RealParentDeathReapsWholeTree(t *testing.T) {
 		"echo $! > " + proxyPidFile + "\n" +
 		"wait\n"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// Scaled for the same reason as the sandbox teardown ctx below: the waits
+	// inside this test scale under CI and an unscaled ctx would expire first.
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(90*time.Second))
 	defer cancel()
 
 	session := exec.CommandContext(ctx, "/bin/sh")
@@ -316,7 +318,14 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 	sandboxFile := filepath.Join(dir, "sandbox.pid")
 	grandchildFile := filepath.Join(dir, "grandchild.pid")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	// Scaled with the waits inside it. An unscaled ctx here is not merely
+	// impatient, it inverts the result: exec.CommandContext kills the command
+	// when ctx expires, RunProxyWithSandbox returns, and the teardown select
+	// takes its <-done branch. A run whose reaping was genuinely broken would
+	// then report PASS, because the context did the killing the code under test
+	// failed to do. The scaled teardown deadline below is 80s under CI, so an
+	// unscaled 45s ctx would win every time.
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(45*time.Second))
 	defer cancel()
 	clientIn := newBlockingReader()
 	defer func() { _ = clientIn.Close() }()

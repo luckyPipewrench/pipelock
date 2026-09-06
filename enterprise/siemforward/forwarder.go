@@ -598,22 +598,30 @@ func verifyCursor(spoolPath string, c cursor) error {
 
 func (f *Forwarder) Emit(_ context.Context, event emit.Event) error {
 	f.lifecycleMu.Lock()
-	defer f.lifecycleMu.Unlock()
 	if f.closed {
+		f.lifecycleMu.Unlock()
 		return errClosed
 	}
 	if f.activationErr != nil {
-		return f.activationErr
+		activationErr := f.activationErr
+		f.lifecycleMu.Unlock()
+		return activationErr
 	}
 	if event.Severity < f.cfg.MinSeverity {
+		f.lifecycleMu.Unlock()
 		return nil
 	}
 	select {
 	case f.queue <- event:
+		f.lifecycleMu.Unlock()
+		// Observer callbacks are external work. Publish after releasing the
+		// lifecycle lock so observers can inspect Health without deadlocking
+		// Emit, while keeping the queue send synchronized with Close.
 		f.setQueued()
 		return nil
 	default:
 		f.dropped.Add(1)
+		f.lifecycleMu.Unlock()
 		if f.observer != nil {
 			f.observer.RecordDropped()
 		}

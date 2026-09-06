@@ -81,6 +81,10 @@ type fsWatcher struct {
 	// addWatch is the fsnotify registration seam. It is only replaced by tests
 	// to deterministically exercise per-subtree watch-install failures.
 	addWatch func(string) error
+	// afterFunc is the debounce timer seam. It is only replaced by tests so a
+	// stale callback can be invoked after a replacement without waiting on the
+	// wall clock. Production keeps time.AfterFunc.
+	afterFunc func(time.Duration, func()) *time.Timer
 }
 
 // DegradedPath records a configured watch_paths entry whose install failed
@@ -140,6 +144,7 @@ func NewWatcher(cfg *config.FileSentry, sc DLPScanner, lin Lineage, onError func
 		watchedPaths: make(map[string]struct{}),
 		onError:      onError,
 		addWatch:     w.Add,
+		afterFunc:    time.AfterFunc,
 	}, nil
 }
 
@@ -548,8 +553,9 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	// Timer identity check: capture the timer pointer in the closure.
 	// If a second write replaces this timer before the callback fires,
 	// the old callback sees its pointer differs from the map entry and
-	// does nothing. Without this, the old callback would delete the new
-	// timer's map entry, causing the new callback to scan without cleanup.
+	// does nothing. Without this, the old callback deletes the live
+	// timer's map entry, the live callback finds no timer, and the
+	// quiet-period scan is missed.
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -562,7 +568,7 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	// Declare timer before AfterFunc so the closure can capture it.
 	// The closure uses timer identity to detect stale callbacks.
 	var timer *time.Timer
-	timer = time.AfterFunc(debounceDelay, func() {
+	timer = w.afterFunc(debounceDelay, func() {
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()

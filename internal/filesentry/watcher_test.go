@@ -1053,12 +1053,13 @@ func TestWatcher_ClosedGuardsRejectNewWork(t *testing.T) {
 	t.Run("timer_callback", func(t *testing.T) {
 		sc := &countingDLPScanner{}
 		w := &fsWatcher{
-			cfg:      &config.FileSentry{ScanContent: ptrBool(true)},
-			scanner:  sc,
-			findings: make(chan Finding, 1),
-			overflow: make(chan Finding, 1),
-			timers:   make(map[string]*time.Timer),
-			pidSnap:  make(map[string]bool),
+			cfg:       &config.FileSentry{ScanContent: ptrBool(true)},
+			scanner:   sc,
+			findings:  make(chan Finding, 1),
+			overflow:  make(chan Finding, 1),
+			timers:    make(map[string]*time.Timer),
+			pidSnap:   make(map[string]bool),
+			afterFunc: time.AfterFunc,
 		}
 		w.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
 		w.mu.Lock()
@@ -1273,8 +1274,9 @@ func TestWatcher_CloseWaitsForInFlightDebounceScan(t *testing.T) {
 }
 
 func TestWatcher_DebounceTimerRace(t *testing.T) {
-	// Verify that rapid writes to the same file produce exactly one scan,
-	// not multiple. The timer identity check prevents stale callbacks.
+	// Smoke test over real fsnotify: a write burst still produces a finding
+	// for the written path. The identity check is covered by
+	// TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan.
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
@@ -1313,14 +1315,11 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 	//   produced 6 scans for 10 writes and the assertion stayed green.
 	//
 	// The count assertions this test's name implies need control over the
-	// debounce clock, which this package does not expose. Until that exists the
-	// honest position is a smoke test that cannot lie, rather than a threshold
-	// that reports contention as a timer race.
-	//
-	// In particular this does NOT guard the timer identity check. That
-	// regression deletes the live timer's map entry and produces FEWER scans,
-	// which no upper bound detects; removing the identity comparison leaves
-	// this test green.
+	// debounce clock. TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan
+	// owns that clock through the afterFunc seam. This test stays a smoke
+	// check over real fsnotify: it cannot lie about a scan happening, and it
+	// cannot police the identity check. Removing the identity comparison still
+	// leaves this test green because the missed scan is a lower count.
 	const writes = 10
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	filePath := filepath.Join(dir, "rapid.json")
@@ -1345,6 +1344,147 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 
 	if got := sc.calls.Load(); got < 1 {
 		t.Fatalf("ScanTextForDLP calls = %d, want the debounced scan to have run", got)
+	}
+}
+
+// A stale debounce callback that lost the replacement race must not delete
+// the live timer's map entry. Without that identity check the live callback
+// finds no timer and skips the scan of the quiet-period content.
+func TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	const firstContent = "first-write-body"
+	const finalContent = "final-write-body"
+	if err := os.WriteFile(path, []byte(firstContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sc := &capturingDLPScanner{}
+	clock := &manualAfterFunc{}
+	w, err := NewWatcher(&config.FileSentry{ScanContent: ptrBool(true)}, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	t.Cleanup(func() {
+		clock.stopAll()
+		_ = w.Close()
+	})
+	fw := w.(*fsWatcher)
+	fw.afterFunc = clock.afterFunc
+
+	fw.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+	if err := os.WriteFile(path, []byte(finalContent), 0o600); err != nil {
+		t.Fatalf("WriteFile final: %v", err)
+	}
+	fw.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+
+	stale, live := clock.callbacks()
+	if stale == nil || live == nil {
+		t.Fatalf("armed callbacks = %d, want 2", clock.len())
+	}
+	if clock.timerAt(0) == clock.timerAt(1) {
+		t.Fatal("replacement reused the first timer pointer")
+	}
+
+	fw.mu.Lock()
+	current := fw.timers[path]
+	fw.mu.Unlock()
+	if current != clock.timerAt(1) {
+		t.Fatal("live timer is not the map entry for the path")
+	}
+
+	stale()
+	if got := sc.scanned(); len(got) != 0 {
+		t.Fatalf("stale callback scanned %#v, want no scan", got)
+	}
+	fw.mu.Lock()
+	current = fw.timers[path]
+	fw.mu.Unlock()
+	if current != clock.timerAt(1) {
+		t.Fatal("stale callback deleted the live timer map entry")
+	}
+
+	live()
+	got := sc.scanned()
+	if len(got) != 1 || got[0] != finalContent {
+		t.Fatalf("live scan = %#v, want one scan of %q", got, finalContent)
+	}
+}
+
+type capturingDLPScanner struct {
+	countingDLPScanner
+	mu    sync.Mutex
+	texts []string
+}
+
+func (s *capturingDLPScanner) ScanTextForDLP(ctx context.Context, text string) scanner.TextDLPResult {
+	s.mu.Lock()
+	s.texts = append(s.texts, text)
+	s.mu.Unlock()
+	return s.countingDLPScanner.ScanTextForDLP(ctx, text)
+}
+
+func (s *capturingDLPScanner) scanned() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.texts))
+	copy(out, s.texts)
+	return out
+}
+
+// manualAfterFunc returns real *time.Timer values that never fire on their
+// own so tests can invoke captured callbacks in a chosen order. Production
+// Stop() and pointer identity keep their exact semantics.
+type manualAfterFunc struct {
+	mu     sync.Mutex
+	fns    []func()
+	timers []*time.Timer
+}
+
+func (m *manualAfterFunc) afterFunc(_ time.Duration, cb func()) *time.Timer {
+	// Hour is longer than any test deadline; the test fires cb itself.
+	timer := time.NewTimer(time.Hour)
+	m.mu.Lock()
+	m.fns = append(m.fns, cb)
+	m.timers = append(m.timers, timer)
+	m.mu.Unlock()
+	return timer
+}
+
+func (m *manualAfterFunc) callbacks() (stale, live func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.fns) < 2 {
+		return nil, nil
+	}
+	return m.fns[0], m.fns[1]
+}
+
+func (m *manualAfterFunc) timerAt(i int) *time.Timer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if i < 0 || i >= len(m.timers) {
+		return nil
+	}
+	return m.timers[i]
+}
+
+func (m *manualAfterFunc) len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.fns)
+}
+
+func (m *manualAfterFunc) stopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, timer := range m.timers {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
 	}
 }
 

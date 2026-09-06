@@ -107,6 +107,10 @@ const (
 	// tracker. httputil.ReverseProxy completes through callbacks, so ServeHTTP
 	// owns final emission while callbacks only record status/bytes/reason.
 	ctxKeyReverseOutcome
+	// ctxKeyReverseResponseReceipt carries the response header state across
+	// httputil.ReverseProxy's ModifyResponse boundary. Buffered response blocks
+	// replace the upstream response after an admission receipt was exposed.
+	ctxKeyReverseResponseReceipt
 
 	// ctxKeyEnvelopeEmitter snapshots the fetch/forward envelope emitter
 	// decision, including an explicit nil when signing was off at
@@ -1240,6 +1244,19 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // operator reconstructing the enforcement decision after a missing-receipt
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested.
+// emitRecordedReceipt reports whether a receipt for opts was actually
+// recorded. A nil emitter is a legitimate no-op for enforcement, but it never
+// counts as recorded: a caller-facing X-Pipelock-Receipt set from an
+// allocated-but-unrecorded id would be false evidence, so block writers use
+// this and fail toward silence.
+func (p *Proxy) emitRecordedReceipt(opts receipt.EmitOpts) bool {
+	if cfg := p.cfgPtr.Load(); cfg != nil {
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	}
+	e := p.receiptEmitterPtr.Load()
+	return e != nil && p.emitReceiptWithEmitter(opts, e) == nil
+}
+
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
@@ -4182,12 +4199,15 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 					// so emit a forward receipt here to keep the
 					// audit chain unbroken.
 					requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
-					_ = p.emitReceipt(forwardKillSwitchReceiptOpts(
-						receipt.NewActionID(),
+					actionID := receipt.NewActionID()
+					if p.emitRecordedReceipt(forwardKillSwitchReceiptOpts(
+						actionID,
 						requestID,
 						r.Method,
 						r.URL.String(),
-					))
+					)) {
+						blockreason.SetRecordedReceipt(w.Header(), actionID)
+					}
 					writeBlockedError(w,
 						blockInfoFor(blockreason.KillSwitchActive, "kill_switch"),
 						"blocked: kill_switch_active", http.StatusForbidden)
@@ -4457,7 +4477,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// it only at fetch time would report "unknown" for each event on the way.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
-		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
+			if opts.Verdict == config.ActionBlock {
+				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+			}
+		}
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
@@ -5355,6 +5380,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				})
 			return
 		}
+		blockreason.SetRecordedReceipt(w.Header(), fetchAllowReceipt.ActionID)
 	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
@@ -5967,7 +5993,9 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
-		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		if p.emitRecordedReceipt(opts) {
+			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+		}
 	}
 
 	if result.Clean {

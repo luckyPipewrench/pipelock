@@ -131,7 +131,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
-		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
+			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+		}
 	}
 
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
@@ -646,6 +649,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				"CONNECT blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
+		blockreason.SetRecordedReceipt(w.Header(), allowReceipt.ActionID)
 	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
@@ -667,7 +671,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &ssrfErr) {
 			p.logger.LogBlocked(targetCtx, scanner.ScannerSSRF, ssrfErr.logDetail())
 			p.metrics.RecordTunnelBlocked(agentLabel)
-			_ = p.emitReceipt(withReceiptPolicyHash(receipt.EmitOpts{
+			if p.emitRecordedReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     scanner.ScannerSSRF,
@@ -677,7 +681,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				Target:    connectReceiptTarget,
 				RequestID: requestID,
 				Agent:     agent,
-			}, cfg.CanonicalPolicyHash()))
+			}) {
+				blockreason.SetRecordedReceipt(w.Header(), actionID)
+			}
 			writeBlockedError(w, ssrfErr.blockInfo(), "CONNECT blocked: "+ssrfErr.detail, http.StatusForbidden)
 			outcomeStatus = strconv.Itoa(http.StatusForbidden)
 			outcomeReason = string(ssrfErr.reason)
@@ -715,8 +721,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(clientConn, "clientConn", p.logger)
 
-	// Send 200 Connection Established
-	_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	// Send 200 Connection Established. A hijacked connection bypasses net/http's
+	// normal header serialization, so carry the already-validated recorded
+	// receipt explicitly when required-receipt admission completed.
+	if recordedReceipt := w.Header().Get(blockreason.HeaderRecordedReceipt); recordedReceipt != "" {
+		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n%s: %s\r\n\r\n", blockreason.HeaderRecordedReceipt, recordedReceipt)
+	} else {
+		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	}
 
 	// SNI verification: read ClientHello via Peek, check SNI matches CONNECT
 	// target. Peek() leaves bytes in the buffer for the relay to forward.
@@ -898,7 +910,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
-		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
+			if opts.Verdict == config.ActionBlock {
+				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+			}
+		}
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
@@ -2018,6 +2035,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				"blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
+		blockreason.SetRecordedReceipt(w.Header(), forwardAllowReceipt.ActionID)
 	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
@@ -3039,11 +3057,18 @@ func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxB
 // stripping hop-by-hop headers and Content-Length (which may be stale after
 // body truncation or stripping).
 func copyResponseHeaders(dst, src http.Header) {
+	// X-Pipelock-Receipt is proxy-owned evidence metadata. Preserve only an
+	// already-validated proxy value while deleting a value supplied upstream.
+	// This function is used immediately before every forward response write.
+	recordedReceipt := dst.Get(blockreason.HeaderRecordedReceipt)
+	blockreason.StripRecordedReceipt(dst)
 	for k, vv := range src {
 		for _, v := range vv {
 			dst.Add(k, v)
 		}
 	}
+	blockreason.StripRecordedReceipt(dst)
+	blockreason.SetRecordedReceipt(dst, recordedReceipt)
 	removeHopByHopHeaders(dst)
 	dst.Del("Content-Length")
 }

@@ -602,6 +602,7 @@ func RunHTTPListenerProxy(
 				if withReceipt, receiptErr := info.WithReceipt(actionID); receiptErr == nil {
 					info = withReceipt
 				}
+				blockreason.SetRecordedReceipt(w.Header(), actionID)
 			}
 			info.SetHeaders(w.Header())
 		}
@@ -1399,10 +1400,12 @@ func RunHTTPListenerProxy(
 				// attribution lives in the layer.
 				emitter := requestBaseOpts.receiptEmitter()
 				v2Emitter := requestBaseOpts.v2ReceiptEmitter()
+				actionID := receipt.NewActionID()
+				receiptEmitted := false
 				if emitter != nil || v2Emitter != nil || requestBaseOpts.requireReceipts() {
 					if _, emitErr := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
 						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
-							ActionID:  receipt.NewActionID(),
+							ActionID:  actionID,
 							Verdict:   config.ActionBlock,
 							Layer:     mcpReceiptLayerA2A,
 							Pattern:   firstNonEmpty(headerResult.Reason, mcpReceiptA2AHeaderPattern),
@@ -1417,7 +1420,12 @@ func RunHTTPListenerProxy(
 						RequireReceipt: requestBaseOpts.requireReceipts(),
 					}); emitErr != nil {
 						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
+					} else if emitter != nil || v2Emitter != nil {
+						receiptEmitted = true
 					}
+				}
+				if receiptEmitted {
+					blockreason.SetRecordedReceipt(w.Header(), actionID)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := frame.ID
@@ -2069,7 +2077,7 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
-	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Pipelock-Session-Token")
+	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Pipelock-Session-Token, X-Pipelock-Receipt")
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")
 	headers.Add("Vary", "Access-Control-Request-Headers")

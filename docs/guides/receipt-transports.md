@@ -2,6 +2,8 @@
 
 Pipelock emits Ed25519-signed action receipts for enforcement decisions across proxy transports. Receipts are written to the flight recorder as `action_receipt` entries and linked into a tamper-evident hash chain via `chain_prev_hash` and `chain_seq`.
 
+For HTTP-shaped responses, `X-Pipelock-Receipt` optionally returns the proxy-minted `action_id` after the matching receipt has been recorded. A caller can retain that value beside its own request ID and later verify the signed receipt; the header alone is not proof. The header is available for blocks and for allow responses when `flight_recorder.require_receipts` records admission before egress. Best-effort allow responses intentionally remain uncorrelated until a pre-emission design is introduced.
+
 ## Transports and Event Kinds
 
 | Transport | Event Kind | Layer / Subsurface | Description |

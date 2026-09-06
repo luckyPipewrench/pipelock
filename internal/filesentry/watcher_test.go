@@ -1413,12 +1413,18 @@ func TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan(t *testing.T) {
 	}
 }
 
+// capturingDLPScanner records the text of every scan, so a test can assert
+// WHICH content was scanned rather than only how many scans ran. The debounce
+// tests turn on that distinction: a stale callback and a live one differ by the
+// file body they see, not by their count.
 type capturingDLPScanner struct {
 	countingDLPScanner
 	mu    sync.Mutex
 	texts []string
 }
 
+// ScanTextForDLP records the scanned text before delegating to the embedded
+// counting scanner, so call count and content stay consistent with each other.
 func (s *capturingDLPScanner) ScanTextForDLP(ctx context.Context, text string) scanner.TextDLPResult {
 	s.mu.Lock()
 	s.texts = append(s.texts, text)
@@ -1426,6 +1432,8 @@ func (s *capturingDLPScanner) ScanTextForDLP(ctx context.Context, text string) s
 	return s.countingDLPScanner.ScanTextForDLP(ctx, text)
 }
 
+// scanned returns a copy of the recorded texts. A copy rather than the slice
+// itself, because the watcher may still be scanning on another goroutine.
 func (s *capturingDLPScanner) scanned() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1443,6 +1451,9 @@ type manualAfterFunc struct {
 	timers []*time.Timer
 }
 
+// afterFunc stands in for time.AfterFunc. It returns a REAL timer so the
+// production pointer-identity comparison and Stop() keep their exact meaning,
+// and records the callback so the test decides when each window fires.
 func (m *manualAfterFunc) afterFunc(_ time.Duration, cb func()) *time.Timer {
 	// Hour is longer than any test deadline; the test fires cb itself.
 	timer := time.NewTimer(time.Hour)
@@ -1453,6 +1464,8 @@ func (m *manualAfterFunc) afterFunc(_ time.Duration, cb func()) *time.Timer {
 	return timer
 }
 
+// callbacks returns the first two armed callbacks, the stale one and the live
+// one, for the two-event replacement race.
 func (m *manualAfterFunc) callbacks() (stale, live func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1526,6 +1539,8 @@ func TestWatcher_BurstCoalescesToOneScan(t *testing.T) {
 	}
 }
 
+// fnAt returns the callback armed by the i-th event, so a burst test can fire
+// every window in the order the watcher armed them.
 func (m *manualAfterFunc) fnAt(i int) func() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1535,6 +1550,8 @@ func (m *manualAfterFunc) fnAt(i int) func() {
 	return m.fns[i]
 }
 
+// timerAt returns the timer handed back for the i-th event, which is what the
+// watcher stores in its map and compares against.
 func (m *manualAfterFunc) timerAt(i int) *time.Timer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1544,12 +1561,15 @@ func (m *manualAfterFunc) timerAt(i int) *time.Timer {
 	return m.timers[i]
 }
 
+// len reports how many debounce windows the watcher armed.
 func (m *manualAfterFunc) len() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.fns)
 }
 
+// stopAll releases every timer the fake handed out. The timers are real, so
+// leaving them armed would keep the runtime holding them for the full hour.
 func (m *manualAfterFunc) stopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

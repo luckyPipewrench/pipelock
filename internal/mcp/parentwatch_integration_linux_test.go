@@ -371,7 +371,7 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 	parentDied.Store(true)
 	select {
 	case <-done:
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("sandbox proxy stayed alive after the spawning session exited")
 	}
 
@@ -427,7 +427,7 @@ func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		// Report the operator log and the surviving processes. This assertion
 		// has failed on CI while passing on a development host, and a bare
 		// timeout says nothing about which stage did not finish.
@@ -484,7 +484,7 @@ func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatalf("sandbox proxy did not stop after cancellation while a detached descendant held stdout; log: %q; surviving descendants: %s",
 			logBuf.String(), describeOwnDescendants())
 	}

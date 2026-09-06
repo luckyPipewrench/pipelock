@@ -40,7 +40,7 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
 
     def test_every_shipped_verifier_is_in_the_runner_contract(self):
         example_scripts = sorted(ROOT.glob("examples/*/verify.sh"))
-        self.assertEqual(len(example_scripts), 17)
+        self.assertEqual(len(example_scripts), 18)
         self.assertIn("find \"$ROOT_DIR/examples\"", self.runner)
         self.assertIn("-name verify.sh", self.runner)
         for path in sorted((ROOT / "scripts" / "e2e").glob("*-install.sh")):

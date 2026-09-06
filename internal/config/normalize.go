@@ -289,6 +289,7 @@ func (c *Config) ApplyDefaults() {
 		c.DLP.Patterns,
 		Defaults().DLP.Patterns,
 	)
+	markBuiltInCredentialURLWhitespaceGrammar(c.DLP.Patterns)
 	c.Suppress = mergeDefaultSuppressions(c.Suppress, defaultProviderKeySuppressions())
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
@@ -862,6 +863,28 @@ func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPP
 	}
 	merged = append(merged, user...)
 	return merged
+}
+
+// markBuiltInCredentialURLWhitespaceGrammar restores built-in runtime
+// provenance for shipped preset YAML, which serializes DLPPattern without its
+// runtime-only marker. Only an exact copy of the canonical built-in definition
+// receives the marker; operators cannot configure it through YAML.
+func markBuiltInCredentialURLWhitespaceGrammar(patterns []DLPPattern) {
+	for _, pattern := range defaultDLPPatternSet {
+		if !pattern.CredentialURLWhitespaceGrammar {
+			continue
+		}
+		for i := range patterns {
+			candidate := &patterns[i]
+			candidate.CredentialURLWhitespaceGrammar = candidate.Bundle == "" &&
+				candidate.Name == pattern.Name &&
+				candidate.Regex == pattern.Regex &&
+				candidate.Severity == pattern.Severity &&
+				candidate.Validator == pattern.Validator &&
+				sameStrings(candidate.ExemptDomains, pattern.ExemptDomains)
+		}
+		return
+	}
 }
 
 func mergeDefaultSuppressions(user, defaults []SuppressEntry) []SuppressEntry {

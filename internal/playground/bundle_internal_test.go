@@ -370,8 +370,14 @@ func TestGenerateOrchestratorKey_WriteFailuresFailClosed(t *testing.T) {
 }
 
 func TestDefaultOrchestratorKeyPath_UsesConfigDir(t *testing.T) {
-	configDir := filepath.Join(t.TempDir(), "config")
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	dir := t.TempDir()
+	for _, name := range []string{"XDG_CONFIG_HOME", "HOME", "AppData", "home"} {
+		t.Setenv(name, dir)
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	want := filepath.Join(configDir, orchestratorKeyConfigDir, orchestratorKeyFileName)
 	if got := DefaultOrchestratorKeyPath(); got != want {
@@ -380,8 +386,9 @@ func TestDefaultOrchestratorKeyPath_UsesConfigDir(t *testing.T) {
 }
 
 func TestDefaultOrchestratorKeyPath_NoConfigDir(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("HOME", "")
+	for _, name := range []string{"XDG_CONFIG_HOME", "HOME", "AppData", "home"} {
+		t.Setenv(name, "")
+	}
 
 	if got := DefaultOrchestratorKeyPath(); got != "" {
 		t.Fatalf("DefaultOrchestratorKeyPath() = %q, want empty without config dir", got)

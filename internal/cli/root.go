@@ -168,6 +168,7 @@ Quick start:
 		setup.JetbrainsCmd(),
 		setup.CodexCmd(),
 		setup.OpenCodeCmd(),
+		setup.PiCmd(),
 		setup.ZedCmd(),
 		// Signing & integrity
 		clisigning.IntegrityCmd(),

@@ -112,6 +112,111 @@ func TestLifecycleMutationsReturnCommittedMetadata(t *testing.T) {
 	}
 }
 
+func TestLifecycleFailurePathsDoNotCreateOrReplaceKeyrings(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation func(path string) error
+		want      error
+		wantFile  bool
+	}{
+		{
+			name: "rotate missing keyring",
+			operation: func(path string) error {
+				_, _, err := Rotate(path, time.Unix(1_700_000_100, 0))
+				return err
+			},
+			want: os.ErrNotExist,
+		},
+		{
+			name: "retire missing keyring",
+			operation: func(path string) error {
+				_, err := Retire(path, "ck_00000000000000000000000000000000", 1, true)
+				return err
+			},
+			want: os.ErrNotExist,
+		},
+		{
+			name: "retire unknown key",
+			operation: func(path string) error {
+				_, err := Retire(path, "ck_00000000000000000000000000000000", 99, true)
+				return err
+			},
+			want:     ErrKeyNotFound,
+			wantFile: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+			var before []byte
+			if tc.wantFile {
+				if _, err := Initialize(path, time.Unix(1_700_000_000, 0)); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				before, err = os.ReadFile(filepath.Clean(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := tc.operation(path); !errors.Is(err, tc.want) {
+				t.Fatalf("operation error = %v, want %v", err, tc.want)
+			}
+			if tc.wantFile {
+				after, err := os.ReadFile(filepath.Clean(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(after) != string(before) {
+					t.Fatal("failed lifecycle operation modified the persisted keyring")
+				}
+				if _, err := Load(path); err != nil {
+					t.Fatalf("Load preserved keyring: %v", err)
+				}
+				return
+			}
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed lifecycle operation created keyring: %v", err)
+			}
+		})
+	}
+}
+
+func TestInMemoryRotateRejectsInvalidStateWithoutWriting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commitment-keyring.json")
+	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := cloneKeyring(keyring)
+	invalid.Purpose = "receipt-signing"
+	beforeInvalid := cloneKeyring(invalid)
+	if _, err := invalid.rotate(path, time.Unix(1_700_000_100, 0)); !errors.Is(err, ErrInvalidKeyring) {
+		t.Fatalf("rotate invalid keyring error = %v, want ErrInvalidKeyring", err)
+	}
+	if !reflect.DeepEqual(invalid, beforeInvalid) {
+		t.Fatal("rejected rotation modified the invalid in-memory keyring")
+	}
+
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("invalid in-memory rotation modified persisted key material")
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load preserved keyring: %v", err)
+	}
+}
+
 func TestKeyringDoesNotExportUnlockedSave(t *testing.T) {
 	if _, exists := reflect.TypeFor[*Keyring]().MethodByName("Save"); exists {
 		t.Fatal("Keyring exports Save without enforcing the lifecycle lock")

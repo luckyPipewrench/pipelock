@@ -775,13 +775,13 @@ func (f *Forwarder) recordDropped() {
 // event type and the sentinel reason are logged; the untrusted Fields are never
 // written out.
 func (f *Forwarder) recordDroppedEvent(event emit.Event, err error) {
+	f.healthMu.Lock()
 	f.dropped.Add(1)
+	f.lastError = err.Error()
+	f.healthMu.Unlock()
 	if f.observer != nil {
 		f.observer.RecordDropped()
 	}
-	f.healthMu.Lock()
-	f.lastError = err.Error()
-	f.healthMu.Unlock()
 	_, _ = fmt.Fprintf(os.Stderr, "siem forwarder dropped event type=%q: %v\n", event.Type, err)
 }
 
@@ -868,16 +868,16 @@ func (f *Forwarder) deliverPending() {
 			f.recordFailure(err)
 			return
 		}
-		f.delivered.Add(1)
 		now := time.Now().UTC()
+		f.healthMu.Lock()
+		f.delivered.Add(1)
+		f.lastError = ""
+		f.lastOK = now
+		f.healthMu.Unlock()
 		if f.observer != nil {
 			f.observer.RecordDelivered()
 			f.observer.SetLastSuccess(now)
 		}
-		f.healthMu.Lock()
-		f.lastError = ""
-		f.lastOK = now
-		f.healthMu.Unlock()
 	}
 	f.compactIfDrained(file)
 }
@@ -1076,14 +1076,14 @@ func hashRecord(record []byte) string {
 }
 
 func (f *Forwarder) recordFailure(err error) {
-	f.failed.Add(1)
-	if f.observer != nil {
-		f.observer.RecordFailed()
-	}
 	f.healthMu.Lock()
+	f.failed.Add(1)
 	changed := f.lastError != err.Error()
 	f.lastError = err.Error()
 	f.healthMu.Unlock()
+	if f.observer != nil {
+		f.observer.RecordFailed()
+	}
 	if changed {
 		_, _ = fmt.Fprintf(os.Stderr, "siem forwarder delivery error: %v\n", err)
 	}

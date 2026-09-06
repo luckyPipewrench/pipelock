@@ -146,7 +146,7 @@ dlp:
       regex: '[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
       severity: medium
     - name: "Credential in URL"
-      regex: '(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}'
+      regex: '(?m)(?:^\s*(?:password|passwd|secret|token|apikey|api_key|api-key)=[A-Za-z0-9_+/=~%.-][^\s&;]{3,}|[?&;]\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,})'
       severity: high
 response_scanning:
   enabled: true

@@ -1113,6 +1113,9 @@ type DLPPattern struct {
 	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
 	Compiled      bool     `yaml:"-"`                   // true for patterns created in Defaults()
+	// CredentialURLWhitespaceGrammar is set only by the built-in default
+	// registry. It is runtime provenance, not an operator-facing setting.
+	CredentialURLWhitespaceGrammar bool `yaml:"-"`
 }
 
 // AddressProtection configures crypto address poisoning detection.

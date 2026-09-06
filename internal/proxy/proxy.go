@@ -2926,6 +2926,7 @@ type sessionActivityOptions struct {
 	Scope      string
 	RequestID  string
 	UserAgent  string
+	ActorAuth  envelope.ActorAuth
 	Result     scanner.Result
 	Config     *config.Config
 	Logger     *audit.Logger
@@ -2970,10 +2971,14 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 
 	anomalies := sess.RecordRequest(hostname, &cfg.SessionProfiling)
 
-	// IP-level domain tracking: catches header rotation attacks where the
-	// agent identity changes per request but the source IP stays the same.
-	ipAnomalies := sm.RecordIPDomain(clientIP, hostname, &cfg.SessionProfiling)
-	anomalies = append(anomalies, ipAnomalies...)
+	// IP-level domain tracking exists to catch header rotation of a
+	// request-controlled agent name. Bound and config-default identities
+	// are not request-controlled, so writing them into the shared IP
+	// bucket only poisons co-located sessions on the same address.
+	if !opts.ActorAuth.TrustedForIdentity() {
+		ipAnomalies := sm.RecordIPDomain(clientIP, hostname, &cfg.SessionProfiling)
+		anomalies = append(anomalies, ipAnomalies...)
+	}
 
 	if baselineResult := sm.CheckBaselineFailClosed(baselineAgentKeyForSessionKey(key), sess); baselineResult != nil {
 		detail := baselineDecisionDetail(baselineResult)
@@ -3068,7 +3073,8 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	}
 
 	if cfg.AdaptiveEnforcement.Enabled && !result.IsAdaptiveNeutral() && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
-		cooperativeBurst := cfg.AdaptiveEnforcement.CooperativeToolDownweight && isCooperativeToolBurstUserAgent(userAgent)
+		cooperativeBurst := (cfg.AdaptiveEnforcement.CooperativeToolDownweight && isCooperativeToolBurstUserAgent(userAgent)) ||
+			opts.ActorAuth.TrustedForIdentity()
 		for _, a := range anomalies {
 			sig, ok := signalForSessionAnomaly(a.Type, cooperativeBurst)
 			if !ok || a.Score <= 0 {
@@ -4620,6 +4626,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Hostname:   parsed.Hostname(),
 		RequestID:  requestID,
 		UserAgent:  r.UserAgent(),
+		ActorAuth:  id.Auth,
 		Result:     result,
 		Config:     cfg,
 		Logger:     log,

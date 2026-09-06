@@ -24,6 +24,28 @@ func TestDefaultDLPPatternsMatchDefaults(t *testing.T) {
 	}
 }
 
+func TestMarkBuiltInCredentialURLWhitespaceGrammar(t *testing.T) {
+	patterns := DefaultDLPPatterns()
+	var credentialIndex int
+	for i := range patterns {
+		if patterns[i].CredentialURLWhitespaceGrammar {
+			credentialIndex = i
+			break
+		}
+	}
+	patterns[credentialIndex].CredentialURLWhitespaceGrammar = false
+	markBuiltInCredentialURLWhitespaceGrammar(patterns)
+	if !patterns[credentialIndex].CredentialURLWhitespaceGrammar {
+		t.Fatal("canonical Credential in URL pattern lost built-in runtime provenance")
+	}
+
+	patterns[credentialIndex].Regex += "(?:changed)"
+	markBuiltInCredentialURLWhitespaceGrammar(patterns)
+	if patterns[credentialIndex].CredentialURLWhitespaceGrammar {
+		t.Fatal("customized Credential in URL pattern received built-in runtime provenance")
+	}
+}
+
 func TestDefaultDLPPatternsMatchIssuerBackedDecodedFormats(t *testing.T) {
 	t.Parallel()
 	githubJWTHeader := strings.Join([]string{"ghs_", "eyJ", "hbG", "ciOi", "JFUz", "I1Ni", "J9."}, "")
@@ -507,6 +529,7 @@ func scrubPatternRuntimeFields(patterns []DLPPattern) []DLPPattern {
 	out := cloneDLPPatterns(patterns)
 	for i := range out {
 		out[i].Compiled = false
+		out[i].CredentialURLWhitespaceGrammar = false
 		out[i].Bundle = ""
 		out[i].BundleVersion = ""
 	}

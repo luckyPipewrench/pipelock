@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -562,7 +563,8 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 	}
 
 	if len(segmentViews) > 1 {
-		matches = append(matches, s.matchDLPPatternsInView(segmentViews[1].text, "whitespace", cleaned)...)
+		compacted, offsets := compactTextDLPWhitespaceWithOffsets(cleaned)
+		matches = append(matches, s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets)...)
 	}
 
 	// Hostname exfiltration: extract URL hostnames from the text and run the
@@ -699,6 +701,66 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 		}
 	}
 	return matches
+}
+
+// matchDLPPatternsInWhitespaceView preserves the whitespace-compacted view and
+// its spans for every pattern. The built-in Credential in URL grammar alone
+// rejects a match that compaction manufactured from a spaced line-start
+// assignment; this is intentionally not an operator-configurable behavior.
+func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, offsets []int) []TextDLPMatch {
+	// text is already compacted from normalize.ForDLP(proseSource). Do not
+	// transform it again: offsets index this exact emitted view.
+	var matches []TextDLPMatch
+	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
+		p := s.dlpPatterns[idx]
+		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
+			if p.credentialURLWhitespaceGrammar && !credentialURLWhitespaceMatchAllowed(text, proseSource, offsets, start, end) {
+				continue
+			}
+			matches = append(matches, TextDLPMatch{
+				PatternName:   p.name,
+				Severity:      p.severity,
+				Encoded:       "whitespace",
+				Bundle:        p.bundle,
+				BundleVersion: p.bundleVersion,
+				Warn:          p.warn,
+				span:          newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
+			})
+		}
+	}
+	return matches
+}
+
+func credentialURLWhitespaceMatchAllowed(compacted, source string, offsets []int, start, end int) bool {
+	if start < 0 || end > len(compacted) || start >= end || end > len(offsets) {
+		return true // Invalid context must stay fail-closed for detection.
+	}
+	if delimiter := compacted[start]; delimiter == '?' || delimiter == '&' || delimiter == ';' {
+		return true
+	}
+	equalAt := start + strings.IndexByte(compacted[start:end], '=')
+	if equalAt < start || equalAt >= len(offsets) {
+		return true
+	}
+	sourceEqualAt := offsets[equalAt]
+	if sourceEqualAt < 0 || sourceEqualAt >= len(source) || source[sourceEqualAt] != '=' {
+		return true
+	}
+	return !hasWhitespaceAdjacentToByte(source, sourceEqualAt)
+}
+
+func hasWhitespaceAdjacentToByte(text string, at int) bool {
+	if at > 0 {
+		left, _ := utf8.DecodeLastRuneInString(text[:at])
+		if unicode.IsSpace(left) {
+			return true
+		}
+	}
+	if at+1 < len(text) {
+		right, _ := utf8.DecodeRuneInString(text[at+1:])
+		return unicode.IsSpace(right)
+	}
+	return false
 }
 
 //pipelock:provenance-transform whitespace_compact

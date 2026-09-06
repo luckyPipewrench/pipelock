@@ -324,18 +324,19 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 }
 
 type compiledPattern struct {
-	name                string
-	re                  *regexp.Regexp
-	withoutLeftBoundary *regexp.Regexp
-	providerKeyPrefix   string
-	severity            string
-	validate            func(string) bool // post-match checksum (nil = regex-only)
-	exemptDomains       []string          // domains where this pattern is skipped (wildcard supported)
-	core                bool              // name belongs to the immutable floor: exemptDomains is never honored
-	bundle              string            // empty for built-in/config patterns
-	bundleVersion       string
-	warn                bool // true when pattern action is "warn" - matches are informational only
-	requiredLiteralsAny []string
+	name                           string
+	re                             *regexp.Regexp
+	withoutLeftBoundary            *regexp.Regexp
+	providerKeyPrefix              string
+	severity                       string
+	validate                       func(string) bool // post-match checksum (nil = regex-only)
+	exemptDomains                  []string          // domains where this pattern is skipped (wildcard supported)
+	core                           bool              // name belongs to the immutable floor: exemptDomains is never honored
+	bundle                         string            // empty for built-in/config patterns
+	bundleVersion                  string
+	warn                           bool // true when pattern action is "warn" - matches are informational only
+	credentialURLWhitespaceGrammar bool // built-in-only runtime provenance; never configured by operators
+	requiredLiteralsAny            []string
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -418,14 +419,15 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
 		cp := &compiledPattern{
-			name:          p.Name,
-			re:            re,
-			severity:      p.Severity,
-			exemptDomains: p.ExemptDomains,
-			core:          config.IsCoreDLPPatternName(p.Name),
-			bundle:        p.Bundle,
-			bundleVersion: p.BundleVersion,
-			warn:          p.Action == config.ActionWarn,
+			name:                           p.Name,
+			re:                             re,
+			severity:                       p.Severity,
+			exemptDomains:                  p.ExemptDomains,
+			core:                           config.IsCoreDLPPatternName(p.Name),
+			bundle:                         p.Bundle,
+			bundleVersion:                  p.BundleVersion,
+			warn:                           p.Action == config.ActionWarn,
+			credentialURLWhitespaceGrammar: p.CredentialURLWhitespaceGrammar,
 		}
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {

@@ -872,6 +872,8 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | Instruction Dismissal | `set the previous instructions aside` | high |
 | Priority Override | `prioritize the (task\|current) (request\|input)` | high |
 
+`Credential in URL` treats a line-start `key=value` as a credential only when `=` has no surrounding whitespace; spaced source or configuration assignments such as `token = value` are not this pattern's target. Query-style forms beginning with `?`, `&`, or `;` retain whitespace tolerance, so `? token = value` is still detected. Tabs are removed during DLP normalization before this grammar check, so tab-aligned assignments remain a documented false-positive residual.
+
 ### Environment Variable Leak Detection
 
 When `scan_env: true`, pipelock reads all environment variables at startup and flags URLs containing any env value that is:

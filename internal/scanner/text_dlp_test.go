@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 const (
@@ -2431,6 +2432,148 @@ func TestScanTextForDLP_CredentialInURL_CatchesBodyStart(t *testing.T) {
 			result := s.ScanTextForDLP(context.Background(), s2)
 			if result.Clean {
 				t.Errorf("expected catch on %q, got clean", s2)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_CredentialInURLGrammar(t *testing.T) {
+	s := MustNew(testConfig())
+	defer s.Close()
+
+	positives := []struct {
+		name     string
+		text     string
+		encoding string
+	}{
+		{name: "line start", text: "token=abcdef123456"},
+		{name: "query", text: "?token=abcdef123456"},
+		{name: "ampersand", text: "&secret=abcdef123456"},
+		{name: "split keyword", text: "tok en=abcdef123456", encoding: "whitespace"},
+		{name: "split value", text: "token=abcdef 123456", encoding: "whitespace"},
+		{name: "url encoded", text: "api_key%3DZ9x8y7w6v5u4", encoding: "url"},
+		{name: "spaced query", text: "GET /p? token = abcdef123456"},
+		{name: "callback", text: "https://api.vendor.example/cb?api_key=Z9x8y7w6v5u4"},
+	}
+	for _, tc := range positives {
+		t.Run("positive/"+tc.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tc.text)
+			if result.Clean || !hasTextDLPMatch(result.Matches, "Credential in URL", tc.encoding) {
+				t.Fatalf("Credential in URL missed %q: %+v", tc.text, result.Matches)
+			}
+		})
+	}
+
+	negatives := []string{
+		`secret = bytes.fromhex("0011223344556677")`,
+		`SECRET = os.Getenv("X")`,
+		"token = $(get_token)",
+		"token=${VAR}",
+	}
+	for _, text := range negatives {
+		t.Run("negative/"+text, func(t *testing.T) {
+			if result := s.ScanTextForDLP(context.Background(), text); !result.Clean {
+				t.Fatalf("spaced source assignment must stay clean: %+v", result.Matches)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_CredentialInURLTabResidual(t *testing.T) {
+	s := MustNew(testConfig())
+	defer s.Close()
+
+	// ForDLP strips tabs before the whitespace view can preserve offsets, so
+	// tab-aligned source assignments remain a documented false positive.
+	result := s.ScanTextForDLP(context.Background(), "passwd\t=\tabcdef123456")
+	if result.Clean || !hasTextDLPMatch(result.Matches, "Credential in URL", "") {
+		t.Fatalf("tab residual must remain covered: %+v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_CredentialInURLPreservesWhitespaceViewSpans(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "view sentinel", Regex: `VIEWSENTINEL`, Severity: config.SeverityHigh,
+	})
+	s := MustNew(cfg)
+	defer s.Close()
+
+	text := "secret = bytes.fromhex(\"00\")\nordinary note VIEWSENTINEL"
+	result := s.ScanTextForDLP(context.Background(), text)
+	cleaned := normalize.ForDLP(text)
+	compacted, offsets := compactTextDLPWhitespaceWithOffsets(cleaned)
+	sentinelStart := strings.Index(compacted, "VIEWSENTINEL")
+	if sentinelStart < 0 {
+		t.Fatal("compacted view lost VIEWSENTINEL")
+	}
+	for i := range "VIEWSENTINEL" {
+		if got := cleaned[offsets[sentinelStart+i]]; got != "VIEWSENTINEL"[i] {
+			t.Fatalf("offset[%d] indexes %q, want %q", sentinelStart+i, got, "VIEWSENTINEL"[i])
+		}
+	}
+	for _, match := range result.Matches {
+		if match.PatternName != "view sentinel" || match.Encoded != "whitespace" {
+			continue
+		}
+		assertSpanSlice(t, compacted, match.Span(), "VIEWSENTINEL")
+		return
+	}
+	t.Fatalf("missing whitespace VIEWSENTINEL match: %+v", result.Matches)
+}
+
+func TestCredentialURLWhitespaceMatchAllowed(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		start  int
+		end    int
+		want   bool
+	}{
+		{name: "adjacent line start", source: "token=abcdef123456", start: 0, end: len("token=abcdef123456"), want: true},
+		{name: "spaced line start", source: "token = abcdef123456", start: 0, end: len("token=abcdef123456"), want: false},
+		{name: "delimiter keeps whitespace", source: "? token = abcdef123456", start: 0, end: len("?token=abcdef123456"), want: true},
+		{name: "invalid span stays detected", source: "token=abcdef123456", start: -1, end: 2, want: true},
+		{name: "empty span stays detected", source: "token=abcdef123456", start: 3, end: 3, want: true},
+		{name: "missing equals stays detected", source: "tokenabcdef123456", start: 0, end: len("tokenabcdef123456"), want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			compacted, offsets := compactTextDLPWhitespaceWithOffsets(tc.source)
+			if got := credentialURLWhitespaceMatchAllowed(compacted, tc.source, offsets, tc.start, tc.end); got != tc.want {
+				t.Fatalf("credentialURLWhitespaceMatchAllowed(%q) = %v, want %v", tc.source, got, tc.want)
+			}
+		})
+	}
+
+	compacted, offsets := compactTextDLPWhitespaceWithOffsets("token=abcdef123456")
+	if !credentialURLWhitespaceMatchAllowed(compacted, "token=abcdef123456", nil, 0, len(compacted)) {
+		t.Fatal("missing offset context must stay detected")
+	}
+	badOffsets := append([]int(nil), offsets...)
+	badOffsets[strings.IndexByte(compacted, '=')] = 0
+	if !credentialURLWhitespaceMatchAllowed(compacted, "token=abcdef123456", badOffsets, 0, len(compacted)) {
+		t.Fatal("invalid source mapping must stay detected")
+	}
+}
+
+func TestHasWhitespaceAdjacentToByte(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		at   int
+		want bool
+	}{
+		{name: "left", text: "token =value", at: strings.IndexByte("token =value", '='), want: true},
+		{name: "right", text: "token= value", at: strings.IndexByte("token= value", '='), want: true},
+		{name: "unicode right", text: "token=\u00a0value", at: strings.IndexByte("token=\u00a0value", '='), want: true},
+		{name: "adjacent", text: "token=value", at: strings.IndexByte("token=value", '='), want: false},
+		{name: "edge", text: "=", at: 0, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasWhitespaceAdjacentToByte(tc.text, tc.at); got != tc.want {
+				t.Fatalf("hasWhitespaceAdjacentToByte(%q, %d) = %v, want %v", tc.text, tc.at, got, tc.want)
 			}
 		})
 	}

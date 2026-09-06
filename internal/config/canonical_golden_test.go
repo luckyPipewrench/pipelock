@@ -357,7 +357,10 @@ const (
 	// report the same policy identity.
 	// Re-bumped when host-set hashing adopted runtime-equivalent case,
 	// duplicate, and trailing-dot normalization.
-	goldenHashDefaults = "6013ddd31af350126da95206ec226224f6c572aa628640745141d4a9c0a55eaa"
+	// Re-bumped for Credential in URL grammar: line-start assignments require
+	// adjacency around '=', while delimiter-led query parameters retain
+	// whitespace tolerance. This detection-relevant default changes policy.
+	goldenHashDefaults = "43c689f65d90d4cd7e6a90a298df97a6b4d01150066006d37e7e618d1f968063"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -541,7 +544,9 @@ const (
 	// flows into ph identically to Defaults().
 	// Re-bumped for runtime-equivalent host-set normalization; see
 	// goldenHashDefaults above.
-	goldenHashRichConfig = "0d78b75e6e65becb10e7ed9b6b3fca2846eebc5ab52bad45aa4cbb55ca533e6b"
+	// Re-bumped for the Credential in URL grammar change above; the rich
+	// fixture inherits the built-in DLP patterns.
+	goldenHashRichConfig = "649c59d3cf9cb07e446c22dc88769316c6ea3ba3600659a669bb5ade43b7e7af"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

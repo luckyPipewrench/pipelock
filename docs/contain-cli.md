@@ -99,6 +99,8 @@ Install steps run in order; each one is idempotent. If any step fails, every pre
 12. Write per-tool proxy + CA config (`git` / `npm` / `pip` / `cargo`) into the agent home.
 13. Write the wrapper inventory, then install the sudoers entry that lets the operator user invoke `plk-launch` as `pipelock-agent` without a password prompt.
 
+Newly installed `pipelock.service` units support `sudo systemctl reload pipelock`, which sends SIGHUP to reload the config. This command confirms signal delivery; check `sudo journalctl -u pipelock` for the reload result. Existing units without an `ExecReload` entry require a direct SIGHUP or a restart. A rejected trust expansion leaves the active policy unchanged and requires `sudo systemctl restart pipelock` to take effect.
+
 Exit codes:
 
 - **0** — all steps applied (or already in place).

@@ -494,7 +494,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		}
 	}
 	if s.opts.ConfigFile != "" {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "  Config: %s (hot-reload enabled%s)\n", s.opts.ConfigFile, ReloadSignalHint())
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  Config: %s (hot-reload enabled%s; rejected security downgrades require restart)\n", s.opts.ConfigFile, ReloadSignalHint())
 	}
 	if s.hasMCPListen {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  MCP:    http://%s -> %s\n", s.opts.MCPListen, s.opts.MCPUpstream)

@@ -1315,11 +1315,13 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 	//   produced 6 scans for 10 writes and the assertion stayed green.
 	//
 	// The count assertions this test's name implies need control over the
-	// debounce clock. TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan
-	// owns that clock through the afterFunc seam. This test stays a smoke
+	// debounce clock, and two tests own that clock through the afterFunc seam:
+	// TestWatcher_BurstCoalescesToOneScan asserts a burst collapses to exactly
+	// one scan, and TestWatcher_StaleDebounceCallbackDoesNotDropLiveScan
+	// asserts the identity check keeps the live scan. This one stays a smoke
 	// check over real fsnotify: it cannot lie about a scan happening, and it
-	// cannot police the identity check. Removing the identity comparison still
-	// leaves this test green because the missed scan is a lower count.
+	// cannot police either count. Removing the identity comparison still leaves
+	// this test green because the missed scan is a lower count.
 	const writes = 10
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	filePath := filepath.Join(dir, "rapid.json")
@@ -1458,6 +1460,79 @@ func (m *manualAfterFunc) callbacks() (stale, live func()) {
 		return nil, nil
 	}
 	return m.fns[0], m.fns[1]
+}
+
+// A rapid burst must collapse to ONE scan, and this asserts the count without
+// touching the wall clock. The real-fsnotify test above deliberately asserts no
+// count: it observes whatever windows the scheduler happened to produce, so any
+// number it checks is a claim about scheduling rather than about the debouncer.
+// Driving handleEvent through the afterFunc seam fixes the window boundaries,
+// which is what makes a count meaningful here.
+//
+// This is the coalescing guarantee the debouncer actually owns: every event but
+// the last loses the replacement race and its callback must do nothing.
+func TestWatcher_BurstCoalescesToOneScan(t *testing.T) {
+	const writes = 10
+	const finalContent = "final-burst-body"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "burst.txt")
+	if err := os.WriteFile(path, []byte("seed-body"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sc := &capturingDLPScanner{}
+	clock := &manualAfterFunc{}
+	w, err := NewWatcher(&config.FileSentry{ScanContent: ptrBool(true)}, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	t.Cleanup(func() {
+		clock.stopAll()
+		_ = w.Close()
+	})
+	fw := w.(*fsWatcher)
+	fw.afterFunc = clock.afterFunc
+
+	for range writes {
+		fw.handleEvent(context.Background(), fsnotify.Event{Name: path, Op: fsnotify.Write})
+	}
+	if err := os.WriteFile(path, []byte(finalContent), 0o600); err != nil {
+		t.Fatalf("WriteFile final: %v", err)
+	}
+
+	if got := clock.len(); got != writes {
+		t.Fatalf("armed timers = %d, want %d", got, writes)
+	}
+	fw.mu.Lock()
+	current := fw.timers[path]
+	fw.mu.Unlock()
+	if current != clock.timerAt(writes-1) {
+		t.Fatal("map entry is not the last armed timer")
+	}
+
+	// Fire every window in the order it was armed. The first nine lost the race.
+	for i := range writes {
+		cb := clock.fnAt(i)
+		if cb == nil {
+			t.Fatalf("callback %d missing", i)
+		}
+		cb()
+	}
+
+	got := sc.scanned()
+	if len(got) != 1 || got[0] != finalContent {
+		t.Fatalf("scans = %#v, want exactly one scan of %q", got, finalContent)
+	}
+}
+
+func (m *manualAfterFunc) fnAt(i int) func() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if i < 0 || i >= len(m.fns) {
+		return nil
+	}
+	return m.fns[i]
 }
 
 func (m *manualAfterFunc) timerAt(i int) *time.Timer {

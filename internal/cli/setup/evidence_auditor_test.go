@@ -5,6 +5,7 @@ package setup
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,7 @@ func TestInitCmdInstallsEvidenceCorpusAuditorWithRenderedConsumer(t *testing.T) 
 		t.Skip("init installs the auditor only on linux")
 	}
 
+	configDir := isolatedEvidenceAuditorInstall(t)
 	home := t.TempDir()
 	configPath := filepath.Join(home, "cfg", "pipelock.yaml")
 	cmd := InitCmd()
@@ -27,10 +29,6 @@ func TestInitCmdInstallsEvidenceCorpusAuditorWithRenderedConsumer(t *testing.T) 
 		t.Fatalf("init: %v", err)
 	}
 
-	configDir, err := evidenceAuditorUserConfigDir()
-	if err != nil {
-		t.Fatal(err)
-	}
 	servicePath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorService)
 	timerPath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorTimer)
 	alertPath := filepath.Join(configDir, "pipelock", "prometheus", "rules", evidenceCorpusAuditorAlert)
@@ -69,6 +67,49 @@ func TestEvidenceCorpusAuditorRenderersQuotePathsAndRemainOutOfBand(t *testing.T
 	}
 }
 
+func TestEvidenceCorpusAuditorServiceTargetKeepsQuotedTargetPaths(t *testing.T) {
+	service := renderEvidenceCorpusAuditorService(
+		"/opt/one evidence doctor two/pipelock",
+		"/var/one --prometheus-textfile two/recorder",
+		"/var/lib/pipelock/pipelock.prom",
+	)
+	target, ok := evidenceCorpusAuditorServiceTarget(service)
+	if !ok {
+		t.Fatal("rendered service has no target")
+	}
+	want := `ExecStart="/opt/one evidence doctor two/pipelock" evidence doctor "/var/one --prometheus-textfile two/recorder"`
+	if target != want {
+		t.Fatalf("target = %q, want %q", target, want)
+	}
+}
+
+func TestEvidenceCorpusAuditorServiceKeepsControlCharactersInArguments(t *testing.T) {
+	for _, tt := range []struct {
+		name, value, escaped string
+	}{
+		{"newline", "\n", `\n`},
+		{"carriage return", "\r", `\r`},
+		{"tab", "\t", `\t`},
+		{"vertical tab", "\v", `\v`},
+		{"form feed", "\f", `\f`},
+		{"bell", "\a", `\a`},
+		{"backspace", "\b", `\b`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := renderEvidenceCorpusAuditorService("/opt/"+tt.value+"/pipelock", "/var/"+tt.value+"/recorder", "/var/"+tt.value+"/metric.prom")
+			if strings.Count(service, tt.escaped) != 3 {
+				t.Fatalf("service did not escape each argument with %q: %q", tt.escaped, service)
+			}
+			if strings.Count(service, "\n") != strings.Count(renderEvidenceCorpusAuditorService("/bin/pipelock", "/recorder", "/metric"), "\n") {
+				t.Fatalf("argument introduced a new unit directive: %q", service)
+			}
+			if _, ok := evidenceCorpusAuditorServiceTarget(service); !ok {
+				t.Fatalf("rendered target cannot be read on rerun: %q", service)
+			}
+		})
+	}
+}
+
 // TestEvidenceCorpusAuditorAlertRemediationNamesAShippedSurface keeps the
 // annotation honest. It previously told the operator to "stop evidence export",
 // and Pipelock ships no evidence-export surface to stop: `pipelock evidence`
@@ -99,13 +140,10 @@ func TestEvidenceCorpusAuditorAlertRemediationNamesAShippedSurface(t *testing.T)
 }
 
 func TestEvidenceCorpusAuditorRerunRepairsManagedTimerButRefusesUnmanagedFile(t *testing.T) {
+	configDir := isolatedEvidenceAuditorInstall(t)
 	home := t.TempDir()
 	configPath := filepath.Join(home, "pipelock.yaml")
 	runInitForEvidenceAuditorTest(t, home, configPath)
-	configDir, err := evidenceAuditorUserConfigDir()
-	if err != nil {
-		t.Fatal(err)
-	}
 	timerPath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorTimer)
 	if err := os.WriteFile(timerPath, []byte(managedEvidenceAuditorHeader+"broken\n"), 0o600); err != nil {
 		t.Fatalf("damage managed timer: %v", err)
@@ -125,6 +163,137 @@ func TestEvidenceCorpusAuditorRerunRepairsManagedTimerButRefusesUnmanagedFile(t 
 	if _, err := installEvidenceCorpusAuditor(t.Context(), filepath.Join(home, "recorder")); err == nil {
 		t.Fatal("unmanaged service was overwritten")
 	}
+}
+
+func TestInstallEvidenceCorpusAuditorPreservesExistingManagedTarget(t *testing.T) {
+	configDir := isolatedEvidenceAuditorInstall(t)
+	recorderDir := filepath.Join(t.TempDir(), "persistent-recorder")
+	if _, err := installEvidenceCorpusAuditor(t.Context(), recorderDir); err != nil {
+		t.Fatalf("install persistent auditor: %v", err)
+	}
+
+	paths := []string{
+		filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorService),
+		filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorTimer),
+		filepath.Join(configDir, "pipelock", "prometheus", "rules", evidenceCorpusAuditorAlert),
+	}
+	before := make(map[string][]byte, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("read installed %s: %v", path, err)
+		}
+		before[path] = data
+	}
+
+	for _, tt := range []struct {
+		name        string
+		executable  string
+		recorderDir string
+	}{
+		{
+			name:        "different executable",
+			executable:  "/tmp/pipelock-candidate",
+			recorderDir: recorderDir,
+		},
+		{
+			name:        "different recorder directory",
+			executable:  "/usr/bin/pipelock",
+			recorderDir: filepath.Join(t.TempDir(), "temporary-recorder"),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stub(t, &evidenceAuditorExecutable, func() (string, error) { return tt.executable, nil })
+
+			_, err := installEvidenceCorpusAuditor(t.Context(), tt.recorderDir)
+			if err == nil {
+				t.Fatal("install replaced an existing managed auditor target")
+			}
+			if !strings.Contains(err.Error(), "refusing to replace managed evidence corpus auditor service target") {
+				t.Fatalf("error = %v, want target-preservation refusal", err)
+			}
+
+			for _, path := range paths {
+				data, readErr := os.ReadFile(filepath.Clean(path))
+				if readErr != nil {
+					t.Fatalf("read preserved %s: %v", path, readErr)
+				}
+				if string(data) != string(before[path]) {
+					t.Fatalf("refused install changed %s:\n%s", path, data)
+				}
+			}
+		})
+	}
+}
+
+func TestEvidenceCorpusAuditorServiceTargetRefusesUnverifiableUnits(t *testing.T) {
+	valid := renderEvidenceCorpusAuditorService("/usr/bin/pipelock", "/var/lib/recorder", "/var/lib/metric.prom")
+	for _, tt := range []struct {
+		name, existing, desired, want string
+		directory                     bool
+	}{
+		{name: "unreadable file", desired: valid, directory: true, want: "reading evidence corpus auditor file"},
+		{name: "unmanaged unit", existing: "[Service]\nExecStart=/usr/bin/true\n", desired: valid, want: "refusing to overwrite unmanaged"},
+		{name: "missing command", existing: managedEvidenceAuditorHeader + "[Service]\n", desired: valid, want: "cannot be determined"},
+		{name: "incomplete command", existing: managedEvidenceAuditorHeader + "[Service]\nExecStart=/usr/bin/pipelock evidence doctor /var/lib/recorder\n", desired: valid, want: "cannot be determined"},
+		{name: "invalid replacement", existing: valid, desired: "[Service]\n", want: "rendering evidence corpus auditor service target"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "auditor.service")
+			if tt.directory {
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(tt.existing), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateEvidenceCorpusAuditorServiceTarget(path, tt.desired); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstallEvidenceCorpusAuditorPreflightsSecondaryManagedFiles(t *testing.T) {
+	configDir := isolatedEvidenceAuditorInstall(t)
+	recorderDir := filepath.Join(t.TempDir(), "recorder")
+	if _, err := installEvidenceCorpusAuditor(t.Context(), recorderDir); err != nil {
+		t.Fatalf("install auditor: %v", err)
+	}
+	servicePath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorService)
+	before, err := os.ReadFile(filepath.Clean(servicePath))
+	if err != nil {
+		t.Fatalf("read service before failed install: %v", err)
+	}
+	before = append(before, []byte("# preflight sentinel\n")...)
+	if err := os.WriteFile(servicePath, before, 0o600); err != nil {
+		t.Fatalf("write managed service sentinel: %v", err)
+	}
+	timerPath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorTimer)
+	if err := os.WriteFile(timerPath, []byte("[Timer]\nOnCalendar=daily\n"), 0o600); err != nil {
+		t.Fatalf("write unmanaged timer: %v", err)
+	}
+
+	_, err = installEvidenceCorpusAuditor(t.Context(), recorderDir)
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged evidence corpus auditor file") {
+		t.Fatalf("error = %v, want unmanaged secondary-file refusal", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(servicePath))
+	if err != nil {
+		t.Fatalf("read service after failed install: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("unmanaged timer refusal changed service:\n%s", after)
+	}
+}
+
+func isolatedEvidenceAuditorInstall(t *testing.T) string {
+	t.Helper()
+	configDir := t.TempDir()
+	stub(t, &evidenceAuditorUserConfigDir, func() (string, error) { return configDir, nil })
+	stub(t, &evidenceAuditorExecutable, func() (string, error) { return "/usr/bin/pipelock", nil })
+	stub(t, &evidenceAuditorSystemctl, func(context.Context, systemctlOp) error { return nil })
+	return configDir
 }
 
 func runInitForEvidenceAuditorTest(t *testing.T, home, configPath string) {

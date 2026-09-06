@@ -534,7 +534,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[OpenAI Codex](docs/guides/codex.md):** MCP proxy wrapping, forward proxy, sandbox integration
 - **[Cline](docs/guides/cline.md):** MCP proxy wrapping for Cline's `mcp.json`
 - **[OpenCode](docs/guides/opencode.md):** MCP proxy wrapping for OpenCode's local and remote MCP servers
-- **[Pi](docs/guides/pi.md):** global proxy setup with a named agent listener
+- **[Pi](docs/guides/pi.md):** global `httpProxy` setup with a named agent listener ([example](examples/pi-integration/))
 - **[Zed](docs/guides/zed.md):** MCP proxy wrapping for Zed's `context_servers` block in `settings.json`
 - **[OpenAI Agents SDK](docs/guides/openai-agents.md):** `MCPServerStdio`, multi-agent handoffs
 - **[Google ADK](docs/guides/google-adk.md):** `McpToolset`, `StdioConnectionParams`

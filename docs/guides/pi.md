@@ -2,7 +2,11 @@
 
 Pi reads its global `httpProxy` setting from `~/.pi/agent/settings.json` and sets `HTTP_PROXY` and `HTTPS_PROXY`. Pipelock uses a dedicated named listener, so traffic through that listener receives the `pi` agent profile without relying on a header or a shared default identity. See Pi's [proxy setting documentation](https://github.com/earendil-works/pi/blob/v0.85.1/packages/coding-agent/docs/settings.md).
 
+Pi's default provider is Google Gemini. Set `GEMINI_API_KEY`, or store the key under `google` in Pi's auth file. `pipelock pi install` only writes `httpProxy`. It does not log Pi into Gemini.
+
 This setup covers requests that honor the proxy setting. Tools and subprocesses that ignore proxy environment variables need separate network containment.
+
+An offline installer walkthrough lives in [examples/pi-integration](../../examples/pi-integration/). Use `PI_CODING_AGENT_DIR` when testing so you do not write `~/.pi/agent/settings.json`.
 
 ## Configure the Pipelock listener
 
@@ -15,7 +19,7 @@ forward_proxy:
 agents:
   pi:
     listeners:
-      - "127.0.0.1:18889"
+      - "127.0.0.1:18991"
 ```
 
 Start or restart Pipelock with that configuration. Listener changes require a restart because Pipelock binds those sockets at startup.
@@ -28,10 +32,10 @@ Preview the settings change first. The proxy URL must match the listener in the 
 
 ```bash
 pipelock pi install --config "$PWD/pipelock.yaml" --profile pi \
-  --proxy http://127.0.0.1:18889 --dry-run
+  --proxy http://127.0.0.1:18991 --dry-run
 
 pipelock pi install --config "$PWD/pipelock.yaml" --profile pi \
-  --proxy http://127.0.0.1:18889
+  --proxy http://127.0.0.1:18991
 ```
 
 Restart Pi after the install. The command updates only the global `httpProxy` member and retains Pi's other settings. It uses `PI_CODING_AGENT_DIR` when set, so an overridden Pi configuration directory receives the change.

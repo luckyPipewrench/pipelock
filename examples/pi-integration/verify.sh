@@ -136,6 +136,45 @@ assert data.get("theme") == "keep-me", data
 PY
 pass "remove dropped httpProxy and kept theme"
 
+# -- Test 6 -------------------------------------------------------------------
+step "Test 6: remove restores a prior httpProxy"
+PRIOR_PROXY="http://127.0.0.1:19999"
+printf '%s\n' "{\"theme\":\"keep-me\",\"httpProxy\":\"$PRIOR_PROXY\"}" >"$SETTINGS"
+chmod 600 "$SETTINGS"
+run_pi install --config "$YAML" --profile pi --proxy "$PROXY" >/dev/null
+REMOVE_PRIOR="$(run_pi remove 2>&1)"
+if printf '%s' "$REMOVE_PRIOR" | grep -q 'Restored Pi'; then
+  pass "remove reported restore of prior proxy"
+else
+  fail "remove did not report restore of prior proxy"
+  printf '%s\n' "$REMOVE_PRIOR" >&2
+fi
+python3 - <<'PY' "$SETTINGS" "$PRIOR_PROXY"
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text())
+assert data.get("httpProxy") == sys.argv[2], data
+assert data.get("theme") == "keep-me", data
+PY
+pass "remove restored prior httpProxy and kept theme"
+
+# -- Test 7 -------------------------------------------------------------------
+step "Test 7: remove deletes a newly created settings file"
+rm -f "$SETTINGS" "$SETTINGS.pipelock-pi-state.json"
+run_pi install --config "$YAML" --profile pi --proxy "$PROXY" >/dev/null
+REMOVE_NEW="$(run_pi remove 2>&1)"
+if printf '%s' "$REMOVE_NEW" | grep -q 'Restored Pi'; then
+  pass "remove reported restore of new settings"
+else
+  fail "remove did not report restore of new settings"
+  printf '%s\n' "$REMOVE_NEW" >&2
+fi
+if [ ! -e "$SETTINGS" ]; then
+  pass "remove deleted newly created settings.json"
+else
+  fail "remove left newly created settings.json"
+fi
+
 printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
 if [ "$FAIL" -ne 0 ]; then
   exit 1

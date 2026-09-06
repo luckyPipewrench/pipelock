@@ -4176,12 +4176,15 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 					// so emit a forward receipt here to keep the
 					// audit chain unbroken.
 					requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
-					_ = p.emitReceipt(forwardKillSwitchReceiptOpts(
-						receipt.NewActionID(),
+					actionID := receipt.NewActionID()
+					if p.emitReceipt(forwardKillSwitchReceiptOpts(
+						actionID,
 						requestID,
 						r.Method,
 						r.URL.String(),
-					))
+					)) == nil {
+						blockreason.SetRecordedReceipt(w.Header(), actionID)
+					}
 					writeBlockedError(w,
 						blockInfoFor(blockreason.KillSwitchActive, "kill_switch"),
 						"blocked: kill_switch_active", http.StatusForbidden)
@@ -5964,7 +5967,9 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
-		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		if p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())) == nil {
+			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+		}
 	}
 
 	if result.Clean {

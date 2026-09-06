@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -62,6 +63,9 @@ func assertStreamableBlockReceipt(
 	if actionID == "" {
 		t.Fatalf("%s is empty", blockreason.HeaderReceipt)
 	}
+	if got := resp.Header.Get(blockreason.HeaderRecordedReceipt); got != actionID {
+		t.Fatalf("%s = %q, want recorded action id %q", blockreason.HeaderRecordedReceipt, got, actionID)
+	}
 	blocks := receiptsByVerdict(readActionReceipts(t, h.dir), config.ActionBlock)
 	if len(blocks) != 1 {
 		t.Fatalf("block receipts = %d, want 1", len(blocks))
@@ -69,6 +73,9 @@ func assertStreamableBlockReceipt(
 	record := blocks[0].ActionRecord
 	if record.ActionID != actionID {
 		t.Fatalf("%s = %q, want emitted action id %q", blockreason.HeaderReceipt, actionID, record.ActionID)
+	}
+	if err := receipt.VerifyWithKey(blocks[0], blocks[0].SignerKey); err != nil {
+		t.Fatalf("verify recorded receipt: %v", err)
 	}
 	if record.Layer != wantLayer {
 		t.Fatalf("receipt layer = %q, want %q", record.Layer, wantLayer)

@@ -612,7 +612,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if snap.cfg != nil {
 			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
 		}
-		_ = rp.emitReceipt(opts)
+		if rp.emitReceipt(opts) == nil {
+			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+		}
 	}
 	if !scOK {
 		// Reload thrash or no live scanner. Fail closed at the request
@@ -1323,7 +1325,9 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		_ = rp.emitReceipt(opts)
+		if rp.emitReceipt(opts) == nil {
+			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+		}
 	}
 
 	// Media declarations and signatures are not a request-side DLP exemption.
@@ -1559,9 +1563,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		if e := rp.receiptEmitter(); e != nil && rp.emitReceiptWithEmitter(opts, e) == nil {
-			blockreason.SetRecordedReceipt(resp.Header, opts.ActionID)
-		}
+		// Response-stream decisions can occur after the upstream status and
+		// headers were committed to the caller. They terminate the stream rather
+		// than writing a new HTTP block response, so no response header remains
+		// writable here.
+		_ = rp.emitReceipt(opts)
 	}
 	clientIP, _ := resp.Request.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)
@@ -2645,7 +2651,9 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		if cfg, _ := r.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config); cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		_ = rp.emitReceipt(opts)
+		if rp.emitReceipt(opts) == nil {
+			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+		}
 		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo(), string(ssrfErr.reason))
 		recordErrorOutcome(http.StatusForbidden, written, string(ssrfErr.reason))
 		return

@@ -120,6 +120,35 @@ func waitForReverseOutcomeReceipt(t *testing.T, dir string) {
 	}, "reverse outcome receipt in %s", dir)
 }
 
+func TestReverseProxy_BlockReceiptHeaderMatchesRecordedAction(t *testing.T) {
+	cfg := reverseTestConfig()
+	proxySrv, dir, closeRecorder := reverseReceiptParitySetup(t, cfg, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("blocked request reached upstream")
+	})
+
+	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	resp := testPost(t, proxySrv.URL+"/api/send", "application/json", `{"secret":"`+apiKey+`"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	headerID := resp.Header.Get(blockreason.HeaderRecordedReceipt)
+	if headerID == "" {
+		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
+	}
+	closeRecorder()
+	for _, rcpt := range extractReceiptsFromDir(t, dir) {
+		if rcpt.ActionRecord.ActionID != headerID {
+			continue
+		}
+		if err := receipt.VerifyWithKey(rcpt, rcpt.SignerKey); err != nil {
+			t.Fatalf("verify recorded receipt: %v", err)
+		}
+		return
+	}
+	t.Fatalf("%s = %q does not name a recorded receipt", blockreason.HeaderRecordedReceipt, headerID)
+}
+
 func TestReverseEmitReceipt_NoV1EmitterSkipsV2(t *testing.T) {
 	dir := t.TempDir()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)

@@ -668,7 +668,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &ssrfErr) {
 			p.logger.LogBlocked(targetCtx, scanner.ScannerSSRF, ssrfErr.logDetail())
 			p.metrics.RecordTunnelBlocked(agentLabel)
-			_ = p.emitReceipt(withReceiptPolicyHash(receipt.EmitOpts{
+			if p.emitReceipt(withReceiptPolicyHash(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     scanner.ScannerSSRF,
@@ -678,7 +678,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				Target:    connectReceiptTarget,
 				RequestID: requestID,
 				Agent:     agent,
-			}, cfg.CanonicalPolicyHash()))
+			}, cfg.CanonicalPolicyHash())) == nil {
+				blockreason.SetRecordedReceipt(w.Header(), actionID)
+			}
 			writeBlockedError(w, ssrfErr.blockInfo(), "CONNECT blocked: "+ssrfErr.detail, http.StatusForbidden)
 			outcomeStatus = strconv.Itoa(http.StatusForbidden)
 			outcomeReason = string(ssrfErr.reason)

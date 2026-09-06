@@ -27,7 +27,9 @@ import (
 	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -35,6 +37,95 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
+
+// TestCallerReceiptHeader_BlockHandlerParity proves that the HTTP block
+// handlers return only the ID of a receipt that was actually recorded. Each
+// row drives the composed handler with its own recorder so a missing setter
+// in any pre-upgrade surface is observable at the response boundary.
+func TestCallerReceiptHeader_BlockHandlerParity(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(*config.Config)
+		request   func() *http.Request
+	}{
+		{
+			name: "fetch_block",
+			request: func() *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://api.vendor.example", nil)
+			},
+		},
+		{
+			name: "forward_block",
+			configure: func(cfg *config.Config) {
+				cfg.ForwardProxy.Enabled = true
+			},
+			request: func() *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://169.254.169.254/latest/meta-data/", nil)
+			},
+		},
+		{
+			name: "websocket_admission_block",
+			configure: func(cfg *config.Config) {
+				cfg.WebSocketProxy.Enabled = true
+			},
+			request: func() *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url=wss://api.vendor.example", nil)
+			},
+		},
+		{
+			name: "kill_switch_block",
+			configure: func(cfg *config.Config) {
+				cfg.KillSwitch.Enabled = true
+				cfg.ForwardProxy.Enabled = true
+			},
+			request: func() *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example/", nil)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.Internal = nil
+			if tc.configure != nil {
+				tc.configure(cfg)
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			t.Cleanup(p.Close)
+			if cfg.KillSwitch.Enabled {
+				p.ks = killswitch.New(cfg)
+			}
+			rph := newReceiptProxyHelper(t)
+			p.receiptEmitterPtr.Store(rph.emitter)
+
+			req := tc.request()
+			if tc.name == "fetch_block" || tc.name == "websocket_admission_block" {
+				req.Header.Set("Authorization", "Bearer "+"AKIA"+"IOSFODNN7EXAMPLE")
+			}
+			rec := httptest.NewRecorder()
+			p.Handler().ServeHTTP(rec, req)
+			headerID := rec.Header().Get(blockreason.HeaderRecordedReceipt)
+			if headerID == "" {
+				t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
+			}
+			receipts := rph.findReceipts(t)
+			for _, rcpt := range receipts {
+				if rcpt.ActionRecord.ActionID != headerID {
+					continue
+				}
+				if err := receipt.VerifyWithKey(rcpt, rcpt.SignerKey); err != nil {
+					t.Fatalf("verify recorded receipt: %v", err)
+				}
+				return
+			}
+			t.Fatalf("%s = %q does not name a recorded receipt", blockreason.HeaderRecordedReceipt, headerID)
+		})
+	}
+}
 
 // Test-scoped constants to avoid goconst triggers.
 const (

@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -44,8 +45,21 @@ type streamableUpstreamObservation struct {
 func TestSetListenerCORSHeaders_ExposesRecordedReceipt(t *testing.T) {
 	headers := make(http.Header)
 	setListenerCORSHeaders(headers, "https://app.vendor.example")
-	if got := headers.Get("Access-Control-Expose-Headers"); !strings.Contains(got, "X-Pipelock-Receipt") {
-		t.Fatalf("Access-Control-Expose-Headers = %q, want X-Pipelock-Receipt", got)
+	got := headers.Get("Access-Control-Expose-Headers")
+	exposed := false
+	for _, token := range strings.Split(got, ",") {
+		if strings.TrimSpace(token) == blockreason.HeaderRecordedReceipt {
+			exposed = true
+		}
+	}
+	if !exposed {
+		t.Fatalf("Access-Control-Expose-Headers = %q, want the exact token %s", got, blockreason.HeaderRecordedReceipt)
+	}
+	// A similarly prefixed name must not satisfy the check.
+	for _, token := range strings.Split(got, ",") {
+		if strings.HasPrefix(strings.TrimSpace(token), blockreason.HeaderRecordedReceipt+"-") {
+			t.Fatalf("Access-Control-Expose-Headers = %q exposes a prefixed variant, not the header itself", got)
+		}
 	}
 }
 
@@ -1336,8 +1350,14 @@ func TestHTTPListener_GETAndDELETEV2OnlyRequiredReceiptSetsBlockHeader(t *testin
 			if got := resp.Header.Get(blockreason.HeaderRecordedReceipt); got != resp.Header.Get(blockreason.HeaderReceipt) {
 				t.Fatalf("%s = %q, want emitted action_id %q", blockreason.HeaderRecordedReceipt, got, resp.Header.Get(blockreason.HeaderReceipt))
 			}
-			if receipts := mcpV2Receipts(t, h); len(receipts) != 1 {
+			receipts := mcpV2Receipts(t, h)
+			if len(receipts) != 1 {
 				t.Fatalf("v2 receipts = %d, want 1", len(receipts))
+			}
+			// The header must name a receipt that verifies under the harness key,
+			// not merely a value that looks like an id.
+			if err := contractreceipt.VerifyWithKey(receipts[0], h.pub, h.kid); err != nil {
+				t.Fatalf("persisted v2 receipt does not verify: %v", err)
 			}
 		})
 	}

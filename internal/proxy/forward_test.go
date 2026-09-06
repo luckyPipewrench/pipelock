@@ -1860,8 +1860,8 @@ func TestCopyResponseHeaders_StripsUpstreamRecordedReceipt(t *testing.T) {
 
 	copyResponseHeaders(dst, src)
 
-	if got := dst.Get(blockreason.HeaderRecordedReceipt); got != proxyActionID {
-		t.Fatalf("%s = %q, want proxy-owned %q", blockreason.HeaderRecordedReceipt, got, proxyActionID)
+	if got := dst.Values(blockreason.HeaderRecordedReceipt); len(got) != 1 || got[0] != proxyActionID {
+		t.Fatalf("%s values = %q, want exactly the proxy-owned %q", blockreason.HeaderRecordedReceipt, got, proxyActionID)
 	}
 	if got := dst.Get("X-Upstream-Trace"); got != "kept" {
 		t.Fatalf("ordinary upstream header = %q, want kept", got)

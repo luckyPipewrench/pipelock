@@ -20,7 +20,7 @@ notes and output-file confirmations go to stderr.
 
 ## Hot Reload
 
-Config changes are picked up automatically via file watcher or SIGHUP signal (100ms debounce). Most fields reload without restart. Fields that require a restart are marked below. Strict mode and required security controls can reject security downgrades, including expanded `trusted_domains` or `ssrf.ip_allowlist` lists. A rejected reload keeps the running configuration active and logs the refusal. Restart Pipelock to apply a refused trust expansion.
+Config changes are picked up automatically via a file watcher or a SIGHUP signal (100ms debounce). Most fields reload without restart. Fields that require a restart are marked below. Strict mode and required security controls can reject security downgrades, including expanded `trusted_domains` or `ssrf.ip_allowlist` lists. A rejected reload keeps the running configuration active and logs the refusal. Restart Pipelock to apply a refused trust expansion.
 
 On reload, the scanner and session manager are atomically swapped. Runtime
 kill-switch state is preserved, including the API, signal, Conductor remote,

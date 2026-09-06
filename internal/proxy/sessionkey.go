@@ -10,6 +10,13 @@ import "github.com/luckyPipewrench/pipelock/internal/identitykey"
 // client IP so that two agents sharing one client IP are tracked as distinct
 // sessions. An unnamed or anonymous agent keys on the client IP alone.
 //
+// Adaptive keys intentionally include self-declared names. CEE/DoW keys
+// collapse those names to the client IP (CEESafeKey) so a rotating header
+// cannot partition a secret. Adaptive instead keeps the name and relies on
+// RecordIPDomain to catch that rotation. Bound and config-default identities
+// skip RecordIPDomain because they are not request-controlled; do not weaken
+// IP-burst for self-declared or matched names.
+//
 // This is the single source of truth for session-key construction. Every
 // transport (fetch, forward, CONNECT, WebSocket, TLS intercept) must build
 // the key the same way, otherwise adaptive escalation and de-escalation would

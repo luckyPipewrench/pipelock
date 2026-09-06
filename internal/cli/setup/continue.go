@@ -165,6 +165,14 @@ type continuePlan struct {
 	warnings         string
 }
 
+type continueEntryRewrite struct {
+	index       int
+	original    *yaml.Node
+	replacement *yaml.Node
+}
+
+var encodeContinueDocument = marshalContinueDocument
+
 func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if errors.Is(err, os.ErrNotExist) {
@@ -189,6 +197,7 @@ func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, 
 	}
 	changed := false
 	var warnings bytes.Buffer
+	rewrites := make([]continueEntryRewrite, 0, len(serversNode.Content))
 	for i, serverNode := range serversNode.Content {
 		if serverNode.Kind != yaml.MappingNode {
 			return continuePlan{}, fmt.Errorf("parsing %s: mcpServers[%d] must be a mapping", path, i)
@@ -219,22 +228,88 @@ func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, 
 		if err != nil {
 			return continuePlan{}, fmt.Errorf("marshaling %s mcpServers[%d]: %w", path, i, err)
 		}
-		serversNode.Content[i] = newNode
+		rewrites = append(rewrites, continueEntryRewrite{index: i, original: serverNode, replacement: newNode})
 		changed = true
 	}
 	if !changed {
 		return continuePlan{path: path, original: data, exists: true, warnings: warnings.String()}, nil
 	}
+	for _, rewrite := range rewrites {
+		if anchor := continueAliasToEntry(&document, rewrite.original); anchor != "" {
+			return continuePlan{}, fmt.Errorf("parsing %s: mcpServers[%d] is referenced by anchor %q; inline it before wrapping", path, rewrite.index, anchor)
+		}
+		if anchor := continueAnchorWithin(rewrite.original); anchor != "" {
+			return continuePlan{}, fmt.Errorf("parsing %s: mcpServers[%d] contains anchor %q; inline it before wrapping", path, rewrite.index, anchor)
+		}
+	}
+	for _, rewrite := range rewrites {
+		serversNode.Content[rewrite.index] = rewrite.replacement
+	}
+	output, err := encodeContinueDocument(&document)
+	if err != nil {
+		return continuePlan{}, fmt.Errorf("marshaling %s: %w", path, err)
+	}
+	if continueHasDocumentMarker(data) && !continueHasDocumentMarker(output) {
+		output = append([]byte("---\n"), output...)
+	}
+	var verified yaml.Node
+	if err := yaml.Unmarshal(output, &verified); err != nil {
+		return continuePlan{}, fmt.Errorf("marshaling %s: rewritten YAML does not parse: %w", path, err)
+	}
+	return continuePlan{path: path, original: data, output: output, exists: true, changed: true, warnings: warnings.String()}, nil
+}
+
+func marshalContinueDocument(document *yaml.Node) ([]byte, error) {
 	var output bytes.Buffer
 	encoder := yaml.NewEncoder(&output)
 	encoder.SetIndent(2)
-	if err := encoder.Encode(&document); err != nil {
-		return continuePlan{}, fmt.Errorf("marshaling %s: %w", path, err)
+	if err := encoder.Encode(document); err != nil {
+		return nil, err
 	}
 	if err := encoder.Close(); err != nil {
-		return continuePlan{}, fmt.Errorf("marshaling %s: %w", path, err)
+		return nil, err
 	}
-	return continuePlan{path: path, original: data, output: output.Bytes(), exists: true, changed: true, warnings: warnings.String()}, nil
+	return output.Bytes(), nil
+}
+
+func continueHasDocumentMarker(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("---\n")) || bytes.HasPrefix(data, []byte("---\r\n"))
+}
+
+func continueAnchorWithin(node *yaml.Node) string {
+	if node.Anchor != "" {
+		return node.Anchor
+	}
+	for _, child := range node.Content {
+		if anchor := continueAnchorWithin(child); anchor != "" {
+			return anchor
+		}
+	}
+	return ""
+}
+
+func continueAliasToEntry(document, entry *yaml.Node) string {
+	if document.Kind == yaml.AliasNode && continueNodeContains(entry, document.Alias) {
+		return document.Alias.Anchor
+	}
+	for _, child := range document.Content {
+		if anchor := continueAliasToEntry(child, entry); anchor != "" {
+			return anchor
+		}
+	}
+	return ""
+}
+
+func continueNodeContains(root, candidate *yaml.Node) bool {
+	if root == candidate {
+		return true
+	}
+	for _, child := range root.Content {
+		if continueNodeContains(child, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func continueServersNode(document *yaml.Node) (*yaml.Node, bool, error) {

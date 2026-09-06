@@ -39,6 +39,38 @@ func TestParseMCPServersStdio(t *testing.T) {
 	}
 }
 
+func TestParseContinueYAMLConfig_ErrorsAndUnnamedServer(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		if _, err := parseContinueYAMLConfig(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
+			t.Fatal("missing Continue config unexpectedly parsed")
+		}
+	})
+
+	t.Run("malformed YAML", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("mcpServers: ["), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseContinueYAMLConfig(path); err == nil {
+			t.Fatal("malformed Continue config unexpectedly parsed")
+		}
+	})
+
+	t.Run("unnamed server", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("mcpServers:\n  - command: node\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		servers, err := parseContinueYAMLConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(servers) != 1 || servers[0].ServerName != "mcpServers[0]" {
+			t.Fatalf("unnamed Continue server = %#v", servers)
+		}
+	})
+}
+
 func TestParseMCPServersHTTP(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

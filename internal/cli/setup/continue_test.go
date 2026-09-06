@@ -5,8 +5,10 @@ package setup
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -26,6 +28,12 @@ mcpServers:
     type: sse
     url: https://api.vendor.example/mcp
 `
+
+type failingContinueYAMLValue struct{}
+
+func (failingContinueYAMLValue) MarshalYAML() (interface{}, error) {
+	return nil, errors.New("marshal failed")
+}
 
 func runContinueCmd(t *testing.T, args ...string) error {
 	t.Helper()
@@ -344,4 +352,299 @@ func TestPlanContinueFileNoServersAndMissing(t *testing.T) {
 	if err != nil || plan.changed {
 		t.Fatalf("no-server plan = %#v, %v", plan, err)
 	}
+}
+
+func TestContinueInstall_RefusesCrossBoundaryAnchorFailClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, continueDirname, continueConfigName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const fixture = `mcpServers:
+  - name: local
+    command: node
+    args: [server.js]
+    env: &shared
+      FIXTURE: value
+sharedElsewhere: *shared
+`
+	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runContinueCmd(t, "install"); err == nil || !strings.Contains(err.Error(), "referenced by anchor \"shared\"") {
+		t.Fatalf("cross-boundary anchor error = %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, []byte(fixture)) {
+		t.Fatalf("cross-boundary anchor config changed:\n%s", after)
+	}
+}
+
+func TestContinueInstall_RefusesAnchorInsideRewrittenEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, continueDirname, continueConfigName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const fixture = `mcpServers:
+  - name: local
+    command: node
+    args: [server.js]
+    env: &internal
+      FIXTURE: value
+`
+	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runContinueCmd(t, "install"); err == nil || !strings.Contains(err.Error(), "internal") {
+		t.Fatalf("entry anchor error = %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, []byte(fixture)) {
+		t.Fatalf("entry anchor config changed:\n%s", after)
+	}
+}
+
+func TestContinueInstall_PreservesDocumentMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, continueDirname, continueConfigName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	fixture := "---\n" + continueStdioFixture
+	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runContinueCmd(t, "install"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(after, []byte("---\n")) {
+		t.Fatalf("document marker was dropped:\n%s", after)
+	}
+}
+
+func TestContinueInstall_AllowsExternalAnchorAndRewritesFlowStyleServers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, continueDirname, continueConfigName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const fixture = `shared: &shared {FIXTURE: value}
+models: {keep: true}
+mcpServers: [{name: local, command: node, args: [server.js], env: *shared}, {name: remote, url: https://api.vendor.example/mcp}]
+rules: [keep]
+`
+	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runContinueCmd(t, "install"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]interface{}
+	if err := yaml.Unmarshal(after, &document); err != nil {
+		t.Fatalf("rewritten flow-style document does not parse: %v", err)
+	}
+	servers := document[continueServersKey].([]interface{})
+	for index, raw := range servers {
+		if raw.(map[string]interface{})[mcpFieldPipelock] == nil {
+			t.Fatalf("mcpServers[%d] was not wrapped: %#v", index, raw)
+		}
+	}
+	if document["models"].(map[string]interface{})["keep"] != true {
+		t.Fatalf("models sibling changed: %#v", document["models"])
+	}
+	if document["rules"].([]interface{})[0] != "keep" {
+		t.Fatalf("rules sibling changed: %#v", document["rules"])
+	}
+	if got, want := servers[0].(map[string]interface{})["env"], document["shared"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("external anchor value was not preserved in rewritten entry: got %#v want %#v", got, want)
+	}
+}
+
+func TestPlanContinueFile_RejectsUnparseableEncodedOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), continueConfigName)
+	if err := os.WriteFile(path, []byte(continueStdioFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalEncoder := encodeContinueDocument
+	encodeContinueDocument = func(*yaml.Node) ([]byte, error) {
+		return []byte("[unterminated"), nil
+	}
+	t.Cleanup(func() { encodeContinueDocument = originalEncoder })
+	if _, err := planContinueFile(path, "/bin/pipelock", "", false); err == nil || !strings.Contains(err.Error(), "rewritten YAML does not parse") {
+		t.Fatalf("unparseable encoded output error = %v", err)
+	}
+}
+
+func TestPlanContinueFile_RejectsEncoderError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), continueConfigName)
+	if err := os.WriteFile(path, []byte(continueStdioFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalEncoder := encodeContinueDocument
+	encodeContinueDocument = func(*yaml.Node) ([]byte, error) {
+		return nil, errors.New("encoder failed")
+	}
+	t.Cleanup(func() { encodeContinueDocument = originalEncoder })
+	if _, err := planContinueFile(path, "/bin/pipelock", "", false); err == nil || !strings.Contains(err.Error(), "encoder failed") {
+		t.Fatalf("encoder error = %v", err)
+	}
+}
+
+func TestContinuePlanRejectsInvalidServerShapes(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		fixture string
+	}{
+		{name: "invalid YAML", fixture: "mcpServers: ["},
+		{name: "non-mapping server", fixture: "mcpServers: [plain]\n"},
+		{name: "duplicate mapping key", fixture: "mcpServers:\n  - command: node\n    command: duplicate\n"},
+		{name: "invalid server", fixture: "mcpServers:\n  - command: node\n    url: https://api.vendor.example/mcp\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), continueConfigName)
+			if err := os.WriteFile(path, []byte(tt.fixture), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := planContinueFile(path, "/bin/pipelock", "", false); err == nil {
+				t.Fatal("invalid server shape unexpectedly planned")
+			}
+		})
+	}
+}
+
+func TestContinueHelperEdgeCases(t *testing.T) {
+	if _, err := continueServerNode(map[string]interface{}{"unsupported": failingContinueYAMLValue{}}); err == nil || !strings.Contains(err.Error(), "marshal failed") {
+		t.Fatalf("server node marshal error = %v", err)
+	}
+	if _, err := marshalContinueDocument(&yaml.Node{Kind: yaml.Kind(42)}); err == nil {
+		t.Fatal("invalid document node unexpectedly encoded")
+	}
+	if got := continueServerName(map[string]interface{}{}, 3); got != "mcpServers[3]" {
+		t.Fatalf("unnamed server = %q", got)
+	}
+	for _, data := range [][]byte{[]byte("---\n"), []byte("---\r\n"), []byte("mcpServers: []\n")} {
+		_ = continueHasDocumentMarker(data)
+	}
+}
+
+func TestContinuePlanAndWriteErrors(t *testing.T) {
+	t.Run("legacy path is rejected by command", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), continueLegacyName)
+		if err := runContinueCmd(t, "install", "--path", path); err == nil || !strings.Contains(err.Error(), "deprecated") {
+			t.Fatalf("legacy path error = %v", err)
+		}
+	})
+
+	t.Run("non-mapping root", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), continueConfigName)
+		if err := os.WriteFile(path, []byte("- not-a-mapping\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := planContinueFile(path, "/bin/pipelock", "", false); err == nil || !strings.Contains(err.Error(), "document must contain a mapping") {
+			t.Fatalf("root error = %v", err)
+		}
+	})
+
+	t.Run("unreadable standalone directory", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		blocksDir := filepath.Join(home, continueDirname, continueMCPDirname)
+		if err := os.MkdirAll(blocksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(blocksDir, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		usableDirMode := os.FileMode(0o700)
+		usableDirMode |= 0o050
+		t.Cleanup(func() { _ = os.Chmod(blocksDir, usableDirMode) })
+		if err := runContinueCmd(t, "install"); err == nil || !strings.Contains(err.Error(), "reading standalone MCP directory") {
+			t.Fatalf("standalone directory error = %v", err)
+		}
+	})
+
+	t.Run("standalone subdirectory is ignored", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		blocksDir := filepath.Join(home, continueDirname, continueMCPDirname)
+		if err := os.MkdirAll(filepath.Join(blocksDir, "nested"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := runContinueCmd(t, "install"); err != nil {
+			t.Fatalf("install with standalone directory: %v", err)
+		}
+	})
+
+	t.Run("legacy config stat failure", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		dir := filepath.Join(home, continueDirname)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, continueLegacyName), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(continueConfigName, filepath.Join(dir, continueConfigName)); err != nil {
+			t.Fatal(err)
+		}
+		if err := runContinueCmd(t, "install"); err == nil || !strings.Contains(err.Error(), "checking") {
+			t.Fatalf("legacy config stat error = %v", err)
+		}
+	})
+
+	t.Run("directory config path", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		path := filepath.Join(home, "config-directory")
+		if err := os.Mkdir(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := runContinueCmd(t, "install", "--path", path); err == nil || !strings.Contains(err.Error(), "reading") {
+			t.Fatalf("directory config error = %v", err)
+		}
+	})
+
+	t.Run("read-only backup directory", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		dir := filepath.Join(home, continueDirname)
+		path := filepath.Join(dir, continueConfigName)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(continueStdioFixture), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		readOnlyDirMode := os.FileMode(0o400)
+		readOnlyDirMode |= 0o100
+		if err := os.Chmod(dir, readOnlyDirMode); err != nil {
+			t.Fatal(err)
+		}
+		usableDirMode := os.FileMode(0o700)
+		usableDirMode |= 0o050
+		t.Cleanup(func() { _ = os.Chmod(dir, usableDirMode) })
+		if err := runContinueCmd(t, "install"); err == nil || !strings.Contains(err.Error(), "creating backup") {
+			t.Fatalf("backup write error = %v", err)
+		}
+	})
 }

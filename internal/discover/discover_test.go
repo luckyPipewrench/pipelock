@@ -49,6 +49,23 @@ func TestDiscoverContinueYAMLAndStandaloneBlocks(t *testing.T) {
 	}
 }
 
+func TestIsContinueConfigExtension(t *testing.T) {
+	for _, tt := range []struct {
+		ext  string
+		want bool
+	}{
+		{ext: ".yaml", want: true},
+		{ext: ".yml", want: true},
+		{ext: ".json", want: false},
+	} {
+		t.Run(tt.ext, func(t *testing.T) {
+			if got := IsContinueConfigExtension(tt.ext); got != tt.want {
+				t.Fatalf("IsContinueConfigExtension(%q) = %t, want %t", tt.ext, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigPathsClaudeDesktopPlatforms(t *testing.T) {
 	home := t.TempDir()
 	for _, tt := range []struct {

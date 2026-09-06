@@ -213,7 +213,12 @@ func hasSubsequence(haystack, needle []string) bool {
 func snapshotTree(t *testing.T, root string) map[string]string {
 	t.Helper()
 	snap := map[string]string{}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	scoped, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = scoped.Close() }()
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -226,7 +231,7 @@ func snapshotTree(t *testing.T, root string) map[string]string {
 			snap[rel] = "dir " + info.Mode().Perm().String()
 			return nil
 		}
-		data, err := os.ReadFile(filepath.Clean(path))
+		data, err := scoped.ReadFile(rel)
 		if err != nil {
 			return err
 		}

@@ -46,7 +46,18 @@ func atomicWriteFile(path string, data []byte, doBackup bool) error {
 // missing backup is the normal case and is not an error.
 func writeInstallerBackup(path string, data []byte) error {
 	backup := path + ".bak"
-	if err := os.Chmod(backup, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(backup)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return os.WriteFile(backup, data, 0o600)
+	case err != nil:
+		return fmt.Errorf("inspecting existing backup %s: %w", backup, err)
+	case !info.Mode().IsRegular():
+		// A symlink would redirect both the chmod and the write to its target,
+		// and a directory cannot hold the backup. Refuse rather than follow.
+		return fmt.Errorf("existing backup %s is not a regular file; move it aside", backup)
+	}
+	if err := os.Chmod(backup, 0o600); err != nil {
 		return fmt.Errorf("restricting existing backup %s: %w", backup, err)
 	}
 	return os.WriteFile(backup, data, 0o600)

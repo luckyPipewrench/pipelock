@@ -96,10 +96,34 @@ func TestContinueInstallAndRemove_GlobalAndBlockFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	exe, err := resolvePipelockBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{global, block} {
 		servers := readContinueServers(t, path)
 		if servers[0][mcpFieldPipelock] == nil || servers[1][mcpFieldPipelock] == nil {
 			t.Fatalf("%s was not wrapped: %#v", path, servers)
+		}
+		// The proxy must sit in the execution path, not only in metadata.
+		for i, server := range servers {
+			if server[mcpFieldCommand] != exe {
+				t.Fatalf("%s mcpServers[%d] command = %v, want the pipelock binary %s", path, i, server[mcpFieldCommand], exe)
+			}
+		}
+		stdioArgs := continueStringSlice(t, servers[0][mcpFieldArgs])
+		if len(stdioArgs) < 2 || stdioArgs[0] != "mcp" || stdioArgs[1] != "proxy" {
+			t.Fatalf("%s stdio args %v do not invoke the MCP proxy", path, stdioArgs)
+		}
+		if tail := afterSeparator(stdioArgs); !reflect.DeepEqual(tail, []string{"node", "server.js"}) {
+			t.Fatalf("%s stdio args %v do not run the original command behind the proxy separator", path, stdioArgs)
+		}
+		remoteArgs := continueStringSlice(t, servers[1][mcpFieldArgs])
+		if len(remoteArgs) < 2 || remoteArgs[0] != "mcp" || remoteArgs[1] != "proxy" {
+			t.Fatalf("%s remote args %v do not invoke the MCP proxy", path, remoteArgs)
+		}
+		if !hasSubsequence(remoteArgs, []string{"--upstream", "https://api.vendor.example/mcp"}) {
+			t.Fatalf("%s remote args %v do not proxy the original url", path, remoteArgs)
 		}
 		if _, err := os.Stat(path + ".bak"); err != nil {
 			t.Fatalf("backup for %s: %v", path, err)
@@ -118,12 +142,101 @@ func TestContinueInstallAndRemove_GlobalAndBlockFiles(t *testing.T) {
 	if err := runContinueCmd(t, "remove"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
+	original := readContinueServersFromBytes(t, []byte(continueStdioFixture))
 	for _, path := range []string{global, block} {
 		servers := readContinueServers(t, path)
-		if servers[0][mcpFieldCommand] != "node" || servers[1][mcpFieldURL] != "https://api.vendor.example/mcp" {
-			t.Fatalf("%s was not restored: %#v", path, servers)
+		if !reflect.DeepEqual(servers, original) {
+			t.Fatalf("%s was not restored to the original mappings:\n got %#v\nwant %#v", path, servers, original)
+		}
+		for i, server := range servers {
+			if _, stale := server[mcpFieldPipelock]; stale {
+				t.Fatalf("%s mcpServers[%d] kept pipelock metadata after remove", path, i)
+			}
 		}
 	}
+}
+
+func readContinueServersFromBytes(t *testing.T, data []byte) []map[string]interface{} {
+	t.Helper()
+	var document map[string]interface{}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	raw := document[continueServersKey].([]interface{})
+	servers := make([]map[string]interface{}, len(raw))
+	for i, server := range raw {
+		servers[i] = server.(map[string]interface{})
+	}
+	return servers
+}
+
+func continueStringSlice(t *testing.T, value interface{}) []string {
+	t.Helper()
+	raw, ok := value.([]interface{})
+	if !ok {
+		t.Fatalf("args = %#v, want a list", value)
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		str, ok := item.(string)
+		if !ok {
+			t.Fatalf("arg %#v is not a string", item)
+		}
+		out = append(out, str)
+	}
+	return out
+}
+
+// afterSeparator returns the arguments after the first "--", which is the
+// original command the proxy execs; nil when there is no separator.
+func afterSeparator(args []string) []string {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[i+1:]
+		}
+	}
+	return nil
+}
+
+func hasSubsequence(haystack, needle []string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if reflect.DeepEqual(haystack[i:i+len(needle)], needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotTree records every file under root with its mode and bytes so a
+// test can prove an operation left the whole directory untouched, not only
+// the one file it happened to read back.
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	snap := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if entry.IsDir() {
+			snap[rel] = "dir " + info.Mode().Perm().String()
+			return nil
+		}
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			return err
+		}
+		snap[rel] = info.Mode().Perm().String() + " " + string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap
 }
 
 func TestContinueInstall_DryRunAndMalformedFailClosed(t *testing.T) {
@@ -136,16 +249,22 @@ func TestContinueInstall_DryRunAndMalformedFailClosed(t *testing.T) {
 	if err := os.WriteFile(path, []byte(continueStdioFixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
+	blocks := filepath.Join(home, continueDirname, continueMCPDirname)
+	if err := os.MkdirAll(blocks, 0o750); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(blocks, "block.yaml"), []byte(continueStdioFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, filepath.Join(home, continueDirname))
 	if err := runContinueCmd(t, "install", "--dry-run"); err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
-	after, _ := os.ReadFile(filepath.Clean(path))
-	if !bytes.Equal(before, after) {
-		t.Fatal("dry run modified config")
+	if after := snapshotTree(t, filepath.Join(home, continueDirname)); !reflect.DeepEqual(before, after) {
+		t.Fatalf("dry run changed the filesystem:\nbefore %#v\nafter  %#v", before, after)
+	}
+	if err := os.RemoveAll(blocks); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("mcpServers: not-a-list\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -154,7 +273,7 @@ func TestContinueInstall_DryRunAndMalformedFailClosed(t *testing.T) {
 	if err := runContinueCmd(t, "install"); err == nil {
 		t.Fatal("malformed config unexpectedly installed")
 	}
-	after, _ = os.ReadFile(filepath.Clean(path))
+	after, _ := os.ReadFile(filepath.Clean(path))
 	if !bytes.Equal(bad, after) {
 		t.Fatal("malformed config was rewritten")
 	}
@@ -320,6 +439,19 @@ func TestContinueInstall_WarnsForForeignAndUnrestorableWrappers(t *testing.T) {
 	if !strings.Contains(stderr, "that is not this pipelock binary") {
 		t.Fatalf("foreign-wrapper warning missing: %q", stderr)
 	}
+	// A foreign wrapper is wrapped again (the warning explains, it does not
+	// refuse); the foreign command survives as the recorded original.
+	exe, err := resolvePipelockBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := readContinueServers(t, path)
+	if wrapped[0][mcpFieldCommand] != exe {
+		t.Fatalf("foreign wrapper was not wrapped by this binary: %#v", wrapped[0])
+	}
+	if meta, _ := wrapped[0][mcpFieldPipelock].(map[string]interface{}); meta["original_command"] != "/tmp/other-pipelock" {
+		t.Fatalf("foreign command not recorded as the original: %#v", wrapped[0][mcpFieldPipelock])
+	}
 	const unrestorable = `mcpServers:
   - name: marked-but-direct
     command: node
@@ -329,12 +461,21 @@ func TestContinueInstall_WarnsForForeignAndUnrestorableWrappers(t *testing.T) {
 	if err := os.WriteFile(path, []byte(unrestorable), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(path + ".bak"); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, filepath.Dir(path))
 	stderr, err = runContinueCmdWithOutput(t, "remove")
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if !strings.Contains(stderr, "metadata but runs") {
 		t.Fatalf("unrestorable-wrapper warning missing: %q", stderr)
+	}
+	// An unrestorable entry is skipped, so nothing on disk may change and no
+	// backup may appear.
+	if after := snapshotTree(t, filepath.Dir(path)); !reflect.DeepEqual(before, after) {
+		t.Fatalf("unrestorable remove changed the filesystem:\nbefore %#v\nafter  %#v", before, after)
 	}
 }
 
@@ -575,8 +716,8 @@ func TestContinuePlanAndWriteErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable standalone directory", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("Windows does not enforce Unix directory modes")
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("Unix directory modes are not enforced here (Windows or root)")
 		}
 		home := t.TempDir()
 		t.Setenv("HOME", home)
@@ -648,8 +789,8 @@ func TestContinuePlanAndWriteErrors(t *testing.T) {
 		if err := os.WriteFile(path, []byte(continueStdioFixture), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if runtime.GOOS == "windows" {
-			t.Skip("Windows does not enforce Unix directory modes")
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("Unix directory modes are not enforced here (Windows or root)")
 		}
 		readOnlyDirMode := os.FileMode(0o400)
 		readOnlyDirMode |= 0o100
@@ -669,8 +810,8 @@ func TestContinuePlanAndWriteErrors(t *testing.T) {
 // earlier backup was left world-readable: the installer must tighten it to
 // 0o600 before writing copied MCP env values into it.
 func TestContinueInstall_RestrictsExistingBackupMode(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not enforce Unix file modes")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("Unix file modes are not enforced here (Windows or root)")
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -731,4 +872,89 @@ func TestContinueInstall_RejectsDuplicateKeys(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestContinueInstall_DuplicateKeyInBlockLeavesGlobalUntouched drives the
+// duplicate-key refusal through the command: every target is planned before
+// any is written, so a bad standalone file must leave a valid global config
+// byte-identical with no backup.
+func TestContinueInstall_DuplicateKeyInBlockLeavesGlobalUntouched(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	global := filepath.Join(home, continueDirname, continueConfigName)
+	blocks := filepath.Join(home, continueDirname, continueMCPDirname)
+	if err := os.MkdirAll(blocks, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(global, []byte(continueStdioFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dup := "mcpServers:\n  - name: a\n    command: node\nmcpServers:\n  - name: b\n    command: node\n"
+	if err := os.WriteFile(filepath.Join(blocks, "dup.yaml"), []byte(dup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, filepath.Join(home, continueDirname))
+	err := runContinueCmd(t, "install")
+	if err == nil || !strings.Contains(err.Error(), "duplicate mapping key") {
+		t.Fatalf("install error = %v, want duplicate key refusal", err)
+	}
+	if after := snapshotTree(t, filepath.Join(home, continueDirname)); !reflect.DeepEqual(before, after) {
+		t.Fatalf("refused install changed the filesystem:\nbefore %#v\nafter  %#v", before, after)
+	}
+}
+
+// TestWriteInstallerBackup_RefusesNonRegularPaths covers a symlink or a
+// directory sitting where the backup goes: the helper must refuse before it
+// changes a mode or writes, so the link target is never touched.
+func TestWriteInstallerBackup_RefusesNonRegularPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("symlink", func(t *testing.T) {
+		cfg := filepath.Join(dir, "linked.yaml")
+		if err := os.Symlink(target, cfg+".bak"); err != nil {
+			t.Fatal(err)
+		}
+		err := writeInstallerBackup(cfg, []byte("new backup\n"))
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("symlink backup error = %v", err)
+		}
+		if data, _ := os.ReadFile(filepath.Clean(target)); string(data) != "keep me\n" {
+			t.Fatalf("symlink target was modified: %q", data)
+		}
+	})
+	t.Run("directory", func(t *testing.T) {
+		cfg := filepath.Join(dir, "dir.yaml")
+		if err := os.Mkdir(cfg+".bak", 0o750); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(cfg + ".bak")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = writeInstallerBackup(cfg, []byte("new backup\n"))
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("directory backup error = %v", err)
+		}
+		// The mode is whatever umask left; the point is that it did not change.
+		info, statErr := os.Stat(cfg + ".bak")
+		if statErr != nil || !info.IsDir() || info.Mode().Perm() != before.Mode().Perm() {
+			t.Fatalf("directory was altered: %v %v", info, statErr)
+		}
+	})
+	t.Run("missing", func(t *testing.T) {
+		cfg := filepath.Join(dir, "fresh.yaml")
+		if err := writeInstallerBackup(cfg, []byte("first\n")); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(cfg + ".bak")
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("fresh backup mode = %v err %v", info, err)
+		}
+	})
 }

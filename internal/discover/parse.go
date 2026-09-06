@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -51,7 +52,7 @@ func parseConfigFile(path, key, client string) ([]MCPServer, error) {
 
 // parseContinueYAMLConfig reads Continue's YAML list-shaped mcpServers field.
 func parseContinueYAMLConfig(path string) ([]MCPServer, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path comes from the operator's Continue directory
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}

@@ -23,8 +23,10 @@ func atomicWriteFile(path string, data []byte, doBackup bool) error {
 		if readErr != nil {
 			return fmt.Errorf("reading original for backup: %w", readErr)
 		}
-		if writeErr := os.WriteFile(path+".bak", bakData, info.Mode()); writeErr != nil {
-			return fmt.Errorf("creating backup: %w", writeErr)
+		// Same helper as every other installer: private mode, never follows a
+		// planted symlink at the backup path.
+		if writeErr := writeInstallerBackup(path, bakData); writeErr != nil {
+			return writeErr
 		}
 	}
 
@@ -40,7 +42,10 @@ func atomicWriteFile(path string, data []byte, doBackup bool) error {
 }
 
 // writeInstallerBackup writes path+".bak" with 0o600 without ever operating on
-// the final path by name in more than one step. The bytes go to a private
+// the final path by name in more than one step. The 0o600 mode is a Unix
+// contract; on Windows the file inherits its directory's ACL and Go's Chmod
+// only toggles the read-only bit, so the privacy guarantee there is the
+// operator's home-directory ACL, not this call. The bytes go to a private
 // temporary file in the same directory and are renamed over the backup path,
 // so a symlink planted there is replaced rather than followed and its target
 // is never touched; a directory there makes the rename fail and the install

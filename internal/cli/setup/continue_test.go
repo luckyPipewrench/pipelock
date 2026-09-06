@@ -926,15 +926,27 @@ func TestWriteInstallerBackup_NeverFollowsTheBackupPath(t *testing.T) {
 		if err := os.Symlink(target, cfg+".bak"); err != nil {
 			t.Fatal(err)
 		}
+		targetBefore, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := writeInstallerBackup(cfg, []byte("new backup\n")); err != nil {
 			t.Fatalf("backup over a symlink: %v", err)
 		}
 		if data, _ := os.ReadFile(filepath.Clean(target)); string(data) != "keep me\n" {
 			t.Fatalf("symlink target was modified: %q", data)
 		}
+		// A metadata operation that followed the link would show up here even
+		// when the bytes survive.
+		if targetAfter, err := os.Stat(target); err != nil || targetAfter.Mode() != targetBefore.Mode() || !targetAfter.ModTime().Equal(targetBefore.ModTime()) {
+			t.Fatalf("symlink target metadata changed: before %v, after %v (%v)", targetBefore.Mode(), targetAfter, err)
+		}
 		info, err := os.Lstat(cfg + ".bak")
-		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-			t.Fatalf("backup path is not a private regular file: %v %v", info, err)
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("backup path is not a regular file: %v %v", info, err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Fatalf("backup mode = %o, want 600", info.Mode().Perm())
 		}
 		if data, _ := os.ReadFile(filepath.Clean(cfg + ".bak")); string(data) != "new backup\n" {
 			t.Fatalf("backup content = %q", data)
@@ -967,8 +979,12 @@ func TestWriteInstallerBackup_NeverFollowsTheBackupPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		info, err := os.Stat(cfg + ".bak")
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("fresh backup mode = %v err %v", info, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Unix mode contract only; Windows inherits the directory ACL.
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Fatalf("fresh backup mode = %o, want 600", info.Mode().Perm())
 		}
 	})
 }

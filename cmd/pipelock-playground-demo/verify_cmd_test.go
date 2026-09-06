@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -162,9 +164,39 @@ func TestOfflineCommandsDefaultToPublishedOrchestratorKey(t *testing.T) {
 	}
 }
 
+// isolateOrchestratorConfig redirects os.UserConfigDir without discarding the
+// module and build caches needed by the live demo's nested Go builds.
+func isolateOrchestratorConfig(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	switch runtime.GOOS {
+	case "darwin", "ios":
+		out, err := exec.CommandContext(t.Context(), "go", "env", "-json", "GOCACHE", "GOMODCACHE", "GOPATH").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var caches map[string]string
+		if err := json.Unmarshal(out, &caches); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH"} {
+			if caches[name] == "" {
+				t.Fatalf("go env returned no %s", name)
+			}
+			t.Setenv(name, caches[name])
+		}
+		t.Setenv("HOME", dir)
+	case "windows":
+		t.Setenv("AppData", dir)
+	case "plan9":
+		t.Setenv("home", dir)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", dir)
+	}
+}
+
 func TestResolveOrchestratorKeyPath(t *testing.T) {
-	configDir := filepath.Join(t.TempDir(), "config")
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	isolateOrchestratorConfig(t)
 
 	explicit := filepath.Join(t.TempDir(), "custom.key")
 	if got := resolveOrchestratorKeyPath(explicit, true); got != explicit {
@@ -185,11 +217,13 @@ func TestResolveOrchestratorKeyPath(t *testing.T) {
 	if got := resolveOrchestratorKeyPath("", false); got != def {
 		t.Fatalf("default key path = %q, want %q", got, def)
 	}
+	if got := resolveOrchestratorKeyPath("", true); got != "" {
+		t.Fatalf("explicit ephemeral key path = %q, want empty despite installed key", got)
+	}
 }
 
 func TestKeygenOrchestratorCmd_DefaultPathForceAndRefuse(t *testing.T) {
-	configDir := filepath.Join(t.TempDir(), "config")
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	isolateOrchestratorConfig(t)
 	def := playground.DefaultOrchestratorKeyPath()
 
 	cmd := newRootCmd()

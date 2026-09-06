@@ -16,9 +16,9 @@ Restart Continue after installation and run a harmless tool action to confirm th
 
 By default the installer reads the global YAML configuration and every `.yaml` or `.yml` file in the global MCP block directory. Use `--path` for another `config.yaml` and `--mcp-dir` for another block directory.
 
-Continue's legacy `~/.continue/config.json` is deprecated. The installer refuses it with a migration message rather than rewriting a different, legacy schema.
+Continue's legacy `~/.continue/config.json` is deprecated. When `config.yaml` is present, Continue loads it instead, so the installer wraps YAML and notes that the JSON file is ignored. When only the legacy file exists, the installer refuses: rename or remove it before creating `config.yaml`, because wrapping JSON would be inert.
 
-YAML comments and formatting are not preserved because the YAML library rewrites changed files. Unknown YAML fields on the document and server entries are preserved.
+The installer preserves sibling top-level keys, their order, and comments outside the rewritten MCP server entries. Formatting or comments inside an entry it rewrites may shift. Unknown YAML fields on the document and server entries are preserved.
 
 ## Previewing and removing
 

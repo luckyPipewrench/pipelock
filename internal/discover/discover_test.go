@@ -32,7 +32,7 @@ func TestDiscoverContinueYAMLAndStandaloneBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	block := "name: block\nversion: 0.0.1\nschema: v1\nmcpServers:\n  - name: remote\n    type: streamable-http\n    url: https://api.vendor.example/mcp\n"
-	if err := os.WriteFile(filepath.Join(blocks, "remote.yaml"), []byte(block), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(blocks, "remote.yml"), []byte(block), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	report, err := Discover(home)

@@ -4,6 +4,7 @@
 package setup
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/discover"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -36,10 +38,12 @@ func ContinueCmd() *cobra.Command {
 func continueInstallCmd() *cobra.Command {
 	var path, mcpDir, configFile string
 	var dryRun bool
-	cmd := &cobra.Command{Use: "install", Short: "Wrap Continue MCP servers through pipelock", SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
+	cmd := &cobra.Command{
+		Use: "install", Short: "Wrap Continue MCP servers through pipelock", SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runContinue(cmd, path, mcpDir, dryRun, configFile, false)
-		}}
+		},
+	}
 	cmd.Flags().StringVar(&path, "path", "", "path to config.yaml (default ~/.continue/config.yaml)")
 	cmd.Flags().StringVar(&mcpDir, "mcp-dir", "", "path to standalone MCP block directory (default ~/.continue/mcpServers)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show changes without modifying files")
@@ -50,8 +54,10 @@ func continueInstallCmd() *cobra.Command {
 func continueRemoveCmd() *cobra.Command {
 	var path, mcpDir string
 	var dryRun bool
-	cmd := &cobra.Command{Use: "remove", Short: "Remove pipelock wrapping from Continue MCP servers", SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error { return runContinue(cmd, path, mcpDir, dryRun, "", true) }}
+	cmd := &cobra.Command{
+		Use: "remove", Short: "Remove pipelock wrapping from Continue MCP servers", SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error { return runContinue(cmd, path, mcpDir, dryRun, "", true) },
+	}
 	cmd.Flags().StringVar(&path, "path", "", "path to config.yaml (default ~/.continue/config.yaml)")
 	cmd.Flags().StringVar(&mcpDir, "mcp-dir", "", "path to standalone MCP block directory (default ~/.continue/mcpServers)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show changes without modifying files")
@@ -60,7 +66,7 @@ func continueRemoveCmd() *cobra.Command {
 
 func continuePaths(path, mcpDir string) (string, string, error) {
 	if path != "" && filepath.Base(path) == continueLegacyName {
-		return "", "", fmt.Errorf("%s is deprecated and unsupported; migrate it to %s first", continueLegacyName, continueConfigName)
+		return "", "", fmt.Errorf("%s is deprecated; rename or remove it and create %s instead, because wrapping JSON would be inert", continueLegacyName, continueConfigName)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -75,16 +81,27 @@ func continuePaths(path, mcpDir string) (string, string, error) {
 	return path, mcpDir, nil
 }
 
-// runContinue plans every target before writing any target. A malformed config
-// therefore fails closed: no Continue file is partially rewritten.
+// runContinue plans every target before writing any target. Parse and planning
+// errors therefore fail closed without rewriting a Continue file. A later write
+// error can leave earlier targets changed, but each changed target has a .bak.
 func runContinue(cmd *cobra.Command, path, mcpDir string, dryRun bool, configFile string, remove bool) error {
 	configPath, blocksDir, err := continuePaths(path, mcpDir)
 	if err != nil {
 		return err
 	}
 	if !remove {
-		if _, err := os.Stat(filepath.Join(filepath.Dir(configPath), continueLegacyName)); err == nil {
-			return fmt.Errorf("found deprecated %s; migrate it to %s before installing", continueLegacyName, continueConfigName)
+		// Continue's migration guide says: "If a config.yaml file is present,
+		// it will be loaded instead of config.json."
+		// https://docs.continue.dev/reference/yaml-migration
+		legacyPath := filepath.Join(filepath.Dir(configPath), continueLegacyName)
+		if _, err := os.Stat(legacyPath); err == nil {
+			if _, configErr := os.Stat(configPath); configErr == nil {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "note: deprecated config.json is present and ignored because config.yaml takes precedence")
+			} else if errors.Is(configErr, os.ErrNotExist) {
+				return fmt.Errorf("found deprecated %s but no %s; rename or remove the legacy file before creating %s, because wrapping it would be inert", continueLegacyName, continueConfigName, continueConfigName)
+			} else {
+				return fmt.Errorf("checking %s: %w", configPath, configErr)
+			}
 		}
 	}
 	exe, err := resolvePipelockBinary()
@@ -101,22 +118,24 @@ func runContinue(cmd *cobra.Command, path, mcpDir string, dryRun bool, configFil
 		if entry.IsDir() {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(entry.Name()))
-		if ext == ".yaml" || ext == ".yml" {
+		if discover.IsContinueConfigExtension(filepath.Ext(entry.Name())) {
 			targets = append(targets, filepath.Join(blocksDir, entry.Name()))
 		}
 	}
 	sort.Strings(targets[1:])
 	plans := make([]continuePlan, 0, len(targets))
+	var warnings strings.Builder
 	for _, target := range targets {
 		plan, err := planContinueFile(target, exe, configFile, remove)
 		if err != nil {
 			return err
 		}
+		warnings.WriteString(plan.warnings)
 		if plan.exists && plan.changed {
 			plans = append(plans, plan)
 		}
 	}
+	_, _ = fmt.Fprint(cmd.ErrOrStderr(), warnings.String())
 	if dryRun {
 		for _, plan := range plans {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Would write to %s:\n%s", plan.path, plan.output)
@@ -143,6 +162,7 @@ type continuePlan struct {
 	path             string
 	original, output []byte
 	exists, changed  bool
+	warnings         string
 }
 
 func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, error) {
@@ -153,27 +173,35 @@ func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, 
 	if err != nil {
 		return continuePlan{}, fmt.Errorf("reading %s: %w", path, err)
 	}
-	var document map[string]interface{}
+	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
 		return continuePlan{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	raw, ok := document[continueServersKey]
-	if !ok || raw == nil {
+	serversNode, found, err := continueServersNode(&document)
+	if err != nil {
+		return continuePlan{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if !found {
 		return continuePlan{path: path, original: data, exists: true}, nil
 	}
-	servers, ok := raw.([]interface{})
-	if !ok {
+	if serversNode.Kind != yaml.SequenceNode {
 		return continuePlan{}, fmt.Errorf("parsing %s: %s must be a list", path, continueServersKey)
 	}
 	changed := false
-	for i, rawServer := range servers {
-		server, ok := rawServer.(map[string]interface{})
-		if !ok {
+	var warnings bytes.Buffer
+	for i, serverNode := range serversNode.Content {
+		if serverNode.Kind != yaml.MappingNode {
 			return continuePlan{}, fmt.Errorf("parsing %s: mcpServers[%d] must be a mapping", path, i)
 		}
+		server := make(map[string]interface{})
+		if err := serverNode.Decode(&server); err != nil {
+			return continuePlan{}, fmt.Errorf("parsing %s: mcpServers[%d]: %w", path, i, err)
+		}
+		name := continueServerName(server, i)
 		var result map[string]interface{}
 		if remove {
 			if !isRestorableWrapper(server) {
+				warnUnrestorableWrapper(&warnings, name, server)
 				continue
 			}
 			result, err = unwrapMCPServer(server)
@@ -181,23 +209,67 @@ func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, 
 			if isWrappedBySelf(server) {
 				continue
 			}
+			warnForeignWrapper(&warnings, name, server)
 			result, err = wrapContinueServer(server, exe, configFile)
 		}
 		if err != nil {
 			return continuePlan{}, fmt.Errorf("%s mcpServers[%d]: %w", path, i, err)
 		}
-		servers[i] = result
+		newNode, err := continueServerNode(result)
+		if err != nil {
+			return continuePlan{}, fmt.Errorf("marshaling %s mcpServers[%d]: %w", path, i, err)
+		}
+		serversNode.Content[i] = newNode
 		changed = true
 	}
 	if !changed {
-		return continuePlan{path: path, original: data, exists: true}, nil
+		return continuePlan{path: path, original: data, exists: true, warnings: warnings.String()}, nil
 	}
-	document[continueServersKey] = servers
-	output, err := yaml.Marshal(document)
-	if err != nil {
+	var output bytes.Buffer
+	encoder := yaml.NewEncoder(&output)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&document); err != nil {
 		return continuePlan{}, fmt.Errorf("marshaling %s: %w", path, err)
 	}
-	return continuePlan{path: path, original: data, output: output, exists: true, changed: true}, nil
+	if err := encoder.Close(); err != nil {
+		return continuePlan{}, fmt.Errorf("marshaling %s: %w", path, err)
+	}
+	return continuePlan{path: path, original: data, output: output.Bytes(), exists: true, changed: true, warnings: warnings.String()}, nil
+}
+
+func continueServersNode(document *yaml.Node) (*yaml.Node, bool, error) {
+	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, false, errors.New("document must contain a mapping")
+	}
+	mapping := document.Content[0]
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == continueServersKey {
+			return mapping.Content[i+1], true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func continueServerNode(server map[string]interface{}) (*yaml.Node, error) {
+	data, err := yaml.Marshal(server)
+	if err != nil {
+		return nil, err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, errors.New("server must marshal to a mapping")
+	}
+	return document.Content[0], nil
+}
+
+func continueServerName(server map[string]interface{}, index int) string {
+	if name, ok := server["name"].(string); ok && name != "" {
+		return name
+	}
+	return fmt.Sprintf("mcpServers[%d]", index)
 }
 
 func wrapContinueServer(server map[string]interface{}, exe, configFile string) (map[string]interface{}, error) {

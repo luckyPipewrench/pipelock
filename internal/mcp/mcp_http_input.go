@@ -680,7 +680,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		// Cross-request exfiltration check on clean outbound messages.
-		ceeKey := ceeSessionKeyMCP("", sessionKey)
+		// The MCP session key is the CEE key verbatim. It is issued by the
+		// transport, not supplied by the caller, so there is no self-declared
+		// agent name to namespace by. Namespacing CEE state by a
+		// caller-controlled name would let a client rotate that name to
+		// partition a secret across buckets and evade accumulation.
+		ceeKey := sessionKey
 		if reason := ceeRecordMCP(ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
@@ -1142,7 +1147,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			recordAdaptiveSignal(session.SignalNearMiss)
 		}
 		// Cross-request exfiltration check even in warn mode.
-		ceeKey := ceeSessionKeyMCP("", sessionKey)
+		// The MCP session key is the CEE key verbatim. It is issued by the
+		// transport, not supplied by the caller, so there is no self-declared
+		// agent name to namespace by. Namespacing CEE state by a
+		// caller-controlled name would let a client rotate that name to
+		// partition a secret across buckets and evade accumulation.
+		ceeKey := sessionKey
 		if reason := ceeRecordMCP(ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,

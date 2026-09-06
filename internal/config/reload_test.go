@@ -374,3 +374,65 @@ func TestReloader_RenameReload(t *testing.T) {
 	waitForReloaderReady(t, r)
 	renameUntilReload(t, r, dir, cfgPath, ModeAudit)
 }
+
+// TestReloader_PreservesCredentialURLGrammarMarker covers the runtime-only
+// marker on the built-in Credential in URL pattern across two successive
+// reloads. The fixture serializes the pattern the way a shipped preset does
+// (include_defaults: false plus the literal regex), so the marker cannot come
+// from Defaults(); it exists after a reload only because ApplyDefaults
+// re-derives it. With that re-derivation disabled this test fails.
+func TestReloader_PreservesCredentialURLGrammarMarker(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	writeCredentialPatternConfig(t, cfgPath, "balanced")
+
+	r := NewReloader(cfgPath)
+	defer r.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		if err := r.Start(ctx); err != nil {
+			t.Errorf("reloader error: %v", err)
+		}
+	}()
+	waitForReloaderReady(t, r)
+
+	assertMarker := func(cfg *Config, state string) {
+		t.Helper()
+		for _, p := range cfg.DLP.Patterns {
+			if p.Name == "Credential in URL" {
+				if !p.CredentialURLWhitespaceGrammar {
+					t.Fatalf("%s: built-in Credential in URL lost its grammar marker", state)
+				}
+				return
+			}
+		}
+		t.Fatalf("%s: Credential in URL pattern missing after reload", state)
+	}
+
+	writeCredentialPatternConfig(t, cfgPath, ModeAudit)
+	assertMarker(waitForReload(t, r, ModeAudit), "reload with change")
+	writeCredentialPatternConfig(t, cfgPath, ModeBalanced)
+	assertMarker(waitForReload(t, r, ModeBalanced), "second reload")
+}
+
+// writeCredentialPatternConfig writes a config whose DLP set is only the
+// serialized built-in Credential in URL pattern, taken from Defaults() so the
+// fixture cannot drift from the shipped regex.
+func writeCredentialPatternConfig(t *testing.T, path, mode string) {
+	t.Helper()
+	var regex string
+	for _, p := range Defaults().DLP.Patterns {
+		if p.Name == "Credential in URL" {
+			regex = p.Regex
+		}
+	}
+	if regex == "" {
+		t.Fatal("Credential in URL missing from Defaults()")
+	}
+	content := "version: 1\nmode: " + mode + "\ndlp:\n  include_defaults: false\n  patterns:\n    - name: \"Credential in URL\"\n      regex: '" + regex + "'\n      severity: high\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

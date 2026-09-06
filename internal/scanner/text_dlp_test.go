@@ -3869,3 +3869,24 @@ func TestTextDLP_DottedTokenPatterns(t *testing.T) {
 		}
 	}
 }
+
+// TestScanTextForDLP_CredentialInURLGrammarFromPresetYAML proves the
+// production seam: a shipped preset serializes the pattern without its
+// runtime-only marker, so the whitespace-view filter exists only through the
+// ApplyDefaults re-derivation. Defaults()-based tests never exercise that path.
+func TestScanTextForDLP_CredentialInURLGrammarFromPresetYAML(t *testing.T) {
+	cfg, err := config.Load("../../configs/balanced.yaml")
+	if err != nil {
+		t.Fatalf("load preset: %v", err)
+	}
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+
+	if result := s.ScanTextForDLP(context.Background(), `secret = bytes.fromhex("0011223344556677")`); !result.Clean {
+		t.Fatalf("preset-loaded pattern must suppress the spaced assignment: %+v", result.Matches)
+	}
+	if result := s.ScanTextForDLP(context.Background(), "token=abcdef123456"); result.Clean || !hasTextDLPMatch(result.Matches, "Credential in URL", "") {
+		t.Fatalf("preset-loaded pattern must still detect the adjacent form: %+v", result.Matches)
+	}
+}

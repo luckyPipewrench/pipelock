@@ -684,6 +684,9 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 }
 
 func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []TextDLPMatch {
+	// The whitespace view deliberately skips this re-normalization
+	// (matchDLPPatternsInWhitespaceView): its offsets index the emitted view
+	// bytes, and normalizing again would shift every span.
 	text = normalize.ForDLP(text)
 	var matches []TextDLPMatch
 	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {

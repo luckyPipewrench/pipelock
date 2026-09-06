@@ -287,6 +287,8 @@ func TestPiPreparedRecoveryRefusesDifferentProxy(t *testing.T) {
 }
 
 func TestPiMissingHomeFailsBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
 	t.Setenv(piConfigDirEnv, "")
 	t.Setenv("HOME", "")
 	t.Setenv("USERPROFILE", "")
@@ -297,6 +299,17 @@ func TestPiMissingHomeFailsBeforeWriting(t *testing.T) {
 		_, _, err := runPiCommand(t, args...)
 		if err == nil || !strings.Contains(err.Error(), "home directory") {
 			t.Fatalf("missing home error = %v", err)
+		}
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			t.Fatalf("read working directory: %v", readErr)
+		}
+		if len(entries) != 0 {
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			t.Fatalf("missing-home command wrote %v", names)
 		}
 	}
 }

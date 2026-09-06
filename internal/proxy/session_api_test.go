@@ -802,9 +802,9 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	done := make(chan struct{})
+	done := make(chan time.Time, 1)
 	go func() {
-		defer close(done)
+		defer func() { done <- time.Now() }()
 
 		var wg sync.WaitGroup
 
@@ -850,13 +850,20 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 		wg.Wait()
 	}()
 
+	var completedAt time.Time
 	select {
-	case <-done:
-		if err := ctx.Err(); err != nil {
-			t.Fatalf("concurrent traffic ended after the watchdog expired: %v", err)
-		}
+	case completedAt = <-done:
 	case <-ctx.Done():
-		t.Fatal("concurrent traffic did not complete before the watchdog expired")
+		// The receiver may resume after both channels became ready.
+		select {
+		case completedAt = <-done:
+		default:
+			t.Fatal("concurrent traffic did not complete before the watchdog expired")
+		}
+	}
+	deadline, _ := ctx.Deadline()
+	if !completedAt.Before(deadline) {
+		t.Fatal("concurrent traffic ended after the watchdog expired")
 	}
 }
 

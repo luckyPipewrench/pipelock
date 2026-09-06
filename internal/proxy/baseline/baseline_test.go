@@ -817,8 +817,20 @@ func TestWaitForPathRequiresCompletionBeforeDeadline(t *testing.T) {
 }
 
 func TestWaitForPathMissingFileExpires(t *testing.T) {
-	if waitForPath(filepath.Join(t.TempDir(), "missing"), 0) {
+	start := time.Unix(0, 0)
+	reads := 0
+	now := func() time.Time {
+		reads++
+		if reads < 3 {
+			return start
+		}
+		return start.Add(time.Second)
+	}
+	if waitForPathWithNow(filepath.Join(t.TempDir(), "missing"), time.Second, now) {
 		t.Fatal("missing file satisfied the wait")
+	}
+	if reads != 3 {
+		t.Fatalf("clock reads = %d, want 3 across the retry", reads)
 	}
 }
 

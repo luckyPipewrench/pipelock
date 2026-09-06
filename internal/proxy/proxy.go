@@ -107,6 +107,10 @@ const (
 	// tracker. httputil.ReverseProxy completes through callbacks, so ServeHTTP
 	// owns final emission while callbacks only record status/bytes/reason.
 	ctxKeyReverseOutcome
+	// ctxKeyReverseResponseReceipt carries the response header state across
+	// httputil.ReverseProxy's ModifyResponse boundary. Buffered response blocks
+	// replace the upstream response after an admission receipt was exposed.
+	ctxKeyReverseResponseReceipt
 
 	// ctxKeyEnvelopeEmitter snapshots the fetch/forward envelope emitter
 	// decision, including an explicit nil when signing was off at
@@ -4475,7 +4479,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
-			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+			if opts.Verdict == config.ActionBlock {
+				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+			}
 		}
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {

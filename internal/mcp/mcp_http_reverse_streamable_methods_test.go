@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -38,6 +39,14 @@ type streamableUpstreamObservation struct {
 	auth        string
 	proxyAuth   string
 	operator    string
+}
+
+func TestSetListenerCORSHeaders_ExposesRecordedReceipt(t *testing.T) {
+	headers := make(http.Header)
+	setListenerCORSHeaders(headers, "https://app.vendor.example")
+	if got := headers.Get("Access-Control-Expose-Headers"); !strings.Contains(got, "X-Pipelock-Receipt") {
+		t.Fatalf("Access-Control-Expose-Headers = %q, want X-Pipelock-Receipt", got)
+	}
 }
 
 func receiveStreamableUpstreamObservation(t *testing.T, ch <-chan streamableUpstreamObservation) streamableUpstreamObservation {
@@ -74,7 +83,7 @@ func assertStreamableBlockReceipt(
 	if record.ActionID != actionID {
 		t.Fatalf("%s = %q, want emitted action id %q", blockreason.HeaderReceipt, actionID, record.ActionID)
 	}
-	if err := receipt.VerifyWithKey(blocks[0], blocks[0].SignerKey); err != nil {
+	if err := receipt.VerifyWithKey(blocks[0], hex.EncodeToString(h.pub)); err != nil {
 		t.Fatalf("verify recorded receipt: %v", err)
 	}
 	if record.Layer != wantLayer {
@@ -1323,6 +1332,9 @@ func TestHTTPListener_GETAndDELETEV2OnlyRequiredReceiptSetsBlockHeader(t *testin
 			}
 			if got := resp.Header.Get(blockreason.HeaderReceipt); got == "" {
 				t.Fatalf("%s is empty", blockreason.HeaderReceipt)
+			}
+			if got := resp.Header.Get(blockreason.HeaderRecordedReceipt); got != resp.Header.Get(blockreason.HeaderReceipt) {
+				t.Fatalf("%s = %q, want emitted action_id %q", blockreason.HeaderRecordedReceipt, got, resp.Header.Get(blockreason.HeaderReceipt))
 			}
 			if receipts := mcpV2Receipts(t, h); len(receipts) != 1 {
 				t.Fatalf("v2 receipts = %d, want 1", len(receipts))

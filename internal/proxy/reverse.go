@@ -690,6 +690,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx = context.WithValue(ctx, ctxKeyAgentAuth, agentAuth)
 	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
+	ctx = context.WithValue(ctx, ctxKeyReverseResponseReceipt, &reverseResponseReceiptState{header: w.Header()})
 	r = r.WithContext(ctx)
 	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit && cfg.ReverseProxy.RequestTimeoutSeconds > 0 {
 		timeoutCtx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.ReverseProxy.RequestTimeoutSeconds)*time.Second)
@@ -1550,6 +1551,24 @@ func reverseRequestContext(resp *http.Response) context.Context {
 	return context.Background()
 }
 
+// reverseResponseReceiptState bridges the response replacement boundary in
+// httputil.ReverseProxy. A required admission receipt may already be present
+// on the writer when ModifyResponse turns an upstream response into a block.
+// The buffered block receipt must replace it, or no receipt header may remain.
+type reverseResponseReceiptState struct {
+	header                 http.Header
+	recordedBlockReceiptID string
+	responseBlocked        bool
+}
+
+func reverseResponseReceiptStateFrom(resp *http.Response) *reverseResponseReceiptState {
+	if resp == nil || resp.Request == nil {
+		return nil
+	}
+	state, _ := resp.Request.Context().Value(ctxKeyReverseResponseReceipt).(*reverseResponseReceiptState)
+	return state
+}
+
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// httputil.ReverseProxy copies response headers after this hook. Reserve the
 	// recorded-receipt namespace before any response branch can reach the
@@ -1568,9 +1587,27 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			sc = snap.sc
 		}
 	}
+	responseReceiptState := reverseResponseReceiptStateFrom(resp)
+	defer func() {
+		if responseReceiptState == nil || !responseReceiptState.responseBlocked {
+			return
+		}
+		if responseReceiptState.recordedBlockReceiptID == "" {
+			blockreason.StripRecordedReceipt(responseReceiptState.header)
+			return
+		}
+		blockreason.SetRecordedReceipt(resp.Header, responseReceiptState.recordedBlockReceiptID)
+		blockreason.SetRecordedReceipt(responseReceiptState.header, responseReceiptState.recordedBlockReceiptID)
+	}()
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		}
+		if opts.Verdict == config.ActionBlock && rp.emitRecordedReceipt(opts) {
+			if responseReceiptState != nil {
+				responseReceiptState.recordedBlockReceiptID = opts.ActionID
+			}
+			return
 		}
 		// Response-stream decisions can occur after the upstream status and
 		// headers were committed to the caller. They terminate the stream rather
@@ -2716,6 +2753,9 @@ func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.
 // injection findings, and reporting them that way would mislead the
 // client about what the proxy rejected.
 func replaceWithMediaBlockResponse(resp *http.Response, reason string) {
+	if state := reverseResponseReceiptStateFrom(resp); state != nil {
+		state.responseBlocked = true
+	}
 	blockResp := ReverseProxyBlockResponse{
 		Error:       "response blocked by pipelock",
 		Blocked:     true,
@@ -2743,6 +2783,9 @@ func replaceWithBlockResponse(resp *http.Response, patternNames []string) {
 // Browser Shield block names the cap and its remedies instead, and stuffing that
 // text after an "injection:" prefix would misreport why the response was refused.
 func replaceWithBlockReason(resp *http.Response, reason string) {
+	if state := reverseResponseReceiptStateFrom(resp); state != nil {
+		state.responseBlocked = true
+	}
 	blockResp := ReverseProxyBlockResponse{
 		Error:       "response blocked by pipelock",
 		Blocked:     true,

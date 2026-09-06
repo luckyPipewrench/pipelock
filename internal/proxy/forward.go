@@ -912,7 +912,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
-			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+			if opts.Verdict == config.ActionBlock {
+				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+			}
 		}
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {

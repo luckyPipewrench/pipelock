@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -140,15 +141,27 @@ func TestA2AHeaderBlock_EmitsReceiptWithPolicyHash(t *testing.T) {
 
 	// Benign body; the malicious signal is in the A2A-Extensions header. The
 	// ftp:// scheme is rejected by the URL scanner without needing DNS.
-	postA2A(t, baseURL, jsonToolsList, map[string]string{
-		"A2A-Extensions": "ftp://evil.example.com/exfil",
-	})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("A2A-Extensions", "ftp://evil.example.com/exfil")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	blocks := a2aBlockReceipts(t, h.dir)
 	if len(blocks) != 1 {
 		t.Fatalf("expected exactly 1 block receipt for A2A header block, got %d", len(blocks))
 	}
 	r := blocks[0]
+	if got := resp.Header.Get(blockreason.HeaderRecordedReceipt); got != r.ActionRecord.ActionID {
+		t.Fatalf("%s = %q, want recorded action_id %q", blockreason.HeaderRecordedReceipt, got, r.ActionRecord.ActionID)
+	}
 	if err := receipt.VerifyWithKey(r, hex.EncodeToString(h.pub)); err != nil {
 		t.Fatalf("receipt verify: %v", err)
 	}

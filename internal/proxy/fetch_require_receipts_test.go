@@ -209,6 +209,9 @@ func TestHandleFetch_RequireReceiptsOutcomeEmitFailureDoesNotFailRequest(t *test
 	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
 		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
 	}
+	if got := rec.Header().Get(blockreason.HeaderRecordedReceipt); got != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("%s = %q, want durable intent action_id %q", blockreason.HeaderRecordedReceipt, got, receipts[0].ActionRecord.ActionID)
+	}
 }
 
 func TestHandleFetch_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {

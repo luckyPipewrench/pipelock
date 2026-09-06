@@ -1851,15 +1851,17 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 
 func TestCopyResponseHeaders_StripsUpstreamRecordedReceipt(t *testing.T) {
 	t.Parallel()
+	const proxyActionID = "01961f3a-7b2c-7000-8000-000000000003"
 	dst := make(http.Header)
 	src := make(http.Header)
+	dst.Set(blockreason.HeaderRecordedReceipt, proxyActionID)
 	src.Set(blockreason.HeaderRecordedReceipt, "upstream-supplied")
 	src.Set("X-Upstream-Trace", "kept")
 
 	copyResponseHeaders(dst, src)
 
-	if got := dst.Get(blockreason.HeaderRecordedReceipt); got != "" {
-		t.Fatalf("%s = %q, want empty", blockreason.HeaderRecordedReceipt, got)
+	if got := dst.Get(blockreason.HeaderRecordedReceipt); got != proxyActionID {
+		t.Fatalf("%s = %q, want proxy-owned %q", blockreason.HeaderRecordedReceipt, got, proxyActionID)
 	}
 	if got := dst.Get("X-Upstream-Trace"); got != "kept" {
 		t.Fatalf("ordinary upstream header = %q, want kept", got)

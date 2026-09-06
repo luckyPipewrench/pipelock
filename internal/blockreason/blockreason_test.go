@@ -294,8 +294,18 @@ func TestRecordedReceiptHeader_OnlyAcceptsReceiptIDs(t *testing.T) {
 	if SetRecordedReceipt(h, "upstream-supplied") {
 		t.Fatal("SetRecordedReceipt(invalid) = true, want false")
 	}
-	StripRecordedReceipt(h)
-	if got := h.Get(HeaderRecordedReceipt); got != "" {
+	invalidHeader := make(http.Header)
+	if SetRecordedReceipt(invalidHeader, "upstream-supplied") {
+		t.Fatal("SetRecordedReceipt(invalid) = true, want false")
+	}
+	if got := invalidHeader.Get(HeaderRecordedReceipt); got != "" {
+		t.Fatalf("%s = %q after invalid set, want empty", HeaderRecordedReceipt, got)
+	}
+
+	stripHeader := make(http.Header)
+	stripHeader.Set(HeaderRecordedReceipt, validUUIDv7)
+	StripRecordedReceipt(stripHeader)
+	if got := stripHeader.Get(HeaderRecordedReceipt); got != "" {
 		t.Fatalf("%s = %q after strip, want empty", HeaderRecordedReceipt, got)
 	}
 }

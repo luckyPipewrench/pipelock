@@ -20,6 +20,52 @@ func TestConfigPathsNotEmpty(t *testing.T) {
 	}
 }
 
+func TestDiscoverContinueYAMLAndStandaloneBlocks(t *testing.T) {
+	home := t.TempDir()
+	continueDir := filepath.Join(home, ".continue")
+	blocks := filepath.Join(continueDir, "mcpServers")
+	if err := os.MkdirAll(blocks, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	config := "mcpServers:\n  - name: global\n    command: node\n    args: [server.js]\n"
+	if err := os.WriteFile(filepath.Join(continueDir, "config.yaml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	block := "name: block\nversion: 0.0.1\nschema: v1\nmcpServers:\n  - name: remote\n    type: streamable-http\n    url: https://api.vendor.example/mcp\n"
+	if err := os.WriteFile(filepath.Join(blocks, "remote.yml"), []byte(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.TotalServers != 2 {
+		t.Fatalf("servers = %#v", report.Servers)
+	}
+	for _, server := range report.Servers {
+		if server.Client != "continue" || server.Transport == TransportUnknown {
+			t.Fatalf("unexpected Continue server: %#v", server)
+		}
+	}
+}
+
+func TestIsContinueConfigExtension(t *testing.T) {
+	for _, tt := range []struct {
+		ext  string
+		want bool
+	}{
+		{ext: ".yaml", want: true},
+		{ext: ".yml", want: true},
+		{ext: ".json", want: false},
+	} {
+		t.Run(tt.ext, func(t *testing.T) {
+			if got := IsContinueConfigExtension(tt.ext); got != tt.want {
+				t.Fatalf("IsContinueConfigExtension(%q) = %t, want %t", tt.ext, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigPathsClaudeDesktopPlatforms(t *testing.T) {
 	home := t.TempDir()
 	for _, tt := range []struct {

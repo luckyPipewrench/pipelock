@@ -383,7 +383,7 @@ func installZedPath(cmd *cobra.Command, targetPath, exe, configFile string, dryR
 	}
 
 	if len(existingData) > 0 {
-		if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+		if err := writeInstallerBackup(targetPath, existingData); err != nil {
 			return fmt.Errorf("creating backup: %w", err)
 		}
 	}
@@ -473,7 +473,7 @@ func removeZedPath(cmd *cobra.Command, targetPath string, dryRun bool) error {
 		return nil
 	}
 
-	if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+	if err := writeInstallerBackup(targetPath, existingData); err != nil {
 		return fmt.Errorf("creating backup: %w", err)
 	}
 

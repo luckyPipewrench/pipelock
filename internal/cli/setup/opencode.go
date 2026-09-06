@@ -223,7 +223,7 @@ func runOpenCodeInstall(cmd *cobra.Command, override string, dryRun bool, config
 	}
 
 	if readErr == nil {
-		if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+		if err := writeInstallerBackup(targetPath, existingData); err != nil {
 			return fmt.Errorf("creating backup: %w", err)
 		}
 	}
@@ -299,7 +299,7 @@ func runOpenCodeRemove(cmd *cobra.Command, override string, dryRun bool) error {
 		return nil
 	}
 
-	if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+	if err := writeInstallerBackup(targetPath, existingData); err != nil {
 		return fmt.Errorf("creating backup: %w", err)
 	}
 

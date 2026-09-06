@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // rawServer is the JSON shape of a single MCP server entry across all clients.
 type rawServer struct {
+	Name      string            `json:"name" yaml:"name"`
 	Type      string            `json:"type"`
 	Command   string            `json:"command"`
 	Args      []string          `json:"args"`
@@ -43,6 +47,38 @@ func parseConfigFile(path, key, client string) ([]MCPServer, error) {
 		return nil, fmt.Errorf("parsing %s[%s]: %w", path, key, err)
 	}
 
+	return servers, nil
+}
+
+// parseContinueYAMLConfig reads Continue's YAML list-shaped mcpServers field.
+func parseContinueYAMLConfig(path string) ([]MCPServer, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	var document struct {
+		Servers []rawServer `yaml:"mcpServers"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	servers := make([]MCPServer, 0, len(document.Servers))
+	for index, rs := range document.Servers {
+		name := fmt.Sprintf("mcpServers[%d]", index)
+		// Continue's YAML schema requires name; preserve an observable entry
+		// rather than silently losing malformed input during discovery.
+		if rs.Name != "" {
+			name = rs.Name
+		}
+		// The JSON discovery contract emits args as an array; an omitted YAML
+		// list would otherwise decode to nil and serialize as null.
+		args := rs.Args
+		if args == nil {
+			args = []string{}
+		}
+		url := rs.URL
+		servers = append(servers, MCPServer{Client: "continue", ConfigPath: path, ServerName: name, Transport: inferTransport(rs, url), Command: rs.Command, Args: args, Env: rs.Env, URL: url})
+	}
 	return servers, nil
 }
 

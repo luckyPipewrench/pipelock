@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -148,8 +149,6 @@ func TestCEEDepsReconfigure_PreservesHistoryAndAppliesStricterPolicy(t *testing.
 
 const (
 	testMCPSessionKey = "session-001"
-	testMCPAgent      = "myagent"
-	testMCPSessionIP  = "10.0.0.1"
 
 	// Fake AWS key suffix, built as constant to avoid repetition.
 	// Combined with prefix at runtime to avoid gosec G101.
@@ -167,19 +166,88 @@ func testMCPScanner() *scanner.Scanner {
 	return scanner.MustNew(cfg)
 }
 
-func TestCeeSessionKeyMCP_EmptyAgent(t *testing.T) {
-	got := ceeSessionKeyMCP("", testMCPSessionIP)
-	if got != testMCPSessionIP {
-		t.Errorf("ceeSessionKeyMCP(%q, %q) = %q, want %q", "", testMCPSessionIP, got, testMCPSessionIP)
+// mcpCEEBlockErrorCode is the JSON-RPC error code the MCP input path returns
+// when cross-request exfiltration accumulation denies a message.
+const mcpCEEBlockErrorCode = -32005
+
+// ceeDepsAccumulating creates CEE deps whose entropy budget one of the test
+// messages below stays under, but two together exceed. That window is what
+// makes the bucketing assertions non-vacuous: with the tiny budget used by
+// testCEEDepsBlock, any single message blocks on its own and a shared bucket
+// would be indistinguishable from an isolated one.
+func ceeDepsAccumulating(t *testing.T) *CEEDeps {
+	t.Helper()
+	const bitsPerWindow = 400.0
+	et := scanner.NewEntropyTracker(bitsPerWindow, 300)
+	t.Cleanup(et.Close)
+	return &CEEDeps{
+		Tracker: et,
+		Metrics: metrics.New(),
+		Config: &config.CrossRequestDetection{
+			EntropyBudget: config.CrossRequestEntropyBudget{
+				Enabled:       true,
+				BitsPerWindow: bitsPerWindow,
+				WindowMinutes: 5,
+				Action:        config.ActionBlock,
+			},
+		},
 	}
 }
 
-func TestCeeSessionKeyMCP_WithAgent(t *testing.T) {
-	got := ceeSessionKeyMCP(testMCPAgent, testMCPSessionIP)
-	want := testMCPAgent + "|" + testMCPSessionIP
-	if got != want {
-		t.Errorf("ceeSessionKeyMCP(%q, %q) = %q, want %q", testMCPAgent, testMCPSessionIP, got, want)
-	}
+// TestMCPCEEKeyIsTheSessionKey pins how MCP cross-request-exfiltration state is
+// bucketed on the HTTP input path: by the transport-issued session key alone.
+// Two requests on one session accumulate together; two requests on different
+// sessions do not.
+//
+// This is the property that made the removed agent-namespacing branch unsafe.
+// Keying CEE state on any caller-supplied name would let a client rotate that
+// name per request, land each request in a fresh bucket, and spread a secret
+// across buckets so it never accumulated past the budget.
+func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
+	msg1 := []byte(makeRequest(1, "tools/list", nil))
+	msg2 := []byte(makeRequest(2, "resources/read", map[string]string{
+		"uri": "file:///etc/hosts",
+	}))
+
+	t.Run("one message stays under the budget", func(t *testing.T) {
+		opts := MCPProxyOpts{Scanner: testInputScanner(t), CEE: ceeDepsAccumulating(t)}
+		if d := scanHTTPInputDecision(msg1, io.Discard, "session-a", "session-a", opts); d.Blocked != nil {
+			t.Fatal("first message blocked on its own; the budget leaves no room to " +
+				"observe accumulation, so the assertions below would prove nothing")
+		}
+	})
+
+	t.Run("same session accumulates", func(t *testing.T) {
+		opts := MCPProxyOpts{Scanner: testInputScanner(t), CEE: ceeDepsAccumulating(t)}
+
+		_ = scanHTTPInputDecision(msg1, io.Discard, "session-a", "session-a", opts)
+		second := scanHTTPInputDecision(msg2, io.Discard, "session-a", "session-a", opts)
+
+		if second.Blocked == nil {
+			t.Fatal("second request on the same session was not CEE-blocked; " +
+				"state did not accumulate under the session key")
+		}
+		// Assert the CEE-specific code, not merely that something blocked. A
+		// future session-scoped blocker unrelated to CEE would otherwise satisfy
+		// this subtest and quietly stop it testing accumulation at all.
+		if got := second.Blocked.ErrorCode; got != mcpCEEBlockErrorCode {
+			t.Fatalf("second request blocked with code %d, want the CEE code %d; "+
+				"something other than cross-request accumulation denied it",
+				got, mcpCEEBlockErrorCode)
+		}
+	})
+
+	t.Run("different sessions stay isolated", func(t *testing.T) {
+		opts := MCPProxyOpts{Scanner: testInputScanner(t), CEE: ceeDepsAccumulating(t)}
+
+		_ = scanHTTPInputDecision(msg1, io.Discard, "session-a", "session-a", opts)
+		other := scanHTTPInputDecision(msg2, io.Discard, "session-b", "session-b", opts)
+
+		if other.Blocked != nil {
+			t.Fatal("a request on a different session inherited the first session's " +
+				"CEE budget; buckets are not isolated by session key")
+		}
+	})
 }
 
 func TestMCPCEEFragmentPayloads(t *testing.T) {

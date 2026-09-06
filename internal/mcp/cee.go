@@ -136,15 +136,6 @@ func (cee *CEEDeps) snapshot() (*scanner.EntropyTracker, *scanner.FragmentBuffer
 	return runtime.tracker, runtime.buffer, runtime.metrics, runtime.config, runtime.mu.RUnlock
 }
 
-// ceeSessionKeyMCP builds a CEE session key for MCP traffic. The agent
-// identifier distinguishes traffic when multiple agents share a proxy.
-func ceeSessionKeyMCP(agent, sessionOrIP string) string {
-	if agent != "" {
-		return agent + "|" + sessionOrIP
-	}
-	return sessionOrIP
-}
-
 const (
 	// mcpCEEArgumentMaxDepth bounds recursive token walking independently from
 	// encoding/json's object decoding depth limit, which Decoder.Token does not

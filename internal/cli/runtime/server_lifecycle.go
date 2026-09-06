@@ -1083,6 +1083,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		rpHandler.SetReceiptEmitter(s.proxy.ReceiptEmitterPtr())
 		rpHandler.SetV2ReceiptEmitter(s.proxy.V2EmitterPtr())
 		rpHandler.SetContractLoader(s.proxy.ContractLoaderPtr())
+		s.proxy.BindReverseProxyIdentity(rpHandler)
 		rpHandler.SetReloadLock(s.proxy.ReloadLock())
 		rpHandler.SetRequestPolicyFn(s.proxy.ApplyRequestPolicy)
 		rpHandler.SetRequestPolicyPrepareFn(s.proxy.PrepareRequestPolicyBody)

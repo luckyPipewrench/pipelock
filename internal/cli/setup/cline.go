@@ -218,7 +218,7 @@ func runClineInstall(cmd *cobra.Command, override string, dryRun bool, configFil
 	}
 
 	if readErr == nil {
-		if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+		if err := writeInstallerBackup(targetPath, existingData); err != nil {
 			return fmt.Errorf("creating backup: %w", err)
 		}
 	}
@@ -298,7 +298,7 @@ func runClineRemove(cmd *cobra.Command, override string, dryRun bool) error {
 		return nil
 	}
 
-	if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+	if err := writeInstallerBackup(targetPath, existingData); err != nil {
 		return fmt.Errorf("creating backup: %w", err)
 	}
 

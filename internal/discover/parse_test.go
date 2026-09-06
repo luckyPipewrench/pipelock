@@ -4,8 +4,10 @@
 package discover
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +39,38 @@ func TestParseMCPServersStdio(t *testing.T) {
 	if s.Client != clientClaudeCode {
 		t.Errorf("client = %q, want claude-code", s.Client)
 	}
+}
+
+func TestParseContinueYAMLConfig_ErrorsAndUnnamedServer(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		if _, err := parseContinueYAMLConfig(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
+			t.Fatal("missing Continue config unexpectedly parsed")
+		}
+	})
+
+	t.Run("malformed YAML", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("mcpServers: ["), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseContinueYAMLConfig(path); err == nil {
+			t.Fatal("malformed Continue config unexpectedly parsed")
+		}
+	})
+
+	t.Run("unnamed server", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("mcpServers:\n  - command: node\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		servers, err := parseContinueYAMLConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(servers) != 1 || servers[0].ServerName != "mcpServers[0]" {
+			t.Fatalf("unnamed Continue server = %#v", servers)
+		}
+	})
 }
 
 func TestParseMCPServersHTTP(t *testing.T) {
@@ -581,5 +615,28 @@ func TestParseExplicitStdioType(t *testing.T) {
 	}
 	if servers[0].Transport != TransportStdio {
 		t.Errorf("transport = %q, want stdio", servers[0].Transport)
+	}
+}
+
+// TestParseContinueYAMLConfig_OmittedArgsIsEmptyArray keeps the JSON discovery
+// contract: an omitted YAML args list must serialize as [] rather than null.
+func TestParseContinueYAMLConfig_OmittedArgsIsEmptyArray(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("mcpServers:\n  - name: local\n    command: node\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := parseContinueYAMLConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 || servers[0].Args == nil {
+		t.Fatalf("args must be a non-nil empty slice, got %+v", servers)
+	}
+	data, err := json.Marshal(servers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"args":[]`) {
+		t.Fatalf("omitted args must serialize as []: %s", data)
 	}
 }

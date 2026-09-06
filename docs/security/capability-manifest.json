@@ -1315,6 +1315,11 @@
     },
     {
       "kind": "command",
+      "value": "pipelock continue",
+      "reason": "IDE integration installer, not a separate protection capability."
+    },
+    {
+      "kind": "command",
       "value": "pipelock codex",
       "reason": "IDE integration installer, not a separate protection capability."
     },

@@ -380,6 +380,16 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 	parentDied.Store(true)
 	select {
 	case <-done:
+		// Scaling the deadline is not enough on its own: whichever clock fires
+		// first decides which branch runs. If the governing context deadline
+		// expired, exec.CommandContext killed the command, RunProxyWithSandbox
+		// returned, and this branch reports success for teardown the code under
+		// test never performed. Deliberate cancellation is a different thing and
+		// is not a deadline, so this checks DeadlineExceeded specifically.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Fatal("teardown completed only because the governing context deadline expired; " +
+				"the session-exit reaping under test never ran")
+		}
 	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("sandbox proxy stayed alive after the spawning session exited")
 	}

@@ -1294,91 +1294,57 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 
 	armAndStart(t, w, ctx)
 
-	// Write the same file rapidly, then assert the debouncer COALESCED the
-	// burst rather than asserting an exact scan count.
+	// Write the same file rapidly and assert what survives scheduling: the
+	// burst produces a finding, and it describes the file that was written.
 	//
-	// The timer fires debounceDelay after the last write it saw, so two writes
-	// separated by a gap of at least debounceDelay legitimately land in
-	// different windows and legitimately produce two scans. How the burst is
-	// spread across windows is decided by the OS scheduler, not by the
-	// debouncer, so "exactly 1" asserted a property this code does not own. On
-	// an idle host the loop finishes in microseconds and the answer is 1; on a
-	// contended CI runner the loop can be preempted for longer than the 50ms
-	// window, and the old assertion reported that as "unexpected extra finding
-	// (timer race?)" -- a red build caused by load rather than by the timer
-	// identity check it named.
+	// This test asserts NO scan count, and that is deliberate. Three count
+	// shapes were tried and each was unsound:
 	//
-	// The bound is derived from the burst this run actually observed: the gaps
-	// that can split it sum to at most the elapsed time, so it spans at most
-	// elapsed/debounceDelay + 1 windows. On a fast host that is 1, which keeps
-	// the original strict assertion intact where it is meaningful.
+	//   "exactly 1" asserted a property of the OS scheduler. The timer is armed
+	//   in handleEvent, so window boundaries are set by when fsnotify delivers
+	//   events, not by when the writer wrote. A burst completed in microseconds
+	//   can still span two windows, which is what reddened CI.
+	//
+	//   A bound derived from the writer's elapsed time reads a different clock
+	//   than the one arming the timers, so it is wrong in both directions.
+	//
+	//   "fewer scans than writes" is vacuous: fsnotify already coalesces the
+	//   writes into fewer events, so disabling the debouncer entirely still
+	//   produced 6 scans for 10 writes and the assertion stayed green.
+	//
+	// The count assertions this test's name implies need control over the
+	// debounce clock, which this package does not expose. Until that exists the
+	// honest position is a smoke test that cannot lie, rather than a threshold
+	// that reports contention as a timer race.
+	//
+	// In particular this does NOT guard the timer identity check. That
+	// regression deletes the live timer's map entry and produces FEWER scans,
+	// which no upper bound detects; removing the identity comparison leaves
+	// this test green.
 	const writes = 10
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	filePath := filepath.Join(dir, "rapid.json")
-	start := time.Now()
 	for i := range writes {
 		content := fmt.Sprintf("%s-%d", secret, i)
 		if err := os.WriteFile(filePath, []byte(content), 0o600); err != nil {
 			t.Fatalf("WriteFile[%d]: %v", i, err)
 		}
 	}
-	elapsed := time.Since(start)
 
-	// A burst slow enough to span every window proves nothing about
-	// coalescing, so say so rather than passing vacuously.
-	// Computed and compared as int64. A narrowing conversion here could wrap to
-	// a negative bound, which would fail every run rather than tolerate a slow
-	// one -- the exact failure direction this change exists to remove.
-	maxScans := int64(elapsed/debounceDelay) + 1
-	if maxScans >= writes {
-		t.Skipf("burst of %d writes took %v, spanning at least %d debounce windows: "+
-			"scheduling decided the scan count, so coalescing cannot be observed",
-			writes, elapsed, writes)
-	}
-
-	// Wait for the first debounced scan.
 	select {
 	case f := <-w.Findings():
 		if f.PatternName == "" {
 			t.Error("expected DLP match")
 		}
+		if f.Path != filePath {
+			t.Errorf("finding path = %q, want %q", f.Path, filePath)
+		}
 	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout waiting for debounced finding")
 	}
 
-	// Drain whatever the remaining windows produced. Counting beats failing on
-	// the first extra: a run that coalesced nothing and a run that split into
-	// two windows are different defects, and only the count distinguishes them.
-	// The two-value receive is load-bearing. A closed Findings channel yields
-	// immediately and forever, so a single-value receive would spin for the
-	// whole observation window and report thousands of findings -- a false
-	// failure that would read exactly like a catastrophic timer race.
-	findings := int64(1)
-	extraWindow := time.After(filesentryNegativeObservation)
-drain:
-	for {
-		select {
-		case _, open := <-w.Findings():
-			if !open {
-				break drain
-			}
-			findings++
-		case <-extraWindow:
-			break drain
-		}
-	}
-
-	if findings > maxScans {
-		t.Errorf("findings = %d over a %v burst of %d writes, want at most %d (timer race?)",
-			findings, elapsed, writes, maxScans)
-	}
-	got := int64(sc.calls.Load())
-	if got < 1 {
+	if got := sc.calls.Load(); got < 1 {
 		t.Fatalf("ScanTextForDLP calls = %d, want the debounced scan to have run", got)
-	}
-	if got > maxScans {
-		t.Fatalf("ScanTextForDLP calls = %d over a %v burst of %d writes, want at most %d",
-			got, elapsed, writes, maxScans)
 	}
 }
 

@@ -115,18 +115,20 @@ func TestCallerReceiptHeader_BlockHandlerParity(t *testing.T) {
 			if headerID == "" {
 				t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
 			}
-			requireSignedRecordedReceipt(t, rph, headerID)
+			requireSignedRecordedReceipt(t, rph, rph.findReceipts(t), headerID)
 		})
 	}
 }
 
-// requireSignedRecordedReceipt fails unless headerID names a receipt the
-// helper's recorder persisted and that receipt verifies under the helper's
-// signing key. A header that merely looks like an id is not evidence.
-func requireSignedRecordedReceipt(t *testing.T, rph *receiptProxyHelper, headerID string) {
+// requireSignedRecordedReceipt fails unless headerID names one of the receipts
+// the helper's recorder persisted and that receipt verifies under the helper's
+// signing key. A header that merely looks like an id is not evidence. The
+// caller reads the receipts once (findReceipts closes the recorder) and may
+// check several headers against the same set.
+func requireSignedRecordedReceipt(t *testing.T, rph *receiptProxyHelper, receipts []receipt.Receipt, headerID string) {
 	t.Helper()
 	pub := hex.EncodeToString(rph.priv.Public().(ed25519.PublicKey))
-	for _, rcpt := range rph.findReceipts(t) {
+	for _, rcpt := range receipts {
 		if rcpt.ActionRecord.ActionID != headerID {
 			continue
 		}
@@ -176,13 +178,17 @@ func TestCallerReceiptHeader_AllowRequiresRequiredReceipt(t *testing.T) {
 				t.Fatalf("forward status = %d, want %d", forwardRec.Code, http.StatusOK)
 			}
 
+			var recorded []receipt.Receipt
+			if requireReceipts {
+				recorded = rph.findReceipts(t)
+			}
 			for surface, rec := range map[string]*httptest.ResponseRecorder{"fetch": fetchRec, "forward": forwardRec} {
 				got := rec.Header().Get(blockreason.HeaderRecordedReceipt)
 				if requireReceipts {
 					if got == "" {
 						t.Fatalf("%s %s is empty with require_receipts", surface, blockreason.HeaderRecordedReceipt)
 					}
-					requireSignedRecordedReceipt(t, rph, got)
+					requireSignedRecordedReceipt(t, rph, recorded, got)
 				}
 				if !requireReceipts && got != "" {
 					t.Fatalf("%s %s = %q, want empty in best-effort mode", surface, blockreason.HeaderRecordedReceipt, got)

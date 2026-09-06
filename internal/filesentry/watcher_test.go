@@ -1349,12 +1349,19 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 	// Drain whatever the remaining windows produced. Counting beats failing on
 	// the first extra: a run that coalesced nothing and a run that split into
 	// two windows are different defects, and only the count distinguishes them.
+	// The two-value receive is load-bearing. A closed Findings channel yields
+	// immediately and forever, so a single-value receive would spin for the
+	// whole observation window and report thousands of findings -- a false
+	// failure that would read exactly like a catastrophic timer race.
 	findings := int64(1)
 	extraWindow := time.After(filesentryNegativeObservation)
 drain:
 	for {
 		select {
-		case <-w.Findings():
+		case _, open := <-w.Findings():
+			if !open {
+				break drain
+			}
 			findings++
 		case <-extraWindow:
 			break drain

@@ -265,6 +265,10 @@ func TestInstallEvidenceCorpusAuditorPreflightsSecondaryManagedFiles(t *testing.
 	if err != nil {
 		t.Fatalf("read service before failed install: %v", err)
 	}
+	before = append(before, []byte("# preflight sentinel\n")...)
+	if err := os.WriteFile(servicePath, before, 0o600); err != nil {
+		t.Fatalf("write managed service sentinel: %v", err)
+	}
 	timerPath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorTimer)
 	if err := os.WriteFile(timerPath, []byte("[Timer]\nOnCalendar=daily\n"), 0o600); err != nil {
 		t.Fatalf("write unmanaged timer: %v", err)

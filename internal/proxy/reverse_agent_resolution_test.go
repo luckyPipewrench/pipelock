@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
@@ -63,5 +64,20 @@ func TestReverseProxyUsesConfiguredAgentResolverForMediationEnvelope(t *testing.
 	}
 	if got.ActorAuth != envelope.ActorAuthBound {
 		t.Errorf("envelope actor auth = %q, want %q", got.ActorAuth, envelope.ActorAuthBound)
+	}
+}
+
+func TestReverseProxyUnavailableWithoutConfigFailsClosed(t *testing.T) {
+	_, handler := reverseTestSetupWithHandler(t, reverseTestConfig(), func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("request reached upstream without config or scanner")
+	})
+	handler.cfgPtr.Store(nil)
+	handler.scPtr.Store(nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example/resource", nil)
+	req.Header.Set(AgentHeader, "header-agent")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
 	}
 }

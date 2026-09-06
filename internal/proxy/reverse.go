@@ -282,6 +282,9 @@ func (rp *ReverseProxyHandler) resolveAgentIdentity(r *http.Request, cfg *config
 	if rp.agentResolver != nil {
 		return rp.agentResolver(r)
 	}
+	if cfg == nil {
+		return edition.ResolveAgentIdentity(r, nil, "", false)
+	}
 	return edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
 }
 
@@ -595,6 +598,16 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	snap, releaseScanner, scOK := rp.snapshotAndAcquire()
 	defer releaseScanner()
+	cfg := snap.cfg
+	clientIP, requestID := requestMeta(r)
+	agent, _ := r.Context().Value(ctxKeyAgent).(string)
+	agentAuth := agentAuthFromContext(r.Context())
+	resolvedIdentity := edition.AgentIdentity{Name: agent, Auth: envelope.ActorAuth(agentAuth)}
+	if agent == "" {
+		resolvedIdentity = rp.resolveAgentIdentity(r, cfg, snap.edition)
+		agent = resolvedIdentity.Name
+		agentAuth = string(resolvedIdentity.Auth)
+	}
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		if snap.cfg != nil {
 			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
@@ -606,8 +619,6 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// level rather than scan on an unpinned, possibly-closed scanner.
 		// Attest the deny so an operator reconstructing the enforcement
 		// timeline from receipts sees the request resolved to a verdict.
-		_, requestID := requestMeta(r)
-		agent, _ := r.Context().Value(ctxKeyAgent).(string)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
 		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
@@ -625,18 +636,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			scannerPatternUnavailable)
 		return
 	}
-	cfg := snap.cfg
 	sc := snap.sc
 	admissionEmitter := snap.admissionEmitter
-	clientIP, requestID := requestMeta(r)
-	agent, _ := r.Context().Value(ctxKeyAgent).(string)
-	agentAuth := agentAuthFromContext(r.Context())
-	resolvedIdentity := edition.AgentIdentity{Name: agent, Auth: envelope.ActorAuth(agentAuth)}
-	if agent == "" {
-		resolvedIdentity = rp.resolveAgentIdentity(r, cfg, snap.edition)
-		agent = resolvedIdentity.Name
-		agentAuth = string(resolvedIdentity.Auth)
-	}
 	// Put the grade on the request as soon as identity resolves. The collision
 	// audit below builds its context from r.Context(), and the reverse handler
 	// otherwise attaches the grade much further down, so the one event that
@@ -644,6 +645,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// bound agent.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, agentAuth))
 	targetURL := reverseTargetURL(rp.upstream, r)
+	// Bound identities ignore request labels, as bound defaults do. Only
+	// rejected self-declared identities produce a reserved-name collision.
 	if envelope.NormalizeActorAuth(agentAuth) != envelope.ActorAuthBound {
 		reservedAgent, ok := edition.RejectedSelfDeclaredReservedControlActor(r, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
 		if ok {

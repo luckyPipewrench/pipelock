@@ -908,29 +908,36 @@ func TestContinueInstall_DuplicateKeyInBlockLeavesGlobalUntouched(t *testing.T) 
 	}
 }
 
-// TestWriteInstallerBackup_RefusesNonRegularPaths covers a symlink or a
-// directory sitting where the backup goes: the helper must refuse before it
-// changes a mode or writes, so the link target is never touched.
-func TestWriteInstallerBackup_RefusesNonRegularPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs privileges on Windows")
-	}
+// TestWriteInstallerBackup_NeverFollowsTheBackupPath covers a symlink or a
+// directory sitting where the backup goes. The helper writes a private temp
+// file and renames it into place, so a planted symlink is replaced and its
+// target is never read or written, and a directory makes the write fail.
+func TestWriteInstallerBackup_NeverFollowsTheBackupPath(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.txt")
 	if err := os.WriteFile(target, []byte("keep me\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Run("symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation needs privileges on Windows")
+		}
 		cfg := filepath.Join(dir, "linked.yaml")
 		if err := os.Symlink(target, cfg+".bak"); err != nil {
 			t.Fatal(err)
 		}
-		err := writeInstallerBackup(cfg, []byte("new backup\n"))
-		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-			t.Fatalf("symlink backup error = %v", err)
+		if err := writeInstallerBackup(cfg, []byte("new backup\n")); err != nil {
+			t.Fatalf("backup over a symlink: %v", err)
 		}
 		if data, _ := os.ReadFile(filepath.Clean(target)); string(data) != "keep me\n" {
 			t.Fatalf("symlink target was modified: %q", data)
+		}
+		info, err := os.Lstat(cfg + ".bak")
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Fatalf("backup path is not a private regular file: %v %v", info, err)
+		}
+		if data, _ := os.ReadFile(filepath.Clean(cfg + ".bak")); string(data) != "new backup\n" {
+			t.Fatalf("backup content = %q", data)
 		}
 	})
 	t.Run("directory", func(t *testing.T) {
@@ -942,14 +949,16 @@ func TestWriteInstallerBackup_RefusesNonRegularPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = writeInstallerBackup(cfg, []byte("new backup\n"))
-		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-			t.Fatalf("directory backup error = %v", err)
+		if err := writeInstallerBackup(cfg, []byte("new backup\n")); err == nil {
+			t.Fatal("backup over a directory unexpectedly succeeded")
 		}
-		// The mode is whatever umask left; the point is that it did not change.
 		info, statErr := os.Stat(cfg + ".bak")
 		if statErr != nil || !info.IsDir() || info.Mode().Perm() != before.Mode().Perm() {
 			t.Fatalf("directory was altered: %v %v", info, statErr)
+		}
+		leftovers, _ := filepath.Glob(filepath.Join(dir, "dir.yaml.bak.tmp-*"))
+		if len(leftovers) != 0 {
+			t.Fatalf("temporary backup files were left behind: %v", leftovers)
 		}
 	})
 	t.Run("missing", func(t *testing.T) {

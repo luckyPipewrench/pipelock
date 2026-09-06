@@ -4,7 +4,6 @@
 package setup
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,25 +39,38 @@ func atomicWriteFile(path string, data []byte, doBackup bool) error {
 	return nil
 }
 
-// writeInstallerBackup writes path+".bak" with 0o600. os.WriteFile applies the
-// mode only when it creates the file, so an existing backup left at a broader
-// mode would keep it and expose copied MCP env values; restrict it first. A
-// missing backup is the normal case and is not an error.
+// writeInstallerBackup writes path+".bak" with 0o600 without ever operating on
+// the final path by name in more than one step. The bytes go to a private
+// temporary file in the same directory and are renamed over the backup path,
+// so a symlink planted there is replaced rather than followed and its target
+// is never touched; a directory there makes the rename fail and the install
+// stop. Inspecting the path first and then writing it would leave a window
+// where the path could change between the two operations.
 func writeInstallerBackup(path string, data []byte) error {
 	backup := path + ".bak"
-	info, err := os.Lstat(backup)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return os.WriteFile(backup, data, 0o600)
-	case err != nil:
-		return fmt.Errorf("inspecting existing backup %s: %w", backup, err)
-	case !info.Mode().IsRegular():
-		// A symlink would redirect both the chmod and the write to its target,
-		// and a directory cannot hold the backup. Refuse rather than follow.
-		return fmt.Errorf("existing backup %s is not a regular file; move it aside", backup)
+	tmp, err := os.CreateTemp(filepath.Dir(backup), filepath.Base(backup)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating backup for %s: %w", path, err)
 	}
-	if err := os.Chmod(backup, 0o600); err != nil {
-		return fmt.Errorf("restricting existing backup %s: %w", backup, err)
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("restricting backup for %s: %w", path, err)
 	}
-	return os.WriteFile(backup, data, 0o600)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("writing backup for %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("closing backup for %s: %w", path, err)
+	}
+	if err := os.Rename(tmpName, backup); err != nil {
+		cleanup()
+		return fmt.Errorf("placing backup %s: %w", backup, err)
+	}
+	return nil
 }

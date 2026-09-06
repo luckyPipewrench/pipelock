@@ -1759,6 +1759,15 @@ func (p *Proxy) ScannerPtr() *atomic.Pointer[scanner.Scanner] {
 	return &p.scannerPtr
 }
 
+// BindReverseProxyIdentity makes a reverse-proxy handler resolve identities
+// from the same edition snapshot as the main proxy, including enterprise
+// source CIDR bindings across reloads.
+func (p *Proxy) BindReverseProxyIdentity(handler *ReverseProxyHandler) {
+	if handler != nil {
+		handler.setEditionPtr(&p.editionPtr)
+	}
+}
+
 // SessionMgrPtr returns the atomic pointer to the session manager.
 // Used by run.go to construct the session API handler for the dedicated port.
 func (p *Proxy) SessionMgrPtr() *atomic.Pointer[SessionManager] {

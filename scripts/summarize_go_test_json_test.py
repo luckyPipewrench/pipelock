@@ -180,14 +180,56 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
             )
         )
 
-        results = summarize_go_test_json.parse_events(lines, output_limit=None)
         out = io.StringIO()
-        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+        with mock.patch.object(sys, "stdout", out):
+            summarize_go_test_json.summarize_full_output(lines, label="unit", top=1, top_tests=25)
 
         summary = out.getvalue()
         self.assertIn("stack line 0", summary)
         self.assertIn("stack line 50", summary)
         self.assertIn("stack line 100", summary)
+
+    def test_full_output_streams_large_passed_output_without_retaining_it(self):
+        import tracemalloc
+
+        class DiscardOutput:
+            def write(self, value):
+                return len(value)
+            def flush(self):
+                pass
+
+        def events():
+            payload = json.dumps({"Action": "output", "Package": "example.com/pass", "Output": "x" * 8192})
+            for _ in range(2048):
+                yield payload
+            yield json.dumps({"Action": "pass", "Package": "example.com/pass"})
+            yield json.dumps({"Action": "fail", "Package": "example.com/fail"})
+
+        tracemalloc.start()
+        try:
+            with mock.patch.object(sys, "stdout", DiscardOutput()):
+                results = summarize_go_test_json.summarize_full_output(events(), label="unit", top=1, top_tests=1)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 4 * 1024 * 1024)
+        self.assertFalse(results["example.com/pass"].output)
+
+    def test_full_output_preserves_malformed_text_and_escapes_controls(self):
+        lines = [
+            "toolchain prelude\x1b[2J\n",
+            json.dumps({"Action": "output", "Package": "example.com/fail", "Output": "stack\x1b[2J\n"}),
+            json.dumps({"Action": "fail", "Package": "example.com/fail"}),
+            json.dumps({"Action": "output", "Package": "example.com/pass", "Output": "unrelated passed output"}),
+            json.dumps({"Action": "pass", "Package": "example.com/pass"}),
+        ]
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdout", out):
+            summarize_go_test_json.summarize_full_output(lines, label="unit", top=1, top_tests=1)
+        self.assertIn("unparsed diagnostic: toolchain prelude", out.getvalue())
+        self.assertIn("stack\\u001b[2J", out.getvalue())
+        self.assertNotIn("\x1b", out.getvalue())
+        self.assertNotIn("unrelated passed output", out.getvalue())
 
     def test_omits_failed_tests_header_for_package_only_failure(self):
         lines = [

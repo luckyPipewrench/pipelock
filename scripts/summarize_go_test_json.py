@@ -11,6 +11,8 @@ import collections
 import json
 import math
 import sys
+import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 
@@ -54,7 +56,7 @@ class TestResult(_ActionResult):
 
 
 def parse_events(
-    lines: list[str], *, output_limit: int | None = FAILED_OUTPUT_LIMIT
+    lines: Iterable[str], *, output_limit: int = FAILED_OUTPUT_LIMIT
 ) -> dict[str, PackageResult]:
     results: dict[str, PackageResult] = {}
 
@@ -213,6 +215,61 @@ def print_summary(
                 print(escape_terminal_text(line), file=out)
 
 
+def print_full_failed_output(lines: Iterable[str], results: dict[str, PackageResult]) -> None:
+    """Replay failed diagnostics from disk without retaining output in memory."""
+    previous = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # Go and its toolchain may write text around the JSON stream. Keep
+            # that evidence too; silently dropping it hides formatter failures.
+            print("unparsed diagnostic: " + escape_terminal_text(line.rstrip("\n")))
+            continue
+        if not isinstance(event, dict):
+            continue
+        package = event.get("Package")
+        if not isinstance(package, str):
+            continue
+        result = results.get(package)
+        output = event.get("Output")
+        if result is None or result.action != "fail" or not isinstance(output, str):
+            continue
+        test = event.get("Test")
+        test = test if isinstance(test, str) else ""
+        if test:
+            test_result = result.tests.get(test)
+            if test_result is None or test_result.action not in {"fail", "run"}:
+                continue
+            heading = "interrupted test output:" if test_result.action == "run" else "failed tests:"
+        else:
+            heading = "failed package output:"
+        key = (package, test)
+        if key != previous:
+            print(heading)
+            name = package + (" " + test if test else "")
+            print(f"--- {escape_terminal_text(name)} ---")
+            previous = key
+        print(escape_terminal_text(output.rstrip("\n")))
+
+
+def summarize_full_output(lines: Iterable[str], *, label: str, top: int, top_tests: int) -> dict[str, PackageResult]:
+    """Spool input once, then replay selected output after final states are known."""
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as captured:
+        def capture():
+            for line in lines:
+                captured.write(line)
+                if not line.endswith("\n"):
+                    captured.write("\n")
+                yield line
+
+        results = parse_events(capture(), output_limit=0)
+        print_summary(results, label=label, top=top, top_tests=top_tests)
+        captured.seek(0)
+        print_full_failed_output(captured, results)
+        return results
+
+
 def has_failed_packages(results: dict[str, PackageResult]) -> bool:
     return any(result.action == "fail" for result in results.values())
 
@@ -253,9 +310,11 @@ def main() -> int:
             print(escape_terminal_text(line.rstrip("\n")))
         return 0
 
-    output_limit = None if args.full_failed_output else FAILED_OUTPUT_LIMIT
-    results = parse_events(sys.stdin.readlines(), output_limit=output_limit)
-    print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
+    if args.full_failed_output:
+        results = summarize_full_output(sys.stdin, label=args.label, top=args.top, top_tests=args.top_tests)
+    else:
+        results = parse_events(sys.stdin)
+        print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
     if has_failed_packages(results) and not args.allow_failed_packages:
         return 1
     return 0

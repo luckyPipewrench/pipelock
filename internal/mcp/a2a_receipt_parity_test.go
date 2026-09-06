@@ -100,24 +100,6 @@ func startA2AReceiptListener(t *testing.T, upstreamURL string, opts MCPProxyOpts
 	return baseURL
 }
 
-func postA2A(t *testing.T, baseURL, body string, headers map[string]string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-}
-
 // 5a: a blocked A2A *header* request (an A2A-Extensions URI the URL scanner
 // rejects) must emit a signed block receipt bound to the policy hash. Pre-fix
 // the header block wrote the JSON-RPC error and returned with no receipt.

@@ -359,7 +359,7 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 
 	// Backup existing file.
 	if readErr == nil {
-		if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+		if err := writeInstallerBackup(targetPath, existingData); err != nil {
 			return fmt.Errorf("creating backup: %w", err)
 		}
 	}
@@ -451,7 +451,7 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 	}
 
 	// Backup.
-	if err := os.WriteFile(targetPath+".bak", existingData, 0o600); err != nil {
+	if err := writeInstallerBackup(targetPath, existingData); err != nil {
 		return fmt.Errorf("creating backup: %w", err)
 	}
 

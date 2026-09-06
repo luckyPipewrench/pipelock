@@ -75,6 +75,20 @@ const (
 	flagConfig = "--config"
 )
 
+var continueConfigExtensions = []string{".yaml", ".yml"}
+
+// IsContinueConfigExtension reports whether ext is a documented Continue YAML
+// configuration extension. Setup imports this package so discovery and install
+// use this one extension set rather than duplicating it.
+func IsContinueConfigExtension(ext string) bool {
+	for _, supported := range continueConfigExtensions {
+		if ext == supported {
+			return true
+		}
+	}
+	return false
+}
+
 // Pipelock wrapper command/arg constants used by classifier + generator.
 const (
 	wrapperCommand  = "pipelock"
@@ -154,6 +168,8 @@ func Discover(home string) (*Report, error) {
 		// Claude Code has nested per-project servers
 		if cp.Client == clientClaudeCode {
 			parsed, err = parseClaudeCodeConfig(cp.Path)
+		} else if cp.Client == "continue" && (filepath.Ext(cp.Path) == ".yaml" || filepath.Ext(cp.Path) == ".yml") {
+			parsed, err = parseContinueYAMLConfig(cp.Path)
 		} else {
 			parsed, err = parseConfigFile(cp.Path, cp.Key, cp.Client)
 		}
@@ -312,6 +328,12 @@ func configPathsForOS(home, goos string) []clientPath {
 		},
 		{
 			Client: "continue",
+			Path:   filepath.Join(home, ".continue", "config.yaml"),
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
+		},
+		{
+			Client: "continue",
 			Path:   filepath.Join(home, ".continue", "config.json"),
 			Key:    configKeyMCPServers,
 			Scope:  scopeUser,
@@ -361,6 +383,12 @@ func configPathsForOS(home, goos string) []clientPath {
 		// deterministic from its inputs. Project-local scanning requires
 		// an explicit project root parameter (future work). Consistent
 		// with VS Code (.vscode/mcp.json also not scanned).
+	}
+	for _, extension := range continueConfigExtensions {
+		continueBlocks, _ := filepath.Glob(filepath.Join(home, ".continue", "mcpServers", "*"+extension))
+		for _, path := range continueBlocks {
+			paths = append(paths, clientPath{Client: "continue", Path: path, Key: configKeyMCPServers, Scope: scopeUser})
+		}
 	}
 	if goos == osWindows {
 		// Packaged desktop apps can redirect Roaming data into their private

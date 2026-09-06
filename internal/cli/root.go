@@ -163,6 +163,7 @@ Quick start:
 		setup.InitCmd(),
 		setup.ClaudeCmd(),
 		setup.ClineCmd(),
+		setup.ContinueCmd(),
 		setup.CursorCmd(),
 		setup.VscodeCmd(),
 		setup.JetbrainsCmd(),

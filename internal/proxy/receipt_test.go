@@ -160,10 +160,9 @@ func TestProxy_ReceiptEmission_FetchBlock(t *testing.T) {
 		t.Errorf("expected policy_hash %q, got %q", want, r.ActionRecord.PolicyHash)
 	}
 
-	if err := receipt.VerifyWithKey(r, r.SignerKey); err != nil {
+	if err := receipt.VerifyWithKey(r, hex.EncodeToString(pubKey)); err != nil {
 		t.Fatalf("receipt verification with key failed: %v", err)
 	}
-	_ = pubKey // used indirectly via priv.Public()
 }
 
 // TestProxy_ReceiptEmission_FetchAllow verifies that allowed requests also

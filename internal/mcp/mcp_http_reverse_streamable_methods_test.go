@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -21,10 +22,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -37,6 +40,27 @@ type streamableUpstreamObservation struct {
 	auth        string
 	proxyAuth   string
 	operator    string
+}
+
+func TestSetListenerCORSHeaders_ExposesRecordedReceipt(t *testing.T) {
+	headers := make(http.Header)
+	setListenerCORSHeaders(headers, "https://app.vendor.example")
+	got := headers.Get("Access-Control-Expose-Headers")
+	exposed := false
+	for _, token := range strings.Split(got, ",") {
+		if strings.TrimSpace(token) == blockreason.HeaderRecordedReceipt {
+			exposed = true
+		}
+	}
+	if !exposed {
+		t.Fatalf("Access-Control-Expose-Headers = %q, want the exact token %s", got, blockreason.HeaderRecordedReceipt)
+	}
+	// A similarly prefixed name must not satisfy the check.
+	for _, token := range strings.Split(got, ",") {
+		if strings.HasPrefix(strings.TrimSpace(token), blockreason.HeaderRecordedReceipt+"-") {
+			t.Fatalf("Access-Control-Expose-Headers = %q exposes a prefixed variant, not the header itself", got)
+		}
+	}
 }
 
 func receiveStreamableUpstreamObservation(t *testing.T, ch <-chan streamableUpstreamObservation) streamableUpstreamObservation {
@@ -62,6 +86,9 @@ func assertStreamableBlockReceipt(
 	if actionID == "" {
 		t.Fatalf("%s is empty", blockreason.HeaderReceipt)
 	}
+	if got := resp.Header.Get(blockreason.HeaderRecordedReceipt); got != actionID {
+		t.Fatalf("%s = %q, want recorded action id %q", blockreason.HeaderRecordedReceipt, got, actionID)
+	}
 	blocks := receiptsByVerdict(readActionReceipts(t, h.dir), config.ActionBlock)
 	if len(blocks) != 1 {
 		t.Fatalf("block receipts = %d, want 1", len(blocks))
@@ -69,6 +96,9 @@ func assertStreamableBlockReceipt(
 	record := blocks[0].ActionRecord
 	if record.ActionID != actionID {
 		t.Fatalf("%s = %q, want emitted action id %q", blockreason.HeaderReceipt, actionID, record.ActionID)
+	}
+	if err := receipt.VerifyWithKey(blocks[0], hex.EncodeToString(h.pub)); err != nil {
+		t.Fatalf("verify recorded receipt: %v", err)
 	}
 	if record.Layer != wantLayer {
 		t.Fatalf("receipt layer = %q, want %q", record.Layer, wantLayer)
@@ -1317,8 +1347,17 @@ func TestHTTPListener_GETAndDELETEV2OnlyRequiredReceiptSetsBlockHeader(t *testin
 			if got := resp.Header.Get(blockreason.HeaderReceipt); got == "" {
 				t.Fatalf("%s is empty", blockreason.HeaderReceipt)
 			}
-			if receipts := mcpV2Receipts(t, h); len(receipts) != 1 {
+			if got := resp.Header.Get(blockreason.HeaderRecordedReceipt); got != resp.Header.Get(blockreason.HeaderReceipt) {
+				t.Fatalf("%s = %q, want emitted action_id %q", blockreason.HeaderRecordedReceipt, got, resp.Header.Get(blockreason.HeaderReceipt))
+			}
+			receipts := mcpV2Receipts(t, h)
+			if len(receipts) != 1 {
 				t.Fatalf("v2 receipts = %d, want 1", len(receipts))
+			}
+			// The header must name a receipt that verifies under the harness key,
+			// not merely a value that looks like an id.
+			if err := contractreceipt.VerifyWithKey(receipts[0], h.pub, h.kid); err != nil {
+				t.Fatalf("persisted v2 receipt does not verify: %v", err)
 			}
 		})
 	}

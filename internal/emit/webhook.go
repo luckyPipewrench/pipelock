@@ -282,16 +282,14 @@ func (w *WebhookSink) Stats() WebhookStats {
 		return WebhookStats{}
 	}
 	w.lastErrMu.Lock()
-	lastErr := w.lastErr
-	degraded := w.degraded.Load()
-	w.lastErrMu.Unlock()
+	defer w.lastErrMu.Unlock()
 	stats := WebhookStats{
 		Delivered: w.delivered.Load(),
 		Failed:    w.failed.Load(),
 		Dropped:   w.dropped.Load(),
 		Abandoned: w.abandoned.Load(),
-		Degraded:  degraded,
-		LastError: lastErr,
+		Degraded:  w.degraded.Load(),
+		LastError: w.lastErr,
 	}
 	if w.queue != nil {
 		stats.QueueLen = len(w.queue)
@@ -320,11 +318,15 @@ func sanitizeWebhookErr(err error) string {
 }
 
 func (w *WebhookSink) recordFailure(reason string, event Event, err error) {
-	w.failed.Add(1)
+	lastErr := ""
+	if err != nil {
+		lastErr = sanitizeWebhookErr(err)
+	}
 	w.lastErrMu.Lock()
+	w.failed.Add(1)
 	w.degraded.Store(true)
 	if err != nil {
-		w.lastErr = sanitizeWebhookErr(err)
+		w.lastErr = lastErr
 	}
 	w.lastErrMu.Unlock()
 	w.logDiagnostic("delivery_failed", reason, event, err, 0)
@@ -338,12 +340,12 @@ func (w *WebhookSink) recordFailure(reason string, event Event, err error) {
 // backpressure into request-path blocking. The drop is observable via
 // Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
 func (w *WebhookSink) recordDropped(reason string, err error) {
-	w.dropped.Add(1)
 	lastErr := reason
 	if err != nil {
 		lastErr = sanitizeWebhookErr(err)
 	}
 	w.lastErrMu.Lock()
+	w.dropped.Add(1)
 	w.degraded.Store(true)
 	w.lastErr = lastErr
 	w.lastErrMu.Unlock()
@@ -354,8 +356,8 @@ func (w *WebhookSink) recordAbandoned(count int) {
 		return
 	}
 	const reason = "drain_timeout" // the only path that abandons webhook events is a drain deadline
-	w.abandoned.Add(uint64(count))
 	w.lastErrMu.Lock()
+	w.abandoned.Add(uint64(count))
 	w.degraded.Store(true)
 	w.lastErr = reason
 	w.lastErrMu.Unlock()

@@ -448,16 +448,14 @@ func (s *SyslogSink) Stats() SyslogStats {
 		return SyslogStats{}
 	}
 	s.lastErrMu.Lock()
-	lastErr := s.lastErr
-	degraded := s.degraded.Load()
-	s.lastErrMu.Unlock()
+	defer s.lastErrMu.Unlock()
 	stats := SyslogStats{
 		Delivered: s.delivered.Load(),
 		Failed:    s.failed.Load(),
 		Dropped:   s.dropped.Load(),
 		Abandoned: s.abandoned.Load(),
-		Degraded:  degraded,
-		LastError: lastErr,
+		Degraded:  s.degraded.Load(),
+		LastError: s.lastErr,
 	}
 	if s.queue != nil {
 		stats.QueueLen = len(s.queue)
@@ -467,11 +465,15 @@ func (s *SyslogSink) Stats() SyslogStats {
 }
 
 func (s *SyslogSink) recordFailure(reason string, msg syslogMessage, err error) {
-	s.failed.Add(1)
+	lastErr := ""
+	if err != nil {
+		lastErr = err.Error()
+	}
 	s.lastErrMu.Lock()
+	s.failed.Add(1)
 	s.degraded.Store(true)
 	if err != nil {
-		s.lastErr = err.Error()
+		s.lastErr = lastErr
 	}
 	s.lastErrMu.Unlock()
 	s.logDiagnostic("delivery_failed", reason, msg, err, 0)
@@ -485,12 +487,12 @@ func (s *SyslogSink) recordFailure(reason string, msg syslogMessage, err error) 
 // backpressure into request-path blocking. The drop is observable via
 // Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
 func (s *SyslogSink) recordDropped(reason string, err error) {
-	s.dropped.Add(1)
 	lastErr := reason
 	if err != nil {
 		lastErr = err.Error()
 	}
 	s.lastErrMu.Lock()
+	s.dropped.Add(1)
 	s.degraded.Store(true)
 	s.lastErr = lastErr
 	s.lastErrMu.Unlock()
@@ -500,8 +502,8 @@ func (s *SyslogSink) recordAbandoned(reason string, msg syslogMessage, count int
 	if count < 1 {
 		count = 1
 	}
-	s.abandoned.Add(uint64(count))
 	s.lastErrMu.Lock()
+	s.abandoned.Add(uint64(count))
 	s.degraded.Store(true)
 	s.lastErr = reason
 	s.lastErrMu.Unlock()

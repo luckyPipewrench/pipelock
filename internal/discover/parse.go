@@ -70,8 +70,14 @@ func parseContinueYAMLConfig(path string) ([]MCPServer, error) {
 		if rs.Name != "" {
 			name = rs.Name
 		}
+		// The JSON discovery contract emits args as an array; an omitted YAML
+		// list would otherwise decode to nil and serialize as null.
+		args := rs.Args
+		if args == nil {
+			args = []string{}
+		}
 		url := rs.URL
-		servers = append(servers, MCPServer{Client: "continue", ConfigPath: path, ServerName: name, Transport: inferTransport(rs, url), Command: rs.Command, Args: rs.Args, Env: rs.Env, URL: url})
+		servers = append(servers, MCPServer{Client: "continue", ConfigPath: path, ServerName: name, Transport: inferTransport(rs, url), Command: rs.Command, Args: args, Env: rs.Env, URL: url})
 	}
 	return servers, nil
 }

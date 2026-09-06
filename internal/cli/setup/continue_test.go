@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -541,8 +542,17 @@ func TestContinueHelperEdgeCases(t *testing.T) {
 	if got := continueServerName(map[string]interface{}{}, 3); got != "mcpServers[3]" {
 		t.Fatalf("unnamed server = %q", got)
 	}
-	for _, data := range [][]byte{[]byte("---\n"), []byte("---\r\n"), []byte("mcpServers: []\n")} {
-		_ = continueHasDocumentMarker(data)
+	for _, tc := range []struct {
+		data []byte
+		want bool
+	}{
+		{data: []byte("---\n"), want: true},
+		{data: []byte("---\r\n"), want: true},
+		{data: []byte("mcpServers: []\n"), want: false},
+	} {
+		if got := continueHasDocumentMarker(tc.data); got != tc.want {
+			t.Fatalf("continueHasDocumentMarker(%q) = %v, want %v", tc.data, got, tc.want)
+		}
 	}
 }
 
@@ -565,6 +575,9 @@ func TestContinuePlanAndWriteErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable standalone directory", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not enforce Unix directory modes")
+		}
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		blocksDir := filepath.Join(home, continueDirname, continueMCPDirname)
@@ -635,6 +648,9 @@ func TestContinuePlanAndWriteErrors(t *testing.T) {
 		if err := os.WriteFile(path, []byte(continueStdioFixture), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not enforce Unix directory modes")
+		}
 		readOnlyDirMode := os.FileMode(0o400)
 		readOnlyDirMode |= 0o100
 		if err := os.Chmod(dir, readOnlyDirMode); err != nil {
@@ -647,4 +663,72 @@ func TestContinuePlanAndWriteErrors(t *testing.T) {
 			t.Fatalf("backup write error = %v", err)
 		}
 	})
+}
+
+// TestContinueInstall_RestrictsExistingBackupMode covers an operator whose
+// earlier backup was left world-readable: the installer must tighten it to
+// 0o600 before writing copied MCP env values into it.
+func TestContinueInstall_RestrictsExistingBackupMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix file modes")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, continueDirname)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, continueConfigName)
+	if err := os.WriteFile(path, []byte(continueStdioFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broadMode := os.FileMode(0o600)
+	broadMode |= 0o044
+	if err := os.WriteFile(path+".bak", []byte("stale: backup\n"), broadMode); err != nil {
+		t.Fatal(err)
+	}
+	// WriteFile's mode is subject to umask; chmod so the precondition holds.
+	if err := os.Chmod(path+".bak", broadMode); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path + ".bak"); err != nil || info.Mode().Perm() != broadMode {
+		t.Fatalf("precondition: backup mode = %v, err %v", info.Mode().Perm(), err)
+	}
+	if err := runContinueCmd(t, "install"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	info, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("backup mode = %o, want 600", got)
+	}
+	if data, _ := os.ReadFile(filepath.Clean(path + ".bak")); string(data) != continueStdioFixture {
+		t.Fatalf("backup content = %q, want the original config", data)
+	}
+}
+
+// TestContinueInstall_RejectsDuplicateKeys covers duplicate mapping keys, which
+// a Node decode keeps; a duplicate mcpServers key and a duplicate inside an
+// untouched sibling both refuse before any write.
+func TestContinueInstall_RejectsDuplicateKeys(t *testing.T) {
+	for name, doc := range map[string]string{
+		"duplicate mcpServers":  "mcpServers:\n  - name: a\n    command: node\nmcpServers:\n  - name: b\n    command: node\n",
+		"duplicate sibling key": "models:\n  provider: x\n  provider: y\nmcpServers:\n  - name: a\n    command: node\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), continueConfigName)
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := planContinueFile(path, "/bin/pipelock", "", false)
+			if err == nil || !strings.Contains(err.Error(), "duplicate mapping key") {
+				t.Fatalf("duplicate key error = %v", err)
+			}
+			if _, statErr := os.Stat(path + ".bak"); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("backup must not exist after a refused plan: %v", statErr)
+			}
+		})
+	}
 }

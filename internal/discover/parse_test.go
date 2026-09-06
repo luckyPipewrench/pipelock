@@ -4,8 +4,10 @@
 package discover
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -613,5 +615,28 @@ func TestParseExplicitStdioType(t *testing.T) {
 	}
 	if servers[0].Transport != TransportStdio {
 		t.Errorf("transport = %q, want stdio", servers[0].Transport)
+	}
+}
+
+// TestParseContinueYAMLConfig_OmittedArgsIsEmptyArray keeps the JSON discovery
+// contract: an omitted YAML args list must serialize as [] rather than null.
+func TestParseContinueYAMLConfig_OmittedArgsIsEmptyArray(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("mcpServers:\n  - name: local\n    command: node\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := parseContinueYAMLConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 || servers[0].Args == nil {
+		t.Fatalf("args must be a non-nil empty slice, got %+v", servers)
+	}
+	data, err := json.Marshal(servers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"args":[]`) {
+		t.Fatalf("omitted args must serialize as []: %s", data)
 	}
 }

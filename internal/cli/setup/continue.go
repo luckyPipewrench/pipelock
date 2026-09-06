@@ -143,7 +143,7 @@ func runContinue(cmd *cobra.Command, path, mcpDir string, dryRun bool, configFil
 		return nil
 	}
 	for _, plan := range plans {
-		if err := os.WriteFile(plan.path+".bak", plan.original, 0o600); err != nil {
+		if err := writeInstallerBackup(plan.path, plan.original); err != nil {
 			return fmt.Errorf("creating backup for %s: %w", plan.path, err)
 		}
 		if err := vscodeAtomicWrite(plan.path, plan.output, filepath.Dir(plan.path)); err != nil {
@@ -183,6 +183,12 @@ func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, 
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
+		return continuePlan{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	// Decoding into a Node keeps duplicate mapping keys that a typed decode
+	// would reject. Selecting the first mcpServers and rewriting around a
+	// second would silently change which copy Continue reads, so refuse.
+	if err := continueRejectDuplicateKeys(&document); err != nil {
 		return continuePlan{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	serversNode, found, err := continueServersNode(&document)
@@ -407,4 +413,23 @@ func wrapContinueServer(server map[string]interface{}, exe, configFile string) (
 	}
 	result[mcpFieldPipelock] = metaMap
 	return result, nil
+}
+
+func continueRejectDuplicateKeys(node *yaml.Node) error {
+	if node.Kind == yaml.MappingNode {
+		seen := make(map[string]int, len(node.Content)/2)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if first, dup := seen[key.Value]; dup {
+				return fmt.Errorf("duplicate mapping key %q at line %d (already defined at line %d)", key.Value, key.Line, first)
+			}
+			seen[key.Value] = key.Line
+		}
+	}
+	for _, child := range node.Content {
+		if err := continueRejectDuplicateKeys(child); err != nil {
+			return err
+		}
+	}
+	return nil
 }

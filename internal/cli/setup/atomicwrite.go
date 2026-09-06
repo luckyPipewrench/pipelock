@@ -4,6 +4,7 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,4 +38,16 @@ func atomicWriteFile(path string, data []byte, doBackup bool) error {
 		return fmt.Errorf("atomic rename: %w", err)
 	}
 	return nil
+}
+
+// writeInstallerBackup writes path+".bak" with 0o600. os.WriteFile applies the
+// mode only when it creates the file, so an existing backup left at a broader
+// mode would keep it and expose copied MCP env values; restrict it first. A
+// missing backup is the normal case and is not an error.
+func writeInstallerBackup(path string, data []byte) error {
+	backup := path + ".bak"
+	if err := os.Chmod(backup, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("restricting existing backup %s: %w", backup, err)
+	}
+	return os.WriteFile(backup, data, 0o600)
 }

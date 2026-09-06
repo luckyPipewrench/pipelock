@@ -6,6 +6,7 @@
 import io
 import json
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -181,8 +182,20 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with mock.patch.object(sys, "stdout", out):
-            summarize_go_test_json.summarize_full_output(lines, label="unit", top=1, top_tests=25)
+        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as captured:
+            captured.write("\n".join(lines) + "\n")
+            captured.seek(0)
+            with (
+                mock.patch.object(sys, "stdout", out),
+                mock.patch.object(
+                    summarize_go_test_json.tempfile,
+                    "TemporaryFile",
+                    side_effect=AssertionError("regular input must be replayed directly"),
+                ),
+            ):
+                summarize_go_test_json.summarize_full_output(
+                    captured, label="unit", top=1, top_tests=25
+                )
 
         summary = out.getvalue()
         self.assertIn("stack line 0", summary)
@@ -207,13 +220,23 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
 
         tracemalloc.start()
         try:
-            with mock.patch.object(sys, "stdout", DiscardOutput()):
-                results = summarize_go_test_json.summarize_full_output(events(), label="unit", top=1, top_tests=1)
+            with (
+                mock.patch.object(sys, "stdout", DiscardOutput()),
+                mock.patch.object(
+                    summarize_go_test_json.tempfile,
+                    "TemporaryFile",
+                    wraps=tempfile.TemporaryFile,
+                ) as captured,
+            ):
+                results = summarize_go_test_json.summarize_full_output(
+                    events(), label="unit", top=1, top_tests=1
+                )
             _, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
         self.assertLess(peak, 4 * 1024 * 1024)
         self.assertFalse(results["example.com/pass"].output)
+        captured.assert_called_once_with(mode="w+t", encoding="utf-8")
 
     def test_full_output_preserves_malformed_text_and_escapes_controls(self):
         lines = [

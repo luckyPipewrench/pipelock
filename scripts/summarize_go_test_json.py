@@ -253,8 +253,35 @@ def print_full_failed_output(lines: Iterable[str], results: dict[str, PackageRes
         print(escape_terminal_text(output.rstrip("\n")))
 
 
+def rewind_position(lines: Iterable[str]) -> int | None:
+    """Return a replayable input position, or None when the input is a pipe."""
+    seekable = getattr(lines, "seekable", None)
+    if not callable(seekable):
+        return None
+    try:
+        if not seekable():
+            return None
+        position = lines.tell()
+        # Check rewinding before consuming the stream, when a fallback can
+        # still capture it if this is an unusual file-like object.
+        lines.seek(position)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return position
+
+
 def summarize_full_output(lines: Iterable[str], *, label: str, top: int, top_tests: int) -> dict[str, PackageResult]:
-    """Spool input once, then replay selected output after final states are known."""
+    """Replay failed diagnostics without retaining all output in memory."""
+    position = rewind_position(lines)
+    if position is not None:
+        results = parse_events(lines, output_limit=0)
+        print_summary(results, label=label, top=top, top_tests=top_tests)
+        lines.seek(position)
+        print_full_failed_output(lines, results)
+        return results
+
+    # Pipes cannot be rewound, so capture exactly one temporary copy for the
+    # second pass after package terminal states are known.
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as captured:
         def capture():
             for line in lines:

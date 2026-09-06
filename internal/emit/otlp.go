@@ -424,15 +424,14 @@ func (s *OTLPSink) Stats() OTLPStats {
 		return OTLPStats{}
 	}
 	s.lastErrMu.Lock()
-	lastErr := s.lastErr
-	s.lastErrMu.Unlock()
+	defer s.lastErrMu.Unlock()
 	stats := OTLPStats{
 		Delivered: s.delivered.Load(),
 		Failed:    s.failed.Load(),
 		Dropped:   s.dropped.Load(),
 		Abandoned: s.abandoned.Load(),
 		Degraded:  s.degraded.Load(),
-		LastError: lastErr,
+		LastError: s.lastErr,
 	}
 	if s.queue != nil {
 		stats.QueueLen = len(s.queue)
@@ -443,13 +442,13 @@ func (s *OTLPSink) Stats() OTLPStats {
 
 func (s *OTLPSink) recordFailure(reason string, event Event, err error) {
 	lastErr := safeOTLPErrorString(err)
+	s.lastErrMu.Lock()
 	s.failed.Add(1)
 	s.degraded.Store(true)
 	if lastErr != "" {
-		s.lastErrMu.Lock()
 		s.lastErr = lastErr
-		s.lastErrMu.Unlock()
 	}
+	s.lastErrMu.Unlock()
 	s.logDiagnostic("delivery_failed", reason, event, lastErr, 0)
 }
 
@@ -461,13 +460,13 @@ func (s *OTLPSink) recordFailure(reason string, event Event, err error) {
 // backpressure into request-path blocking. The drop is observable via
 // Stats().Dropped / LastError / Degraded (and, once wired, sink health metrics).
 func (s *OTLPSink) recordDropped(reason string, err error) {
-	s.dropped.Add(1)
-	s.degraded.Store(true)
 	lastErr := reason
 	if err != nil {
 		lastErr = safeOTLPErrorString(err)
 	}
 	s.lastErrMu.Lock()
+	s.dropped.Add(1)
+	s.degraded.Store(true)
 	s.lastErr = lastErr
 	s.lastErrMu.Unlock()
 }
@@ -476,9 +475,9 @@ func (s *OTLPSink) recordAbandoned(reason string, event Event, count int) {
 	if count < 1 {
 		count = 1
 	}
+	s.lastErrMu.Lock()
 	s.abandoned.Add(uint64(count))
 	s.degraded.Store(true)
-	s.lastErrMu.Lock()
 	s.lastErr = reason
 	s.lastErrMu.Unlock()
 	s.logDiagnostic("events_abandoned", reason, event, "", count)

@@ -546,7 +546,7 @@ func TestSyslogSink_SuccessHealthTransitionIsAtomic(t *testing.T) {
 func TestSyslogSink_SuccessDoesNotEraseConcurrentDropDegraded(t *testing.T) {
 	var sink *SyslogSink
 	writer := &callbackSyslogWriter{writeFn: func() {
-		sink.recordDropped("queue_full", nil)
+		sink.recordDropped()
 	}}
 	sink = &SyslogSink{writer: writer, queue: make(chan syslogMessage, 1)}
 
@@ -568,7 +568,7 @@ func TestSyslogSink_RepeatedDegradeRecoverCycles(t *testing.T) {
 	}
 
 	for cycle := 1; cycle <= 3; cycle++ {
-		sink.recordDropped("queue_full", nil)
+		sink.recordDropped()
 		if stats := sink.Stats(); !stats.Degraded || stats.LastError != "queue_full" {
 			t.Fatalf("cycle %d degraded stats = %+v", cycle, stats)
 		}

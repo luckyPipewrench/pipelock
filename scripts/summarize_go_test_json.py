@@ -53,7 +53,9 @@ class TestResult(_ActionResult):
     pass
 
 
-def parse_events(lines: list[str]) -> dict[str, PackageResult]:
+def parse_events(
+    lines: list[str], *, output_limit: int | None = FAILED_OUTPUT_LIMIT
+) -> dict[str, PackageResult]:
     results: dict[str, PackageResult] = {}
 
     for line in lines:
@@ -68,12 +70,16 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
         if not isinstance(package, str) or package == "":
             continue
 
-        result = results.setdefault(package, PackageResult())
+        result = results.setdefault(
+            package, PackageResult(output=collections.deque(maxlen=output_limit))
+        )
         action = event.get("Action")
         test = event.get("Test")
         test_result = None
         if isinstance(test, str) and test != "":
-            test_result = result.tests.setdefault(test, TestResult())
+            test_result = result.tests.setdefault(
+                test, TestResult(output=collections.deque(maxlen=output_limit))
+            )
 
         if action == "output":
             output = event.get("Output")
@@ -83,6 +89,10 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
                     test_result.output.append(output_line)
                 else:
                     result.output.append(output_line)
+            continue
+
+        if action == "run" and test_result is not None:
+            test_result.action = action
             continue
 
         if action in {"pass", "fail", "skip"}:
@@ -111,8 +121,10 @@ def print_summary(
     label: str,
     top: int,
     top_tests: int = 25,
-    out: object = sys.stdout,
+    out: object | None = None,
 ) -> None:
+    if out is None:
+        out = sys.stdout
     packages = [
         (package, result)
         for package, result in results.items()
@@ -174,6 +186,22 @@ def print_summary(
             for line in test_result.output:
                 print(escape_terminal_text(line), file=out)
 
+    interrupted_tests = [
+        (package, test, test_result)
+        for package, result in failures
+        for test, test_result in sorted(result.tests.items())
+        if test_result.action == "run" and test_result.output
+    ]
+    if interrupted_tests:
+        print("interrupted test output:", file=out)
+        for package, test, test_result in interrupted_tests:
+            print(
+                f"--- {escape_terminal_text(package)} {escape_terminal_text(test)} ---",
+                file=out,
+            )
+            for line in test_result.output:
+                print(escape_terminal_text(line), file=out)
+
     package_output_failures = [
         (package, result) for package, result in failures if result.output
     ]
@@ -198,6 +226,21 @@ def main() -> int:
     parser.add_argument(
         "--top-tests", type=int, default=25, help="number of slow tests to print"
     )
+    parser.add_argument(
+        "--full-failed-output",
+        action="store_true",
+        help="retain complete output for failed packages instead of bounded tails",
+    )
+    parser.add_argument(
+        "--allow-failed-packages",
+        action="store_true",
+        help="return success after reporting failed packages",
+    )
+    parser.add_argument(
+        "--sanitize-raw",
+        action="store_true",
+        help="escape captured input without parsing it",
+    )
     args = parser.parse_args()
 
     if args.top < 1:
@@ -205,9 +248,15 @@ def main() -> int:
     if args.top_tests < 1:
         parser.error("--top-tests must be at least 1")
 
-    results = parse_events(sys.stdin.readlines())
+    if args.sanitize_raw:
+        for line in sys.stdin:
+            print(escape_terminal_text(line.rstrip("\n")))
+        return 0
+
+    output_limit = None if args.full_failed_output else FAILED_OUTPUT_LIMIT
+    results = parse_events(sys.stdin.readlines(), output_limit=output_limit)
     print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
-    if has_failed_packages(results):
+    if has_failed_packages(results) and not args.allow_failed_packages:
         return 1
     return 0
 

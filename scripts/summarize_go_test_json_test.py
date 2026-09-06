@@ -52,6 +52,13 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertIn("failed package output tails:", summary)
         self.assertIn("useful failure line", summary)
 
+    def test_default_output_uses_current_stdout(self):
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdout", out):
+            summarize_go_test_json.print_summary({}, label="unit", top=1)
+
+        self.assertIn("Go test package timing (unit)", out.getvalue())
+
     def test_preserves_failed_test_output_when_package_tail_evicted(self):
         lines = [
             json.dumps(
@@ -106,6 +113,81 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertIn("failed tests:", summary)
         self.assertIn("--- example.com/proxy TestFlaky (0.8s) ---", summary)
         self.assertIn("lost early failure", summary)
+
+    def test_preserves_running_test_output_when_package_times_out(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "run",
+                    "Package": "example.com/conductor",
+                    "Test": "TestServe",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/conductor",
+                    "Test": "TestServe",
+                    "Output": "goroutine 42 [chan receive]:\\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/conductor",
+                    "Elapsed": 900,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+
+        summary = out.getvalue()
+        self.assertIn("interrupted test output:", summary)
+        self.assertIn("--- example.com/conductor TestServe ---", summary)
+        self.assertIn("goroutine 42 [chan receive]:", summary)
+
+    def test_full_failed_output_preserves_complete_timeout_stack(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "run",
+                    "Package": "example.com/conductor",
+                    "Test": "TestServe",
+                }
+            )
+        ]
+        for index in range(summarize_go_test_json.FAILED_OUTPUT_LIMIT + 21):
+            lines.append(
+                json.dumps(
+                    {
+                        "Action": "output",
+                        "Package": "example.com/conductor",
+                        "Test": "TestServe",
+                        "Output": f"stack line {index}\\n",
+                    }
+                )
+            )
+        lines.append(
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/conductor",
+                    "Elapsed": 900,
+                }
+            )
+        )
+
+        results = summarize_go_test_json.parse_events(lines, output_limit=None)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+
+        summary = out.getvalue()
+        self.assertIn("stack line 0", summary)
+        self.assertIn("stack line 50", summary)
+        self.assertIn("stack line 100", summary)
 
     def test_omits_failed_tests_header_for_package_only_failure(self):
         lines = [
@@ -351,6 +433,38 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
             status = summarize_go_test_json.main()
 
         self.assertEqual(status, 1)
+
+    def test_main_allows_failed_packages_when_requested(self):
+        lines = json.dumps(
+            {"Action": "fail", "Package": "example.com/pkg", "Elapsed": 1}
+        )
+
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                ["summarize_go_test_json.py", "--allow-failed-packages"],
+            ),
+            mock.patch.object(sys, "stdin", io.StringIO(lines)),
+            mock.patch.object(sys, "stdout", io.StringIO()),
+        ):
+            status = summarize_go_test_json.main()
+
+        self.assertEqual(status, 0)
+
+    def test_main_sanitizes_raw_controls_without_parsing(self):
+        out = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["summarize_go_test_json.py", "--sanitize-raw"]),
+            mock.patch.object(sys, "stdin", io.StringIO("bad\x1b[2J\rline\n")),
+            mock.patch.object(sys, "stdout", out),
+        ):
+            status = summarize_go_test_json.main()
+
+        self.assertEqual(status, 0)
+        self.assertNotIn("\x1b", out.getvalue())
+        self.assertNotIn("\r", out.getvalue())
+        self.assertIn("bad\\u001b[2J\\u000dline", out.getvalue())
 
     def test_main_allows_retry_stream_when_final_package_action_passes(self):
         lines = "\n".join(

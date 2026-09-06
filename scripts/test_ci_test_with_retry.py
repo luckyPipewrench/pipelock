@@ -781,7 +781,9 @@ exit 0
 state=${CI_RETRY_STATE:?}
 if [ ! -e "$state" ]; then
   : >"$state"
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestHang"}'
   printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestHang","Output":"panic: test timed out after 15m0s\n"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestHang","Output":"goroutine 42 [chan receive]:\n"}'
   printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":900}'
   exit 1
 fi
@@ -791,7 +793,82 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("GO TEST TIMEOUT DIAGNOSTICS", result.stderr)
+        self.assertIn("interrupted test output:", result.stderr)
+        self.assertIn("--- example.com/p/pkg TestHang ---", result.stderr)
+        self.assertIn("goroutine 42 [chan receive]:", result.stderr)
+        self.assertIn("panic: test timed out after 15m0s", result.stderr)
         self.assertIn("failed then passed on rerun", result.stderr)
+
+    def test_timeout_diagnostics_retain_complete_stack_before_retry(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestHang"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestHang","Output":"panic: test timed out after 15m0s\n"}'
+  for i in $(seq 0 100); do
+    printf '{"Action":"output","Package":"example.com/p/pkg","Test":"TestHang","Output":"stack line %s\\n"}\n' "$i"
+  done
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":900}'
+  exit 1
+fi
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stack line 0", result.stderr)
+        self.assertIn("stack line 50", result.stderr)
+        self.assertIn("stack line 100", result.stderr)
+        self.assertLess(
+            result.stderr.index("GO TEST TIMEOUT DIAGNOSTICS"),
+            result.stderr.index("FLAKE RETRY: first pass failed"),
+        )
+
+    def test_timeout_summary_failure_uses_sanitized_raw_fallback(self) -> None:
+        real_python = shutil.which("python3")
+        self.assertIsNotNone(real_python)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_python = Path(tmp) / "python3"
+            fake_python.write_text(
+                f'''#!/bin/sh
+case " $* " in
+  *" --sanitize-raw "*) exec "{real_python}" "$@" ;;
+esac
+if [ "$1" = "scripts/summarize_go_test_json.py" ]; then
+  exit 1
+fi
+exec "{real_python}" "$@"
+''',
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o700)
+            result = run_wrapper(
+                r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '\033[2Jmalformed\n'
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestHang"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestHang","Output":"panic: test timed out after 15m0s\n"}'
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":900}'
+  exit 1
+fi
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
+''',
+                env_overrides={"PATH": f"{tmp}:{os.environ['PATH']}"},
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("failed to summarize first-attempt timeout diagnostics (status 1)", result.stderr)
+        self.assertIn("sanitized raw first-attempt JSON follows", result.stderr)
+        self.assertIn("\\u001b[2Jmalformed", result.stderr)
+        self.assertNotIn("\x1b", result.stderr)
+        self.assertNotIn("\r", result.stderr)
+        self.assertIn("FLAKE RETRY: first pass failed", result.stderr)
 
     def test_coverage_retry_requires_recreated_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

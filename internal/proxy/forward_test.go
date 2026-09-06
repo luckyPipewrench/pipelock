@@ -1671,6 +1671,10 @@ func TestConnect_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
 	}
+	recordedID := resp.Header.Get(blockreason.HeaderRecordedReceipt)
+	if recordedID == "" {
+		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
+	}
 	_ = resp.Body.Close()
 	_ = conn.Close()
 
@@ -1694,6 +1698,9 @@ func TestConnect_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) {
 	}
 	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
 		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	if recordedID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("%s = %q, want intent action_id %q", blockreason.HeaderRecordedReceipt, recordedID, receipts[0].ActionRecord.ActionID)
 	}
 	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=200") {
 		t.Fatalf("outcome pattern = %q, want status=200", receipts[1].ActionRecord.Pattern)
@@ -1813,6 +1820,10 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
 	}
+	recordedID := resp.Header.Get(blockreason.HeaderRecordedReceipt)
+	if recordedID == "" {
+		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
+	}
 
 	receipts := rph.findReceipts(t)
 	if len(receipts) != 2 {
@@ -1830,8 +1841,28 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
 		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
 	}
+	if recordedID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("%s = %q, want intent action_id %q", blockreason.HeaderRecordedReceipt, recordedID, receipts[0].ActionRecord.ActionID)
+	}
 	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=200") {
 		t.Fatalf("outcome pattern = %q, want status=200", receipts[1].ActionRecord.Pattern)
+	}
+}
+
+func TestCopyResponseHeaders_StripsUpstreamRecordedReceipt(t *testing.T) {
+	t.Parallel()
+	dst := make(http.Header)
+	src := make(http.Header)
+	src.Set(blockreason.HeaderRecordedReceipt, "upstream-supplied")
+	src.Set("X-Upstream-Trace", "kept")
+
+	copyResponseHeaders(dst, src)
+
+	if got := dst.Get(blockreason.HeaderRecordedReceipt); got != "" {
+		t.Fatalf("%s = %q, want empty", blockreason.HeaderRecordedReceipt, got)
+	}
+	if got := dst.Get("X-Upstream-Trace"); got != "kept" {
+		t.Fatalf("ordinary upstream header = %q, want kept", got)
 	}
 }
 

@@ -4451,7 +4451,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// it only at fetch time would report "unknown" for each event on the way.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
-		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
+			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+		}
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
@@ -5348,6 +5351,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				})
 			return
 		}
+		blockreason.SetRecordedReceipt(w.Header(), fetchAllowReceipt.ActionID)
 	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)

@@ -1117,6 +1117,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				blockedErr.reason)
 			return
 		}
+		blockreason.SetRecordedReceipt(w.Header(), reverseAllowReceipt.ActionID)
 	}
 	var outcomeTracker *reverseOutcomeTracker
 	if cfg.FlightRecorder.RequireReceipts {
@@ -1537,6 +1538,10 @@ func reverseRequestContext(resp *http.Response) context.Context {
 }
 
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
+	// httputil.ReverseProxy copies response headers after this hook. Reserve the
+	// recorded-receipt namespace before any response branch can reach the
+	// caller.
+	blockreason.StripRecordedReceipt(resp.Header)
 	responseBodyLimit := rp.responseScanBodyLimit()
 	stripUpstreamShieldRewriteMarker(resp)
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
@@ -1554,7 +1559,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		_ = rp.emitReceipt(opts)
+		if e := rp.receiptEmitter(); e != nil && rp.emitReceiptWithEmitter(opts, e) == nil {
+			blockreason.SetRecordedReceipt(resp.Header, opts.ActionID)
+		}
 	}
 	clientIP, _ := resp.Request.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)

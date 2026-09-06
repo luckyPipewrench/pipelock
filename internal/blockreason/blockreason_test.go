@@ -282,6 +282,24 @@ func TestSetHeaders_OmitsOptionalFieldsWhenUnset(t *testing.T) {
 	}
 }
 
+func TestRecordedReceiptHeader_OnlyAcceptsReceiptIDs(t *testing.T) {
+	t.Parallel()
+	h := make(http.Header)
+	if !SetRecordedReceipt(h, validUUIDv7) {
+		t.Fatal("SetRecordedReceipt(valid UUIDv7) = false, want true")
+	}
+	if got := h.Get(HeaderRecordedReceipt); got != validUUIDv7 {
+		t.Fatalf("%s = %q, want %q", HeaderRecordedReceipt, got, validUUIDv7)
+	}
+	if SetRecordedReceipt(h, "upstream-supplied") {
+		t.Fatal("SetRecordedReceipt(invalid) = true, want false")
+	}
+	StripRecordedReceipt(h)
+	if got := h.Get(HeaderRecordedReceipt); got != "" {
+		t.Fatalf("%s = %q after strip, want empty", HeaderRecordedReceipt, got)
+	}
+}
+
 func TestCloseFramePayload_FullShapeWithoutReceipt(t *testing.T) {
 	t.Parallel()
 	// Without the optional receipt the document fits with all other fields

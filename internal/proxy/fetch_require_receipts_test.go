@@ -88,6 +88,9 @@ func TestHandleFetch_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	if got := rec.Header().Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
 		t.Fatalf("block reason header = %q, want %s", got, blockreason.ReceiptEmissionFailed)
 	}
+	if got := rec.Header().Get(blockreason.HeaderRecordedReceipt); got != "" {
+		t.Fatalf("%s = %q after failed emission, want empty", blockreason.HeaderRecordedReceipt, got)
+	}
 	var resp FetchResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode FetchResponse: %v", err)
@@ -149,6 +152,10 @@ func TestHandleFetch_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fetch status = %d, want 200", rec.Code)
 	}
+	recordedID := rec.Header().Get(blockreason.HeaderRecordedReceipt)
+	if recordedID == "" {
+		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
+	}
 
 	receipts := rph.findReceipts(t)
 	if len(receipts) != 2 {
@@ -162,6 +169,9 @@ func TestHandleFetch_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) 
 	}
 	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
 		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	if recordedID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("%s = %q, want intent action_id %q", blockreason.HeaderRecordedReceipt, recordedID, receipts[0].ActionRecord.ActionID)
 	}
 	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=202") {
 		t.Fatalf("outcome pattern = %q, want status=202", receipts[1].ActionRecord.Pattern)
@@ -284,6 +294,10 @@ func TestHandleFetch_RequireReceiptsResponseBlockReusesActionID(t *testing.T) {
 	if got := rec.Header().Get(blockreason.HeaderReason); got != string(blockreason.CompressedResponse) {
 		t.Fatalf("block reason header = %q, want %s", got, blockreason.CompressedResponse)
 	}
+	recordedID := rec.Header().Get(blockreason.HeaderRecordedReceipt)
+	if recordedID == "" {
+		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
+	}
 	if err := rph.rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -326,5 +340,8 @@ func TestHandleFetch_RequireReceiptsResponseBlockReusesActionID(t *testing.T) {
 			t.Fatalf("action receipt %d action_id = %s, want %s",
 				i+1, rcpt.ActionRecord.ActionID, actionReceipts[0].ActionRecord.ActionID)
 		}
+	}
+	if recordedID != actionReceipts[1].ActionRecord.ActionID {
+		t.Fatalf("%s = %q, want block action_id %q", blockreason.HeaderRecordedReceipt, recordedID, actionReceipts[1].ActionRecord.ActionID)
 	}
 }

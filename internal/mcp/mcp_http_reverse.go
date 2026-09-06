@@ -602,6 +602,7 @@ func RunHTTPListenerProxy(
 				if withReceipt, receiptErr := info.WithReceipt(actionID); receiptErr == nil {
 					info = withReceipt
 				}
+				blockreason.SetRecordedReceipt(w.Header(), actionID)
 			}
 			info.SetHeaders(w.Header())
 		}

@@ -38,6 +38,11 @@ const (
 	HeaderRetry    = "X-Pipelock-Block-Reason-Retry"
 	HeaderLayer    = "X-Pipelock-Block-Reason-Layer"
 	HeaderReceipt  = "X-Pipelock-Block-Reason-Receipt"
+	// HeaderRecordedReceipt carries the action_id of a receipt that was
+	// successfully recorded before this response was written. It is additive
+	// metadata and must never be treated as proof without verifying the signed
+	// receipt it identifies.
+	HeaderRecordedReceipt = "X-Pipelock-Receipt"
 
 	// SchemaVersion increments only on breaking changes. Additive changes
 	// (new reason codes, new optional headers) keep v1.
@@ -436,7 +441,29 @@ func (i Info) SetHeaders(h http.Header) {
 	}
 	if i.Receipt != "" {
 		h.Set(HeaderReceipt, i.Receipt)
+		// A block reason carries Receipt only after its emission site confirmed
+		// the matching action receipt was recorded. Surface that same recorded
+		// handle through the general caller-correlation header.
+		_ = SetRecordedReceipt(h, i.Receipt)
 	}
+}
+
+// SetRecordedReceipt sets the caller-correlation header only for a valid
+// receipt action ID. Its boolean result lets an emission site fail toward
+// silence if a future producer supplies an invalid ID.
+func SetRecordedReceipt(h http.Header, actionID string) bool {
+	if !validReceipt(actionID) || actionID == "" {
+		return false
+	}
+	h.Set(HeaderRecordedReceipt, actionID)
+	return true
+}
+
+// StripRecordedReceipt reserves the caller-correlation header for Pipelock.
+// It is called after copying an upstream response so an upstream cannot claim
+// that Pipelock recorded a receipt.
+func StripRecordedReceipt(h http.Header) {
+	h.Del(HeaderRecordedReceipt)
 }
 
 // closeFramePayload is the JSON shape carried in WebSocket close-frame Reason

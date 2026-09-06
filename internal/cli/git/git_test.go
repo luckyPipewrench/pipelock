@@ -56,6 +56,26 @@ func writeInstallTestConfig(t *testing.T) string {
 	return cfgPath
 }
 
+// isolateInstallHooksConfig prevents hook-install tests from embedding an
+// operator's discovered config path. Install hooks intentionally inherit
+// PIPELOCK_CONFIG, so give each test an explicit, test-owned value.
+func isolateInstallHooksConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("home", t.TempDir())
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	hostileConfig := filepath.Join(configHome, "pipelock", "pipelock.yaml")
+	if err := os.MkdirAll(filepath.Dir(hostileConfig), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostileConfig, []byte("mode: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PIPELOCK_CONFIG", writeInstallTestConfig(t))
+}
+
 func runScanDiffCmd(t *testing.T, diff string) (string, error) {
 	t.Helper()
 	stdin, err := os.CreateTemp(t.TempDir(), "scan-diff-stdin-*")
@@ -423,6 +443,8 @@ func TestScanDiffCmd_EmptyStdin(t *testing.T) {
 }
 
 func TestInstallHooksCmd_CreatesHook(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	// Create a fake git repo
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git")
@@ -477,6 +499,8 @@ func TestInstallHooksCmd_CreatesHook(t *testing.T) {
 }
 
 func TestInstallHooksCmd_ExistingHookBlocked(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git", "hooks")
 	if err := os.MkdirAll(gitDir, 0o750); err != nil {
@@ -509,6 +533,8 @@ func TestInstallHooksCmd_ExistingHookBlocked(t *testing.T) {
 }
 
 func TestInstallHooksCmd_ForceOverwrite(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git", "hooks")
 	if err := os.MkdirAll(gitDir, 0o750); err != nil {
@@ -541,11 +567,16 @@ func TestInstallHooksCmd_ForceOverwrite(t *testing.T) {
 }
 
 func TestInstallHooksCmd_NoGitDir(t *testing.T) {
-	dir := t.TempDir()
+	isolateInstallHooksConfig(t)
 
-	oldDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldDir) }()
+	// A temporary directory can have a real repository in its ancestry. At
+	// the volume root the search has no parent and cannot install a hook in
+	// an unrelated repository above the test fixture.
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	if _, err := os.Lstat(filepath.Join(root, ".git")); !os.IsNotExist(err) {
+		t.Skipf("volume root cannot provide a no-repository fixture: %v", err)
+	}
+	t.Chdir(root)
 
 	cmd := testRootCmd()
 	cmd.SetArgs([]string{"git", "install-hooks"})
@@ -555,12 +586,14 @@ func TestInstallHooksCmd_NoGitDir(t *testing.T) {
 	cmd.SetErr(buf)
 
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error when not in git repo")
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("expected no-repository error, got %v", err)
 	}
 }
 
 func TestInstallHooksCmd_GitFile_Worktree(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	// Simulate a git worktree where .git is a file pointing to the real gitdir
 	dir := t.TempDir()
 	realGitDir := filepath.Join(dir, "real-gitdir")
@@ -604,6 +637,8 @@ func TestInstallHooksCmd_GitFile_Worktree(t *testing.T) {
 }
 
 func TestInstallHooksCmd_WithBinary(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git")
 	if err := os.MkdirAll(gitDir, 0o750); err != nil {
@@ -801,6 +836,8 @@ func TestScanDiffCmd_InvalidConfig(t *testing.T) {
 }
 
 func TestInstallHooksCmd_WithConfig(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git")
 	if err := os.MkdirAll(gitDir, 0o750); err != nil {
@@ -927,6 +964,8 @@ func TestScanDiffCmd_JSON_EmptyStdin(t *testing.T) {
 }
 
 func TestInstallHooksCmd_ReadOnlyGitDir(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	// MkdirAll for hooks dir fails when .git is read-only.
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git")
@@ -960,6 +999,8 @@ func TestInstallHooksCmd_ReadOnlyGitDir(t *testing.T) {
 }
 
 func TestInstallHooksCmd_ReadOnlyHooksDir(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	// WriteFile fails when hooks dir exists but is read-only.
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git")
@@ -1368,6 +1409,8 @@ func TestScanDiffCmd_SARIF_HighSeverity(t *testing.T) {
 }
 
 func TestInstallHooksCmd_BadGitFile(t *testing.T) {
+	isolateInstallHooksConfig(t)
+
 	// .git is a file with invalid content (no "gitdir: " prefix).
 	// This exercises the findGitDir → resolveGitFile error path.
 	dir := t.TempDir()
@@ -1387,7 +1430,7 @@ func TestInstallHooksCmd_BadGitFile(t *testing.T) {
 	cmd.SetErr(buf)
 
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for invalid .git file content")
+	if err == nil || !strings.Contains(err.Error(), "invalid .git file") {
+		t.Fatalf("expected invalid .git file error, got %v", err)
 	}
 }

@@ -5,6 +5,8 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -51,19 +53,38 @@ func TestRunCmd_Uncontained_ExitZero(t *testing.T) {
 		t.Skip("run test builds binaries and boots a real proxy")
 	}
 
+	// A distinct installed key must not influence an explicitly ephemeral run.
+	isolateOrchestratorConfig(t)
+	installedKey, err := playground.GenerateOrchestratorKey(playground.DefaultOrchestratorKeyPath(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PIPELOCK_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+
 	rd := t.TempDir()
 	cmd := newRootCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"run", "--run-dir", rd, "--scenario", playground.LiveDemoScenarioID})
-	err := cmd.Execute()
+	cmd.SetArgs([]string{"run", "--run-dir", rd, "--scenario", playground.LiveDemoScenarioID, "--orchestrator-key-file="})
+	err = cmd.Execute()
 	if err != nil {
 		t.Fatalf("run --uncontained must exit 0, got: %v\noutput:\n%s", err, buf.String())
 	}
 	out := buf.String()
 	if !strings.Contains(out, "VERIFY OK") {
 		t.Fatalf("output must contain VERIFY OK, got:\n%s", out)
+	}
+	match := regexp.MustCompile(`--orchestrator-key ([0-9a-f]{64})`).FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("output must contain the run's verification key, got:\n%s", out)
+	}
+	if match[1] == installedKey {
+		t.Fatal("ephemeral run used the installed signing identity")
+	}
+	report, err := playground.VerifyRun(rd, match[1])
+	if err != nil || !report.OK {
+		t.Fatalf("run did not verify against its ephemeral key: report=%+v err=%v", report, err)
 	}
 }
 

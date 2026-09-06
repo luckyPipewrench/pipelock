@@ -1,0 +1,21 @@
+# Named Pi listener used by `pipelock pi install --proxy`.
+# Named agent listeners require Pipelock Pro at runtime.
+
+version: 1
+mode: balanced
+
+forward_proxy:
+  enabled: true
+
+agents:
+  pi:
+    listeners:
+      - "127.0.0.1:18991"
+
+dlp:
+  include_defaults: true
+
+response_scanning:
+  enabled: true
+  action: block
+  include_defaults: true

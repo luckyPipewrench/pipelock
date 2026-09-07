@@ -2807,15 +2807,63 @@ type knownSecretMatch struct {
 
 // knownValueWindows returns the fixed-size windows of one known value that are
 // eligible for partial matching, or nil when the value gets whole-value
-// matching only. A value is skipped when it is too short, when its own entropy
-// is below the leak floor (a low-entropy value's fragments are ordinary text),
-// or when it is URL-shaped: a connection string or webhook URL carries a long
-// public stem (scheme, host, path) that is not the secret part, and matching
-// that stem would block ordinary text that merely names the service.
+// matching only. A value is skipped when it is too short or when its own
+// entropy is below the leak floor. URL-shaped values skip public scheme, host,
+// and path stems; only credential-bearing parts (password, query, fragment,
+// and a high-entropy final path segment) are windowed.
 func knownValueWindows(value string) map[string][]int {
-	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy || strings.Contains(value, "://") {
+	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
 		return nil
 	}
+	if strings.Contains(value, "://") {
+		return urlCredentialWindows(value)
+	}
+	return collectValueWindows(value, 0)
+}
+
+func urlCredentialWindows(value string) map[string][]int {
+	u, err := url.Parse(value)
+	if err != nil {
+		return nil
+	}
+	var parts []string
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok && password != "" {
+			parts = append(parts, password)
+		}
+	}
+	for _, vs := range u.Query() {
+		parts = append(parts, vs...)
+	}
+	if u.Fragment != "" {
+		parts = append(parts, u.Fragment)
+	}
+	if path := strings.Trim(u.Path, "/"); path != "" {
+		seg := path
+		if i := strings.LastIndexByte(path, '/'); i >= 0 {
+			seg = path[i+1:]
+		}
+		if seg != "" {
+			parts = append(parts, seg)
+		}
+	}
+	out := make(map[string][]int)
+	for _, part := range parts {
+		if len(part) < minKnownSecretSubstringLen || ShannonEntropy(part) <= envLeakMinEntropy {
+			continue
+		}
+		idx := strings.Index(value, part)
+		if idx < 0 {
+			continue
+		}
+		for window, offsets := range collectValueWindows(part, idx) {
+			out[window] = append(out[window], offsets...)
+		}
+	}
+	return out
+}
+
+func collectValueWindows(value string, base int) map[string][]int {
 	windows := make(map[string][]int, len(value)-minKnownSecretSubstringLen+1)
 	repeated := make(map[string]struct{})
 	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
@@ -2829,7 +2877,7 @@ func knownValueWindows(value string) map[string][]int {
 			repeated[window] = struct{}{}
 			continue
 		}
-		windows[window] = []int{start}
+		windows[window] = []int{base + start}
 	}
 	for window := range repeated {
 		delete(windows, window)

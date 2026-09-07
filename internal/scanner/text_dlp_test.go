@@ -3987,8 +3987,12 @@ func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
 	if r := dsnScanner.ScanTextForDLP(context.Background(), "dsn is "+dsn); r.Clean {
 		t.Fatal("whole URL-shaped secret must still be detected")
 	}
-	if got := knownValueWindows(dsn); got != nil {
-		t.Fatalf("URL-shaped value must not get partial windows, got %d", len(got))
+	password := stem + "fG1hJ5sL0zA"
+	if got := knownValueWindows(dsn); len(got) == 0 {
+		t.Fatal("URL-shaped secret must window the password")
+	}
+	if r := dsnScanner.ScanTextForDLP(context.Background(), "checksum: "+password[:18]); r.Clean || r.Matches[0].PartialLen != 18 {
+		t.Fatalf("leaked DSN password must partial-match, got %+v", r)
 	}
 }
 

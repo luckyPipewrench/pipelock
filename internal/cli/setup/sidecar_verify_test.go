@@ -5,10 +5,12 @@ package setup
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestNetworkPolicyHasPortExact(t *testing.T) {
@@ -56,6 +58,187 @@ func TestRunSidecarVerify_MCPLauncherContract(t *testing.T) {
 	if !strings.Contains(buf.String(), "Static topology checks passed") {
 		t.Fatalf("verify output missing success message:\n%s", buf.String())
 	}
+}
+
+func TestRunSidecarVerifyRejectsStaticTopologyDrift(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*testing.T, *sidecarPatchResult)
+		wantError string
+	}{
+		{
+			name: "wrong replica count",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.DeploymentYAML = strings.Replace(
+					result.DeploymentYAML,
+					fmt.Sprintf("replicas: %d", proxyReplicaCount),
+					fmt.Sprintf("replicas: %d", proxyReplicaCount-1),
+					1,
+				)
+			},
+			wantError: fmt.Sprintf("proxy Deployment does not set replicas=%d", proxyReplicaCount),
+		},
+		{
+			name: "subpath config mount",
+			mutate: func(t *testing.T, result *sidecarPatchResult) {
+				result.DeploymentYAML = addConfigMountSubPath(t, result.DeploymentYAML)
+			},
+			wantError: "proxy Deployment still uses subPath ConfigMap mount",
+		},
+		{
+			name: "missing config directory mount",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.DeploymentYAML = strings.Replace(result.DeploymentYAML, "mountPath: /etc/pipelock", "mountPath: /etc/not-pipelock", 1)
+			},
+			wantError: "proxy Deployment does not mount the config directory",
+		},
+		{
+			name: "wrong image pull policy",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.DeploymentYAML = strings.Replace(result.DeploymentYAML, "imagePullPolicy: IfNotPresent", "imagePullPolicy: Always", 1)
+			},
+			wantError: "proxy Deployment does not set imagePullPolicy=IfNotPresent",
+		},
+		{
+			name: "forward proxy disabled",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.Config.ForwardProxy.Enabled = false
+			},
+			wantError: "forward_proxy.enabled is false",
+		},
+		{
+			name: "wrong proxy listener",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.Config.FetchProxy.Listen = "127.0.0.1:8080"
+			},
+			wantError: "fetch_proxy.listen = \"127.0.0.1:8080\"",
+		},
+		{
+			name: "agent direct web egress",
+			mutate: func(t *testing.T, result *sidecarPatchResult) {
+				result.AgentNetworkPolicyYAML = addAgentDirectWebEgress(t, result.AgentNetworkPolicyYAML)
+			},
+			wantError: "agent NetworkPolicy still allows direct web egress",
+		},
+		{
+			name: "agent missing proxy port",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.AgentNetworkPolicyYAML = strings.Replace(
+					result.AgentNetworkPolicyYAML,
+					fmt.Sprintf("port: %d", sidecarHealthPort),
+					"port: 9999",
+					1,
+				)
+			},
+			wantError: "agent NetworkPolicy does not allow proxy port",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced})
+			tt.mutate(t, result)
+
+			var buf bytes.Buffer
+			verify := runSidecarVerify(&buf, result, sidecarOptions{}, false)
+			if verify.Healthy || verify.Reachable {
+				t.Fatalf("verify = %+v, want unhealthy and unreachable; output:\n%s", verify, buf.String())
+			}
+			wantDetail := "static topology verification failed: " + tt.wantError
+			if verify.Detail != wantDetail {
+				t.Fatalf("verify detail = %q, want exactly %q", verify.Detail, wantDetail)
+			}
+			if !strings.Contains(buf.String(), "Static topology verification failed") {
+				t.Fatalf("verify output missing failure message:\n%s", buf.String())
+			}
+			if strings.Contains(buf.String(), "Static topology checks passed") {
+				t.Fatalf("unhealthy verification claimed success:\n%s", buf.String())
+			}
+		})
+	}
+
+	healthy := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced})
+	var buf bytes.Buffer
+	verify := runSidecarVerify(&buf, healthy, sidecarOptions{}, false)
+	if !verify.Healthy || !verify.Reachable || !strings.Contains(buf.String(), "Static topology checks passed") {
+		t.Fatalf("fresh healthy topology verify = %+v, output:\n%s", verify, buf.String())
+	}
+}
+
+func addConfigMountSubPath(t *testing.T, deploymentYAML string) string {
+	t.Helper()
+
+	deployment := decodeSidecarVerifyYAML(t, deploymentYAML)
+	podSpec, err := getPodSpec(deployment, kindDeployment)
+	if err != nil {
+		t.Fatalf("getPodSpec: %v", err)
+	}
+	containers, ok := podSpec["containers"].([]interface{})
+	if !ok {
+		t.Fatal("Deployment containers are unavailable")
+	}
+	for _, rawContainer := range containers {
+		container, ok := rawContainer.(map[string]interface{})
+		if !ok || container["name"] != proxyContainerName {
+			continue
+		}
+		mounts, ok := container["volumeMounts"].([]interface{})
+		if !ok {
+			t.Fatal("proxy container volumeMounts are unavailable")
+		}
+		for _, rawMount := range mounts {
+			mount, ok := rawMount.(map[string]interface{})
+			if !ok || mount["mountPath"] != sidecarConfigMount {
+				continue
+			}
+			mount["subPath"] = sidecarConfigFile
+			return encodeSidecarVerifyYAML(t, deployment)
+		}
+	}
+	t.Fatal("proxy config volumeMount is unavailable")
+	return ""
+}
+
+func addAgentDirectWebEgress(t *testing.T, policyYAML string) string {
+	t.Helper()
+
+	policy := decodeSidecarVerifyYAML(t, policyYAML)
+	spec, ok := policy["spec"].(map[string]interface{})
+	if !ok {
+		t.Fatal("NetworkPolicy spec is unavailable")
+	}
+	egress, ok := spec["egress"].([]interface{})
+	if !ok {
+		t.Fatal("NetworkPolicy egress rules are unavailable")
+	}
+	// A separate rule without a destination selector allows TCP/80 beyond the proxy.
+	spec["egress"] = append(egress, map[string]interface{}{
+		"ports": []interface{}{map[string]interface{}{"port": 80, "protocol": "TCP"}},
+	})
+	return encodeSidecarVerifyYAML(t, policy)
+}
+
+func decodeSidecarVerifyYAML(t *testing.T, input string) map[string]interface{} {
+	t.Helper()
+
+	var document map[string]interface{}
+	if err := yaml.Unmarshal([]byte(input), &document); err != nil {
+		t.Fatalf("unmarshal YAML: %v", err)
+	}
+	return document
+}
+
+func encodeSidecarVerifyYAML(t *testing.T, document map[string]interface{}) string {
+	t.Helper()
+
+	encoded, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatalf("marshal YAML: %v", err)
+	}
+	// Parse the generated fixture again so a later verifier failure represents topology drift,
+	// rather than malformed YAML.
+	_ = decodeSidecarVerifyYAML(t, string(encoded))
+	return string(encoded)
 }
 
 func TestVerifyMCPLauncherContractFailures(t *testing.T) {

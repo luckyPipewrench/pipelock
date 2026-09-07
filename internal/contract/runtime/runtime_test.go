@@ -373,6 +373,60 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 	}
 }
 
+func TestEvaluateHTTP_RejectsParseableURLsWithoutHostname(t *testing.T) {
+	resolved := resolvedContractWithRules(captureRule("r1"))
+	tests := []struct {
+		name         string
+		rawURL       string
+		wantHostname bool
+	}{
+		{
+			name:   "relative path",
+			rawURL: "/v1/chat",
+		},
+		{
+			name:   "opaque scheme",
+			rawURL: "mailto:operator@example.com",
+		},
+		{
+			name:         "absolute URL",
+			rawURL:       testHTTPSAPIChatURL,
+			wantHostname: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", tt.rawURL, err)
+			}
+			if got := parsed.Hostname() != ""; got != tt.wantHostname {
+				t.Fatalf("url.Parse(%q).Hostname() present = %v, want %v", tt.rawURL, got, tt.wantHostname)
+			}
+
+			decision, err := EvaluateHTTP(EvaluateOptions{
+				Mode:           ModeLive,
+				Resolved:       &resolved,
+				Request:        HTTPRequest{URL: tt.rawURL, Method: http.MethodPost},
+				ScannerVerdict: config.ActionAllow,
+			})
+			if !tt.wantHostname {
+				if !errors.Is(err, ErrInvalidDecisionInput) {
+					t.Fatalf("EvaluateHTTP(%q) error = %v, want ErrInvalidDecisionInput", tt.rawURL, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("EvaluateHTTP(%q): %v", tt.rawURL, err)
+			}
+			if decision.Verdict != config.ActionAllow || decision.WinningSource != WinningSourceScanner {
+				t.Fatalf("decision = %+v, want scanner allow", decision)
+			}
+		})
+	}
+}
+
 func TestEvaluateHTTP_RejectsEmptyAndUnknownMode(t *testing.T) {
 	if _, err := EvaluateHTTP(EvaluateOptions{ScannerVerdict: config.ActionAllow}); !errors.Is(err, ErrInvalidDecisionInput) {
 		t.Fatalf("empty mode err = %v, want ErrInvalidDecisionInput", err)

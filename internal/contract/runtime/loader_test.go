@@ -982,23 +982,73 @@ func waitForLoaderReady(t *testing.T, loader *Loader) {
 }
 
 // waitFor polls cond until it returns true or watchTestTimeout elapses.
-// Returns true on success, false on timeout. Used by Watch tests where
+// Returns true on completion before the deadline, false on timeout. Used by Watch tests where
 // the signal is the watcher goroutine landing a Reload outcome: poll
 // the metric to increment rather than guess a fixed sleep.
 func waitFor(cond func() bool) bool {
-	timer := time.NewTimer(watchTestTimeout)
+	return waitForWithNow(watchTestTimeout, time.Now, cond)
+}
+
+func waitForWithNow(timeout time.Duration, now func() time.Time, cond func() bool) bool {
+	deadline := now().Add(timeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if !now().Before(deadline) {
+			return false
+		}
 		if cond() {
-			return true
+			return now().Before(deadline)
 		}
 		select {
 		case <-timer.C:
-			return cond()
+			return false
 		case <-ticker.C:
 		}
+	}
+}
+
+func TestWaitFor_DoesNotAcceptConditionAfterDeadline(t *testing.T) {
+	base := time.Unix(0, 0)
+	now := sequenceClock(base, base, base.Add(time.Second))
+	calls := 0
+	if waitForWithNow(time.Second, now, func() bool {
+		calls++
+		return true
+	}) {
+		t.Fatal("waitFor accepted a condition that became true after its deadline")
+	}
+	if calls != 1 {
+		t.Fatalf("condition calls = %d, want 1", calls)
+	}
+}
+
+func TestWaitFor_DoesNotEvaluateConditionAfterDeadline(t *testing.T) {
+	base := time.Unix(0, 0)
+	now := sequenceClock(base, base.Add(time.Second))
+	calls := 0
+	if waitForWithNow(time.Second, now, func() bool {
+		calls++
+		return true
+	}) {
+		t.Fatal("waitFor accepted an already-expired deadline")
+	}
+	if calls != 0 {
+		t.Fatalf("condition calls = %d, want 0 after deadline", calls)
+	}
+}
+
+func sequenceClock(values ...time.Time) func() time.Time {
+	index := 0
+	return func() time.Time {
+		if index >= len(values) {
+			return values[len(values)-1]
+		}
+		value := values[index]
+		index++
+		return value
 	}
 }
 

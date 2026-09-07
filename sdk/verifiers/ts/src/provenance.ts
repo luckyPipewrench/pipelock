@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import he from "he";
-import unicode15Assigned from "@unicode/unicode-15.0.0/Binary_Property/Assigned/regex.js";
-import unicode15NonspacingMark from "@unicode/unicode-15.0.0/General_Category/Nonspacing_Mark/regex.js";
-import unicode15Whitespace from "@unicode/unicode-15.0.0/Binary_Property/White_Space/regex.js";
-import unicode15LowercaseMap from "@unicode/unicode-15.0.0/Simple_Case_Mapping/Lowercase/code-points.js";
+import { createRequire } from "node:module";
 
 /** The pinned, fixture-only evidence-provenance transform profile. */
 export const EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST =
@@ -63,7 +60,18 @@ export function supportedOperationKindsForProfile(digest: string): string[] {
 }
 
 /** Unicode 15.0.0's Simple_Lowercase_Mapping table, pinned by dependency. */
-const unicode15SimpleLowercase = unicode15LowercaseMap as Map<number, number>;
+const require = createRequire(import.meta.url);
+const unicode15Assigned =
+  require("@unicode/unicode-15.0.0/Binary_Property/Assigned/regex.js") as RegExp;
+const unicode15NonspacingMark =
+  require("@unicode/unicode-15.0.0/General_Category/Nonspacing_Mark/regex.js") as RegExp;
+const unicode15Whitespace =
+  require("@unicode/unicode-15.0.0/Binary_Property/White_Space/regex.js") as RegExp;
+const unicode15SimpleLowercase =
+  require("@unicode/unicode-15.0.0/Simple_Case_Mapping/Lowercase/code-points.js") as Map<
+    number,
+    number
+  >;
 
 function unicode15Normalize(value: string, form: "NFD" | "NFKC"): string {
   // ICU in Node 24 uses Unicode 17. Normalizing an assigned Unicode-15 run is

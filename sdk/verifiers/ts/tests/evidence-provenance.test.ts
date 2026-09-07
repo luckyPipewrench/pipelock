@@ -128,7 +128,7 @@ test("evidence provenance: Unicode 15 tables pin newer code points as opaque", (
   const unicodeData = JSON.parse(
     readFileSync(resolve(packageRoot, "node_modules/@unicode/unicode-15.0.0/package.json"), "utf8"),
   ) as { version: string };
-  assert.equal(unicodeData.version, "1.6.17");
+  assert.equal(unicodeData.version, "2.0.2");
 
   // U+1C89 was assigned in Unicode 16. Native Node 24 (Unicode 17) maps it
   // to U+1C8A; profile v1 must leave it untouched under Unicode 15.

@@ -835,7 +835,7 @@ func TestCheckDoctorFileSentryUnreadableSubtreeStates(t *testing.T) {
 		t.Fatalf("Chmod blocked subtree: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chmod(blocked, 0o750) //nolint:gosec // test cleanup restores directory traversal permissions.
+		_ = os.Chmod(blocked, 0o750)
 	})
 
 	for _, tt := range []struct {

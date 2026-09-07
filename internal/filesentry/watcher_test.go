@@ -2049,7 +2049,7 @@ func TestWatcher_PermissionDeniedSubdir(t *testing.T) {
 	if err := os.Chmod(denied, 0o000); err != nil {
 		t.Skipf("chmod not supported: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(denied, 0o750) }) //nolint:gosec // restoring directory perms for t.TempDir cleanup
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o750) })
 
 	cfg := &config.FileSentry{
 		Enabled:     true,
@@ -2405,7 +2405,7 @@ func TestWatcher_ArmUnreadableSubtreeFailsClosedUnlessIgnored(t *testing.T) {
 		t.Fatalf("Chmod blocked subtree: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chmod(blocked, 0o750) //nolint:gosec // test cleanup restores directory traversal permissions.
+		_ = os.Chmod(blocked, 0o750)
 	})
 
 	for _, tt := range []struct {

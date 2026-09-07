@@ -295,6 +295,42 @@ func TestCanary_NestedEncodingInQuerySegment(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_CanonicalCanaryKeepsURLAndSharedStemExclusions(t *testing.T) {
+	stem := "Q7vP2mK9xR4nT8wB6cD3"
+	first := stem + "-fG1hJ5sL0zAqW2eR"
+	second := stem + "_9uY6tR3eW1qZ8xC7"
+	urlCanary := strings.Join([]string{"https://example.com/a/", stem, "fG1hJ5sL0zA"}, "")
+
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{
+		{Name: "first", Value: first},
+		{Name: "second", Value: second},
+		{Name: "url_canary", Value: urlCanary},
+	}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	// Hyphens force the canonical path. The shared stem is 20 bytes after
+	// separators are stripped; that is not a disclosure of either canary.
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+stem[:10]+"-"+stem[10:]); !r.Clean {
+		t.Fatalf("shared canonical stem must stay clean, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+first); r.Clean {
+		t.Fatal("whole first canary must still match")
+	}
+
+	// Canonicalization strips ://, so a URL-shaped canary would otherwise get
+	// partial windows on the public host path. Naming that path is not a leak.
+	if r := s.ScanTextForDLP(context.Background(), "docs live at https://example.com/a/readme"); !r.Clean {
+		t.Fatalf("URL-shaped canary public prefix must stay clean, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "token is "+urlCanary); r.Clean {
+		t.Fatal("whole URL-shaped canary must still be detected")
+	}
+}
+
 // BenchmarkScanCanaryText_Clean measures the canary path on ordinary text with
 // canary tokens configured. benchConfig deliberately has none, so the existing
 // text-DLP benchmarks never enter this code.

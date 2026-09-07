@@ -12,10 +12,11 @@ import (
 
 // compiledCanaryToken stores normalized canary values for fast matching.
 type compiledCanaryToken struct {
-	name            string
-	normalizedLower string
-	canonicalLower  string
-	partialWindows  map[string][]int
+	name                    string
+	normalizedLower         string
+	canonicalLower          string
+	partialWindows          map[string][]int
+	canonicalPartialWindows map[string][]int
 }
 
 func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
@@ -39,8 +40,20 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 	// Windows shared between two canaries are a common stem, not a disclosure
 	// of either; they are excluded the same way as for environment secrets.
 	windows := buildKnownValueWindows(normalizedValues)
+	canonicalValues := make([]string, 0, len(out))
 	for i := range out {
 		out[i].partialWindows = windows[out[i].normalizedLower]
+		// URL-shaped originals stay whole-value-only after canonicalization.
+		// canonicalizeCanaryText strips "://", and knownValueWindows would
+		// then emit partial windows for the public scheme/host/path stem.
+		if strings.Contains(out[i].normalizedLower, "://") || out[i].canonicalLower == "" {
+			continue
+		}
+		canonicalValues = append(canonicalValues, out[i].canonicalLower)
+	}
+	canonicalWindows := buildKnownValueWindows(canonicalValues)
+	for i := range out {
+		out[i].canonicalPartialWindows = canonicalWindows[out[i].canonicalLower]
 	}
 	return out
 }
@@ -149,7 +162,7 @@ func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool, input
 		}
 		windows := token.partialWindows
 		if canonical {
-			windows = knownValueWindows(needle)
+			windows = token.canonicalPartialWindows
 		}
 		if start, end, length, _, ok := indexKnownValueSubstring(needle, windows, []spanTextView{{text: haystack, viewLabel: viewLabel}}); ok {
 			patternName := "Canary Token (" + token.name + ")"

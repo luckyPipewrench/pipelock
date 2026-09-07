@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -727,22 +728,34 @@ func TestDoctorChecksCoverConfiguredBranches(t *testing.T) {
 		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusFail {
 			t.Fatalf("empty paths check = %+v, want fail", check)
 		}
-		// required:false missing path: degrades to warn (matches the new
-		// startup behavior where non-required misses log degraded and
-		// continue rather than crash-loop).
+		// Strict mode fails because a missing optional path still prevents the
+		// next startup; best_effort is the explicit availability trade.
 		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: filepath.Join(dir, "missing")}}
-		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusWarn {
-			t.Fatalf("missing optional path check = %+v, want warn (degraded)", check)
+		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusFail {
+			t.Fatalf("missing optional path check = %+v, want fail (strict startup would fail)", check)
 		}
-		// required:true missing path: hard fail.
+		cfg.FileSentry.BestEffort = true
+		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusWarn {
+			t.Fatalf("missing best-effort path check = %+v, want warn", check)
+		}
+		// required:true missing path stays hard fail under best effort.
 		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: filepath.Join(dir, "missing"), Required: true}}
 		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusFail {
 			t.Fatalf("missing required path check = %+v, want fail", check)
 		}
+		cfg.FileSentry.BestEffort = false
 		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: watchDir}}
 		check := checkDoctorFileSentry(cfg)
-		if check.Status != doctorStatusWarn || !check.Reachable {
-			t.Fatalf("readable path check = %+v, want reachable warning", check)
+		if check.Status != doctorStatusOK || !check.Reachable {
+			t.Fatalf("readable path check = %+v, want reachable ok", check)
+		}
+		// A traversal preflight must not claim enforcement: file sentry only
+		// runs under the MCP wrapper, and that is a separate proof.
+		if check.Enforcing {
+			t.Fatalf("readable path check = %+v, want enforcing false until the wrapper lifecycle is proven", check)
+		}
+		if !strings.Contains(check.Detail, "unproven") || !strings.Contains(check.Next, "wrapper") {
+			t.Fatalf("readable path check = %+v, want the lifecycle caveat retained", check)
 		}
 	})
 
@@ -806,6 +819,60 @@ func TestDoctorHelpersAndStatusTags(t *testing.T) {
 	}
 	if got := doctorStatusTag(doctorStatusWarn, false); got != "[WARN]" {
 		t.Fatalf("plain status tag = %q, want [WARN]", got)
+	}
+}
+
+func TestCheckDoctorFileSentryUnreadableSubtreeStates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o750); err != nil {
+		t.Fatalf("Mkdir blocked subtree: %v", err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatalf("Chmod blocked subtree: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(blocked, 0o750) //nolint:gosec // test cleanup restores directory traversal permissions.
+	})
+
+	for _, tt := range []struct {
+		name       string
+		bestEffort bool
+		wantStatus string
+	}{
+		{name: "strict fails before restart", wantStatus: doctorStatusFail},
+		{name: "best effort warns about degraded coverage", bestEffort: true, wantStatus: doctorStatusWarn},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.FileSentry.Enabled = true
+			cfg.FileSentry.BestEffort = tt.bestEffort
+			cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: root}}
+			check := checkDoctorFileSentry(cfg)
+			if check.Status != tt.wantStatus {
+				t.Fatalf("check status = %q, want %q: %+v", check.Status, tt.wantStatus, check)
+			}
+			for _, want := range []string{blocked, root, "permission denied", "checked as"} {
+				if !strings.Contains(check.Detail, want) {
+					t.Errorf("check detail = %q, missing %q", check.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatFileSentryCoverageFailuresIncludesOmittedCount(t *testing.T) {
+	detail := formatFileSentryCoverageFailures(filesentry.CoverageReport{
+		FailureCount: 2,
+		Failures:     []filesentry.CoverageFailure{{Path: "/tmp/blocked", Root: "/tmp/watch", Error: "permission denied"}},
+	})
+	for _, want := range []string{"/tmp/blocked", "/tmp/watch", "permission denied", "1 additional subtree failure(s) omitted"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("coverage failure detail = %q, missing %q", detail, want)
+		}
 	}
 }
 

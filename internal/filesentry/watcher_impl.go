@@ -98,17 +98,33 @@ type DegradedPath struct {
 
 type skippedSubtree struct {
 	path  string
+	root  string
 	cause error
 }
 
 func (s skippedSubtree) err() error {
-	return fmt.Errorf("cannot monitor subtree %q: %w", s.path, s.cause)
+	return fmt.Errorf("cannot monitor subtree %q beneath watch root %q: %w", s.path, s.root, s.cause)
 }
 
 type recursiveAddResult struct {
 	added        int
 	skipped      []skippedSubtree
 	skippedCount int
+}
+
+// CoverageFailure identifies a subtree the current user could not include in
+// file-sentry coverage. It is returned by CheckCoverage without allocating an
+// fsnotify watch, so diagnostics do not consume the process watch budget.
+type CoverageFailure struct {
+	Path  string
+	Root  string
+	Error string
+}
+
+// CoverageReport is the bounded diagnostic result from CheckCoverage.
+type CoverageReport struct {
+	Failures     []CoverageFailure
+	FailureCount int
 }
 
 func (r recursiveAddResult) err() error {
@@ -414,24 +430,60 @@ func (w *fsWatcher) addRecursive(root string) error {
 // failure. Symlinks are never followed: a child symlink could leave the
 // configured tree, while a root symlink has no trustworthy direct watch root.
 func (w *fsWatcher) addRecursiveDetailed(root string) recursiveAddResult {
+	return addRecursiveDetailed(root, w.isIgnored, w.addDirectory)
+}
+
+// CheckCoverage walks configured roots using the same ignore and traversal
+// rules as Arm, but its no-op add function deliberately installs no fsnotify
+// watches. It reports permission and path failures visible to the calling user.
+func CheckCoverage(cfg *config.FileSentry) CoverageReport {
+	if cfg == nil {
+		return CoverageReport{Failures: []CoverageFailure{{Error: "file_sentry configuration is unavailable"}}, FailureCount: 1}
+	}
+	report := CoverageReport{}
+	for _, wp := range cfg.WatchPaths {
+		root, err := filepath.Abs(wp.Path)
+		if err != nil {
+			// The absolute form is unknown here, so the configured path is the
+			// only identifier worth reporting for both fields.
+			report.add(wp.Path, wp.Path, err)
+			continue
+		}
+		result := addRecursiveDetailed(root, func(path string) bool { return isIgnored(cfg.IgnorePatterns, path) }, func(string) (bool, error) { return true, nil })
+		for _, skipped := range result.skipped {
+			report.add(skipped.path, skipped.root, skipped.cause)
+		}
+		report.FailureCount += result.skippedCount - len(result.skipped)
+	}
+	return report
+}
+
+func (r *CoverageReport) add(path, root string, cause error) {
+	r.FailureCount++
+	if len(r.Failures) < maxArmDiagnosticSamples {
+		r.Failures = append(r.Failures, CoverageFailure{Path: path, Root: root, Error: cause.Error()})
+	}
+}
+
+func addRecursiveDetailed(root string, ignored func(string) bool, addDirectory func(string) (bool, error)) recursiveAddResult {
 	result := recursiveAddResult{}
 	info, err := os.Lstat(root)
 	if err != nil {
-		result.addSkipped(root, fmt.Errorf("watch root: %w", err))
+		result.addSkipped(root, root, fmt.Errorf("watch root: %w", err))
 		return result
 	}
 	if info.Mode()&fs.ModeSymlink != 0 {
-		result.addSkipped(root, errors.New("watch root must not be a symlink"))
+		result.addSkipped(root, root, errors.New("watch root must not be a symlink"))
 		return result
 	}
 	if !info.IsDir() {
-		result.addSkipped(root, fmt.Errorf("watch root %q is a file, not a directory", root))
+		result.addSkipped(root, root, fmt.Errorf("watch root %q is a file, not a directory", root))
 		return result
 	}
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			result.addSkipped(path, fmt.Errorf("inaccessible path: %w", walkErr))
+			result.addSkipped(path, root, fmt.Errorf("inaccessible path: %w", walkErr))
 			return filepath.SkipDir
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
@@ -440,27 +492,31 @@ func (w *fsWatcher) addRecursiveDetailed(root string) recursiveAddResult {
 		if !d.IsDir() {
 			return nil
 		}
-		if w.isIgnored(path) {
+		if ignored(path) {
 			return filepath.SkipDir
 		}
-		if added, addErr := w.addDirectory(path); addErr != nil {
-			result.addSkipped(path, addErr)
+		if added, addErr := addDirectory(path); addErr != nil {
+			result.addSkipped(path, root, addErr)
 			return filepath.SkipDir
 		} else if added {
 			result.added++
 		}
 		return nil
 	})
+	// The callback returns only nil or SkipDir today, so this is unreachable in
+	// practice. It stays fail-closed rather than discarded: if the callback
+	// ever returns a real error, the walk must count as incomplete coverage
+	// instead of silently reporting a clean traversal.
 	if walkErr != nil {
-		result.addSkipped(root, fmt.Errorf("walk root: %w", walkErr))
+		result.addSkipped(root, root, fmt.Errorf("walk root: %w", walkErr))
 	}
 	return result
 }
 
-func (r *recursiveAddResult) addSkipped(path string, cause error) {
+func (r *recursiveAddResult) addSkipped(path, root string, cause error) {
 	r.skippedCount++
 	if len(r.skipped) < maxArmDiagnosticSamples {
-		r.skipped = append(r.skipped, skippedSubtree{path: path, cause: cause})
+		r.skipped = append(r.skipped, skippedSubtree{path: path, root: root, cause: cause})
 	}
 }
 
@@ -828,7 +884,11 @@ func overflowError(f Finding, reason string) error {
 
 // isIgnored checks if a path matches any configured ignore pattern.
 func (w *fsWatcher) isIgnored(path string) bool {
-	for _, pattern := range w.cfg.IgnorePatterns {
+	return isIgnored(w.cfg.IgnorePatterns, path)
+}
+
+func isIgnored(patterns []string, path string) bool {
+	for _, pattern := range patterns {
 		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
 			return true
 		}

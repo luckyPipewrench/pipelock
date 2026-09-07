@@ -2392,6 +2392,117 @@ func TestWatcher_ArmStrictFailsAfterArmingAccessibleSiblings(t *testing.T) {
 	}
 }
 
+func TestWatcher_ArmUnreadableSubtreeFailsClosedUnlessIgnored(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o750); err != nil {
+		t.Fatalf("Mkdir blocked subtree: %v", err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatalf("Chmod blocked subtree: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(blocked, 0o750) //nolint:gosec // test cleanup restores directory traversal permissions.
+	})
+
+	for _, tt := range []struct {
+		name    string
+		ignored []string
+		wantErr bool
+	}{
+		{name: "strict coverage failure", wantErr: true},
+		{name: "ignore prevents coverage failure", ignored: []string{"blocked"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.FileSentry{Enabled: true, WatchPaths: []config.WatchPath{{Path: root}}, IgnorePatterns: tt.ignored}
+			w, err := NewWatcher(cfg, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("NewWatcher: %v", err)
+			}
+			defer func() { _ = w.Close() }()
+			armErr := w.Arm()
+			if (armErr != nil) != tt.wantErr {
+				t.Fatalf("Arm error = %v, want error=%t", armErr, tt.wantErr)
+			}
+			if tt.wantErr {
+				t.Logf("Arm error: %v", armErr)
+				for _, want := range []string{blocked, root, "permission denied", "incomplete watch coverage"} {
+					if !strings.Contains(armErr.Error(), want) {
+						t.Errorf("Arm error = %q, missing %q", armErr, want)
+					}
+				}
+			}
+		})
+	}
+	coverage := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	if coverage.FailureCount != 1 || len(coverage.Failures) != 1 || coverage.Failures[0].Path != blocked {
+		t.Fatalf("CheckCoverage unreadable subtree = %#v, want blocked subtree", coverage)
+	}
+}
+
+func TestCheckCoverageDoesNotInstallWatchesAndReportsRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing}}})
+	if report.FailureCount != 1 || len(report.Failures) != 1 {
+		t.Fatalf("CheckCoverage report = %#v, want one failure", report)
+	}
+	if report.Failures[0].Path != missing || report.Failures[0].Root != missing || !strings.Contains(report.Failures[0].Error, "no such file") {
+		t.Fatalf("CheckCoverage failure = %#v, want missing path, root, and cause", report.Failures[0])
+	}
+}
+
+func TestCheckCoverageNilAndBoundedFailures(t *testing.T) {
+	if report := CheckCoverage(nil); report.FailureCount != 1 || len(report.Failures) != 1 || report.Failures[0].Error != "file_sentry configuration is unavailable" {
+		t.Fatalf("CheckCoverage(nil) = %#v, want unavailable configuration failure", report)
+	}
+
+	base := t.TempDir()
+	watchPaths := make([]config.WatchPath, 0, maxArmDiagnosticSamples+1)
+	for i := range maxArmDiagnosticSamples + 1 {
+		watchPaths = append(watchPaths, config.WatchPath{Path: filepath.Join(base, fmt.Sprintf("missing-%d", i))})
+	}
+	report := CheckCoverage(&config.FileSentry{WatchPaths: watchPaths})
+	if report.FailureCount != maxArmDiagnosticSamples+1 || len(report.Failures) != maxArmDiagnosticSamples {
+		t.Fatalf("CheckCoverage bounded report = %#v, want count=%d samples=%d", report, maxArmDiagnosticSamples+1, maxArmDiagnosticSamples)
+	}
+
+	if report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: base}}}); report.FailureCount != 0 {
+		t.Fatalf("CheckCoverage accessible root = %#v, want no failures", report)
+	}
+	fileRoot := filepath.Join(base, "not-a-directory")
+	if err := os.WriteFile(fileRoot, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile root fixture: %v", err)
+	}
+	linkRoot := filepath.Join(base, "root-link")
+	if err := os.Symlink(base, linkRoot); err != nil {
+		t.Skipf("Symlink root fixture: %v", err)
+	}
+	for _, path := range []string{fileRoot, linkRoot} {
+		if report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: path}}}); report.FailureCount != 1 {
+			t.Fatalf("CheckCoverage(%q) = %#v, want one rejected root", path, report)
+		}
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	deletedWD := t.TempDir()
+	if err := os.Chdir(deletedWD); err != nil {
+		t.Fatalf("Chdir deleted working directory: %v", err)
+	}
+	if err := os.Remove(deletedWD); err != nil {
+		t.Fatalf("Remove working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	if report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: "relative"}}}); report.FailureCount != 1 || len(report.Failures) != 1 {
+		t.Fatalf("CheckCoverage unresolved relative root = %#v, want one failure", report)
+	}
+}
+
 func TestWatcher_ArmRequiredWatchPathHasTypedErrorSignal(t *testing.T) {
 	root := t.TempDir()
 	accessible := filepath.Join(root, "accessible")

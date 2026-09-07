@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -589,48 +591,73 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 			Next:    "enable with reachable watch_paths where workspace drift should be detected",
 		}
 	}
-	// Split required vs optional paths so the doctor exit code aligns with
-	// runtime behavior: optional (required:false) misses degrade at startup,
-	// they should not turn doctor into a hard failure. Required misses still
-	// fail.
-	var requiredPaths, optionalPaths []string
-	for _, wp := range cfg.FileSentry.WatchPaths {
-		if wp.Required {
-			requiredPaths = append(requiredPaths, wp.Path)
-		} else {
-			optionalPaths = append(optionalPaths, wp.Path)
-		}
-	}
 	check := doctorReportCheck{
 		Name:       "file_sentry",
 		Surface:    doctorSurfaceMCP,
 		Configured: true,
-		Detail:     "configured; current implementation is tied to MCP proxy lifecycle",
-		Next:       "prove the watched workspace is reachable from the process that arms file_sentry",
+		Detail:     "configured; coverage preflight has not run",
+		Next:       "run doctor as the user that starts pipelock",
 	}
 	if len(cfg.FileSentry.WatchPaths) == 0 {
 		check.Status = doctorStatusFail
-		check.Detail = "enabled but no watch_paths are configured"
+		check.Detail = "enabled but no watch_paths are configured; coverage preflight could not run"
 		return check
 	}
-	requiredMissing := missingReadablePaths(requiredPaths...)
-	optionalMissing := missingReadablePaths(optionalPaths...)
-	if len(requiredMissing) > 0 {
+	coverage := filesentry.CheckCoverage(&cfg.FileSentry)
+	checkedUser := "the current user"
+	if current, err := user.Current(); err == nil && current.Username != "" {
+		checkedUser = current.Username
+	}
+	if coverage.FailureCount > 0 {
 		check.Status = doctorStatusFail
-		check.Detail = "required watch path(s) not readable: " + strings.Join(requiredMissing, ", ")
+		if cfg.FileSentry.BestEffort && !fileSentryRequiredCoverageFailed(cfg.FileSentry.WatchPaths, coverage) {
+			check.Status = doctorStatusWarn
+		}
+		check.Detail = "coverage preflight checked as " + checkedUser + "; inaccessible subtree(s): " + formatFileSentryCoverageFailures(coverage)
+		check.Next = "grant the service user read and execute access, add a matching file_sentry.ignore_patterns entry, or set file_sentry.best_effort: true to trade coverage for availability"
 		return check
 	}
-	if len(optionalMissing) > 0 {
-		check.Status = doctorStatusWarn
-		check.Reachable = true
-		check.Detail = "optional watch path(s) not readable (will degrade at startup, not fail): " + strings.Join(optionalMissing, ", ")
-		check.Next = "either mark these required:true to fail-fast, or remove them from watch_paths"
-		return check
-	}
-	check.Status = doctorStatusWarn
+	check.Status = doctorStatusOK
 	check.Reachable = true
-	check.Detail = "watch paths are readable, but wrapper/sidecar lifecycle still must be proven"
+	// Enforcing stays false deliberately. A traversal preflight proves coverage
+	// is reachable, not that the watcher is running: file sentry applies to
+	// subprocess MCP mode, so enforcement still depends on the agent launching
+	// through the Pipelock MCP wrapper. Claiming enforcement from a filesystem
+	// walk would let a green check stand in for a proof it never performed.
+	check.Detail = "coverage preflight completed as " + checkedUser + "; all configured watch subtrees were traversable (result applies to the doctor's user); wrapper/sidecar lifecycle is still unproven"
+	check.Next = "prove the agent launches through the Pipelock MCP wrapper so the armed watcher actually runs"
 	return check
+}
+
+func fileSentryRequiredCoverageFailed(watchPaths []config.WatchPath, coverage filesentry.CoverageReport) bool {
+	requiredRoots := make(map[string]struct{}, len(watchPaths))
+	for _, watchPath := range watchPaths {
+		if !watchPath.Required {
+			continue
+		}
+		if root, err := filepath.Abs(watchPath.Path); err == nil {
+			requiredRoots[root] = struct{}{}
+		}
+	}
+	for _, failure := range coverage.Failures {
+		if _, required := requiredRoots[failure.Root]; required {
+			return true
+		}
+	}
+	// Omitted failures cannot safely be classified as optional, so preserve the
+	// strict result when a required root could have produced one.
+	return coverage.FailureCount > len(coverage.Failures) && len(requiredRoots) > 0
+}
+
+func formatFileSentryCoverageFailures(coverage filesentry.CoverageReport) string {
+	parts := make([]string, 0, len(coverage.Failures)+1)
+	for _, failure := range coverage.Failures {
+		parts = append(parts, fmt.Sprintf("%s (watch root %s: %s)", failure.Path, failure.Root, failure.Error))
+	}
+	if omitted := coverage.FailureCount - len(coverage.Failures); omitted > 0 {
+		parts = append(parts, fmt.Sprintf("%d additional subtree failure(s) omitted", omitted))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {

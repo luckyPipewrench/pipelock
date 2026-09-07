@@ -4,6 +4,7 @@
 package tlsfile
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -89,6 +90,49 @@ func TestLoadX509KeyPairSecurityBoundary(t *testing.T) {
 			t.Fatalf("error = %v, want size rejection", err)
 		}
 	})
+
+	otherCertPEM, otherKeyPEM := testPair(t)
+	if bytes.Equal(certPEM, otherCertPEM) || bytes.Equal(keyPEM, otherKeyPEM) {
+		t.Fatal("mismatch fixtures must use distinct certificates and private keys")
+	}
+	t.Run("second valid pair", func(t *testing.T) {
+		dir := t.TempDir()
+		cert := write(dir, "tls.crt", otherCertPEM, 0o600)
+		key := write(dir, "tls.key", otherKeyPEM, 0o600)
+		pair, err := LoadX509KeyPair(cert, key)
+		if err != nil || len(pair.Certificate) == 0 || pair.PrivateKey == nil {
+			t.Fatalf("second pair did not produce a usable TLS identity: %v", err)
+		}
+	})
+	const mismatchError = "private key does not match public key"
+	const malformedError = "failed to find any PEM data"
+	for _, tt := range []struct {
+		name    string
+		certPEM []byte
+		keyPEM  []byte
+		wantErr string
+	}{
+		{name: "mismatched private key", certPEM: certPEM, keyPEM: otherKeyPEM, wantErr: mismatchError},
+		{name: "mismatched certificate", certPEM: otherCertPEM, keyPEM: keyPEM, wantErr: mismatchError},
+		{name: "malformed certificate", certPEM: []byte("invalid certificate"), keyPEM: keyPEM, wantErr: malformedError},
+		{name: "malformed private key", certPEM: certPEM, keyPEM: []byte("invalid private key"), wantErr: malformedError},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cert := write(dir, "tls.crt", tt.certPEM, 0o600)
+			key := write(dir, "tls.key", tt.keyPEM, 0o600)
+			pair, err := LoadX509KeyPair(cert, key)
+			if err == nil {
+				t.Fatal("accepted an invalid certificate/private-key pair")
+			}
+			if !strings.HasPrefix(err.Error(), "tls:") || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want TLS parser rejection containing %q", err, tt.wantErr)
+			}
+			if len(pair.Certificate) != 0 || pair.PrivateKey != nil {
+				t.Fatal("rejected pair returned usable TLS identity material")
+			}
+		})
+	}
 }
 
 func testPair(t *testing.T) ([]byte, []byte) {

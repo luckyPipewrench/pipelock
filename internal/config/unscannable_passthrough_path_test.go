@@ -55,6 +55,38 @@ func TestCanonicalUnscannablePassthroughPathDecodeBoundaries(t *testing.T) {
 			raw:  "/packages/./item.bin",
 		},
 		{
+			name: "encoded slash",
+			raw:  "/packages/item%2fchild.bin",
+		},
+		{
+			name: "nested encoded slash",
+			raw:  "/packages/item%252fchild.bin",
+		},
+		{
+			name: "encoded backslash",
+			raw:  "/packages/item%5cchild.bin",
+		},
+		{
+			name: "nested encoded backslash",
+			raw:  "/packages/item%255cchild.bin",
+		},
+		{
+			name: "encoded dot segment",
+			raw:  "/packages/%2e/item.bin",
+		},
+		{
+			name: "nested encoded dot segment",
+			raw:  "/packages/%252e/item.bin",
+		},
+		{
+			name: "encoded path parameter",
+			raw:  "/packages/item%3bdownload",
+		},
+		{
+			name: "nested encoded path parameter",
+			raw:  "/packages/item%253bdownload",
+		},
+		{
 			name: "raw newline control",
 			raw:  "/packages/item\n.bin",
 		},

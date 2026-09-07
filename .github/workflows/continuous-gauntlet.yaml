@@ -91,6 +91,16 @@ jobs:
 
       - name: Run portable canonical benchmark
         shell: bash
+        # The runner resolves the pinned Pipelock release through the GitHub
+        # API. Unauthenticated calls are rate-limited per source IP, which on a
+        # hosted runner is shared with every other job on that machine, so the
+        # lookup returns 403 and the whole scheduled run produces no score. The
+        # run on 2026-09-07 failed exactly this way. GITHUB_TOKEN raises the
+        # limit to a per-repository budget; contents:read is enough to read a
+        # public release, and the runner still works without a token, so an
+        # exhausted limit fails the run loudly rather than scoring silently.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           job_deadline=$((JOB_STARTED_EPOCH + JOB_TIMEOUT_MINUTES * 60))

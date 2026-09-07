@@ -89,6 +89,34 @@ func TestLoadX509KeyPairSecurityBoundary(t *testing.T) {
 			t.Fatalf("error = %v, want size rejection", err)
 		}
 	})
+
+	otherCertPEM, otherKeyPEM := testPair(t)
+	for _, tt := range []struct {
+		name    string
+		certPEM []byte
+		keyPEM  []byte
+	}{
+		{name: "mismatched private key", certPEM: certPEM, keyPEM: otherKeyPEM},
+		{name: "mismatched certificate", certPEM: otherCertPEM, keyPEM: keyPEM},
+		{name: "malformed certificate", certPEM: []byte("invalid certificate"), keyPEM: keyPEM},
+		{name: "malformed private key", certPEM: certPEM, keyPEM: []byte("invalid private key")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cert := write(dir, "tls.crt", tt.certPEM, 0o600)
+			key := write(dir, "tls.key", tt.keyPEM, 0o600)
+			pair, err := LoadX509KeyPair(cert, key)
+			if err == nil {
+				t.Fatal("accepted an invalid certificate/private-key pair")
+			}
+			if !strings.HasPrefix(err.Error(), "tls:") {
+				t.Fatalf("error = %v, want TLS parser rejection after successful file reads", err)
+			}
+			if len(pair.Certificate) != 0 || pair.PrivateKey != nil {
+				t.Fatal("rejected pair returned usable TLS identity material")
+			}
+		})
+	}
 }
 
 func testPair(t *testing.T) ([]byte, []byte) {

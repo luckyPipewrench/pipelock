@@ -1507,10 +1507,16 @@ func TestServer_StartFailsWhenFileSentryArmsNoPaths(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "no watch paths armed") {
 			t.Fatalf("Start error = %v, want zero-armed file-sentry failure", err)
 		}
-		for _, want := range []string{missing, "file_sentry.ignore_patterns", "file_sentry.best_effort: true"} {
+		for _, want := range []string{missing, "file_sentry.ignore_patterns", "does NOT apply to this failure"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("Start error = %q, missing remedy detail %q", err, want)
 			}
+		}
+		// A no-watch-paths error stays fail-closed under best_effort, so
+		// offering that setting would send an operator to a control that
+		// cannot resolve their failure.
+		if strings.Contains(err.Error(), "set file_sentry.best_effort: true to trade coverage") {
+			t.Errorf("Start error = %q, must not offer best_effort for a fail-closed error", err)
 		}
 	case <-time.After(5 * time.Second):
 		if err := s.Shutdown(context.Background()); err != nil {

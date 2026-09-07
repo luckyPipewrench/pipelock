@@ -615,10 +615,32 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 		}
 		check.Detail = "coverage preflight checked as " + checkedUser + "; inaccessible subtree(s): " + formatFileSentryCoverageFailures(coverage)
 		check.Next = "grant the service user read and execute access, add a matching file_sentry.ignore_patterns entry, or set file_sentry.best_effort: true to trade coverage for availability"
+		if fileSentryRequiredCoverageFailed(cfg.FileSentry.WatchPaths, coverage) {
+			// best_effort cannot rescue a required root, so offering it here
+			// would name a control that cannot resolve this failure.
+			check.Next = "grant the service user read and execute access to the required path, add a matching file_sentry.ignore_patterns entry, or drop required: true for that root"
+		}
+		return check
+	}
+	// Zero watchable paths with no failure means every configured root was
+	// ignored away. Arming has nothing to watch and fails closed regardless of
+	// best_effort, so reporting OK here would be the exact fail-open this check
+	// exists to prevent.
+	if coverage.NoWatchablePaths() {
+		check.Status = doctorStatusFail
+		check.Detail = "coverage preflight checked as " + checkedUser + "; no configured watch path survives file_sentry.ignore_patterns, so arming has nothing to watch and startup fails closed"
+		check.Next = "narrow file_sentry.ignore_patterns so at least one configured root remains watchable, or disable file_sentry deliberately"
 		return check
 	}
 	check.Status = doctorStatusOK
 	check.Reachable = true
+	if coverage.Truncated {
+		// A bounded walk proves nothing about what it never visited.
+		check.Status = doctorStatusWarn
+		check.Detail = "coverage preflight checked as " + checkedUser + "; traversal stopped at its entry budget, so the unvisited remainder is unchecked rather than proven reachable"
+		check.Next = "narrow watch_paths or ignore_patterns so the configured tree can be traversed within the preflight budget"
+		return check
+	}
 	// Enforcing stays false deliberately. A traversal preflight proves coverage
 	// is reachable, not that the watcher is running: file sentry applies to
 	// subprocess MCP mode, so enforcement still depends on the agent launching
@@ -629,24 +651,27 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 	return check
 }
 
+// fileSentryRequiredCoverageFailed reports whether any coverage failure belongs
+// to a root the operator marked required. The flag travels on the failure, so a
+// root whose absolute path could not be resolved keeps its required status
+// instead of being silently downgraded to an optional warning.
 func fileSentryRequiredCoverageFailed(watchPaths []config.WatchPath, coverage filesentry.CoverageReport) bool {
-	requiredRoots := make(map[string]struct{}, len(watchPaths))
-	for _, watchPath := range watchPaths {
-		if !watchPath.Required {
-			continue
-		}
-		if root, err := filepath.Abs(watchPath.Path); err == nil {
-			requiredRoots[root] = struct{}{}
-		}
-	}
 	for _, failure := range coverage.Failures {
-		if _, required := requiredRoots[failure.Root]; required {
+		if failure.Required {
 			return true
 		}
 	}
 	// Omitted failures cannot safely be classified as optional, so preserve the
-	// strict result when a required root could have produced one.
-	return coverage.FailureCount > len(coverage.Failures) && len(requiredRoots) > 0
+	// strict result when any required root could have produced one.
+	if coverage.FailureCount <= len(coverage.Failures) {
+		return false
+	}
+	for _, watchPath := range watchPaths {
+		if watchPath.Required {
+			return true
+		}
+	}
+	return false
 }
 
 func formatFileSentryCoverageFailures(coverage filesentry.CoverageReport) string {

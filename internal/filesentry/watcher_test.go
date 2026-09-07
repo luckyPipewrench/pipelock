@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2393,6 +2394,11 @@ func TestWatcher_ArmStrictFailsAfterArmingAccessibleSiblings(t *testing.T) {
 }
 
 func TestWatcher_ArmUnreadableSubtreeFailsClosedUnlessIgnored(t *testing.T) {
+	// Windows os.Chmod cannot remove directory traversal, so the fixture would
+	// stay readable and the test would assert the opposite of what it means.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions required to make a subtree unreadable")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
 	}
@@ -2927,5 +2933,57 @@ func TestIsIgnored(t *testing.T) {
 				t.Errorf("isIgnored(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCheckCoverage_AllRootsIgnoredReportsNoWatchablePaths covers the state
+// where traversal records no failure and still leaves nothing to watch: every
+// configured root matches an ignore pattern. Arming fails closed here, so a
+// failure-only report would look healthy while startup refuses to run.
+func TestCheckCoverage_AllRootsIgnoredReportsNoWatchablePaths(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.FileSentry{
+		WatchPaths:     []config.WatchPath{{Path: root}},
+		IgnorePatterns: []string{filepath.Base(root)},
+	}
+	report := CheckCoverage(cfg)
+	if report.FailureCount != 0 {
+		t.Fatalf("FailureCount = %d, want 0; an ignored root is not a failure", report.FailureCount)
+	}
+	if report.WatchablePaths != 0 {
+		t.Fatalf("WatchablePaths = %d, want 0", report.WatchablePaths)
+	}
+	if !report.NoWatchablePaths() {
+		t.Fatal("NoWatchablePaths() = false; an ignored-away configuration must not read as covered")
+	}
+}
+
+// TestCheckCoverage_ReachableRootCountsWatchablePaths is the negative control:
+// a normal reachable root must NOT report the no-watchable-paths state.
+func TestCheckCoverage_ReachableRootCountsWatchablePaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	if report.FailureCount != 0 || report.NoWatchablePaths() {
+		t.Fatalf("report = %+v, want a clean reachable result", report)
+	}
+	if report.WatchablePaths < 2 {
+		t.Fatalf("WatchablePaths = %d, want the root and its child counted", report.WatchablePaths)
+	}
+}
+
+// TestCheckCoverage_CarriesRequiredFlag proves the required flag travels with
+// the failure instead of being reconstructed from a path, which is what breaks
+// when the absolute form cannot be resolved.
+func TestCheckCoverage_CarriesRequiredFlag(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing, Required: true}}})
+	if len(report.Failures) != 1 {
+		t.Fatalf("Failures = %+v, want one", report.Failures)
+	}
+	if !report.Failures[0].Required {
+		t.Fatal("Required = false on a failure from a required root")
 	}
 }

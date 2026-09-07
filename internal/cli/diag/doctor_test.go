@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -823,6 +824,11 @@ func TestDoctorHelpersAndStatusTags(t *testing.T) {
 }
 
 func TestCheckDoctorFileSentryUnreadableSubtreeStates(t *testing.T) {
+	// Windows os.Chmod cannot remove directory traversal, so the fixture would
+	// stay readable and the test would assert the opposite of what it means.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions required to make a subtree unreadable")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
 	}
@@ -943,4 +949,46 @@ func doctorReportHasCheck(report doctorReport, name, status string) bool {
 		}
 	}
 	return false
+}
+
+// TestCheckDoctorFileSentryIgnoredAwayRootsFail covers the fail-open this
+// check exists to prevent: every configured root matched an ignore pattern, so
+// traversal records no failure while arming has nothing to watch and startup
+// fails closed. Reporting OK there would approve a configuration that cannot
+// start.
+func TestCheckDoctorFileSentryIgnoredAwayRootsFail(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: root}}
+	cfg.FileSentry.IgnorePatterns = []string{filepath.Base(root)}
+
+	check := checkDoctorFileSentry(cfg)
+	if check.Status != doctorStatusFail {
+		t.Fatalf("status = %q, want fail; check=%+v", check.Status, check)
+	}
+	if !strings.Contains(check.Detail, "nothing to watch") {
+		t.Fatalf("detail = %q, want it to name the no-watchable-path cause", check.Detail)
+	}
+	// best_effort does not rescue this either, so the remedy must not offer it.
+	if strings.Contains(check.Next, "best_effort") {
+		t.Fatalf("next = %q, must not offer best_effort for a fail-closed configuration", check.Next)
+	}
+}
+
+// TestCheckDoctorFileSentryRequiredFailureOmitsBestEffortRemedy proves the
+// remedy text names only controls that can resolve the reported failure.
+func TestCheckDoctorFileSentryRequiredFailureOmitsBestEffortRemedy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.BestEffort = true
+	cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: filepath.Join(t.TempDir(), "absent"), Required: true}}
+
+	check := checkDoctorFileSentry(cfg)
+	if check.Status != doctorStatusFail {
+		t.Fatalf("status = %q, want fail for a required root even under best_effort; check=%+v", check.Status, check)
+	}
+	if strings.Contains(check.Next, "best_effort") {
+		t.Fatalf("next = %q, must not offer best_effort for a required-root failure", check.Next)
+	}
 }

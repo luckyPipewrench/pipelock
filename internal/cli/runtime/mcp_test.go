@@ -201,7 +201,10 @@ func TestMcpProxyCmd_FileSentryFailsWhenNoPathsArm(t *testing.T) {
 	if !strings.Contains(err.Error(), "no watch paths armed") {
 		t.Fatalf("mcp proxy error = %v, want zero-armed file-sentry failure; stderr:\n%s", err, stderr)
 	}
-	for _, want := range []string{missing, "file_sentry.ignore_patterns", "file_sentry.best_effort: true"} {
+	if strings.Contains(err.Error(), "set file_sentry.best_effort: true to trade coverage") {
+		t.Errorf("mcp proxy error = %q, must not offer best_effort for a fail-closed error", err)
+	}
+	for _, want := range []string{missing, "file_sentry.ignore_patterns", "does NOT apply to this failure"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("mcp proxy error = %q, missing remedy detail %q", err, want)
 		}

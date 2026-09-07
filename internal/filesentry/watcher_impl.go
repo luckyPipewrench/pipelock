@@ -116,15 +116,37 @@ type recursiveAddResult struct {
 // file-sentry coverage. It is returned by CheckCoverage without allocating an
 // fsnotify watch, so diagnostics do not consume the process watch budget.
 type CoverageFailure struct {
-	Path  string
-	Root  string
-	Error string
+	Path string
+	Root string
+	// Required carries the configured root's required flag with the failure,
+	// rather than leaving a caller to rediscover it by comparing paths. Path
+	// comparison loses the flag whenever the absolute form cannot be resolved,
+	// which silently downgrades a required-root failure to a warning.
+	Required bool
+	Error    string
 }
 
 // CoverageReport is the bounded diagnostic result from CheckCoverage.
+//
+// WatchablePaths counts directories the traversal could have watched. Zero of
+// them with no recorded failure is its own hard error: every configured root
+// matched an ignore pattern, so arming has nothing to watch and startup fails
+// closed while a failure-only report would look clean.
 type CoverageReport struct {
-	Failures     []CoverageFailure
-	FailureCount int
+	Failures       []CoverageFailure
+	FailureCount   int
+	WatchablePaths int
+	// Truncated is set when traversal stopped at maxCoverageWalkEntries. The
+	// scan is then a lower bound: unvisited subtrees may also be unwatchable,
+	// so a caller must not read the absence of further failures as coverage.
+	Truncated bool
+}
+
+// NoWatchablePaths reports the state where traversal found nothing to watch and
+// recorded no failure explaining why. Arming fails closed here regardless of
+// best_effort, so a coverage preflight must not report this as healthy.
+func (r CoverageReport) NoWatchablePaths() bool {
+	return r.WatchablePaths == 0 && r.FailureCount == 0
 }
 
 func (r recursiveAddResult) err() error {
@@ -433,35 +455,73 @@ func (w *fsWatcher) addRecursiveDetailed(root string) recursiveAddResult {
 	return addRecursiveDetailed(root, w.isIgnored, w.addDirectory)
 }
 
+// maxCoverageWalkEntries bounds one CheckCoverage call across all configured
+// roots. Bounding the rendered sample does not bound the traversal, and a root
+// such as "/", a very large tree, or a slow network mount would otherwise let a
+// diagnostic block doctor or startup for an unbounded time. Stopping early is
+// reported as Truncated so the result is read as a lower bound rather than as
+// proof of coverage.
+const maxCoverageWalkEntries = 200000
+
+// errCoverageWalkBudget stops traversal once the entry budget is spent. It is
+// not a coverage failure and is never reported as one.
+var errCoverageWalkBudget = errors.New("coverage walk entry budget exhausted")
+
 // CheckCoverage walks configured roots using the same ignore and traversal
 // rules as Arm, but its no-op add function deliberately installs no fsnotify
-// watches. It reports permission and path failures visible to the calling user.
+// watches. It is an ACCESS AND TRAVERSAL preflight: it reports permission and
+// path failures visible to the calling user, and because it installs nothing it
+// cannot see a failure that only appears when a watch is really registered,
+// such as inotify descriptor exhaustion. Traversal is bounded; see
+// maxCoverageWalkEntries.
 func CheckCoverage(cfg *config.FileSentry) CoverageReport {
 	if cfg == nil {
 		return CoverageReport{Failures: []CoverageFailure{{Error: "file_sentry configuration is unavailable"}}, FailureCount: 1}
 	}
 	report := CoverageReport{}
+	budget := maxCoverageWalkEntries
 	for _, wp := range cfg.WatchPaths {
 		root, err := filepath.Abs(wp.Path)
 		if err != nil {
 			// The absolute form is unknown here, so the configured path is the
 			// only identifier worth reporting for both fields.
-			report.add(wp.Path, wp.Path, err)
+			report.add(wp.Path, wp.Path, wp.Required, err)
 			continue
 		}
-		result := addRecursiveDetailed(root, func(path string) bool { return isIgnored(cfg.IgnorePatterns, path) }, func(string) (bool, error) { return true, nil })
+		visited := 0
+		result := addRecursiveDetailed(root,
+			func(path string) bool { return isIgnored(cfg.IgnorePatterns, path) },
+			func(string) (bool, error) {
+				visited++
+				if visited > budget {
+					return false, errCoverageWalkBudget
+				}
+				return true, nil
+			})
+		budget -= visited
 		for _, skipped := range result.skipped {
-			report.add(skipped.path, skipped.root, skipped.cause)
+			if errors.Is(skipped.cause, errCoverageWalkBudget) {
+				report.Truncated = true
+				continue
+			}
+			report.add(skipped.path, skipped.root, wp.Required, skipped.cause)
+		}
+		if report.Truncated {
+			// The remaining skips under a truncated walk are budget stops, not
+			// coverage failures, so they are not counted as either.
+			report.WatchablePaths += result.added
+			break
 		}
 		report.FailureCount += result.skippedCount - len(result.skipped)
+		report.WatchablePaths += result.added
 	}
 	return report
 }
 
-func (r *CoverageReport) add(path, root string, cause error) {
+func (r *CoverageReport) add(path, root string, required bool, cause error) {
 	r.FailureCount++
 	if len(r.Failures) < maxArmDiagnosticSamples {
-		r.Failures = append(r.Failures, CoverageFailure{Path: path, Root: root, Error: cause.Error()})
+		r.Failures = append(r.Failures, CoverageFailure{Path: path, Root: root, Required: required, Error: cause.Error()})
 	}
 }
 

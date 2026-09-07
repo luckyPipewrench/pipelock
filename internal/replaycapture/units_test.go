@@ -322,6 +322,42 @@ func TestVerifyPacketBytes_BrowserBundlePath(t *testing.T) {
 	if err := VerifyPacketBytes(packetJSON, evidenceJSONL, "  "+eng.PublicKeyHex()+"\n"); err != nil {
 		t.Fatalf("VerifyPacketBytes key with surrounding whitespace: %v", err)
 	}
+	for _, tt := range []struct {
+		name    string
+		field   string
+		wantErr string
+	}{
+		{name: "duplicate key", field: `"schema_version":"unsupported",`, wantErr: "duplicate object key"},
+		{name: "escaped duplicate key", field: `"\u0073chema_version":"unsupported",`, wantErr: "duplicate object key"},
+		{name: "unsafe positive number", field: `"numeric_probe":9007199254740992,`, wantErr: "exceeds cross-language exact range"},
+		{name: "unsafe negative number", field: `"numeric_probe":-9007199254740992,`, wantErr: "exceeds cross-language exact range"},
+		{name: "exact numeric boundary", field: `"numeric_probe":9007199254740991,`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Preserve the real packet and receipt chain. Without the JSON guard,
+			// encoding/json keeps the later schema key and ignores numeric_probe.
+			mutated := []byte(strings.Replace(string(packetJSON), "{", "{"+tt.field, 1))
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, artifactPacketName), mutated, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, artifactEvidenceName), evidenceJSONL, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for path, err := range map[string]error{
+				"browser":   VerifyPacketBytes(mutated, evidenceJSONL, eng.PublicKeyHex()),
+				"directory": VerifyPacketDir(dir, eng.PublicKeyHex()),
+			} {
+				if tt.wantErr == "" {
+					if err != nil {
+						t.Errorf("%s rejected an exactly representable number: %v", path, err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "parsing packet.json") || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("%s error = %v, want packet parsing rejection containing %q", path, err, tt.wantErr)
+				}
+			}
+		})
+	}
 	if err := VerifyPacketBytes(packetJSON, evidenceJSONL, ""); err == nil ||
 		!strings.Contains(err.Error(), "external signer key is required") {
 		t.Fatalf("missing external signer key error = %v", err)

@@ -248,6 +248,62 @@ func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
 				"CEE budget; buckets are not isolated by session key")
 		}
 	})
+
+	// The warn path is a SECOND call site with its own CEE key selection. The
+	// subtests above drive only the clean path, so without this one a change
+	// that broke bucketing in warn mode alone would go unnoticed.
+	t.Run("warn mode buckets on the session key too", func(t *testing.T) {
+		warnCfg := &InputScanConfig{
+			Enabled:      true,
+			Action:       "warn",
+			OnParseError: config.ActionBlock,
+		}
+		// A credential in the payload makes the content scan warn, which routes
+		// the request through the warn branch rather than the clean one.
+		secret := "sk-ant-" + strings.Repeat("x", 25)
+		warn1 := []byte(makeRequest(1, "tools/call", map[string]string{"data": secret}))
+		warn2 := []byte(makeRequest(2, "tools/call", map[string]string{"data": secret}))
+
+		t.Run("same session accumulates", func(t *testing.T) {
+			opts := MCPProxyOpts{
+				Scanner:  testInputScanner(t),
+				InputCfg: warnCfg,
+				CEE:      ceeDepsAccumulating(t),
+			}
+			var logBuf bytes.Buffer
+
+			_ = scanHTTPInputDecision(warn1, &logBuf, "session-a", "session-a", opts)
+			second := scanHTTPInputDecision(warn2, &logBuf, "session-a", "session-a", opts)
+
+			if !strings.Contains(logBuf.String(), "warning") {
+				t.Fatal("no content warning logged, so the warn branch never ran and " +
+					"this subtest is not covering the site it exists for")
+			}
+			if second.Blocked == nil {
+				t.Fatal("second warn-mode request on the same session was not CEE-blocked")
+			}
+			if got := second.Blocked.ErrorCode; got != mcpCEEBlockErrorCode {
+				t.Fatalf("warn-mode block code %d, want the CEE code %d", got, mcpCEEBlockErrorCode)
+			}
+		})
+
+		t.Run("different sessions stay isolated", func(t *testing.T) {
+			opts := MCPProxyOpts{
+				Scanner:  testInputScanner(t),
+				InputCfg: warnCfg,
+				CEE:      ceeDepsAccumulating(t),
+			}
+			var logBuf bytes.Buffer
+
+			_ = scanHTTPInputDecision(warn1, &logBuf, "session-a", "session-a", opts)
+			other := scanHTTPInputDecision(warn2, &logBuf, "session-b", "session-b", opts)
+
+			if other.Blocked != nil {
+				t.Fatal("a warn-mode request on a different session inherited the first " +
+					"session's CEE budget")
+			}
+		})
+	})
 }
 
 func TestMCPCEEFragmentPayloads(t *testing.T) {

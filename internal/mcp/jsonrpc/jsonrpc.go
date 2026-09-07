@@ -386,7 +386,13 @@ func isOpaqueMediaPayload(s string) bool {
 // hasMediaSignature reports whether decoded leading bytes are a recognized
 // media container, not a magic prefix wrapping agent-visible text.
 func hasMediaSignature(decoded []byte, capped bool) bool {
-	rest, ok := mediaPayloadAfterHeader(decoded, capped)
+	// A truncated prefix cannot prove the unread tail is media. PNG/JPEG/GIF
+	// headers plus non-printable padding filled the window and hid a
+	// credential in the remaining base64. Fail closed and scan.
+	if capped {
+		return false
+	}
+	rest, ok := mediaPayloadAfterHeader(decoded)
 	if !ok {
 		return false
 	}
@@ -395,7 +401,7 @@ func hasMediaSignature(decoded []byte, capped bool) bool {
 
 // mediaPayloadAfterHeader reports the bytes after a validated media header.
 // Failure direction: a payload that does not prove its header is scanned.
-func mediaPayloadAfterHeader(decoded []byte, capped bool) ([]byte, bool) {
+func mediaPayloadAfterHeader(decoded []byte) ([]byte, bool) {
 	if rest, ok := pngPayloadAfterIHDR(decoded); ok {
 		return rest, true
 	}
@@ -414,7 +420,7 @@ func mediaPayloadAfterHeader(decoded []byte, capped bool) ([]byte, bool) {
 			}
 		}
 	}
-	return ftypPayloadAfterBox(decoded, capped)
+	return ftypPayloadAfterBox(decoded)
 }
 
 func pngPayloadAfterIHDR(decoded []byte) ([]byte, bool) {
@@ -439,7 +445,7 @@ func jpegPayloadAfterSOI(decoded []byte) ([]byte, bool) {
 	return decoded[4:], true
 }
 
-func ftypPayloadAfterBox(decoded []byte, capped bool) ([]byte, bool) {
+func ftypPayloadAfterBox(decoded []byte) ([]byte, bool) {
 	// Same size floor as media.DetectType: a 32-bit box length must cover the
 	// 8-byte header plus "ftyp" contents. Cap the size so a huge field cannot
 	// hide trailing text inside a claimed box the prefix never contains.
@@ -450,18 +456,10 @@ func ftypPayloadAfterBox(decoded []byte, capped bool) ([]byte, bool) {
 	if size < 12 || size > maxFtypBoxSize {
 		return nil, false
 	}
-	// A box that extends past the decoded prefix cannot be validated. Treating
-	// it as opaque skipped a printable run sitting in the unread tail of the
-	// claimed box. Fail closed and scan.
 	if int(size) > len(decoded) {
 		return nil, false
 	}
 	if int(size) == len(decoded) {
-		// Equality on a capped prefix means the encoded value continues past
-		// the bytes we decoded. Trailing content after that prefix was skipped.
-		if capped {
-			return nil, false
-		}
 		return nil, true
 	}
 	return decoded[size:], true

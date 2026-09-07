@@ -907,9 +907,7 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 		{name: "binary media declared data url", in: "data:image/png;base64," + media, want: true},
 		{name: "binary media line wrapped", in: media[:32] + "\r\n" + media[32:], want: true},
 		{name: "binary media with terminal line ending", in: media + "\r\n", want: true},
-		{name: "binary media url alphabet", in: base64.RawURLEncoding.EncodeToString(append(
-			pngIHDRPrefix(),
-			[]byte(strings.Repeat("\xff\xfe\xfd\xfc", 8))...)), want: true},
+		{name: "binary media url alphabet", in: base64.RawURLEncoding.EncodeToString(pngIHDRPrefix()), want: true},
 		{name: "riff webp", in: base64.StdEncoding.EncodeToString(append(
 			[]byte("RIFF\x24\x00\x00\x00WEBPVP8 "),
 			[]byte(strings.Repeat("\x00\x01\x02\x03", 6))...)), want: true},
@@ -962,7 +960,10 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 		// Longer than the decode cap: the signature still sits in the prefix.
 		{name: "large media beyond the decode cap", in: base64.StdEncoding.EncodeToString(append(
 			pngIHDRPrefix(),
-			[]byte(strings.Repeat("\x01\x02\x03\x04", 400))...)), want: true},
+			[]byte(strings.Repeat("\x01\x02\x03\x04", 400))...)), want: false},
+		{name: "capped png prefix wrapping a credential", in: base64.StdEncoding.EncodeToString(append(
+			append(pngIHDRPrefix(), bytes.Repeat([]byte{0x01}, 16)...),
+			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

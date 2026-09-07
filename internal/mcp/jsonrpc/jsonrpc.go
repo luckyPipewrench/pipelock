@@ -9,6 +9,7 @@ package jsonrpc
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"regexp"
 	"sort"
@@ -40,9 +41,9 @@ type ContentBlock struct {
 }
 
 // ResourceContents is the content carried by an embedded MCP resource.
-// Blob data intentionally stays out of prompt scanning: it is opaque binary
-// content, while Text is rendered directly to the agent. Media policy handles
-// the Blob with its declared MimeType separately.
+// Text is always agent-visible. Blob is scanned unless the VALUE is an
+// encoded media payload; a field name alone does not make it opaque.
+// Media policy handles declared MimeType separately.
 type ResourceContents struct {
 	URI      string `json:"uri,omitempty"`
 	MimeType string `json:"mimeType,omitempty"`
@@ -177,18 +178,27 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 			if block.Resource != nil && block.Resource.Text != "" {
 				texts = append(texts, block.Resource.Text)
 			}
-			// resource_link metadata is also rendered to the agent. Keep URI and
-			// binary fields out of this text path; Name, Title, and Description
-			// are the human-facing fields an attacker could use as instructions.
+			// resource_link metadata is also rendered to the agent. Keep URI
+			// out of this text path; Name, Title, and Description are the
+			// human-facing fields an attacker could use as instructions.
 			for _, field := range []string{block.Name, block.Title, block.Description} {
 				if field != "" {
 					texts = append(texts, field)
 				}
 			}
+			// Typed data/blob/raw fields are opaque only when the VALUE is
+			// encoded media. A plaintext secret or instruction under
+			// content[].data must be scanned, same as structuredContent.
+			for _, field := range []string{block.Data, block.Blob, block.Raw} {
+				texts = appendVisibleMediaField(texts, field)
+			}
+			if block.Resource != nil {
+				texts = appendVisibleMediaField(texts, block.Resource.Blob)
+			}
 		}
 		// structuredContent is rendered to the agent alongside content blocks.
 		// Extract its text even when the typed content fast path succeeds, while
-		// excluding known opaque media fields such as data/blob/raw.
+		// skipping only value-shaped opaque media.
 		structured := ExtractVisibleStringsFromJSONResult(tr.StructuredContent)
 		if structured.Truncated {
 			return TextResult{Truncated: true}
@@ -273,6 +283,15 @@ func isOpaqueMCPMediaField(key string) bool {
 	}
 }
 
+// appendVisibleMediaField appends field when it is agent-visible text. Encoded
+// media payloads stay out of prompt and inbound DLP scanning.
+func appendVisibleMediaField(texts []string, field string) []string {
+	if field != "" && !isOpaqueMediaPayload(field) {
+		return append(texts, field)
+	}
+	return texts
+}
+
 // minOpaqueMediaPayloadLen is the shortest candidate considered at all. It only
 // needs to cover the longest signature below, so it bounds work rather than
 // standing in for a judgement about what media looks like.
@@ -285,22 +304,39 @@ const minOpaqueMediaPayloadLen = 16
 const maxOpaqueMediaDecodeChars = 64
 
 // mediaSignatures are leading byte sequences published by binary container
-// formats an MCP image, audio or resource-blob field can carry. Recognition is
-// positive and deliberately incomplete: an unlisted format is treated as
-// visible text and scanned, which costs scanning and never skips content. Only
-// signatures specific enough that ordinary text cannot produce them are listed,
-// so a two-byte printable prefix such as a bitmap's is deliberately absent.
+// formats an MCP image, audio or resource-blob field can carry. PNG and JPEG
+// are classified separately because a magic prefix alone is forgeable.
+// Recognition is positive and deliberately incomplete: an unlisted format is
+// treated as visible text and scanned, which costs scanning and never skips
+// content. Only signatures specific enough that ordinary text cannot produce
+// them are listed, so a two-byte printable prefix such as a bitmap's is
+// deliberately absent.
 var mediaSignatures = [][]byte{
-	{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, // PNG
-	{'G', 'I', 'F', '8', '7', 'a'},                // GIF87a
-	{'G', 'I', 'F', '8', '9', 'a'},                // GIF89a
-	{0xff, 0xd8, 0xff},                            // JPEG start of image
-	{'%', 'P', 'D', 'F', '-'},                     // PDF
-	{'O', 'g', 'g', 'S'},                          // Ogg
-	{'f', 'L', 'a', 'C'},                          // FLAC
-	{0x1a, 0x45, 0xdf, 0xa3},                      // Matroska and WebM
-	{0x1f, 0x8b},                                  // gzip
+	{'G', 'I', 'F', '8', '7', 'a'}, // GIF87a
+	{'G', 'I', 'F', '8', '9', 'a'}, // GIF89a
+	{'%', 'P', 'D', 'F', '-'},      // PDF
+	{'O', 'g', 'g', 'S'},           // Ogg
+	{'f', 'L', 'a', 'C'},           // FLAC
+	{0x1a, 0x45, 0xdf, 0xa3},       // Matroska and WebM
+	{0x1f, 0x8b},                   // gzip
 }
+
+var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+
+// pngIHDREnd is the offset after a canonical PNG signature and IHDR chunk
+// (8 + 4 length + 4 type + 13 data + 4 CRC). Real PNGs put IHDR here; a
+// magic prefix followed by text cannot.
+const pngIHDREnd = 33
+
+// minSmuggledTextRun is the shortest ASCII run after a media header that
+// means the payload is text wrapped in a forged container, not media. It
+// must fit in the bounded decode window after a PNG IHDR (48-33=15 bytes).
+const minSmuggledTextRun = 12
+
+// maxFtypBoxSize rejects an ISO-BMFF size field that cannot be a real ftyp
+// box. Brands plus the 8-byte header fit in tens of bytes; 256 is well above
+// any legitimate ftyp and still inside the decode prefix.
+const maxFtypBoxSize = 256
 
 // riffForms are the RIFF container forms carried as media. The four-character
 // form name sits at byte offset 8, after "RIFF" and the chunk size.
@@ -348,23 +384,92 @@ func isOpaqueMediaPayload(s string) bool {
 	return hasMediaSignature(decoded)
 }
 
-// hasMediaSignature reports whether decoded leading bytes begin with a
-// recognized media container signature.
+// hasMediaSignature reports whether decoded leading bytes are a recognized
+// media container, not a magic prefix wrapping agent-visible text.
 func hasMediaSignature(decoded []byte) bool {
+	rest, ok := mediaPayloadAfterHeader(decoded)
+	if !ok {
+		return false
+	}
+	return !hasPrintableASCIIRun(rest, minSmuggledTextRun)
+}
+
+// mediaPayloadAfterHeader reports the bytes after a validated media header.
+// Failure direction: a payload that does not prove its header is scanned.
+func mediaPayloadAfterHeader(decoded []byte) ([]byte, bool) {
+	if rest, ok := pngPayloadAfterIHDR(decoded); ok {
+		return rest, true
+	}
+	if rest, ok := jpegPayloadAfterSOI(decoded); ok {
+		return rest, true
+	}
 	for _, sig := range mediaSignatures {
 		if bytes.HasPrefix(decoded, sig) {
-			return true
+			return decoded[len(sig):], true
 		}
 	}
 	if bytes.HasPrefix(decoded, []byte("RIFF")) && len(decoded) >= 12 {
 		for _, form := range riffForms {
 			if bytes.Equal(decoded[8:12], form) {
-				return true
+				return decoded[12:], true
 			}
 		}
 	}
-	// ISO base media (MP4, M4A, and relatives) carry "ftyp" at offset 4.
-	return len(decoded) >= 8 && bytes.Equal(decoded[4:8], []byte("ftyp"))
+	return ftypPayloadAfterBox(decoded)
+}
+
+func pngPayloadAfterIHDR(decoded []byte) ([]byte, bool) {
+	if !bytes.HasPrefix(decoded, pngSignature) || len(decoded) < pngIHDREnd {
+		return nil, false
+	}
+	if binary.BigEndian.Uint32(decoded[8:12]) != 13 || string(decoded[12:16]) != "IHDR" {
+		return nil, false
+	}
+	return decoded[pngIHDREnd:], true
+}
+
+func jpegPayloadAfterSOI(decoded []byte) ([]byte, bool) {
+	// JPEG SOI plus the start of the next marker (FF <type>). Type must be a
+	// real segment code; ASCII such as 'I' from "Ignore..." is not.
+	if len(decoded) < 4 || decoded[0] != 0xff || decoded[1] != 0xd8 || decoded[2] != 0xff {
+		return nil, false
+	}
+	if decoded[3] < 0xc0 || decoded[3] > 0xfe {
+		return nil, false
+	}
+	return decoded[4:], true
+}
+
+func ftypPayloadAfterBox(decoded []byte) ([]byte, bool) {
+	// Same size floor as media.DetectType: a 32-bit box length must cover the
+	// 8-byte header plus "ftyp" contents. Cap the size so a huge field cannot
+	// hide trailing text inside a claimed box the prefix never contains.
+	if len(decoded) < 8 || !bytes.Equal(decoded[4:8], []byte("ftyp")) {
+		return nil, false
+	}
+	size := binary.BigEndian.Uint32(decoded[:4])
+	if size < 12 || size > maxFtypBoxSize {
+		return nil, false
+	}
+	if int(size) >= len(decoded) {
+		return nil, true
+	}
+	return decoded[size:], true
+}
+
+func hasPrintableASCIIRun(b []byte, n int) bool {
+	run := 0
+	for _, c := range b {
+		if c >= 0x20 && c <= 0x7e {
+			run++
+			if run >= n {
+				return true
+			}
+			continue
+		}
+		run = 0
+	}
+	return false
 }
 
 // base64DataURLPayload returns the payload of a data URL that explicitly
@@ -411,11 +516,7 @@ func isBase64MediaRun(s string) bool {
 // It reports false when the candidate cannot be decoded, so an unreadable value
 // is scanned as text instead of being skipped.
 func decodeMediaPrefix(payload string) ([]byte, bool) {
-	compact := strings.NewReplacer("\r", "", "\n", "").Replace(payload)
-	compact = strings.TrimRight(compact, "=")
-	if len(compact) > maxOpaqueMediaDecodeChars {
-		compact = compact[:maxOpaqueMediaDecodeChars]
-	}
+	compact := compactBase64Prefix(payload)
 	enc := base64.RawStdEncoding
 	if strings.ContainsAny(compact, "-_") {
 		enc = base64.RawURLEncoding
@@ -425,6 +526,22 @@ func decodeMediaPrefix(payload string) ([]byte, bool) {
 		return nil, false
 	}
 	return decoded, true
+}
+
+// compactBase64Prefix copies at most maxOpaqueMediaDecodeChars payload bits,
+// dropping MIME line wrapping as it goes, so a multi-megabyte attachment
+// never allocates a second full copy just to classify its first bytes.
+func compactBase64Prefix(payload string) string {
+	var b strings.Builder
+	b.Grow(maxOpaqueMediaDecodeChars)
+	for i := 0; i < len(payload) && b.Len() < maxOpaqueMediaDecodeChars; i++ {
+		c := payload[i]
+		if c == '\r' || c == '\n' {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return strings.TrimRight(b.String(), "=")
 }
 
 // jsonDepthTruncated reports whether raw JSON exceeds the recursive extraction

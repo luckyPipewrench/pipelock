@@ -40,7 +40,7 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 	// Windows shared between two canaries are a common stem, not a disclosure
 	// of either; they are excluded the same way as for environment secrets.
 	windows := buildKnownValueWindows(normalizedValues)
-	canonicalValues := make([]string, 0, len(out))
+	canonicalCount := make(map[string]int, len(out))
 	for i := range out {
 		out[i].partialWindows = windows[out[i].normalizedLower]
 		// URL-shaped originals stay whole-value-only after canonicalization.
@@ -49,10 +49,22 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 		if strings.Contains(out[i].normalizedLower, "://") || out[i].canonicalLower == "" {
 			continue
 		}
-		canonicalValues = append(canonicalValues, out[i].canonicalLower)
+		canonicalCount[out[i].canonicalLower]++
+	}
+	canonicalValues := make([]string, 0, len(canonicalCount))
+	for value, n := range canonicalCount {
+		if n == 1 {
+			canonicalValues = append(canonicalValues, value)
+		}
 	}
 	canonicalWindows := buildKnownValueWindows(canonicalValues)
 	for i := range out {
+		if strings.Contains(out[i].normalizedLower, "://") || out[i].canonicalLower == "" {
+			continue
+		}
+		if canonicalCount[out[i].canonicalLower] != 1 {
+			continue
+		}
 		out[i].canonicalPartialWindows = canonicalWindows[out[i].canonicalLower]
 	}
 	return out

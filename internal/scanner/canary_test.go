@@ -331,6 +331,52 @@ func TestScanTextForDLP_CanonicalCanaryKeepsURLAndSharedStemExclusions(t *testin
 	}
 }
 
+func TestScanTextForDLP_CanonicalCanaryCollisionDropsPartialWindows(t *testing.T) {
+	stem := "Q7vP2mK9xR4nT8wB6cD3"
+	hyphen := stem + "-fG1hJ5sL0zA"
+	underscore := stem + "_fG1hJ5sL0zA"
+
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{
+		{Name: "hyphen", Value: hyphen},
+		{Name: "underscore", Value: underscore},
+	}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	frag := (stem + "fG1hJ5sL0zA")[:20]
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+frag[:10]+"-"+frag[10:]); !r.Clean {
+		t.Fatalf("canonical -/_ collision must not partial-match, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "token is "+hyphen); r.Clean {
+		t.Fatal("whole hyphen canary must still match")
+	}
+	for _, tok := range compileCanaryTokens(cfg.CanaryTokens) {
+		if tok.canonicalPartialWindows != nil {
+			t.Fatalf("colliding canonical canary %q kept partial windows", tok.name)
+		}
+	}
+}
+
+func TestCompileCanaryTokens_URLTokenDoesNotInheritTwinWindows(t *testing.T) {
+	stem := "Q7vP2mK9xR4nT8wB6cD3"
+	urlCanary := "https://example.com/a/" + stem
+	cfg := config.CanaryTokens{
+		Enabled: true,
+		Tokens: []config.CanaryToken{
+			{Name: "url_canary", Value: urlCanary},
+			{Name: "url_canonical_twin", Value: canonicalizeCanaryText(urlCanary)},
+		},
+	}
+	for _, tok := range compileCanaryTokens(cfg) {
+		if strings.Contains(tok.normalizedLower, "://") && tok.canonicalPartialWindows != nil {
+			t.Fatalf("URL-shaped canary %q inherited canonical partial windows", tok.name)
+		}
+	}
+}
+
 // BenchmarkScanCanaryText_Clean measures the canary path on ordinary text with
 // canary tokens configured. benchConfig deliberately has none, so the existing
 // text-DLP benchmarks never enter this code.

@@ -204,6 +204,12 @@ func ceeDepsAccumulating(t *testing.T) *CEEDeps {
 // name per request, land each request in a fresh bucket, and spread a secret
 // across buckets so it never accumulated past the budget.
 func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
+	// sessionKey and auditSessionKey are deliberately DIFFERENT throughout, and
+	// each subtest varies exactly one of them. Passing the same value for both
+	// would let these subtests pass even if CEE were keyed on the audit key, so
+	// they would assert nothing about which key actually selects the bucket.
+	// Accumulation cases hold sessionKey fixed and vary the audit key; isolation
+	// cases hold the audit key fixed and vary sessionKey.
 	msg1 := []byte(makeRequest(1, "tools/list", nil))
 	msg2 := []byte(makeRequest(2, "resources/read", map[string]string{
 		"uri": "file:///etc/hosts",
@@ -211,7 +217,7 @@ func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
 
 	t.Run("one message stays under the budget", func(t *testing.T) {
 		opts := MCPProxyOpts{Scanner: testInputScanner(t), CEE: ceeDepsAccumulating(t)}
-		if d := scanHTTPInputDecision(msg1, io.Discard, "session-a", "session-a", opts); d.Blocked != nil {
+		if d := scanHTTPInputDecision(msg1, io.Discard, "session-a", "audit-1", opts); d.Blocked != nil {
 			t.Fatal("first message blocked on its own; the budget leaves no room to " +
 				"observe accumulation, so the assertions below would prove nothing")
 		}
@@ -220,8 +226,8 @@ func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
 	t.Run("same session accumulates", func(t *testing.T) {
 		opts := MCPProxyOpts{Scanner: testInputScanner(t), CEE: ceeDepsAccumulating(t)}
 
-		_ = scanHTTPInputDecision(msg1, io.Discard, "session-a", "session-a", opts)
-		second := scanHTTPInputDecision(msg2, io.Discard, "session-a", "session-a", opts)
+		_ = scanHTTPInputDecision(msg1, io.Discard, "session-a", "audit-1", opts)
+		second := scanHTTPInputDecision(msg2, io.Discard, "session-a", "audit-2", opts)
 
 		if second.Blocked == nil {
 			t.Fatal("second request on the same session was not CEE-blocked; " +
@@ -240,8 +246,8 @@ func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
 	t.Run("different sessions stay isolated", func(t *testing.T) {
 		opts := MCPProxyOpts{Scanner: testInputScanner(t), CEE: ceeDepsAccumulating(t)}
 
-		_ = scanHTTPInputDecision(msg1, io.Discard, "session-a", "session-a", opts)
-		other := scanHTTPInputDecision(msg2, io.Discard, "session-b", "session-b", opts)
+		_ = scanHTTPInputDecision(msg1, io.Discard, "session-a", "audit-shared", opts)
+		other := scanHTTPInputDecision(msg2, io.Discard, "session-b", "audit-shared", opts)
 
 		if other.Blocked != nil {
 			t.Fatal("a request on a different session inherited the first session's " +
@@ -272,8 +278,8 @@ func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
 			}
 			var logBuf bytes.Buffer
 
-			_ = scanHTTPInputDecision(warn1, &logBuf, "session-a", "session-a", opts)
-			second := scanHTTPInputDecision(warn2, &logBuf, "session-a", "session-a", opts)
+			_ = scanHTTPInputDecision(warn1, &logBuf, "session-a", "audit-1", opts)
+			second := scanHTTPInputDecision(warn2, &logBuf, "session-a", "audit-2", opts)
 
 			if !strings.Contains(logBuf.String(), "warning") {
 				t.Fatal("no content warning logged, so the warn branch never ran and " +
@@ -295,8 +301,8 @@ func TestMCPCEEKeyIsTheSessionKey(t *testing.T) {
 			}
 			var logBuf bytes.Buffer
 
-			_ = scanHTTPInputDecision(warn1, &logBuf, "session-a", "session-a", opts)
-			other := scanHTTPInputDecision(warn2, &logBuf, "session-b", "session-b", opts)
+			_ = scanHTTPInputDecision(warn1, &logBuf, "session-a", "audit-shared", opts)
+			other := scanHTTPInputDecision(warn2, &logBuf, "session-b", "audit-shared", opts)
 
 			if other.Blocked != nil {
 				t.Fatal("a warn-mode request on a different session inherited the first " +

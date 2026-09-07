@@ -1732,6 +1732,45 @@ func TestCheckSecretsInText_NoEnvSecrets(t *testing.T) {
 	}
 }
 
+func TestCheckSecretsInText_KnownSecretRepresentations(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	s := MustNew(cfg)
+	defer s.Close()
+
+	secret := strings.Join([]string{"Q7vP2mK9xR4nT8wB", "6cD3fG1hJ5sL0zA"}, "")
+	tests := []struct {
+		name        string
+		text        string
+		wantPartial int
+		wantEnc     string
+	}{
+		{name: "full", text: secret},
+		{name: "prefix", text: secret[:20], wantPartial: 20},
+		{name: "middle", text: secret[6:27], wantPartial: 21},
+		{name: "suffix", text: secret[len(secret)-20:], wantPartial: 20},
+		{name: "decimal_comma", text: decimalCharacterCodes(secret, ","), wantEnc: encodingDecimal},
+		{name: "decimal_space", text: decimalCharacterCodes(secret, " "), wantEnc: encodingDecimal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matches := s.checkSecretsInText([]string{secret}, tt.text, "Known Secret Leak", "")
+			if len(matches) != 1 {
+				t.Fatalf("matches=%+v, want one known-secret match", matches)
+			}
+			if matches[0].PatternName != "Known Secret Leak" {
+				t.Fatalf("pattern=%q must stay stable for suppression rules", matches[0].PatternName)
+			}
+			if matches[0].PartialLen != tt.wantPartial {
+				t.Fatalf("partial=%d, want %d", matches[0].PartialLen, tt.wantPartial)
+			}
+			if matches[0].Encoded != tt.wantEnc {
+				t.Fatalf("encoded=%q, want %q", matches[0].Encoded, tt.wantEnc)
+			}
+		})
+	}
+}
+
 func TestCheckSecretsInText_HexEncodedEnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
@@ -3888,5 +3927,43 @@ func TestScanTextForDLP_CredentialInURLGrammarFromPresetYAML(t *testing.T) {
 	}
 	if result := s.ScanTextForDLP(context.Background(), "token=abcdef123456"); result.Clean || !hasTextDLPMatch(result.Matches, "Credential in URL", "") {
 		t.Fatalf("preset-loaded pattern must still detect the adjacent form: %+v", result.Matches)
+	}
+}
+
+func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+
+	// Two secrets sharing a 20-byte stem: the stem alone is not a disclosure
+	// of either, while each unique tail still is.
+	stem := "Q7vP2mK9xR4nT8wB6cD3"
+	first := stem + "fG1hJ5sL0zAqW2eR"
+	second := stem + "9uY6tR3eW1qZ8xC7"
+	s.envSecrets = []string{first, second}
+
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+stem); !r.Clean {
+		t.Fatalf("shared stem alone must stay clean, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+first[len(first)-18:]); r.Clean || r.Matches[0].PartialLen != 18 {
+		t.Fatalf("unique tail of first secret must partial-match, got %+v", r)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+first); r.Clean || r.Matches[0].PartialLen != 0 {
+		t.Fatalf("whole first secret must match as a whole value, got %+v", r)
+	}
+
+	// A URL-shaped secret gets whole-value matching only: its scheme, host and
+	// path are a public stem that ordinary text may name.
+	// Built at runtime from parts so the test binary carries no URL-shaped credential literal.
+	dsn := strings.Join([]string{"postgres://app:", stem, "fG1hJ5sL0zA", "@db.internal.example:5432/prod"}, "")
+	s.envSecrets = []string{dsn}
+	if r := s.ScanTextForDLP(context.Background(), "connect to postgres://app:@db.internal.example:5432/prod first"); !r.Clean {
+		t.Fatalf("URL stem without the credential must stay clean, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "dsn is "+dsn); r.Clean {
+		t.Fatal("whole URL-shaped secret must still be detected")
+	}
+	if got := knownValueWindows(dsn); got != nil {
+		t.Fatalf("URL-shaped value must not get partial windows, got %d", len(got))
 	}
 }

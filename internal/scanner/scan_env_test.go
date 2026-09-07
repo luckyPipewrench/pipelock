@@ -46,6 +46,24 @@ func TestScan_EnvLeakDetection_RawValue(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_EnvLeakPartialValue(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+	secret := strings.Join([]string{"Q7vP2mK9xR4nT8wB", "6cD3fG1hJ5sL0zA"}, "")
+	t.Setenv("PIPELOCK_PARTIAL_SECRET", secret)
+	s := MustNew(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP(context.Background(), "checksum: "+secret[:20])
+	if result.Clean || len(result.Matches) != 1 {
+		t.Fatalf("partial environment value must be blocked, got %+v", result)
+	}
+	if result.Matches[0].PartialLen != 20 || result.Matches[0].PatternName != "Environment Variable Leak" || result.Matches[0].Encoded != "env" {
+		t.Fatalf("match=%+v, want partial environment leak attribution", result.Matches[0])
+	}
+}
+
 func TestScan_EnvLeakDetection_Base64Encoded(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true

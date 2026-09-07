@@ -15,6 +15,7 @@ type compiledCanaryToken struct {
 	name            string
 	normalizedLower string
 	canonicalLower  string
+	partialWindows  map[string][]int
 }
 
 func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
@@ -22,17 +23,24 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 		return nil
 	}
 	out := make([]compiledCanaryToken, 0, len(cfg.Tokens))
+	normalizedValues := make([]string, 0, len(cfg.Tokens))
 	for _, token := range cfg.Tokens {
 		normalized := strings.ToLower(normalize.ForDLP(token.Value))
 		if normalized == "" {
 			continue
 		}
-		canonical := strings.ToLower(canonicalizeCanaryText(normalized))
+		normalizedValues = append(normalizedValues, normalized)
 		out = append(out, compiledCanaryToken{
 			name:            token.Name,
 			normalizedLower: normalized,
-			canonicalLower:  canonical,
+			canonicalLower:  strings.ToLower(canonicalizeCanaryText(normalized)),
 		})
+	}
+	// Windows shared between two canaries are a common stem, not a disclosure
+	// of either; they are excluded the same way as for environment secrets.
+	windows := buildKnownValueWindows(normalizedValues)
+	for i := range out {
+		out[i].partialWindows = windows[out[i].normalizedLower]
 	}
 	return out
 }
@@ -55,6 +63,9 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, spanViewLabel("url_decoded", ViewDLPNormalized))...)
+	}
+	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
+		matches = append(matches, s.matchCanaryTokens(decoded, encodingHTML, false, spanViewLabel("html_decoded", ViewDLPNormalized))...)
 	}
 	if strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
@@ -132,6 +143,21 @@ func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool, input
 				PatternName: patternName,
 				Severity:    "critical",
 				Encoded:     encoding,
+				span:        newMatchSpan(start, end, viewLabel, patternName, "", ""),
+			})
+			continue
+		}
+		windows := token.partialWindows
+		if canonical {
+			windows = knownValueWindows(needle)
+		}
+		if start, end, length, _, ok := indexKnownValueSubstring(needle, windows, []spanTextView{{text: haystack, viewLabel: viewLabel}}); ok {
+			patternName := "Canary Token (" + token.name + ")"
+			matches = append(matches, TextDLPMatch{
+				PatternName: patternName,
+				Severity:    "critical",
+				Encoded:     encoding,
+				PartialLen:  length,
 				span:        newMatchSpan(start, end, viewLabel, patternName, "", ""),
 			})
 		}

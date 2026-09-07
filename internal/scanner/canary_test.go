@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -174,6 +175,76 @@ func TestScanTextForDLP_CanaryDisabled(t *testing.T) {
 		if strings.Contains(m.PatternName, "Canary Token") {
 			t.Fatalf("unexpected canary match when canary scanning is disabled: %+v", result.Matches)
 		}
+	}
+}
+
+func TestScanTextForDLP_CanaryPartialDisclosure(t *testing.T) {
+	const canary = "Q7vP2mK9xR4nT8wB6cD3fG1hJ5sL0zA"
+	cfg := testConfig()
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{{Name: "partial_canary", Value: canary}}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	htmlEntity := func(value string) string {
+		var b strings.Builder
+		for _, r := range value {
+			b.WriteString("&#")
+			b.WriteString(strconv.Itoa(int(r)))
+			b.WriteString(";")
+		}
+		return b.String()
+	}
+
+	tests := []struct {
+		name        string
+		text        string
+		wantClean   bool
+		wantPartial int
+	}{
+		{name: "full", text: canary},
+		{name: "prefix", text: "checksum: " + canary[:20], wantPartial: 20},
+		{name: "middle", text: "checksum: " + canary[6:27], wantPartial: 21},
+		{name: "suffix", text: "checksum: " + canary[len(canary)-20:], wantPartial: 20},
+		{name: "below_floor", text: "checksum: " + canary[:15], wantClean: true},
+		{name: "html_entity", text: htmlEntity(canary)},
+		{name: "unrelated_high_entropy", text: "checksum: mV4xJ9qR2sT7wK3p", wantClean: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean != tt.wantClean {
+				t.Fatalf("Clean = %t, want %t; matches=%+v", result.Clean, tt.wantClean, result.Matches)
+			}
+			if !tt.wantClean {
+				if result.Matches[0].PatternName != "Canary Token (partial_canary)" {
+					t.Fatalf("pattern=%q must stay stable for name-keyed consumers", result.Matches[0].PatternName)
+				}
+				if result.Matches[0].PartialLen != tt.wantPartial {
+					t.Fatalf("partial=%d, want %d; matches=%+v", result.Matches[0].PartialLen, tt.wantPartial, result.Matches)
+				}
+			}
+			if !tt.wantClean {
+				span := result.Matches[0].Span()
+				if !span.Valid() || span.ByteEnd-span.ByteStart < minKnownSecretSubstringLen {
+					t.Fatalf("partial canary span=%+v must retain the matched region", span)
+				}
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_LowEntropyCanaryPartialDisclosureIgnored(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{{Name: "low_entropy", Value: "passwordpasswordpasswordpassword"}}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP(context.Background(), "checksum: passwordpassword")
+	if !result.Clean {
+		t.Fatalf("low-entropy partial canary must remain clean, got %+v", result.Matches)
 	}
 }
 

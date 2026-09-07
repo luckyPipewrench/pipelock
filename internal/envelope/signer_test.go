@@ -259,7 +259,7 @@ func TestSignRequest_SignatureMergeFailureRestoresDigest(t *testing.T) {
 	if got := req.Header.Get("Content-Digest"); got != priorDigest {
 		t.Errorf("Content-Digest = %q, want %q", got, priorDigest)
 	}
-	if got := req.Header.Get("Signature-Input"); got != "" {
+	if got := req.Header.Values("Signature-Input"); len(got) != 0 {
 		t.Errorf("partial Signature-Input remained after failure: %q", got)
 	}
 	if got := req.Header.Get("Signature"); got != invalidSignature {

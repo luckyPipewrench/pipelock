@@ -331,11 +331,14 @@ func TestVerifyPacketBytes_BrowserBundlePath(t *testing.T) {
 		{name: "escaped duplicate key", field: `"\u0073chema_version":"unsupported",`, wantErr: "duplicate object key"},
 		{name: "unsafe positive number", field: `"numeric_probe":9007199254740992,`, wantErr: "exceeds cross-language exact range"},
 		{name: "unsafe negative number", field: `"numeric_probe":-9007199254740992,`, wantErr: "exceeds cross-language exact range"},
-		{name: "exact numeric boundary", field: `"numeric_probe":9007199254740991,`},
+		{name: "positive extension value at exact limit", field: `"numeric_probe":9007199254740991,`},
+		{name: "negative extension value at exact limit", field: `"numeric_probe":-9007199254740991,`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			// Preserve the real packet and receipt chain. Without the JSON guard,
 			// encoding/json keeps the later schema key and ignores numeric_probe.
+			// These extension values must pass through the raw-number guard before
+			// typed decoding ignores them: accept the limit, reject its neighbor.
 			mutated := []byte(strings.Replace(string(packetJSON), "{", "{"+tt.field, 1))
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, artifactPacketName), mutated, 0o600); err != nil {

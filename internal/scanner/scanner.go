@@ -203,26 +203,32 @@ func IsHostnameExfilResult(r Result) bool {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
-	core                       *compiledCoreScanner // immutable safety floor - always runs, no config knobs
-	allowlist                  []string
-	blocklist                  []string
-	dlpPatterns                []*compiledPattern
-	canaryTokens               []compiledCanaryToken
-	dlpPreFilter               *dlpPreFilter
-	entropyThreshold           float64
-	subdomainEntropyThreshold  float64
-	entropyMinLen              int
-	maxURLLength               int
-	internalCIDRs              []*net.IPNet
-	ipAllowlistCIDRs           []*net.IPNet // SSRF-exempt IP ranges (ssrf.ip_allowlist)
-	trustedDomains             []string     // SSRF-exempt domains (wildcard via MatchDomain)
-	destinationGrants          destination.GrantSet
-	rawAPIAllowlist            []string // full api_allowlist for SSRF hint generation (all modes)
-	rateLimiter                *RateLimiter
-	dataBudget                 *DataBudget
-	envSecrets                 []string // filtered high-entropy env var values
-	fileSecrets                []string // loaded from secrets_file config
-	minEnvSecretLen            int      // minimum env var length for leak detection
+	core                      *compiledCoreScanner // immutable safety floor - always runs, no config knobs
+	allowlist                 []string
+	blocklist                 []string
+	dlpPatterns               []*compiledPattern
+	canaryTokens              []compiledCanaryToken
+	dlpPreFilter              *dlpPreFilter
+	entropyThreshold          float64
+	subdomainEntropyThreshold float64
+	entropyMinLen             int
+	maxURLLength              int
+	internalCIDRs             []*net.IPNet
+	ipAllowlistCIDRs          []*net.IPNet // SSRF-exempt IP ranges (ssrf.ip_allowlist)
+	trustedDomains            []string     // SSRF-exempt domains (wildcard via MatchDomain)
+	destinationGrants         destination.GrantSet
+	rawAPIAllowlist           []string // full api_allowlist for SSRF hint generation (all modes)
+	rateLimiter               *RateLimiter
+	dataBudget                *DataBudget
+	envSecrets                []string // filtered high-entropy env var values
+	fileSecrets               []string // loaded from secrets_file config
+	// knownSecretWindows holds the partial-match windows for every configured
+	// env and file secret, keyed by the secret. It is built once here because
+	// the lists are fixed for a scanner's lifetime (a reload builds a new
+	// scanner), and rebuilding it per scan cost more than the scan itself once
+	// a host had a realistic number of high-entropy environment values.
+	knownSecretWindows         knownValueWindowSet
+	minEnvSecretLen            int // minimum env var length for leak detection
 	responsePatterns           []*compiledPattern
 	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
 	responseVowelFoldPatterns  []*compiledPattern // vowel-folded variants for confusable vowel attacks
@@ -526,6 +532,10 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 				cfg.DLP.SecretsFile)
 		}
 	}
+
+	// Build partial-match windows across both known-value lists together, so a
+	// stem shared by an env secret and a file secret is excluded from both.
+	s.knownSecretWindows = buildKnownValueWindows(s.envSecrets, s.fileSecrets)
 
 	// Compile response scanning patterns - must succeed since config.Validate checks these
 	if cfg.ResponseScanning.Enabled {
@@ -1964,11 +1974,12 @@ type decodedResult struct {
 
 // Encoding labels for decoded results.
 const (
-	encodingHex    = "hex"
-	encodingBase64 = "base64"
-	encodingBase32 = "base32"
-	encodingURL    = "url"
-	encodingHTML   = "html_entity"
+	encodingHex     = "hex"
+	encodingBase64  = "base64"
+	encodingBase32  = "base32"
+	encodingURL     = "url"
+	encodingHTML    = "html_entity"
+	encodingDecimal = "decimal_character_codes"
 )
 
 const (
@@ -2732,10 +2743,12 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 	}
 
 	for _, secret := range secrets {
-		if matched, enc, start, end, viewLabel := matchSecretEncodingSpan(secret, texts, lowerTexts); matched {
+		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], texts, lowerTexts); matched {
 			reason := reasonPrefix
-			if enc != "" {
-				reason += " (" + enc + "-encoded)"
+			if match.partialLen > 0 {
+				reason += fmt.Sprintf(" (partial %d)", match.partialLen)
+			} else if match.encoding != "" {
+				reason += " (" + match.encoding + "-encoded)"
 			}
 			return Result{
 				Allowed: false,
@@ -2780,6 +2793,201 @@ func indexAnyView(needle string, views []spanTextView) (int, int, string, bool) 
 		}
 	}
 	return 0, 0, "", false
+}
+
+// minKnownSecretSubstringLen is long enough that, at the 3-bit/character
+// entropy floor, a contiguous match carries at least 48 bits of evidence.
+// That keeps accidental matches unlikely while detecting meaningful disclosure.
+const minKnownSecretSubstringLen = 16
+
+type knownSecretMatch struct {
+	encoding   string
+	partialLen int
+}
+
+// knownValueWindows returns the fixed-size windows of one known value that are
+// eligible for partial matching, or nil when the value gets whole-value
+// matching only. A value is skipped when it is too short or when its own
+// entropy is below the leak floor. URL-shaped values skip public scheme, host,
+// and path stems; only credential-bearing parts (password, query, fragment,
+// and a high-entropy final path segment) are windowed.
+func knownValueWindows(value string) map[string][]int {
+	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
+		return nil
+	}
+	if strings.Contains(value, "://") {
+		return urlCredentialWindows(value)
+	}
+	return collectValueWindows(value, 0)
+}
+
+func urlCredentialWindows(value string) map[string][]int {
+	u, err := url.Parse(value)
+	if err != nil {
+		// Unparseable URL-shaped secrets still have to partial-match as a
+		// blob. Skipping them would hide a leaked token that happens to
+		// sit next to "://".
+		return collectValueWindows(value, 0)
+	}
+	var parts []string
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok && password != "" {
+			parts = append(parts, password)
+		}
+	}
+	for _, vs := range u.Query() {
+		parts = append(parts, vs...)
+	}
+	if u.Fragment != "" {
+		parts = append(parts, u.Fragment)
+	}
+	if path := strings.Trim(u.Path, "/"); path != "" {
+		for _, seg := range strings.Split(path, "/") {
+			if seg != "" {
+				parts = append(parts, seg)
+			}
+		}
+	}
+	out := make(map[string][]int)
+	for _, part := range parts {
+		if len(part) < minKnownSecretSubstringLen || ShannonEntropy(part) <= envLeakMinEntropy {
+			continue
+		}
+		idx, raw := locateURLPart(value, part)
+		if idx < 0 {
+			continue
+		}
+		for window, offsets := range collectValueWindows(part, idx) {
+			out[window] = append(out[window], offsets...)
+		}
+		if raw != part {
+			for window, offsets := range collectValueWindows(raw, idx) {
+				out[window] = append(out[window], offsets...)
+			}
+		}
+	}
+	return out
+}
+
+func locateURLPart(value, part string) (int, string) {
+	if i := strings.Index(value, part); i >= 0 {
+		return i, part
+	}
+	for _, enc := range []string{url.QueryEscape(part), url.PathEscape(part)} {
+		if enc == part {
+			continue
+		}
+		if i := strings.Index(value, enc); i >= 0 {
+			return i, enc
+		}
+	}
+	return -1, ""
+}
+
+func collectValueWindows(value string, base int) map[string][]int {
+	windows := make(map[string][]int, len(value)-minKnownSecretSubstringLen+1)
+	repeated := make(map[string]struct{})
+	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
+		window := value[start : start+minKnownSecretSubstringLen]
+		// The whole-value entropy floor does not protect a low-entropy prefix
+		// or a repeated 16-byte block inside an otherwise high-entropy secret.
+		if ShannonEntropy(window) <= envLeakMinEntropy {
+			continue
+		}
+		if _, seen := windows[window]; seen {
+			repeated[window] = struct{}{}
+			continue
+		}
+		windows[window] = []int{base + start}
+	}
+	for window := range repeated {
+		delete(windows, window)
+	}
+	return windows
+}
+
+// knownValueWindowSet holds, per known value, the windows unique to that value.
+type knownValueWindowSet map[string]map[string][]int
+
+// buildKnownValueWindows computes partial-match windows for every value across
+// the given lists and drops any window that appears in more than one distinct
+// value. Two secrets that share a sixteen-byte run share a structural stem (a
+// vendor prefix, an account path, a common template), and a stem is not a
+// disclosure of either secret; matching it would attribute one secret's text
+// to the other and would block text that only contains the shared part.
+func buildKnownValueWindows(lists ...[]string) knownValueWindowSet {
+	set := make(knownValueWindowSet)
+	owners := make(map[string]string) // window -> first value seen with it
+	shared := make(map[string]struct{})
+	for _, list := range lists {
+		for _, value := range list {
+			if _, done := set[value]; done {
+				continue
+			}
+			windows := knownValueWindows(value)
+			set[value] = windows
+			for window := range windows {
+				if owner, seen := owners[window]; seen && owner != value {
+					shared[window] = struct{}{}
+					continue
+				}
+				owners[window] = value
+			}
+		}
+	}
+	for _, windows := range set {
+		for window := range shared {
+			delete(windows, window)
+		}
+	}
+	return set
+}
+
+// indexKnownValueSubstring scans each candidate view once with fixed-size
+// windows, then extends only matching windows. It avoids constructing every
+// possible substring needle while retaining the longest contiguous disclosure.
+func indexKnownValueSubstring(value string, windows map[string][]int, views []spanTextView) (int, int, int, string, bool) {
+	if len(windows) == 0 {
+		return 0, 0, 0, "", false
+	}
+	bestLen := 0
+	bestStart, bestEnd := 0, 0
+	bestView := ""
+	for _, view := range views {
+		for textStart := 0; textStart <= len(view.text)-minKnownSecretSubstringLen; textStart++ {
+			for _, valueStart := range windows[view.text[textStart:textStart+minKnownSecretSubstringLen]] {
+				leftText, leftValue := textStart, valueStart
+				for leftText > 0 && leftValue > 0 && view.text[leftText-1] == value[leftValue-1] {
+					leftText--
+					leftValue--
+				}
+				rightText := textStart + minKnownSecretSubstringLen
+				rightValue := valueStart + minKnownSecretSubstringLen
+				for rightText < len(view.text) && rightValue < len(value) && view.text[rightText] == value[rightValue] {
+					rightText++
+					rightValue++
+				}
+				if length := rightText - leftText; length > bestLen {
+					bestLen, bestStart, bestEnd, bestView = length, leftText, rightText, view.viewLabel
+				}
+			}
+		}
+	}
+	if bestLen < minKnownSecretSubstringLen {
+		return 0, 0, 0, "", false
+	}
+	return bestStart, bestEnd, bestLen, bestView, true
+}
+
+func decimalCharacterCodes(value, separator string) string {
+	var b strings.Builder
+	for i, r := range value {
+		if i > 0 {
+			b.WriteString(separator)
+		}
+		b.WriteString(strconv.Itoa(int(r)))
+	}
+	return b.String()
 }
 
 func indexEncodedTokenView(needle string, views []spanTextView, kind encodedTokenKind) (int, int, string, bool) {
@@ -2876,29 +3084,35 @@ func indexHexTokenView(needle string, views []spanTextView) (int, int, string, b
 	return 0, 0, "", false
 }
 
-func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (bool, string, int, int, string) {
+// matchSecretEncodingSpan finds a known secret in the candidate views as a
+// whole value, as a contiguous partial disclosure using the caller-provided
+// windows (nil disables partial matching), or under a supported encoding.
+func matchSecretEncodingSpan(secret string, windows map[string][]int, texts, lowerTexts []spanTextView) (knownSecretMatch, int, int, string, bool) {
 	// Raw match.
 	if start, end, viewLabel, ok := indexAnyView(secret, texts); ok {
-		return true, "", start, end, viewLabel
+		return knownSecretMatch{}, start, end, viewLabel, true
+	}
+	if start, end, length, viewLabel, ok := indexKnownValueSubstring(secret, windows, texts); ok {
+		return knownSecretMatch{partialLen: length}, start, end, viewLabel, true
 	}
 
 	// Base64 standard (padded + unpadded).
 	b64Std := base64.StdEncoding.EncodeToString([]byte(secret))
 	b64StdNoPad := strings.TrimRight(b64Std, "=")
 	if start, end, viewLabel, ok := indexAnyView(b64Std, texts); ok {
-		return true, encodingBase64, start, end, viewLabel
+		return knownSecretMatch{encoding: encodingBase64}, start, end, viewLabel, true
 	}
 	if b64StdNoPad != b64Std {
 		if start, end, viewLabel, ok := indexAnyView(b64StdNoPad, texts); ok {
-			return true, encodingBase64, start, end, viewLabel
+			return knownSecretMatch{encoding: encodingBase64}, start, end, viewLabel, true
 		}
 	}
 	if start, end, viewLabel, ok := indexEncodedTokenView(b64Std, texts, encodedTokenBase64Std); ok {
-		return true, encodingBase64, start, end, viewLabel
+		return knownSecretMatch{encoding: encodingBase64}, start, end, viewLabel, true
 	}
 	if b64StdNoPad != b64Std {
 		if start, end, viewLabel, ok := indexEncodedTokenView(b64StdNoPad, texts, encodedTokenBase64Std); ok {
-			return true, encodingBase64, start, end, viewLabel
+			return knownSecretMatch{encoding: encodingBase64}, start, end, viewLabel, true
 		}
 	}
 
@@ -2907,29 +3121,29 @@ func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (b
 	b64URLNoPad := strings.TrimRight(b64URL, "=")
 	if b64URL != b64Std {
 		if start, end, viewLabel, ok := indexAnyView(b64URL, texts); ok {
-			return true, "base64url", start, end, viewLabel
+			return knownSecretMatch{encoding: "base64url"}, start, end, viewLabel, true
 		}
 	}
 	if b64URLNoPad != b64StdNoPad {
 		if start, end, viewLabel, ok := indexAnyView(b64URLNoPad, texts); ok {
-			return true, "base64url", start, end, viewLabel
+			return knownSecretMatch{encoding: "base64url"}, start, end, viewLabel, true
 		}
 	}
 	if b64URL != b64Std {
 		if start, end, viewLabel, ok := indexEncodedTokenView(b64URL, texts, encodedTokenBase64URL); ok {
-			return true, "base64url", start, end, viewLabel
+			return knownSecretMatch{encoding: "base64url"}, start, end, viewLabel, true
 		}
 	}
 	if b64URLNoPad != b64StdNoPad {
 		if start, end, viewLabel, ok := indexEncodedTokenView(b64URLNoPad, texts, encodedTokenBase64URL); ok {
-			return true, "base64url", start, end, viewLabel
+			return knownSecretMatch{encoding: "base64url"}, start, end, viewLabel, true
 		}
 	}
 
 	// Hex (case-insensitive via pre-lowered texts).
 	hexEnc := hex.EncodeToString([]byte(secret))
 	if start, end, viewLabel, ok := indexAnyView(hexEnc, lowerTexts); ok {
-		return true, encodingHex, start, end, viewLabel
+		return knownSecretMatch{encoding: encodingHex}, start, end, viewLabel, true
 	}
 
 	// Delimiter-separated hex variants for env/file secret detection.
@@ -2942,34 +3156,40 @@ func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (b
 	zxHex := hexBytePrefix(hexEnc, "0x")
 	for _, candidate := range []string{colonHex, spaceHex, hyphenHex, commaHex, bsxHex, zxHex} {
 		if start, end, viewLabel, ok := indexAnyView(candidate, lowerTexts); ok {
-			return true, encodingHex, start, end, viewLabel
+			return knownSecretMatch{encoding: encodingHex}, start, end, viewLabel, true
 		}
 	}
 	if start, end, viewLabel, ok := indexHexTokenView(hexEnc, lowerTexts); ok {
-		return true, encodingHex, start, end, viewLabel
+		return knownSecretMatch{encoding: encodingHex}, start, end, viewLabel, true
+	}
+
+	for _, candidate := range []string{decimalCharacterCodes(secret, ","), decimalCharacterCodes(secret, " ")} {
+		if start, end, viewLabel, ok := indexAnyView(candidate, texts); ok {
+			return knownSecretMatch{encoding: encodingDecimal}, start, end, viewLabel, true
+		}
 	}
 
 	// Base32 standard (padded + unpadded).
 	b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
 	b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
 	if start, end, viewLabel, ok := indexAnyView(b32Std, texts); ok {
-		return true, encodingBase32, start, end, viewLabel
+		return knownSecretMatch{encoding: encodingBase32}, start, end, viewLabel, true
 	}
 	if b32NoPad != b32Std {
 		if start, end, viewLabel, ok := indexAnyView(b32NoPad, texts); ok {
-			return true, encodingBase32, start, end, viewLabel
+			return knownSecretMatch{encoding: encodingBase32}, start, end, viewLabel, true
 		}
 	}
 	if start, end, viewLabel, ok := indexEncodedTokenView(b32Std, texts, encodedTokenBase32); ok {
-		return true, encodingBase32, start, end, viewLabel
+		return knownSecretMatch{encoding: encodingBase32}, start, end, viewLabel, true
 	}
 	if b32NoPad != b32Std {
 		if start, end, viewLabel, ok := indexEncodedTokenView(b32NoPad, texts, encodedTokenBase32); ok {
-			return true, encodingBase32, start, end, viewLabel
+			return knownSecretMatch{encoding: encodingBase32}, start, end, viewLabel, true
 		}
 	}
 
-	return false, "", 0, 0, ""
+	return knownSecretMatch{}, 0, 0, "", false
 }
 
 // nonSecretEnvNames lists environment variable names that are never secrets.

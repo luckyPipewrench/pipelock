@@ -288,7 +288,12 @@ type TextDLPMatch struct {
 	BundleVersion  string `json:"bundle_version,omitempty"`
 	Warn           bool   `json:"warn,omitempty"`            // true for warn-mode patterns (informational only)
 	ProviderOpaque bool   `json:"provider_opaque,omitempty"` // true when proxy scoped this match to trusted provider opaque ciphertext
-	span           MatchSpan
+	// PartialLen is the number of contiguous bytes of a known value (canary or
+	// environment/file secret) found when the whole value was absent. Zero
+	// means a whole-value match. It lives in its own field so PatternName stays
+	// stable for suppression rules and core-pattern checks that match by name.
+	PartialLen int `json:"partial_len,omitempty"`
+	span       MatchSpan
 }
 
 // Span returns retained coordinates for this match in the normalized scanner
@@ -900,12 +905,12 @@ func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encode
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 
 	for _, secret := range secrets {
-		if matched, enc, start, end, viewLabel := matchSecretEncodingSpan(secret, texts, lowerTexts); matched {
-			m := TextDLPMatch{PatternName: patternName, Severity: "critical"}
+		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], texts, lowerTexts); matched {
+			m := TextDLPMatch{PatternName: patternName, Severity: "critical", PartialLen: match.partialLen}
 			if encodedOverride != "" {
 				m.Encoded = encodedOverride
 			} else {
-				m.Encoded = enc
+				m.Encoded = match.encoding
 			}
 			m.span = newMatchSpan(start, end, viewLabel, patternName, "", "")
 			return []TextDLPMatch{m}

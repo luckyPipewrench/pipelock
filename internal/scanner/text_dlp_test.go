@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -1729,6 +1730,54 @@ func TestCheckSecretsInText_NoEnvSecrets(t *testing.T) {
 	matches := s.checkSecretsInText(nil, "some text with anything", "Environment Variable Leak", "env")
 	if len(matches) != 0 {
 		t.Errorf("expected no matches with empty envSecrets, got %d", len(matches))
+	}
+}
+
+func TestCheckSecretsInText_KnownSecretRepresentations(t *testing.T) {
+	secret := strings.Join([]string{"Q7vP2mK9xR4nT8wB", "6cD3fG1hJ5sL0zA"}, "")
+	// Configure the secret through the shipped secrets_file path, so the
+	// partial-match windows under test are the ones the scanner precomputes
+	// rather than a set assembled by the test.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.DLP.SecretsFile = path
+	s := MustNew(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name        string
+		text        string
+		wantPartial int
+		wantEnc     string
+	}{
+		{name: "full", text: secret},
+		{name: "prefix", text: secret[:20], wantPartial: 20},
+		{name: "middle", text: secret[6:27], wantPartial: 21},
+		{name: "suffix", text: secret[len(secret)-20:], wantPartial: 20},
+		{name: "decimal_comma", text: decimalCharacterCodes(secret, ","), wantEnc: encodingDecimal},
+		{name: "decimal_space", text: decimalCharacterCodes(secret, " "), wantEnc: encodingDecimal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matches := s.checkSecretsInText([]string{secret}, tt.text, "Known Secret Leak", "")
+			if len(matches) != 1 {
+				t.Fatalf("matches=%+v, want one known-secret match", matches)
+			}
+			if matches[0].PatternName != "Known Secret Leak" {
+				t.Fatalf("pattern=%q must stay stable for suppression rules", matches[0].PatternName)
+			}
+			if matches[0].PartialLen != tt.wantPartial {
+				t.Fatalf("partial=%d, want %d", matches[0].PartialLen, tt.wantPartial)
+			}
+			if matches[0].Encoded != tt.wantEnc {
+				t.Fatalf("encoded=%q, want %q", matches[0].Encoded, tt.wantEnc)
+			}
+		})
 	}
 }
 
@@ -3888,5 +3937,143 @@ func TestScanTextForDLP_CredentialInURLGrammarFromPresetYAML(t *testing.T) {
 	}
 	if result := s.ScanTextForDLP(context.Background(), "token=abcdef123456"); result.Clean || !hasTextDLPMatch(result.Matches, "Credential in URL", "") {
 		t.Fatalf("preset-loaded pattern must still detect the adjacent form: %+v", result.Matches)
+	}
+}
+
+func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
+	// Two secrets sharing a 20-byte stem: the stem alone is not a disclosure
+	// of either, while each unique tail still is. They are configured through
+	// the shipped secrets_file path so the test exercises the windows the
+	// scanner precomputes at construction, not a hand-built set.
+	stem := "Q7vP2mK9xR4nT8wB6cD3"
+	first := stem + "fG1hJ5sL0zAqW2eR"
+	second := stem + "9uY6tR3eW1qZ8xC7"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(first+"\n"+second+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := MustNew(cfg)
+	defer s.Close()
+
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+stem); !r.Clean {
+		t.Fatalf("shared stem alone must stay clean, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+first[len(first)-18:]); r.Clean || r.Matches[0].PartialLen != 18 {
+		t.Fatalf("unique tail of first secret must partial-match, got %+v", r)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+first); r.Clean || r.Matches[0].PartialLen != 0 {
+		t.Fatalf("whole first secret must match as a whole value, got %+v", r)
+	}
+
+	// A URL-shaped secret windows credential-bearing parts only. Scheme, host
+	// and public path stay unmatched. Built at runtime from parts so the test
+	// binary carries no URL-shaped credential literal.
+	dsn := strings.Join([]string{"postgres://app:", stem, "fG1hJ5sL0zA", "@db.internal.example:5432/prod"}, "")
+	dsnPath := filepath.Join(dir, "dsn.txt")
+	if err := os.WriteFile(dsnPath, []byte(dsn+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dsnCfg := testConfig()
+	dsnCfg.DLP.SecretsFile = dsnPath
+	dsnScanner := MustNew(dsnCfg)
+	defer dsnScanner.Close()
+
+	if r := dsnScanner.ScanTextForDLP(context.Background(), "connect to postgres://app:@db.internal.example:5432/prod first"); !r.Clean {
+		t.Fatalf("URL stem without the credential must stay clean, got %+v", r.Matches)
+	}
+	if r := dsnScanner.ScanTextForDLP(context.Background(), "dsn is "+dsn); r.Clean {
+		t.Fatal("whole URL-shaped secret must still be detected")
+	}
+	password := stem + "fG1hJ5sL0zA"
+	if got := knownValueWindows(dsn); len(got) == 0 {
+		t.Fatal("URL-shaped secret must window the password")
+	}
+	if r := dsnScanner.ScanTextForDLP(context.Background(), "checksum: "+password[:18]); r.Clean || r.Matches[0].PartialLen != 18 {
+		t.Fatalf("leaked DSN password must partial-match, got %+v", r)
+	}
+}
+
+func TestCheckSecretsInText_PartialMatchURLEncodedComponents(t *testing.T) {
+	// Derived at runtime so the PR never contains a high-entropy secret
+	// literal for GitGuardian to reconstruct from concatenations or bytes.
+	sum := sha256.Sum256([]byte(t.Name()))
+	token := hex.EncodeToString(sum[:10]) + "/" + hex.EncodeToString(sum[10:14])
+	escaped := url.QueryEscape(token)
+	if escaped == token {
+		t.Fatal("test token must contain a character that percent-encodes")
+	}
+
+	dir := t.TempDir()
+	writeSecret := func(name, value string) *Scanner {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := testConfig()
+		cfg.DLP.SecretsFile = path
+		s := MustNew(cfg)
+		t.Cleanup(s.Close)
+		return s
+	}
+
+	queryURL := "https://api.vendor.example/v1?token=" + escaped
+	qs := writeSecret("query.txt", queryURL)
+	if r := qs.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("decoded query token must partial-match, got %+v", r)
+	}
+	if r := qs.ScanTextForDLP(context.Background(), "checksum: "+escaped[:18]); r.Clean {
+		t.Fatalf("escaped query token must partial-match, got %+v", r)
+	}
+
+	pathURL := "https://api.vendor.example/hooks/" + url.PathEscape(token)
+	ps := writeSecret("path.txt", pathURL)
+	if r := ps.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("decoded path token must partial-match, got %+v", r)
+	}
+
+	fragURL := "https://api.vendor.example/v1#" + escaped
+	fs := writeSecret("frag.txt", fragURL)
+	if r := fs.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("decoded fragment token must partial-match, got %+v", r)
+	}
+
+	malformed := "http://[" + token
+	if _, err := url.Parse(malformed); err == nil {
+		t.Fatal("malformed fixture must fail url.Parse")
+	}
+	ms := writeSecret("malformed.txt", malformed)
+	if r := ms.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("unparseable URL-shaped secret must still partial-match, got %+v", r)
+	}
+}
+
+func TestCheckSecretsInText_PartialMatchSkipsLowEntropyWindows(t *testing.T) {
+	prefix := strings.Repeat("a", minKnownSecretSubstringLen)
+	tail := "Q7vP2mK9xR4nT8wB6cD3fG1hJ5sL0zAqW2eR9uY6tR3eW1qZ8xC7"
+	secret := prefix + tail
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := MustNew(cfg)
+	defer s.Close()
+
+	if r := s.ScanTextForDLP(context.Background(), "padding: "+prefix); !r.Clean {
+		t.Fatalf("low-entropy prefix window must stay clean, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+tail[:18]); r.Clean || r.Matches[0].PartialLen != 18 {
+		t.Fatalf("high-entropy tail must partial-match, got %+v", r)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "secret is "+secret); r.Clean {
+		t.Fatal("whole secret must still be detected")
 	}
 }

@@ -151,6 +151,144 @@ func TestResume_SameKeyValidTail_ResumesUnchanged(t *testing.T) {
 	}
 }
 
+// TestResume_EvidenceReadFailuresFailClosed verifies that a complete, valid
+// tail never permits resume to silently reset when earlier evidence cannot be
+// read or decoded. The recorder pointer is deliberately reused after Close:
+// resumeChain needs only its configured evidence root, and Emit must fail
+// before it attempts to write through the closed recorder.
+func TestResume_EvidenceReadFailuresFailClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr string
+		prepare func(t *testing.T, dir string)
+	}{
+		{
+			name:    "evidence root moved aside",
+			wantErr: "reading evidence directory:",
+			prepare: func(t *testing.T, dir string) {
+				t.Helper()
+				movedRoot := dir + ".unavailable"
+				if err := os.Rename(dir, movedRoot); err != nil {
+					t.Fatalf("move evidence root aside: %v", err)
+				}
+			},
+		},
+		{
+			name:    "malformed oldest shard with valid newer tail",
+			wantErr: "reading existing evidence file evidence-proxy-0.jsonl:",
+			prepare: func(t *testing.T, dir string) {
+				t.Helper()
+				moveEvidenceTailToNewerShard(t, dir)
+				malformedHead := filepath.Join(dir, "evidence-proxy-0.jsonl")
+				if err := os.WriteFile(malformedHead, []byte("not JSON\n"), 0o600); err != nil {
+					t.Fatalf("write malformed head shard: %v", err)
+				}
+			},
+		},
+		{
+			name:    "malformed oldest receipt detail with valid newer tail",
+			wantErr: "unmarshal existing receipt at seq 0:",
+			prepare: func(t *testing.T, dir string) {
+				t.Helper()
+				moveEvidenceTailToNewerShard(t, dir)
+				malformedHead := recorder.Entry{
+					Version:   recorder.EntryVersion,
+					Sequence:  0,
+					Timestamp: time.Now().UTC(),
+					SessionID: recorderSessionID,
+					Type:      recorderEntryType,
+					Transport: testTransport,
+					Summary:   "malformed receipt detail",
+					Detail:    map[string]string{"action_record": "not an object"},
+				}
+				data, err := json.Marshal(malformedHead)
+				if err != nil {
+					t.Fatalf("marshal malformed head entry: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), append(data, '\n'), 0o600); err != nil {
+					t.Fatalf("write malformed head shard: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "evidence")
+			pub, priv := generateTestKey(t)
+			rec := newTestRecorder(t, dir, priv)
+			e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
+			emitOne(t, e)
+			if err := rec.Close(); err != nil {
+				t.Fatalf("close recorder: %v", err)
+			}
+
+			control := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
+			if err := control.InitError(); err != nil {
+				t.Fatalf("valid evidence failed resume before mutation: %v", err)
+			}
+
+			tt.prepare(t, dir)
+			if tt.name != "evidence root moved aside" {
+				assertNewestReceiptIsReadable(t, filepath.Join(dir, "evidence-proxy-1.jsonl"), pub)
+			}
+
+			metrics := &stubMetrics{}
+			resumed := NewEmitter(EmitterConfig{
+				Recorder:  rec,
+				PrivKey:   priv,
+				Principal: testPrincipal,
+				Actor:     testActor,
+				Metrics:   metrics,
+			})
+			if err := resumed.InitError(); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("InitError = %v, want %q", err, tt.wantErr)
+			}
+			if err := resumed.Emit(EmitOpts{
+				ActionID:  NewActionID(),
+				Target:    testTarget,
+				Verdict:   config.ActionBlock,
+				Transport: testTransport,
+				Method:    http.MethodGet,
+			}); err == nil || !strings.Contains(err.Error(), "resume receipt chain:") {
+				t.Fatalf("Emit after evidence resume failure = %v, want chain-init error", err)
+			}
+			if got := metrics.snapshot(); len(got) != 1 || got[0] != FailReasonChainInit {
+				t.Errorf("emit failure reasons = %v, want [%q]", got, FailReasonChainInit)
+			}
+		})
+	}
+}
+
+func moveEvidenceTailToNewerShard(t *testing.T, dir string) {
+	t.Helper()
+	oldest := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	newest := filepath.Join(dir, "evidence-proxy-1.jsonl")
+	if err := os.Rename(oldest, newest); err != nil {
+		t.Fatalf("move valid evidence tail to newer shard: %v", err)
+	}
+}
+
+func assertNewestReceiptIsReadable(t *testing.T, path string, pub ed25519.PublicKey) {
+	t.Helper()
+	entry, found, err := recorder.FindLastEntry(path, func(entry recorder.Entry) bool {
+		return entry.Type == recorderEntryType
+	})
+	if err != nil {
+		t.Fatalf("read valid newer tail: %v", err)
+	}
+	if !found {
+		t.Fatal("valid newer shard has no action receipt")
+	}
+	r, err := receiptFromEntry(entry)
+	if err != nil {
+		t.Fatalf("decode valid newer tail: %v", err)
+	}
+	if err := VerifyWithKey(*r, hex.EncodeToString(pub)); err != nil {
+		t.Fatalf("verify valid newer tail: %v", err)
+	}
+}
+
 func TestResume_SelectsOldestHeadAndNewestTail(t *testing.T) {
 	dir := t.TempDir()
 	_, priv := generateTestKey(t)

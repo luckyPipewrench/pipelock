@@ -1733,12 +1733,21 @@ func TestCheckSecretsInText_NoEnvSecrets(t *testing.T) {
 }
 
 func TestCheckSecretsInText_KnownSecretRepresentations(t *testing.T) {
+	secret := strings.Join([]string{"Q7vP2mK9xR4nT8wB", "6cD3fG1hJ5sL0zA"}, "")
+	// Configure the secret through the shipped secrets_file path, so the
+	// partial-match windows under test are the ones the scanner precomputes
+	// rather than a set assembled by the test.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := testConfig()
 	cfg.DLP.Patterns = nil
+	cfg.DLP.SecretsFile = path
 	s := MustNew(cfg)
 	defer s.Close()
 
-	secret := strings.Join([]string{"Q7vP2mK9xR4nT8wB", "6cD3fG1hJ5sL0zA"}, "")
 	tests := []struct {
 		name        string
 		text        string
@@ -3931,16 +3940,23 @@ func TestScanTextForDLP_CredentialInURLGrammarFromPresetYAML(t *testing.T) {
 }
 
 func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
-	cfg := testConfig()
-	s := MustNew(cfg)
-	defer s.Close()
-
 	// Two secrets sharing a 20-byte stem: the stem alone is not a disclosure
-	// of either, while each unique tail still is.
+	// of either, while each unique tail still is. They are configured through
+	// the shipped secrets_file path so the test exercises the windows the
+	// scanner precomputes at construction, not a hand-built set.
 	stem := "Q7vP2mK9xR4nT8wB6cD3"
 	first := stem + "fG1hJ5sL0zAqW2eR"
 	second := stem + "9uY6tR3eW1qZ8xC7"
-	s.envSecrets = []string{first, second}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(first+"\n"+second+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := MustNew(cfg)
+	defer s.Close()
 
 	if r := s.ScanTextForDLP(context.Background(), "checksum: "+stem); !r.Clean {
 		t.Fatalf("shared stem alone must stay clean, got %+v", r.Matches)
@@ -3953,14 +3969,22 @@ func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
 	}
 
 	// A URL-shaped secret gets whole-value matching only: its scheme, host and
-	// path are a public stem that ordinary text may name.
-	// Built at runtime from parts so the test binary carries no URL-shaped credential literal.
+	// path are a public stem that ordinary text may name. Built at runtime from
+	// parts so the test binary carries no URL-shaped credential literal.
 	dsn := strings.Join([]string{"postgres://app:", stem, "fG1hJ5sL0zA", "@db.internal.example:5432/prod"}, "")
-	s.envSecrets = []string{dsn}
-	if r := s.ScanTextForDLP(context.Background(), "connect to postgres://app:@db.internal.example:5432/prod first"); !r.Clean {
+	dsnPath := filepath.Join(dir, "dsn.txt")
+	if err := os.WriteFile(dsnPath, []byte(dsn+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dsnCfg := testConfig()
+	dsnCfg.DLP.SecretsFile = dsnPath
+	dsnScanner := MustNew(dsnCfg)
+	defer dsnScanner.Close()
+
+	if r := dsnScanner.ScanTextForDLP(context.Background(), "connect to postgres://app:@db.internal.example:5432/prod first"); !r.Clean {
 		t.Fatalf("URL stem without the credential must stay clean, got %+v", r.Matches)
 	}
-	if r := s.ScanTextForDLP(context.Background(), "dsn is "+dsn); r.Clean {
+	if r := dsnScanner.ScanTextForDLP(context.Background(), "dsn is "+dsn); r.Clean {
 		t.Fatal("whole URL-shaped secret must still be detected")
 	}
 	if got := knownValueWindows(dsn); got != nil {

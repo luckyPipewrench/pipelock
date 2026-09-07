@@ -904,11 +904,8 @@ func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encode
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 
-	// Windows are built over every known value, not only this list, so a stem
-	// shared between an environment secret and a file secret is excluded.
-	windows := buildKnownValueWindows(s.envSecrets, s.fileSecrets, secrets)
 	for _, secret := range secrets {
-		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, windows[secret], texts, lowerTexts); matched {
+		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], texts, lowerTexts); matched {
 			m := TextDLPMatch{PatternName: patternName, Severity: "critical", PartialLen: match.partialLen}
 			if encodedOverride != "" {
 				m.Encoded = encodedOverride

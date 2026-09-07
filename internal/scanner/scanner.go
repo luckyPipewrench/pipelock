@@ -203,26 +203,32 @@ func IsHostnameExfilResult(r Result) bool {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
-	core                       *compiledCoreScanner // immutable safety floor - always runs, no config knobs
-	allowlist                  []string
-	blocklist                  []string
-	dlpPatterns                []*compiledPattern
-	canaryTokens               []compiledCanaryToken
-	dlpPreFilter               *dlpPreFilter
-	entropyThreshold           float64
-	subdomainEntropyThreshold  float64
-	entropyMinLen              int
-	maxURLLength               int
-	internalCIDRs              []*net.IPNet
-	ipAllowlistCIDRs           []*net.IPNet // SSRF-exempt IP ranges (ssrf.ip_allowlist)
-	trustedDomains             []string     // SSRF-exempt domains (wildcard via MatchDomain)
-	destinationGrants          destination.GrantSet
-	rawAPIAllowlist            []string // full api_allowlist for SSRF hint generation (all modes)
-	rateLimiter                *RateLimiter
-	dataBudget                 *DataBudget
-	envSecrets                 []string // filtered high-entropy env var values
-	fileSecrets                []string // loaded from secrets_file config
-	minEnvSecretLen            int      // minimum env var length for leak detection
+	core                      *compiledCoreScanner // immutable safety floor - always runs, no config knobs
+	allowlist                 []string
+	blocklist                 []string
+	dlpPatterns               []*compiledPattern
+	canaryTokens              []compiledCanaryToken
+	dlpPreFilter              *dlpPreFilter
+	entropyThreshold          float64
+	subdomainEntropyThreshold float64
+	entropyMinLen             int
+	maxURLLength              int
+	internalCIDRs             []*net.IPNet
+	ipAllowlistCIDRs          []*net.IPNet // SSRF-exempt IP ranges (ssrf.ip_allowlist)
+	trustedDomains            []string     // SSRF-exempt domains (wildcard via MatchDomain)
+	destinationGrants         destination.GrantSet
+	rawAPIAllowlist           []string // full api_allowlist for SSRF hint generation (all modes)
+	rateLimiter               *RateLimiter
+	dataBudget                *DataBudget
+	envSecrets                []string // filtered high-entropy env var values
+	fileSecrets               []string // loaded from secrets_file config
+	// knownSecretWindows holds the partial-match windows for every configured
+	// env and file secret, keyed by the secret. It is built once here because
+	// the lists are fixed for a scanner's lifetime (a reload builds a new
+	// scanner), and rebuilding it per scan cost more than the scan itself once
+	// a host had a realistic number of high-entropy environment values.
+	knownSecretWindows         knownValueWindowSet
+	minEnvSecretLen            int // minimum env var length for leak detection
 	responsePatterns           []*compiledPattern
 	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
 	responseVowelFoldPatterns  []*compiledPattern // vowel-folded variants for confusable vowel attacks
@@ -526,6 +532,10 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 				cfg.DLP.SecretsFile)
 		}
 	}
+
+	// Build partial-match windows across both known-value lists together, so a
+	// stem shared by an env secret and a file secret is excluded from both.
+	s.knownSecretWindows = buildKnownValueWindows(s.envSecrets, s.fileSecrets)
 
 	// Compile response scanning patterns - must succeed since config.Validate checks these
 	if cfg.ResponseScanning.Enabled {
@@ -2732,9 +2742,8 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		{text: strings.ToLower(decodedURL), viewLabel: lowerViewLabel("control_stripped_url:url_decoded")},
 	}
 
-	windows := buildKnownValueWindows(s.envSecrets, s.fileSecrets)
 	for _, secret := range secrets {
-		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, windows[secret], texts, lowerTexts); matched {
+		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], texts, lowerTexts); matched {
 			reason := reasonPrefix
 			if match.partialLen > 0 {
 				reason += fmt.Sprintf(" (partial %d)", match.partialLen)

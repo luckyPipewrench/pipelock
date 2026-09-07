@@ -174,14 +174,14 @@ func TestResume_EvidenceReadFailuresFailClosed(t *testing.T) {
 			},
 		},
 		{
-			name:    "broken oldest shard with valid newer tail",
+			name:    "malformed oldest shard with valid newer tail",
 			wantErr: "reading existing evidence file evidence-proxy-0.jsonl:",
 			prepare: func(t *testing.T, dir string) {
 				t.Helper()
 				moveEvidenceTailToNewerShard(t, dir)
-				brokenHead := filepath.Join(dir, "evidence-proxy-0.jsonl")
-				if err := os.Symlink(filepath.Join(dir, "missing.jsonl"), brokenHead); err != nil {
-					t.Skipf("symlink unavailable: %v", err)
+				malformedHead := filepath.Join(dir, "evidence-proxy-0.jsonl")
+				if err := os.WriteFile(malformedHead, []byte("not JSON\n"), 0o600); err != nil {
+					t.Fatalf("write malformed head shard: %v", err)
 				}
 			},
 		},
@@ -199,7 +199,7 @@ func TestResume_EvidenceReadFailuresFailClosed(t *testing.T) {
 					Type:      recorderEntryType,
 					Transport: testTransport,
 					Summary:   "malformed receipt detail",
-					Detail:    map[string]string{"not": "a receipt"},
+					Detail:    map[string]string{"action_record": "not an object"},
 				}
 				data, err := json.Marshal(malformedHead)
 				if err != nil {
@@ -214,7 +214,7 @@ func TestResume_EvidenceReadFailuresFailClosed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := filepath.Join(t.TempDir(), "evidence")
 			pub, priv := generateTestKey(t)
 			rec := newTestRecorder(t, dir, priv)
 			e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, Principal: testPrincipal, Actor: testActor})

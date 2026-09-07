@@ -402,3 +402,119 @@ func legacyManagedBlockWithHandles(first int) string {
 func itoa(value int) string {
 	return strconv.Itoa(value)
 }
+
+// The reconciler talks to nft and the filesystem through injected seams, so its
+// error paths are only exercised when each seam is made to fail on purpose.
+// These cover the branches that report a cause rather than returning a verdict:
+// a caller acting on a wrong cause is as stuck as one acting on none.
+func TestReloadNFTRulesReportsCauseForEachFailingSeam(t *testing.T) {
+	t.Parallel()
+	rules := renderNFTRules(1000, 967, 966, 8888, defaultNFTTable, defaultNFTChain)
+	baseEnv := func() *nftReloadEnv {
+		return &nftReloadEnv{
+			nftPath:    "nft",
+			rulesPath:  "/managed/50-pipelock-containment.nft",
+			table:      defaultNFTTable,
+			chain:      defaultNFTChain,
+			readFile:   func(string) ([]byte, error) { return []byte(rules), nil },
+			writeFile:  func(string, []byte, os.FileMode) error { return nil },
+			removeFile: func(string) error { return nil },
+		}
+	}
+
+	t.Run("unparseable header", func(t *testing.T) {
+		env := baseEnv()
+		// A header naming a non-numeric uid cannot yield the identities the
+		// reconciler matches on, so it must refuse rather than guess them.
+		env.readFile = func(string) ([]byte, error) {
+			return []byte("# operator=notanumber pipelock-proxy=967 pipelock-agent=966 proxy-port=8888\n"), nil
+		}
+		err := reloadNFTRules(context.Background(), env)
+		if err == nil {
+			t.Fatal("error = nil, want a refusal for an unparseable managed header")
+		}
+	})
+
+	t.Run("list invocation error", func(t *testing.T) {
+		env := baseEnv()
+		env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return "", -1, errors.New("nft binary missing")
+		}
+		err := reloadNFTRules(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "list nft managed chain") {
+			t.Fatalf("error = %v, want the list invocation cause", err)
+		}
+	})
+
+	t.Run("validation invocation error", func(t *testing.T) {
+		env := baseEnv()
+		env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
+			joined := strings.Join(args, " ")
+			if strings.HasPrefix(joined, "-n -a list") {
+				return "No such file or directory", 1, nil
+			}
+			return "", -1, errors.New("nft check crashed")
+		}
+		err := reloadNFTRules(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "validate nft managed chain reload") {
+			t.Fatalf("error = %v, want the validation invocation cause", err)
+		}
+	})
+
+	t.Run("apply invocation error", func(t *testing.T) {
+		env := baseEnv()
+		env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.HasPrefix(joined, "-n -a list"):
+				return "No such file or directory", 1, nil
+			case strings.HasPrefix(joined, "-c -f"):
+				return "", 0, nil
+			default:
+				return "", -1, errors.New("nft apply crashed")
+			}
+		}
+		err := reloadNFTRules(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "reload nft managed chain") {
+			t.Fatalf("error = %v, want the apply invocation cause", err)
+		}
+	})
+}
+
+// A listing line whose handle is not a number must be skipped rather than
+// deleted. Guessing a handle here would delete an unrelated rule, which is the
+// failure this reconciler exists to avoid.
+func TestLegacyManagedNFTRuleBlockHandlesSkipsUnparseableHandle(t *testing.T) {
+	t.Parallel()
+	listing := `table inet pipelock_containment {
+	chain output_filter {
+		type filter hook output priority filter; policy accept;
+		meta skuid 1000 accept # handle notanumber
+		meta skuid 967 accept # handle notanumber
+		meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle notanumber
+		meta skuid 966 udp dport 53 counter log prefix "pipelock-contain class=direct_dns_blocked " drop # handle notanumber
+		meta skuid 966 tcp dport 53 counter log prefix "pipelock-contain class=direct_dns_blocked " drop # handle notanumber
+		meta skuid 966 counter log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle notanumber
+	}
+}`
+	if got := legacyManagedNFTRuleBlockHandles(listing, 1000, 967, 966, 8888); len(got) != 0 {
+		t.Fatalf("handles = %v, want none when every handle is unparseable", got)
+	}
+}
+
+// The DNS-block matcher reads fixed positions, so a line shorter than the
+// prefix it compares must be rejected before indexing rather than panicking,
+// and a line of the right length with the wrong values must still be rejected.
+func TestLineHasManagedDNSDropRejectsShortAndMismatchedLines(t *testing.T) {
+	t.Parallel()
+	for name, line := range map[string]string{
+		"too short":      "meta skuid 966 udp dport 53",
+		"wrong protocol": "meta skuid 966 sctp dport 53 counter log prefix \"x \" drop",
+		"wrong uid":      "meta skuid 999 udp dport 53 counter log prefix \"x \" drop",
+		"wrong port":     "meta skuid 966 udp dport 8888 counter log prefix \"x \" drop",
+	} {
+		if lineHasManagedDNSDrop(line, 966, "udp") {
+			t.Fatalf("%s: line %q matched the managed DNS drop rule", name, line)
+		}
+	}
+}

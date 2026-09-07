@@ -2443,7 +2443,7 @@ func TestWatcher_ArmUnreadableSubtreeFailsClosedUnlessIgnored(t *testing.T) {
 			}
 		})
 	}
-	coverage := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	coverage := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
 	if coverage.FailureCount != 1 || len(coverage.Failures) != 1 || coverage.Failures[0].Path != blocked {
 		t.Fatalf("CheckCoverage unreadable subtree = %#v, want blocked subtree", coverage)
 	}
@@ -2451,7 +2451,7 @@ func TestWatcher_ArmUnreadableSubtreeFailsClosedUnlessIgnored(t *testing.T) {
 
 func TestCheckCoverageDoesNotInstallWatchesAndReportsRoot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
-	report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing}}})
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing}}})
 	if report.FailureCount != 1 || len(report.Failures) != 1 {
 		t.Fatalf("CheckCoverage report = %#v, want one failure", report)
 	}
@@ -2461,8 +2461,8 @@ func TestCheckCoverageDoesNotInstallWatchesAndReportsRoot(t *testing.T) {
 }
 
 func TestCheckCoverageNilAndBoundedFailures(t *testing.T) {
-	if report := CheckCoverage(nil); report.FailureCount != 1 || len(report.Failures) != 1 || report.Failures[0].Error != "file_sentry configuration is unavailable" {
-		t.Fatalf("CheckCoverage(nil) = %#v, want unavailable configuration failure", report)
+	if report := CheckCoverage(context.Background(), nil); report.FailureCount != 1 || len(report.Failures) != 1 || report.Failures[0].Error != "file_sentry configuration is unavailable" {
+		t.Fatalf("CheckCoverage(context.Background(), nil) = %#v, want unavailable configuration failure", report)
 	}
 
 	base := t.TempDir()
@@ -2470,12 +2470,12 @@ func TestCheckCoverageNilAndBoundedFailures(t *testing.T) {
 	for i := range maxArmDiagnosticSamples + 1 {
 		watchPaths = append(watchPaths, config.WatchPath{Path: filepath.Join(base, fmt.Sprintf("missing-%d", i))})
 	}
-	report := CheckCoverage(&config.FileSentry{WatchPaths: watchPaths})
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: watchPaths})
 	if report.FailureCount != maxArmDiagnosticSamples+1 || len(report.Failures) != maxArmDiagnosticSamples {
 		t.Fatalf("CheckCoverage bounded report = %#v, want count=%d samples=%d", report, maxArmDiagnosticSamples+1, maxArmDiagnosticSamples)
 	}
 
-	if report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: base}}}); report.FailureCount != 0 {
+	if report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: base}}}); report.FailureCount != 0 {
 		t.Fatalf("CheckCoverage accessible root = %#v, want no failures", report)
 	}
 	fileRoot := filepath.Join(base, "not-a-directory")
@@ -2487,8 +2487,8 @@ func TestCheckCoverageNilAndBoundedFailures(t *testing.T) {
 		t.Skipf("Symlink root fixture: %v", err)
 	}
 	for _, path := range []string{fileRoot, linkRoot} {
-		if report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: path}}}); report.FailureCount != 1 {
-			t.Fatalf("CheckCoverage(%q) = %#v, want one rejected root", path, report)
+		if report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: path}}}); report.FailureCount != 1 {
+			t.Fatalf("CheckCoverage(context.Background(), %q) = %#v, want one rejected root", path, report)
 		}
 	}
 
@@ -2504,7 +2504,7 @@ func TestCheckCoverageNilAndBoundedFailures(t *testing.T) {
 		t.Fatalf("Remove working directory: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldWD) })
-	if report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: "relative"}}}); report.FailureCount != 1 || len(report.Failures) != 1 {
+	if report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: "relative"}}}); report.FailureCount != 1 || len(report.Failures) != 1 {
 		t.Fatalf("CheckCoverage unresolved relative root = %#v, want one failure", report)
 	}
 }
@@ -2946,7 +2946,7 @@ func TestCheckCoverage_AllRootsIgnoredReportsNoWatchablePaths(t *testing.T) {
 		WatchPaths:     []config.WatchPath{{Path: root}},
 		IgnorePatterns: []string{filepath.Base(root)},
 	}
-	report := CheckCoverage(cfg)
+	report := CheckCoverage(context.Background(), cfg)
 	if report.FailureCount != 0 {
 		t.Fatalf("FailureCount = %d, want 0; an ignored root is not a failure", report.FailureCount)
 	}
@@ -2965,7 +2965,7 @@ func TestCheckCoverage_ReachableRootCountsWatchablePaths(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "child"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
 	if report.FailureCount != 0 || report.NoWatchablePaths() {
 		t.Fatalf("report = %+v, want a clean reachable result", report)
 	}
@@ -2979,11 +2979,36 @@ func TestCheckCoverage_ReachableRootCountsWatchablePaths(t *testing.T) {
 // when the absolute form cannot be resolved.
 func TestCheckCoverage_CarriesRequiredFlag(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent")
-	report := CheckCoverage(&config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing, Required: true}}})
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing, Required: true}}})
 	if len(report.Failures) != 1 {
 		t.Fatalf("Failures = %+v, want one", report.Failures)
 	}
 	if !report.Failures[0].Required {
 		t.Fatal("Required = false on a failure from a required root")
+	}
+}
+
+// TestCheckCoverage_CancelledContextTruncates proves the walk honours
+// cancellation and reports the result as a lower bound rather than as coverage.
+// An unbounded diagnostic on a huge tree or a slow mount is what this prevents.
+func TestCheckCoverage_CancelledContextTruncates(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report := CheckCoverage(ctx, &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	if !report.Truncated {
+		t.Fatalf("report = %+v, want Truncated on a cancelled walk", report)
+	}
+	if report.FailureCount != 0 {
+		t.Fatalf("FailureCount = %d, want 0; a cancellation is not a coverage failure", report.FailureCount)
+	}
+	// A truncated walk must not present as the no-watchable-paths verdict
+	// either, since it never finished looking.
+	if report.NoWatchablePaths() {
+		t.Fatal("NoWatchablePaths() = true on a cancelled walk; truncation is not proof of absence")
 	}
 }

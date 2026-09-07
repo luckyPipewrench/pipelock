@@ -992,3 +992,62 @@ func TestCheckDoctorFileSentryRequiredFailureOmitsBestEffortRemedy(t *testing.T)
 		t.Fatalf("next = %q, must not offer best_effort for a required-root failure", check.Next)
 	}
 }
+
+// TestFileSentryCoverageVerdict covers every branch of the report-to-verdict
+// mapping from report values, including the states a real filesystem cannot be
+// made to produce on demand.
+func TestFileSentryCoverageVerdict(t *testing.T) {
+	base := doctorReportCheck{Name: "file_sentry", Surface: doctorSurfaceMCP, Configured: true}
+	strict := config.Defaults()
+	strict.FileSentry.Enabled = true
+	strict.FileSentry.WatchPaths = []config.WatchPath{{Path: "/srv/work"}}
+	bestEffort := config.Defaults()
+	bestEffort.FileSentry.Enabled = true
+	bestEffort.FileSentry.BestEffort = true
+	bestEffort.FileSentry.WatchPaths = []config.WatchPath{{Path: "/srv/work"}}
+
+	optional := filesentry.CoverageReport{
+		Failures:     []filesentry.CoverageFailure{{Path: "/srv/work/blocked", Root: "/srv/work", Error: "permission denied"}},
+		FailureCount: 1, WatchablePaths: 3,
+	}
+	required := filesentry.CoverageReport{
+		Failures:     []filesentry.CoverageFailure{{Path: "/srv/work", Root: "/srv/work", Required: true, Error: "permission denied"}},
+		FailureCount: 1, WatchablePaths: 0,
+	}
+
+	tests := []struct {
+		name       string
+		cfg        *config.Config
+		report     filesentry.CoverageReport
+		wantStatus string
+		wantDetail string
+		denyNext   string
+	}{
+		{name: "strict failure", cfg: strict, report: optional, wantStatus: doctorStatusFail, wantDetail: "inaccessible subtree"},
+		{name: "best effort warns", cfg: bestEffort, report: optional, wantStatus: doctorStatusWarn, wantDetail: "inaccessible subtree"},
+		{name: "required fails under best effort", cfg: bestEffort, report: required, wantStatus: doctorStatusFail, wantDetail: "inaccessible subtree", denyNext: "best_effort"},
+		{name: "ignored away", cfg: strict, report: filesentry.CoverageReport{}, wantStatus: doctorStatusFail, wantDetail: "nothing to watch", denyNext: "best_effort"},
+		{name: "truncated warns", cfg: strict, report: filesentry.CoverageReport{Truncated: true, WatchablePaths: 5}, wantStatus: doctorStatusWarn, wantDetail: "unvisited remainder"},
+		{name: "clean", cfg: strict, report: filesentry.CoverageReport{WatchablePaths: 5}, wantStatus: doctorStatusOK, wantDetail: "still unproven"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fileSentryCoverageVerdict(base, tt.cfg, tt.report, "svc")
+			if got.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q; check=%+v", got.Status, tt.wantStatus, got)
+			}
+			if !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("detail = %q, want substring %q", got.Detail, tt.wantDetail)
+			}
+			if !strings.Contains(got.Detail, "svc") {
+				t.Fatalf("detail = %q, want the checked user named", got.Detail)
+			}
+			if tt.denyNext != "" && strings.Contains(got.Next, tt.denyNext) {
+				t.Fatalf("next = %q, must not offer %q for this failure", got.Next, tt.denyNext)
+			}
+			if got.Enforcing {
+				t.Fatalf("check=%+v, a traversal preflight must never claim enforcement", got)
+			}
+		})
+	}
+}

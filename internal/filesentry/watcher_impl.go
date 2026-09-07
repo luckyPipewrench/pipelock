@@ -142,11 +142,16 @@ type CoverageReport struct {
 	Truncated bool
 }
 
-// NoWatchablePaths reports the state where traversal found nothing to watch and
-// recorded no failure explaining why. Arming fails closed here regardless of
-// best_effort, so a coverage preflight must not report this as healthy.
+// NoWatchablePaths reports the state where a COMPLETE traversal found nothing
+// to watch and recorded no failure explaining why. Arming fails closed here
+// regardless of best_effort, so a coverage preflight must not report it healthy.
+//
+// A truncated walk is excluded deliberately. It stopped before it finished
+// looking, so zero watchable paths is ignorance rather than absence, and
+// reporting the ignored-away verdict from it would state a cause that was never
+// established.
 func (r CoverageReport) NoWatchablePaths() bool {
-	return r.WatchablePaths == 0 && r.FailureCount == 0
+	return !r.Truncated && r.WatchablePaths == 0 && r.FailureCount == 0
 }
 
 func (r recursiveAddResult) err() error {
@@ -472,9 +477,10 @@ var errCoverageWalkBudget = errors.New("coverage walk entry budget exhausted")
 // watches. It is an ACCESS AND TRAVERSAL preflight: it reports permission and
 // path failures visible to the calling user, and because it installs nothing it
 // cannot see a failure that only appears when a watch is really registered,
-// such as inotify descriptor exhaustion. Traversal is bounded; see
-// maxCoverageWalkEntries.
-func CheckCoverage(cfg *config.FileSentry) CoverageReport {
+// such as inotify descriptor exhaustion. Traversal honours ctx cancellation and
+// is bounded by maxCoverageWalkEntries; either stop sets Truncated so a partial
+// scan is never read as proof of coverage.
+func CheckCoverage(ctx context.Context, cfg *config.FileSentry) CoverageReport {
 	if cfg == nil {
 		return CoverageReport{Failures: []CoverageFailure{{Error: "file_sentry configuration is unavailable"}}, FailureCount: 1}
 	}
@@ -492,6 +498,12 @@ func CheckCoverage(cfg *config.FileSentry) CoverageReport {
 		result := addRecursiveDetailed(root,
 			func(path string) bool { return isIgnored(cfg.IgnorePatterns, path) },
 			func(string) (bool, error) {
+				// Cancellation and the entry budget share one stop path, so a
+				// caller that gives up and a tree too large to walk produce the
+				// same honest answer: the scan is a lower bound, not coverage.
+				if ctx.Err() != nil {
+					return false, errCoverageWalkBudget
+				}
 				visited++
 				if visited > budget {
 					return false, errCoverageWalkBudget

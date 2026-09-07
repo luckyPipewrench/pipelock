@@ -4,6 +4,7 @@
 package diag
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -603,11 +604,18 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 		check.Detail = "enabled but no watch_paths are configured; coverage preflight could not run"
 		return check
 	}
-	coverage := filesentry.CheckCoverage(&cfg.FileSentry)
+	coverage := filesentry.CheckCoverage(context.Background(), &cfg.FileSentry)
 	checkedUser := "the current user"
 	if current, err := user.Current(); err == nil && current.Username != "" {
 		checkedUser = current.Username
 	}
+	return fileSentryCoverageVerdict(check, cfg, coverage, checkedUser)
+}
+
+// fileSentryCoverageVerdict maps a coverage report onto the doctor check. It is
+// separate from the walk so every verdict, including the ones a real filesystem
+// cannot easily produce on demand, is directly testable from a report value.
+func fileSentryCoverageVerdict(check doctorReportCheck, cfg *config.Config, coverage filesentry.CoverageReport, checkedUser string) doctorReportCheck {
 	if coverage.FailureCount > 0 {
 		check.Status = doctorStatusFail
 		if cfg.FileSentry.BestEffort && !fileSentryRequiredCoverageFailed(cfg.FileSentry.WatchPaths, coverage) {

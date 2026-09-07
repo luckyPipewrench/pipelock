@@ -135,22 +135,73 @@ func TestReaper_ProtectedDirectPIDRegistry(t *testing.T) {
 }
 
 // waitForCondition polls cond every 25 ms until it returns true or the
-// deadline passes. Returns the final value of cond().
+// deadline passes. Completion after the deadline is a timeout.
 func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) bool {
 	t.Helper()
+	return waitForConditionWithNow(t, timeout, time.Now, cond)
+}
+
+func waitForConditionWithNow(t *testing.T, timeout time.Duration, now func() time.Time, cond func() bool) bool {
+	t.Helper()
+	deadline := now().Add(timeout)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if !now().Before(deadline) {
+			return false
+		}
 		if cond() {
-			return true
+			return now().Before(deadline)
 		}
 		select {
 		case <-timer.C:
-			return cond()
+			return false
 		case <-ticker.C:
 		}
+	}
+}
+
+func TestWaitForCondition_DoesNotAcceptConditionAfterDeadline(t *testing.T) {
+	base := time.Unix(0, 0)
+	now := reaperSequenceClock(base, base, base.Add(time.Second))
+	calls := 0
+	if waitForConditionWithNow(t, time.Second, now, func() bool {
+		calls++
+		return true
+	}) {
+		t.Fatal("waitForCondition accepted a condition that became true after its deadline")
+	}
+	if calls != 1 {
+		t.Fatalf("condition calls = %d, want 1", calls)
+	}
+}
+
+func TestWaitForCondition_DoesNotEvaluateConditionAfterDeadline(t *testing.T) {
+	base := time.Unix(0, 0)
+	now := reaperSequenceClock(base, base.Add(time.Second))
+	calls := 0
+	if waitForConditionWithNow(t, time.Second, now, func() bool {
+		calls++
+		return true
+	}) {
+		t.Fatal("waitForCondition accepted an already-expired deadline")
+	}
+	if calls != 0 {
+		t.Fatalf("condition calls = %d, want 0 after deadline", calls)
+	}
+}
+
+func reaperSequenceClock(values ...time.Time) func() time.Time {
+	index := 0
+	return func() time.Time {
+		if index >= len(values) {
+			return values[len(values)-1]
+		}
+		value := values[index]
+		index++
+		return value
 	}
 }
 

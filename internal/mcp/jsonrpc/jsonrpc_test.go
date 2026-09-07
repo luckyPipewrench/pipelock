@@ -904,6 +904,9 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 		{name: "ftyp box smaller than header", in: base64.StdEncoding.EncodeToString(append(
 			[]byte("\x00\x00\x00\x08ftyp"),
 			[]byte(strings.Repeat("\x00\x01\x02\x03", 8))...)), want: false},
+		{name: "ftyp box larger than decoded prefix wrapping text", in: base64.StdEncoding.EncodeToString(append(
+			[]byte("\x00\x00\x00\xffftyp"),
+			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},
 		{name: "png magic wrapping a credential", in: base64.StdEncoding.EncodeToString(append(
 			[]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a},
 			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},

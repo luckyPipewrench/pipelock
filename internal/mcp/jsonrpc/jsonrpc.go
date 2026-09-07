@@ -451,7 +451,13 @@ func ftypPayloadAfterBox(decoded []byte) ([]byte, bool) {
 	if size < 12 || size > maxFtypBoxSize {
 		return nil, false
 	}
-	if int(size) >= len(decoded) {
+	// A box that extends past the decoded prefix cannot be validated. Treating
+	// it as opaque skipped a printable run sitting in the unread tail of the
+	// claimed box. Fail closed and scan.
+	if int(size) > len(decoded) {
+		return nil, false
+	}
+	if int(size) == len(decoded) {
 		return nil, true
 	}
 	return decoded[size:], true

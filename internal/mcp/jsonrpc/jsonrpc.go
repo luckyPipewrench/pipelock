@@ -209,9 +209,17 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 }
 
 // ExtractVisibleStringsFromJSONResult extracts agent-visible JSON string
-// values while deliberately excluding opaque MCP media fields. It is used for
-// structuredContent, whose values are rendered to the agent but which may
+// values while deliberately excluding opaque MCP media payloads. It is used
+// for structuredContent, whose values are rendered to the agent but which may
 // include image/resource payloads that must not be treated as prompt text.
+//
+// Opacity is decided by the VALUE, not by the key alone. A key such as data,
+// blob or raw only nominates a string as a media candidate; the string is
+// skipped when it is actually shaped like a media payload (base64 or a data
+// URI). A nested object under such a key is walked normally, because
+// structuredContent follows a tool-defined schema in which "data" is as often
+// a record as a payload. Skipping by key name alone dropped every string
+// inside {"data":{...}} and let a plaintext secret reach the client unscanned.
 func ExtractVisibleStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -220,32 +228,40 @@ func ExtractVisibleStringsFromJSONResult(raw json.RawMessage) ExtractStringsResu
 
 	var result []string
 	truncated := false
-	var extract func(interface{}, int)
-	extract = func(v interface{}, depth int) {
+	var extract func(interface{}, int, bool)
+	extract = func(v interface{}, depth int, mediaCandidate bool) {
 		if depth > maxExtractDepth {
 			truncated = true
 			return
 		}
 		switch val := v.(type) {
 		case string:
+			if mediaCandidate && isOpaqueMediaPayload(val) {
+				return
+			}
 			result = append(result, val)
 		case []interface{}:
+			// An array under a media key is a list of payloads; each element
+			// decides for itself by shape.
 			for _, item := range val {
-				extract(item, depth+1)
+				extract(item, depth+1, mediaCandidate)
 			}
 		case map[string]interface{}:
+			// Keys inside a nested object decide for themselves; a parent key
+			// never makes a whole object opaque.
 			for _, key := range SortedKeys(val) {
-				if isOpaqueMCPMediaField(key) {
-					continue
-				}
-				extract(val[key], depth+1)
+				extract(val[key], depth+1, isOpaqueMCPMediaField(key))
 			}
 		}
 	}
-	extract(parsed, 0)
+	extract(parsed, 0, false)
 	return ExtractStringsResult{Strings: result, Truncated: truncated}
 }
 
+// isOpaqueMCPMediaField reports whether a structuredContent key conventionally
+// carries a media payload (MCP image and audio content use data, resource
+// blobs use blob). The key alone only nominates the value; isOpaqueMediaPayload
+// makes the decision.
 func isOpaqueMCPMediaField(key string) bool {
 	switch strings.ToLower(key) {
 	case "blob", "data", "raw":
@@ -253,6 +269,51 @@ func isOpaqueMCPMediaField(key string) bool {
 	default:
 		return false
 	}
+}
+
+// minOpaqueMediaPayloadLen is the shortest string treated as an encoded media
+// payload. The smallest real image (a 1x1 PNG, 67 bytes) encodes to about 90
+// base64 characters, so anything shorter under a media key is far more likely
+// to be a short token or a note than media, and scanning it costs nothing.
+const minOpaqueMediaPayloadLen = 64
+
+// isOpaqueMediaPayload reports whether a string value under a media key is
+// shaped like an encoded payload: a data URI, or a run of at least
+// minOpaqueMediaPayloadLen base64 characters (standard or URL alphabet, padded
+// or not, optionally line-wrapped). Anything else is agent-visible text.
+//
+// Failure direction: a genuine payload that fails this shape test is scanned
+// as text, which costs extra scanning and never skips a secret. A plaintext
+// value that happens to be one long unbroken base64-alphabet run is still
+// skipped; that is the residual the key-only exclusion always had, and it is
+// now bounded by length and shape instead of applying to every value.
+func isOpaqueMediaPayload(s string) bool {
+	if strings.HasPrefix(s, "data:") {
+		return true
+	}
+	if len(s) < minOpaqueMediaPayloadLen {
+		return false
+	}
+	payload := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '+', c == '/', c == '-', c == '_':
+			payload++
+		case c == '=':
+			// Padding is only valid as the final one or two characters.
+			if strings.TrimRight(s[i:], "=") != "" || len(s)-i > 2 {
+				return false
+			}
+			return payload >= minOpaqueMediaPayloadLen
+		case c == '\n', c == '\r':
+			// Line-wrapped (MIME style) base64 is still a payload.
+		default:
+			return false
+		}
+	}
+	return payload >= minOpaqueMediaPayloadLen
 }
 
 // jsonDepthTruncated reports whether raw JSON exceeds the recursive extraction

@@ -3991,3 +3991,29 @@ func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
 		t.Fatalf("URL-shaped value must not get partial windows, got %d", len(got))
 	}
 }
+
+func TestCheckSecretsInText_PartialMatchSkipsLowEntropyWindows(t *testing.T) {
+	prefix := strings.Repeat("a", minKnownSecretSubstringLen)
+	tail := "Q7vP2mK9xR4nT8wB6cD3fG1hJ5sL0zAqW2eR9uY6tR3eW1qZ8xC7"
+	secret := prefix + tail
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := MustNew(cfg)
+	defer s.Close()
+
+	if r := s.ScanTextForDLP(context.Background(), "padding: "+prefix); !r.Clean {
+		t.Fatalf("low-entropy prefix window must stay clean, got %+v", r.Matches)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "checksum: "+tail[:18]); r.Clean || r.Matches[0].PartialLen != 18 {
+		t.Fatalf("high-entropy tail must partial-match, got %+v", r)
+	}
+	if r := s.ScanTextForDLP(context.Background(), "secret is "+secret); r.Clean {
+		t.Fatal("whole secret must still be detected")
+	}
+}

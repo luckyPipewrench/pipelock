@@ -2817,9 +2817,22 @@ func knownValueWindows(value string) map[string][]int {
 		return nil
 	}
 	windows := make(map[string][]int, len(value)-minKnownSecretSubstringLen+1)
+	repeated := make(map[string]struct{})
 	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
 		window := value[start : start+minKnownSecretSubstringLen]
-		windows[window] = append(windows[window], start)
+		// The whole-value entropy floor does not protect a low-entropy prefix
+		// or a repeated 16-byte block inside an otherwise high-entropy secret.
+		if ShannonEntropy(window) <= envLeakMinEntropy {
+			continue
+		}
+		if _, seen := windows[window]; seen {
+			repeated[window] = struct{}{}
+			continue
+		}
+		windows[window] = []int{start}
+	}
+	for window := range repeated {
+		delete(windows, window)
 	}
 	return windows
 }

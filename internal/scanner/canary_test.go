@@ -350,8 +350,10 @@ func TestScanTextForDLP_CanonicalCanaryCollisionDropsPartialWindows(t *testing.T
 	if r := s.ScanTextForDLP(context.Background(), "checksum: "+frag[:10]+"-"+frag[10:]); !r.Clean {
 		t.Fatalf("canonical -/_ collision must not partial-match, got %+v", r.Matches)
 	}
-	if r := s.ScanTextForDLP(context.Background(), "token is "+hyphen); r.Clean {
-		t.Fatal("whole hyphen canary must still match")
+	for _, canary := range []string{hyphen, underscore} {
+		if r := s.ScanTextForDLP(context.Background(), "token is "+canary); r.Clean {
+			t.Fatalf("whole canary %q must still match", canary)
+		}
 	}
 	for _, tok := range compileCanaryTokens(cfg.CanaryTokens) {
 		if tok.canonicalPartialWindows != nil {

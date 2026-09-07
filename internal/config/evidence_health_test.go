@@ -64,7 +64,7 @@ func TestLoad_FlightRecorderEvidenceMaxAnchorLagDuration(t *testing.T) {
 			want: DefaultEvidenceHealthMaxAnchorLag,
 		},
 		{
-			name: "explicit zero disables age check",
+			name: "explicit zero is preserved",
 			yaml: "flight_recorder:\n  enabled: true\n  evidence_health:\n    max_anchor_lag: 0s\n",
 			want: 0,
 		},

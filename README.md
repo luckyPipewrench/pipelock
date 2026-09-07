@@ -572,6 +572,12 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ---
 
+## ☁️ One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/pipelock/)
+
+---
+
 ## CI Integration
 
 ```yaml

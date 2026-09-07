@@ -4,6 +4,8 @@
 package jsonrpc
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -846,6 +848,19 @@ func TestExtractText_StructuredContentSecretUnderOpaqueKeyReachesScanner(t *test
 
 // pngIHDRPrefix is a canonical PNG signature plus IHDR chunk. Tests that
 // need "looks like PNG" must use this, not a bare magic prefix.
+func gzipCredentialFixture(t *testing.T) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	if _, err := w.Write([]byte("ghp_" + "ABCDEFghijklmnopqrstuvwxyz0123456789")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
 func pngIHDRPrefix() []byte {
 	return []byte{
 		0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a,
@@ -907,6 +922,13 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 		{name: "ftyp box larger than decoded prefix wrapping text", in: base64.StdEncoding.EncodeToString(append(
 			[]byte("\x00\x00\x00\xffftyp"),
 			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},
+		{name: "complete ftyp box filling the prefix", in: base64.StdEncoding.EncodeToString(append(
+			[]byte("\x00\x00\x00\x30ftypisom"),
+			make([]byte, 36)...)), want: true},
+		{name: "capped ftyp prefix with trailing credential", in: base64.StdEncoding.EncodeToString(append(
+			append([]byte("\x00\x00\x00\x30ftypisom"), make([]byte, 36)...),
+			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},
+		{name: "gzip compressed credential is not media", in: gzipCredentialFixture(t), want: false},
 		{name: "png magic wrapping a credential", in: base64.StdEncoding.EncodeToString(append(
 			[]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a},
 			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},

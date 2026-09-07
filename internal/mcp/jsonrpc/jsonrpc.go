@@ -318,7 +318,6 @@ var mediaSignatures = [][]byte{
 	{'O', 'g', 'g', 'S'},           // Ogg
 	{'f', 'L', 'a', 'C'},           // FLAC
 	{0x1a, 0x45, 0xdf, 0xa3},       // Matroska and WebM
-	{0x1f, 0x8b},                   // gzip
 }
 
 var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
@@ -377,17 +376,17 @@ func isOpaqueMediaPayload(s string) bool {
 	if !isBase64MediaRun(payload) {
 		return false
 	}
-	decoded, ok := decodeMediaPrefix(payload)
+	decoded, capped, ok := decodeMediaPrefix(payload)
 	if !ok {
 		return false
 	}
-	return hasMediaSignature(decoded)
+	return hasMediaSignature(decoded, capped)
 }
 
 // hasMediaSignature reports whether decoded leading bytes are a recognized
 // media container, not a magic prefix wrapping agent-visible text.
-func hasMediaSignature(decoded []byte) bool {
-	rest, ok := mediaPayloadAfterHeader(decoded)
+func hasMediaSignature(decoded []byte, capped bool) bool {
+	rest, ok := mediaPayloadAfterHeader(decoded, capped)
 	if !ok {
 		return false
 	}
@@ -396,7 +395,7 @@ func hasMediaSignature(decoded []byte) bool {
 
 // mediaPayloadAfterHeader reports the bytes after a validated media header.
 // Failure direction: a payload that does not prove its header is scanned.
-func mediaPayloadAfterHeader(decoded []byte) ([]byte, bool) {
+func mediaPayloadAfterHeader(decoded []byte, capped bool) ([]byte, bool) {
 	if rest, ok := pngPayloadAfterIHDR(decoded); ok {
 		return rest, true
 	}
@@ -415,7 +414,7 @@ func mediaPayloadAfterHeader(decoded []byte) ([]byte, bool) {
 			}
 		}
 	}
-	return ftypPayloadAfterBox(decoded)
+	return ftypPayloadAfterBox(decoded, capped)
 }
 
 func pngPayloadAfterIHDR(decoded []byte) ([]byte, bool) {
@@ -440,7 +439,7 @@ func jpegPayloadAfterSOI(decoded []byte) ([]byte, bool) {
 	return decoded[4:], true
 }
 
-func ftypPayloadAfterBox(decoded []byte) ([]byte, bool) {
+func ftypPayloadAfterBox(decoded []byte, capped bool) ([]byte, bool) {
 	// Same size floor as media.DetectType: a 32-bit box length must cover the
 	// 8-byte header plus "ftyp" contents. Cap the size so a huge field cannot
 	// hide trailing text inside a claimed box the prefix never contains.
@@ -458,6 +457,11 @@ func ftypPayloadAfterBox(decoded []byte) ([]byte, bool) {
 		return nil, false
 	}
 	if int(size) == len(decoded) {
+		// Equality on a capped prefix means the encoded value continues past
+		// the bytes we decoded. Trailing content after that prefix was skipped.
+		if capped {
+			return nil, false
+		}
 		return nil, true
 	}
 	return decoded[size:], true
@@ -521,33 +525,44 @@ func isBase64MediaRun(s string) bool {
 // decodeMediaPrefix decodes a bounded leading portion of a base64 candidate.
 // It reports false when the candidate cannot be decoded, so an unreadable value
 // is scanned as text instead of being skipped.
-func decodeMediaPrefix(payload string) ([]byte, bool) {
-	compact := compactBase64Prefix(payload)
+func decodeMediaPrefix(payload string) ([]byte, bool, bool) {
+	compact, capped := compactBase64Prefix(payload)
 	enc := base64.RawStdEncoding
 	if strings.ContainsAny(compact, "-_") {
 		enc = base64.RawURLEncoding
 	}
 	decoded, err := enc.DecodeString(compact)
 	if err != nil || len(decoded) == 0 {
-		return nil, false
+		return nil, false, false
 	}
-	return decoded, true
+	return decoded, capped, true
 }
 
 // compactBase64Prefix copies at most maxOpaqueMediaDecodeChars payload bits,
 // dropping MIME line wrapping as it goes, so a multi-megabyte attachment
 // never allocates a second full copy just to classify its first bytes.
-func compactBase64Prefix(payload string) string {
+func compactBase64Prefix(payload string) (string, bool) {
 	var b strings.Builder
 	b.Grow(maxOpaqueMediaDecodeChars)
-	for i := 0; i < len(payload) && b.Len() < maxOpaqueMediaDecodeChars; i++ {
+	i := 0
+	for ; i < len(payload) && b.Len() < maxOpaqueMediaDecodeChars; i++ {
 		c := payload[i]
 		if c == '\r' || c == '\n' {
 			continue
 		}
 		b.WriteByte(c)
 	}
-	return strings.TrimRight(b.String(), "=")
+	compact := strings.TrimRight(b.String(), "=")
+	capped := false
+	for ; i < len(payload); i++ {
+		c := payload[i]
+		if c == '\r' || c == '\n' || c == '=' {
+			continue
+		}
+		capped = true
+		break
+	}
+	return compact, capped
 }
 
 // jsonDepthTruncated reports whether raw JSON exceeds the recursive extraction

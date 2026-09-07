@@ -2824,7 +2824,10 @@ func knownValueWindows(value string) map[string][]int {
 func urlCredentialWindows(value string) map[string][]int {
 	u, err := url.Parse(value)
 	if err != nil {
-		return nil
+		// Unparseable URL-shaped secrets still have to partial-match as a
+		// blob. Skipping them would hide a leaked token that happens to
+		// sit next to "://".
+		return collectValueWindows(value, 0)
 	}
 	var parts []string
 	if u.User != nil {
@@ -2839,12 +2842,10 @@ func urlCredentialWindows(value string) map[string][]int {
 		parts = append(parts, u.Fragment)
 	}
 	if path := strings.Trim(u.Path, "/"); path != "" {
-		seg := path
-		if i := strings.LastIndexByte(path, '/'); i >= 0 {
-			seg = path[i+1:]
-		}
-		if seg != "" {
-			parts = append(parts, seg)
+		for _, seg := range strings.Split(path, "/") {
+			if seg != "" {
+				parts = append(parts, seg)
+			}
 		}
 	}
 	out := make(map[string][]int)
@@ -2852,15 +2853,35 @@ func urlCredentialWindows(value string) map[string][]int {
 		if len(part) < minKnownSecretSubstringLen || ShannonEntropy(part) <= envLeakMinEntropy {
 			continue
 		}
-		idx := strings.Index(value, part)
+		idx, raw := locateURLPart(value, part)
 		if idx < 0 {
 			continue
 		}
 		for window, offsets := range collectValueWindows(part, idx) {
 			out[window] = append(out[window], offsets...)
 		}
+		if raw != part {
+			for window, offsets := range collectValueWindows(raw, idx) {
+				out[window] = append(out[window], offsets...)
+			}
+		}
 	}
 	return out
+}
+
+func locateURLPart(value, part string) (int, string) {
+	if i := strings.Index(value, part); i >= 0 {
+		return i, part
+	}
+	for _, enc := range []string{url.QueryEscape(part), url.PathEscape(part)} {
+		if enc == part {
+			continue
+		}
+		if i := strings.Index(value, enc); i >= 0 {
+			return i, enc
+		}
+	}
+	return -1, ""
 }
 
 func collectValueWindows(value string, base int) map[string][]int {

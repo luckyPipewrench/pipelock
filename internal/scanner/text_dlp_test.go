@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -3968,9 +3969,9 @@ func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
 		t.Fatalf("whole first secret must match as a whole value, got %+v", r)
 	}
 
-	// A URL-shaped secret gets whole-value matching only: its scheme, host and
-	// path are a public stem that ordinary text may name. Built at runtime from
-	// parts so the test binary carries no URL-shaped credential literal.
+	// A URL-shaped secret windows credential-bearing parts only. Scheme, host
+	// and public path stay unmatched. Built at runtime from parts so the test
+	// binary carries no URL-shaped credential literal.
 	dsn := strings.Join([]string{"postgres://app:", stem, "fG1hJ5sL0zA", "@db.internal.example:5432/prod"}, "")
 	dsnPath := filepath.Join(dir, "dsn.txt")
 	if err := os.WriteFile(dsnPath, []byte(dsn+"\n"), 0o600); err != nil {
@@ -3993,6 +3994,61 @@ func TestCheckSecretsInText_PartialMatchSkipsSharedStemsAndURLs(t *testing.T) {
 	}
 	if r := dsnScanner.ScanTextForDLP(context.Background(), "checksum: "+password[:18]); r.Clean || r.Matches[0].PartialLen != 18 {
 		t.Fatalf("leaked DSN password must partial-match, got %+v", r)
+	}
+}
+
+func TestCheckSecretsInText_PartialMatchURLEncodedComponents(t *testing.T) {
+	// Derived at runtime so the PR never contains a high-entropy secret
+	// literal for GitGuardian to reconstruct from concatenations or bytes.
+	sum := sha256.Sum256([]byte(t.Name()))
+	token := hex.EncodeToString(sum[:10]) + "/" + hex.EncodeToString(sum[10:14])
+	escaped := url.QueryEscape(token)
+	if escaped == token {
+		t.Fatal("test token must contain a character that percent-encodes")
+	}
+
+	dir := t.TempDir()
+	writeSecret := func(name, value string) *Scanner {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := testConfig()
+		cfg.DLP.SecretsFile = path
+		s := MustNew(cfg)
+		t.Cleanup(s.Close)
+		return s
+	}
+
+	queryURL := "https://api.vendor.example/v1?token=" + escaped
+	qs := writeSecret("query.txt", queryURL)
+	if r := qs.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("decoded query token must partial-match, got %+v", r)
+	}
+	if r := qs.ScanTextForDLP(context.Background(), "checksum: "+escaped[:18]); r.Clean {
+		t.Fatalf("escaped query token must partial-match, got %+v", r)
+	}
+
+	pathURL := "https://api.vendor.example/hooks/" + url.PathEscape(token)
+	ps := writeSecret("path.txt", pathURL)
+	if r := ps.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("decoded path token must partial-match, got %+v", r)
+	}
+
+	fragURL := "https://api.vendor.example/v1#" + escaped
+	fs := writeSecret("frag.txt", fragURL)
+	if r := fs.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("decoded fragment token must partial-match, got %+v", r)
+	}
+
+	malformed := "http://[" + token
+	if _, err := url.Parse(malformed); err == nil {
+		t.Fatal("malformed fixture must fail url.Parse")
+	}
+	ms := writeSecret("malformed.txt", malformed)
+	if r := ms.ScanTextForDLP(context.Background(), "checksum: "+token[:18]); r.Clean {
+		t.Fatalf("unparseable URL-shaped secret must still partial-match, got %+v", r)
 	}
 }
 

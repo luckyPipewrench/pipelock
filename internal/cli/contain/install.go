@@ -1717,7 +1717,7 @@ func stepInstallNFTRules() step {
 			}
 			reloadedManagedChain := false
 			if tableLoaded && (rulesChanged || liveRulesDrifted) {
-				if err := reloadNFTManagedChain(ctx, env, body); err != nil {
+				if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID, env.proxyPort); err != nil {
 					return false, err
 				}
 				reloadedManagedChain = true
@@ -1808,9 +1808,16 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 	return nil
 }
 
-func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string) error {
+func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string, operatorUID, proxyUID, agentUID, proxyPort int) error {
+	out, code, err := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault())
+	if err != nil {
+		return fmt.Errorf("list nft managed chain for reload: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("list nft managed chain for reload exit=%d: %s", code, oneLine(out))
+	}
+	reloadScript := renderNFTManagedChainReloadScript(out, rulesBody, env.nftTableOrDefault(), env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, proxyPort)
 	reloadPath := env.nftRulesPath + ".reload"
-	reloadScript := "delete chain inet " + env.nftTableOrDefault() + " " + env.nftChainOrDefault() + "\n" + rulesBody
 	if err := env.writeFile(reloadPath, []byte(reloadScript), modeConfigSecret); err != nil {
 		return fmt.Errorf("write nft managed chain reload file %s: %w", reloadPath, err)
 	}
@@ -1956,7 +1963,7 @@ func renderNFTPersistUnit(env *installEnv) string {
 		"",
 		"[Service]",
 		"Type=oneshot",
-		"ExecStart=" + nftExecutable(env) + " -f " + env.nftRulesPath,
+		"ExecStart=" + env.pipelockTarget + " contain reload-nft-rules",
 		"RemainAfterExit=yes",
 		"",
 		"[Install]",

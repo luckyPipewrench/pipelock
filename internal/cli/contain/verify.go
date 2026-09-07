@@ -1201,6 +1201,7 @@ type nftRulesHeaderUIDs struct {
 	operatorUID int
 	proxyUID    int
 	agentUID    int
+	proxyPort   int
 }
 
 func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
@@ -1217,10 +1218,10 @@ func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
 				continue
 			}
 			switch key {
-			case "operator", "pipelock-proxy", "pipelock-agent":
+			case "operator", "pipelock-proxy", "pipelock-agent", "proxy-port":
 				uid, err := strconv.Atoi(value)
 				if err != nil {
-					return nftRulesHeaderUIDs{}, true, fmt.Errorf("%s uid %q: %w", key, value, err)
+					return nftRulesHeaderUIDs{}, true, fmt.Errorf("%s value %q: %w", key, value, err)
 				}
 				values[key] = uid
 			}
@@ -1228,10 +1229,17 @@ func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
 		operatorUID, hasOperator := values["operator"]
 		proxyUID, hasProxy := values["pipelock-proxy"]
 		agentUID, hasAgent := values["pipelock-agent"]
+		proxyPort, hasPort := values["proxy-port"]
 		if !hasOperator || !hasProxy || !hasAgent {
 			return nftRulesHeaderUIDs{}, true, errors.New("managed uid header missing operator, pipelock-proxy, or pipelock-agent uid")
 		}
-		return nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID}, true, nil
+		if !hasPort {
+			proxyPort = defaultProxyPort
+		}
+		if err := validatePort(proxyPort); err != nil {
+			return nftRulesHeaderUIDs{}, true, fmt.Errorf("managed proxy-port: %w", err)
+		}
+		return nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID, proxyPort: proxyPort}, true, nil
 	}
 	return nftRulesHeaderUIDs{}, false, nil
 }
@@ -1242,8 +1250,11 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
 	body := string(data)
-	if !execStartLineContains(body, env.nftRulesPath) {
-		return fmt.Errorf("%s missing ExecStart for %s", env.nftPersistUnitPath, env.nftRulesPath)
+	if !strings.Contains(body, "ConditionPathExists="+env.nftRulesPath) {
+		return fmt.Errorf("%s missing ConditionPathExists for %s", env.nftPersistUnitPath, env.nftRulesPath)
+	}
+	if !execStartLineContains(body, env.pipelockTarget+" contain reload-nft-rules") {
+		return fmt.Errorf("%s missing ExecStart for managed nft reloader", env.nftPersistUnitPath)
 	}
 	rules, err := env.readFile(env.nftRulesPath)
 	if err != nil {
@@ -2134,7 +2145,7 @@ func managedContainmentDropPacketCountFromLines(lines []string, chainName string
 		if !fieldsAreNFTBookkeeping(fields[uidAt+1 : dropAt]) {
 			continue
 		}
-		packets = parsed
+		packets += parsed
 		matched++
 	}
 	if parseErr != nil {
@@ -2142,9 +2153,6 @@ func managedContainmentDropPacketCountFromLines(lines []string, chainName string
 	}
 	if matched == 0 {
 		return 0, fmt.Errorf("no managed catch-all DROP packet counter found in chain %s for agent uid %d", chainName, agentUID)
-	}
-	if matched != 1 {
-		return 0, fmt.Errorf("found %d managed catch-all DROP packet counters in chain %s for agent uid %d; want exactly one", matched, chainName, agentUID)
 	}
 	return packets, nil
 }

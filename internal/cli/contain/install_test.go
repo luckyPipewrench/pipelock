@@ -1728,7 +1728,7 @@ func TestStepInstallNFTRules_PersistsViaOwnedSystemdUnitAndRestores(t *testing.T
 	if err != nil {
 		t.Fatalf("read persistence unit: %v", err)
 	}
-	if !strings.Contains(string(unitBody), "ExecStart="+env.nftPath+" -f "+env.nftRulesPath) {
+	if !strings.Contains(string(unitBody), "ExecStart="+env.pipelockTarget+" contain reload-nft-rules") {
 		t.Fatalf("unit missing ExecStart:\n%s", unitBody)
 	}
 

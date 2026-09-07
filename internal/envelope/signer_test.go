@@ -4,12 +4,14 @@
 package envelope
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -150,6 +152,118 @@ func TestSignRequest_NilRequest(t *testing.T) {
 	s := newTestSigner(t, priv)
 	if err := s.SignRequest(nil, nil); err == nil {
 		t.Error("nil request should fail")
+	}
+}
+
+func TestSignRequest_NonceFailureRestoresContentDigest(t *testing.T) {
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"action":"write"}`)
+
+	tests := []struct {
+		name       string
+		prevDigest string
+	}{
+		{
+			name:       "nonempty digest",
+			prevDigest: "sha-256=:previous=:",
+		},
+		{
+			name: "empty digest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signer, err := NewSigner(SignerConfig{
+				PrivKey:          priv,
+				KeyID:            testKeyIDTrusted,
+				SignedComponents: []string{derivedMethod, derivedTargetURI, headerContentDigest, headerPipelockMediation},
+				NowFn:            func() time.Time { return now },
+				RandReader:       bytes.NewReader([]byte("short")),
+			})
+			if err != nil {
+				t.Fatalf("NewSigner: %v", err)
+			}
+
+			req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(string(body)))
+			req.Header.Set(HeaderName, `v=1, act="write", vd="allow"`)
+			req.Header.Set("Content-Digest", tt.prevDigest)
+			req.Header.Set("Signature-Input", `sig1=("@method");keyid="upstream"`)
+			req.Header.Set("Signature", "sig1=:dXBzdHJlYW0=:")
+
+			err = signer.SignRequest(req, body)
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("SignRequest error = %v, want nonce short-reader error", err)
+			}
+			if got := req.Header.Get("Content-Digest"); got != tt.prevDigest {
+				t.Errorf("Content-Digest = %q, want prior value %q", got, tt.prevDigest)
+			}
+			if got := req.Header.Get("Signature-Input"); got != `sig1=("@method");keyid="upstream"` {
+				t.Errorf("Signature-Input = %q, want existing upstream signature only", got)
+			}
+			if got := req.Header.Get("Signature"); got != "sig1=:dXBzdHJlYW0=:" {
+				t.Errorf("Signature = %q, want existing upstream signature only", got)
+			}
+		})
+	}
+
+	t.Run("same key with complete nonce signs and verifies", func(t *testing.T) {
+		signer, err := NewSigner(SignerConfig{
+			PrivKey:          priv,
+			KeyID:            testKeyIDTrusted,
+			SignedComponents: []string{derivedMethod, derivedTargetURI, headerContentDigest, headerPipelockMediation},
+			NowFn:            func() time.Time { return now },
+			RandReader:       bytes.NewReader([]byte("0123456789abcdef")),
+		})
+		if err != nil {
+			t.Fatalf("NewSigner: %v", err)
+		}
+		emitter := NewEmitter(EmitterConfig{
+			ConfigHash:  strings.Repeat("a", 64),
+			Signer:      signer,
+			ActorFormat: ActorFormatSPIFFE,
+			TrustDomain: testTrustDomain,
+		})
+		req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(string(body)))
+		if err := emitter.InjectAndSign(req, body, BuildOpts{
+			ActionID:  testReceiptID1,
+			Action:    testActionWrite,
+			Verdict:   testVerdictAllow,
+			Actor:     testActorAlpha,
+			ActorAuth: ActorAuthBound,
+		}); err != nil {
+			t.Fatalf("InjectAndSign: %v", err)
+		}
+		if _, err := newTestVerifier(t, pub, now).VerifyRequest(req, body); err != nil {
+			t.Fatalf("VerifyRequest: %v", err)
+		}
+	})
+}
+
+func TestSignRequest_SignatureMergeFailureRestoresDigest(t *testing.T) {
+	t.Parallel()
+	_, priv := testSignerKey(t)
+	body := []byte("request body")
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(string(body)))
+	req.Header.Set(HeaderName, `v=1, act="write", vd="allow"`)
+	const priorDigest = "prior digest"
+	const invalidSignature = "not a structured dictionary"
+	req.Header.Set("Content-Digest", priorDigest)
+	req.Header.Set("Signature", invalidSignature)
+
+	err := newTestSigner(t, priv).SignRequest(req, body)
+	if err == nil || !strings.Contains(err.Error(), "merging Signature:") {
+		t.Fatalf("SignRequest error = %v, want signature merge error", err)
+	}
+	if got := req.Header.Get("Content-Digest"); got != priorDigest {
+		t.Errorf("Content-Digest = %q, want %q", got, priorDigest)
+	}
+	if got := req.Header.Get("Signature-Input"); got != "" {
+		t.Errorf("partial Signature-Input remained after failure: %q", got)
+	}
+	if got := req.Header.Get("Signature"); got != invalidSignature {
+		t.Errorf("Signature = %q, want original input %q", got, invalidSignature)
 	}
 }
 

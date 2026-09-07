@@ -255,35 +255,51 @@ func TestEvidenceCorpusAuditorServiceTargetRefusesUnverifiableUnits(t *testing.T
 }
 
 func TestInstallEvidenceCorpusAuditorPreflightsSecondaryManagedFiles(t *testing.T) {
-	configDir := isolatedEvidenceAuditorInstall(t)
-	recorderDir := filepath.Join(t.TempDir(), "recorder")
-	if _, err := installEvidenceCorpusAuditor(t.Context(), recorderDir); err != nil {
-		t.Fatalf("install auditor: %v", err)
-	}
-	servicePath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorService)
-	before, err := os.ReadFile(filepath.Clean(servicePath))
-	if err != nil {
-		t.Fatalf("read service before failed install: %v", err)
-	}
-	before = append(before, []byte("# preflight sentinel\n")...)
-	if err := os.WriteFile(servicePath, before, 0o600); err != nil {
-		t.Fatalf("write managed service sentinel: %v", err)
-	}
-	timerPath := filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorTimer)
-	if err := os.WriteFile(timerPath, []byte("[Timer]\nOnCalendar=daily\n"), 0o600); err != nil {
-		t.Fatalf("write unmanaged timer: %v", err)
-	}
+	for _, unmanaged := range []string{"timer", "alert"} {
+		t.Run(unmanaged, func(t *testing.T) {
+			isolatedEvidenceAuditorInstall(t)
+			recorderDir := filepath.Join(t.TempDir(), "recorder")
+			installed, err := installEvidenceCorpusAuditor(t.Context(), recorderDir)
+			if err != nil {
+				t.Fatalf("install auditor: %v", err)
+			}
+			files := []struct {
+				name, path string
+				before     []byte
+			}{
+				{name: "service", path: installed.ServicePath},
+				{name: "timer", path: installed.TimerPath},
+				{name: "alert", path: installed.AlertPath},
+			}
+			for i := range files {
+				file := &files[i]
+				data, err := os.ReadFile(filepath.Clean(file.path))
+				if err != nil {
+					t.Fatalf("read %s before failed install: %v", file.name, err)
+				}
+				file.before = append(data, []byte("# preflight sentinel\n")...)
+				if file.name == unmanaged {
+					file.before = []byte("# unmanaged preflight sentinel\n")
+				}
+				if err := os.WriteFile(file.path, file.before, 0o600); err != nil {
+					t.Fatalf("write %s sentinel: %v", file.name, err)
+				}
+			}
 
-	_, err = installEvidenceCorpusAuditor(t.Context(), recorderDir)
-	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged evidence corpus auditor file") {
-		t.Fatalf("error = %v, want unmanaged secondary-file refusal", err)
-	}
-	after, err := os.ReadFile(filepath.Clean(servicePath))
-	if err != nil {
-		t.Fatalf("read service after failed install: %v", err)
-	}
-	if string(after) != string(before) {
-		t.Fatalf("unmanaged timer refusal changed service:\n%s", after)
+			_, err = installEvidenceCorpusAuditor(t.Context(), recorderDir)
+			if err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged evidence corpus auditor file") {
+				t.Fatalf("error = %v, want unmanaged secondary-file refusal", err)
+			}
+			for _, file := range files {
+				after, err := os.ReadFile(filepath.Clean(file.path))
+				if err != nil {
+					t.Fatalf("read %s after failed install: %v", file.name, err)
+				}
+				if !bytes.Equal(after, file.before) {
+					t.Errorf("unmanaged %s refusal changed %s:\n%s", unmanaged, file.name, after)
+				}
+			}
+		})
 	}
 }
 

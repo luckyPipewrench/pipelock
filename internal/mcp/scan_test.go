@@ -1877,6 +1877,15 @@ func TestScanResponse_StructuredContentInjectionUnderMediaKeys(t *testing.T) {
 		{name: "plaintext string under raw", structure: `{"raw":"` + injection + `"}`, wantClean: false},
 		{name: "array of plaintext under blob", structure: `{"blob":["ok","` + injection + `"]}`, wantClean: false},
 		{name: "base64 media under data stays clean", structure: `{"data":"` + media + `","mimeType":"image/png"}`, wantClean: true},
+		{name: "declared base64 media data url stays clean", structure: `{"data":"data:image/png;base64,` + media + `"}`, wantClean: true},
+		// A data-URL prefix must not buy silence: neither a malformed data URL
+		// nor one declaring text can hide an instruction from the scanner.
+		{name: "malformed data url under data", structure: `{"data":"data:` + injection + `"}`, wantClean: false},
+		{name: "text data url under raw", structure: `{"raw":"data:text/plain,` + injection + `"}`, wantClean: false},
+		{name: "data url declaring base64 but carrying text", structure: `{"blob":"data:text/plain;base64,` + base64.StdEncoding.EncodeToString([]byte(injection)) + `"}`, wantClean: false},
+		// A base64 run with no container signature is not media, so a credential
+		// encoded under a media key reaches inbound DLP.
+		{name: "base64 credential under blob", structure: `{"blob":"` + base64.StdEncoding.EncodeToString([]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")) + `"}`, wantClean: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

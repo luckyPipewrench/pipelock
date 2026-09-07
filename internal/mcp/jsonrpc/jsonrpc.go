@@ -7,6 +7,8 @@
 package jsonrpc
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"regexp"
 	"sort"
@@ -271,49 +273,158 @@ func isOpaqueMCPMediaField(key string) bool {
 	}
 }
 
-// minOpaqueMediaPayloadLen is the shortest string treated as an encoded media
-// payload. The smallest real image (a 1x1 PNG, 67 bytes) encodes to about 90
-// base64 characters, so anything shorter under a media key is far more likely
-// to be a short token or a note than media, and scanning it costs nothing.
-const minOpaqueMediaPayloadLen = 64
+// minOpaqueMediaPayloadLen is the shortest candidate considered at all. It only
+// needs to cover the longest signature below, so it bounds work rather than
+// standing in for a judgement about what media looks like.
+const minOpaqueMediaPayloadLen = 16
 
-// isOpaqueMediaPayload reports whether a string value under a media key is
-// shaped like an encoded payload: a data URI, or a run of at least
-// minOpaqueMediaPayloadLen base64 characters (standard or URL alphabet, padded
-// or not, optionally line-wrapped). Anything else is agent-visible text.
+// maxOpaqueMediaDecodeChars caps how much of a candidate payload is decoded to
+// classify it. A container signature sits in the first bytes, so a prefix is
+// enough and the work stays bounded on a large attachment. The value is a
+// multiple of four so the prefix is a whole number of base64 quanta.
+const maxOpaqueMediaDecodeChars = 64
+
+// mediaSignatures are leading byte sequences published by binary container
+// formats an MCP image, audio or resource-blob field can carry. Recognition is
+// positive and deliberately incomplete: an unlisted format is treated as
+// visible text and scanned, which costs scanning and never skips content. Only
+// signatures specific enough that ordinary text cannot produce them are listed,
+// so a two-byte printable prefix such as a bitmap's is deliberately absent.
+var mediaSignatures = [][]byte{
+	{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, // PNG
+	{'G', 'I', 'F', '8', '7', 'a'},                // GIF87a
+	{'G', 'I', 'F', '8', '9', 'a'},                // GIF89a
+	{0xff, 0xd8, 0xff},                            // JPEG start of image
+	{'%', 'P', 'D', 'F', '-'},                     // PDF
+	{'O', 'g', 'g', 'S'},                          // Ogg
+	{'f', 'L', 'a', 'C'},                          // FLAC
+	{0x1a, 0x45, 0xdf, 0xa3},                      // Matroska and WebM
+	{0x1f, 0x8b},                                  // gzip
+}
+
+// riffForms are the RIFF container forms carried as media. The four-character
+// form name sits at byte offset 8, after "RIFF" and the chunk size.
+var riffForms = [][]byte{
+	[]byte("WEBP"),
+	[]byte("WAVE"),
+	[]byte("AVI "),
+}
+
+// isOpaqueMediaPayload reports whether a string value under a media key is an
+// encoded BINARY media payload, which is the only thing the exclusion exists to
+// keep out of prompt scanning.
 //
-// Failure direction: a genuine payload that fails this shape test is scanned
-// as text, which costs extra scanning and never skips a secret. A plaintext
-// value that happens to be one long unbroken base64-alphabet run is still
-// skipped; that is the residual the key-only exclusion always had, and it is
-// now bounded by length and shape instead of applying to every value.
+// Two tests must both pass. The string is shaped like base64 (standard or URL
+// alphabet, optional trailing padding, optional line wrapping), or a data URL
+// that explicitly declares base64. Then its decoded leading bytes must carry a
+// recognized media container signature. MCP specifies its typed image, audio
+// and resource-blob fields as base64 strings, so a declared-base64 payload
+// carrying a real container is the form the exclusion was written for.
+//
+// Failure direction: everything this rejects is scanned as text, so the cost of
+// a wrong answer is extra scanning rather than skipped content. A
+// base64-encoded credential carries no container signature and is therefore
+// scanned. An unlisted or proprietary media format is also scanned, which can
+// produce scanner work or a false positive on binary noise; that is the
+// deliberate trade, because the opposite default is a silent bypass.
 func isOpaqueMediaPayload(s string) bool {
+	payload := s
 	if strings.HasPrefix(s, "data:") {
-		return true
+		declared, ok := base64DataURLPayload(s)
+		if !ok {
+			// A data URL that does not declare base64, or is not a data URL at
+			// all beyond its prefix, carries visible text.
+			return false
+		}
+		payload = declared
 	}
+	if !isBase64MediaRun(payload) {
+		return false
+	}
+	decoded, ok := decodeMediaPrefix(payload)
+	if !ok {
+		return false
+	}
+	return hasMediaSignature(decoded)
+}
+
+// hasMediaSignature reports whether decoded leading bytes begin with a
+// recognized media container signature.
+func hasMediaSignature(decoded []byte) bool {
+	for _, sig := range mediaSignatures {
+		if bytes.HasPrefix(decoded, sig) {
+			return true
+		}
+	}
+	if bytes.HasPrefix(decoded, []byte("RIFF")) && len(decoded) >= 12 {
+		for _, form := range riffForms {
+			if bytes.Equal(decoded[8:12], form) {
+				return true
+			}
+		}
+	}
+	// ISO base media (MP4, M4A, and relatives) carry "ftyp" at offset 4.
+	return len(decoded) >= 8 && bytes.Equal(decoded[4:8], []byte("ftyp"))
+}
+
+// base64DataURLPayload returns the payload of a data URL that explicitly
+// declares base64 encoding. RFC 2397 requires a comma between the metadata and
+// the data, and the base64 form carries a `;base64` parameter last in the
+// metadata. Anything else is not a base64 data URL.
+func base64DataURLPayload(s string) (string, bool) {
+	meta, data, found := strings.Cut(strings.TrimPrefix(s, "data:"), ",")
+	if !found || !strings.HasSuffix(strings.ToLower(meta), ";base64") {
+		return "", false
+	}
+	return data, true
+}
+
+// isBase64MediaRun reports whether s is long enough and drawn only from a
+// base64 alphabet, allowing MIME line wrapping and at most two trailing
+// padding characters.
+func isBase64MediaRun(s string) bool {
+	// A final MIME line ending sits after the padding, so remove it first.
+	s = strings.TrimRight(s, "\r\n")
 	if len(s) < minOpaqueMediaPayloadLen {
 		return false
 	}
-	payload := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
+	body := strings.TrimRight(s, "=")
+	if len(s)-len(body) > 2 {
+		return false
+	}
+	chars := 0
+	for i := 0; i < len(body); i++ {
+		switch c := body[i]; {
 		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
 			c == '+', c == '/', c == '-', c == '_':
-			payload++
-		case c == '=':
-			// Padding is only valid as the final one or two characters.
-			if strings.TrimRight(s[i:], "=") != "" || len(s)-i > 2 {
-				return false
-			}
-			return payload >= minOpaqueMediaPayloadLen
+			chars++
 		case c == '\n', c == '\r':
-			// Line-wrapped (MIME style) base64 is still a payload.
+			// Line-wrapped (MIME style) base64 is still one payload.
 		default:
 			return false
 		}
 	}
-	return payload >= minOpaqueMediaPayloadLen
+	return chars >= minOpaqueMediaPayloadLen
+}
+
+// decodeMediaPrefix decodes a bounded leading portion of a base64 candidate.
+// It reports false when the candidate cannot be decoded, so an unreadable value
+// is scanned as text instead of being skipped.
+func decodeMediaPrefix(payload string) ([]byte, bool) {
+	compact := strings.NewReplacer("\r", "", "\n", "").Replace(payload)
+	compact = strings.TrimRight(compact, "=")
+	if len(compact) > maxOpaqueMediaDecodeChars {
+		compact = compact[:maxOpaqueMediaDecodeChars]
+	}
+	enc := base64.RawStdEncoding
+	if strings.ContainsAny(compact, "-_") {
+		enc = base64.RawURLEncoding
+	}
+	decoded, err := enc.DecodeString(compact)
+	if err != nil || len(decoded) == 0 {
+		return nil, false
+	}
+	return decoded, true
 }
 
 // jsonDepthTruncated reports whether raw JSON exceeds the recursive extraction

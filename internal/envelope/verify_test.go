@@ -564,6 +564,121 @@ func TestVerifierRejectsMalformedRequestsWithCodes(t *testing.T) {
 	checkCode(t, err, VerificationFailureParse)
 }
 
+func TestVerifier_RejectsMalformedSignatureParametersWithoutConsumingNonce(t *testing.T) {
+	t.Parallel()
+
+	checkCode := func(t *testing.T, err error, want VerificationFailureCode) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("error = nil, want %s", want)
+		}
+		got, ok := VerificationFailureCodeOf(err)
+		if !ok || got != want {
+			t.Fatalf("code = %q, %v; want %s", got, ok, want)
+		}
+	}
+
+	parameterCases := []struct {
+		name  string
+		param string
+		value any
+		omit  bool
+	}{
+		{name: "missing key ID", param: "keyid", omit: true},
+		{name: "non-string key ID", param: "keyid", value: int64(1)},
+		{name: "missing algorithm", param: "alg", omit: true},
+		{name: "non-string algorithm", param: "alg", value: int64(1)},
+		{name: "missing tag", param: "tag", omit: true},
+		{name: "non-string tag", param: "tag", value: int64(1)},
+		{name: "missing created", param: "created", omit: true},
+		{name: "non-integer created", param: "created", value: "now"},
+		{name: "missing expires", param: "expires", omit: true},
+		{name: "non-integer expires", param: "expires", value: "later"},
+		{name: "missing nonce", param: "nonce", omit: true},
+		{name: "non-string nonce", param: "nonce", value: int64(1)},
+	}
+
+	type mutationCase struct {
+		name   string
+		mutate func(httpsfv.InnerList) httpsfv.InnerList
+	}
+	cases := make([]mutationCase, 0, len(parameterCases)+3)
+	for _, tc := range parameterCases {
+		cases = append(cases, mutationCase{
+			name: tc.name,
+			mutate: func(inner httpsfv.InnerList) httpsfv.InnerList {
+				if tc.omit {
+					inner.Params.Del(tc.param)
+				} else {
+					inner.Params.Add(tc.param, tc.value)
+				}
+				return inner
+			},
+		})
+	}
+
+	cases = append(cases,
+		mutationCase{
+			name: "empty component list",
+			mutate: func(inner httpsfv.InnerList) httpsfv.InnerList {
+				inner.Items = nil
+				return inner
+			},
+		},
+		mutationCase{
+			name: "non-string component",
+			mutate: func(inner httpsfv.InnerList) httpsfv.InnerList {
+				inner.Items = []httpsfv.Item{httpsfv.NewItem(int64(1))}
+				return inner
+			},
+		},
+		mutationCase{
+			name: "unsupported component",
+			mutate: func(inner httpsfv.InnerList) httpsfv.InnerList {
+				inner.Items = []httpsfv.Item{httpsfv.NewItem("unsupported")}
+				return inner
+			},
+		},
+	)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, priv := testSignerKey(t)
+			now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+			req := signedVerifierRequest(t, priv, now, "")
+			validInput := req.Header.Get("Signature-Input")
+
+			dict, err := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
+			if err != nil {
+				t.Fatalf("Signature-Input parse: %v", err)
+			}
+			member, ok := dict.Get(pipelockSigLabel)
+			if !ok {
+				t.Fatal("pipelock signature input is missing")
+			}
+			inner, ok := member.(httpsfv.InnerList)
+			if !ok {
+				t.Fatalf("pipelock signature input is %T, want inner list", member)
+			}
+			dict.Add(pipelockSigLabel, tc.mutate(inner))
+			mutatedInput, err := httpsfv.Marshal(dict)
+			if err != nil {
+				t.Fatalf("Signature-Input marshal: %v", err)
+			}
+			req.Header.Set("Signature-Input", mutatedInput)
+
+			verifier := newTestVerifier(t, pub, now)
+			_, err = verifier.VerifyRequest(req, nil)
+			checkCode(t, err, VerificationFailureParse)
+
+			req.Header.Set("Signature-Input", validInput)
+			if _, err := verifier.VerifyRequest(req, nil); err != nil {
+				t.Fatalf("valid request after parse failure: %v", err)
+			}
+		})
+	}
+}
+
 func TestVerifierValidateTimeBranches(t *testing.T) {
 	t.Parallel()
 

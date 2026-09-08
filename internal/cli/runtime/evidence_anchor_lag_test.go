@@ -25,6 +25,9 @@ func TestEvidenceHealthZeroAnchorLagDisablesOnlyAgeRequirement(t *testing.T) {
 	if !ok || withoutAnchor.Anchor != nil || withoutAnchor.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
 		t.Fatalf("zero age limit accepted missing anchor evidence: ok=%v stats=%+v", ok, withoutAnchor)
 	}
+	if _, present := withoutAnchor.Requirements[metrics.EvidenceRequirementAnchoringFresh]; !present {
+		t.Fatal("missing anchoring_fresh requirement without anchor")
+	}
 	state := validEvidenceHealthAnchorState()
 	state.FinalSeq = 1
 	state.SignerKey = emitter.SignerKeyHex()
@@ -49,7 +52,18 @@ func TestEvidenceHealthZeroAnchorLagDisablesOnlyAgeRequirement(t *testing.T) {
 				if !ok || stats.Anchor == nil {
 					t.Fatalf("valid anchor stats unavailable: ok=%v anchor=%+v", ok, stats.Anchor)
 				}
-				if got := stats.Requirements[metrics.EvidenceRequirementAnchoringFresh]; got != tt.wantFresh {
+				if stats.Anchor.AnchoredAt != state.AnchoredAt.Format(time.RFC3339Nano) || stats.Anchor.FinalSeq != state.FinalSeq || stats.Anchor.RootHash != state.RootHash {
+					t.Fatalf("loaded anchor does not match stale fixture: %+v", stats.Anchor)
+				}
+				if want := float64(state.AnchoredAt.UnixNano()) / 1e9; stats.Anchor.LastTimestampSeconds != want {
+					t.Fatalf("anchor age timestamp = %v, want %v", stats.Anchor.LastTimestampSeconds, want)
+				}
+				if time.Since(state.AnchoredAt) <= config.DefaultEvidenceHealthMaxAnchorLag {
+					t.Fatal("anchor fixture is not stale")
+				}
+				if got, present := stats.Requirements[metrics.EvidenceRequirementAnchoringFresh]; !present {
+					t.Error("missing anchoring_fresh requirement with stale anchor")
+				} else if got != tt.wantFresh {
 					t.Errorf("anchoring_fresh = %v, want %v", got, tt.wantFresh)
 				}
 				if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {

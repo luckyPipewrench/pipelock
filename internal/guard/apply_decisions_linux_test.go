@@ -153,6 +153,8 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 		wantRestrictArg   uint32
 		wantHandledAccess uint64
 		wantScope         uint64
+		wantCoverage      Coverage
+		wantUnmediated    []string
 	}{
 		{
 			name:              "create_ruleset",
@@ -194,6 +196,11 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 			abi:               MinimumABI,
 			wantSequence:      []string{"create", "add", "no_new_privs", "restrict", "close"},
 			wantHandledAccess: baseAccessFS,
+			wantCoverage:      CoveragePartial,
+			wantUnmediated: []string{
+				"connect(2) and sendmsg(2) on pathname unix sockets, including agent sockets",
+				"abstract unix sockets and signals to processes outside the restriction",
+			},
 		},
 		{
 			name:              "healthy_with_thread_sync_and_socket_mediation",
@@ -203,6 +210,8 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 			wantRestrictArg:   llsys.FlagRestrictSelfTSync,
 			wantHandledAccess: baseAccessFS | llsys.AccessFSResolveUnix,
 			wantScope:         scopedIPC,
+			wantCoverage:      CoverageFull,
+			wantUnmediated:    nil,
 		},
 	}
 
@@ -283,6 +292,12 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 				}
 				if !record.Enforced() || !p.applied {
 					t.Fatalf("record = %+v, applied=%v, want enforced", record, p.applied)
+				}
+				if record.Coverage != tc.wantCoverage {
+					t.Fatalf("Coverage = %q, want %q", record.Coverage, tc.wantCoverage)
+				}
+				if !slices.Equal(record.Unmediated, tc.wantUnmediated) {
+					t.Fatalf("Unmediated = %v, want %v", record.Unmediated, tc.wantUnmediated)
 				}
 			} else {
 				if !errors.Is(err, sentinel) {

@@ -122,27 +122,32 @@ func TestSessionEvidenceOf_TimelineWindowPreservesChainPositions(t *testing.T) {
 	pub, priv := generateTestKey(t)
 	trusted := map[string]TrustedKey{hex.EncodeToString(pub): {Source: "test"}}
 	tampered := buildTestChain(t, priv, 3)
-	tampered[1].ActionRecord.Target = "https://api.vendor.example/tampered"
+	const tamperedTarget = "https://api.vendor.example/tampered"
+	tampered[1].ActionRecord.Target = tamperedTarget
+	timelineBase := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name         string
-		readLimited  bool
-		wantWindow   string
-		wantSeq      []uint64
-		unverifiable []bool
+		name        string
+		readLimited bool
+		wantWindow  string
+		want        []TimelineItem
 	}{
 		{
-			name:         "bounded read shows first window",
-			readLimited:  true,
-			wantWindow:   "first",
-			wantSeq:      []uint64{0, 1},
-			unverifiable: []bool{false, true},
+			name:        "bounded read shows first window",
+			readLimited: true,
+			wantWindow:  "first",
+			want: []TimelineItem{
+				{Seq: 0, Time: timelineBase, Verdict: "allow", Reason: "read", Destination: testTarget},
+				{Seq: 1, Time: timelineBase.Add(time.Second), Verdict: "allow", Reason: "read", Destination: tamperedTarget, Unverifiable: true},
+			},
 		},
 		{
-			name:         "complete read shows latest window",
-			wantWindow:   "latest",
-			wantSeq:      []uint64{1, 2},
-			unverifiable: []bool{true, true},
+			name:       "complete read shows latest window",
+			wantWindow: "latest",
+			want: []TimelineItem{
+				{Seq: 1, Time: timelineBase.Add(time.Second), Verdict: "allow", Reason: "read", Destination: tamperedTarget, Unverifiable: true},
+				{Seq: 2, Time: timelineBase.Add(2 * time.Second), Verdict: "allow", Reason: "read", Destination: testTarget, Unverifiable: true},
+			},
 		},
 	}
 
@@ -158,12 +163,13 @@ func TestSessionEvidenceOf_TimelineWindowPreservesChainPositions(t *testing.T) {
 			if !evidence.TimelineLimited || evidence.TimelineWindow != tt.wantWindow {
 				t.Fatalf("timeline state = limited:%t window:%q, want limited:%t window:%q", evidence.TimelineLimited, evidence.TimelineWindow, true, tt.wantWindow)
 			}
-			if len(evidence.Timeline) != len(tt.wantSeq) {
-				t.Fatalf("timeline length = %d, want %d", len(evidence.Timeline), len(tt.wantSeq))
+			if len(evidence.Timeline) != len(tt.want) {
+				t.Fatalf("timeline length = %d, want %d", len(evidence.Timeline), len(tt.want))
 			}
 			for i, item := range evidence.Timeline {
-				if item.Seq != tt.wantSeq[i] || item.Unverifiable != tt.unverifiable[i] {
-					t.Errorf("timeline[%d] = seq:%d unverifiable:%t, want seq:%d unverifiable:%t", i, item.Seq, item.Unverifiable, tt.wantSeq[i], tt.unverifiable[i])
+				want := tt.want[i]
+				if item.Seq != want.Seq || !item.Time.Equal(want.Time) || item.Verdict != want.Verdict || item.Reason != want.Reason || item.Destination != want.Destination || item.Unverifiable != want.Unverifiable {
+					t.Errorf("timeline[%d] = seq:%d time:%s verdict:%q reason:%q destination:%q unverifiable:%t, want seq:%d time:%s verdict:%q reason:%q destination:%q unverifiable:%t", i, item.Seq, item.Time, item.Verdict, item.Reason, item.Destination, item.Unverifiable, want.Seq, want.Time, want.Verdict, want.Reason, want.Destination, want.Unverifiable)
 				}
 			}
 		})

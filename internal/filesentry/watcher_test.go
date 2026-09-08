@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2049,7 +2050,7 @@ func TestWatcher_PermissionDeniedSubdir(t *testing.T) {
 	if err := os.Chmod(denied, 0o000); err != nil {
 		t.Skipf("chmod not supported: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(denied, 0o750) }) //nolint:gosec // restoring directory perms for t.TempDir cleanup
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o750) })
 
 	cfg := &config.FileSentry{
 		Enabled:     true,
@@ -2389,6 +2390,122 @@ func TestWatcher_ArmStrictFailsAfterArmingAccessibleSiblings(t *testing.T) {
 	}
 	if degraded := w.DegradedPaths(); len(degraded) != 1 || degraded[0].Path != skipped {
 		t.Errorf("strict Arm degradation = %#v, want skipped subtree %q", degraded, skipped)
+	}
+}
+
+func TestWatcher_ArmUnreadableSubtreeFailsClosedUnlessIgnored(t *testing.T) {
+	// Windows os.Chmod cannot remove directory traversal, so the fixture would
+	// stay readable and the test would assert the opposite of what it means.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions required to make a subtree unreadable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o750); err != nil {
+		t.Fatalf("Mkdir blocked subtree: %v", err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatalf("Chmod blocked subtree: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(blocked, 0o750)
+	})
+
+	for _, tt := range []struct {
+		name    string
+		ignored []string
+		wantErr bool
+	}{
+		{name: "strict coverage failure", wantErr: true},
+		{name: "ignore prevents coverage failure", ignored: []string{"blocked"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.FileSentry{Enabled: true, WatchPaths: []config.WatchPath{{Path: root}}, IgnorePatterns: tt.ignored}
+			w, err := NewWatcher(cfg, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("NewWatcher: %v", err)
+			}
+			defer func() { _ = w.Close() }()
+			armErr := w.Arm()
+			if (armErr != nil) != tt.wantErr {
+				t.Fatalf("Arm error = %v, want error=%t", armErr, tt.wantErr)
+			}
+			if tt.wantErr {
+				t.Logf("Arm error: %v", armErr)
+				for _, want := range []string{blocked, root, "permission denied", "incomplete watch coverage"} {
+					if !strings.Contains(armErr.Error(), want) {
+						t.Errorf("Arm error = %q, missing %q", armErr, want)
+					}
+				}
+			}
+		})
+	}
+	coverage := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	if coverage.FailureCount != 1 || len(coverage.Failures) != 1 || coverage.Failures[0].Path != blocked {
+		t.Fatalf("CheckCoverage unreadable subtree = %#v, want blocked subtree", coverage)
+	}
+}
+
+func TestCheckCoverageDoesNotInstallWatchesAndReportsRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing}}})
+	if report.FailureCount != 1 || len(report.Failures) != 1 {
+		t.Fatalf("CheckCoverage report = %#v, want one failure", report)
+	}
+	if report.Failures[0].Path != missing || report.Failures[0].Root != missing || !strings.Contains(report.Failures[0].Error, "no such file") {
+		t.Fatalf("CheckCoverage failure = %#v, want missing path, root, and cause", report.Failures[0])
+	}
+}
+
+func TestCheckCoverageNilAndBoundedFailures(t *testing.T) {
+	if report := CheckCoverage(context.Background(), nil); report.FailureCount != 1 || len(report.Failures) != 1 || report.Failures[0].Error != "file_sentry configuration is unavailable" {
+		t.Fatalf("CheckCoverage(context.Background(), nil) = %#v, want unavailable configuration failure", report)
+	}
+
+	base := t.TempDir()
+	watchPaths := make([]config.WatchPath, 0, maxArmDiagnosticSamples+1)
+	for i := range maxArmDiagnosticSamples + 1 {
+		watchPaths = append(watchPaths, config.WatchPath{Path: filepath.Join(base, fmt.Sprintf("missing-%d", i))})
+	}
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: watchPaths})
+	if report.FailureCount != maxArmDiagnosticSamples+1 || len(report.Failures) != maxArmDiagnosticSamples {
+		t.Fatalf("CheckCoverage bounded report = %#v, want count=%d samples=%d", report, maxArmDiagnosticSamples+1, maxArmDiagnosticSamples)
+	}
+
+	if report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: base}}}); report.FailureCount != 0 {
+		t.Fatalf("CheckCoverage accessible root = %#v, want no failures", report)
+	}
+	fileRoot := filepath.Join(base, "not-a-directory")
+	if err := os.WriteFile(fileRoot, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile root fixture: %v", err)
+	}
+	linkRoot := filepath.Join(base, "root-link")
+	if err := os.Symlink(base, linkRoot); err != nil {
+		t.Skipf("Symlink root fixture: %v", err)
+	}
+	for _, path := range []string{fileRoot, linkRoot} {
+		if report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: path}}}); report.FailureCount != 1 {
+			t.Fatalf("CheckCoverage(context.Background(), %q) = %#v, want one rejected root", path, report)
+		}
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	deletedWD := t.TempDir()
+	if err := os.Chdir(deletedWD); err != nil {
+		t.Fatalf("Chdir deleted working directory: %v", err)
+	}
+	if err := os.Remove(deletedWD); err != nil {
+		t.Fatalf("Remove working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	if report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: "relative"}}}); report.FailureCount != 1 || len(report.Failures) != 1 {
+		t.Fatalf("CheckCoverage unresolved relative root = %#v, want one failure", report)
 	}
 }
 
@@ -2816,5 +2933,120 @@ func TestIsIgnored(t *testing.T) {
 				t.Errorf("isIgnored(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCheckCoverage_AllRootsIgnoredReportsNoWatchablePaths covers the state
+// where traversal records no failure and still leaves nothing to watch: every
+// configured root matches an ignore pattern. Arming fails closed here, so a
+// failure-only report would look healthy while startup refuses to run.
+func TestCheckCoverage_AllRootsIgnoredReportsNoWatchablePaths(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.FileSentry{
+		WatchPaths:     []config.WatchPath{{Path: root}},
+		IgnorePatterns: []string{filepath.Base(root)},
+	}
+	report := CheckCoverage(context.Background(), cfg)
+	if report.FailureCount != 0 {
+		t.Fatalf("FailureCount = %d, want 0; an ignored root is not a failure", report.FailureCount)
+	}
+	if report.WatchablePaths != 0 {
+		t.Fatalf("WatchablePaths = %d, want 0", report.WatchablePaths)
+	}
+	if !report.NoWatchablePaths() {
+		t.Fatal("NoWatchablePaths() = false; an ignored-away configuration must not read as covered")
+	}
+}
+
+// TestCheckCoverage_ReachableRootCountsWatchablePaths is the negative control:
+// a normal reachable root must NOT report the no-watchable-paths state.
+func TestCheckCoverage_ReachableRootCountsWatchablePaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	if report.FailureCount != 0 || report.NoWatchablePaths() {
+		t.Fatalf("report = %+v, want a clean reachable result", report)
+	}
+	if report.WatchablePaths < 2 {
+		t.Fatalf("WatchablePaths = %d, want the root and its child counted", report.WatchablePaths)
+	}
+}
+
+// TestCheckCoverage_CarriesRequiredFlag proves the required flag travels with
+// the failure instead of being reconstructed from a path, which is what breaks
+// when the absolute form cannot be resolved.
+func TestCheckCoverage_CarriesRequiredFlag(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	report := CheckCoverage(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: missing, Required: true}}})
+	if len(report.Failures) != 1 {
+		t.Fatalf("Failures = %+v, want one", report.Failures)
+	}
+	if !report.Failures[0].Required {
+		t.Fatal("Required = false on a failure from a required root")
+	}
+}
+
+// TestCheckCoverage_CancelledContextTruncates proves the walk honours
+// cancellation and reports the result as a lower bound rather than as coverage.
+// An unbounded diagnostic on a huge tree or a slow mount is what this prevents.
+func TestCheckCoverage_CancelledContextTruncates(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "child"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report := CheckCoverage(ctx, &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}})
+	if !report.Truncated {
+		t.Fatalf("report = %+v, want Truncated on a cancelled walk", report)
+	}
+	if report.FailureCount != 0 {
+		t.Fatalf("FailureCount = %d, want 0; a cancellation is not a coverage failure", report.FailureCount)
+	}
+	// A truncated walk must not present as the no-watchable-paths verdict
+	// either, since it never finished looking.
+	if report.NoWatchablePaths() {
+		t.Fatal("NoWatchablePaths() = true on a cancelled walk; truncation is not proof of absence")
+	}
+}
+
+// TestCheckCoverage_FlatFilesCountTowardWalkBudget proves the entry budget
+// counts files, not only directories. A watch root that is a large flat
+// directory would otherwise walk unbounded while the budget only saw the root.
+func TestCheckCoverage_FlatFilesCountTowardWalkBudget(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 8; i++ {
+		path := filepath.Join(root, fmt.Sprintf("f-%d", i))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Budget 3: root directory plus eight files is nine entries. Counting only
+	// directories would visit one dir and report complete coverage.
+	report := checkCoverageWithBudget(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}}, 3)
+	if !report.Truncated {
+		t.Fatalf("report = %+v, want Truncated when flat files exceed the entry budget", report)
+	}
+	if report.FailureCount != 0 {
+		t.Fatalf("FailureCount = %d, want 0; budget exhaustion is not a coverage failure", report.FailureCount)
+	}
+}
+
+// TestCheckCoverage_FlatFilesUnderBudgetAreNotTruncated is the negative control
+// for the flat-file budget: a small tree must still complete.
+func TestCheckCoverage_FlatFilesUnderBudgetAreNotTruncated(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := checkCoverageWithBudget(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}}, 8)
+	if report.Truncated || report.FailureCount != 0 || report.NoWatchablePaths() {
+		t.Fatalf("report = %+v, want a complete one-dir walk", report)
+	}
+	if report.WatchablePaths != 1 {
+		t.Fatalf("WatchablePaths = %d, want the root directory only", report.WatchablePaths)
 	}
 }

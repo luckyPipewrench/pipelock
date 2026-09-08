@@ -4,6 +4,7 @@
 package evidenceview
 
 import (
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -115,6 +116,75 @@ func TestSessionEvidenceOf(t *testing.T) {
 			t.Errorf("Timeline[0].Verdict = %q, want %q", ev.Timeline[0].Verdict, "allow")
 		}
 	})
+}
+
+func TestSessionEvidenceOf_TimelineWindowPreservesChainPositions(t *testing.T) {
+	pub, priv := generateTestKey(t)
+	trusted := map[string]TrustedKey{hex.EncodeToString(pub): {Source: "test"}}
+	tampered := buildTestChain(t, priv, 3)
+	const tamperedTarget = "https://api.vendor.example/tampered"
+	tampered[1].ActionRecord.Target = tamperedTarget
+	timelineBase := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		readLimited bool
+		wantWindow  string
+		want        []TimelineItem
+	}{
+		{
+			name:        "bounded read shows first window",
+			readLimited: true,
+			wantWindow:  "first",
+			want: []TimelineItem{
+				{Seq: 0, Time: timelineBase, Verdict: "allow", Reason: "read", Destination: testTarget},
+				{Seq: 1, Time: timelineBase.Add(time.Second), Verdict: "allow", Reason: "read", Destination: tamperedTarget, Unverifiable: true},
+			},
+		},
+		{
+			name:       "complete read shows latest window",
+			wantWindow: "latest",
+			want: []TimelineItem{
+				{Seq: 1, Time: timelineBase.Add(time.Second), Verdict: "allow", Reason: "read", Destination: tamperedTarget, Unverifiable: true},
+				{Seq: 2, Time: timelineBase.Add(2 * time.Second), Verdict: "allow", Reason: "read", Destination: testTarget, Unverifiable: true},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidence := SessionEvidenceOf("sess-window", tampered, trusted, tt.readLimited, 2, 2)
+			if evidence.Chain.Valid || evidence.Chain.BrokenAtIndex != 1 {
+				t.Fatalf("chain = %+v, want verification break at index 1", evidence.Chain)
+			}
+			if evidence.ReadLimited != tt.readLimited {
+				t.Fatalf("ReadLimited = %t, want %t", evidence.ReadLimited, tt.readLimited)
+			}
+			if !evidence.TimelineLimited || evidence.TimelineWindow != tt.wantWindow {
+				t.Fatalf("timeline state = limited:%t window:%q, want limited:%t window:%q", evidence.TimelineLimited, evidence.TimelineWindow, true, tt.wantWindow)
+			}
+			if len(evidence.Timeline) != len(tt.want) {
+				t.Fatalf("timeline length = %d, want %d", len(evidence.Timeline), len(tt.want))
+			}
+			for i, item := range evidence.Timeline {
+				want := tt.want[i]
+				if item.Seq != want.Seq || !item.Time.Equal(want.Time) || item.Verdict != want.Verdict || item.Reason != want.Reason || item.Destination != want.Destination || item.Unverifiable != want.Unverifiable {
+					t.Errorf("timeline[%d] = seq:%d time:%s verdict:%q reason:%q destination:%q unverifiable:%t, want seq:%d time:%s verdict:%q reason:%q destination:%q unverifiable:%t", i, item.Seq, item.Time, item.Verdict, item.Reason, item.Destination, item.Unverifiable, want.Seq, want.Time, want.Verdict, want.Reason, want.Destination, want.Unverifiable)
+				}
+			}
+		})
+	}
+
+	valid := buildTestChain(t, priv, 2)
+	exactLimit := SessionEvidenceOf("sess-exact", valid, trusted, false, 2, 2)
+	if !exactLimit.Chain.Valid || exactLimit.TimelineLimited || exactLimit.TimelineWindow != "all" || len(exactLimit.Timeline) != 2 {
+		t.Fatalf("exact-limit evidence = %+v, want verified all-receipts timeline", exactLimit)
+	}
+
+	defaultLimit := SessionEvidenceOf("sess-default", buildTestChain(t, priv, 3), trusted, false, 3, 0)
+	if !defaultLimit.Chain.Valid || defaultLimit.TimelineLimited || defaultLimit.TimelineWindow != "all" || len(defaultLimit.Timeline) != 3 {
+		t.Fatalf("default-limit evidence = %+v, want verified all-receipts timeline", defaultLimit)
+	}
 }
 
 func TestRedactRaw(t *testing.T) {

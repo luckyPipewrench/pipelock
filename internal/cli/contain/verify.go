@@ -1201,6 +1201,7 @@ type nftRulesHeaderUIDs struct {
 	operatorUID int
 	proxyUID    int
 	agentUID    int
+	proxyPort   int
 }
 
 func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
@@ -1217,10 +1218,10 @@ func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
 				continue
 			}
 			switch key {
-			case "operator", "pipelock-proxy", "pipelock-agent":
+			case "operator", "pipelock-proxy", "pipelock-agent", "proxy-port":
 				uid, err := strconv.Atoi(value)
 				if err != nil {
-					return nftRulesHeaderUIDs{}, true, fmt.Errorf("%s uid %q: %w", key, value, err)
+					return nftRulesHeaderUIDs{}, true, fmt.Errorf("%s value %q: %w", key, value, err)
 				}
 				values[key] = uid
 			}
@@ -1228,10 +1229,17 @@ func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
 		operatorUID, hasOperator := values["operator"]
 		proxyUID, hasProxy := values["pipelock-proxy"]
 		agentUID, hasAgent := values["pipelock-agent"]
+		proxyPort, hasPort := values["proxy-port"]
 		if !hasOperator || !hasProxy || !hasAgent {
 			return nftRulesHeaderUIDs{}, true, errors.New("managed uid header missing operator, pipelock-proxy, or pipelock-agent uid")
 		}
-		return nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID}, true, nil
+		if !hasPort {
+			proxyPort = defaultProxyPort
+		}
+		if err := validatePort(proxyPort); err != nil {
+			return nftRulesHeaderUIDs{}, true, fmt.Errorf("managed proxy-port: %w", err)
+		}
+		return nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID, proxyPort: proxyPort}, true, nil
 	}
 	return nftRulesHeaderUIDs{}, false, nil
 }
@@ -1242,8 +1250,11 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
 	body := string(data)
-	if !execStartLineContains(body, env.nftRulesPath) {
-		return fmt.Errorf("%s missing ExecStart for %s", env.nftPersistUnitPath, env.nftRulesPath)
+	if !unitHasExactEntry(body, "Unit", "ConditionPathExists", env.nftRulesPath) {
+		return fmt.Errorf("%s missing ConditionPathExists for %s", env.nftPersistUnitPath, env.nftRulesPath)
+	}
+	if !unitHasExactEntry(body, "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
+		return fmt.Errorf("%s missing ExecStart for managed nft reloader", env.nftPersistUnitPath)
 	}
 	rules, err := env.readFile(env.nftRulesPath)
 	if err != nil {
@@ -1272,12 +1283,24 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 	return nil
 }
 
-func execStartLineContains(body, needle string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "ExecStart=") && strings.Contains(line, needle) {
-			return true
+// unitHasExactEntry reports whether the systemd unit body carries key=value
+// verbatim inside the named section. Substring matching accepted a commented
+// entry, a suffixed path, an unintended executable whose path merely contained
+// the managed target, and extra trailing arguments, so every one of those
+// tampered units verified as healthy. The managed unit is rendered by
+// renderNFTPersistUnit, so an exact section-scoped entry is the whole contract.
+func unitHasExactEntry(body, section, key, value string) bool {
+	current := ""
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			current = strings.TrimSpace(line[1 : len(line)-1])
+			continue
 		}
+		if current != section || line != key+"="+value {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -1324,6 +1347,26 @@ func lineHasAgentProxyLoopbackAllow(line string, agentUID, port int) bool {
 		}
 	}
 	return nftRuleTailIsCommentOnly(fields[len(want):])
+}
+
+// lineHasAgentProxyLoopbackAllowAnyPort recognizes the managed loopback allow
+// regardless of which proxy port it names. Reconciliation matches the legacy
+// block so it can delete it, and pinning that match to the CURRENT port left a
+// previous-port block in place after an operator changed the proxy port. Its
+// catch-all DROP then sat ahead of the freshly appended canonical rules and
+// dropped the agent's traffic to the new port.
+func lineHasAgentProxyLoopbackAllowAnyPort(line string, agentUID int) bool {
+	fields := nftLineFields(line)
+	const wantLen = 10
+	if len(fields) < wantLen {
+		return false
+	}
+	if fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) ||
+		fields[3] != "ip" || fields[4] != "daddr" || fields[5] != "127.0.0.1" ||
+		fields[6] != "tcp" || fields[7] != "dport" || !isTCPPort(fields[8]) || fields[9] != "accept" {
+		return false
+	}
+	return nftRuleTailIsCommentOnly(fields[wantLen:])
 }
 
 func chainLinesHaveAgentDNSDropBeforeCatchAll(lines []string, agentUID int, protocol string) bool {
@@ -2134,7 +2177,11 @@ func managedContainmentDropPacketCountFromLines(lines []string, chainName string
 		if !fieldsAreNFTBookkeeping(fields[uidAt+1 : dropAt]) {
 			continue
 		}
-		packets = parsed
+		if packets > math.MaxUint64-parsed {
+			parseErr = fmt.Errorf("managed catch-all DROP packet counters overflow uint64 in chain %s for agent uid %d", chainName, agentUID)
+			break
+		}
+		packets += parsed
 		matched++
 	}
 	if parseErr != nil {
@@ -2142,9 +2189,6 @@ func managedContainmentDropPacketCountFromLines(lines []string, chainName string
 	}
 	if matched == 0 {
 		return 0, fmt.Errorf("no managed catch-all DROP packet counter found in chain %s for agent uid %d", chainName, agentUID)
-	}
-	if matched != 1 {
-		return 0, fmt.Errorf("found %d managed catch-all DROP packet counters in chain %s for agent uid %d; want exactly one", matched, chainName, agentUID)
 	}
 	return packets, nil
 }

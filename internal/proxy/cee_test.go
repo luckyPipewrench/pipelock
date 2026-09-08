@@ -1261,10 +1261,9 @@ func TestExtractOutboundPayload_ExcludesPath(t *testing.T) {
 
 // --- Path-split secret regression tests ---
 
-func TestCeeAdmit_PathContributesToEntropy(t *testing.T) {
-	// Tests ceeAdmit directly with path-containing payload. HTTP handlers
-	// no longer include paths in the payload, but this validates ceeAdmit
-	// entropy tracking works for any input data shape.
+func TestCeeAdmit_EntropyBudgetRecordsOutboundBytes(t *testing.T) {
+	// Tests the entropy-budget path directly with representative outbound bytes.
+	// HTTP handlers carry URL paths separately, so this is not path coverage.
 	et := scanner.NewEntropyTracker(1.0, 300) // 1-bit budget
 	defer et.Close()
 	m := metrics.New()
@@ -1279,11 +1278,10 @@ func TestCeeAdmit_PathContributesToEntropy(t *testing.T) {
 		},
 	}
 
-	// Simulate path data with high entropy (passed directly, not via urlPayload).
-	pathPayload := []byte("/api/tokens/x7k9mQ2pR4wL8nJ5")
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: pathPayload, TargetURL: "http://example.com/api/tokens/x7k9mQ2pR4wL8nJ5", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
+	outbound := []byte("opaque-outbound-x7k9mQ2pR4wL8nJ5")
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: outbound, TargetURL: "http://example.com/api/tokens/x7k9mQ2pR4wL8nJ5", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
 	if !result.Blocked {
-		t.Fatal("expected block: high-entropy path should exceed 1-bit budget")
+		t.Fatal("expected block: high-entropy outbound bytes should exceed 1-bit budget")
 	}
 	if !result.EntropyHit {
 		t.Error("expected EntropyHit = true")

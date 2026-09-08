@@ -209,6 +209,24 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	setBoolDefault(conductor, "honor_remote_kill_switch", &cfg.Conductor.HonorRemoteKillSwitch)
 }
 
+// validateExplicitEntropyThreshold rejects a configured non-positive path
+// entropy threshold before ApplyDefaults can replace it with the default. An
+// omitted or null field still defaults to 4.5; only an explicit numeric value
+// is an operator choice that must fail loud rather than silently change.
+func validateExplicitEntropyThreshold(rawYAML []byte, cfg *Config) error {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(rawYAML, &raw); err != nil {
+		return fmt.Errorf("parsing config for entropy threshold validation: %w", err)
+	}
+	fetchProxy, _ := raw["fetch_proxy"].(map[string]interface{})
+	monitoring, _ := fetchProxy["monitoring"].(map[string]interface{})
+	value, configured := monitoring["entropy_threshold"]
+	if !configured || value == nil || cfg.FetchProxy.Monitoring.EntropyThreshold > 0 {
+		return nil
+	}
+	return fmt.Errorf("fetch_proxy.monitoring.entropy_threshold must be greater than 0 when configured; omit it to use the default (4.5)")
+}
+
 // ApplyDefaults fills in zero-value fields with sensible defaults.
 func (c *Config) ApplyDefaults() {
 	normalizeLearn(&c.Learn)

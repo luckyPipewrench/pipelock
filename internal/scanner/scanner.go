@@ -3943,7 +3943,8 @@ func isReadableLowerWord(part string) bool {
 }
 
 // ShannonEntropy calculates the Shannon entropy of a string in bits per character.
-// English text: ~3.5-4.0, base64: ~5.5-6.0, hex: ~4.0, encrypted: ~7.5-8.0.
+// English text: ~3.5-4.0, measured base64url resource identifiers: ~4.93-5.43,
+// hex: ~4.0, encrypted: ~7.5-8.0.
 func ShannonEntropy(s string) float64 {
 	if len(s) == 0 {
 		return 0

@@ -1803,6 +1803,48 @@ mode: audit
 	}
 }
 
+func TestLoad_EntropyThresholdExplicitNonPositiveRejected(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold string
+		wantErr   bool
+		want      float64
+	}{
+		{name: "omitted defaults", want: 4.5},
+		{name: "null defaults", threshold: "null", want: 4.5},
+		{name: "positive is preserved", threshold: "7.9", want: 7.9},
+		{name: "zero is rejected", threshold: "0", wantErr: true},
+		{name: "negative is rejected", threshold: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := "version: 1\nmode: audit\n"
+			if tt.threshold != "" {
+				body += "fetch_proxy:\n  monitoring:\n    entropy_threshold: " + tt.threshold + "\n"
+			}
+			cfg, err := LoadBytes([]byte(body))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("LoadBytes succeeded, want non-positive threshold rejection")
+				}
+				for _, want := range []string{"fetch_proxy.monitoring.entropy_threshold", "omit it to use the default"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("LoadBytes error = %q, want substring %q", err, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadBytes: %v", err)
+			}
+			if cfg.FetchProxy.Monitoring.EntropyThreshold != tt.want {
+				t.Errorf("EntropyThreshold = %v, want %v", cfg.FetchProxy.Monitoring.EntropyThreshold, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidate_AllModes(t *testing.T) {
 	for _, mode := range []string{ModeStrict, ModeBalanced, ModeAudit} {
 		cfg := Defaults()

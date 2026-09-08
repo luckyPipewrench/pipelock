@@ -155,10 +155,10 @@ fetch_proxy:
 **Entropy guidance:**
 - English text: 3.5-4.0 bits/char
 - Hex/commit hashes: ~4.0
-- Base64-encoded data: 4.0-4.5
-- Random/encrypted: 5.5-8.0
+- Measured base64url resource identifiers: 4.93-5.43
+- Random/encrypted: ~7.5-8.0
 
-The default threshold (4.5) allows commit hashes and base64-encoded filenames while flagging encrypted blobs. Lower it (3.5) for strict mode. Raise it (5.0) for development environments where base64 URLs are common.
+The default threshold (4.5) allows typical commit hashes while flagging encrypted blobs. Vendor resource identifiers in URL paths commonly exceed that threshold (the measured base64url range above) and are blocked. Lower it (3.5) for strict mode. For known API routes, prefer a narrow `request_policy` path rule over raising the global threshold.
 
 **Subdomain entropy exclusions** skip subdomain and path entropy checks for specific domains, but query parameter entropy is still checked. Defaults cover package/object hosts that use hash-like routing paths (`files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com`). This is also useful for APIs that embed tokens in URL paths (e.g., Telegram bot API). Supports wildcard matching (`*.example.com`).
 

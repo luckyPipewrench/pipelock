@@ -17,6 +17,12 @@ type compiledCanaryToken struct {
 	canonicalLower          string
 	partialWindows          map[string][]int
 	canonicalPartialWindows map[string][]int
+	// decimalCodes holds the token spelled out as decimal character codes
+	// (comma and space separated), built from the original-case value. The
+	// known value is encoded and searched for, never the other way round:
+	// decoding arbitrary numeric runs in prose would fire on JSON arrays,
+	// CSV telemetry and pixel data.
+	decimalCodes []string
 }
 
 func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
@@ -31,10 +37,12 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 			continue
 		}
 		normalizedValues = append(normalizedValues, normalized)
+		original := normalize.ForDLP(token.Value)
 		out = append(out, compiledCanaryToken{
 			name:            token.Name,
 			normalizedLower: normalized,
 			canonicalLower:  strings.ToLower(canonicalizeCanaryText(normalized)),
+			decimalCodes:    []string{decimalCharacterCodes(original, ","), decimalCharacterCodes(original, " ")},
 		})
 	}
 	// Windows shared between two canaries are a common stem, not a disclosure
@@ -85,6 +93,7 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 
 	var matches []TextDLPMatch
 	matches = append(matches, s.matchCanaryTokens(cleaned, "", false, ViewDLPNormalized)...)
+	matches = append(matches, s.matchCanaryDecimalCodes(cleaned, ViewDLPNormalized)...)
 
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, spanViewLabel("url_decoded", ViewDLPNormalized))...)
@@ -204,4 +213,37 @@ func canonicalizeCanaryText(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// matchCanaryDecimalCodes finds a canary token spelled out as decimal character
+// codes ("65,75,73,65,...") in text. Ordinary DLP already catches configured
+// secrets in this form through matchSecretEncodingSpan; a canary exists to
+// prove an exfiltration path, so it must not be the one known value this
+// spelling hides. Only whole tokens match: the encoded needle is the exact
+// code sequence of the exact value, so a match is that value and nothing else.
+func (s *Scanner) matchCanaryDecimalCodes(text, inputViewLabel string) []TextDLPMatch {
+	if len(s.canaryTokens) == 0 || text == "" {
+		return nil
+	}
+	var matches []TextDLPMatch
+	for _, token := range s.canaryTokens {
+		for _, needle := range token.decimalCodes {
+			if needle == "" {
+				continue
+			}
+			start := strings.Index(text, needle)
+			if start < 0 {
+				continue
+			}
+			patternName := "Canary Token (" + token.name + ")"
+			matches = append(matches, TextDLPMatch{
+				PatternName: patternName,
+				Severity:    "critical",
+				Encoded:     encodingDecimal,
+				span:        newMatchSpan(start, start+len(needle), inputViewLabel, patternName, "", ""),
+			})
+			break
+		}
+	}
+	return matches
 }

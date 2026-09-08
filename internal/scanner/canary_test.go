@@ -413,3 +413,42 @@ func BenchmarkScanCanaryText_NestedEncoded(b *testing.B) {
 		s.scanCanaryText(text)
 	}
 }
+
+// TestCanary_DecimalCharacterCodesAreDetected covers the last known-value
+// spelling the canary matcher lacked: the token written as decimal character
+// codes. Configured secrets already matched this way; the canary did not.
+func TestCanary_DecimalCharacterCodesAreDetected(t *testing.T) {
+	s := testCanaryScanner()
+	defer s.Close()
+
+	canary := testCanaryValue()
+	for _, tt := range []struct {
+		name string
+		text string
+	}{
+		{name: "comma", text: "payload: " + decimalCharacterCodes(canary, ",")},
+		{name: "space", text: "payload: " + decimalCharacterCodes(canary, " ")},
+		{name: "inside json array", text: `{"bytes":[` + decimalCharacterCodes(canary, ",") + `]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean {
+				t.Fatal("canary spelled as decimal character codes must be detected")
+			}
+			match := result.Matches[0]
+			if match.PatternName != "Canary Token ("+testCanaryName+")" || match.Encoded != encodingDecimal {
+				t.Fatalf("match = (%q, %q), want canary with decimal encoding; matches=%+v", match.PatternName, match.Encoded, result.Matches)
+			}
+			if !match.Span().Valid() {
+				t.Fatalf("match must carry a valid span, got %+v", match.Span())
+			}
+		})
+	}
+
+	// Ordinary numeric data that happens to share a prefix of the code
+	// sequence must stay clean: only the whole value matches.
+	partial := decimalCharacterCodes(canary[:8], ",")
+	if result := s.ScanTextForDLP(context.Background(), "samples: "+partial+",255,0,0"); !result.Clean {
+		t.Fatalf("a partial code sequence must not match, got %+v", result.Matches)
+	}
+}

@@ -5,6 +5,8 @@ package evidence
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -45,6 +48,57 @@ func TestEvidenceDoctorCleanDirectory(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "healthy") {
 		t.Fatalf("doctor output = %q, want healthy", stdout.String())
+	}
+}
+
+func TestEvidenceDoctorPrometheusMetricReplacesHealthyWithInconclusive(t *testing.T) {
+	dir := t.TempDir()
+	writeActualDoctorReceipt(t, dir)
+	metricPath := filepath.Join(t.TempDir(), "pipelock_evidence_corpus.prom")
+	runDoctor := func() (int, string) {
+		t.Helper()
+		var output bytes.Buffer
+		cmd := Cmd()
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		cmd.SetArgs([]string{"doctor", dir, "--prometheus-textfile", metricPath})
+		err := cmd.Execute()
+		code := cliutil.ExitOK
+		if err != nil {
+			code = cliutil.ExitCodeOf(err)
+		}
+		return code, output.String()
+	}
+	readMetric := func() string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Clean(metricPath))
+		if err != nil {
+			t.Fatalf("read metric: %v", err)
+		}
+		return string(raw)
+	}
+
+	if code, output := runDoctor(); code != cliutil.ExitOK {
+		t.Fatalf("healthy doctor exit code = %d, want 0 (output=%q)", code, output)
+	}
+	if metric := readMetric(); !strings.Contains(metric, "pipelock_evidence_corpus_integrity_ok 1") {
+		t.Fatalf("healthy metric = %q, want integrity 1", metric)
+	}
+
+	for i := 0; i <= maxEvidenceDoctorFiles; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("evidence-proxy-%d.raw.enc", i))
+		if err := os.WriteFile(path, []byte("sidecar"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	if code, output := runDoctor(); code != cliutil.ExitGeneral {
+		t.Fatalf("inconclusive doctor exit code = %d, want %d (output=%q)", code, cliutil.ExitGeneral, output)
+	} else if !strings.Contains(output, "scan was incomplete") {
+		t.Fatalf("doctor did not report an incomplete scan: %q", output)
+	}
+	metric := readMetric()
+	if !strings.Contains(metric, "pipelock_evidence_corpus_integrity_ok 0") || strings.Contains(metric, "pipelock_evidence_corpus_integrity_ok 1") {
+		t.Fatalf("inconclusive metric did not replace healthy reading: %q", metric)
 	}
 }
 
@@ -412,6 +466,36 @@ func writeDoctorRawEntries(t *testing.T, dir, name string, entries []recorder.En
 	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 		t.Fatalf("write evidence: %v", err)
 	}
+}
+
+func writeActualDoctorReceipt(t *testing.T, dir string) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	record := receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionRead,
+		Timestamp:     doctorTestTime(t, 1700000300, 0),
+		Target:        "https://api.vendor.example/resource",
+		Verdict:       config.ActionAllow,
+		Transport:     "fetch",
+		ChainPrevHash: receipt.GenesisHash,
+		ChainSeq:      0,
+		PolicyHash:    "doctor-test-policy",
+	}
+	signed, err := receipt.Sign(record, privateKey)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	detail, err := receipt.Marshal(signed)
+	if err != nil {
+		t.Fatalf("Marshal receipt: %v", err)
+	}
+	entry := doctorV1ReceiptEntry(t, 0, recorder.GenesisHash, detail)
+	writeDoctorRawEntries(t, dir, "evidence-proxy-0.jsonl", []recorder.Entry{entry})
 }
 
 func minimalDoctorV2Receipt(t *testing.T, seq uint64, prevHash, kind string) json.RawMessage {

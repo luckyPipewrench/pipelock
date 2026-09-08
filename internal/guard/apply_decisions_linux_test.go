@@ -7,19 +7,20 @@ package guard
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
 
-// These cover the decisions Apply makes BEFORE it touches the kernel.
+// These cover Apply's decisions and setup failures without touching the kernel.
 //
-// They can run in-process precisely because each one returns early: Landlock is
-// irreversible, so a test that reached the syscalls would restrict the test
-// binary itself for the rest of the run. Every case here is chosen to stop
-// before that line, which is also why the incomplete-manifest case is the one
-// used to exercise coverage tiering at a supported ABI.
+// Landlock is irreversible, so tests must not use the kernel operations in
+// process. The rulesetOperations seam supplies every syscall below, including
+// successful setup, while the manifest uses ordinary temporary directories for
+// its post-apply reachability check.
 
 func TestApply_RefusesWhenLandlockUnavailable(t *testing.T) {
 	sentinel := errors.New("landlock syscall missing")
@@ -137,6 +138,178 @@ func TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync(t *testing.T) {
 	}
 	if restrictFlags != 0 {
 		t.Fatalf("pre-exec restrict flags=%d, want no thread-sync flag", restrictFlags)
+	}
+}
+
+func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
+	tests := []struct {
+		name            string
+		threadSync      bool
+		failStage       string
+		wantReason      string
+		wantCreate      int
+		wantAdd         int
+		wantNoNewPrivs  int
+		wantRestrict    int
+		wantClose       int
+		wantRestrictArg uint32
+	}{
+		{
+			name:       "create_ruleset",
+			failStage:  "create",
+			wantReason: "creating landlock ruleset",
+			wantCreate: 1,
+		},
+		{
+			name:       "add_path_rule",
+			failStage:  "add",
+			wantReason: "adding rule",
+			wantCreate: 1,
+			wantAdd:    1,
+			wantClose:  1,
+		},
+		{
+			name:           "set_no_new_privs",
+			failStage:      "no_new_privs",
+			wantReason:     "setting no_new_privs",
+			wantCreate:     1,
+			wantAdd:        1,
+			wantNoNewPrivs: 1,
+			wantClose:      1,
+		},
+		{
+			name:            "restrict_self_with_thread_sync",
+			threadSync:      true,
+			failStage:       "restrict",
+			wantReason:      "applying landlock restriction",
+			wantCreate:      1,
+			wantAdd:         1,
+			wantNoNewPrivs:  1,
+			wantRestrict:    1,
+			wantClose:       1,
+			wantRestrictArg: llsys.FlagRestrictSelfTSync,
+		},
+		{
+			name:           "healthy_without_thread_sync",
+			wantCreate:     1,
+			wantAdd:        1,
+			wantNoNewPrivs: 1,
+			wantRestrict:   1,
+			wantClose:      1,
+		},
+		{
+			name:            "healthy_with_thread_sync",
+			threadSync:      true,
+			wantCreate:      1,
+			wantAdd:         1,
+			wantNoNewPrivs:  1,
+			wantRestrict:    1,
+			wantClose:       1,
+			wantRestrictArg: llsys.FlagRestrictSelfTSync,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			state := filepath.Join(root, "state")
+			if err := os.Mkdir(state, 0o750); err != nil {
+				t.Fatalf("Mkdir state: %v", err)
+			}
+			p := &PreparedManifest{
+				complete: true,
+				rules: []preparedRule{{
+					fd:       17,
+					access:   rightsReadDir,
+					declared: "state",
+					resolved: state,
+					isDir:    true,
+					kind:     AccessReadDirectory,
+				}},
+			}
+			sentinel := errors.New("injected ruleset operation failure")
+			var created, added, noNewPrivs, restricted, closed int
+			var restrictFlags uint32
+			ops := rulesetOperations{
+				getABI: func() (int, error) {
+					if tc.threadSync {
+						return ThreadSyncABI, nil
+					}
+					return MinimumABI, nil
+				},
+				createRuleset: func(attr *llsys.RulesetAttr, flags int) (int, error) {
+					created++
+					if flags != 0 || attr.HandledAccessFS == 0 {
+						t.Fatalf("create ruleset flags=%d handled=%d", flags, attr.HandledAccessFS)
+					}
+					if tc.failStage == "create" {
+						return -1, sentinel
+					}
+					return 42, nil
+				},
+				addPathRule: func(fd int, attr *llsys.PathBeneathAttr, flags int) error {
+					added++
+					if fd != 42 || flags != 0 || attr.ParentFd != 17 || attr.AllowedAccess != rightsReadDir {
+						t.Fatalf("add rule fd=%d flags=%d parent=%d access=%d", fd, flags, attr.ParentFd, attr.AllowedAccess)
+					}
+					if tc.failStage == "add" {
+						return sentinel
+					}
+					return nil
+				},
+				setNoNewPrivs: func() error {
+					noNewPrivs++
+					if tc.failStage == "no_new_privs" {
+						return sentinel
+					}
+					return nil
+				},
+				restrictSelf: func(fd int, flags uint32) error {
+					restricted++
+					restrictFlags = flags
+					if fd != 42 {
+						t.Fatalf("restrict fd=%d, want 42", fd)
+					}
+					if tc.failStage == "restrict" {
+						return sentinel
+					}
+					return nil
+				},
+				closeFD: func(fd int) error {
+					closed++
+					if fd != 42 {
+						t.Fatalf("close fd=%d, want 42", fd)
+					}
+					return nil
+				},
+			}
+
+			record, err := p.applyWithOperations(ops, tc.threadSync)
+			if tc.failStage == "" {
+				if err != nil {
+					t.Fatalf("applyWithOperations: %v", err)
+				}
+				if !record.Enforced() || !p.applied {
+					t.Fatalf("record = %+v, applied=%v, want enforced", record, p.applied)
+				}
+			} else {
+				if !errors.Is(err, sentinel) {
+					t.Fatalf("error = %v, want injected error wrapped", err)
+				}
+				if record.State != EnforcementRefused || record.Enforced() || p.applied {
+					t.Fatalf("record = %+v, applied=%v, want refused and unapplied", record, p.applied)
+				}
+				if !strings.Contains(record.Reason, tc.wantReason) {
+					t.Fatalf("reason = %q, want %q", record.Reason, tc.wantReason)
+				}
+			}
+			if created != tc.wantCreate || added != tc.wantAdd || noNewPrivs != tc.wantNoNewPrivs || restricted != tc.wantRestrict || closed != tc.wantClose {
+				t.Fatalf("calls create=%d add=%d no_new_privs=%d restrict=%d close=%d, want %d/%d/%d/%d/%d", created, added, noNewPrivs, restricted, closed, tc.wantCreate, tc.wantAdd, tc.wantNoNewPrivs, tc.wantRestrict, tc.wantClose)
+			}
+			if tc.wantRestrict != 0 && restrictFlags != tc.wantRestrictArg {
+				t.Fatalf("restrict flags=%d, want %d", restrictFlags, tc.wantRestrictArg)
+			}
+		})
 	}
 }
 

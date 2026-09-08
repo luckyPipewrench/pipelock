@@ -50,6 +50,7 @@ planned actions without touching state.`,
 		grantWorkspaceCmd(),
 		revokeWorkspaceCmd(),
 		caRefreshCmd(),
+		reloadNFTRulesCmd(),
 		upgradeCmd(),
 	)
 

@@ -750,6 +750,121 @@ func TestManagerCascadeLimitDenialJournal(t *testing.T) {
 	}
 }
 
+func TestManagerResolveJournalFailureFailsClosed(t *testing.T) {
+	tests := []struct {
+		name             string
+		breakJournalPath bool
+		wantDecision     string
+		wantSource       string
+		wantPending      int
+	}{
+		{
+			name:         "terminal_allow_is_journaled",
+			wantDecision: config.ActionAllow,
+			wantSource:   SourceApproval,
+			wantPending:  0,
+		},
+		{
+			name:             "terminal_allow_with_unavailable_journal_blocks",
+			breakJournalPath: true,
+			wantDecision:     config.ActionBlock,
+			wantSource:       SourceCancel,
+			wantPending:      1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			journalPath := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+			resolved := make(chan Resolution, 2)
+			m := NewManager(Config{
+				Enabled:              true,
+				Timeout:              time.Hour,
+				MaxPending:           4,
+				MaxPendingPerSession: 4,
+				MaxPendingBytes:      1024,
+				JournalPath:          journalPath,
+			})
+			t.Cleanup(func() { m.ResolveAll(config.ActionBlock, SourceCancel) })
+			held := HeldAction{
+				DeferID:   "held-action",
+				ActionID:  "action-1",
+				Target:    "tool",
+				Surface:   SurfaceMCPStdio,
+				Method:    "tools/call",
+				Reason:    "awaiting approval",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "session-1", SessionIDOriginal: "session-1"},
+				Resolve:   func(res Resolution) { resolved <- res },
+			}
+			if err := m.Hold(held); err != nil {
+				t.Fatalf("Hold: %v", err)
+			}
+
+			if tc.breakJournalPath {
+				// A directory cannot be opened for append. Keep the earlier valid
+				// journal path intact so recovery observes its held entry.
+				m.cfg.JournalPath = t.TempDir()
+			}
+			if err := m.Resolve(held.DeferID, config.ActionAllow, SourceApproval); err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+
+			got := waitResolution(t, resolved)
+			if got.FinalDecision != tc.wantDecision || got.ResolutionSource != tc.wantSource {
+				t.Fatalf("resolution = (%q, %q), want (%q, %q)", got.FinalDecision, got.ResolutionSource, tc.wantDecision, tc.wantSource)
+			}
+			if _, ok := m.Held(held.DeferID); ok {
+				t.Fatal("resolved hold remained live")
+			}
+			if pending := m.Snapshot(); len(pending) != 0 {
+				t.Fatalf("pending holds = %+v, want none", pending)
+			}
+			select {
+			case duplicate := <-resolved:
+				t.Fatalf("duplicate resolution delivered: %+v", duplicate)
+			default:
+			}
+
+			pending, err := PendingJournal(journalPath)
+			if err != nil {
+				t.Fatalf("PendingJournal: %v", err)
+			}
+			if len(pending) != tc.wantPending {
+				t.Fatalf("recovery pending holds = %+v, want %d", pending, tc.wantPending)
+			}
+			if tc.wantPending == 1 && (pending[0].DeferID != held.DeferID || pending[0].ActionID != held.ActionID) {
+				t.Fatalf("recovery hold = %+v, want original held action", pending[0])
+			}
+			entries := readJournalEntries(t, journalPath)
+			if tc.breakJournalPath {
+				if len(entries) != 1 || entries[0].State != StateHeld {
+					t.Fatalf("journal after failed terminal write = %+v, want original held entry only", entries)
+				}
+				recovery := NewManager(Config{Enabled: true, JournalPath: journalPath})
+				if err := recovery.RecordRestartRecovery(pending[0]); err != nil {
+					t.Fatalf("RecordRestartRecovery: %v", err)
+				}
+				pending, err = PendingJournal(journalPath)
+				if err != nil {
+					t.Fatalf("PendingJournal after restart recovery: %v", err)
+				}
+				if len(pending) != 0 {
+					t.Fatalf("recovery pending holds after restart recovery = %+v, want none", pending)
+				}
+				entries = readJournalEntries(t, journalPath)
+				if len(entries) != 2 || entries[1].State != StateResolvedBlock || entries[1].Source != SourceRestartRecovery {
+					t.Fatalf("journal after restart recovery = %+v, want held then resolved_block recovery", entries)
+				}
+				return
+			}
+			if len(entries) != 2 || entries[1].State != StateResolvedAllow || entries[1].Source != SourceApproval {
+				t.Fatalf("journal after allow = %+v, want held then resolved_allow approval", entries)
+			}
+		})
+	}
+}
+
 func readJournalEntries(t *testing.T, path string) []journalEntry {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Clean(path))

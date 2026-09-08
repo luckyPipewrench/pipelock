@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoad_FlightRecorderEvidenceHealthEnabledStates(t *testing.T) {
@@ -43,6 +44,76 @@ func TestLoad_FlightRecorderEvidenceHealthReloadStates(t *testing.T) {
 	if third.FlightRecorder.EvidenceHealthEnabled() != second.FlightRecorder.EvidenceHealthEnabled() {
 		t.Fatalf("reload without change EvidenceHealthEnabled = %v, want %v",
 			third.FlightRecorder.EvidenceHealthEnabled(), second.FlightRecorder.EvidenceHealthEnabled())
+	}
+}
+
+func TestLoad_FlightRecorderEvidenceMaxAnchorLagDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want time.Duration
+	}{
+		{
+			name: "omitted uses default",
+			yaml: "flight_recorder:\n  enabled: true\n",
+			want: DefaultEvidenceHealthMaxAnchorLag,
+		},
+		{
+			name: "null uses default",
+			yaml: "flight_recorder:\n  enabled: true\n  evidence_health:\n    max_anchor_lag: null\n",
+			want: DefaultEvidenceHealthMaxAnchorLag,
+		},
+		{
+			name: "explicit zero is preserved",
+			yaml: "flight_recorder:\n  enabled: true\n  evidence_health:\n    max_anchor_lag: 0s\n",
+			want: 0,
+		},
+		{
+			name: "whitespace-padded duration",
+			yaml: "flight_recorder:\n  enabled: true\n  evidence_health:\n    max_anchor_lag: ' 90m '\n",
+			want: 90 * time.Minute,
+		},
+		{
+			name: "blank uses default",
+			yaml: "flight_recorder:\n  enabled: true\n  evidence_health:\n    max_anchor_lag: ''\n",
+			want: DefaultEvidenceHealthMaxAnchorLag,
+		},
+		{
+			name: "valid duration",
+			yaml: "flight_recorder:\n  enabled: true\n  evidence_health:\n    max_anchor_lag: 90m\n",
+			want: 90 * time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadEvidenceHealthYAML(t, tt.yaml)
+			if got := cfg.FlightRecorder.EvidenceMaxAnchorLagDuration(); got != tt.want {
+				t.Fatalf("EvidenceMaxAnchorLagDuration = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFlightRecorderEvidenceMaxAnchorLagDurationFallback(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{name: "blank", raw: " \t", want: DefaultEvidenceHealthMaxAnchorLag},
+		{name: "trimmed valid duration", raw: " 90m ", want: 90 * time.Minute},
+		{name: "malformed", raw: "not-a-duration", want: DefaultEvidenceHealthMaxAnchorLag},
+		{name: "negative", raw: "-1s", want: DefaultEvidenceHealthMaxAnchorLag},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := FlightRecorder{EvidenceHealth: FlightRecorderEvidenceHealth{MaxAnchorLag: tt.raw}}
+			if got := f.EvidenceMaxAnchorLagDuration(); got != tt.want {
+				t.Fatalf("EvidenceMaxAnchorLagDuration(%q) = %s, want %s", tt.raw, got, tt.want)
+			}
+		})
 	}
 }
 

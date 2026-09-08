@@ -81,25 +81,41 @@ func TestEvidenceDoctorPrometheusMetricReplacesHealthyWithInconclusive(t *testin
 	if code, output := runDoctor(); code != cliutil.ExitOK {
 		t.Fatalf("healthy doctor exit code = %d, want 0 (output=%q)", code, output)
 	}
-	if metric := readMetric(); !strings.Contains(metric, "pipelock_evidence_corpus_integrity_ok 1") {
-		t.Fatalf("healthy metric = %q, want integrity 1", metric)
+	assertMetric := func(want string) {
+		t.Helper()
+		metric := readMetric()
+		var samples []string
+		for _, line := range strings.Split(metric, "\n") {
+			if strings.HasPrefix(line, "pipelock_evidence_corpus_integrity_ok") {
+				samples = append(samples, line)
+			}
+		}
+		if len(samples) != 1 || samples[0] != "pipelock_evidence_corpus_integrity_ok "+want {
+			t.Fatalf("metric = %q, want exactly one integrity sample with value %s", metric, want)
+		}
 	}
+	assertMetric("1")
 
-	for i := 0; i <= maxEvidenceDoctorFiles; i++ {
+	// The signed receipt occupies one file; sidecars fill the remaining slots.
+	for i := 0; i < maxEvidenceDoctorFiles-1; i++ {
 		path := filepath.Join(dir, fmt.Sprintf("evidence-proxy-%d.raw.enc", i))
 		if err := os.WriteFile(path, []byte("sidecar"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", path, err)
 		}
+	}
+	if code, output := runDoctor(); code != cliutil.ExitOK {
+		t.Fatalf("doctor at exact file limit: code=%d output=%q", code, output)
+	}
+	assertMetric("1")
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("evidence-proxy-%d.raw.enc", maxEvidenceDoctorFiles)), []byte("sidecar"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	if code, output := runDoctor(); code != cliutil.ExitGeneral {
 		t.Fatalf("inconclusive doctor exit code = %d, want %d (output=%q)", code, cliutil.ExitGeneral, output)
 	} else if !strings.Contains(output, "scan was incomplete") {
 		t.Fatalf("doctor did not report an incomplete scan: %q", output)
 	}
-	metric := readMetric()
-	if !strings.Contains(metric, "pipelock_evidence_corpus_integrity_ok 0") || strings.Contains(metric, "pipelock_evidence_corpus_integrity_ok 1") {
-		t.Fatalf("inconclusive metric did not replace healthy reading: %q", metric)
-	}
+	assertMetric("0")
 }
 
 func TestParseDoctorEvidenceName(t *testing.T) {

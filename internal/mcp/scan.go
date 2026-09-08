@@ -117,6 +117,10 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 	}
 	text := textResult.Text
+	// Numeric leaves travel on their own channel and are only ever compared
+	// against known values (canaries, configured secrets); they never join
+	// text, which feeds the injection cascade and pattern DLP.
+	numeric := textResult.Numeric
 
 	// Also scan error messages for prompt injection.
 	// Attackers can inject via error.message and error.data returned by malicious
@@ -137,6 +141,7 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			if errData.Text != "" {
 				text += "\n" + errData.Text
 			}
+			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
 			// Fallback: extract all strings from non-standard error shapes.
 			errText := jsonrpc.ExtractTextResult(rpc.Error)
@@ -149,6 +154,7 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 				}
 				text += errText.Text
 			}
+			numeric = joinNumericChannel(numeric, errText.Numeric)
 		}
 	}
 
@@ -165,13 +171,19 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			}
 			text += paramsText.Text
 		}
+		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
 
-	if text == "" {
+	if text == "" && (!includeDLP || numeric == "") {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
+	// An all-numeric response has nothing for the injection scanner; it is
+	// treated as a clean response scan and only the numeric channel runs.
+	result := scanner.ResponseScanResult{Clean: true}
+	if text != "" {
+		result = sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
+	}
 	for _, match := range result.SuppressedMatches {
 		if opts.OnSuppressedResponse != nil {
 			opts.OnSuppressedResponse(match)
@@ -179,13 +191,16 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	}
 	var dlpMatches []scanner.TextDLPMatch
 	if includeDLP {
-		var lowConfidence []scanner.TextDLPMatch
-		dlpMatches, lowConfidence = scanner.PartitionInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
-		for _, match := range lowConfidence {
-			if opts.OnDroppedDLP != nil {
-				opts.OnDroppedDLP(match, "low_confidence")
+		if text != "" {
+			var lowConfidence []scanner.TextDLPMatch
+			dlpMatches, lowConfidence = scanner.PartitionInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
+			for _, match := range lowConfidence {
+				if opts.OnDroppedDLP != nil {
+					opts.OnDroppedDLP(match, "low_confidence")
+				}
 			}
 		}
+		dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
 	}
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
@@ -292,7 +307,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		}
 	}
 
-	var text, toolText string
+	var text, toolText, numeric string
 
 	// Scan non-"tools" sibling fields in the result object.
 	// A malicious server can include extra fields alongside tools[].
@@ -312,6 +327,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 						return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 					}
 					toolText = extracted.Text
+					numeric = joinNumericChannel(numeric, extracted.Numeric)
 					continue
 				}
 				siblingText := jsonrpc.ExtractTextResult(resultMap[key])
@@ -324,6 +340,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 					}
 					text += siblingText.Text
 				}
+				numeric = joinNumericChannel(numeric, siblingText.Numeric)
 			}
 		}
 	}
@@ -343,6 +360,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			if errData.Text != "" {
 				text += "\n" + errData.Text
 			}
+			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
 			errText := jsonrpc.ExtractTextResult(rpc.Error)
 			if errText.Truncated {
@@ -354,6 +372,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 				}
 				text += errText.Text
 			}
+			numeric = joinNumericChannel(numeric, errText.Numeric)
 		}
 	}
 
@@ -369,6 +388,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			}
 			text += paramsText.Text
 		}
+		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
 
 	dlpText := text
@@ -379,11 +399,14 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		dlpText += toolText
 	}
 
-	if text == "" && dlpText == "" {
+	if text == "" && dlpText == "" && numeric == "" {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+	result := scanner.ResponseScanResult{Clean: true}
+	if text != "" {
+		result = sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+	}
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}
@@ -392,12 +415,17 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			opts.OnSuppressedResponse(match)
 		}
 	}
-	dlpMatches, lowConfidence := scanner.PartitionInboundTextDLPMatches(dlpText, sc.ScanTextForDLPInbound(context.Background(), dlpText).Matches)
-	for _, match := range lowConfidence {
-		if opts.OnDroppedDLP != nil {
-			opts.OnDroppedDLP(match, "low_confidence")
+	var dlpMatches []scanner.TextDLPMatch
+	if dlpText != "" {
+		var lowConfidence []scanner.TextDLPMatch
+		dlpMatches, lowConfidence = scanner.PartitionInboundTextDLPMatches(dlpText, sc.ScanTextForDLPInbound(context.Background(), dlpText).Matches)
+		for _, match := range lowConfidence {
+			if opts.OnDroppedDLP != nil {
+				opts.OnDroppedDLP(match, "low_confidence")
+			}
 		}
 	}
+	dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
@@ -1050,4 +1078,18 @@ func mapProvenanceConfig(cfg *config.MCPToolProvenance) (provenance.VerifyConfig
 	}
 
 	return vcfg, nil
+}
+
+// joinNumericChannel concatenates two numeric channels with the same comma
+// separator the extractor uses, so a known value split by the JSON-RPC
+// envelope boundary (result versus error data) is still one contiguous run.
+func joinNumericChannel(existing, more string) string {
+	switch {
+	case more == "":
+		return existing
+	case existing == "":
+		return more
+	default:
+		return existing + "," + more
+	}
 }

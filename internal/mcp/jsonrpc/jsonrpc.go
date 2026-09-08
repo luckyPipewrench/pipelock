@@ -133,6 +133,14 @@ type ExtractKeysResult struct {
 type TextResult struct {
 	Text      string
 	Truncated bool
+	// Numeric carries every numeric leaf of the result, in deterministic
+	// traversal order, joined by commas. It is a separate channel from Text
+	// on purpose: numbers never enter the prompt-injection or pattern-DLP
+	// cascade (a run of ordinary telemetry joined into one digit string is
+	// exactly the false-positive shape those scanners produce), but a value
+	// delivered entirely as numbers, such as a canary spelled out as decimal
+	// character codes, must still reach known-value matching.
+	Numeric string
 }
 
 // ExtractText extracts all text content from an MCP tool result.
@@ -159,6 +167,7 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 	if jsonDepthTruncated(raw) {
 		return TextResult{Truncated: true}
 	}
+	numeric := ExtractNumericLeaves(raw)
 
 	// Try standard ToolResult structure first.
 	var tr ToolResult
@@ -207,17 +216,57 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 		// Always return after a successful ToolResult parse, even when
 		// texts is empty. Falling through to ExtractStringsFromJSON would
 		// feed base64 media in data/blob/raw fields into prompt scanning.
-		return TextResult{Text: strings.Join(texts, " ")}
+		return TextResult{Text: strings.Join(texts, " "), Numeric: numeric}
 	}
 
 	// Fallback: recursively extract all string values from arbitrary JSON.
 	// Catches non-standard result shapes (plain string, nested objects, etc).
 	extracted := ExtractStringsFromJSONResult(raw)
 	if len(extracted.Strings) > 0 {
-		return TextResult{Text: strings.Join(extracted.Strings, "\n"), Truncated: extracted.Truncated}
+		return TextResult{Text: strings.Join(extracted.Strings, "\n"), Truncated: extracted.Truncated, Numeric: numeric}
 	}
 
-	return TextResult{Truncated: extracted.Truncated}
+	return TextResult{Truncated: extracted.Truncated, Numeric: numeric}
+}
+
+// ExtractNumericLeaves returns every numeric leaf in raw, in the same
+// deterministic order the string extractors use (sorted object keys, array
+// order), joined by commas. Numbers keep their source spelling: a decoder
+// with UseNumber preserves large integers that float64 would round, and a
+// rounded digit string could never match the value it came from. Depth past
+// maxExtractDepth is skipped here because the caller has already failed
+// closed on truncation before asking for this channel.
+func ExtractNumericLeaves(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == Null {
+		return ""
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var parsed interface{}
+	if err := dec.Decode(&parsed); err != nil {
+		return ""
+	}
+	var leaves []string
+	var walk func(v interface{}, depth int)
+	walk = func(v interface{}, depth int) {
+		if depth > maxExtractDepth {
+			return
+		}
+		switch val := v.(type) {
+		case json.Number:
+			leaves = append(leaves, val.String())
+		case []interface{}:
+			for _, item := range val {
+				walk(item, depth+1)
+			}
+		case map[string]interface{}:
+			for _, key := range SortedKeys(val) {
+				walk(val[key], depth+1)
+			}
+		}
+	}
+	walk(parsed, 0)
+	return strings.Join(leaves, ",")
 }
 
 // ExtractVisibleStringsFromJSONResult extracts agent-visible JSON string

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -90,14 +91,14 @@ func TestApplyForExec_AcceptsBaseABIWithoutThreadSync(t *testing.T) {
 
 func TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync(t *testing.T) {
 	p := &PreparedManifest{complete: true}
-	var created, restricted, closed, noNewPrivs bool
+	var sequence []string
 	var restrictFlags uint32
 	ops := rulesetOperations{
 		getABI: func() (int, error) { return MinimumABI, nil },
 		createRuleset: func(attr *llsys.RulesetAttr, flags int) (int, error) {
-			created = true
-			if flags != 0 || attr.HandledAccessFS == 0 {
-				t.Fatalf("create flags=%d handled=%d", flags, attr.HandledAccessFS)
+			sequence = append(sequence, "create")
+			if flags != 0 || attr.HandledAccessFS != baseAccessFS || attr.Scoped != 0 {
+				t.Fatalf("create flags=%d handled=%d scoped=%d, want 0/%d/0", flags, attr.HandledAccessFS, attr.Scoped, baseAccessFS)
 			}
 			return 42, nil
 		},
@@ -106,7 +107,7 @@ func TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync(t *testing.T) {
 			return nil
 		},
 		restrictSelf: func(fd int, flags uint32) error {
-			restricted = true
+			sequence = append(sequence, "restrict")
 			restrictFlags = flags
 			if fd != 42 {
 				t.Fatalf("restrict fd=%d, want 42", fd)
@@ -114,11 +115,11 @@ func TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync(t *testing.T) {
 			return nil
 		},
 		setNoNewPrivs: func() error {
-			noNewPrivs = true
+			sequence = append(sequence, "no_new_privs")
 			return nil
 		},
 		closeFD: func(fd int) error {
-			closed = true
+			sequence = append(sequence, "close")
 			if fd != 42 {
 				t.Fatalf("close fd=%d, want 42", fd)
 			}
@@ -133,8 +134,8 @@ func TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync(t *testing.T) {
 	if !record.Enforced() || record.RequiredABI != MinimumABI {
 		t.Fatalf("record = %+v, want enforced at base ABI", record)
 	}
-	if !created || !noNewPrivs || !restricted || !closed {
-		t.Fatalf("sequence create=%v no_new_privs=%v restrict=%v close=%v", created, noNewPrivs, restricted, closed)
+	if want := []string{"create", "no_new_privs", "restrict", "close"}; !slices.Equal(sequence, want) {
+		t.Fatalf("operation sequence = %v, want %v", sequence, want)
 	}
 	if restrictFlags != 0 {
 		t.Fatalf("pre-exec restrict flags=%d, want no thread-sync flag", restrictFlags)
@@ -143,69 +144,65 @@ func TestApplyForExec_CompleteSequenceUsesBaseABIAndNoThreadSync(t *testing.T) {
 
 func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 	tests := []struct {
-		name            string
-		threadSync      bool
-		failStage       string
-		wantReason      string
-		wantCreate      int
-		wantAdd         int
-		wantNoNewPrivs  int
-		wantRestrict    int
-		wantClose       int
-		wantRestrictArg uint32
+		name              string
+		abi               int
+		threadSync        bool
+		failStage         string
+		wantReason        string
+		wantSequence      []string
+		wantRestrictArg   uint32
+		wantHandledAccess uint64
+		wantScope         uint64
 	}{
 		{
-			name:       "create_ruleset",
-			failStage:  "create",
-			wantReason: "creating landlock ruleset",
-			wantCreate: 1,
+			name:              "create_ruleset",
+			abi:               MinimumABI,
+			failStage:         "create",
+			wantReason:        "creating landlock ruleset",
+			wantSequence:      []string{"create"},
+			wantHandledAccess: baseAccessFS,
 		},
 		{
-			name:       "add_path_rule",
-			failStage:  "add",
-			wantReason: "adding rule",
-			wantCreate: 1,
-			wantAdd:    1,
-			wantClose:  1,
+			name:              "add_path_rule",
+			abi:               MinimumABI,
+			failStage:         "add",
+			wantReason:        "adding rule",
+			wantSequence:      []string{"create", "add", "close"},
+			wantHandledAccess: baseAccessFS,
 		},
 		{
-			name:           "set_no_new_privs",
-			failStage:      "no_new_privs",
-			wantReason:     "setting no_new_privs",
-			wantCreate:     1,
-			wantAdd:        1,
-			wantNoNewPrivs: 1,
-			wantClose:      1,
+			name:              "set_no_new_privs",
+			abi:               MinimumABI,
+			failStage:         "no_new_privs",
+			wantReason:        "setting no_new_privs",
+			wantSequence:      []string{"create", "add", "no_new_privs", "close"},
+			wantHandledAccess: baseAccessFS,
 		},
 		{
-			name:            "restrict_self_with_thread_sync",
-			threadSync:      true,
-			failStage:       "restrict",
-			wantReason:      "applying landlock restriction",
-			wantCreate:      1,
-			wantAdd:         1,
-			wantNoNewPrivs:  1,
-			wantRestrict:    1,
-			wantClose:       1,
-			wantRestrictArg: llsys.FlagRestrictSelfTSync,
+			name:              "restrict_self_with_thread_sync",
+			abi:               ThreadSyncABI,
+			threadSync:        true,
+			failStage:         "restrict",
+			wantReason:        "applying landlock restriction",
+			wantSequence:      []string{"create", "add", "no_new_privs", "restrict", "close"},
+			wantRestrictArg:   llsys.FlagRestrictSelfTSync,
+			wantHandledAccess: baseAccessFS,
+			wantScope:         scopedIPC,
 		},
 		{
-			name:           "healthy_without_thread_sync",
-			wantCreate:     1,
-			wantAdd:        1,
-			wantNoNewPrivs: 1,
-			wantRestrict:   1,
-			wantClose:      1,
+			name:              "healthy_without_thread_sync",
+			abi:               MinimumABI,
+			wantSequence:      []string{"create", "add", "no_new_privs", "restrict", "close"},
+			wantHandledAccess: baseAccessFS,
 		},
 		{
-			name:            "healthy_with_thread_sync",
-			threadSync:      true,
-			wantCreate:      1,
-			wantAdd:         1,
-			wantNoNewPrivs:  1,
-			wantRestrict:    1,
-			wantClose:       1,
-			wantRestrictArg: llsys.FlagRestrictSelfTSync,
+			name:              "healthy_with_thread_sync_and_socket_mediation",
+			abi:               SocketMediationABI,
+			threadSync:        true,
+			wantSequence:      []string{"create", "add", "no_new_privs", "restrict", "close"},
+			wantRestrictArg:   llsys.FlagRestrictSelfTSync,
+			wantHandledAccess: baseAccessFS | llsys.AccessFSResolveUnix,
+			wantScope:         scopedIPC,
 		},
 	}
 
@@ -228,19 +225,14 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 				}},
 			}
 			sentinel := errors.New("injected ruleset operation failure")
-			var created, added, noNewPrivs, restricted, closed int
+			var sequence []string
 			var restrictFlags uint32
 			ops := rulesetOperations{
-				getABI: func() (int, error) {
-					if tc.threadSync {
-						return ThreadSyncABI, nil
-					}
-					return MinimumABI, nil
-				},
+				getABI: func() (int, error) { return tc.abi, nil },
 				createRuleset: func(attr *llsys.RulesetAttr, flags int) (int, error) {
-					created++
-					if flags != 0 || attr.HandledAccessFS == 0 {
-						t.Fatalf("create ruleset flags=%d handled=%d", flags, attr.HandledAccessFS)
+					sequence = append(sequence, "create")
+					if flags != 0 || attr.HandledAccessFS != tc.wantHandledAccess || attr.Scoped != tc.wantScope {
+						t.Fatalf("create ruleset flags=%d handled=%d scoped=%d, want 0/%d/%d", flags, attr.HandledAccessFS, attr.Scoped, tc.wantHandledAccess, tc.wantScope)
 					}
 					if tc.failStage == "create" {
 						return -1, sentinel
@@ -248,7 +240,7 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 					return 42, nil
 				},
 				addPathRule: func(fd int, attr *llsys.PathBeneathAttr, flags int) error {
-					added++
+					sequence = append(sequence, "add")
 					if fd != 42 || flags != 0 || attr.ParentFd != 17 || attr.AllowedAccess != rightsReadDir {
 						t.Fatalf("add rule fd=%d flags=%d parent=%d access=%d", fd, flags, attr.ParentFd, attr.AllowedAccess)
 					}
@@ -258,14 +250,14 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 					return nil
 				},
 				setNoNewPrivs: func() error {
-					noNewPrivs++
+					sequence = append(sequence, "no_new_privs")
 					if tc.failStage == "no_new_privs" {
 						return sentinel
 					}
 					return nil
 				},
 				restrictSelf: func(fd int, flags uint32) error {
-					restricted++
+					sequence = append(sequence, "restrict")
 					restrictFlags = flags
 					if fd != 42 {
 						t.Fatalf("restrict fd=%d, want 42", fd)
@@ -276,7 +268,7 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 					return nil
 				},
 				closeFD: func(fd int) error {
-					closed++
+					sequence = append(sequence, "close")
 					if fd != 42 {
 						t.Fatalf("close fd=%d, want 42", fd)
 					}
@@ -303,10 +295,10 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 					t.Fatalf("reason = %q, want %q", record.Reason, tc.wantReason)
 				}
 			}
-			if created != tc.wantCreate || added != tc.wantAdd || noNewPrivs != tc.wantNoNewPrivs || restricted != tc.wantRestrict || closed != tc.wantClose {
-				t.Fatalf("calls create=%d add=%d no_new_privs=%d restrict=%d close=%d, want %d/%d/%d/%d/%d", created, added, noNewPrivs, restricted, closed, tc.wantCreate, tc.wantAdd, tc.wantNoNewPrivs, tc.wantRestrict, tc.wantClose)
+			if !slices.Equal(sequence, tc.wantSequence) {
+				t.Fatalf("operation sequence = %v, want %v", sequence, tc.wantSequence)
 			}
-			if tc.wantRestrict != 0 && restrictFlags != tc.wantRestrictArg {
+			if slices.Contains(tc.wantSequence, "restrict") && restrictFlags != tc.wantRestrictArg {
 				t.Fatalf("restrict flags=%d, want %d", restrictFlags, tc.wantRestrictArg)
 			}
 		})

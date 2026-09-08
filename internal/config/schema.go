@@ -1074,6 +1074,14 @@ type Monitoring struct {
 	// "*.example.com". An empty list (default) preserves the prior
 	// always-on query entropy behavior.
 	QueryEntropyExclusions []string `yaml:"query_entropy_exclusions"`
+	// PathEntropyExclusions scopes a path-entropy exemption to one host plus a
+	// literal path prefix, leaving subdomain entropy, query entropy, DLP and
+	// SSRF enforced for the same request. Prefer this over adding a host to
+	// SubdomainEntropyExclusions for a path false positive: that list governs
+	// BOTH the path and subdomain gates, so it gives up a second detection.
+	// Ships empty; a route enters the defaults only with the vendor's own
+	// published route contract behind it.
+	PathEntropyExclusions []PathEntropyExclusion `yaml:"path_entropy_exclusions"`
 
 	// QueryEntropyParamExclusions lists exact HTTPS endpoint+parameter tuples
 	// whose query value may bypass only the raw Shannon query-value entropy
@@ -1099,6 +1107,31 @@ type QueryEntropyParamExclusion struct {
 	Reason  string `yaml:"reason,omitempty"`
 	Owner   string `yaml:"owner,omitempty"`
 	Expires string `yaml:"expires,omitempty"`
+}
+
+// PathEntropyExclusion is a narrow URL-path entropy exemption for one host and
+// one literal path prefix. It affects ONLY the path-entropy gate: subdomain
+// entropy, query entropy, DLP and SSRF all still run for the same request.
+//
+// It exists because the path gate is the one entropy gate with no scoped
+// exemption of its own. Before this, the only way to stop a path-entropy false
+// positive was subdomain_entropy_exclusions, which is host-wide AND also
+// disables subdomain entropy for that host, so fixing a path false positive
+// silently gave up an unrelated detection.
+//
+// WHAT AN ENTRY ASSERTS, and it is deliberately narrow: on this exact route the
+// opaque segment is a service-issued resource identifier. It is a policy
+// assertion, not a classifier, and it does NOT make the route safe. An agent
+// that can place a chosen opaque segment on an exempted route, and later read
+// that value back, can still use it to carry data; verify that is not possible
+// for a route before exempting it.
+type PathEntropyExclusion struct {
+	Scheme     string `yaml:"scheme,omitempty"` // https when unset; an entry never matches a scheme it does not name
+	Host       string `yaml:"host"`             // exact host, or *.example.com
+	PathPrefix string `yaml:"path_prefix"`      // literal prefix of the normalized path, e.g. /document/d/
+	Reason     string `yaml:"reason,omitempty"` // why this route is exempt, for the operator reading it later
+	Owner      string `yaml:"owner,omitempty"`
+	Expires    string `yaml:"expires,omitempty"`
 }
 
 // DLP configures data loss prevention scanning.

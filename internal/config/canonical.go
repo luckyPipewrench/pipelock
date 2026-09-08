@@ -254,6 +254,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.ResponseScanning.AuthenticatedArtifacts = canonicalAuthenticatedArtifacts(view.ResponseScanning.AuthenticatedArtifacts)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
+	view.FetchProxy.Monitoring.PathEntropyExclusions = canonicalPathEntropyExclusions(view.FetchProxy.Monitoring.PathEntropyExclusions)
 	view.FetchProxy.Monitoring.Blocklist = canonicalHostSet(view.FetchProxy.Monitoring.Blocklist)
 	view.FetchProxy.Monitoring.SubdomainEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.SubdomainEntropyExclusions)
 	view.FetchProxy.Monitoring.QueryEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.QueryEntropyExclusions)
@@ -447,6 +448,41 @@ func canonicalMCPResponseServers(entries []MCPResponseServerTrust) []MCPResponse
 			return out[i].Trust < out[j].Trust
 		}
 		return out[i].Server < out[j].Server
+	})
+	return out
+}
+
+// canonicalPathEntropyExclusions keeps only the fields that change DETECTION
+// and drops the governance metadata. Scheme, host and path prefix decide
+// whether the path gate runs, so they belong in the policy hash a receipt
+// carries. Reason, owner and expiry are for the operator reading the config
+// later and must not move the hash, or editing a comment would look like a
+// policy change in the evidence.
+func canonicalPathEntropyExclusions(entries []PathEntropyExclusion) []PathEntropyExclusion {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]PathEntropyExclusion, len(entries))
+	for i, entry := range entries {
+		scheme := entry.Scheme
+		if scheme == "" {
+			scheme = QueryEntropyParamDefaultScheme
+		}
+		out[i] = PathEntropyExclusion{
+			Scheme:     strings.ToLower(scheme),
+			Host:       strings.TrimSuffix(strings.ToLower(entry.Host), "."),
+			PathPrefix: entry.PathPrefix,
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Scheme != b.Scheme {
+			return a.Scheme < b.Scheme
+		}
+		if a.Host != b.Host {
+			return a.Host < b.Host
+		}
+		return a.PathPrefix < b.PathPrefix
 	})
 	return out
 }

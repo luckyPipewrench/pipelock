@@ -150,6 +150,7 @@ fetch_proxy:
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 | `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
+| `monitoring.path_entropy_exclusions` | `[]` | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply |
 | `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply |
 
 **Entropy guidance:**
@@ -168,6 +169,25 @@ fetch_proxy:
     subdomain_entropy_exclusions:
       - "api.telegram.org"
 ```
+
+**Path entropy exclusions** skip only the URL-path entropy gate for one host plus one literal path prefix. Subdomain entropy, query entropy, query-key entropy, DLP, SSRF, rate limits and data budgets all still apply to the same request.
+
+Reach for this instead of `subdomain_entropy_exclusions` when a path false positive is the problem. That list is host-wide AND governs both the path and subdomain gates, so using it to fix a path block silently gives up subdomain-entropy detection for that host as well.
+
+```yaml
+fetch_proxy:
+  monitoring:
+    path_entropy_exclusions:
+      - host: docs.vendor.example      # exact host, or *.vendor.example
+        path_prefix: /document/d/      # literal prefix of the normalized path
+        reason: service-issued document identifier
+        owner: platform
+        expires: 2027-01-01            # optional, YYYY-MM-DD
+```
+
+An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host or no path prefix is refused rather than treated as a wildcard.
+
+This ships empty. A vendor route enters the shipped defaults only with that vendor's own published route contract behind it.
 
 **Query entropy parameter exclusions** skip only the raw query-value entropy gate for one exact HTTPS endpoint and one exact parameter key. Subdomain entropy, path entropy, query-key entropy, adjacent parameters, DLP, SSRF, rate limits, and data budgets still apply. Use this first when a structured query language or endpoint contract creates a false positive in one parameter.
 

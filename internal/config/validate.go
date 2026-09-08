@@ -1171,6 +1171,9 @@ func (c *Config) validateFetchProxy() error {
 	if err := validateHostnamePatternList("query_entropy_exclusions", c.FetchProxy.Monitoring.QueryEntropyExclusions); err != nil {
 		return err
 	}
+	if err := validatePathEntropyExclusions(c.FetchProxy.Monitoring.PathEntropyExclusions); err != nil {
+		return err
+	}
 	if err := validateQueryEntropyParamExclusions(c.FetchProxy.Monitoring.QueryEntropyParamExclusions); err != nil {
 		return err
 	}
@@ -1205,6 +1208,69 @@ func validateHostnamePatternList(field string, entries []string) error {
 			return fmt.Errorf("%s[%d] %q: only exact hosts and *.example.com wildcards are supported", field, i, raw)
 		}
 		entries[i] = d
+	}
+	return nil
+}
+
+// validatePathEntropyExclusions rejects an entry that would widen the path
+// entropy exemption beyond one route. An empty host or an empty path prefix
+// makes the entry match everything, which is a host-wide (or global) exemption
+// wearing a scoped name, and the operator would not see that from the YAML.
+func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
+	seen := make(map[string]struct{}, len(entries))
+	for i := range entries {
+		field := fmt.Sprintf("fetch_proxy.monitoring.path_entropy_exclusions[%d]", i)
+		entry := &entries[i]
+
+		scheme := strings.TrimSpace(strings.ToLower(entry.Scheme))
+		if scheme == "" {
+			scheme = QueryEntropyParamDefaultScheme
+		}
+		if scheme != schemeHTTPS {
+			return fmt.Errorf("%s.scheme %q must be https", field, entry.Scheme)
+		}
+
+		host := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(entry.Host)), ".")
+		if host == "" {
+			return fmt.Errorf("%s.host is required; an entry without a host would exempt every host", field)
+		}
+		hosts := []string{host}
+		if err := validateHostnamePatternList(field+".host", hosts); err != nil {
+			return err
+		}
+		host = hosts[0]
+
+		prefix := strings.TrimSpace(entry.PathPrefix)
+		if prefix == "" {
+			return fmt.Errorf("%s.path_prefix is required; an entry without a prefix would exempt every path on the host", field)
+		}
+		if !strings.HasPrefix(prefix, "/") {
+			return fmt.Errorf("%s.path_prefix %q must start with /", field, entry.PathPrefix)
+		}
+		if prefix == "/" {
+			return fmt.Errorf("%s.path_prefix %q exempts every path on the host; use subdomain_entropy_exclusions deliberately if that is the intent", field, entry.PathPrefix)
+		}
+		if strings.Contains(prefix, "://") {
+			return fmt.Errorf("%s.path_prefix %q must be a path, not a URL", field, entry.PathPrefix)
+		}
+
+		expires := strings.TrimSpace(entry.Expires)
+		if expires != "" {
+			if _, err := time.Parse("2006-01-02", expires); err != nil {
+				return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+			}
+		}
+
+		key := scheme + "|" + host + "|" + prefix
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("%s duplicates an earlier entry for %s%s", field, host, prefix)
+		}
+		seen[key] = struct{}{}
+
+		entry.Scheme = scheme
+		entry.Host = host
+		entry.PathPrefix = prefix
+		entry.Expires = expires
 	}
 	return nil
 }

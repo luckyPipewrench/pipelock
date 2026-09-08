@@ -240,6 +240,7 @@ type Scanner struct {
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
 	queryParamExclusions       map[queryEntropyParamExclusionKey]struct{}
+	pathEntropyExclusions      []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
 	scanNestedURLs             bool          // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
 	nestedURLResolveBudget     time.Duration // shared deadline for all nested lookups in one request
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
@@ -401,6 +402,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
+		pathEntropyExclusions:     buildPathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions),
 		scanNestedURLs:            cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
 		nestedURLResolveBudget:    defaultNestedURLResolveBudget,
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
@@ -3522,7 +3524,8 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	// operator inspects by rule, and it false-positives on legitimate
 	// high-entropy REST resource ids. This is path-only: it never affects
 	// query entropy (below), subdomain entropy, DLP, or SSRF.
-	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path)
+	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path) ||
+		s.isPathEntropyExcluded(parsed)
 
 	// Check path segments (skipped for excluded domains).
 	if !excludedPath && !routeExemptPath {
@@ -3648,6 +3651,69 @@ type queryEntropyParamExclusionKey struct {
 	host   string
 	path   string
 	param  string
+}
+
+// pathEntropyExclusion is a compiled path-entropy exemption. Kept as a slice
+// rather than a map because the path is matched as a PREFIX, not by equality,
+// and these lists are short enough that a linear scan is cheaper than any
+// index that could answer a prefix question.
+type pathEntropyExclusion struct {
+	scheme     string
+	host       string
+	pathPrefix string
+}
+
+func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEntropyExclusion {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]pathEntropyExclusion, 0, len(entries))
+	for _, entry := range entries {
+		// An entry with no host or no prefix would match every path on every
+		// host, which is a host-wide exemption wearing a scoped name. Drop it
+		// here as well as rejecting it in validation, so a config that somehow
+		// reaches the scanner cannot silently disable the gate.
+		if strings.TrimSpace(entry.Host) == "" || strings.TrimSpace(entry.PathPrefix) == "" {
+			continue
+		}
+		scheme := entry.Scheme
+		if scheme == "" {
+			scheme = config.QueryEntropyParamDefaultScheme
+		}
+		out = append(out, pathEntropyExclusion{
+			scheme:     strings.ToLower(scheme),
+			host:       strings.TrimSuffix(strings.ToLower(entry.Host), "."),
+			pathPrefix: entry.PathPrefix,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// isPathEntropyExcluded reports whether this exact scheme, host and path prefix
+// is exempt from the PATH entropy gate. It deliberately answers nothing about
+// subdomain entropy, query entropy, DLP or SSRF, which continue to run.
+func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
+	if len(s.pathEntropyExclusions) == 0 || parsed == nil {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	host := parsed.Hostname()
+	path := parsed.Path
+	for _, ex := range s.pathEntropyExclusions {
+		if ex.scheme != scheme {
+			continue
+		}
+		if !MatchDomain(host, ex.host) {
+			continue
+		}
+		if strings.HasPrefix(path, ex.pathPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusion) map[queryEntropyParamExclusionKey]struct{} {

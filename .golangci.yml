@@ -43,6 +43,18 @@ linters:
       - path: internal/mcp/fdexec_linux_test\.go
         linters: [gosec]
         text: "G302|G306"
+      # File-sentry coverage tests make a directory unreadable to prove the
+      # arming and doctor paths report an inaccessible subtree, then restore
+      # traversal so the temporary-directory cleanup can delete it. Restoring
+      # traversal needs the execute bit, so 0600 or less cannot express it and
+      # G302 is unsatisfiable for a directory. Recorded here rather than as
+      # inline directives, which this repository bans as net-new.
+      - path: internal/filesentry/watcher_test\.go
+        linters: [gosec]
+        text: "G302"
+      - path: internal/cli/diag/doctor_test\.go
+        linters: [gosec]
+        text: "G302"
       # CLI stream routing is proved by re-executing this test binary and
       # reading the child's real stdout and stderr, because a test that installs
       # its own writers is exactly what hid the routing bug it exists to catch.

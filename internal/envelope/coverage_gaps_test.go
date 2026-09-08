@@ -59,16 +59,16 @@ func TestEmitter_InjectAndSign_StripsHeadersOnSignError(t *testing.T) {
 		t.Fatal("InjectAndSign should have returned an error for nil URL")
 	}
 
-	if v := req.Header.Get("Pipelock-Mediation"); v != "" {
+	if v := req.Header.Values("Pipelock-Mediation"); len(v) != 0 {
 		t.Errorf("Pipelock-Mediation should be stripped on error, got %q", v)
 	}
-	if v := req.Header.Get("Signature"); v != "" {
+	if v := req.Header.Values("Signature"); len(v) != 0 {
 		t.Errorf("Signature should be stripped on error, got %q", v)
 	}
-	if v := req.Header.Get("Signature-Input"); v != "" {
+	if v := req.Header.Values("Signature-Input"); len(v) != 0 {
 		t.Errorf("Signature-Input should be stripped on error, got %q", v)
 	}
-	if v := req.Header.Get("Content-Digest"); v != "" {
+	if v := req.Header.Values("Content-Digest"); len(v) != 0 {
 		t.Errorf("Content-Digest should be stripped on error, got %q", v)
 	}
 }
@@ -110,7 +110,7 @@ func TestEmitter_InjectAndSign_NilEmitterIsNoOp(t *testing.T) {
 	if err := em.InjectAndSign(req, nil, BuildOpts{Action: testActionRead, Verdict: testVerdictAllow}); err != nil {
 		t.Errorf("nil emitter should no-op, got err = %v", err)
 	}
-	if v := req.Header.Get("Pipelock-Mediation"); v != "" {
+	if v := req.Header.Values("Pipelock-Mediation"); len(v) != 0 {
 		t.Errorf("nil emitter should not write headers, got %q", v)
 	}
 }
@@ -135,7 +135,7 @@ func TestEmitter_InjectAndSign_NoSignerHeaderOnly(t *testing.T) {
 	if v := req.Header.Get("Pipelock-Mediation"); v == "" {
 		t.Error("header-only path must still set Pipelock-Mediation")
 	}
-	if v := req.Header.Get("Signature"); v != "" {
+	if v := req.Header.Values("Signature"); len(v) != 0 {
 		t.Errorf("header-only path must not sign, got Signature = %q", v)
 	}
 }

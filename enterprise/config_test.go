@@ -1488,3 +1488,52 @@ func TestValidateAgents_EmptySandboxWritePaths(t *testing.T) {
 		t.Fatal("expected error for empty sandbox allow_write path")
 	}
 }
+
+func TestMergeAgentProfile_SandboxBestEffortCarriesAuthorization(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	cfg := config.Defaults()
+	cfg.Sandbox.BestEffort = false
+	cfg.Sandbox.BestEffortReason = "top-level reason that must not leak"
+	cfg.Sandbox.BestEffortExpiry = "2000-01-01T00:00:00Z"
+
+	enabling := config.AgentProfile{Sandbox: &config.AgentSandboxOverride{
+		BestEffort:       boolPtr(true),
+		BestEffortReason: "runner blocks user namespaces",
+		BestEffortExpiry: expiry,
+	}}
+	merged, err := MergeAgentProfile(cfg, &enabling)
+	if err != nil {
+		t.Fatalf("MergeAgentProfile: %v", err)
+	}
+	if !merged.Sandbox.BestEffort {
+		t.Fatal("profile best_effort: true must enable the override")
+	}
+	if merged.Sandbox.BestEffortReason != "runner blocks user namespaces" || merged.Sandbox.BestEffortExpiry != expiry {
+		t.Fatalf("merged authorization = (%q, %q), want the profile's own reason and expiry", merged.Sandbox.BestEffortReason, merged.Sandbox.BestEffortExpiry)
+	}
+
+	cfg.Sandbox.BestEffort = true
+	cfg.Sandbox.BestEffortReason = "top-level override"
+	cfg.Sandbox.BestEffortExpiry = expiry
+	disabling := config.AgentProfile{Sandbox: &config.AgentSandboxOverride{BestEffort: boolPtr(false)}}
+	merged, err = MergeAgentProfile(cfg, &disabling)
+	if err != nil {
+		t.Fatalf("MergeAgentProfile: %v", err)
+	}
+	if merged.Sandbox.BestEffort {
+		t.Fatal("profile best_effort: false must disable the override")
+	}
+	if merged.Sandbox.BestEffortReason != "" || merged.Sandbox.BestEffortExpiry != "" {
+		t.Fatalf("a disabled override must not keep the top-level authorization, got (%q, %q)", merged.Sandbox.BestEffortReason, merged.Sandbox.BestEffortExpiry)
+	}
+
+	inheriting := config.AgentProfile{Sandbox: &config.AgentSandboxOverride{Enabled: boolPtr(true)}}
+	merged, err = MergeAgentProfile(cfg, &inheriting)
+	if err != nil {
+		t.Fatalf("MergeAgentProfile: %v", err)
+	}
+	if !merged.Sandbox.BestEffort || merged.Sandbox.BestEffortReason != "top-level override" {
+		t.Fatal("a profile that says nothing about best_effort must inherit the top-level override and its authorization")
+	}
+}

@@ -3475,6 +3475,13 @@ func (c *Config) validateAgents() error {
 		if err := ap.Budget.ValidateDoW(); err != nil {
 			return fmt.Errorf("agents.%s.budget: %w", name, err)
 		}
+		// A per-agent best_effort override carries the same authorization the
+		// top-level block requires. Checked here for OSS and enterprise alike:
+		// OSS never applies profiles, but a config that would be refused once a
+		// license arrives should be refused before it.
+		if err := validateAgentSandboxOverride(name, ap.Sandbox, time.Now()); err != nil {
+			return err
+		}
 	}
 	// Validate agent profiles (enterprise hook; nil in OSS).
 	if ValidateAgentsFunc != nil {
@@ -3736,27 +3743,76 @@ func normalizeReverseProxySubmitHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
+// MaxBestEffortConfigHorizon bounds how far ahead a configuration-sourced
+// best_effort_expiry may lie, measured from validation time. A best-effort
+// override trades kernel network isolation for cooperative proxy variables,
+// so one config edit must not be able to authorize that trade for a year.
+// Command-line durations are anchored per launch and keep their own bound.
+const MaxBestEffortConfigHorizon = 30 * 24 * time.Hour
+
+// validateBestEffortAuthorization checks the reason and expiry that must
+// accompany a configuration-sourced best_effort override. field names the
+// YAML block in error text ("sandbox" or "agents.<name>.sandbox"). The rules
+// are the same at both levels so a per-agent override cannot be looser than
+// the top-level one: a non-blank reason, an RFC3339 expiry (never a duration,
+// which filesystem metadata could re-anchor), not yet expired, and no further
+// than MaxBestEffortConfigHorizon after now. Every branch refuses the config.
+func validateBestEffortAuthorization(field, reason, expiry string, now time.Time) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("%s: best_effort_reason is required when best_effort is true", field)
+	}
+	if strings.TrimSpace(expiry) == "" {
+		return fmt.Errorf("%s: best_effort_expiry is required when best_effort is true", field)
+	}
+	if _, err := time.ParseDuration(expiry); err == nil {
+		return fmt.Errorf("%s: best_effort_expiry in configuration must be an RFC3339 timestamp; durations are command-line only", field)
+	}
+	expiresAt, timestampErr := time.Parse(time.RFC3339, expiry)
+	if timestampErr != nil {
+		return fmt.Errorf("%s: best_effort_expiry must be an RFC3339 timestamp", field)
+	}
+	if !expiresAt.After(now) {
+		return fmt.Errorf("%s: best_effort_expiry has expired", field)
+	}
+	if expiresAt.After(now.Add(MaxBestEffortConfigHorizon)) {
+		return fmt.Errorf("%s: best_effort_expiry %s is more than %s after now; a configuration override may not be authorized further ahead than that in one edit", field, expiry, MaxBestEffortConfigHorizon)
+	}
+	return nil
+}
+
+// validateAgentSandboxOverride applies the top-level best_effort authorization
+// rules to one agent profile's sandbox override. The profile must carry its
+// own reason and expiry; inheriting them from the top-level block would let a
+// per-agent override ride on an authorization written for a different scope.
+// Reason and expiry without an enabling best_effort are refused too, so a
+// profile cannot look authorized while the override is actually off.
+func validateAgentSandboxOverride(name string, override *AgentSandboxOverride, now time.Time) error {
+	if override == nil {
+		return nil
+	}
+	field := fmt.Sprintf("agents.%s.sandbox", name)
+	bestEffort := override.BestEffort != nil && *override.BestEffort
+	strict := override.Strict != nil && *override.Strict
+	if bestEffort && strict {
+		return fmt.Errorf("%s: best_effort and strict are mutually exclusive", field)
+	}
+	if bestEffort {
+		return validateBestEffortAuthorization(field, override.BestEffortReason, override.BestEffortExpiry, now)
+	}
+	if strings.TrimSpace(override.BestEffortReason) != "" || strings.TrimSpace(override.BestEffortExpiry) != "" {
+		return fmt.Errorf("%s: best_effort_reason and best_effort_expiry require best_effort: true in the same profile", field)
+	}
+	return nil
+}
+
 func (c *Config) validateSandbox() error {
 	// Sandbox: best_effort and strict are mutually exclusive.
 	if c.Sandbox.BestEffort && c.Sandbox.Strict {
 		return fmt.Errorf("sandbox: best_effort and strict are mutually exclusive")
 	}
 	if c.Sandbox.BestEffort {
-		if strings.TrimSpace(c.Sandbox.BestEffortReason) == "" {
-			return errors.New("sandbox: best_effort_reason is required when best_effort is true")
-		}
-		if strings.TrimSpace(c.Sandbox.BestEffortExpiry) == "" {
-			return errors.New("sandbox: best_effort_expiry is required when best_effort is true")
-		}
-		if _, err := time.ParseDuration(c.Sandbox.BestEffortExpiry); err == nil {
-			return errors.New("sandbox: best_effort_expiry in configuration must be an RFC3339 timestamp; durations are command-line only")
-		}
-		expiresAt, timestampErr := time.Parse(time.RFC3339, c.Sandbox.BestEffortExpiry)
-		if timestampErr != nil {
-			return errors.New("sandbox: best_effort_expiry must be an RFC3339 timestamp")
-		}
-		if !expiresAt.After(time.Now()) {
-			return errors.New("sandbox: best_effort_expiry has expired")
+		if err := validateBestEffortAuthorization("sandbox", c.Sandbox.BestEffortReason, c.Sandbox.BestEffortExpiry, time.Now()); err != nil {
+			return err
 		}
 	}
 

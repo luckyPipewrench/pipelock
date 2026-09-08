@@ -16286,3 +16286,155 @@ func TestDefaults_RulesTrustEmbeddedKeysIsTrue(t *testing.T) {
 			"built config must trust the embedded rules keyring unless the operator opts out", got)
 	}
 }
+
+func TestValidate_SandboxBestEffortExpiryHorizon(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tt := range []struct {
+		name    string
+		expiry  string
+		wantErr string
+	}{
+		{name: "one day ahead is allowed", expiry: now.Add(24 * time.Hour).Format(time.RFC3339)},
+		{name: "just inside the horizon is allowed", expiry: now.Add(MaxBestEffortConfigHorizon - time.Hour).Format(time.RFC3339)},
+		{name: "just past the horizon is refused", expiry: now.Add(MaxBestEffortConfigHorizon + time.Hour).Format(time.RFC3339), wantErr: "more than 720h0m0s after now"},
+		{name: "a year ahead is refused", expiry: now.Add(365 * 24 * time.Hour).Format(time.RFC3339), wantErr: "more than 720h0m0s after now"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
+			cfg.Sandbox.BestEffort = true
+			cfg.Sandbox.BestEffortReason = "container user namespaces disabled"
+			cfg.Sandbox.BestEffortExpiry = tt.expiry
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateBestEffortAuthorization_HorizonIsMeasuredFromNow(t *testing.T) {
+	// The horizon is relative to validation time, not to any timestamp in the
+	// file, so a config validated later against the same expiry stays inside
+	// the bound only while the remaining window is still within the horizon.
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	expiry := now.Add(MaxBestEffortConfigHorizon).Format(time.RFC3339)
+	if err := validateBestEffortAuthorization("sandbox", "reason", expiry, now); err != nil {
+		t.Fatalf("expiry exactly at the horizon must be allowed, got %v", err)
+	}
+	if err := validateBestEffortAuthorization("sandbox", "reason", expiry, now.Add(-time.Second)); err == nil {
+		t.Fatal("expiry one second past the horizon must be refused")
+	}
+	if err := validateBestEffortAuthorization("sandbox", "reason", expiry, now.Add(MaxBestEffortConfigHorizon)); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expiry reached must be refused as expired, got %v", err)
+	}
+}
+
+func TestValidate_AgentSandboxBestEffortAuthorization(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	farFuture := time.Now().Add(MaxBestEffortConfigHorizon + 24*time.Hour).UTC().Format(time.RFC3339)
+	boolPtr := func(b bool) *bool { return &b }
+	for _, tt := range []struct {
+		name     string
+		override *AgentSandboxOverride
+		wantErr  string
+	}{
+		{name: "nil override inherits", override: nil},
+		{name: "override without best_effort", override: &AgentSandboxOverride{Enabled: boolPtr(true)}},
+		{name: "explicit false without fields", override: &AgentSandboxOverride{BestEffort: boolPtr(false)}},
+		{name: "true with reason and expiry", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: "runner blocks CLONE_NEWUSER", BestEffortExpiry: future}},
+		{name: "true without reason", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortExpiry: future}, wantErr: "agents.worker.sandbox: best_effort_reason is required"},
+		{name: "true without expiry", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: "runner blocks CLONE_NEWUSER"}, wantErr: "agents.worker.sandbox: best_effort_expiry is required"},
+		{name: "true with blank reason", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: "   ", BestEffortExpiry: future}, wantErr: "best_effort_reason is required"},
+		{name: "true with duration expiry", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: "r", BestEffortExpiry: "30m"}, wantErr: "durations are command-line only"},
+		{name: "true with malformed expiry", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: "r", BestEffortExpiry: "tomorrow"}, wantErr: "must be an RFC3339 timestamp"},
+		{name: "true with expired expiry", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: "r", BestEffortExpiry: "2000-01-01T00:00:00Z"}, wantErr: "has expired"},
+		{name: "true past the horizon", override: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: "r", BestEffortExpiry: farFuture}, wantErr: "more than 720h0m0s after now"},
+		{name: "true with strict", override: &AgentSandboxOverride{BestEffort: boolPtr(true), Strict: boolPtr(true), BestEffortReason: "r", BestEffortExpiry: future}, wantErr: "agents.worker.sandbox: best_effort and strict are mutually exclusive"},
+		{name: "fields without best_effort", override: &AgentSandboxOverride{BestEffortReason: "r", BestEffortExpiry: future}, wantErr: "require best_effort: true in the same profile"},
+		{name: "fields with explicit false", override: &AgentSandboxOverride{BestEffort: boolPtr(false), BestEffortReason: "r"}, wantErr: "require best_effort: true in the same profile"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
+			cfg.Agents = map[string]AgentProfile{"worker": {Sandbox: tt.override}}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadBytes_AgentSandboxBestEffortFieldStates(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, tt := range []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{name: "omitted", yaml: "agents:\n  worker:\n    sandbox:\n      enabled: true\n"},
+		{name: "null best_effort", yaml: "agents:\n  worker:\n    sandbox:\n      best_effort: null\n"},
+		{name: "explicit false", yaml: "agents:\n  worker:\n    sandbox:\n      best_effort: false\n"},
+		{name: "explicit true with authorization", yaml: "agents:\n  worker:\n    sandbox:\n      best_effort: true\n      best_effort_reason: runner blocks user namespaces\n      best_effort_expiry: " + future + "\n"},
+		// The refusal cases live in TestValidate_AgentSandboxBestEffortAuthorization
+		// against a constructed Config: under the enterprise build tag an
+		// unlicensed load disables agent profiles before validation, so a
+		// LoadBytes-shaped refusal test would pass vacuously there.
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadBytes([]byte(tt.yaml))
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("LoadBytes() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadBytes() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateReload_AgentSandboxBestEffortAuthorizationChanged(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	later := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	boolPtr := func(b bool) *bool { return &b }
+	base := func(reason, expiry string) *Config {
+		cfg := Defaults()
+		cfg.Agents = map[string]AgentProfile{"worker": {Sandbox: &AgentSandboxOverride{BestEffort: boolPtr(true), BestEffortReason: reason, BestEffortExpiry: expiry}}}
+		return cfg
+	}
+	sandboxWarned := func(warnings []ReloadWarning) bool {
+		for _, w := range warnings {
+			if w.Field == fieldSandbox {
+				return true
+			}
+		}
+		return false
+	}
+	if !sandboxWarned(ValidateReload(base("old", future), base("new", future))) {
+		t.Fatal("changed per-agent best_effort_reason must produce the sandbox restart warning")
+	}
+	if !sandboxWarned(ValidateReload(base("same", future), base("same", later))) {
+		t.Fatal("changed per-agent best_effort_expiry must produce the sandbox restart warning")
+	}
+	if sandboxWarned(ValidateReload(base("same", future), base("same", future))) {
+		t.Fatal("unchanged per-agent authorization must not warn")
+	}
+}

@@ -2293,6 +2293,22 @@ Resolution priority: listener binding > source CIDR > header > query param > `_d
 
 CIDRs must not overlap between different agents (containment and exact matches are both rejected). Overlapping CIDRs within the same agent are allowed.
 
+### Per-Agent Sandbox Override
+
+An agent profile may carry a `sandbox` block that overrides the top-level sandbox settings for that agent. Boolean fields left unset inherit the top-level value; filesystem paths are appended to the top-level policy.
+
+```yaml
+agents:
+  ci-runner:
+    listeners: [":8891"]
+    sandbox:
+      best_effort: true
+      best_effort_reason: "runner image blocks user namespaces"
+      best_effort_expiry: "2026-10-01T00:00:00Z"
+```
+
+A profile that sets `best_effort: true` must carry its own `best_effort_reason` and `best_effort_expiry`; it never inherits them from the top-level block, so one override cannot ride on an authorization written for a different scope. The same rules apply as at the top level: the expiry is an RFC3339 timestamp (durations are command-line only), it must be in the future, and it may lie at most 30 days after validation time. A profile that sets `best_effort: false` drops the top-level authorization for that agent. Supplying a reason or expiry without `best_effort: true` in the same profile is refused, so a profile cannot read as authorized while the override is off. Changing any of these fields on reload produces the same restart warning as the top-level sandbox block.
+
 ### The `_default` Profile
 
 If defined, `_default` applies to any request that does not match a named agent. Without `_default`, unmatched requests use the base config directly.
@@ -2613,7 +2629,7 @@ sandbox:
 | `enabled` | `false` | Enable sandbox containment |
 | `best_effort` | `false` | Temporary advisory override when a network namespace cannot be created. Requires `best_effort_reason` and `best_effort_expiry`. Direct egress may bypass Pipelock. |
 | `best_effort_reason` | `""` | Operator reason for the advisory network override. Required with `best_effort: true`. |
-| `best_effort_expiry` | `""` | Admission-time RFC3339 expiry for the advisory override. Command-line flags also accept a Go duration such as `30m`, but configuration requires RFC3339 so copied, touched, or rewritten files cannot renew an authorization through filesystem metadata. An expired override refuses that launch; it does not stop a child already running, and every later launch requires re-authorization. Required with `best_effort: true`. |
+| `best_effort_expiry` | `""` | Admission-time RFC3339 expiry for the advisory override. Command-line flags also accept a Go duration such as `30m`, but configuration requires RFC3339 so copied, touched, or rewritten files cannot renew an authorization through filesystem metadata. The timestamp may lie at most 30 days after the time the configuration is validated (startup or reload); a later timestamp is refused, so one edit cannot authorize the override for a year. An expired override refuses that launch; it does not stop a child already running, and every later launch requires re-authorization. Required with `best_effort: true`. |
 | `strict` | `false` | Error if any containment layer is unavailable. Mutually exclusive with `best_effort`. |
 | `workspace` | CWD | Agent working directory (resolved to absolute at startup) |
 | `filesystem.allow_read` | `[]` | Additional read-only filesystem paths |

@@ -5,6 +5,7 @@ package support_test
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/support"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -188,10 +190,20 @@ func writeTempConfig(t *testing.T, cfg *config.Config) string {
 
 func writeTempLoggingConfig(t *testing.T, logLines []string) string {
 	t.Helper()
+	cfgPath, _ := writeTempLoggingConfigWithPath(t, logLines)
+	return cfgPath
+}
+
+func writeTempLoggingConfigWithPath(t *testing.T, logLines []string) (string, string) {
+	t.Helper()
 
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "pipelock-audit.log")
-	if err := os.WriteFile(filepath.Clean(logPath), []byte(strings.Join(logLines, "\n")+"\n"), 0o600); err != nil {
+	var data []byte
+	if len(logLines) > 0 {
+		data = []byte(strings.Join(logLines, "\n") + "\n")
+	}
+	if err := os.WriteFile(filepath.Clean(logPath), data, 0o600); err != nil {
 		t.Fatalf("write audit log: %v", err)
 	}
 
@@ -206,7 +218,7 @@ func writeTempLoggingConfig(t *testing.T, logLines []string) string {
 	if err := os.WriteFile(filepath.Clean(cfgPath), []byte(yaml), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	return cfgPath
+	return cfgPath, logPath
 }
 
 // --- adversarial leak tests ---
@@ -318,6 +330,46 @@ func TestBundle_AuditLogTailDLPRedactsUnknownSecret(t *testing.T) {
 	}
 	if !bytes.Contains(tail, []byte("<redacted>")) {
 		t.Errorf("audit-log-tail.txt should contain redaction sentinel; got: %q", string(tail))
+	}
+}
+
+func TestBundle_AuditLogTailPreservesLargeJSONRecord(t *testing.T) {
+	cfgPath, logPath := writeTempLoggingConfigWithPath(t, nil)
+	logger, err := audit.New("json", "file", logPath, false, true)
+	if err != nil {
+		t.Fatalf("new audit logger: %v", err)
+	}
+	largeMarker := "large-audit-record-marker"
+	largeReason := largeMarker + strings.Repeat("audit-detail-", bufio.MaxScanTokenSize/len("audit-detail-")+1)
+	logger.LogBlocked(audit.NewMethodLogContext("audit_tail_large_record"), "support-test", largeReason)
+	logger.LogBlocked(audit.NewMethodLogContext("audit_tail_following_record"), "support-test", "following-normal-record-marker")
+	logger.Close()
+
+	raw, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("read produced audit log: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(raw, []byte("\n")), []byte("\n"))
+	if len(lines) != 2 || len(lines[0]) <= bufio.MaxScanTokenSize {
+		t.Fatalf("produced audit records = %d, first length = %d, want two records with first over %d bytes", len(lines), len(lines[0]), bufio.MaxScanTokenSize)
+	}
+	for i, line := range lines {
+		if !json.Valid(line) {
+			t.Fatalf("producer line %d is not valid JSON: %q", i, line)
+		}
+	}
+
+	archivePath := runBundleCmd(t, cfgPath)
+	files := readArchive(t, archivePath)
+	tail, ok := files["audit-log-tail.txt"]
+	if !ok {
+		t.Fatal("audit-log-tail.txt missing despite configured readable audit log")
+	}
+	if !bytes.Equal(tail, raw) {
+		t.Fatalf("audit log tail length = %d, want exact producer length %d", len(tail), len(raw))
+	}
+	if !bytes.Contains(tail, []byte(largeMarker)) || !bytes.Contains(tail, []byte("following-normal-record-marker")) {
+		t.Fatalf("audit log tail omitted a retained record: %q", string(tail))
 	}
 }
 

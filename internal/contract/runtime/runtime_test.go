@@ -351,25 +351,90 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 	}
 
 	resolved := resolvedContractWithRules(enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost))
-	if _, err := EvaluateHTTP(EvaluateOptions{
+	decision, err = EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeLive,
 		Resolved:       &resolved,
 		Request:        HTTPRequest{URL: "://bad"},
 		ScannerVerdict: config.ActionAllow,
-	}); !errors.Is(err, ErrInvalidDecisionInput) {
+	})
+	if !errors.Is(err, ErrInvalidDecisionInput) {
 		t.Fatalf("invalid URL err = %v", err)
+	}
+	if decision.Verdict != "" || decision.LiveVerdict != "" {
+		t.Fatalf("invalid URL returned verdicts: %+v", decision)
 	}
 
 	badLifecycle := enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost)
 	badLifecycle.LifecycleState = "surprise"
 	resolved = resolvedContractWithRules(badLifecycle)
-	if _, err := EvaluateHTTP(EvaluateOptions{
+	decision, err = EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeLive,
 		Resolved:       &resolved,
 		Request:        HTTPRequest{URL: testHTTPSAPIChatURL, Method: http.MethodPost},
 		ScannerVerdict: config.ActionAllow,
-	}); !errors.Is(err, ErrUnsupportedLifecycle) {
+	})
+	if !errors.Is(err, ErrUnsupportedLifecycle) {
 		t.Fatalf("lifecycle err = %v", err)
+	}
+	if decision.Verdict != "" || decision.LiveVerdict != "" {
+		t.Fatalf("invalid lifecycle returned verdicts: %+v", decision)
+	}
+}
+
+func TestEvaluateHTTP_RejectsParseableURLsWithoutHostname(t *testing.T) {
+	resolved := resolvedContractWithRules(captureRule("r1"))
+	tests := []struct {
+		name         string
+		rawURL       string
+		wantHostname bool
+	}{
+		{
+			name:   "relative path",
+			rawURL: "/v1/chat",
+		},
+		{
+			name:   "opaque scheme",
+			rawURL: "mailto:operator@example.com",
+		},
+		{
+			name:         "absolute URL",
+			rawURL:       testHTTPSAPIChatURL,
+			wantHostname: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", tt.rawURL, err)
+			}
+			if got := parsed.Hostname() != ""; got != tt.wantHostname {
+				t.Fatalf("url.Parse(%q).Hostname() present = %v, want %v", tt.rawURL, got, tt.wantHostname)
+			}
+
+			decision, err := EvaluateHTTP(EvaluateOptions{
+				Mode:           ModeLive,
+				Resolved:       &resolved,
+				Request:        HTTPRequest{URL: tt.rawURL, Method: http.MethodPost},
+				ScannerVerdict: config.ActionAllow,
+			})
+			if !tt.wantHostname {
+				if !errors.Is(err, ErrInvalidDecisionInput) {
+					t.Fatalf("EvaluateHTTP(%q) error = %v, want ErrInvalidDecisionInput", tt.rawURL, err)
+				}
+				if decision.Verdict != "" || decision.LiveVerdict != "" {
+					t.Fatalf("EvaluateHTTP(%q) returned verdicts with an error: %+v", tt.rawURL, decision)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("EvaluateHTTP(%q): %v", tt.rawURL, err)
+			}
+			if decision.Verdict != config.ActionAllow || decision.WinningSource != WinningSourceScanner {
+				t.Fatalf("decision = %+v, want scanner allow", decision)
+			}
+		})
 	}
 }
 

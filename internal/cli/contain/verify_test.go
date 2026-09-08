@@ -1242,15 +1242,15 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 		{
 			name: "canonical rules and exec start point at managed rules",
 			unitBody: func(rulesPath string) string {
-				return "[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"
+				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + defaultPipelockTarget + " contain reload-nft-rules\n"
 			},
 			wantStatus: statusPass,
 			wantDetail: "persistence unit",
 		},
 		{
 			name: "exec start points elsewhere",
-			unitBody: func(_ string) string {
-				return "[Service]\nExecStart=/usr/sbin/nft -f /other/rules.nft\n"
+			unitBody: func(rulesPath string) string {
+				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + defaultPipelockTarget + " contain other-rules\n"
 			},
 			wantStatus: statusFail,
 			wantDetail: "missing ExecStart",
@@ -1258,15 +1258,15 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 		{
 			name: "rules path outside exec start does not satisfy check",
 			unitBody: func(rulesPath string) string {
-				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=/usr/sbin/nft -f /other/rules.nft\n"
+				return "[Unit]\nConditionPathExists=/other/rules.nft\n[Service]\nExecStart=" + defaultPipelockTarget + " contain reload-nft-rules\n"
 			},
 			wantStatus: statusFail,
-			wantDetail: "missing ExecStart",
+			wantDetail: "missing ConditionPathExists",
 		},
 		{
 			name: "stale persisted rules fail despite canonical live rules and matching unit",
 			unitBody: func(rulesPath string) string {
-				return "[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"
+				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + defaultPipelockTarget + " contain reload-nft-rules\n"
 			},
 			rulesBody: func() string {
 				return `# Pipelock containment ruleset (managed by pipelock contain install).
@@ -1332,7 +1332,7 @@ func TestProbeNFTContainment_RejectsPersistedOperatorUIDDrift(t *testing.T) {
 	if err := os.WriteFile(rulesPath, []byte(renderNFTRules(98, 988, 987, 8888, testTable, testChain)), 0o600); err != nil {
 		t.Fatalf("write persisted rules: %v", err)
 	}
-	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/usr/sbin/nft -f "+rulesPath+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(unitPath, []byte("[Unit]\nConditionPathExists="+rulesPath+"\n[Service]\nExecStart="+defaultPipelockTarget+" contain reload-nft-rules\n"), 0o600); err != nil {
 		t.Fatalf("write persistence unit: %v", err)
 	}
 	env := makeProbeEnv(t, func(e *probeEnv) {
@@ -2176,16 +2176,16 @@ func TestManagedContainmentDropPacketCount(t *testing.T) {
 			wantErr: "not positively attributed",
 		},
 		{
-			name: "rejects duplicate managed catch-all counters",
+			name: "sums duplicate managed catch-all counters during migration",
 			output: `table inet pipelock_containment {
 	chain output_filter {
 		meta skuid 987 counter packets 12 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
 		meta skuid 987 counter packets 13 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
 	}
 }`,
-			chain:   testChain,
-			uid:     987,
-			wantErr: "found 2 managed catch-all DROP packet counters",
+			chain: testChain,
+			uid:   987,
+			want:  25,
 		},
 		{
 			name: "rejects destination-specific lookalike",

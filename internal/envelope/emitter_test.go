@@ -330,10 +330,10 @@ func TestEmitter_InjectAndSign_NoSigner(t *testing.T) {
 	if req.Header.Get(HeaderName) == "" {
 		t.Error("Pipelock-Mediation header not set")
 	}
-	if req.Header.Get("Signature") != "" {
+	if len(req.Header.Values("Signature")) != 0 {
 		t.Error("Signature should be absent when signer is nil")
 	}
-	if req.Header.Get("Signature-Input") != "" {
+	if len(req.Header.Values("Signature-Input")) != 0 {
 		t.Error("Signature-Input should be absent when signer is nil")
 	}
 }

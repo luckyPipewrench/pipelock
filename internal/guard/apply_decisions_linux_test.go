@@ -148,6 +148,7 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 		abi               int
 		threadSync        bool
 		failStage         string
+		closeError        bool
 		wantReason        string
 		wantSequence      []string
 		wantRestrictArg   uint32
@@ -190,6 +191,26 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 			wantRestrictArg:   llsys.FlagRestrictSelfTSync,
 			wantHandledAccess: baseAccessFS,
 			wantScope:         scopedIPC,
+		},
+		{
+			name:              "close_failure_preserves_restriction_failure",
+			abi:               MinimumABI,
+			failStage:         "restrict",
+			closeError:        true,
+			wantReason:        "applying landlock restriction",
+			wantSequence:      []string{"create", "add", "no_new_privs", "restrict", "close"},
+			wantHandledAccess: baseAccessFS,
+		},
+		{
+			name:              "close_failure_preserves_applied_restriction",
+			abi:               SocketMediationABI,
+			threadSync:        true,
+			closeError:        true,
+			wantSequence:      []string{"create", "add", "no_new_privs", "restrict", "close"},
+			wantRestrictArg:   llsys.FlagRestrictSelfTSync,
+			wantHandledAccess: baseAccessFS | llsys.AccessFSResolveUnix,
+			wantScope:         scopedIPC,
+			wantCoverage:      CoverageFull,
 		},
 		{
 			name:              "healthy_without_thread_sync",
@@ -280,6 +301,9 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 					sequence = append(sequence, "close")
 					if fd != 42 {
 						t.Fatalf("close fd=%d, want 42", fd)
+					}
+					if tc.closeError {
+						return errors.New("injected descriptor cleanup failure")
 					}
 					return nil
 				},

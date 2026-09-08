@@ -19,6 +19,15 @@ import (
 // overflow from deeply-nested payloads crafted by malicious agents.
 const maxExtractDepth = 64
 
+// DefaultJSONLeaf limits are the shared CEE bounds for JSON value partitioning.
+// Transport-specific stream names may add tighter limits, but they must not
+// independently redefine the parser's resource ceilings.
+const (
+	DefaultJSONLeafMaxDepth     = 64
+	DefaultJSONLeafMaxStreams   = 128
+	DefaultJSONLeafMaxPathBytes = 512
+)
+
 // JSONLeafLimits bounds JSON leaf partitioning for cross-request detection.
 // Every bound is attacker-controlled input defense: callers must retain and
 // scan the raw payload when Complete is false rather than trusting partial

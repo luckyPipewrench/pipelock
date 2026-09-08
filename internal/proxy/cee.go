@@ -166,9 +166,9 @@ type ceePathPayload struct {
 const maxCEEBodyRead = 65536 // 64KB
 
 const (
-	ceeJSONBodyMaxDepth     = 64
-	ceeJSONBodyMaxStreams   = 128
-	ceeJSONBodyMaxPathBytes = 512
+	ceeJSONBodyMaxDepth     = extract.DefaultJSONLeafMaxDepth
+	ceeJSONBodyMaxStreams   = extract.DefaultJSONLeafMaxStreams
+	ceeJSONBodyMaxPathBytes = extract.DefaultJSONLeafMaxPathBytes
 )
 
 type ceeOutboundPayloads struct {

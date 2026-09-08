@@ -138,15 +138,15 @@ const (
 	// mcpCEEArgumentMaxDepth bounds recursive token walking independently from
 	// encoding/json's object decoding depth limit, which Decoder.Token does not
 	// apply.
-	mcpCEEArgumentMaxDepth = 64
+	mcpCEEArgumentMaxDepth = extract.DefaultJSONLeafMaxDepth
 
 	// mcpCEEArgumentMaxStreams limits FragmentBuffer sessions created by one
 	// tools/call frame. An overflow falls back to the complete raw frame.
-	mcpCEEArgumentMaxStreams = 128
+	mcpCEEArgumentMaxStreams = extract.DefaultJSONLeafMaxStreams
 
 	// mcpCEEArgumentMaxPathBytes bounds one escaped JSON argument path and the
 	// cumulative allocation used by recursive descent.
-	mcpCEEArgumentMaxPathBytes = 512
+	mcpCEEArgumentMaxPathBytes = extract.DefaultJSONLeafMaxPathBytes
 
 	// mcpCEEArgumentMaxStreamKeyBytes also bounds the complete tool-qualified
 	// stream key when an attacker supplies an unusually long tool identity.

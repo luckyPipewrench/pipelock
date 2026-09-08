@@ -2170,6 +2170,22 @@ func TestRecordDLPDroppedMatch_NilSafe(t *testing.T) {
 	m.RecordDLPDroppedMatch("test-pattern", "fetch", "suppressed")
 }
 
+func TestRecordDLPCredentialAudienceAllow(t *testing.T) {
+	m := New()
+	m.RecordDLPCredentialAudienceAllow("OpenAI API Key", "body")
+	m.RecordDLPCredentialAudienceAllow("OpenAI API Key", "body")
+
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `pipelock_dlp_credential_audience_allows_total{pattern="OpenAI API Key",surface="body"} 2`) {
+		t.Fatalf("credential audience metric missing or wrong:\n%s", body)
+	}
+}
+
+func TestRecordDLPCredentialAudienceAllow_NilSafe(t *testing.T) {
+	var m *Metrics
+	m.RecordDLPCredentialAudienceAllow("OpenAI API Key", "body")
+}
+
 func scrapeMetrics(t *testing.T, m *Metrics) string {
 	t.Helper()
 	handler := m.PrometheusHandler()

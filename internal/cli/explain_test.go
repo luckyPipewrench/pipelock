@@ -93,6 +93,28 @@ func TestExplainCmd_CleanURLAllowed(t *testing.T) {
 	}
 }
 
+func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
+	key := "sk-" + "proj-" + strings.Repeat("a", 24)
+	allowed, err := decodeExplainJSON(t, "https://api.openai.com/v1/responses?key="+key)
+	if err != nil || !allowed.Allowed {
+		t.Fatalf("audience explain = %+v, err=%v", allowed, err)
+	}
+	if !strings.Contains(strings.Join(allowed.Notes, "\n"), "allowed: credential audience match") || allowed.PatternName != "OpenAI API Key" {
+		t.Fatalf("audience explain lacks explicit allow: %+v", allowed)
+	}
+
+	blocked, err := decodeExplainJSON(t, "https://api.vendor.example/v1/responses?key="+key)
+	if err != nil || blocked.Allowed {
+		t.Fatalf("non-audience explain = %+v, err=%v", blocked, err)
+	}
+	if !strings.Contains(blocked.Reason, "blocked: credential audience mismatch") || !strings.Contains(blocked.Reason, "*.openai.com") || blocked.Remediation == nil || !blocked.Remediation.Immutable {
+		t.Fatalf("non-audience explain lacks immutable mismatch guidance: %+v", blocked)
+	}
+	if strings.Contains(blocked.Remediation.Knob, "exempt_domains") {
+		t.Fatalf("audience mismatch guidance suggested an exemption: %+v", blocked.Remediation)
+	}
+}
+
 func TestExplainCmd_ResponseScanExemptDomainsAdvisoryNarrowestFirst(t *testing.T) {
 	cfg := writeConfig(t, `
 mode: balanced

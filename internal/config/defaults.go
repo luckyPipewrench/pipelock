@@ -220,50 +220,6 @@ const (
 		`|\b(?:read|get|fetch|retrieve|cat|copy|extract|open|include)\b(?:[^.!?]|\.\S){0,80}(?:\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)(?:[^.!?]|\.\S){0,160}(?:\b(?:send|forward|transmit|share|email|exfiltrat\w*|leak)\b(?:[^.!?]|\.\S){0,60}?(?:(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+|\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b)|\b(?:paste|return|report|dump|print|output|display|show|upload|post|submit)\b(?:[^.!?]|\.\S){0,60}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+)|\bcurl\b(?:[^.!?]|\.\S){0,80}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b(?:[^.!?]|\.\S){0,40}?\bto\s+\S+\.\S+|https?://|\S+\.\S+)|\|\s*(?:openssl\s+base64|base64|xxd)\b|\bin\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)\b))` // #nosec G101 -- detection regex: contains credential path names to MATCH path-exfiltration instructions, not a hardcoded credential
 )
 
-type providerKeyDomainDefault struct {
-	rule   string
-	domain string
-}
-
-var defaultProviderKeyDomains = []providerKeyDomainDefault{
-	{rule: "Anthropic API Key", domain: "*.anthropic.com"},
-	{rule: "OpenAI API Key", domain: "*.openai.com"},
-	{rule: "OpenAI Service Key", domain: "*.openai.com"},
-	{rule: "Fireworks API Key", domain: "*.fireworks.ai"},
-	{rule: "LLM Router API Key", domain: "*.openrouter.ai"},
-	{rule: "Answer Engine API Key", domain: "*.perplexity.ai"},
-	{rule: "Web Research API Key", domain: "*.tavily.com"},
-	{rule: "Google API Key", domain: "*.googleapis.com"},
-	{rule: "Hugging Face Token", domain: "*.huggingface.co"},
-	{rule: "Databricks Token", domain: "*.databricks.com"},
-	{rule: "Replicate API Token", domain: "*.replicate.com"},
-	{rule: "Together AI Key", domain: "*.together.ai"},
-	{rule: "Pinecone API Key", domain: "*.pinecone.io"},
-	{rule: "Groq API Key", domain: "*.groq.com"},
-	{rule: "xAI API Key", domain: "*.x.ai"},
-}
-
-func providerKeyExemptDomains(rule string) []string {
-	for _, d := range defaultProviderKeyDomains {
-		if d.rule == rule {
-			return []string{d.domain}
-		}
-	}
-	return nil
-}
-
-func defaultProviderKeySuppressions() []SuppressEntry {
-	out := make([]SuppressEntry, 0, len(defaultProviderKeyDomains))
-	for _, d := range defaultProviderKeyDomains {
-		out = append(out, SuppressEntry{
-			Rule:   d.rule,
-			Path:   d.domain + "*",
-			Reason: "provider-bound credential",
-		})
-	}
-	return out
-}
-
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{
@@ -329,7 +285,6 @@ func Defaults() *Config {
 			OnParseError:      ActionBlock,
 			OnOpaqueOperation: ActionBlock,
 		},
-		Suppress: defaultProviderKeySuppressions(),
 		DLP: DLP{
 			ScanEnv:  true,
 			Patterns: DefaultDLPPatterns(),

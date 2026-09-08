@@ -308,7 +308,7 @@ func (c *Config) ApplyDefaults() {
 		Defaults().DLP.Patterns,
 	)
 	markBuiltInCredentialURLWhitespaceGrammar(c.DLP.Patterns)
-	c.Suppress = mergeDefaultSuppressions(c.Suppress, defaultProviderKeySuppressions())
+	markBuiltInCredentialAudienceHosts(c.DLP.Patterns)
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
 	if c.MCPInputScanning.OnParseError == "" {
@@ -906,6 +906,27 @@ func markBuiltInCredentialURLWhitespaceGrammar(patterns []DLPPattern) {
 				sameStrings(candidate.ExemptDomains, pattern.ExemptDomains)
 		}
 		return
+	}
+}
+
+// markBuiltInCredentialAudienceHosts restores the immutable audience property
+// for generated preset YAML. The field is excluded from YAML, so only an exact
+// copy of a shipped pattern receives it after default merging. A changed regex,
+// severity, validator, or operator exemption stays a normal blocking pattern.
+func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
+	for _, builtIn := range defaultDLPPatternSet {
+		if len(builtIn.CredentialAudienceHosts) == 0 {
+			continue
+		}
+		for i := range patterns {
+			candidate := &patterns[i]
+			if candidate.Bundle != "" || candidate.Name != builtIn.Name ||
+				candidate.Regex != builtIn.Regex || candidate.Severity != builtIn.Severity ||
+				candidate.Validator != builtIn.Validator || len(candidate.ExemptDomains) != 0 {
+				continue
+			}
+			candidate.CredentialAudienceHosts = append([]string(nil), builtIn.CredentialAudienceHosts...)
+		}
 	}
 }
 

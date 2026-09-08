@@ -1120,7 +1120,7 @@ func (c *Config) validateDLPPatternConfig() error {
 			if p.Action != ActionWarn {
 				return fmt.Errorf("DLP pattern %q has unsupported action %q; only %q is allowed as a per-pattern action", p.Name, p.Action, ActionWarn)
 			}
-			if p.Compiled {
+			if p.Compiled || IsCredentialAudiencePatternName(p.Name) {
 				return fmt.Errorf("DLP pattern %q is a built-in default and cannot be set to warn mode; built-in patterns always enforce", p.Name)
 			}
 		}
@@ -1140,6 +1140,9 @@ func (c *Config) validateDLPPatternConfig() error {
 		// that silently does nothing for that credential class.
 		if len(p.ExemptDomains) > 0 && IsCoreDLPPatternName(p.Name) {
 			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential classes are blocked on every destination", p.Name)
+		}
+		if len(p.ExemptDomains) > 0 && IsCredentialAudiencePatternName(p.Name) {
+			return fmt.Errorf("DLP pattern %q has immutable credential audience hosts and cannot set exempt_domains; use the credential only at its declared audience", p.Name)
 		}
 	}
 
@@ -2675,6 +2678,9 @@ func (c *Config) validateRequestBodyScanning() error {
 		if IsCoreDLPPatternName(pattern) {
 			return fmt.Errorf("request_body_scanning.disable_patterns[%d] %q targets immutable core DLP and cannot be disabled", i, pattern)
 		}
+		if IsCredentialAudiencePatternName(pattern) {
+			return fmt.Errorf("request_body_scanning.disable_patterns[%d] %q targets immutable credential audience hosts and cannot be disabled", i, pattern)
+		}
 		disabledPatterns[pattern] = struct{}{}
 	}
 	for pattern, action := range c.RequestBodyScanning.PatternActions {
@@ -2692,6 +2698,9 @@ func (c *Config) validateRequestBodyScanning() error {
 		}
 		if action == ActionWarn && IsCoreDLPPatternName(pattern) {
 			return fmt.Errorf("request_body_scanning.pattern_actions[%q] cannot downgrade immutable core DLP to warn", pattern)
+		}
+		if action == ActionWarn && IsCredentialAudiencePatternName(pattern) {
+			return fmt.Errorf("request_body_scanning.pattern_actions[%q] cannot downgrade immutable credential audience hosts to warn", pattern)
 		}
 		if _, disabled := disabledPatterns[pattern]; disabled {
 			return fmt.Errorf("request_body_scanning.pattern_actions[%q] is inert because the pattern is also listed in request_body_scanning.disable_patterns", pattern)
@@ -3071,6 +3080,9 @@ func (c *Config) validateSuppress() error {
 		}
 		if IsCoreDLPPatternName(s.Rule) {
 			return fmt.Errorf("suppress entry %d rule %q targets a core floor pattern; core floor patterns cannot be suppressed: dlp.patterns[].exempt_domains applies only to configurable URL DLP patterns, so fix this core pattern's precision", i, s.Rule)
+		}
+		if IsCredentialAudiencePatternName(s.Rule) {
+			return fmt.Errorf("suppress entry %d rule %q targets immutable credential audience hosts and cannot be suppressed", i, s.Rule)
 		}
 		if IsCoreResponsePatternName(s.Rule) {
 			return fmt.Errorf("suppress entry %d rule %q targets a core floor pattern; core floor patterns cannot be suppressed: tighten the response pattern to fix the false positive", i, s.Rule)

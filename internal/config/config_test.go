@@ -7031,7 +7031,7 @@ func TestValidate_SuppressValid(t *testing.T) {
 	cfg := Defaults()
 	cfg.Suppress = []SuppressEntry{
 		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "Instance var, not a secret"},
-		{Rule: "Anthropic API Key", Path: "config/initializers/*.rb"},
+		{Rule: "JWT Token", Path: "config/initializers/*.rb"},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid suppress entries should validate: %v", err)
@@ -7116,7 +7116,7 @@ suppress:
   - rule: Credential in URL
     path: src/integrations/provider_client.rb
     reason: "Instance variable storing constructor param"
-  - rule: Anthropic API Key
+  - rule: JWT Token
     path: "config/initializers/*.rb"
     reason: "Initializers reference env var names"
 `
@@ -7133,9 +7133,9 @@ suppress:
 	if !IsSuppressed("Credential in URL", "src/integrations/provider_client.rb", cfg.Suppress) {
 		t.Fatal("expected loaded Credential in URL suppress entry to survive defaults")
 	}
-	reason, ok := SuppressedReason("Anthropic API Key", "config/initializers/provider.rb", cfg.Suppress)
+	reason, ok := SuppressedReason("JWT Token", "config/initializers/provider.rb", cfg.Suppress)
 	if !ok {
-		t.Fatal("expected loaded Anthropic API Key suppress entry to survive defaults")
+		t.Fatal("expected loaded JWT Token suppress entry to survive defaults")
 	}
 	if reason != "Initializers reference env var names" {
 		t.Errorf("expected loaded reason, got %q", reason)

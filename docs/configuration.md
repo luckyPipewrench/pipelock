@@ -810,7 +810,9 @@ dlp:
         - "*.anthropic.com"
 ```
 
-For built-in provider-key patterns, the default config already exempts the provider's own API host for URL DLP and adds matching `suppress` entries for request-body and request-header DLP. The same key is still blocked when sent to any other destination. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+Built-in provider-key patterns and the Discord bot-token pattern carry a compiled, immutable credential-audience host set. When one of those credentials is sent to its declared API authority, URL, request-body, request-header, and outbound WebSocket-frame DLP allow that one match and record `dlp_credential_audience_allow`; the counter is `pipelock_dlp_credential_audience_allows_total{pattern,surface}`. The same credential stays blocked for every other destination, including lookalike hosts. The set is not YAML configuration: it cannot be extended, cleared, or used as a whole-host bypass. MCP input remains blocked because it has no verified upstream authority. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+
+`exempt_domains` and top-level `suppress` remain operator controls for configurable patterns. They are not a way to extend the immutable audience for a built-in provider credential. For a custom provider-key pattern that you own, use a narrowly scoped pattern and the controls appropriate to the carrier: `exempt_domains` for URL DLP and `suppress` for request-body or request-header DLP.
 
 Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted this way. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through, so a core credential class is blocked on every destination regardless of overrides.
 

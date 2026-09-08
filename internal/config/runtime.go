@@ -345,8 +345,9 @@ func cloneRequestBodySigV4CredentialRoutes(entries []RequestBodySigV4CredentialR
 	return out
 }
 
-// cloneDLPPatterns returns a deep copy of src. Each pattern's ExemptDomains
-// slice is copied so mutating the clone never leaks back into src.
+// cloneDLPPatterns returns a deep copy of src. Runtime-only audience hosts are
+// copied with the operator-facing exempt domain list so reload snapshots cannot
+// mutate an immutable built-in policy through a shared backing array.
 func cloneDLPPatterns(src []DLPPattern) []DLPPattern {
 	if src == nil {
 		return nil
@@ -356,6 +357,9 @@ func cloneDLPPatterns(src []DLPPattern) []DLPPattern {
 		dst[i] = src[i]
 		if src[i].ExemptDomains != nil {
 			dst[i].ExemptDomains = append([]string(nil), src[i].ExemptDomains...)
+		}
+		if src[i].CredentialAudienceHosts != nil {
+			dst[i].CredentialAudienceHosts = append([]string(nil), src[i].CredentialAudienceHosts...)
 		}
 	}
 	return dst

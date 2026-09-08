@@ -80,18 +80,18 @@ func TestDefaultDLPPatternsReturnsDeepCopy(t *testing.T) {
 	t.Parallel()
 
 	first := DefaultDLPPatterns()
-	if len(first) == 0 || len(first[0].ExemptDomains) == 0 {
-		t.Fatal("first canonical pattern should have exempt domains")
+	if len(first) == 0 || len(first[0].CredentialAudienceHosts) == 0 {
+		t.Fatal("first canonical pattern should have credential audience hosts")
 	}
 	first[0].Name = "mutated"
-	first[0].ExemptDomains[0] = "mutated.example"
+	first[0].CredentialAudienceHosts[0] = "mutated.example"
 
 	second := DefaultDLPPatterns()
 	if second[0].Name == "mutated" {
 		t.Fatal("pattern name mutation leaked into canonical registry")
 	}
-	if second[0].ExemptDomains[0] == "mutated.example" {
-		t.Fatal("exempt_domains mutation leaked into canonical registry")
+	if second[0].CredentialAudienceHosts[0] == "mutated.example" {
+		t.Fatal("credential audience host mutation leaked into canonical registry")
 	}
 }
 

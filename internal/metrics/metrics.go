@@ -51,15 +51,16 @@ type Metrics struct {
 	wsRedirectHints    prometheus.Counter
 
 	// DLP / address protection / file sentry (dlp.go).
-	bodyDLPHits        *prometheus.CounterVec
-	bodyEntropyHits    *prometheus.CounterVec
-	bodyInjectionHits  *prometheus.CounterVec
-	bodyRedactions     *prometheus.CounterVec
-	headerDLPHits      *prometheus.CounterVec
-	dlpWarnMatches     *prometheus.CounterVec
-	dlpDroppedMatches  *prometheus.CounterVec
-	AddressFindings    *prometheus.CounterVec
-	FileSentryFindings *prometheus.CounterVec
+	bodyDLPHits                 *prometheus.CounterVec
+	bodyEntropyHits             *prometheus.CounterVec
+	bodyInjectionHits           *prometheus.CounterVec
+	bodyRedactions              *prometheus.CounterVec
+	headerDLPHits               *prometheus.CounterVec
+	dlpWarnMatches              *prometheus.CounterVec
+	dlpDroppedMatches           *prometheus.CounterVec
+	dlpCredentialAudienceAllows *prometheus.CounterVec
+	AddressFindings             *prometheus.CounterVec
+	FileSentryFindings          *prometheus.CounterVec
 
 	// Sessions / adaptive enforcement / chain detection (session.go).
 	sessionAnomalies         *prometheus.CounterVec

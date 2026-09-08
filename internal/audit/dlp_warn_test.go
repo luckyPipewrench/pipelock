@@ -74,6 +74,28 @@ func TestLogDLPWarn_EventTypeConstant(t *testing.T) {
 	}
 }
 
+func TestLogDLPCredentialAudienceAllow_EmitsBoundedFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	ctx, err := NewHTTPLogContext("POST", "https://api.vendor.example/v1", "192.0.2.1", "req-audience", "agent")
+	if err != nil {
+		t.Fatalf("NewHTTPLogContext: %v", err)
+	}
+	logger.LogDLPCredentialAudienceAllow(ctx, "OpenAI API Key", "body", "api.openai.com")
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &entry); err != nil {
+		t.Fatalf("decode audit event: %v", err)
+	}
+	if entry["event"] != string(EventDLPCredentialAudienceAllow) || entry["pattern"] != "OpenAI API Key" || entry["surface"] != "body" || entry["destination"] != "api.openai.com" || entry["request_id"] != "req-audience" {
+		t.Fatalf("credential audience audit fields = %#v", entry)
+	}
+}
+
 func TestLogDLPDropped_EmitsInformationalReason(t *testing.T) {
 	var buf bytes.Buffer
 	logger, err := New("json", "custom", "", true, true)

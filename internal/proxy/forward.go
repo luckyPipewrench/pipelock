@@ -244,6 +244,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(connectScanCtx)
 	result := sc.Scan(connectScanCtx, syntheticURL)
+	p.recordCredentialAudienceAllows(targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent)
 	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, host, targetPort, result))
 
 	// Capture observer: record CONNECT URL verdict for policy replay.
@@ -998,6 +999,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)
+	p.recordCredentialAudienceAllows(actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent)
 
 	// A2A protocol detection: check path and Content-Type before deeper scanning.
 	isA2A := cfg.A2AScanning.Enabled && mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type"))
@@ -1393,11 +1395,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Action:           cfg.RequestBodyScanning.Action,
 			DisablePatterns:  cfg.RequestBodyScanning.DisablePatterns,
 			PatternActions:   cfg.RequestBodyScanning.PatternActions,
+			AudienceSurface:  "body",
 			OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 				if p.logger != nil {
 					p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "body", reason)
 				}
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+			},
+			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
+				p.recordCredentialAudienceAllow(actx, allow, TransportForward, r.Method, targetURL, requestID, agent)
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)

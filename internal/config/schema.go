@@ -1150,15 +1150,16 @@ type DLP struct {
 
 // DLPPattern is a named regex pattern for detecting secrets in URLs.
 type DLPPattern struct {
-	Name          string   `yaml:"name"`
-	Regex         string   `yaml:"regex"`
-	Severity      string   `yaml:"severity"`            // critical, high, medium, low
-	Validator     string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
-	ExemptDomains []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
-	Action        string   `yaml:"action,omitempty"`    // reserved - not yet implemented; rejected at validation
-	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
-	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
-	Compiled      bool     `yaml:"-"`                   // true for patterns created in Defaults()
+	Name                    string   `yaml:"name"`
+	Regex                   string   `yaml:"regex"`
+	Severity                string   `yaml:"severity"`            // critical, high, medium, low
+	Validator               string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
+	ExemptDomains           []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
+	Action                  string   `yaml:"action,omitempty"`    // reserved - not yet implemented; rejected at validation
+	Bundle                  string   `yaml:"-"`                   // set by rules loader, not from YAML
+	BundleVersion           string   `yaml:"-"`                   // set by rules loader, not from YAML
+	Compiled                bool     `yaml:"-"`                   // true for patterns created in Defaults()
+	CredentialAudienceHosts []string `yaml:"-"`                   // compiled built-ins only; strict YAML rejects attempts to configure it
 	// CredentialURLWhitespaceGrammar is set only by the built-in default
 	// registry. It is runtime provenance, not an operator-facing setting.
 	CredentialURLWhitespaceGrammar bool `yaml:"-"`

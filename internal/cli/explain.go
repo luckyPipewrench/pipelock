@@ -444,6 +444,10 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 	report.Notes = append(report.Notes, explainResponseScanExemptNotes(cfg, report.Host)...)
 
 	if result.Allowed {
+		for _, allow := range result.CredentialAudienceAllows {
+			report.PatternName = allow.PatternName
+			report.Notes = append(report.Notes, fmt.Sprintf("allowed: credential audience match (pattern %s, canonical destination %s)", allow.PatternName, allow.Destination))
+		}
 		// Even an allowed verdict can depend on DNS: if the hostname-based
 		// SSRF layer is active in the live config and the host is not an IP
 		// literal, the runtime verdict could still block on resolution.
@@ -453,6 +457,16 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 				"this config's SSRF layer (layer 8) resolves DNS at runtime; explain did not resolve, so a private/metadata IP or DNS failure could still block this URL when proxied")
 		}
 		report.Notes = append(report.Notes, explainUnevaluatedLayerNotes(cfg, report.Host)...)
+		return report, nil
+	}
+	if len(result.CredentialAudienceMismatches) > 0 {
+		mismatch := result.CredentialAudienceMismatches[0]
+		report.PatternName = mismatch.PatternName
+		report.Reason = fmt.Sprintf("blocked: credential audience mismatch (pattern %s, canonical destination %s, immutable audience hosts %s)", mismatch.PatternName, mismatch.Destination, strings.Join(mismatch.Hosts, ", "))
+		report.Remediation = &explainRemediation{
+			Knob:      "This built-in credential audience host set is immutable. Correct the destination or use a credential intended for that destination; do not use exempt_domains or a global bypass.",
+			Immutable: true,
+		}
 		return report, nil
 	}
 

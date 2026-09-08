@@ -830,9 +830,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
 			result := currentScanner.Scan(redirectScanCtx, redirectURL)
+			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
+			p.recordCredentialAudienceAllows(redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName)
 			*req = *req.WithContext(withAllowedSSRFDialScanSnapshot(redirectScanCtx, currentScanner, req.URL.Hostname(), effectiveURLPort(req.URL), result))
 			if !result.Allowed {
-				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
+				actx := redirectAuditCtx
 				if currentCfg.EnforceEnabled() {
 					// Preserve the originating scanner label (SSRF,
 					// DLP, blocklist, …) in the typed block error so
@@ -4593,6 +4595,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
+	p.recordCredentialAudienceAllows(actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent)
 
 	// Capture observer: record URL verdict for policy replay.
 	urlFindings := urlResultToFindings(result)

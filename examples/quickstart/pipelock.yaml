@@ -75,28 +75,18 @@ dlp:
     - name: "Anthropic API Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
-      exempt_domains:
-        - "*.anthropic.com"
     - name: "OpenAI API Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
       severity: critical
-      exempt_domains:
-        - "*.openai.com"
     - name: "OpenAI Service Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-_]{20,}'
       severity: critical
-      exempt_domains:
-        - "*.openai.com"
     - name: "Fireworks API Key"
       regex: 'fw_[A-Za-z0-9]{22}\b'
       severity: critical
-      exempt_domains:
-        - "*.fireworks.ai"
     - name: "Google API Key"
       regex: 'AIza[0-9A-Za-z\-_]{35}\b'
       severity: high
-      exempt_domains:
-        - "*.googleapis.com"
     - name: "Google OAuth Client Secret"
       regex: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
       severity: critical

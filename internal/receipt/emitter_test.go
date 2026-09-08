@@ -189,6 +189,44 @@ func TestEmitter_Emit_HappyPath(t *testing.T) {
 	}
 }
 
+func TestEmitter_Emit_CredentialAudienceExtensionIsUnsigned(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv})
+	if e == nil {
+		t.Fatal("NewEmitter() returned nil")
+	}
+
+	extension := json.RawMessage(`{"dlp_credential_audience_allow":{"pattern":"OpenAI API Key","surface":"header","destination":"api.vendor.example"}}`)
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Target:    testTarget,
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodPost,
+		Extension: extension,
+	}); err != nil {
+		t.Fatalf("Emit() error: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close(): %v", err)
+	}
+
+	r := readReceiptFromDir(t, dir, pub)
+	if got := string(r.Ext); got != string(extension) {
+		t.Fatalf("receipt extension = %s, want %s", got, extension)
+	}
+	// Ext deliberately sits outside the stable signed v1 schema. Changing it
+	// cannot alter the signed allow decision, which is why it is advisory only.
+	r.Ext = json.RawMessage(`{"dlp_credential_audience_allow":{"pattern":"changed"}}`)
+	if err := VerifyWithKey(r, hex.EncodeToString(pub)); err != nil {
+		t.Fatalf("extension must remain outside the signed schema: %v", err)
+	}
+}
+
 // TestEmitter_InFlightReceiptStampsSnapshotPolicyHashAcrossReload proves that a
 // request decided under the OLD policy but emitted AFTER a same-key hot reload
 // advanced the emitter's config-hash atomic is still stamped with the policy

@@ -104,8 +104,12 @@ func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
 	}
 
 	blocked, err := decodeExplainJSON(t, "https://api.vendor.example/v1/responses?key="+key)
-	if err != nil || blocked.Allowed {
+	if err == nil || blocked.Allowed {
 		t.Fatalf("non-audience explain = %+v, err=%v", blocked, err)
+	}
+	var exitErr *cliutil.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != cliutil.ExitSecurity {
+		t.Fatalf("non-audience explain should carry ExitSecurity, got %v", err)
 	}
 	if !strings.Contains(blocked.Reason, "blocked: credential audience mismatch") || !strings.Contains(blocked.Reason, "*.openai.com") || blocked.Remediation == nil || !blocked.Remediation.Immutable {
 		t.Fatalf("non-audience explain lacks immutable mismatch guidance: %+v", blocked)

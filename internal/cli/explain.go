@@ -464,7 +464,7 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 		report.PatternName = mismatch.PatternName
 		report.Reason = fmt.Sprintf("blocked: credential audience mismatch (pattern %s, canonical destination %s, immutable audience hosts %s)", mismatch.PatternName, mismatch.Destination, strings.Join(mismatch.Hosts, ", "))
 		report.Remediation = &explainRemediation{
-			Knob:      "This built-in credential audience host set is immutable. Correct the destination or use a credential intended for that destination; do not use exempt_domains or a global bypass.",
+			Knob:      "This built-in credential audience host set is immutable. Correct the destination or use a credential intended for that destination; do not use a URL-only exemption or a global bypass.",
 			Immutable: true,
 		}
 		return report, nil

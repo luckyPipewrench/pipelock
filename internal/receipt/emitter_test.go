@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -216,8 +217,15 @@ func TestEmitter_Emit_CredentialAudienceExtensionIsUnsigned(t *testing.T) {
 	}
 
 	r := readReceiptFromDir(t, dir, pub)
-	if got := string(r.Ext); got != string(extension) {
-		t.Fatalf("receipt extension = %s, want %s", got, extension)
+	var gotExtension, wantExtension any
+	if err := json.Unmarshal(r.Ext, &gotExtension); err != nil {
+		t.Fatalf("decode receipt extension: %v", err)
+	}
+	if err := json.Unmarshal(extension, &wantExtension); err != nil {
+		t.Fatalf("decode expected extension: %v", err)
+	}
+	if !reflect.DeepEqual(gotExtension, wantExtension) {
+		t.Fatalf("receipt extension = %#v, want %#v", gotExtension, wantExtension)
 	}
 	// Ext deliberately sits outside the stable signed v1 schema. Changing it
 	// cannot alter the signed allow decision, which is why it is advisory only.

@@ -1743,10 +1743,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves. Forward proxy has
 	// URL path, query params, and request body as outbound data.
-	ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()))
+	ceeSession := ceeSessionKey(agent, clientIP, id.Auth)
+	var ceePartitionKey []byte
+	if fb := p.fragmentBufferPtr.Load(); fb != nil {
+		ceePartitionKey = fb.PartitionKey()
+	}
+	ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
 	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
-		KeyPayload: queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
+		SessionKey: ceeSession, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
+		PartitionReason: ceePayloads.partitionReason,
+		KeyPayload:      queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
 		RequestID: requestID, IncludeFragments: true,
 	})
 	if ceeAdmission.Active {

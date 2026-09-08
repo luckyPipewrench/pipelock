@@ -219,11 +219,13 @@ func TestJSONLeafPayloadsPartial(t *testing.T) {
 	}
 }
 
+var testJSONLeafBucketKey = []byte("pipelock-test-json-leaf-bucket-key")
+
 func TestJSONLeafBucketPayloadsKeepsEveryLeafWithinFixedBuckets(t *testing.T) {
 	limits := JSONLeafLimits{MaxDepth: 2, MaxPathBytes: 32}
 
 	t.Run("arrays and scalar kinds remain represented", func(t *testing.T) {
-		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`[null,2,true,"text"]`), limits, 8)
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`[null,2,true,"text"]`), limits, 8, testJSONLeafBucketKey)
 		if !valid {
 			t.Fatal("valid scalar array was rejected")
 		}
@@ -238,34 +240,39 @@ func TestJSONLeafBucketPayloadsKeepsEveryLeafWithinFixedBuckets(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid input and limits fail closed", func(t *testing.T) {
+	t.Run("invalid limits and empty key decline to partition", func(t *testing.T) {
 		for _, tt := range []struct {
 			raw     json.RawMessage
 			limits  JSONLeafLimits
 			buckets int
+			key     []byte
 		}{
-			{raw: json.RawMessage(`{"unterminated"`), limits: limits, buckets: 8},
-			{raw: json.RawMessage(`{"value":"ok"} trailing`), limits: limits, buckets: 8},
-			{raw: json.RawMessage(`{"value":"ok"}`), limits: JSONLeafLimits{}, buckets: 8},
-			{raw: json.RawMessage(`{"value":"ok"}`), limits: limits, buckets: 0},
-			{raw: json.RawMessage(`{"value":"ok"}`), limits: limits, buckets: maxJSONLeafBuckets + 1},
+			{raw: json.RawMessage(`{"unterminated"`), limits: limits, buckets: 8, key: testJSONLeafBucketKey},
+			{raw: json.RawMessage(`{"value":"ok"}`), limits: JSONLeafLimits{}, buckets: 8, key: testJSONLeafBucketKey},
+			{raw: json.RawMessage(`{"value":"ok"}`), limits: limits, buckets: 0, key: testJSONLeafBucketKey},
+			{raw: json.RawMessage(`{"value":"ok"}`), limits: limits, buckets: maxJSONLeafBuckets + 1, key: testJSONLeafBucketKey},
+			{raw: json.RawMessage(`{"value":"ok"}`), limits: limits, buckets: 8, key: nil},
+			{raw: nil, limits: limits, buckets: 8, key: testJSONLeafBucketKey},
 		} {
-			if buckets, valid := JSONLeafBucketPayloads(tt.raw, tt.limits, tt.buckets); valid || buckets != nil {
+			if buckets, valid := JSONLeafBucketPayloads(tt.raw, tt.limits, tt.buckets, tt.key); valid || buckets != nil {
 				t.Fatalf("invalid bucket extraction = %#v, valid=%t", buckets, valid)
 			}
 		}
 	})
 
-	if got := jsonLeafBucketIndex(nil, 0, 0, maxJSONLeafBuckets+1); got != 0 {
+	if got := jsonLeafBucketIndex(nil, 0, 0, maxJSONLeafBuckets+1, testJSONLeafBucketKey); got != 0 {
 		t.Fatalf("out-of-range bucket count index = %d, want 0", got)
+	}
+	if got := jsonLeafBucketIndex([]byte("$/a"), 0, 2, 8, nil); got != 0 {
+		t.Fatalf("empty-key bucket index = %d, want 0", got)
 	}
 
 	t.Run("deep leaf uses a stable bucket", func(t *testing.T) {
-		first, valid := JSONLeafBucketPayloads(nestedJSON(66), limits, 8)
+		first, valid := JSONLeafBucketPayloads(nestedJSON(66), limits, 8, testJSONLeafBucketKey)
 		if !valid || len(first) != 1 {
 			t.Fatalf("first buckets = %#v, valid=%t", first, valid)
 		}
-		second, valid := JSONLeafBucketPayloads(nestedJSON(66), limits, 8)
+		second, valid := JSONLeafBucketPayloads(nestedJSON(66), limits, 8, testJSONLeafBucketKey)
 		if !valid || len(second) != 1 {
 			t.Fatalf("second buckets = %#v, valid=%t", second, valid)
 		}
@@ -290,7 +297,7 @@ func TestJSONLeafBucketPayloadsKeepsEveryLeafWithinFixedBuckets(t *testing.T) {
 			raw.WriteByte('"')
 		}
 		raw.WriteByte('}')
-		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(raw.String()), limits, 4)
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(raw.String()), limits, 4, testJSONLeafBucketKey)
 		if !valid || len(buckets) > 4 {
 			t.Fatalf("buckets = %#v, valid=%t", buckets, valid)
 		}
@@ -304,6 +311,175 @@ func TestJSONLeafBucketPayloadsKeepsEveryLeafWithinFixedBuckets(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestJSONLeafBucketPayloadsKeepsLeavesParsedBeforeError(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 4, MaxPathBytes: 64}
+	secret := "AKI" + "AIOSFODNN7EXAMPLE"
+
+	t.Run("trailing byte keeps the parsed leaf", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"a":"`+secret+`"} x`), limits, 8, testJSONLeafBucketKey)
+		if valid {
+			t.Fatal("trailing non-JSON must not report a complete document")
+		}
+		if !jsonLeafBucketsContain(buckets, secret) {
+			t.Fatalf("parsed leaf was omitted after trailing byte: %#v", buckets)
+		}
+	})
+
+	t.Run("second top-level value keeps the first object's leaves", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"a":"`+secret+`"}{}`), limits, 8, testJSONLeafBucketKey)
+		if valid {
+			t.Fatal("second top-level value must not report a complete document")
+		}
+		if !jsonLeafBucketsContain(buckets, secret) {
+			t.Fatalf("parsed leaf was omitted after second value: %#v", buckets)
+		}
+	})
+
+	t.Run("truncated after a complete sibling keeps that sibling", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"keep":"yes","drop":"`), limits, 8, testJSONLeafBucketKey)
+		if valid {
+			t.Fatal("truncated object must not report a complete document")
+		}
+		if !jsonLeafBucketsContain(buckets, "yes") {
+			t.Fatalf("complete sibling was omitted: %#v", buckets)
+		}
+	})
+
+	t.Run("truncated before any scalar yields no buckets", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"a":"`+secret), limits, 8, testJSONLeafBucketKey)
+		if valid || buckets != nil {
+			t.Fatalf("unterminated first leaf = %#v, valid=%t", buckets, valid)
+		}
+	})
+}
+
+func TestJSONLeafBucketPayloadsWalkerErrorReturns(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 4, MaxPathBytes: 64}
+
+	t.Run("unexpected closing delimiter", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`}`), limits, 8, testJSONLeafBucketKey)
+		if valid || buckets != nil {
+			t.Fatalf("unexpected delim = %#v, valid=%t", buckets, valid)
+		}
+	})
+
+	t.Run("unexpected array closer", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`]`), limits, 8, testJSONLeafBucketKey)
+		if valid || buckets != nil {
+			t.Fatalf("unexpected array delim = %#v, valid=%t", buckets, valid)
+		}
+	})
+
+	t.Run("non-string object key", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{1:true}`), limits, 8, testJSONLeafBucketKey)
+		if valid || buckets != nil {
+			t.Fatalf("numeric key = %#v, valid=%t", buckets, valid)
+		}
+	})
+
+	t.Run("truncated object key", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"`), limits, 8, testJSONLeafBucketKey)
+		if valid || buckets != nil {
+			t.Fatalf("truncated key = %#v, valid=%t", buckets, valid)
+		}
+	})
+
+	t.Run("truncated after object key", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"a":`), limits, 8, testJSONLeafBucketKey)
+		if valid || buckets != nil {
+			t.Fatalf("truncated after key = %#v, valid=%t", buckets, valid)
+		}
+	})
+
+	t.Run("truncated array after a scalar keeps that scalar", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`[1,`), limits, 8, testJSONLeafBucketKey)
+		if valid {
+			t.Fatal("truncated array must not report a complete document")
+		}
+		if !jsonLeafBucketsContain(buckets, "1") {
+			t.Fatalf("array scalar was omitted: %#v", buckets)
+		}
+	})
+
+	t.Run("mismatched object closer", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"a":1]`), limits, 8, testJSONLeafBucketKey)
+		if valid {
+			t.Fatal("mismatched closer must not report a complete document")
+		}
+		if !jsonLeafBucketsContain(buckets, "1") {
+			t.Fatalf("leaf before mismatched closer was omitted: %#v", buckets)
+		}
+	})
+
+	t.Run("mismatched array closer", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`[true}`), limits, 8, testJSONLeafBucketKey)
+		if valid {
+			t.Fatal("mismatched array closer must not report a complete document")
+		}
+		if !jsonLeafBucketsContain(buckets, "true") {
+			t.Fatalf("array leaf before mismatched closer was omitted: %#v", buckets)
+		}
+	})
+
+	t.Run("truncated nested object after sibling", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"keep":false,"child":{`), limits, 8, testJSONLeafBucketKey)
+		if valid {
+			t.Fatal("truncated nested object must not report a complete document")
+		}
+		if !jsonLeafBucketsContain(buckets, "false") {
+			t.Fatalf("sibling before truncated nested object was omitted: %#v", buckets)
+		}
+	})
+}
+
+func TestJSONLeafBucketIndexIsKeyedPerSecret(t *testing.T) {
+	path := []byte("$/messages/0/content")
+	first := jsonLeafBucketIndex(path, 1, 8, 4096, testJSONLeafBucketKey)
+	second := jsonLeafBucketIndex(path, 1, 8, 4096, testJSONLeafBucketKey)
+	if first != second {
+		t.Fatalf("same key mapped %q to %d then %d", path, first, second)
+	}
+	otherKey := append([]byte(nil), testJSONLeafBucketKey...)
+	otherKey[len(otherKey)-1] ^= 0x01
+	other := jsonLeafBucketIndex(path, 1, 8, 4096, otherKey)
+	if first == other {
+		t.Fatalf("distinct keys mapped %q to the same bucket %d", path, first)
+	}
+
+	target := jsonLeafBucketIndex(path, 1, 8, 4096, testJSONLeafBucketKey)
+	wrongKey := []byte("attacker-guessed-json-leaf-bucket")
+	hits := 0
+	for index := 1; index <= 20000; index++ {
+		candidate := []byte("$/n" + strconv.Itoa(index))
+		if jsonLeafBucketIndex(candidate, 1, 8, 4096, wrongKey) == target {
+			hits++
+		}
+	}
+	if hits > 20 {
+		t.Fatalf("grinding with the wrong key hit the secret bucket %d/20000 times; keyed mapping leaked", hits)
+	}
+	found := 0
+	for index := 1; index <= 20000; index++ {
+		candidate := []byte("$/n" + strconv.Itoa(index))
+		if jsonLeafBucketIndex(candidate, 1, 8, 4096, testJSONLeafBucketKey) == target {
+			found = index
+			break
+		}
+	}
+	if found == 0 {
+		t.Fatal("keyed oracle did not find a colliding path in 20000 candidates")
+	}
+}
+
+func jsonLeafBucketsContain(buckets map[string][]byte, want string) bool {
+	for _, value := range buckets {
+		if strings.Contains(string(value), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAllStringsFromJSON_InvalidJSON(t *testing.T) {

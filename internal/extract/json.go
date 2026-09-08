@@ -7,6 +7,7 @@ package extract
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -83,29 +84,48 @@ func JSONLeafPayloadsPartial(raw json.RawMessage, limits JSONLeafLimits) (payloa
 }
 
 // JSONLeafBucketPayloads groups every scalar JSON leaf into one of bucketCount
-// stable buckets. Unlike JSONLeafPayloadsPartial, it never discards a leaf to
-// enforce a path-count ceiling: the fixed bucket count is the resource bound.
-// Deep paths are reduced to a truncated-plus-digest representation before
-// bucket selection, so a depth limit does not omit their content.
-func JSONLeafBucketPayloads(raw json.RawMessage, limits JSONLeafLimits, bucketCount int) (payloads map[string][]byte, valid bool) {
-	if len(raw) == 0 || limits.MaxDepth < 0 || limits.MaxPathBytes <= 0 || bucketCount <= 0 || bucketCount > maxJSONLeafBuckets {
+// buckets. Unlike JSONLeafPayloadsPartial, it never discards a leaf to enforce
+// a path-count ceiling: the fixed bucket count is the resource bound. Deep
+// paths are reduced to a truncated-plus-digest representation before bucket
+// selection, so a depth limit does not omit their content.
+//
+// Bucket selection is a keyed digest of the normalized path. The same path
+// stays in the same bucket for one key; a different key is a different map.
+// Callers must pass a secret that lives at least as long as the fragment
+// streams those buckets feed. An empty key declines to partition: a public
+// digest would let an attacker grind a colliding path offline.
+//
+// valid is true only for a complete JSON document. A parse error still
+// returns every leaf that was already represented; omitting those leaves
+// would drop partitioned evidence and leave only the raw concatenated
+// stream, which cannot reconstruct a split separated by unrelated padding.
+func JSONLeafBucketPayloads(raw json.RawMessage, limits JSONLeafLimits, bucketCount int, key []byte) (payloads map[string][]byte, valid bool) {
+	if len(raw) == 0 || limits.MaxDepth < 0 || limits.MaxPathBytes <= 0 || bucketCount <= 0 || bucketCount > maxJSONLeafBuckets || len(key) == 0 {
 		return nil, false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	state := jsonLeafBucketState{payloads: make(map[string][]byte), bucketCount: bucketCount}
+	state := jsonLeafBucketState{payloads: make(map[string][]byte), bucketCount: bucketCount, key: key}
 	if !appendJSONLeafBucketPayload(decoder, &state, []byte("$"), 0, limits) {
-		return nil, false
+		return jsonLeafBucketResult(state.payloads), false
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return nil, false
+		return jsonLeafBucketResult(state.payloads), false
 	}
-	return state.payloads, true
+	return jsonLeafBucketResult(state.payloads), true
+}
+
+func jsonLeafBucketResult(payloads map[string][]byte) map[string][]byte {
+	if len(payloads) == 0 {
+		return nil
+	}
+	return payloads
 }
 
 type jsonLeafBucketState struct {
 	payloads    map[string][]byte
 	bucketCount int
+	key         []byte
 }
 
 func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth int, limits JSONLeafLimits) bool {
@@ -162,12 +182,12 @@ func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketSta
 }
 
 func appendJSONLeafBucketValue(state *jsonLeafBucketState, path []byte, depth, maxDepth int, value string) {
-	bucket := strconv.Itoa(jsonLeafBucketIndex(path, depth, maxDepth, state.bucketCount))
+	bucket := strconv.Itoa(jsonLeafBucketIndex(path, depth, maxDepth, state.bucketCount, state.key))
 	state.payloads[bucket] = append(state.payloads[bucket], value...)
 }
 
-func jsonLeafBucketIndex(path []byte, depth, maxDepth, bucketCount int) int {
-	if bucketCount <= 0 || bucketCount > maxJSONLeafBuckets {
+func jsonLeafBucketIndex(path []byte, depth, maxDepth, bucketCount int, key []byte) int {
+	if bucketCount <= 0 || bucketCount > maxJSONLeafBuckets || len(key) == 0 {
 		return 0
 	}
 	material := path
@@ -179,7 +199,9 @@ func jsonLeafBucketIndex(path []byte, depth, maxDepth, bucketCount int) int {
 		material[prefixLen] = '#'
 		hex.Encode(material[prefixLen+1:], digest[:])
 	}
-	digest := sha256.Sum256(material)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(material)
+	digest := mac.Sum(nil)
 	return int(binary.BigEndian.Uint16(digest[:2]) % uint16(bucketCount))
 }
 

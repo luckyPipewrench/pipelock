@@ -93,6 +93,8 @@ type Metrics struct {
 	CrossRequestDLPMatch                 prometheus.Counter
 	CrossRequestFragmentCapacityExceeded prometheus.Counter
 	CrossRequestPathDepthExceeded        prometheus.Counter
+	CrossRequestJSONPartitionFallback    *prometheus.CounterVec
+	CrossRequestFragmentOwnerMismatch    prometheus.Counter
 	CrossRequestFragmentBytes            prometheus.Gauge
 
 	// Scan API (scan_api.go).

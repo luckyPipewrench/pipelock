@@ -1566,6 +1566,34 @@ func TestRecordCrossRequestPathDepthExceeded(t *testing.T) {
 	nilMetrics.RecordCrossRequestPathDepthExceeded()
 }
 
+func TestRecordCrossRequestJSONPartitionFallback(t *testing.T) {
+	m := New()
+	m.RecordCrossRequestJSONPartitionFallback("malformed")
+	m.RecordCrossRequestJSONPartitionFallback("malformed")
+	m.RecordCrossRequestJSONPartitionFallback("incomplete")
+	m.RecordCrossRequestJSONPartitionFallback("unkeyed")
+	m.RecordCrossRequestJSONPartitionFallback("attacker-grown")
+	m.RecordCrossRequestJSONPartitionFallback("")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`pipelock_cross_request_json_partition_fallback_total{reason="malformed"} 2`,
+		`pipelock_cross_request_json_partition_fallback_total{reason="incomplete"} 1`,
+		`pipelock_cross_request_json_partition_fallback_total{reason="unkeyed"} 1`,
+		`pipelock_cross_request_json_partition_fallback_total{reason="other"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected %s:\n%s", want, body)
+		}
+	}
+
+	var nilMetrics *Metrics
+	nilMetrics.RecordCrossRequestJSONPartitionFallback("malformed")
+}
+
 func TestSetCrossRequestFragmentBytes(t *testing.T) {
 	m := New()
 	m.SetCrossRequestFragmentBytes(42.0)

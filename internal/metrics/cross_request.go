@@ -37,6 +37,16 @@ func (m *Metrics) registerCrossRequestMetrics(reg *prometheus.Registry) {
 		Name:      "cross_request_path_depth_exceeded_total",
 		Help:      "URL requests denied because their path exceeds the CEE tracking depth cap.",
 	})
+	m.CrossRequestJSONPartitionFallback = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "cross_request_json_partition_fallback_total",
+		Help:      "JSON request bodies that did not produce a complete partitioned fragment map, by reason.",
+	}, []string{"reason"})
+	m.CrossRequestFragmentOwnerMismatch = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "cross_request_fragment_owner_mismatch_total",
+		Help:      "Fragment appends refused because the stream already held another identity's evidence.",
+	})
 	m.CrossRequestFragmentBytes = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "pipelock",
 		Name:      "cross_request_fragment_buffer_bytes",
@@ -44,7 +54,7 @@ func (m *Metrics) registerCrossRequestMetrics(reg *prometheus.Registry) {
 	})
 
 	reg.MustRegister(
-		m.CrossRequestEntropyExceeded, m.CrossRequestDLPMatch, m.CrossRequestFragmentCapacityExceeded, m.CrossRequestPathDepthExceeded, m.CrossRequestFragmentBytes,
+		m.CrossRequestEntropyExceeded, m.CrossRequestDLPMatch, m.CrossRequestFragmentCapacityExceeded, m.CrossRequestPathDepthExceeded, m.CrossRequestJSONPartitionFallback, m.CrossRequestFragmentOwnerMismatch, m.CrossRequestFragmentBytes,
 	)
 }
 
@@ -74,6 +84,35 @@ func (m *Metrics) RecordCrossRequestFragmentCapacityExceeded() {
 func (m *Metrics) RecordCrossRequestPathDepthExceeded() {
 	if m != nil {
 		m.CrossRequestPathDepthExceeded.Inc()
+	}
+}
+
+// RecordCrossRequestJSONPartitionFallback increments the JSON body partition
+// fallback counter. reason is a small closed set (malformed, incomplete,
+// unkeyed); unknown values are recorded as "other" so the label set cannot
+// be attacker-grown.
+func (m *Metrics) RecordCrossRequestJSONPartitionFallback(reason string) {
+	if m == nil || m.CrossRequestJSONPartitionFallback == nil {
+		return
+	}
+	switch reason {
+	case "malformed", "incomplete", "unkeyed":
+	case "":
+		return
+	default:
+		reason = "other"
+	}
+	m.CrossRequestJSONPartitionFallback.WithLabelValues(reason).Inc()
+}
+
+// RecordCrossRequestFragmentOwnerMismatch increments the counter for a
+// fragment append refused because the stream belonged to another identity.
+// A nonzero value is an internal invariant failure, not an operator tuning
+// signal: there is no configuration that permits blending two identities'
+// evidence, so the request is reported as uninspected instead.
+func (m *Metrics) RecordCrossRequestFragmentOwnerMismatch() {
+	if m != nil && m.CrossRequestFragmentOwnerMismatch != nil {
+		m.CrossRequestFragmentOwnerMismatch.Inc()
 	}
 }
 

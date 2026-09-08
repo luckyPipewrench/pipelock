@@ -100,6 +100,102 @@ func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {
 	}
 }
 
+// A logical identity may hold many streams (raw body, one per JSON bucket,
+// query keys, path positions) and they must cost ONE global ledger slot. The
+// alternative was measured: charging the ledger per stream let one client take
+// 4,099 of 10,000 slots, so roughly three clients denied everyone else.
+func TestFragmentBuffer_OwnedStreamsShareOneLedgerSlot(t *testing.T) {
+	fb := NewFragmentBuffer(1024, 1, testWindowSecs)
+	t.Cleanup(fb.Close)
+
+	for _, stream := range []string{"client-a|raw", "client-a|body-json/1", "client-a|body-json/2", "client-a|keys"} {
+		if result := fb.AppendOwned("client-a", stream, []byte("ordinary")); result.CapacityExceeded || result.OwnerMismatch {
+			t.Fatalf("owner stream %q result = %+v, want admission under one identity slot", stream, result)
+		}
+	}
+	if result := fb.AppendPathSegmentsOwned("client-a", "client-a|path", [][]byte{[]byte("upload")}); result.CapacityExceeded || result.OwnerMismatch {
+		t.Fatalf("owner path stream result = %+v, want admission under one identity slot", result)
+	}
+	// A SECOND identity needs a slot of its own, and the ledger holds one, so
+	// it is refused rather than admitted or silently skipped.
+	if result := fb.AppendOwned("client-b", "client-b|raw", []byte("ordinary")); !result.CapacityExceeded {
+		t.Fatalf("second identity result = %+v, want capacity denial", result)
+	}
+	if result := fb.AppendOwned("client-a", "client-a|body-json/3", []byte("more")); result.CapacityExceeded || result.OwnerMismatch {
+		t.Fatalf("established identity result = %+v, want continued admission", result)
+	}
+}
+
+// Ownership is enforced on the stream, not merely accounted for. Without this
+// guard an append whose stream key already exists skipped the ownership check
+// entirely and blended the two identities' fragments, which both manufactures
+// a match from unrelated clients' data and lets one client pad another's
+// evidence. Production keys embed the session key so this is unreachable
+// today, but that invariant was held by convention at three call sites and by
+// nothing at the boundary itself.
+func TestFragmentBuffer_RefusesForeignOwnerOnExistingStream(t *testing.T) {
+	t.Run("data stream", func(t *testing.T) {
+		fb := NewFragmentBuffer(1024, 8, testWindowSecs)
+		t.Cleanup(fb.Close)
+
+		if result := fb.AppendOwned("client-a", "shared", []byte("AKIAIOSFODNN")); result.OwnerMismatch {
+			t.Fatalf("first owner result = %+v, want admission", result)
+		}
+		result := fb.AppendOwned("client-b", "shared", []byte("7EXAMPLE"))
+		if !result.OwnerMismatch {
+			t.Fatalf("foreign owner result = %+v, want OwnerMismatch; blending identities is never safe", result)
+		}
+		if result.CapacityExceeded {
+			t.Fatalf("foreign owner result = %+v, want the mismatch reason alone; capacity is not why this was refused", result)
+		}
+	})
+
+	t.Run("path stream", func(t *testing.T) {
+		fb := NewFragmentBuffer(1024, 8, testWindowSecs)
+		t.Cleanup(fb.Close)
+
+		if result := fb.AppendPathSegmentsOwned("client-a", "shared", [][]byte{[]byte("first")}); result.OwnerMismatch {
+			t.Fatalf("first owner result = %+v, want admission", result)
+		}
+		if result := fb.AppendPathSegmentsOwned("client-b", "shared", [][]byte{[]byte("second")}); !result.OwnerMismatch {
+			t.Fatalf("foreign owner path result = %+v, want OwnerMismatch", result)
+		}
+	})
+
+	// The refusal must not leak across identities in the other direction: the
+	// rightful owner keeps working after a foreign append is refused.
+	t.Run("owner unaffected by a refused foreign append", func(t *testing.T) {
+		fb := NewFragmentBuffer(1024, 8, testWindowSecs)
+		t.Cleanup(fb.Close)
+
+		fb.AppendOwned("client-a", "shared", []byte("ordinary"))
+		fb.AppendOwned("client-b", "shared", []byte("foreign"))
+		if result := fb.AppendOwned("client-a", "shared", []byte("more")); result.OwnerMismatch || result.CapacityExceeded {
+			t.Fatalf("rightful owner result = %+v, want continued admission", result)
+		}
+	})
+}
+
+func TestFragmentBuffer_PartitionKeyLivesWithBuffer(t *testing.T) {
+	fb := NewFragmentBuffer(1024, 2, testWindowSecs)
+	key := fb.PartitionKey()
+	if len(key) != 32 {
+		t.Fatalf("partition key length = %d, want 32", len(key))
+	}
+	fb.UpdateConfig(512, 2, testWindowSecs)
+	afterReload := fb.PartitionKey()
+	if string(afterReload) != string(key) {
+		t.Fatal("UpdateConfig rotated the partition key while fragments can still exist")
+	}
+	fb.Close()
+	if got := fb.PartitionKey(); got != nil {
+		t.Fatalf("closed buffer still exposed a partition key: %x", got)
+	}
+	if got := (*FragmentBuffer)(nil).PartitionKey(); got != nil {
+		t.Fatalf("nil buffer partition key = %x", got)
+	}
+}
+
 func TestFragmentBuffer_DeletesPrefixAcrossStreamsAndPaths(t *testing.T) {
 	fb := NewFragmentBuffer(1024, 4, testWindowSecs)
 	t.Cleanup(fb.Close)

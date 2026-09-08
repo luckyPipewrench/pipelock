@@ -6,6 +6,7 @@ package scanner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,11 @@ type FragmentAppendResult struct {
 	// non-empty segments. The caller must not treat the request as fully
 	// inspected: untracked positions could otherwise carry split fragments.
 	PathDepthExceeded bool
+	// OwnerMismatch means the stream already holds another identity's
+	// evidence. Appending anyway would join two clients' fragments, which
+	// both manufactures a match from unrelated data and lets one client pad
+	// another's stream, so the caller must treat the request as uninspected.
+	OwnerMismatch bool
 }
 
 // FragmentBuffer accumulates outbound payloads per session in rolling buffers.
@@ -75,17 +81,28 @@ type FragmentAppendResult struct {
 // DLP patterns synchronously. This guarantees pre-forward detection: a request
 // that completes a split secret is blocked before egress. Thread-safe.
 type FragmentBuffer struct {
-	mu           sync.Mutex
-	maxBytes     int // per-session byte cap
-	maxSessions  int // global session count cap (new sessions are denied at capacity)
-	windowSecs   int // fragment retention window in seconds
-	sessions     map[string]*sessionBuffer
-	pathSessions map[string]*pathSessionBuffer
-	lastCleanup  time.Time
+	mu              sync.Mutex
+	maxBytes        int // per-session byte cap
+	maxSessions     int // global owner cap (new identities are denied at capacity)
+	windowSecs      int // fragment retention window in seconds
+	sessions        map[string]*sessionBuffer
+	pathSessions    map[string]*pathSessionBuffer
+	owners          map[string]int    // logical identity -> live stream count
+	streamOwners    map[string]string // stream id -> logical identity
+	partitionKey    [32]byte
+	hasPartitionKey bool
+	lastCleanup     time.Time
 }
 
+const (
+	fragmentStreamKindData = "d\x00"
+	fragmentStreamKindPath = "p\x00"
+)
+
 // NewFragmentBuffer creates a fragment buffer with the given per-session byte cap,
-// global session cap, and fragment retention window.
+// global identity cap, and fragment retention window. The partition key is
+// generated once and kept for the life of this buffer so JSON bucket mapping
+// cannot rotate while fragments still exist.
 func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *FragmentBuffer {
 	fb := &FragmentBuffer{
 		maxBytes:     maxBytesPerSession,
@@ -93,9 +110,33 @@ func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *Fragmen
 		windowSecs:   windowSecs,
 		sessions:     make(map[string]*sessionBuffer),
 		pathSessions: make(map[string]*pathSessionBuffer),
+		owners:       make(map[string]int),
+		streamOwners: make(map[string]string),
 		lastCleanup:  time.Now(),
 	}
+	if _, err := rand.Read(fb.partitionKey[:]); err == nil {
+		fb.hasPartitionKey = true
+	}
 	return fb
+}
+
+// PartitionKey returns the buffer-lifetime secret used to map JSON paths into
+// fragment buckets. It is empty only when process entropy was unavailable at
+// construction; callers must then decline to partition rather than fall back
+// to a public digest. The key survives UpdateConfig and is discarded with
+// Close, matching the fragment evidence it labels.
+func (fb *FragmentBuffer) PartitionKey() []byte {
+	if fb == nil {
+		return nil
+	}
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if !fb.hasPartitionKey {
+		return nil
+	}
+	key := make([]byte, len(fb.partitionKey))
+	copy(key, fb.partitionKey[:])
+	return key
 }
 
 // Append adds a payload fragment to the session's rolling buffer.
@@ -106,28 +147,39 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) FragmentAppe
 	return fb.AppendForSession(sessionKey, payload)
 }
 
-// AppendForSession appends an independently scanned stream.
+// AppendForSession appends an independently scanned stream. The stream key is
+// also the ledger identity, which is what unit tests and callers that still
+// buffer one stream per client use.
 func (fb *FragmentBuffer) AppendForSession(streamKey string, payload []byte) FragmentAppendResult {
+	return fb.AppendOwned(streamKey, streamKey, payload)
+}
+
+// AppendOwned appends an independently scanned stream under a logical identity.
+// Additional streams for an identity that already holds evidence do not consume
+// another global ledger slot. A new identity is refused at capacity rather than
+// evicting someone else's fragments or skipping this identity's inspection.
+func (fb *FragmentBuffer) AppendOwned(owner, streamKey string, payload []byte) FragmentAppendResult {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
-	return fb.appendLocked(streamKey, payload)
+	return fb.appendLocked(owner, streamKey, payload)
 }
 
 // appendLocked performs the buffer append. Must be called with fb.mu held and
 // after any due cleanup, so callers that must decide something about existing
 // buffer contents can do so atomically with the append itself.
-func (fb *FragmentBuffer) appendLocked(streamKey string, payload []byte) FragmentAppendResult {
+func (fb *FragmentBuffer) appendLocked(owner, streamKey string, payload []byte) FragmentAppendResult {
+	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
 	sb, exists := fb.sessions[streamKey]
 	if !exists {
-		// Check global session cap before creating a new session. Do not evict
-		// another session: a later fragment could otherwise complete a secret
-		// in an empty bucket and pass uninspected.
-		if fb.sessionCountLocked() >= fb.maxSessions {
+		if !fb.canAdmitOwnerLocked(owner) {
 			return FragmentAppendResult{CapacityExceeded: true}
 		}
 		sb = &sessionBuffer{}
 		fb.sessions[streamKey] = sb
+		fb.trackOwnerStreamLocked(owner, streamID)
+	} else if !fb.streamOwnedByLocked(streamID, owner) {
+		return FragmentAppendResult{OwnerMismatch: true}
 	}
 
 	// Copy payload to prevent caller mutation of buffered data.
@@ -157,7 +209,59 @@ func (fb *FragmentBuffer) appendLocked(streamKey string, payload []byte) Fragmen
 }
 
 func (fb *FragmentBuffer) sessionCountLocked() int {
-	return len(fb.sessions) + len(fb.pathSessions)
+	return len(fb.owners)
+}
+
+func fragmentStreamID(kind, streamKey string) string {
+	return kind + streamKey
+}
+
+func (fb *FragmentBuffer) canAdmitOwnerLocked(owner string) bool {
+	if owner == "" {
+		return fb.sessionCountLocked() < fb.maxSessions
+	}
+	if fb.owners[owner] > 0 {
+		return true
+	}
+	return fb.sessionCountLocked() < fb.maxSessions
+}
+
+// streamOwnedByLocked reports whether an existing stream may accept a fragment
+// from owner. Every live stream carries a recorded owner: creation tracks it
+// and every deletion path routes through deleteStreamLocked, which untracks it.
+// An untracked live stream is therefore an invariant violation rather than a
+// legacy stream, and it is refused for the same reason a mismatch is: the safe
+// answer when ownership cannot be established is to report the request as
+// uninspected, never to blend two identities' evidence.
+func (fb *FragmentBuffer) streamOwnedByLocked(streamID, owner string) bool {
+	recorded, ok := fb.streamOwners[streamID]
+	if !ok {
+		return false
+	}
+	if owner == "" {
+		return recorded == streamID
+	}
+	return recorded == owner
+}
+
+func (fb *FragmentBuffer) trackOwnerStreamLocked(owner, streamID string) {
+	if owner == "" {
+		owner = streamID
+	}
+	fb.streamOwners[streamID] = owner
+	fb.owners[owner]++
+}
+
+func (fb *FragmentBuffer) untrackStreamLocked(streamID string) {
+	owner, ok := fb.streamOwners[streamID]
+	if !ok {
+		return
+	}
+	delete(fb.streamOwners, streamID)
+	fb.owners[owner]--
+	if fb.owners[owner] <= 0 {
+		delete(fb.owners, owner)
+	}
 }
 
 // minFragmentsForMatch is the minimum number of in-window fragments a session
@@ -200,8 +304,16 @@ func (fb *FragmentBuffer) AppendPathSegments(sessionKey string, segments [][]byt
 	return fb.AppendPathSegmentsForSession(sessionKey, segments)
 }
 
-// AppendPathSegmentsForSession appends a position-aware stream.
+// AppendPathSegmentsForSession appends a position-aware stream. The stream key
+// is also the ledger identity.
 func (fb *FragmentBuffer) AppendPathSegmentsForSession(streamKey string, segments [][]byte) FragmentAppendResult {
+	return fb.AppendPathSegmentsOwned(streamKey, streamKey, segments)
+}
+
+// AppendPathSegmentsOwned appends a position-aware stream under a logical
+// identity. Path state shares that identity's ledger slot with any sibling
+// JSON or raw streams rather than competing with them one key at a time.
+func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segments [][]byte) FragmentAppendResult {
 	if fb == nil || len(segments) == 0 {
 		return FragmentAppendResult{}
 	}
@@ -223,13 +335,17 @@ func (fb *FragmentBuffer) AppendPathSegmentsForSession(streamKey string, segment
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
 
+	pathStreamID := fragmentStreamID(fragmentStreamKindPath, streamKey)
 	ps, exists := fb.pathSessions[streamKey]
 	if !exists {
-		if fb.sessionCountLocked() >= fb.maxSessions {
+		if !fb.canAdmitOwnerLocked(owner) {
 			return FragmentAppendResult{CapacityExceeded: true}
 		}
 		ps = &pathSessionBuffer{positions: make(map[int]*pathPositionBuffer)}
 		fb.pathSessions[streamKey] = ps
+		fb.trackOwnerStreamLocked(owner, pathStreamID)
+	} else if !fb.streamOwnedByLocked(pathStreamID, owner) {
+		return FragmentAppendResult{OwnerMismatch: true}
 	}
 
 	for position, segment := range segments {
@@ -496,11 +612,23 @@ func (fb *FragmentBuffer) Close() {
 	defer fb.mu.Unlock()
 	fb.sessions = make(map[string]*sessionBuffer)
 	fb.pathSessions = make(map[string]*pathSessionBuffer)
+	fb.owners = make(map[string]int)
+	fb.streamOwners = make(map[string]string)
+	fb.hasPartitionKey = false
+	fb.partitionKey = [32]byte{}
 }
 
 func (fb *FragmentBuffer) deleteStreamLocked(key string) {
+	_, hadData := fb.sessions[key]
+	_, hadPath := fb.pathSessions[key]
 	delete(fb.sessions, key)
 	delete(fb.pathSessions, key)
+	if hadData {
+		fb.untrackStreamLocked(fragmentStreamID(fragmentStreamKindData, key))
+	}
+	if hadPath {
+		fb.untrackStreamLocked(fragmentStreamID(fragmentStreamKindPath, key))
+	}
 }
 
 // cleanupInterval is derived from the configured window: at most 60s and at

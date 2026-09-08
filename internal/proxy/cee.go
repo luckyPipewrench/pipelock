@@ -617,7 +617,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		// JSON body leaves are mapped into stable, fixed-cardinality buckets. No
 		// valid leaf is omitted for a per-request path or depth ceiling.
 		for _, path := range sortedCEEJSONBodyPayloadPaths(bodyFragmentPayloads) {
-			if res := ceeFragmentScan(ctx, ceeJSONBodyFragmentSessionKey(sessionKey, path), bodyFragmentPayloads[path], sctx); res != nil {
+			if res := ceeFragmentScanInGroup(ctx, ceeJSONBodyFragmentSessionKey(sessionKey, path), sessionKey+ceeJSONBodyStreamPrefix, bodyFragmentPayloads[path], sctx); res != nil {
 				result.FragmentHit = true
 				if res.Blocked {
 					result.Blocked = true
@@ -678,6 +678,13 @@ type ceeStreamContext struct {
 }
 
 func ceeFragmentScan(ctx context.Context, bufferKey string, data []byte, sctx ceeStreamContext) *ceeResult {
+	return ceeFragmentScanInGroup(ctx, bufferKey, "", data, sctx)
+}
+
+// ceeFragmentScanInGroup is ceeFragmentScan for a stream whose cardinality the
+// request body controls. An empty group means the stream is one of the fixed
+// classes (raw body, query keys) and keeps the plain per-stream cap.
+func ceeFragmentScanInGroup(ctx context.Context, bufferKey, group string, data []byte, sctx ceeStreamContext) *ceeResult {
 	fb := sctx.Fragments
 	if len(data) == 0 {
 		return nil
@@ -686,7 +693,10 @@ func ceeFragmentScan(ctx context.Context, bufferKey string, data []byte, sctx ce
 	if owner == "" {
 		owner = bufferKey
 	}
-	return ceeFragmentEvaluate(ctx, bufferKey, fb.AppendOwned(owner, bufferKey, data), false, sctx)
+	if group == "" {
+		group = bufferKey
+	}
+	return ceeFragmentEvaluate(ctx, bufferKey, fb.AppendOwnedInGroup(owner, group, bufferKey, data), false, sctx)
 }
 
 // ceeFragmentScanSegments is ceeFragmentScan for a position-aware path stream.

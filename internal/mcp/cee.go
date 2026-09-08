@@ -352,9 +352,41 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				continue
 			}
 			fragmentKey := mcpCEEFragmentSessionKey(opts.sessionKey, path)
+			// Every stream this frame opens belongs to one logical identity and
+			// shares that identity's single ledger slot. Charging the ledger per
+			// stream made an ordinary one-argument call cost two slots, so a
+			// small max_sessions denied a first call outright, and let one
+			// client's streams crowd out unrelated clients.
+			owner := opts.sessionKey
+			if owner == "" {
+				owner = fragmentKey
+			}
 			// Capacity exhaustion always blocks, regardless of the configured
 			// cross-request action, because the request is no longer inspectable.
-			if appendResult := buffer.Append(fragmentKey, payload); appendResult.CapacityExceeded {
+			// Argument streams are the class whose cardinality the frame
+			// chooses, so they share one byte budget. The raw-frame fallback
+			// stream keeps its own cap: a session accumulates both over time,
+			// and a large raw frame sharing the budget would evict the small
+			// argument evidence a split secret is reassembled from.
+			budgetGroup := fragmentKey
+			if path != "" {
+				budgetGroup = owner + mcpCEEArgumentStreamSuffix
+			}
+			appendResult := buffer.AppendOwnedInGroup(owner, budgetGroup, fragmentKey, payload)
+			if appendResult.OwnerMismatch {
+				if m != nil {
+					m.RecordCrossRequestFragmentOwnerMismatch()
+				}
+				// Names no tunable: no configuration permits joining two
+				// identities' fragments.
+				reason := "cross-request fragment stream belongs to another identity; request cannot be safely inspected"
+				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
+				if opts.logger != nil {
+					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment_owner_mismatch", reason)
+				}
+				return reason
+			}
+			if appendResult.CapacityExceeded {
 				if m != nil {
 					m.RecordCrossRequestFragmentCapacityExceeded()
 				}

@@ -81,23 +81,39 @@ type FragmentAppendResult struct {
 // DLP patterns synchronously. This guarantees pre-forward detection: a request
 // that completes a split secret is blocked before egress. Thread-safe.
 type FragmentBuffer struct {
-	mu              sync.Mutex
-	maxBytes        int // per-session byte cap
-	maxSessions     int // global owner cap (new identities are denied at capacity)
-	windowSecs      int // fragment retention window in seconds
-	sessions        map[string]*sessionBuffer
-	pathSessions    map[string]*pathSessionBuffer
-	owners          map[string]int    // logical identity -> live stream count
-	streamOwners    map[string]string // stream id -> logical identity
-	partitionKey    [32]byte
-	hasPartitionKey bool
-	lastCleanup     time.Time
+	mu           sync.Mutex
+	maxBytes     int // per-session byte cap
+	maxSessions  int // global owner cap (new identities are denied at capacity)
+	windowSecs   int // fragment retention window in seconds
+	sessions     map[string]*sessionBuffer
+	pathSessions map[string]*pathSessionBuffer
+	owners       map[string]*ownerState // logical identity -> its live streams
+	streamOwners map[string]string      // stream id -> logical identity
+	partitionKey [32]byte
+	lastCleanup  time.Time
 }
 
 const (
 	fragmentStreamKindData = "d\x00"
 	fragmentStreamKindPath = "p\x00"
 )
+
+// ownerState is one logical identity's footprint. The ledger admits identities
+// rather than streams, so the byte budget has to live here too: enforcing it
+// per stream would let one identity hold thousands of separately-capped
+// streams, which turns the configured memory ceiling into that ceiling times
+// the bucket cardinality.
+type ownerState struct {
+	streams map[string]struct{}
+	// budgets maps a budget group to the stream ids sharing its byte cap.
+	// Grouping exists because ONE class of stream has attacker-controlled
+	// cardinality: JSON buckets. The fixed classes (raw body, query keys, path
+	// positions) are at most one stream each, so each keeps its own cap and the
+	// identity's ceiling stays a small stated multiple of the configured figure
+	// rather than that figure times the bucket count.
+	budgets map[string]map[string]struct{}
+	groupOf map[string]string
+}
 
 // NewFragmentBuffer creates a fragment buffer with the given per-session byte cap,
 // global identity cap, and fragment retention window. The partition key is
@@ -110,30 +126,31 @@ func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *Fragmen
 		windowSecs:   windowSecs,
 		sessions:     make(map[string]*sessionBuffer),
 		pathSessions: make(map[string]*pathSessionBuffer),
-		owners:       make(map[string]int),
+		owners:       make(map[string]*ownerState),
 		streamOwners: make(map[string]string),
 		lastCleanup:  time.Now(),
 	}
-	if _, err := rand.Read(fb.partitionKey[:]); err == nil {
-		fb.hasPartitionKey = true
-	}
+	// crypto/rand.Read is documented never to return an error: it fills the
+	// buffer entirely and crashes the program irrecoverably if the operating
+	// system source fails. Branching on an error here would be dead code that
+	// reads like a handled degradation, so the key is unconditional and a
+	// buffer always has one.
+	_, _ = rand.Read(fb.partitionKey[:])
 	return fb
 }
 
 // PartitionKey returns the buffer-lifetime secret used to map JSON paths into
-// fragment buckets. It is empty only when process entropy was unavailable at
-// construction; callers must then decline to partition rather than fall back
-// to a public digest. The key survives UpdateConfig and is discarded with
-// Close, matching the fragment evidence it labels.
+// fragment buckets. Every constructed buffer has one, and it survives both
+// UpdateConfig and Close so a bucket map cannot change under fragments that
+// are still retained. It is empty only for a nil buffer, and a caller with no
+// key must decline to partition rather than fall back to a public digest,
+// which an attacker can grind offline.
 func (fb *FragmentBuffer) PartitionKey() []byte {
 	if fb == nil {
 		return nil
 	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
-	if !fb.hasPartitionKey {
-		return nil
-	}
 	key := make([]byte, len(fb.partitionKey))
 	copy(key, fb.partitionKey[:])
 	return key
@@ -159,16 +176,27 @@ func (fb *FragmentBuffer) AppendForSession(streamKey string, payload []byte) Fra
 // another global ledger slot. A new identity is refused at capacity rather than
 // evicting someone else's fragments or skipping this identity's inspection.
 func (fb *FragmentBuffer) AppendOwned(owner, streamKey string, payload []byte) FragmentAppendResult {
+	return fb.AppendOwnedInGroup(owner, streamKey, streamKey, payload)
+}
+
+// AppendOwnedInGroup appends a stream that shares a byte budget with the other
+// streams in group. Streams whose cardinality the caller fixes (one raw body,
+// one query-key stream, one path stream) pass their own key and keep the plain
+// per-stream cap. Streams whose cardinality an attacker chooses, such as the
+// JSON buckets a request body maps into, pass a shared group so the identity's
+// retention stays a small stated multiple of the configured figure instead of
+// that figure times the bucket count.
+func (fb *FragmentBuffer) AppendOwnedInGroup(owner, group, streamKey string, payload []byte) FragmentAppendResult {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
-	return fb.appendLocked(owner, streamKey, payload)
+	return fb.appendLocked(owner, group, streamKey, payload)
 }
 
 // appendLocked performs the buffer append. Must be called with fb.mu held and
 // after any due cleanup, so callers that must decide something about existing
 // buffer contents can do so atomically with the append itself.
-func (fb *FragmentBuffer) appendLocked(owner, streamKey string, payload []byte) FragmentAppendResult {
+func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload []byte) FragmentAppendResult {
 	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
 	sb, exists := fb.sessions[streamKey]
 	if !exists {
@@ -177,7 +205,7 @@ func (fb *FragmentBuffer) appendLocked(owner, streamKey string, payload []byte) 
 		}
 		sb = &sessionBuffer{}
 		fb.sessions[streamKey] = sb
-		fb.trackOwnerStreamLocked(owner, streamID)
+		fb.trackOwnerStreamLocked(owner, group, streamID)
 	} else if !fb.streamOwnedByLocked(streamID, owner) {
 		return FragmentAppendResult{OwnerMismatch: true}
 	}
@@ -205,6 +233,9 @@ func (fb *FragmentBuffer) appendLocked(owner, streamKey string, payload []byte) 
 		sb.fragments[0].data = sb.fragments[0].data[len(sb.fragments[0].data)-fb.maxBytes:]
 		sb.totalBytes = fb.maxBytes
 	}
+	// The per-stream cap above bounds one stream; this bounds the identity that
+	// owns it, which is the unit the ledger admits.
+	fb.enforceOwnerBudgetLocked(ownerFor(owner, streamID), streamID)
 	return FragmentAppendResult{}
 }
 
@@ -212,15 +243,21 @@ func (fb *FragmentBuffer) sessionCountLocked() int {
 	return len(fb.owners)
 }
 
+// ownerFor resolves the identity an append is charged to. An empty owner means
+// the caller keeps one stream per client, so the stream is its own identity.
+func ownerFor(owner, streamID string) string {
+	if owner == "" {
+		return streamID
+	}
+	return owner
+}
+
 func fragmentStreamID(kind, streamKey string) string {
 	return kind + streamKey
 }
 
 func (fb *FragmentBuffer) canAdmitOwnerLocked(owner string) bool {
-	if owner == "" {
-		return fb.sessionCountLocked() < fb.maxSessions
-	}
-	if fb.owners[owner] > 0 {
+	if owner != "" && fb.owners[owner] != nil {
 		return true
 	}
 	return fb.sessionCountLocked() < fb.maxSessions
@@ -244,12 +281,29 @@ func (fb *FragmentBuffer) streamOwnedByLocked(streamID, owner string) bool {
 	return recorded == owner
 }
 
-func (fb *FragmentBuffer) trackOwnerStreamLocked(owner, streamID string) {
+func (fb *FragmentBuffer) trackOwnerStreamLocked(owner, group, streamID string) {
 	if owner == "" {
 		owner = streamID
 	}
 	fb.streamOwners[streamID] = owner
-	fb.owners[owner]++
+	state := fb.owners[owner]
+	if state == nil {
+		state = &ownerState{
+			streams: make(map[string]struct{}),
+			budgets: make(map[string]map[string]struct{}),
+			groupOf: make(map[string]string),
+		}
+		fb.owners[owner] = state
+	}
+	state.streams[streamID] = struct{}{}
+	if group == "" {
+		group = streamID
+	}
+	state.groupOf[streamID] = group
+	if state.budgets[group] == nil {
+		state.budgets[group] = make(map[string]struct{})
+	}
+	state.budgets[group][streamID] = struct{}{}
 }
 
 func (fb *FragmentBuffer) untrackStreamLocked(streamID string) {
@@ -258,10 +312,138 @@ func (fb *FragmentBuffer) untrackStreamLocked(streamID string) {
 		return
 	}
 	delete(fb.streamOwners, streamID)
-	fb.owners[owner]--
-	if fb.owners[owner] <= 0 {
+	state := fb.owners[owner]
+	if state == nil {
+		return
+	}
+	delete(state.streams, streamID)
+	if group, ok := state.groupOf[streamID]; ok {
+		delete(state.groupOf, streamID)
+		delete(state.budgets[group], streamID)
+		if len(state.budgets[group]) == 0 {
+			delete(state.budgets, group)
+		}
+	}
+	if len(state.streams) == 0 {
 		delete(fb.owners, owner)
 	}
+}
+
+// recomputeOwnerBytesLocked re-derives an identity's footprint from its live
+// streams. Deletion paths (window expiry, operator reset) remove whole streams
+// without reporting how many bytes went with them, so the total is rebuilt
+// rather than decremented, which cannot drift below the real figure and then
+// admit unbounded retention.
+func (fb *FragmentBuffer) groupBytesLocked(members map[string]struct{}) int {
+	total := 0
+	for streamID := range members {
+		total += fb.streamBytesLocked(streamID)
+	}
+	return total
+}
+
+func (fb *FragmentBuffer) streamBytesLocked(streamID string) int {
+	kind, key := streamID[:len(fragmentStreamKindData)], streamID[len(fragmentStreamKindData):]
+	switch kind {
+	case fragmentStreamKindData:
+		if sb := fb.sessions[key]; sb != nil {
+			return sb.totalBytes
+		}
+	case fragmentStreamKindPath:
+		if ps := fb.pathSessions[key]; ps != nil {
+			return ps.totalBytes
+		}
+	}
+	return 0
+}
+
+// enforceOwnerBudgetLocked keeps one identity's retained bytes within the
+// configured cap by evicting its OWN oldest fragment until it fits. Evicting
+// within an identity is the same trade the per-stream cap already makes, and
+// the newest bytes are kept because they are the ones most likely to complete
+// a split secret. It never touches another identity's evidence: a fragment
+// dropped from a stranger's stream could let a later request complete a secret
+// in an emptied stream and pass uninspected.
+func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
+	state := fb.owners[owner]
+	if state == nil {
+		return
+	}
+	group, ok := state.groupOf[streamID]
+	if !ok {
+		return
+	}
+	members := state.budgets[group]
+	// A group of one is already held by the per-stream cap; only a group whose
+	// membership an attacker can grow needs this.
+	if len(members) <= 1 {
+		return
+	}
+	for fb.groupBytesLocked(members) > fb.maxBytes {
+		if !fb.evictOldestOwnerFragmentLocked(members) {
+			return
+		}
+	}
+}
+
+// evictOldestOwnerFragmentLocked drops the single oldest fragment held by one
+// identity and reports whether anything was removed. A false return means the
+// identity holds nothing further that can be released, which stops the caller
+// from spinning.
+func (fb *FragmentBuffer) evictOldestOwnerFragmentLocked(members map[string]struct{}) bool {
+	var (
+		oldest    *[]fragment
+		oldestAt  time.Time
+		container interface{ addBytes(int) }
+		found     bool
+	)
+	for streamID := range members {
+		kind, key := streamID[:len(fragmentStreamKindData)], streamID[len(fragmentStreamKindData):]
+		switch kind {
+		case fragmentStreamKindData:
+			sb := fb.sessions[key]
+			if sb == nil || len(sb.fragments) == 0 {
+				continue
+			}
+			if !found || sb.fragments[0].at.Before(oldestAt) {
+				oldest, oldestAt, container, found = &sb.fragments, sb.fragments[0].at, sb, true
+			}
+		case fragmentStreamKindPath:
+			ps := fb.pathSessions[key]
+			if ps == nil {
+				continue
+			}
+			for _, pb := range ps.positions {
+				if len(pb.fragments) == 0 {
+					continue
+				}
+				if !found || pb.fragments[0].at.Before(oldestAt) {
+					oldest, oldestAt, container, found = &pb.fragments, pb.fragments[0].at, pathBytesAdder{ps: ps, pb: pb}, true
+				}
+			}
+		}
+	}
+	if !found {
+		return false
+	}
+	removed := len((*oldest)[0].data)
+	*oldest = (*oldest)[1:]
+	container.addBytes(-removed)
+	return true
+}
+
+func (sb *sessionBuffer) addBytes(delta int) { sb.totalBytes += delta }
+
+// pathBytesAdder keeps a path position's byte total and its session total in
+// step, because both are consulted independently.
+type pathBytesAdder struct {
+	ps *pathSessionBuffer
+	pb *pathPositionBuffer
+}
+
+func (a pathBytesAdder) addBytes(delta int) {
+	a.pb.totalBytes += delta
+	a.ps.totalBytes += delta
 }
 
 // minFragmentsForMatch is the minimum number of in-window fragments a session
@@ -343,7 +525,7 @@ func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segme
 		}
 		ps = &pathSessionBuffer{positions: make(map[int]*pathPositionBuffer)}
 		fb.pathSessions[streamKey] = ps
-		fb.trackOwnerStreamLocked(owner, pathStreamID)
+		fb.trackOwnerStreamLocked(owner, pathStreamID, pathStreamID)
 	} else if !fb.streamOwnedByLocked(pathStreamID, owner) {
 		return FragmentAppendResult{OwnerMismatch: true}
 	}
@@ -374,6 +556,7 @@ func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segme
 		fb.appendPathFragmentLocked(ps, pb, segment)
 	}
 	fb.enforcePathMaxBytesLocked(ps)
+	fb.enforceOwnerBudgetLocked(ownerFor(owner, pathStreamID), pathStreamID)
 	return FragmentAppendResult{}
 }
 
@@ -612,10 +795,14 @@ func (fb *FragmentBuffer) Close() {
 	defer fb.mu.Unlock()
 	fb.sessions = make(map[string]*sessionBuffer)
 	fb.pathSessions = make(map[string]*pathSessionBuffer)
-	fb.owners = make(map[string]int)
+	fb.owners = make(map[string]*ownerState)
 	fb.streamOwners = make(map[string]string)
-	fb.hasPartitionKey = false
-	fb.partitionKey = [32]byte{}
+	// The partition key deliberately SURVIVES Close. A hot reload swaps the
+	// buffer pointer and then closes the old buffer, so a request already
+	// holding it would otherwise read an empty key, decline to partition, and
+	// fall back to the raw stream alone for the rest of its life. The key is
+	// process-local and labels no persisted evidence, so retaining it costs
+	// nothing and removes that silent degradation.
 }
 
 func (fb *FragmentBuffer) deleteStreamLocked(key string) {

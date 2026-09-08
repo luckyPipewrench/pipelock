@@ -126,6 +126,68 @@ func TestFragmentBuffer_OwnedStreamsShareOneLedgerSlot(t *testing.T) {
 	}
 }
 
+// The configured byte cap must bound a BUDGET GROUP, not each stream in it.
+// JSON buckets are the one stream class whose cardinality an attacker chooses,
+// The ledger admits identities, so a per-stream budget let one identity hold
+// thousands of separately-capped streams: measured at 4,096 buckets times the
+// 64 KiB stream cap, one client could retain 256 MiB and the fleet-wide
+// ceiling became the configured figure times the bucket cardinality, roughly
+// 2.5 TiB instead of 625 MiB. Partitioning has to improve detection inside
+// the existing memory envelope, not widen it.
+func TestFragmentBuffer_ByteBudgetBoundsTheGroupNotEachStream(t *testing.T) {
+	const capBytes = 4096
+	payload := make([]byte, capBytes)
+	for i := range payload {
+		payload[i] = 'A'
+	}
+
+	for _, streams := range []int{1, 10, 500} {
+		fb := NewFragmentBuffer(capBytes, 10, testWindowSecs)
+		for i := 0; i < streams; i++ {
+			fb.AppendOwnedInGroup("client-a", "client-a|json", fmt.Sprintf("client-a|bucket/%d", i), payload)
+		}
+		if got := fb.TotalBufferBytes(); got > capBytes {
+			t.Fatalf("one identity across %d streams retained %d bytes, want at most %d", streams, got, capBytes)
+		}
+		fb.Close()
+	}
+
+	// Separate identities are budgeted separately: the cap is per identity, so
+	// one client cannot shrink another's retention window.
+	fb := NewFragmentBuffer(capBytes, 10, testWindowSecs)
+	t.Cleanup(fb.Close)
+	for i := 0; i < 4; i++ {
+		owner := fmt.Sprintf("client-%d", i)
+		fb.AppendOwnedInGroup(owner, owner+"|json", owner+"|raw", payload)
+	}
+	if got := fb.TotalBufferBytes(); got != 4*capBytes {
+		t.Fatalf("four identities retained %d bytes, want %d; the cap must apply per identity", got, 4*capBytes)
+	}
+}
+
+// Eviction under the identity budget keeps the NEWEST bytes, because those are
+// the ones that can complete a split secret, and it never reaches into another
+// identity's evidence.
+func TestFragmentBuffer_IdentityEvictionKeepsNewestAndSparesOthers(t *testing.T) {
+	fb := NewFragmentBuffer(32, 10, testWindowSecs)
+	t.Cleanup(fb.Close)
+
+	victim := "client-victim"
+	fb.AppendOwned(victim, victim+"|raw", []byte("victim-evidence"))
+	victimBefore := fb.TotalBufferBytes()
+
+	greedy := "client-greedy"
+	for i := 0; i < 20; i++ {
+		fb.AppendOwnedInGroup(greedy, greedy+"|json", fmt.Sprintf("%s|bucket/%d", greedy, i), []byte("0123456789"))
+	}
+
+	// The victim still holds what it had: the greedy identity evicted only its
+	// own fragments to get under budget.
+	if got := fb.TotalBufferBytes(); got < victimBefore {
+		t.Fatalf("total = %d fell below the victim's own %d bytes; eviction crossed an identity boundary", got, victimBefore)
+	}
+}
+
 // Ownership is enforced on the stream, not merely accounted for. Without this
 // guard an append whose stream key already exists skipped the ownership check
 // entirely and blended the two identities' fragments, which both manufactures
@@ -187,9 +249,13 @@ func TestFragmentBuffer_PartitionKeyLivesWithBuffer(t *testing.T) {
 	if string(afterReload) != string(key) {
 		t.Fatal("UpdateConfig rotated the partition key while fragments can still exist")
 	}
+	// The key must survive Close. A hot reload swaps the buffer pointer and
+	// then closes the old buffer, so a request still holding it would read an
+	// empty key, decline to partition, and spend the rest of its life on the
+	// raw stream alone, which cannot rejoin a padded split.
 	fb.Close()
-	if got := fb.PartitionKey(); got != nil {
-		t.Fatalf("closed buffer still exposed a partition key: %x", got)
+	if got := fb.PartitionKey(); string(got) != string(key) {
+		t.Fatal("Close discarded the partition key; an in-flight request holding this buffer would stop partitioning")
 	}
 	if got := (*FragmentBuffer)(nil).PartitionKey(); got != nil {
 		t.Fatalf("nil buffer partition key = %x", got)

@@ -148,13 +148,6 @@ const (
 	ctxKeySSRFDialPort
 )
 
-func ceeFragmentMaxSessions(fragments config.CrossRequestFragments) int {
-	if fragments.MaxSessions > 0 {
-		return fragments.MaxSessions
-	}
-	return config.DefaultCrossRequestFragmentMaxSessions
-}
-
 type envelopeEmitterSnapshot struct {
 	emitter *envelope.Emitter
 }
@@ -2208,11 +2201,11 @@ func (p *Proxy) prepareCEE(ceeCfg *config.CrossRequestDetection) {
 
 	if ceeCfg.Enabled && ceeCfg.FragmentReassembly.Enabled {
 		if fb := p.fragmentBufferPtr.Load(); fb != nil {
-			fb.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeFragmentMaxSessions(ceeCfg.FragmentReassembly), ceeCfg.FragmentReassembly.WindowMinutes*60)
+			fb.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeCfg.FragmentReassembly.ResolvedMaxSessions(), ceeCfg.FragmentReassembly.WindowMinutes*60)
 		} else {
 			p.fragmentBufferPtr.Store(scanner.NewFragmentBuffer(
 				ceeCfg.FragmentReassembly.MaxBufferBytes,
-				ceeFragmentMaxSessions(ceeCfg.FragmentReassembly),
+				ceeCfg.FragmentReassembly.ResolvedMaxSessions(),
 				ceeCfg.FragmentReassembly.WindowMinutes*60,
 			))
 		}
@@ -2409,7 +2402,7 @@ func (p *Proxy) buildCEE(ceeCfg *config.CrossRequestDetection) (*scanner.Entropy
 		if ceeCfg.FragmentReassembly.Enabled {
 			fb = scanner.NewFragmentBuffer(
 				ceeCfg.FragmentReassembly.MaxBufferBytes,
-				ceeFragmentMaxSessions(ceeCfg.FragmentReassembly),
+				ceeCfg.FragmentReassembly.ResolvedMaxSessions(),
 				ceeCfg.FragmentReassembly.WindowMinutes*60, // minutes to seconds
 			)
 		}

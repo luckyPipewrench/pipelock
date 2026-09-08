@@ -691,3 +691,63 @@ func TestFragmentBuffer_AppendAfterClose(t *testing.T) {
 	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	_ = matches
 }
+
+// A reload that LOWERS the byte cap has to bring already-retained grouped
+// streams within it immediately. Enforcing only on the next append means a
+// tightened memory limit does not apply to the traffic currently held, which is
+// exactly the traffic the operator tightened the limit because of.
+func TestFragmentBuffer_ReloadReenforcesTheGroupBudget(t *testing.T) {
+	fb := NewFragmentBuffer(4096, 10, testWindowSecs)
+	t.Cleanup(fb.Close)
+
+	payload := make([]byte, 512)
+	for i := range payload {
+		payload[i] = 'A'
+	}
+	for i := 0; i < 8; i++ {
+		fb.AppendOwnedInGroup("client-a", "client-a|json", fmt.Sprintf("client-a|bucket/%d", i), payload)
+	}
+	before := fb.TotalBufferBytes()
+	if before <= 1024 {
+		t.Fatalf("setup retained %d bytes, want more than the post-reload cap so the reload has work to do", before)
+	}
+
+	fb.UpdateConfig(1024, 10, testWindowSecs)
+
+	// No append happens between the reload and this check on purpose.
+	if got := fb.TotalBufferBytes(); got > 1024 {
+		t.Fatalf("after lowering the cap to 1024 the buffer still holds %d bytes; the new limit did not apply until the next append", got)
+	}
+}
+
+// Window expiry is per stream. A data stream and a path stream can share a key,
+// and expiring the data half must not discard path evidence that is still live,
+// because that silently drops the positions a later request could complete a
+// split secret across.
+func TestFragmentBuffer_ExpiryDeletesOnlyTheStreamKindThatAgedOut(t *testing.T) {
+	fb := NewFragmentBuffer(1024, 10, testWindowSecs)
+	t.Cleanup(fb.Close)
+
+	const shared = "client-a|shared"
+	fb.AppendOwned("client-a", shared, []byte("data-half"))
+	fb.AppendPathSegmentsOwned("client-a", shared, [][]byte{[]byte("path-half")})
+
+	fb.mu.Lock()
+	// Age the DATA stream past the window while the path stream stays current.
+	if sb := fb.sessions[shared]; sb != nil {
+		for i := range sb.fragments {
+			sb.fragments[i].at = time.Now().Add(-2 * time.Duration(testWindowSecs) * time.Second)
+		}
+	}
+	fb.cleanupLocked(time.Now())
+	_, dataLives := fb.sessions[shared]
+	_, pathLives := fb.pathSessions[shared]
+	fb.mu.Unlock()
+
+	if dataLives {
+		t.Fatal("the expired data stream survived cleanup")
+	}
+	if !pathLives {
+		t.Fatal("cleanup deleted the live path stream because a data stream shared its key")
+	}
+}

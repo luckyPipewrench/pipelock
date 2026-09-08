@@ -1379,11 +1379,28 @@ type CrossRequestEntropyBudget struct {
 type CrossRequestFragments struct {
 	Enabled        bool `yaml:"enabled"`
 	MaxBufferBytes int  `yaml:"max_buffer_bytes"` // per-session rolling buffer cap
-	MaxSessions    int  `yaml:"max_sessions"`     // global fragment-stream cap
-	WindowMinutes  int  `yaml:"window_minutes"`   // fragment retention window (independent of entropy budget)
+	// MaxSessions bounds how many sessions may hold fragment evidence. A
+	// POINTER so an omitted value (nil, take the default) is distinguishable
+	// from an explicit one. Normalization used to coerce any non-positive value
+	// to the default, which silently accepted an operator's `max_sessions: 0`
+	// and made the validation rule unreachable through Load.
+	MaxSessions   *int `yaml:"max_sessions"`
+	WindowMinutes int  `yaml:"window_minutes"` // fragment retention window (independent of entropy budget)
 }
 
 const DefaultCrossRequestFragmentMaxSessions = 10000
+
+// ResolvedMaxSessions returns the session ledger bound this configuration
+// actually runs with. Both transports build their own fragment buffer, and each
+// carried its own copy of this defaulting rule, so the two could drift while
+// nothing failed. Validation rejects an explicit non-positive value, so a
+// non-nil pointer here is always usable.
+func (f CrossRequestFragments) ResolvedMaxSessions() int {
+	if f.MaxSessions != nil && *f.MaxSessions > 0 {
+		return *f.MaxSessions
+	}
+	return DefaultCrossRequestFragmentMaxSessions
+}
 
 // KillSwitch configures the emergency deny-all kill switch.
 // When active, all requests are rejected except health/metrics endpoints

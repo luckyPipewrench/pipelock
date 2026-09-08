@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -115,10 +117,11 @@ func TestCEEDepsReconfigure_RetiresAndRecreatesComponents(t *testing.T) {
 }
 
 func TestCEEDepsFragmentMaxSessionsAppliesAtConstructionAndReload(t *testing.T) {
+	oneSession := 1
 	cfg := config.CrossRequestDetection{
 		Enabled: true,
 		FragmentReassembly: config.CrossRequestFragments{
-			Enabled: true, MaxBufferBytes: 128, MaxSessions: 1, WindowMinutes: 5,
+			Enabled: true, MaxBufferBytes: 128, MaxSessions: &oneSession, WindowMinutes: 5,
 		},
 	}
 	cee := NewCEEDeps(cfg, metrics.New())
@@ -133,7 +136,8 @@ func TestCEEDepsFragmentMaxSessionsAppliesAtConstructionAndReload(t *testing.T) 
 		t.Fatalf("second stream result = %+v, want configured capacity denial", result)
 	}
 
-	cfg.FragmentReassembly.MaxSessions = 2
+	twoSessions := 2
+	cfg.FragmentReassembly.MaxSessions = &twoSessions
 	cee.Reconfigure(cfg, metrics.New())
 	_, reloaded := cee.Components()
 	if reloaded != buffer {
@@ -718,6 +722,13 @@ func TestCeeRecordMCP_OwnerMismatchFailsClosed(t *testing.T) {
 	t.Cleanup(sc.Close)
 	var logBuf bytes.Buffer
 
+	// A real metrics instance, because the counter IS the operator's only signal
+	// that a fragment was refused for ownership. With a nil Metrics the block
+	// still happens and nothing records it, so the test would pass while the
+	// signal was missing.
+	m := metrics.New()
+	cee.Metrics = m
+
 	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///tmp/x"}}`))
 	record := func() string {
 		return ceeRecordMCP(ceeRecordMCPOptions{
@@ -743,6 +754,9 @@ func TestCeeRecordMCP_OwnerMismatchFailsClosed(t *testing.T) {
 	}
 	if strings.Contains(reason, "max_sessions") {
 		t.Fatalf("reason = %q, must not name a control that cannot fix this", reason)
+	}
+	if got := testutil.ToFloat64(m.CrossRequestFragmentOwnerMismatch); got != 1 {
+		t.Fatalf("owner mismatch counter = %v, want 1; the block is invisible to an operator without it", got)
 	}
 }
 

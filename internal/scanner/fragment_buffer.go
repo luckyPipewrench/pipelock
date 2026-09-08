@@ -661,7 +661,30 @@ func (fb *FragmentBuffer) UpdateConfig(maxBytesPerSession, maxSessions, windowSe
 	for _, ps := range fb.pathSessions {
 		fb.enforcePathMaxBytesLocked(ps)
 	}
+	// A reload that LOWERS the cap has to bring grouped streams within it now.
+	// The per-stream loops above cannot: a JSON bucket group is over budget as a
+	// SUM, and nothing would notice until that identity's next append, so a
+	// tightened memory limit would not take effect on the traffic already held.
+	fb.enforceAllOwnerBudgetsLocked()
 	fb.lastCleanup = now
+}
+
+// enforceAllOwnerBudgetsLocked brings every budget group within the current cap.
+// Used on reload, where the cap can drop underneath streams that are already
+// retained.
+func (fb *FragmentBuffer) enforceAllOwnerBudgetsLocked() {
+	for _, state := range fb.owners {
+		for _, members := range state.budgets {
+			if len(members) <= 1 {
+				continue
+			}
+			for fb.groupBytesLocked(members) > fb.maxBytes {
+				if !fb.evictOldestOwnerFragmentLocked(members) {
+					break
+				}
+			}
+		}
+	}
 }
 
 func (fb *FragmentBuffer) enforceMaxBytesLocked(sb *sessionBuffer) {
@@ -761,6 +784,28 @@ func (fb *FragmentBuffer) Close() {
 	// nothing and removes that silent degradation.
 }
 
+// deleteDataStreamLocked removes only the data stream for key, leaving any path
+// stream that still holds evidence under the same key untouched.
+func (fb *FragmentBuffer) deleteDataStreamLocked(key string) {
+	if _, ok := fb.sessions[key]; !ok {
+		return
+	}
+	delete(fb.sessions, key)
+	fb.untrackStreamLocked(fragmentStreamID(fragmentStreamKindData, key))
+}
+
+// deletePathStreamLocked is deleteDataStreamLocked for the path half.
+func (fb *FragmentBuffer) deletePathStreamLocked(key string) {
+	if _, ok := fb.pathSessions[key]; !ok {
+		return
+	}
+	delete(fb.pathSessions, key)
+	fb.untrackStreamLocked(fragmentStreamID(fragmentStreamKindPath, key))
+}
+
+// deleteStreamLocked removes BOTH stream kinds for a key. That is right for the
+// operator reset and prefix delete, which mean "drop this identity's evidence",
+// and wrong for window expiry, which is per stream.
 func (fb *FragmentBuffer) deleteStreamLocked(key string) {
 	_, hadData := fb.sessions[key]
 	_, hadPath := fb.pathSessions[key]
@@ -813,9 +858,11 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 			sb.fragments = sb.fragments[1:]
 		}
 
-		// Remove empty sessions entirely.
+		// Remove empty sessions entirely. Kind-scoped on purpose: a data stream
+		// and a path stream can share a key, and deleting both here would
+		// discard live path evidence because the data half aged out.
 		if len(sb.fragments) == 0 {
-			fb.deleteStreamLocked(key)
+			fb.deleteDataStreamLocked(key)
 		}
 	}
 
@@ -834,7 +881,7 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 			}
 		}
 		if len(ps.positions) == 0 {
-			fb.deleteStreamLocked(key)
+			fb.deletePathStreamLocked(key)
 		}
 	}
 }

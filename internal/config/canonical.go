@@ -152,6 +152,22 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.Sentry = SentryConfig{}
 	view.Emit = EmitConfig{}
 	view.FlightRecorder = FlightRecorder{RequireReceipts: view.FlightRecorder.RequireReceipts}
+	// Policy identity tracks EFFECTIVE enforcement, not how the operator wrote
+	// it. fragment_reassembly.max_sessions is a pointer so validation can tell
+	// an omitted value from an explicit one, and that distinction is a loading
+	// concern: a config that omits the field and a config that sets it to the
+	// default enforce identically and must share an identity. Resolving it here
+	// also keeps the identity stable across a build that changed the field's
+	// representation rather than its meaning.
+	// While the feature is disabled the value cannot affect any decision, so it
+	// stays out of the identity entirely rather than asserting a bound nothing
+	// consults.
+	if view.CrossRequestDetection.Enabled && view.CrossRequestDetection.FragmentReassembly.Enabled {
+		resolvedMaxSessions := view.CrossRequestDetection.FragmentReassembly.ResolvedMaxSessions()
+		view.CrossRequestDetection.FragmentReassembly.MaxSessions = &resolvedMaxSessions
+	} else {
+		view.CrossRequestDetection.FragmentReassembly.MaxSessions = nil
+	}
 	view.EvidenceProvenance = EvidenceProvenance{}
 	view.Conductor = Conductor{}
 	// The override's existence changes sandbox posture, but its operator note

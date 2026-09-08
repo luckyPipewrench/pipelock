@@ -692,9 +692,10 @@ func (c *Config) ApplyDefaults() {
 			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536
 			}
-			if c.CrossRequestDetection.FragmentReassembly.MaxSessions <= 0 {
-				c.CrossRequestDetection.FragmentReassembly.MaxSessions = DefaultCrossRequestFragmentMaxSessions
-			}
+			// Deliberately NOT defaulted here. Coercing a non-positive value
+			// would hide an operator's explicit mistake behind the default and
+			// make the validation rule unreachable; nil means omitted and
+			// ResolvedMaxSessions supplies the default at the point of use.
 			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
 			}

@@ -364,7 +364,16 @@ const (
 	// this fail-closed evidence-capacity field changes whether cross-request
 	// detection can retain and inspect a new fragment stream, so mixed versions
 	// must not report the same policy identity.
-	goldenHashDefaults = "79e86a78f054e3dbfabdb6221f5ea34f2a81698e941f3648dfc98f55252b443d"
+	// Re-bumped again when that field became a pointer so validation can tell an
+	// omitted value from an explicit one. This bump is a REPRESENTATION change
+	// rather than a semantics change, and it moves only the DISABLED default:
+	// while cross-request detection is off the field cannot affect a decision,
+	// so the canonical view now drops it instead of asserting a bound nothing
+	// consults. Where the feature IS enabled the view resolves the pointer to
+	// its effective value, so a config that omits the field and a config that
+	// sets it to the default keep one identity, and the three enabled goldens
+	// below did not move.
+	goldenHashDefaults = "77017505d2e86bb57cd2acf64087b87c7bbb087bf957b1457f0a67bb86e694f5"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

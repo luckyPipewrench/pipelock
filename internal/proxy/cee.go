@@ -425,7 +425,14 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 // incomplete so callers can emit an operator-visible counter.
 func jsonBodyFragmentPayloads(contentType string, body []byte, sessionKey string, partitionKey []byte) (map[string][]byte, string) {
 	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil || (mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json")) {
+	if err != nil {
+		// An unparseable content type is a shortfall, not an inapplicable media
+		// type: the body may well be JSON that this request will not partition,
+		// and reporting nothing would make that invisible. A cleanly parsed
+		// non-JSON type below is genuinely out of scope and stays silent.
+		return nil, ceeJSONPartitionReasonMalformed
+	}
+	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		return nil, ""
 	}
 	if len(partitionKey) == 0 {

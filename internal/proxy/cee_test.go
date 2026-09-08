@@ -359,7 +359,8 @@ func TestCEEFragmentOwnerMismatchFailsClosed(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
 	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 1024
-	cfg.CrossRequestDetection.FragmentReassembly.MaxSessions = 10
+	maxSessions := 10
+	cfg.CrossRequestDetection.FragmentReassembly.MaxSessions = &maxSessions
 	cfg.ApplyDefaults()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
@@ -410,7 +411,8 @@ func TestCEEFragmentGlobalCapacityFailsClosed(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
 	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 1024
-	cfg.CrossRequestDetection.FragmentReassembly.MaxSessions = 3
+	ledgerSlots := 3
+	cfg.CrossRequestDetection.FragmentReassembly.MaxSessions = &ledgerSlots
 	cfg.ApplyDefaults()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)

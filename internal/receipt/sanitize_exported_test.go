@@ -27,37 +27,56 @@ func TestSanitizeTargetExportedOutputIsClean(t *testing.T) {
 	t.Parallel()
 
 	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	// A host label cannot carry uppercase, so the host case needs the lowered
+	// form AND the predicate has to flag it. Without both, the raw target is
+	// already clean, the sanitizer does nothing, and the subtest passes while
+	// the secret survives. That exact subtest was vacuous before this guard.
+	lowered := strings.ToLower(secret)
 
 	tests := []struct {
-		name   string
-		target string
+		name string
+		// target is the input. secretForm is the byte sequence that must not
+		// survive; empty means the case is a deliberately-clean control.
+		target     string
+		secretForm string
 	}{
-		{"userinfo credential", "https://user:" + secret + "@api.vendor.example/v1/things"},
-		{"query value secret", "https://api.vendor.example/v1?token=" + secret},
-		{"secret split across query values", "https://api.vendor.example/v1?a=" + secret[:10] + "&b=" + secret[10:]},
-		{"path segment secret", "https://api.vendor.example/v1/" + secret + "/read"},
-		{"fragment secret", "https://api.vendor.example/v1#" + secret},
-		{"secret in host label", "https://" + strings.ToLower(secret) + ".vendor.example/v1"},
-		{"connect authority", "api.vendor.example:443"},
-		{"connect authority carrying secret", secret + ".vendor.example:443"},
-		{"mcp tool name", "@vendor/integrity_checker"},
-		{"mcp tool name carrying secret", "@vendor/" + secret},
-		{"clean url is preserved", "https://api.vendor.example/v1/things?page=2"},
-		{"empty target", ""},
+		{"userinfo credential", "https://user:" + secret + "@api.vendor.example/v1/things", secret},
+		{"query value secret", "https://api.vendor.example/v1?token=" + secret, secret},
+		{"secret split across query values", "https://api.vendor.example/v1?a=" + secret[:10] + "&b=" + secret[10:], secret},
+		{"path segment secret", "https://api.vendor.example/v1/" + secret + "/read", secret},
+		{"fragment secret", "https://api.vendor.example/v1#" + secret, secret},
+		{"secret in host label", "https://" + lowered + ".vendor.example/v1", lowered},
+		{"connect authority carrying secret", secret + ".vendor.example:443", secret},
+		{"mcp tool name carrying secret", "@vendor/" + secret, secret},
+		{"connect authority", "api.vendor.example:443", ""},
+		{"mcp tool name", "@vendor/integrity_checker", ""},
+		{"clean url is preserved", "https://api.vendor.example/v1/things?page=2", ""},
+		{"empty target", "", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			clean := exportedClean(secret)
+			clean := exportedClean(secret, lowered)
+
+			// Establish the case is meaningful before trusting its result. A
+			// secret-bearing input the predicate reports as already clean
+			// exercises nothing, and the assertions below would pass anyway.
+			if tt.secretForm != "" && clean(tt.target) {
+				t.Fatalf("fixture is vacuous: raw target %q is already clean under the predicate, so this case tests nothing", tt.target)
+			}
+
 			got := SanitizeTarget(tt.target, clean)
 
 			if !clean(got) {
 				t.Fatalf("SanitizeTarget(%q) = %q, which is NOT DLP-clean; a signed receipt would carry the secret", tt.target, got)
 			}
-			if strings.Contains(got, secret) {
+			if tt.secretForm != "" && strings.Contains(got, tt.secretForm) {
 				t.Fatalf("SanitizeTarget(%q) = %q, still contains the secret verbatim", tt.target, got)
+			}
+			if tt.secretForm == "" && got != tt.target {
+				t.Fatalf("SanitizeTarget(%q) = %q, want a clean target preserved byte for byte", tt.target, got)
 			}
 		})
 	}

@@ -68,6 +68,17 @@ func TestValidateCompletenessCoupling(t *testing.T) {
 			{completenessBroken, append(append([]string{}, limitedReasons...), unverifiedReasons...), "BROKEN completeness cannot use reason"},
 			{completenessUnverified, append(append([]string{}, limitedReasons...), brokenReasons...), "UNVERIFIED completeness cannot use reason"},
 		}
+		// A reason outside the vocabulary entirely, not merely one belonging to
+		// a different status. Each status's inner switch has its own default
+		// arm, so all three need the case.
+		unknownReasons := []string{"", "bogus", "BOUNDED_CLOSED", "chain_broken\nbounded_closed"}
+		for _, status := range []string{completenessLimited, completenessBroken, completenessUnverified} {
+			for _, reason := range unknownReasons {
+				if err := validateCompletenessCoupling(session(status, reason, 7)); err == nil {
+					t.Errorf("validateCompletenessCoupling(%s/%q) = nil, want rejection of an unknown reason", status, reason)
+				}
+			}
+		}
 		for _, tc := range cases {
 			for _, reason := range tc.reasons {
 				err := validateCompletenessCoupling(session(tc.status, reason, 7))
@@ -104,10 +115,20 @@ func TestValidateCompletenessCoupling(t *testing.T) {
 
 		// Zero receipts under any reason other than no_receipts: the
 		// certificate would claim a verified-ish window it observed nothing in.
-		for _, reason := range limitedReasons {
-			err := validateCompletenessCoupling(session(completenessLimited, reason, 0))
-			if err == nil || !strings.Contains(err.Error(), "zero receipt_count requires UNVERIFIED/no_receipts") {
-				t.Errorf("validateCompletenessCoupling(LIMITED/%s, 0 receipts) = %v, want the zero-count rejection", reason, err)
+		// The zero-count check is reason-agnostic, so covering only LIMITED
+		// would pass a validator that rejected zero receipts for LIMITED
+		// alone. Walk every status with each of its own valid reasons.
+		zeroCases := map[string][]string{
+			completenessLimited:    limitedReasons,
+			completenessBroken:     brokenReasons,
+			completenessUnverified: {reasonNoOpen, reasonNoLifecycle, reasonRecorderDisabled},
+		}
+		for status, reasons := range zeroCases {
+			for _, reason := range reasons {
+				err := validateCompletenessCoupling(session(status, reason, 0))
+				if err == nil || !strings.Contains(err.Error(), "zero receipt_count requires UNVERIFIED/no_receipts") {
+					t.Errorf("validateCompletenessCoupling(%s/%s, 0 receipts) = %v, want the zero-count rejection", status, reason, err)
+				}
 			}
 		}
 

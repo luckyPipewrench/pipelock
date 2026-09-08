@@ -97,6 +97,21 @@ func TestVerifyChain_RestartSessionOpenRejections(t *testing.T) {
 		},
 	}
 
+	// Availability control. Every case above is deliberately corrupt, so a
+	// change that rejected EVERY restart open, valid handoffs included, would
+	// pass all of them. This builds the same shape with nothing corrupted and
+	// requires it to verify, so over-strictness at the chain boundary fails
+	// here rather than shipping as a refusal an operator has to debug.
+	t.Run("control_valid_restart_open_verifies", func(t *testing.T) {
+		t.Parallel()
+		pub, priv := generateTestKey(t)
+		chain := restartChain(t, priv, func(*SessionOpen, string, uint64) {}, unchangedPrev)
+		res := VerifyChain(chain, hex.EncodeToString(pub))
+		if !res.Valid {
+			t.Fatalf("a valid restart session_open chain failed to verify: %s", res.Error)
+		}
+	})
+
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

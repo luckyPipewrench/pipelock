@@ -57,9 +57,19 @@ func TestLoadRuntime_TrimsProofPathBeforeDeciding(t *testing.T) {
 
 	t.Run("blank value falls back to the default path", func(t *testing.T) {
 		t.Setenv(RuntimeProofEnv, "   ")
-		result, _ := loadRuntime(nil)
+		result, err := loadRuntime(nil)
 		if result.Path != DefaultContainRunProofPath {
 			t.Errorf("path = %q, want the default %q", result.Path, DefaultContainRunProofPath)
+		}
+		// Checking the path alone would pass even if the fallback had taken
+		// the refusal branch and returned that same path as invalid. Assert
+		// it did NOT, without asserting which valid outcome it reached: the
+		// default proof file may or may not exist on the host running this.
+		if err != nil {
+			t.Errorf("loadRuntime after a blank value = error %v, want the fallback to be accepted", err)
+		}
+		if result.Availability == AvailabilityInvalid {
+			t.Errorf("availability = %q, want the fallback not to be treated as a refused path", result.Availability)
 		}
 	})
 }

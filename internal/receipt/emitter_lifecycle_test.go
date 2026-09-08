@@ -101,14 +101,29 @@ func TestEmitter_RetireNativeAELBricksFurtherEmission(t *testing.T) {
 	if err := emit(); err != nil {
 		t.Fatalf("Emit before retirement failed: %v", err)
 	}
+	// Calibrate the counter used below. A reader that always returned the same
+	// number would make the no-append assertion vacuous, so require it to
+	// observe this known-good emit before trusting it to observe an absence.
+	if got := len(readReceiptsRaw(t, dir)); got == 0 {
+		t.Fatal("receipt reader saw 0 receipts after a successful emit; it cannot detect an append, so the assertion below would be vacuous")
+	}
 
 	if err := e.RetireNativeAEL(); err != nil {
 		t.Fatalf("RetireNativeAEL: %v", err)
 	}
 
+	// Count what is on disk before the refused emit. Asserting only that Emit
+	// returns an error would still pass an implementation that appended the
+	// receipt and reported unhealthy afterwards, and the receipt landing is
+	// the thing retirement exists to prevent.
+	before := len(readReceiptsRaw(t, dir))
+
 	err := emit()
 	if err == nil {
 		t.Fatal("Emit succeeded after RetireNativeAEL; a retired emitter must not append under the rotated-out key")
+	}
+	if after := len(readReceiptsRaw(t, dir)); after != before {
+		t.Fatalf("receipt count went %d -> %d after a refused emit; a retired emitter appended under the rotated-out key", before, after)
 	}
 	if !strings.Contains(err.Error(), "unhealthy") {
 		t.Fatalf("Emit error after retirement = %v, want it to report the emitter unhealthy", err)

@@ -2253,15 +2253,16 @@ type ceeEntropySnapshot struct {
 }
 
 type ceeAdmitRequest struct {
-	SessionKey       string
-	Outbound         []byte
-	KeyPayload       []byte
-	PathPayload      *ceePathPayload
-	TargetURL        string
-	Agent            string
-	ClientIP         string
-	RequestID        string
-	IncludeFragments bool
+	SessionKey           string
+	Outbound             []byte
+	BodyFragmentPayloads map[string][]byte
+	KeyPayload           []byte
+	PathPayload          *ceePathPayload
+	TargetURL            string
+	Agent                string
+	ClientIP             string
+	RequestID            string
+	IncludeFragments     bool
 }
 
 // admitCurrentCEE keeps the CEE policy snapshot and its mutable tracking
@@ -2290,7 +2291,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	}
 	return ceeAdmission{
 		Result: ceeAdmit(ctx, ceeAdmitOptions{
-			SessionKey: req.SessionKey, Outbound: req.Outbound, KeyPayload: req.KeyPayload,
+			SessionKey: req.SessionKey, Outbound: req.Outbound, BodyFragmentPayloads: req.BodyFragmentPayloads, KeyPayload: req.KeyPayload,
 			PathPayload: req.PathPayload, TargetURL: req.TargetURL, Agent: req.Agent,
 			ClientIP: req.ClientIP, RequestID: req.RequestID, Config: ceeCfg,
 			Entropy: p.entropyTrackerPtr.Load(), Fragments: fb, Scanner: p.scannerPtr.Load(),

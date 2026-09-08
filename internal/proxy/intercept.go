@@ -1371,13 +1371,14 @@ func newInterceptHandler(
 		// fragment analysis. When p is non-nil, resolve CEE objects per-request
 		// so hot-reloads during long-lived CONNECT tunnels use fresh state.
 		sessionKey := ceeSessionKey(ic.Agent, ic.ClientIP, ic.ActorAuth)
-		outbound := extractOutboundPayload(r)
+		outboundPayloads := extractOutboundPayloads(r)
+		outbound := outboundPayloads.outbound
 		keys := queryParamKeys(r.URL)
 		paths := pathSegments(r.URL)
 		var admission ceeAdmission
 		if ic.Proxy != nil {
 			admission = ic.Proxy.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-				SessionKey: sessionKey, Outbound: outbound, KeyPayload: keys, PathPayload: paths, TargetURL: r.URL.String(),
+				SessionKey: sessionKey, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, KeyPayload: keys, PathPayload: paths, TargetURL: r.URL.String(),
 				Agent: ic.Agent, ClientIP: ic.ClientIP, RequestID: ic.RequestID, IncludeFragments: true,
 			})
 			// A missing live snapshot is security-relevant only when this
@@ -1396,7 +1397,7 @@ func newInterceptHandler(
 			if ceeCfg.Enabled {
 				admission = ceeAdmission{
 					Result: ceeAdmit(r.Context(), ceeAdmitOptions{
-						SessionKey: sessionKey, Outbound: outbound, KeyPayload: keys,
+						SessionKey: sessionKey, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, KeyPayload: keys,
 						PathPayload: paths, TargetURL: r.URL.String(), Agent: ic.Agent,
 						ClientIP: ic.ClientIP, RequestID: ic.RequestID, Config: ceeCfg,
 						Entropy: ic.EntropyTracker, Fragments: ic.FragmentBuffer,

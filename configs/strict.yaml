@@ -606,7 +606,7 @@ cross_request_detection:
     action: warn
   fragment_reassembly:
     enabled: true
-    max_buffer_bytes: 65536
+    max_buffer_bytes: 131072
     window_minutes: 5
 
 # Scan API: evaluation-plane listener for external integrations.

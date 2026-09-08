@@ -4,19 +4,17 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -194,14 +192,19 @@ func mcpCEEFragmentPayloads(frame MCPFrame) map[string][]byte {
 	if !ok {
 		return map[string][]byte{"": frame.Raw}
 	}
-	decoder := json.NewDecoder(bytes.NewReader(frame.Args))
-	decoder.UseNumber()
-	payloads := make(map[string][]byte)
-	if !appendMCPCEEArgumentText(decoder, payloads, toolPrefix, []byte("$"), 0) || len(payloads) == 0 {
+	argumentPayloads, complete := extract.JSONLeafPayloads(frame.Args, extract.JSONLeafLimits{
+		MaxDepth: mcpCEEArgumentMaxDepth, MaxStreams: mcpCEEArgumentMaxStreams, MaxPathBytes: mcpCEEArgumentMaxPathBytes,
+	})
+	if !complete {
 		return map[string][]byte{"": frame.Raw}
 	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return map[string][]byte{"": frame.Raw}
+	payloads := make(map[string][]byte, len(argumentPayloads)+1)
+	for path, value := range argumentPayloads {
+		stream := toolPrefix + mcpCEEArgumentStreamSuffix + path
+		if len(stream) > mcpCEEArgumentMaxStreamKeyBytes {
+			return map[string][]byte{"": frame.Raw}
+		}
+		payloads[stream] = value
 	}
 	if toolStream, value, ok := mcpCEEUnambiguousToolValue(toolPrefix, payloads); ok {
 		if len(payloads) >= mcpCEEArgumentMaxStreams {
@@ -252,101 +255,6 @@ func mcpCEEUnambiguousToolValue(toolPrefix string, payloads map[string][]byte) (
 // into data values: a server receives alpha and progress as distinct arguments.
 // The mutable path buffer avoids allocating a new cumulative path at each
 // nested object key or array element.
-func appendMCPCEEArgumentText(decoder *json.Decoder, payloads map[string][]byte, toolPrefix string, path []byte, depth int) bool {
-	if depth > mcpCEEArgumentMaxDepth {
-		return false
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return false
-	}
-	switch value := token.(type) {
-	case json.Delim:
-		switch value {
-		case '{':
-			for decoder.More() {
-				key, err := decoder.Token()
-				if err != nil {
-					return false
-				}
-				keyString, ok := key.(string)
-				if !ok {
-					return false
-				}
-				pathLen := len(path)
-				path, ok = mcpCEEAppendPathPart(path, keyString)
-				if !ok || !appendMCPCEEArgumentText(decoder, payloads, toolPrefix, path, depth+1) {
-					return false
-				}
-				path = path[:pathLen]
-			}
-			end, err := decoder.Token()
-			return err == nil && end == json.Delim('}')
-		default:
-			// json.Decoder only yields '{' or '[' as an opening delimiter.
-			// A different delimiter reaches the same fail-closed end-token check.
-			for index := 0; decoder.More(); index++ {
-				pathLen := len(path)
-				var ok bool
-				path, ok = mcpCEEAppendPathPart(path, strconv.Itoa(index))
-				if !ok || !appendMCPCEEArgumentText(decoder, payloads, toolPrefix, path, depth+1) {
-					return false
-				}
-				path = path[:pathLen]
-			}
-			end, err := decoder.Token()
-			return err == nil && end == json.Delim(']')
-		}
-	case nil:
-		return true
-	case string:
-		return mcpCEEAppendArgumentPayload(payloads, toolPrefix, path, value)
-	case json.Number:
-		return mcpCEEAppendArgumentPayload(payloads, toolPrefix, path, value.String())
-	case bool:
-		return mcpCEEAppendArgumentPayload(payloads, toolPrefix, path, strconv.FormatBool(value))
-	default:
-		return false
-	}
-}
-
-func mcpCEEAppendPathPart(path []byte, part string) ([]byte, bool) {
-	pathBytes := len(path) + 1
-	for i := 0; i < len(part); i++ {
-		pathBytes++
-		if part[i] == '~' || part[i] == '/' {
-			pathBytes++
-		}
-	}
-	if pathBytes > mcpCEEArgumentMaxPathBytes {
-		return nil, false
-	}
-	path = append(path, '/')
-	for i := 0; i < len(part); i++ {
-		switch part[i] {
-		case '~':
-			path = append(path, '~', '0')
-		case '/':
-			path = append(path, '~', '1')
-		default:
-			path = append(path, part[i])
-		}
-	}
-	return path, true
-}
-
-func mcpCEEAppendArgumentPayload(payloads map[string][]byte, toolPrefix string, path []byte, value string) bool {
-	stream := toolPrefix + mcpCEEArgumentStreamSuffix + string(path)
-	if len(stream) > mcpCEEArgumentMaxStreamKeyBytes {
-		return false
-	}
-	if _, exists := payloads[stream]; !exists && len(payloads) >= mcpCEEArgumentMaxStreams {
-		return false
-	}
-	payloads[stream] = append(payloads[stream], value...)
-	return true
-}
-
 func mcpCEEPathEscape(part string) string {
 	return mcpCEEPathEscaper.Replace(part)
 }

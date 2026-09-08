@@ -6,6 +6,7 @@ package scanner
 import (
 	"bytes"
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -454,6 +455,24 @@ func (fb *FragmentBuffer) Delete(key string) {
 	defer fb.mu.Unlock()
 	delete(fb.sessions, key)
 	delete(fb.pathSessions, key)
+}
+
+// DeletePrefix clears every ordinary and position-aware stream whose key
+// begins with prefix. It supports bounded families of hashed child streams
+// (for example, JSON body fields) when the parent CEE session is reset.
+func (fb *FragmentBuffer) DeletePrefix(prefix string) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	for key := range fb.sessions {
+		if strings.HasPrefix(key, prefix) {
+			delete(fb.sessions, key)
+		}
+	}
+	for key := range fb.pathSessions {
+		if strings.HasPrefix(key, prefix) {
+			delete(fb.pathSessions, key)
+		}
+	}
 }
 
 // Close retires all buffered fragments. It is safe to call more than once.

@@ -10,8 +10,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -19,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -134,6 +137,7 @@ func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scann
 		for _, suffix := range ceeFragmentStreamSuffixes {
 			fb.Delete(key + suffix)
 		}
+		fb.DeletePrefix(key + ceeJSONBodyStreamPrefix)
 	}
 }
 
@@ -142,8 +146,9 @@ func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scann
 // suffix. ceeFragmentStreamSuffixes lists every non-base stream so an operator
 // reset clears all of them; a new stream must be added here as well.
 const (
-	ceeStreamKeysSuffix = "|keys"
-	ceeStreamPathSuffix = "|path"
+	ceeStreamKeysSuffix     = "|keys"
+	ceeStreamPathSuffix     = "|path"
+	ceeJSONBodyStreamPrefix = "|body-json|"
 )
 
 var ceeFragmentStreamSuffixes = []string{ceeStreamKeysSuffix, ceeStreamPathSuffix}
@@ -159,6 +164,20 @@ type ceePathPayload struct {
 // maxCEEBodyRead limits the body bytes read for CEE payload extraction.
 // Larger bodies are unlikely to be fragment-based exfiltration attempts.
 const maxCEEBodyRead = 65536 // 64KB
+
+const (
+	ceeJSONBodyMaxDepth     = 64
+	ceeJSONBodyMaxStreams   = 128
+	ceeJSONBodyMaxPathBytes = 512
+)
+
+type ceeOutboundPayloads struct {
+	// outbound preserves the raw CEE input for entropy accounting and the
+	// legacy all-body fragment stream. JSON body streams supplement it; they do
+	// not replace it, so malformed JSON or cross-channel splits stay scanned.
+	outbound             []byte
+	bodyFragmentPayloads map[string][]byte
+}
 
 // queryParamPayload extracts query values from a URL in wire order (the order
 // tokens appear in RawQuery). For key=value pairs, only the value is extracted.
@@ -345,7 +364,12 @@ func ceeEntropyExempt(targetURL string, exemptDomains []string) bool {
 // with this stream. Re-wraps r.Body after reading so downstream handlers can
 // still consume it.
 func extractOutboundPayload(r *http.Request) []byte {
+	return extractOutboundPayloads(r).outbound
+}
+
+func extractOutboundPayloads(r *http.Request) ceeOutboundPayloads {
 	var parts []string
+	result := ceeOutboundPayloads{}
 
 	// Query parameter values in wire order for accurate fragment reconstruction.
 	if qp := queryParamPayload(r.URL); len(qp) > 0 {
@@ -362,6 +386,7 @@ func extractOutboundPayload(r *http.Request) []byte {
 		bodyBytes, err := io.ReadAll(limited)
 		if err == nil && len(bodyBytes) > 0 {
 			parts = append(parts, string(bodyBytes))
+			result.bodyFragmentPayloads = jsonBodyFragmentPayloads(r.Header.Get("Content-Type"), bodyBytes)
 		}
 		// Concatenate read bytes with any remaining body data beyond the limit.
 		r.Body = struct {
@@ -373,7 +398,40 @@ func extractOutboundPayload(r *http.Request) []byte {
 		}
 	}
 
-	return []byte(strings.Join(parts, ""))
+	result.outbound = []byte(strings.Join(parts, ""))
+	return result
+}
+
+// jsonBodyFragmentPayloads partitions a JSON request body into independent
+// JSON-pointer streams. Whole request bodies remain in the legacy outbound
+// stream as well: parsing failure, an unsupported media type, or a cap hit
+// therefore retains raw cross-request inspection instead of skipping it.
+func jsonBodyFragmentPayloads(contentType string, body []byte) map[string][]byte {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || (mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json")) {
+		return nil
+	}
+	payloads, complete := extract.JSONLeafPayloads(body, extract.JSONLeafLimits{
+		MaxDepth: ceeJSONBodyMaxDepth, MaxStreams: ceeJSONBodyMaxStreams, MaxPathBytes: ceeJSONBodyMaxPathBytes,
+	})
+	if !complete {
+		return nil
+	}
+	return payloads
+}
+
+func ceeJSONBodyFragmentSessionKey(sessionKey, path string) string {
+	digest := sha256.Sum256([]byte(path))
+	return sessionKey + ceeJSONBodyStreamPrefix + hex.EncodeToString(digest[:])
+}
+
+func sortedCEEJSONBodyPayloadPaths(payloads map[string][]byte) []string {
+	paths := make([]string, 0, len(payloads))
+	for path := range payloads {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // ceeEffectiveConfig returns a copy of the CEE config with actions downgraded
@@ -425,25 +483,26 @@ type ceeResult struct {
 // invites argument-order errors, and every added stream lengthened it further
 // (see the options-struct convention in CLAUDE.md).
 type ceeAdmitOptions struct {
-	SessionKey  string
-	Outbound    []byte
-	KeyPayload  []byte
-	PathPayload *ceePathPayload
-	TargetURL   string
-	Agent       string
-	ClientIP    string
-	RequestID   string
-	Config      config.CrossRequestDetection
-	Entropy     *scanner.EntropyTracker
-	Fragments   *scanner.FragmentBuffer
-	Scanner     *scanner.Scanner
-	Logger      *audit.Logger
-	Metrics     *metrics.Metrics
+	SessionKey           string
+	Outbound             []byte
+	BodyFragmentPayloads map[string][]byte
+	KeyPayload           []byte
+	PathPayload          *ceePathPayload
+	TargetURL            string
+	Agent                string
+	ClientIP             string
+	RequestID            string
+	Config               config.CrossRequestDetection
+	Entropy              *scanner.EntropyTracker
+	Fragments            *scanner.FragmentBuffer
+	Scanner              *scanner.Scanner
+	Logger               *audit.Logger
+	Metrics              *metrics.Metrics
 }
 
 func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 	sessionKey := opts.SessionKey
-	outbound, keyPayload := opts.Outbound, opts.KeyPayload
+	outbound, bodyFragmentPayloads, keyPayload := opts.Outbound, opts.BodyFragmentPayloads, opts.KeyPayload
 	pathPayload := opts.PathPayload
 	targetURL, agent := opts.TargetURL, opts.Agent
 	clientIP, requestID := opts.ClientIP, opts.RequestID
@@ -499,7 +558,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		return result
 	}
 
-	// Fragment reassembly DLP check (three independent streams).
+	// Fragment reassembly DLP check (legacy raw, body fields, keys, paths).
 	sctx := ceeStreamContext{
 		TargetURL: targetURL, Agent: agent, ClientIP: clientIP, RequestID: requestID,
 		Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
@@ -512,6 +571,21 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 				result.Blocked = true
 				result.Reason = res.Reason
 				return result
+			}
+		}
+
+		// JSON body leaves are isolated by JSON pointer, preserving contiguity
+		// across repeated LLM conversation fields while keeping unrelated prose
+		// out of the stream. A parser limit falls back to the raw stream above,
+		// which is weaker but never silently skips inspection.
+		for _, path := range sortedCEEJSONBodyPayloadPaths(bodyFragmentPayloads) {
+			if res := ceeFragmentScan(ctx, ceeJSONBodyFragmentSessionKey(sessionKey, path), bodyFragmentPayloads[path], sctx); res != nil {
+				result.FragmentHit = true
+				if res.Blocked {
+					result.Blocked = true
+					result.Reason = res.Reason
+					return result
+				}
 			}
 		}
 

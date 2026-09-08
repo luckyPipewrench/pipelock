@@ -10737,8 +10737,8 @@ func TestApplyDefaults_CrossRequestDetection_Enabled(t *testing.T) {
 	if cfg.CrossRequestDetection.EntropyBudget.Action != ActionWarn {
 		t.Fatalf("expected default entropy_budget action %q, got %q", ActionWarn, cfg.CrossRequestDetection.EntropyBudget.Action)
 	}
-	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 65536 {
-		t.Fatalf("expected default max_buffer_bytes 65536, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 131072 {
+		t.Fatalf("expected default max_buffer_bytes 131072, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
 	}
 	if cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes != 5 {
 		t.Fatalf("expected default fragment window_minutes 5, got %d", cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes)

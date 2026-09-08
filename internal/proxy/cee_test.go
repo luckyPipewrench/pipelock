@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +175,92 @@ func TestExtractOutboundPayload_NilBody(t *testing.T) {
 	payload := extractOutboundPayload(r)
 	if len(payload) != 0 {
 		t.Errorf("expected empty payload for nil body, got %q", string(payload))
+	}
+}
+
+func TestJSONBodyFragmentPayloadsFailClosedToRawStream(t *testing.T) {
+	var limitsExceeded strings.Builder
+	limitsExceeded.WriteByte('{')
+	for index := range ceeJSONBodyMaxStreams + 1 {
+		if index > 0 {
+			limitsExceeded.WriteByte(',')
+		}
+		_, _ = fmt.Fprintf(&limitsExceeded, `"field_%d":"value"`, index)
+	}
+	limitsExceeded.WriteByte('}')
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		wantPath    string
+	}{
+		{name: "valid JSON partitions leaf", contentType: "application/json", body: `{"messages":[{"content":"value"}]}`, wantPath: "$/messages/0/content"},
+		{name: "malformed JSON stays raw", contentType: "application/json", body: `{"unterminated"`},
+		{name: "non JSON stays raw", contentType: "text/plain", body: `{"content":"value"}`},
+		{name: "stream ceiling stays raw", contentType: "application/json", body: limitsExceeded.String()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := jsonBodyFragmentPayloads(tt.contentType, []byte(tt.body))
+			if tt.wantPath == "" {
+				if got != nil {
+					t.Fatalf("payloads = %#v, want raw-stream fallback", got)
+				}
+				return
+			}
+			if value := string(got[tt.wantPath]); value != "value" {
+				t.Fatalf("payload %q = %q, want value", tt.wantPath, value)
+			}
+		})
+	}
+}
+
+func TestResetCEEStateClearsJSONBodyStreams(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := scanner.NewFragmentBuffer(1024, 10, 60)
+	sessionKey := CeeSessionKey(testCEEAgent, testCEEClientIP)
+	bodyKey := ceeJSONBodyFragmentSessionKey(sessionKey, "$/messages/0/content")
+
+	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+		t.Fatal("first body fragment exceeded capacity")
+	}
+	if result := fb.Append(bodyKey, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+		t.Fatal("second body fragment exceeded capacity")
+	}
+	if matches := fb.ScanForSecrets(t.Context(), bodyKey, sc); len(matches) == 0 {
+		t.Fatal("control did not reassemble the JSON body stream")
+	}
+
+	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+		t.Fatal("post-control first fragment exceeded capacity")
+	}
+	ResetCEEState(testCEEAgent, testCEEClientIP, nil, fb)
+	if result := fb.Append(bodyKey, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+		t.Fatal("post-reset second fragment exceeded capacity")
+	}
+	if matches := fb.ScanForSecrets(t.Context(), bodyKey, sc); len(matches) != 0 {
+		t.Fatalf("reset retained JSON body fragments: %#v", matches)
+	}
+}
+
+func BenchmarkExtractOutboundPayloadsJSONFields(b *testing.B) {
+	padding := strings.Repeat("ordinary prose ", ceeForwardConversationPaddingBytes/len("ordinary prose "))
+	body := `{"messages":[{"role":"user","content":"fragment"}],"history":"` + padding + `"}`
+	b.ReportAllocs()
+	for b.Loop() {
+		req := &http.Request{
+			Header:        http.Header{"Content-Type": []string{"application/json"}},
+			URL:           &url.URL{},
+			Body:          io.NopCloser(strings.NewReader(body)),
+			ContentLength: int64(len(body)),
+		}
+		payloads := extractOutboundPayloads(req)
+		if len(payloads.bodyFragmentPayloads) != 3 {
+			b.Fatalf("body field streams = %d, want 3", len(payloads.bodyFragmentPayloads))
+		}
 	}
 }
 

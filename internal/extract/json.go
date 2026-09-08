@@ -11,12 +11,130 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // maxExtractDepth bounds recursion depth when extracting strings from JSON.
 // Matches the limit used by jsonrpc.ExtractStringsFromJSON. Prevents stack
 // overflow from deeply-nested payloads crafted by malicious agents.
 const maxExtractDepth = 64
+
+// JSONLeafLimits bounds JSON leaf partitioning for cross-request detection.
+// Every bound is attacker-controlled input defense: callers must retain and
+// scan the raw payload when Complete is false rather than trusting partial
+// leaf streams.
+type JSONLeafLimits struct {
+	MaxDepth     int
+	MaxStreams   int
+	MaxPathBytes int
+}
+
+// JSONLeafPayloads returns scalar JSON values grouped by their JSON-pointer
+// path. Object keys identify streams but are not concatenated with values:
+// unrelated sibling fields must not interrupt a value split across requests.
+// Complete is false for malformed, oversized, or unrepresentable inputs; that
+// is the caller's signal to fall back to its complete raw payload.
+func JSONLeafPayloads(raw json.RawMessage, limits JSONLeafLimits) (payloads map[string][]byte, complete bool) {
+	if len(raw) == 0 || limits.MaxDepth < 0 || limits.MaxStreams <= 0 || limits.MaxPathBytes <= 0 {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	payloads = make(map[string][]byte)
+	if !appendJSONLeafPayload(decoder, payloads, []byte("$"), 0, limits) || len(payloads) == 0 {
+		return nil, false
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, false
+	}
+	return payloads, true
+}
+
+func appendJSONLeafPayload(decoder *json.Decoder, payloads map[string][]byte, path []byte, depth int, limits JSONLeafLimits) bool {
+	if depth > limits.MaxDepth {
+		return false
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return false
+	}
+	switch value := token.(type) {
+	case json.Delim:
+		switch value {
+		case '{':
+			for decoder.More() {
+				key, err := decoder.Token()
+				if err != nil {
+					return false
+				}
+				keyString, ok := key.(string)
+				if !ok {
+					return false
+				}
+				pathLen := len(path)
+				path, ok = appendJSONLeafPathPart(path, keyString, limits.MaxPathBytes)
+				if !ok || !appendJSONLeafPayload(decoder, payloads, path, depth+1, limits) {
+					return false
+				}
+				path = path[:pathLen]
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim('}')
+		case '[':
+			for index := 0; decoder.More(); index++ {
+				pathLen := len(path)
+				var ok bool
+				path, ok = appendJSONLeafPathPart(path, strconv.Itoa(index), limits.MaxPathBytes)
+				if !ok || !appendJSONLeafPayload(decoder, payloads, path, depth+1, limits) {
+					return false
+				}
+				path = path[:pathLen]
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim(']')
+		default:
+			return false
+		}
+	case nil:
+		return true
+	case string:
+		return appendJSONLeafValue(payloads, path, value, limits.MaxStreams)
+	case json.Number:
+		return appendJSONLeafValue(payloads, path, value.String(), limits.MaxStreams)
+	case bool:
+		return appendJSONLeafValue(payloads, path, strconv.FormatBool(value), limits.MaxStreams)
+	default:
+		return false
+	}
+}
+
+func appendJSONLeafPathPart(path []byte, part string, maxPathBytes int) ([]byte, bool) {
+	pathBytes := len(path) + 1 + len(part) + strings.Count(part, "~") + strings.Count(part, "/")
+	if pathBytes > maxPathBytes {
+		return nil, false
+	}
+	path = append(path, '/')
+	for i := 0; i < len(part); i++ {
+		switch part[i] {
+		case '~':
+			path = append(path, '~', '0')
+		case '/':
+			path = append(path, '~', '1')
+		default:
+			path = append(path, part[i])
+		}
+	}
+	return path, true
+}
+
+func appendJSONLeafValue(payloads map[string][]byte, path []byte, value string, maxStreams int) bool {
+	stream := string(path)
+	if _, exists := payloads[stream]; !exists && len(payloads) >= maxStreams {
+		return false
+	}
+	payloads[stream] = append(payloads[stream], value...)
+	return true
+}
 
 // JSONStringsResult is the bounded extraction result. Truncated is true when
 // the JSON contains content beyond maxExtractDepth, meaning callers that make

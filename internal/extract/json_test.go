@@ -98,6 +98,48 @@ func TestAllStringsFromJSON_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestJSONLeafPayloads(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 2, MaxStreams: 2, MaxPathBytes: 32}
+	tests := []struct {
+		name     string
+		raw      string
+		limits   JSONLeafLimits
+		complete bool
+		want     map[string]string
+	}{
+		{
+			name:     "partition values by escaped path",
+			raw:      `{"messages":[{"content":"first","count":2}],"enabled":true}`,
+			limits:   JSONLeafLimits{MaxDepth: 3, MaxStreams: 3, MaxPathBytes: 64},
+			complete: true,
+			want:     map[string]string{"$/messages/0/content": "first", "$/messages/0/count": "2", "$/enabled": "true"},
+		},
+		{name: "malformed input fails closed", raw: `{"unterminated"`, limits: limits},
+		{name: "depth limit fails closed", raw: `[[["deep"]]]`, limits: limits},
+		{name: "stream limit fails closed", raw: `{"one":"1","two":"2","three":"3"}`, limits: limits},
+		{name: "path limit fails closed", raw: `{"this-path-is-too-long":"value"}`, limits: JSONLeafLimits{MaxDepth: 2, MaxStreams: 2, MaxPathBytes: 16}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, complete := JSONLeafPayloads(json.RawMessage(tt.raw), tt.limits)
+			if complete != tt.complete {
+				t.Fatalf("complete = %t, want %t; payloads=%#v", complete, tt.complete, got)
+			}
+			if !complete {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("payload count = %d, want %d: %#v", len(got), len(tt.want), got)
+			}
+			for path, want := range tt.want {
+				if value := string(got[path]); value != want {
+					t.Errorf("payload %q = %q, want %q", path, value, want)
+				}
+			}
+		})
+	}
+}
+
 func TestAllStringsFromJSON_InvalidJSON(t *testing.T) {
 	result := AllStringsFromJSON(json.RawMessage(`{invalid json`))
 	if len(result) != 0 {

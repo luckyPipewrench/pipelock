@@ -5,7 +5,6 @@ package mcp
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -482,41 +481,6 @@ func TestMCPCEEFragmentSessionKey(t *testing.T) {
 	}
 	if strings.Contains(first, "alpha") || strings.Contains(second, "beta") {
 		t.Fatalf("argument key exposed its plaintext path: %q / %q", first, second)
-	}
-}
-
-func TestAppendMCPCEEArgumentText_RejectsMalformedNestedValues(t *testing.T) {
-	tests := []struct {
-		name   string
-		input  string
-		useNum bool
-	}{
-		{
-			name:   "malformed object key",
-			input:  `{"`,
-			useNum: true,
-		},
-		{
-			name:   "malformed array item",
-			input:  `["ok",`,
-			useNum: true,
-		},
-		{
-			name:   "number without UseNumber is an unexpected token type",
-			input:  `1`,
-			useNum: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			decoder := json.NewDecoder(strings.NewReader(tt.input))
-			if tt.useNum {
-				decoder.UseNumber()
-			}
-			if appendMCPCEEArgumentText(decoder, make(map[string][]byte), "@tool/integrity_checker", []byte("$"), 0) {
-				t.Fatal("appendMCPCEEArgumentText() = true, want false")
-			}
-		})
 	}
 }
 

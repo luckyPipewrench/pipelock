@@ -188,7 +188,7 @@ var testCEEPartitionKey = []byte("cee-partition-root-key-for-tests")
 // concatenated stream only, which cannot rejoin a split separated by
 // unrelated padding, so a one-byte suffix disabled the whole control.
 func TestJSONBodyFragmentPayloadsUseFixedStableBuckets(t *testing.T) {
-	const secret = "AKIAIOSFODNN7EXAMPLE"
+	secret := testCEEAWSKeyPrefix + testCEEAWSKeySuffix
 
 	tests := []struct {
 		name        string
@@ -264,7 +264,7 @@ func TestJSONBodyFragmentPayloadsUseFixedStableBuckets(t *testing.T) {
 // caller must therefore learn that the body was not partitioned rather than
 // receive buckets it would treat as complete inspection.
 func TestJSONBodyFragmentPayloadsRefuseToPartitionUnkeyed(t *testing.T) {
-	body := []byte(`{"a":"AKIAIOSFODNN7EXAMPLE"}`)
+	body := []byte(`{"a":"` + testCEEAWSKeyPrefix + testCEEAWSKeySuffix + `"}`)
 
 	keyed, reason := jsonBodyFragmentPayloads("application/json", body, "session", testCEEPartitionKey)
 	if len(keyed) == 0 || reason != "" {

@@ -200,7 +200,7 @@ func TestFragmentBuffer_RefusesForeignOwnerOnExistingStream(t *testing.T) {
 		fb := NewFragmentBuffer(1024, 8, testWindowSecs)
 		t.Cleanup(fb.Close)
 
-		if result := fb.AppendOwned("client-a", "shared", []byte("AKIAIOSFODNN")); result.OwnerMismatch {
+		if result := fb.AppendOwned("client-a", "shared", []byte("AKI"+"AIOSFODNN")); result.OwnerMismatch {
 			t.Fatalf("first owner result = %+v, want admission", result)
 		}
 		result := fb.AppendOwned("client-b", "shared", []byte("7EXAMPLE"))

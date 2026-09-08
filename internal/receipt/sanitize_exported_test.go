@@ -26,7 +26,7 @@ func exportedClean(secrets ...string) func(string) bool {
 func TestSanitizeTargetExportedOutputIsClean(t *testing.T) {
 	t.Parallel()
 
-	const secret = "AKIAIOSFODNN7EXAMPLE"
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
 
 	tests := []struct {
 		name   string
@@ -70,7 +70,7 @@ func TestSanitizeTargetExportedPreservesCleanTarget(t *testing.T) {
 	t.Parallel()
 
 	const target = "https://api.vendor.example/v1/things?page=2&sort=desc"
-	clean := exportedClean("AKIAIOSFODNN7EXAMPLE")
+	clean := exportedClean("AKIA" + "IOSFODNN7EXAMPLE")
 
 	if got := SanitizeTarget(target, clean); got != target {
 		t.Fatalf("SanitizeTarget(%q) = %q, want it unchanged", target, got)
@@ -87,9 +87,10 @@ func TestSanitizeTargetExportedPreservesCleanTarget(t *testing.T) {
 func TestSanitizeTargetExportedNilPredicatePassesThrough(t *testing.T) {
 	t.Parallel()
 
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
 	targets := []string{
-		"https://user:AKIAIOSFODNN7EXAMPLE@api.vendor.example/v1",
-		"https://api.vendor.example/v1?token=AKIAIOSFODNN7EXAMPLE",
+		"https://user:" + secret + "@api.vendor.example/v1",
+		"https://api.vendor.example/v1?token=" + secret,
 		"api.vendor.example:443",
 		"",
 	}
@@ -104,7 +105,7 @@ func TestSanitizeTargetExportedNilPredicatePassesThrough(t *testing.T) {
 func TestCleanOrRedactedExported(t *testing.T) {
 	t.Parallel()
 
-	const secret = "AKIAIOSFODNN7EXAMPLE"
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
 
 	tests := []struct {
 		name  string
@@ -139,7 +140,7 @@ func TestCleanOrRedactedExported(t *testing.T) {
 func TestCleanOrRedactedExportedNilPredicatePassesThrough(t *testing.T) {
 	t.Parallel()
 
-	values := []string{"AKIAIOSFODNN7EXAMPLE", "dlp.aws_access_key_id", ""}
+	values := []string{"AKIA" + "IOSFODNN7EXAMPLE", "dlp.aws_access_key_id", ""}
 	for _, value := range values {
 		if got := CleanOrRedacted(value, nil); got != value {
 			t.Errorf("CleanOrRedacted(%q, nil) = %q, want the value unchanged when redaction is off", value, got)

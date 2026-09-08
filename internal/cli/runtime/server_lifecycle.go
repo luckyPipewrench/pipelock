@@ -96,7 +96,7 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", err)
 			return func() error { return nil }, nil
 		}
-		return nil, fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", err)
+		return nil, fileSentryArmFailure(err)
 	}
 
 	var findingHook filesentry.FindingHook
@@ -153,6 +153,18 @@ func reportFileSentryCoverage(w io.Writer, configuredPaths int, action string, d
 
 func fileSentryArmErrorMustFailClosed(err error) bool {
 	return errors.Is(err, filesentry.ErrNoWatchPaths) || errors.Is(err, filesentry.ErrRequiredWatchPath)
+}
+
+// fileSentryArmFailure attaches operator remedies to an arming failure, naming
+// only controls the blocking path actually consults. best_effort is offered
+// solely for failures it can resolve: a required root and a no-watch-paths
+// error both stay fail-closed under best_effort, so advertising it there would
+// send an operator to a setting that cannot fix their failure.
+func fileSentryArmFailure(err error) error {
+	if fileSentryArmErrorMustFailClosed(err) {
+		return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w\nremedies: grant the user pipelock runs as read and execute access to each listed directory; add a file_sentry.ignore_patterns entry matching an inaccessible path; or drop required: true from the affected watch_paths entry. file_sentry.best_effort does NOT apply to this failure: a required root and a configuration with no watchable path both stay fail-closed", err)
+	}
+	return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w\nremedies: grant the user pipelock runs as read and execute access to each listed directory; add a file_sentry.ignore_patterns entry matching an inaccessible path; or set file_sentry.best_effort: true to trade coverage for availability", err)
 }
 
 // startupSummaryLine renders the one-line startup diagnostic. fetchAddr is the

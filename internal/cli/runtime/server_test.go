@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1506,6 +1507,17 @@ func TestServer_StartFailsWhenFileSentryArmsNoPaths(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "no watch paths armed") {
 			t.Fatalf("Start error = %v, want zero-armed file-sentry failure", err)
 		}
+		for _, want := range []string{missing, "file_sentry.ignore_patterns", "does NOT apply to this failure"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Start error = %q, missing remedy detail %q", err, want)
+			}
+		}
+		// A no-watch-paths error stays fail-closed under best_effort, so
+		// offering that setting would send an operator to a control that
+		// cannot resolve their failure.
+		if strings.Contains(err.Error(), "set file_sentry.best_effort: true to trade coverage") {
+			t.Errorf("Start error = %q, must not offer best_effort for a fail-closed error", err)
+		}
 	case <-time.After(5 * time.Second):
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
@@ -1558,6 +1570,23 @@ func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 			t.Fatal("Start did not return after Shutdown")
 		}
 		t.Fatal("Start continued despite zero file-sentry coverage")
+	}
+}
+
+func TestFileSentryArmFailureNamesWorkingRemedies(t *testing.T) {
+	err := fileSentryArmFailure(fmt.Errorf("filesentry: incomplete watch coverage: cannot monitor subtree %q beneath watch root %q: %w", "/tmp/watch/blocked", "/tmp/watch", fs.ErrPermission))
+	for _, want := range []string{
+		"/tmp/watch/blocked",
+		"/tmp/watch",
+		"permission denied",
+		"read and execute access",
+		"file_sentry.ignore_patterns",
+		"file_sentry.best_effort: true",
+		"trade coverage for availability",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("fileSentryArmFailure() = %q, missing %q", err, want)
+		}
 	}
 }
 

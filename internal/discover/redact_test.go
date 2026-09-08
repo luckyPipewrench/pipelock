@@ -4,6 +4,9 @@
 package discover
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -89,5 +92,72 @@ func TestRedactReportForOutput_DoesNotMutateInput(t *testing.T) {
 	}
 	if report.Servers[0].URL != "https://example.com/mcp?"+"token=secret" {
 		t.Fatalf("input url mutated: %q", report.Servers[0].URL)
+	}
+}
+
+func TestRedactReportForOutput_RedactsStandaloneAuthorizationArgs(t *testing.T) {
+	bearer := "bearer-" + "canary-value"
+	basic := base64.StdEncoding.EncodeToString([]byte("example:" + "canary-value"))
+	tests := []struct {
+		name string
+		args []string
+		want []string
+		leak string
+	}{
+		{
+			name: "mixed case bearer",
+			args: []string{"serve", "aUtHoRiZaTiOn: BeArEr " + bearer, "--mode", "safe"},
+			want: []string{"serve", redactedValue, "--mode", "safe"},
+			leak: bearer,
+		},
+		{
+			name: "mixed case basic",
+			args: []string{"serve", "BaSiC " + basic, "--mode", "safe"},
+			want: []string{"serve", redactedValue, "--mode", "safe"},
+			leak: basic,
+		},
+		{
+			name: "standalone bearer",
+			args: []string{"serve", "BeArEr " + bearer, "--mode", "safe"},
+			want: []string{"serve", redactedValue, "--mode", "safe"},
+			leak: bearer,
+		},
+		{
+			name: "unrecognized header flag",
+			args: []string{"serve", "-H", "Authorization: Bearer " + bearer, "--mode", "safe"},
+			want: []string{"serve", "-H", redactedValue, "--mode", "safe"},
+			leak: bearer,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"auth": map[string]any{"command": "node", "args": tt.args},
+			})
+			if err != nil {
+				t.Fatalf("marshal server config: %v", err)
+			}
+			servers, err := parseServerMap(raw, "config.json", clientClaudeCode)
+			if err != nil {
+				t.Fatalf("parseServerMap: %v", err)
+			}
+			report := &Report{Servers: servers}
+
+			redacted := RedactReportForOutput(report)
+			serialized, err := json.Marshal(redacted)
+			if err != nil {
+				t.Fatalf("marshal redacted report: %v", err)
+			}
+			if strings.Contains(string(serialized), tt.leak) {
+				t.Fatalf("serialized output leaked %q: %s", tt.leak, serialized)
+			}
+			if got := redacted.Servers[0].Args; !slices.Equal(got, tt.want) {
+				t.Errorf("redacted args = %q, want %q", got, tt.want)
+			}
+			if got := report.Servers[0].Args; !slices.Equal(got, tt.args) {
+				t.Errorf("raw parsed args changed: got %q, want %q", got, tt.args)
+			}
+		})
 	}
 }

@@ -2689,6 +2689,13 @@ func (c *Config) validateCrossRequestDetection(warnings *[]Warning) error {
 			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
 				return fmt.Errorf("cross_request_detection.fragment_reassembly.window_minutes must be > 0")
 			}
+			// The global stream ledger is the control the capacity block names, so a
+			// value that cannot hold a working set turns cross-request detection into
+			// blanket denial. Its two siblings above and session_profiling.max_sessions
+			// all reject a non-positive value; this one is held to the same rule.
+			if c.CrossRequestDetection.FragmentReassembly.MaxSessions <= 0 {
+				return fmt.Errorf("cross_request_detection.fragment_reassembly.max_sessions must be > 0")
+			}
 		}
 	}
 

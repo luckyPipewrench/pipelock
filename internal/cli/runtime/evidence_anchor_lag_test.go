@@ -43,19 +43,25 @@ func TestEvidenceHealthZeroAnchorLagDisablesOnlyAgeRequirement(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h.currentConfig().FlightRecorder.EvidenceHealth.MaxAnchorLag = tt.lag
-			stats, ok := h.stats()
-			if !ok || stats.Anchor == nil {
-				t.Fatalf("valid anchor stats unavailable: ok=%v anchor=%+v", ok, stats.Anchor)
+			checkStats := func() {
+				t.Helper()
+				stats, ok := h.stats()
+				if !ok || stats.Anchor == nil {
+					t.Fatalf("valid anchor stats unavailable: ok=%v anchor=%+v", ok, stats.Anchor)
+				}
+				if got := stats.Requirements[metrics.EvidenceRequirementAnchoringFresh]; got != tt.wantFresh {
+					t.Errorf("anchoring_fresh = %v, want %v", got, tt.wantFresh)
+				}
+				if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
+					t.Errorf("age setting raised current AEL to %q", stats.CurrentAEL)
+				}
+				if !stats.LocalRecorderOperational {
+					t.Error("age setting degraded local recorder operation")
+				}
 			}
-			if got := stats.Requirements[metrics.EvidenceRequirementAnchoringFresh]; got != tt.wantFresh {
-				t.Errorf("anchoring_fresh = %v, want %v", got, tt.wantFresh)
-			}
-			if stats.CurrentAEL != metrics.EvidenceCurrentAELUnavailable {
-				t.Errorf("age setting raised current AEL to %q", stats.CurrentAEL)
-			}
-			if !stats.LocalRecorderOperational {
-				t.Error("age setting degraded local recorder operation")
-			}
+			checkStats()
+			h.runPass()
+			checkStats()
 		})
 	}
 }

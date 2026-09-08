@@ -13,7 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-const credentialAudienceReceiptExtensionKey = "dlp_credential_audience_allow"
+const credentialAudienceReceiptExtensionKey = "dlp_credential_audience_allow" // #nosec G101 -- receipt extension identifier, not credential material
 
 // recordCredentialAudienceAllow records the bounded observability side effect
 // shared by forward, intercept, reverse, and WebSocket DLP. It has no verdict

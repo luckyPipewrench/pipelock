@@ -75,7 +75,7 @@ func canonicalCredentialAudienceDestination(target string) (string, bool) {
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
-	defaultPort := ""
+	var defaultPort string
 	switch scheme {
 	case "http", "ws":
 		defaultPort = "80"

@@ -1298,10 +1298,6 @@ func scanBodyTextForDLP(ctx context.Context, sc *scanner.Scanner, text string, a
 	return sc.ScanTextForDLP(ctx, text)
 }
 
-func scanProviderOpaqueTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string)) []scanner.TextDLPMatch {
-	return scanProviderOpaqueTextsForDLPWithAudience(ctx, sc, texts, target, suppress, disabled, allowEmbeddedSigV4, onDropped, "", nil)
-}
-
 func scanProviderOpaqueTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string), audienceSurface string, onAudienceAllow func(scanner.CredentialAudienceAllow)) []scanner.TextDLPMatch {
 	if len(texts) == 0 {
 		return nil

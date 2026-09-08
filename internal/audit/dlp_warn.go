@@ -15,7 +15,7 @@ const (
 	EventDLPWarn EventType = "dlp_warn"
 	// EventDLPCredentialAudienceAllow records the narrow compiled-in exception
 	// for a provider credential sent to its declared audience.
-	EventDLPCredentialAudienceAllow EventType = "dlp_credential_audience_allow"
+	EventDLPCredentialAudienceAllow EventType = "dlp_credential_audience_allow" // #nosec G101 -- audit event identifier, not credential material
 )
 
 // LogDLPWarn emits an audit event for a DLP pattern match in warn mode.

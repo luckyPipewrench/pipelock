@@ -77,7 +77,7 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		patternByName[p.Name] = p
 	}
 
-	expected := map[string]string{
+	expected := map[string]string{ // #nosec G101 -- compiled audience host assertions, not credential material
 		"Anthropic API Key":     "*.anthropic.com",
 		"OpenAI API Key":        "*.openai.com",
 		"OpenAI Service Key":    "*.openai.com",

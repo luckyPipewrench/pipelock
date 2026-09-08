@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -192,18 +193,15 @@ func TestSignRequest_NonceFailureRestoresContentDigest(t *testing.T) {
 			req.Header.Set("Signature-Input", `sig1=("@method");keyid="upstream"`)
 			req.Header.Set("Signature", "sig1=:dXBzdHJlYW0=:")
 
+			priorHeaders := req.Header.Clone()
 			err = signer.SignRequest(req, body)
 			if !errors.Is(err, io.ErrUnexpectedEOF) {
 				t.Fatalf("SignRequest error = %v, want nonce short-reader error", err)
 			}
-			if got := req.Header.Get("Content-Digest"); got != tt.prevDigest {
-				t.Errorf("Content-Digest = %q, want prior value %q", got, tt.prevDigest)
-			}
-			if got := req.Header.Get("Signature-Input"); got != `sig1=("@method");keyid="upstream"` {
-				t.Errorf("Signature-Input = %q, want existing upstream signature only", got)
-			}
-			if got := req.Header.Get("Signature"); got != "sig1=:dXBzdHJlYW0=:" {
-				t.Errorf("Signature = %q, want existing upstream signature only", got)
+			for _, name := range []string{"Content-Digest", "Signature-Input", "Signature"} {
+				if got, want := req.Header.Values(name), priorHeaders.Values(name); !slices.Equal(got, want) {
+					t.Errorf("%s = %q, want prior values %q", name, got, want)
+				}
 			}
 		})
 	}
@@ -252,18 +250,15 @@ func TestSignRequest_SignatureMergeFailureRestoresDigest(t *testing.T) {
 	req.Header.Set("Content-Digest", priorDigest)
 	req.Header.Set("Signature", invalidSignature)
 
+	priorHeaders := req.Header.Clone()
 	err := newTestSigner(t, priv).SignRequest(req, body)
 	if err == nil || !strings.Contains(err.Error(), "merging Signature:") {
 		t.Fatalf("SignRequest error = %v, want signature merge error", err)
 	}
-	if got := req.Header.Get("Content-Digest"); got != priorDigest {
-		t.Errorf("Content-Digest = %q, want %q", got, priorDigest)
-	}
-	if got := req.Header.Values("Signature-Input"); len(got) != 0 {
-		t.Errorf("partial Signature-Input remained after failure: %q", got)
-	}
-	if got := req.Header.Get("Signature"); got != invalidSignature {
-		t.Errorf("Signature = %q, want original input %q", got, invalidSignature)
+	for _, name := range []string{"Content-Digest", "Signature-Input", "Signature"} {
+		if got, want := req.Header.Values(name), priorHeaders.Values(name); !slices.Equal(got, want) {
+			t.Errorf("%s = %q, want prior values %q", name, got, want)
+		}
 	}
 }
 

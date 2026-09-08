@@ -109,6 +109,23 @@ def social_preview() -> str:
 GENERATED = {"pipelock-logo.svg": logo, "pipelock-lockup.svg": lockup, "pipelock-lockup-stacked.svg": stacked_lockup, "pipelock-favicon.svg": favicon, "social-preview.svg": social_preview}
 RASTERS = {"pipelock-logo.png": "pipelock-logo.svg", "social-preview.png": "social-preview.svg"}
 
+# Every size a consumer has actually asked us for, generated from the one SVG.
+# Before this ladder existed each size was exported by hand into whatever tool
+# needed it, which is how assets/pipelock-logo.png came to be a 240-unit mark
+# sitting untouched in the corner of an 800x800 white canvas.
+ICON_SIZES = (16, 32, 48, 64, 128, 256, 512, 1024)
+ICON_DIR = "icons"
+ICO_SIZES = (16, 32, 48, 64, 128, 256)
+ICO_NAME = "icons/pipelock.ico"
+
+
+def icon_rasters() -> dict[str, tuple[str, int]]:
+    """Map each ladder PNG to its SVG source and square pixel size."""
+    return {
+        f"{ICON_DIR}/pipelock-logo-{size}.png": ("pipelock-logo.svg", size)
+        for size in ICON_SIZES
+    }
+
 
 def source_file(png: str) -> Path:
     return ASSETS / f"{png}.source"
@@ -118,6 +135,88 @@ def raster_fingerprint(png: Path, svg: Path) -> str:
     """Bind a raster provenance record to both its SVG source and PNG bytes."""
     svg_bytes = svg.read_bytes().replace(b"\r\n", b"\n")
     return f"svg {hashlib.sha256(svg_bytes).hexdigest()}\npng {hashlib.sha256(png.read_bytes()).hexdigest()}\n"
+
+
+def _rasterize(svg: Path, png: Path, size: int) -> None:
+    """Render one SVG to a square transparent PNG.
+
+    Rendering is a developer step, not a CI step: CI verifies the stamped
+    fingerprints instead, so a machine without a renderer can still check the
+    tree. Inkscape is used because it honours the viewBox and scales the mark
+    to fill the requested canvas; the hand exports it replaces did not.
+    """
+    import shutil
+    import subprocess
+
+    inkscape = shutil.which("inkscape")
+    if inkscape is None:
+        raise SystemExit(
+            "render_brand: inkscape is required to render rasters; "
+            "install it or leave the committed PNGs untouched"
+        )
+    png.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            inkscape,
+            str(svg),
+            "--export-type=png",
+            f"--export-filename={png}",
+            f"--export-width={size}",
+            f"--export-height={size}",
+            "--export-background-opacity=0",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _write_ico(pngs: list[Path], target: Path) -> None:
+    """Bundle the small ladder sizes into a single multi-resolution .ico."""
+    import shutil
+    import subprocess
+
+    magick = shutil.which("magick") or shutil.which("convert")
+    if magick is None:
+        raise SystemExit("render_brand: ImageMagick is required to build the .ico")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [magick, *[str(p) for p in pngs], str(target)], check=True, capture_output=True
+    )
+
+
+def render_rasters() -> int:
+    """Regenerate every raster from its SVG and re-stamp provenance."""
+    for png, svg in RASTERS.items():
+        svg_path = ASSETS / svg
+        png_path = ASSETS / png
+        if png == "social-preview.png":
+            # Social previews are wide, not square, so they keep their own export.
+            continue
+        _rasterize(svg_path, png_path, 800)
+        source_file(png).write_text(
+            raster_fingerprint(png_path, svg_path), encoding="utf-8"
+        )
+        print(f"rendered assets/{png}")
+
+    ladder = []
+    for png, (svg, size) in icon_rasters().items():
+        svg_path = ASSETS / svg
+        png_path = ASSETS / png
+        _rasterize(svg_path, png_path, size)
+        source_file(png).write_text(
+            raster_fingerprint(png_path, svg_path), encoding="utf-8"
+        )
+        ladder.append((size, png_path))
+        print(f"rendered assets/{png}")
+
+    ico_inputs = [p for size, p in sorted(ladder) if size in ICO_SIZES]
+    ico_path = ASSETS / ICO_NAME
+    _write_ico(ico_inputs, ico_path)
+    source_file(ICO_NAME).write_text(
+        raster_fingerprint(ico_path, ASSETS / "pipelock-logo.svg"), encoding="utf-8"
+    )
+    print(f"rendered assets/{ICO_NAME}")
+    return 0
 
 
 def check() -> list[str]:
@@ -135,6 +234,25 @@ def check() -> list[str]:
             continue
         if stamp.read_text(encoding="utf-8") != raster_fingerprint(png_path, svg_path):
             problems.append(f"assets/{png}: PNG or assets/{svg} changed since export")
+    # The ladder is verified the same way as the other rasters: a raster whose
+    # bytes or SVG source moved since export is reported, never silently kept.
+    for png, (svg, size) in icon_rasters().items():
+        png_path = ASSETS / png
+        svg_path = ASSETS / svg
+        stamp = source_file(png)
+        if not png_path.exists() or not stamp.exists():
+            problems.append(f"assets/{png}: raster or provenance sidecar missing")
+            continue
+        if stamp.read_text(encoding="utf-8") != raster_fingerprint(png_path, svg_path):
+            problems.append(f"assets/{png}: PNG or assets/{svg} changed since export")
+    ico_path = ASSETS / ICO_NAME
+    ico_stamp = source_file(ICO_NAME)
+    if not ico_path.exists() or not ico_stamp.exists():
+        problems.append(f"assets/{ICO_NAME}: icon bundle or provenance sidecar missing")
+    elif ico_stamp.read_text(encoding="utf-8") != raster_fingerprint(
+        ico_path, ASSETS / "pipelock-logo.svg"
+    ):
+        problems.append(f"assets/{ICO_NAME}: bundle or its SVG source changed since export")
     for path in (ASSETS / "pipelock-logo.svg", ASSETS / "pipelock-favicon.svg", ASSETS / "social-preview.svg"):
         if path.exists() and "#00ffc8" in path.read_text(encoding="utf-8").lower():
             problems.append(f"{path.relative_to(ROOT)}: contains retired #00ffc8 cyan")
@@ -145,9 +263,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--stamp-png", action="store_true")
+    parser.add_argument(
+        "--render-rasters",
+        action="store_true",
+        help="regenerate every PNG and the .ico from the SVGs, then re-stamp",
+    )
     args = parser.parse_args()
+    if args.render_rasters:
+        return render_rasters()
     if args.stamp_png:
-        for png, svg in RASTERS.items():
+        stampable = dict(RASTERS)
+        stampable.update({png: svg for png, (svg, _size) in icon_rasters().items()})
+        stampable[ICO_NAME] = "pipelock-logo.svg"
+        for png, svg in stampable.items():
             png_path = ASSETS / png
             svg_path = ASSETS / svg
             if not png_path.exists() or not svg_path.exists():
@@ -163,7 +291,10 @@ def main() -> int:
             for problem in problems:
                 print(f"  {problem}")
             return 1
-        print(f"check-brand: OK ({len(GENERATED)} vectors and {len(RASTERS)} rasters)")
+        print(
+            f"check-brand: OK ({len(GENERATED)} vectors, {len(RASTERS)} rasters, "
+            f"{len(icon_rasters())} ladder icons and 1 bundle)"
+        )
         return 0
     ASSETS.mkdir(exist_ok=True)
     for filename, render in GENERATED.items():

@@ -734,10 +734,13 @@ func TestRuntimeMode_NeedsResponseScanningFallback(t *testing.T) {
 	}
 }
 
-// TestResolveRuntime_MCPScanFallbackNoAutoEnable: RuntimeMCPScan should
-// enable the response-scanning fallback but leave MCP input / tool /
-// policy sections alone (scan mode never wraps an upstream server).
-func TestResolveRuntime_MCPScanFallbackNoAutoEnable(t *testing.T) {
+// TestResolveRuntime_MCPScanFallbackAndToolScanningAutoEnable: RuntimeMCPScan
+// should enable the response-scanning fallback and auto-enable tool
+// scanning (it inspects response content, tools/list definitions, so `mcp
+// scan` needs it exactly as `mcp proxy` does), but leave the request-side
+// sections (MCP input scanning, tool policy) alone: scan mode never wraps an
+// upstream server and never sees a request to scan or authorize.
+func TestResolveRuntime_MCPScanFallbackAndToolScanningAutoEnable(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.Enabled = false
 	cfg.MCPInputScanning = MCPInputScanning{}
@@ -752,10 +755,34 @@ func TestResolveRuntime_MCPScanFallbackNoAutoEnable(t *testing.T) {
 	if !resolved.ResponseScanning.Enabled {
 		t.Error("resolved ResponseScanning.Enabled = false; fallback didn't take effect")
 	}
-	if info.MCPInputScanningAutoEnabled || info.MCPToolScanningAutoEnabled || info.MCPToolPolicyAutoEnabled {
-		t.Errorf("RuntimeMCPScan should not fire any MCP auto-enable flags: %+v", info)
+	if info.MCPInputScanningAutoEnabled || info.MCPToolPolicyAutoEnabled {
+		t.Errorf("RuntimeMCPScan should not fire the request-side MCP auto-enable flags: %+v", info)
 	}
-	if resolved.MCPInputScanning.Enabled || resolved.MCPToolScanning.Enabled || resolved.MCPToolPolicy.Enabled {
-		t.Error("MCP scanning sections auto-enabled under RuntimeMCPScan; expected to stay off")
+	if !info.MCPToolScanningAutoEnabled {
+		t.Error("RuntimeMCPScan should auto-enable tool scanning: it inspects response content, unlike input scanning and tool policy")
+	}
+	if resolved.MCPInputScanning.Enabled || resolved.MCPToolPolicy.Enabled {
+		t.Error("MCP input scanning / tool policy auto-enabled under RuntimeMCPScan; expected to stay off")
+	}
+	if !resolved.MCPToolScanning.Enabled {
+		t.Error("MCP tool scanning did not auto-enable under RuntimeMCPScan")
+	}
+}
+
+// TestResolveRuntime_MCPScan_RespectsExplicitToolScanningDisable proves the
+// auto-enable above never overrides an operator's explicit disable: Enabled
+// false with a non-empty Action means "configured", not "unset" (see
+// applyToolScanningAutoEnable's doc comment).
+func TestResolveRuntime_MCPScan_RespectsExplicitToolScanningDisable(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning = MCPToolScanning{Enabled: false, Action: ActionWarn}
+
+	resolved, info := cfg.ResolveRuntime(RuntimeResolveOpts{Mode: RuntimeMCPScan})
+
+	if info.MCPToolScanningAutoEnabled {
+		t.Error("an explicit disable (Action set) must not be treated as unconfigured")
+	}
+	if resolved.MCPToolScanning.Enabled {
+		t.Error("explicit operator disable of tool scanning must be respected under RuntimeMCPScan")
 	}
 }

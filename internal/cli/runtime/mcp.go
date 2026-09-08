@@ -641,11 +641,17 @@ before forwarding, and requests are scanned for DLP leaks and injection in tool
 arguments.
 
 Exit code 0 only if every response was scanned and all were clean, 1 if any
-response security finding (prompt injection or generic inbound credential) is
-detected, and 2 if any line could not be fully inspected and was therefore not
-verified clean. A finding outranks an inspection failure. Scanning covers response
-injection and inbound DLP; it does not include tool scanning or tool policy,
-which are proxy features.
+response security finding (prompt injection, generic inbound credential, or
+tool-definition poisoning/drift) is detected, and 2 if any line could not be
+fully inspected and was therefore not verified clean - including a tools/list
+response scanned while mcp_tool_scanning is explicitly disabled by config; a
+verdict never reports clean:true over content it did not inspect. A finding
+outranks an inspection failure. Scanning covers response injection, inbound
+DLP, and (auto-enabled by default, like the proxy) tool-definition scanning
+for tools/list responses. It does not include tool call policy or request-side
+input scanning, because scan only ever sees one side of the conversation: the
+response stream on stdin, never the paired request. Use pipelock mcp proxy for
+full bidirectional protection.
 In text mode, findings and input-inspection errors are printed. In JSON mode,
 each line that can be read produces a verdict.
 
@@ -660,10 +666,10 @@ Examples:
 			}
 
 			// Resolve effective policy for scan mode: response-scanning
-			// fallback + bundle merge on a cloned config. The scan
-			// command does not auto-enable MCP scanning because it never
-			// wraps an upstream server; RuntimeMCPProxy mode supplies the
-			// response-scanning fallback behavior the command needs.
+			// fallback, tool-scanning auto-enable, and bundle merge on a
+			// cloned config. RuntimeMCPScan auto-enables tool scanning (it
+			// is response-side, unlike input scanning / tool policy, which
+			// stay off because scan never sees a request).
 			var bundleResult *rules.LoadResult
 			cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 				Mode: config.RuntimeMCPScan,
@@ -686,7 +692,24 @@ Examples:
 			}
 			defer sc.Close()
 
-			found, malformed, err := mcp.ScanStreamResult(cmd.InOrStdin(), cmd.OutOrStdout(), sc, jsonOutput)
+			// A nil toolCfg tells ScanStreamResult the operator explicitly
+			// disabled mcp_tool_scanning (RuntimeMCPScan auto-enables it
+			// above when left unconfigured, matching mcp proxy's default),
+			// so a tools/list response reports Unscanned instead of a false
+			// clean:true. Baseline is fresh per invocation: scan is a
+			// one-shot stdin stream, not a long-lived session, so drift
+			// detection is scoped to definitions repeated within this run.
+			var toolCfg *tools.ToolScanConfig
+			if cfg.MCPToolScanning.Enabled {
+				toolCfg = &tools.ToolScanConfig{
+					Baseline:    tools.NewToolBaseline(),
+					Action:      cfg.MCPToolScanning.Action,
+					DetectDrift: cfg.MCPToolScanning.DetectDrift,
+					ExtraPoison: rules.ConvertToolPoison(bundleResult.ToolPoison),
+				}
+			}
+
+			found, malformed, err := mcp.ScanStreamResult(cmd.InOrStdin(), cmd.OutOrStdout(), sc, jsonOutput, toolCfg)
 			if err != nil && !errors.Is(err, bufio.ErrTooLong) {
 				return err
 			}

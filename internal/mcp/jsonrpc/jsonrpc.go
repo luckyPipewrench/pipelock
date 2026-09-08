@@ -85,18 +85,36 @@ const (
 	ScanScopeResponseInjection = "response_injection"
 	// ScanScopeResponseDLP names the MCP response inbound text-DLP scanner.
 	ScanScopeResponseDLP = "response_dlp"
+	// ScanScopeToolScanning names the MCP tool-definition poisoning/drift
+	// scanner (internal/mcp/tools). It only applies to tools/list responses.
+	ScanScopeToolScanning = "tool_scanning"
 )
 
+// ToolFinding summarizes one tool-definition-scan finding for a single tool in
+// a tools/list response. It mirrors the subset of tools.ToolScanMatch a
+// diagnostic verdict needs; internal/mcp/jsonrpc cannot import
+// internal/mcp/tools directly (tools already imports jsonrpc).
+type ToolFinding struct {
+	ToolName   string                  `json:"tool_name"`
+	Matches    []scanner.ResponseMatch `json:"matches,omitempty"`
+	ToolPoison []string                `json:"tool_poison,omitempty"`
+}
+
 // ScanVerdict describes the outcome of scanning a single MCP response for MCP
-// response content. Clean means neither prompt-injection nor enforceable
-// inbound DLP was found in the scanned response text; it does not mean tool
-// policy or input scanning ran.
+// response content. Clean means every field family this verdict is
+// responsible for was inspected and none contained enforceable inbound DLP,
+// prompt injection, or tool-definition poisoning; it does not mean tool
+// policy or input scanning ran, since those require request-side context this
+// verdict never carries.
 //
-// Three states:
-//   - Clean:     Clean=true, Scanned names the response scopes.
-//   - Error:     Clean=false, Error set (parse/protocol failure). Not injection.
-//   - Finding:   Clean=false, Error empty, Matches and/or DLPMatches and
-//     Action set.
+// Four states:
+//   - Clean:     Clean=true, Scanned names the scopes that ran, Unscanned empty.
+//   - Error:     Clean=false, Error set (parse/protocol failure). Not a finding.
+//   - Unscanned: Clean=false, Unscanned names a field family deliberately not
+//     inspected (e.g. tool scanning disabled by config). Never true alongside
+//     Clean=true: an uninspected family can never be certified clean.
+//   - Finding:   Clean=false, Error empty, Matches and/or DLPMatches and/or
+//     ToolFindings and Action set.
 type ScanVerdict struct {
 	Line  int             `json:"line"`
 	ID    json.RawMessage `json:"id"`
@@ -111,7 +129,15 @@ type ScanVerdict struct {
 	// to the long-standing injection Matches field so existing JSON consumers
 	// retain their response-injection contract.
 	DLPMatches []scanner.TextDLPMatch `json:"dlp_matches,omitempty"`
-	Error      string                 `json:"error,omitempty"`
+	// ToolFindings contains tool-definition poisoning/drift findings when tool
+	// scanning ran against a tools/list response. Empty does not by itself
+	// mean tool scanning ran; check Unscanned for ScanScopeToolScanning.
+	ToolFindings []ToolFinding `json:"tool_findings,omitempty"`
+	// Unscanned names field families this verdict deliberately did not
+	// inspect. Non-empty Unscanned forces Clean=false: the verdict cannot
+	// certify content it never looked at.
+	Unscanned []string `json:"unscanned,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // ExtractStringsResult is the bounded recursive extraction result. Truncated is

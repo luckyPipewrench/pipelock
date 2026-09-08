@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -252,6 +253,75 @@ func ScanResponseDispatch(line []byte, sc *scanner.Scanner, toolScanning bool, o
 		return scanToolsListNonToolFields(line, sc, opts)
 	}
 	return ScanResponseOpts(line, sc, opts)
+}
+
+// scanToolsListCertified scans a tools/list response the way the runtime
+// proxy's full pipeline does: sibling fields (error, params, non-tools result
+// keys) go through response scanning, and tool definitions go through the
+// dedicated tool-definition scanner (poisoning + drift), which is the only
+// scanner precise enough to catch instruction-tag and file-exfiltration
+// wording in a tool description without false-positiving on ordinary
+// capability text.
+//
+// toolCfg == nil means tool scanning is unavailable (operator explicitly
+// disabled mcp_tool_scanning). The verdict then reports Unscanned instead of
+// silently certifying the tool-definition text clean: a diagnostic caller
+// that never ran the tool scanner must not claim it did.
+func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.ToolScanConfig, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	if toolCfg == nil {
+		// No dedicated tool scanner available (operator explicitly disabled
+		// mcp_tool_scanning). Fall back to the pre-tool-scanning behavior -
+		// full-text response scanning that still covers the tool description
+		// text with the generic injection/DLP patterns - so this path is
+		// strictly additive to prior detection, never a regression. The
+		// verdict still reports Unscanned: the generic scanner is not the
+		// dedicated tool-poisoning/drift scanner and must not be credited as
+		// having run it.
+		verdict := ScanResponseOpts(line, sc, opts)
+		if verdict.Error != "" {
+			return verdict
+		}
+		verdict.Clean = false
+		verdict.Unscanned = append(verdict.Unscanned, jsonrpc.ScanScopeToolScanning)
+		return verdict
+	}
+
+	verdict := scanToolsListNonToolFields(line, sc, opts)
+	if verdict.Error != "" {
+		return verdict
+	}
+
+	result := tools.ScanTools(line, sc, toolCfg)
+	if result.ResourceLimit != "" {
+		// A tool-definition scan that cannot complete (uninspectable text,
+		// baseline capacity, epoch reset) is a failure to inspect, not a
+		// verified-clean result. Fail closed the same way the uninspectable-
+		// depth path above does: Error set, Clean false, no finding claimed.
+		return jsonrpc.ScanVerdict{
+			ID:    verdict.ID,
+			Clean: false,
+			Error: "tool definition scan: " + result.ResourceLimit,
+		}
+	}
+
+	if len(result.Matches) == 0 {
+		return verdict
+	}
+
+	verdict.Clean = false
+	for _, m := range result.Matches {
+		verdict.ToolFindings = append(verdict.ToolFindings, jsonrpc.ToolFinding{
+			ToolName:   m.ToolName,
+			Matches:    m.Injection,
+			ToolPoison: m.ToolPoison,
+		})
+	}
+	if verdict.Action == "" {
+		verdict.Action = toolCfg.Action
+	} else {
+		verdict.Action = config.StricterAction(verdict.Action, toolCfg.Action)
+	}
+	return verdict
 }
 
 // isToolsListResponse reports whether line is a JSON-RPC response whose result
@@ -509,7 +579,7 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 // security finding was detected. Parse errors are reported but do not count as a
 // finding.
 func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (bool, error) {
-	found, _, err := ScanStreamResult(r, w, sc, jsonOutput)
+	found, _, err := ScanStreamResult(r, w, sc, jsonOutput, nil)
 	return found, err
 }
 
@@ -521,7 +591,13 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 // verified-clean input tells a caller the opposite of the truth. Callers that
 // gate on process status need to distinguish "nothing was found" from
 // "something could not be looked at".
-func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (found, malformed bool, err error) {
+//
+// toolCfg, when non-nil, routes tools/list responses through the dedicated
+// tool-definition scanner (poisoning + drift) in addition to response
+// scanning, matching the runtime proxy's pipeline. A nil toolCfg means tool
+// scanning is unavailable; a tools/list response then reports Unscanned
+// instead of a false Clean=true.
+func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool, toolCfg *tools.ToolScanConfig) (found, malformed bool, err error) {
 	reader := bufio.NewReaderSize(r, 64*1024)
 
 	foundFinding := false
@@ -549,7 +625,7 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 				Line:    lineNum,
 				Clean:   false,
 				Error:   fmt.Sprintf("line exceeds the %d byte scan limit and was not inspected", transport.MaxLineSize),
-				Scanned: scanVerdictScopes(),
+				Scanned: scanVerdictScopes(toolCfg),
 			}
 			if writeErr := emitVerdict(w, verdict, jsonOutput); writeErr != nil {
 				return foundFinding, sawMalformed, writeErr
@@ -571,11 +647,17 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 			continue
 		}
 
-		verdict, lineFound := scanStreamResponse([]byte(line), sc)
+		verdict, lineFound := scanStreamResponse([]byte(line), sc, toolCfg)
 		verdict.Line = lineNum
-		verdict.Scanned = scanVerdictScopes()
+		verdict.Scanned = scanVerdictScopes(toolCfg)
 
-		if verdict.Error != "" {
+		// An Unscanned field family (e.g. tool scanning explicitly disabled)
+		// is not a protocol error, but the line still was not fully
+		// inspected, so it must share the malformed exit path rather than
+		// the clean one - unless it also carries a real finding, which
+		// lineFound already reports and which must win (a finding outranks
+		// an inspection gap, matching the Error case immediately above).
+		if verdict.Error != "" || (len(verdict.Unscanned) > 0 && !lineFound) {
 			sawMalformed = true
 		}
 		if lineFound {
@@ -668,18 +750,33 @@ func emitVerdict(w io.Writer, verdict jsonrpc.ScanVerdict, jsonOutput bool) erro
 // parse error still owns the public verdict so callers retain the existing
 // fail-closed parse semantics, while the stream result preserves a sibling
 // finding for its exit-status contract.
-func scanStreamResponse(line []byte, sc *scanner.Scanner) (jsonrpc.ScanVerdict, bool) {
+func scanStreamResponse(line []byte, sc *scanner.Scanner, toolCfg *tools.ToolScanConfig) (jsonrpc.ScanVerdict, bool) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
+		// Batch (JSON array) tools/list responses are not routed through the
+		// dedicated tool scanner here: scanBatch has no per-element tools/list
+		// dispatch. This is a known, narrower gap than the single-response
+		// path fixed above; see the deliberately-not-done note in the build
+		// report rather than papering over it with an incomplete fix here.
 		return scanBatch(trimmed, sc, ResponseScanOptions{}, true)
+	}
+
+	if isToolsListResponse(line) {
+		verdict := scanToolsListCertified(line, sc, toolCfg, ResponseScanOptions{})
+		found := !verdict.Clean && verdict.Error == "" && len(verdict.Unscanned) == 0
+		return verdict, found
 	}
 
 	verdict := ScanResponse(line, sc)
 	return verdict, !verdict.Clean && verdict.Error == ""
 }
 
-func scanVerdictScopes() []string {
-	return []string{jsonrpc.ScanScopeResponseInjection, jsonrpc.ScanScopeResponseDLP}
+func scanVerdictScopes(toolCfg *tools.ToolScanConfig) []string {
+	scopes := []string{jsonrpc.ScanScopeResponseInjection, jsonrpc.ScanScopeResponseDLP}
+	if toolCfg != nil {
+		scopes = append(scopes, jsonrpc.ScanScopeToolScanning)
+	}
+	return scopes
 }
 
 // A2AResponseOpts groups A2A-specific dependencies for response scanning.
@@ -939,17 +1036,42 @@ func writeTextVerdict(w io.Writer, v jsonrpc.ScanVerdict) error {
 		return err
 	}
 
-	names := make([]string, 0, len(v.Matches)+len(v.DLPMatches))
+	names := make([]string, 0, len(v.Matches)+len(v.DLPMatches)+len(v.ToolFindings))
 	for _, m := range v.Matches {
 		names = append(names, m.PatternName)
 	}
 	for _, m := range v.DLPMatches {
 		names = append(names, m.PatternName)
 	}
+	for _, tf := range v.ToolFindings {
+		for _, m := range tf.Matches {
+			names = append(names, tf.ToolName+":"+m.PatternName)
+		}
+		for _, p := range tf.ToolPoison {
+			names = append(names, tf.ToolName+":"+p)
+		}
+	}
+
+	if len(names) == 0 {
+		// No matches: this is not a finding, either an uninspected-field
+		// notice or an inert verdict this branch does not otherwise print.
+		if len(v.Unscanned) > 0 {
+			_, err := fmt.Fprintf(w, "line %d: [UNSCANNED] %s not inspected\n", v.Line, strings.Join(v.Unscanned, ", ")) //nolint:gosec // G705: CLI output, not web
+			return err
+		}
+		return nil
+	}
+
 	kind := "INJECTION"
 	if len(v.DLPMatches) > 0 {
 		kind = "DLP"
 		if len(v.Matches) > 0 {
+			kind = "SECURITY FINDING"
+		}
+	}
+	if len(v.ToolFindings) > 0 {
+		kind = "TOOL POISON"
+		if len(v.Matches) > 0 || len(v.DLPMatches) > 0 {
 			kind = "SECURITY FINDING"
 		}
 	}

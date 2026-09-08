@@ -60,7 +60,7 @@ func TestScanStreamResultSeparatesMalformedFromClean(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			found, malformed, err := ScanStreamResult(strings.NewReader(tt.input+"\n"), &out, sc, false)
+			found, malformed, err := ScanStreamResult(strings.NewReader(tt.input+"\n"), &out, sc, false, nil)
 			if err != nil {
 				t.Fatalf("ScanStreamResult: %v", err)
 			}
@@ -130,7 +130,7 @@ func TestScanStreamResultTracksMixedBatchFindingAndUninspectableInput(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			found, malformed, err := ScanStreamResult(strings.NewReader(tt.input+"\n"), &out, sc, true)
+			found, malformed, err := ScanStreamResult(strings.NewReader(tt.input+"\n"), &out, sc, true, nil)
 			if tt.wantErr == nil && err != nil {
 				t.Fatalf("ScanStreamResult: %v", err)
 			}
@@ -182,7 +182,7 @@ func TestScanStreamResultReportsIOFailures(t *testing.T) {
 
 	t.Run("reader failure preserves a prior finding", func(t *testing.T) {
 		r := io.MultiReader(strings.NewReader(hostile+"\n"), &scanFailingReader{err: sentinel})
-		found, malformedSeen, err := ScanStreamResult(r, &bytes.Buffer{}, sc, false)
+		found, malformedSeen, err := ScanStreamResult(r, &bytes.Buffer{}, sc, false, nil)
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("err = %v, want the injected reader failure", err)
 		}
@@ -196,7 +196,7 @@ func TestScanStreamResultReportsIOFailures(t *testing.T) {
 
 	t.Run("reader failure preserves prior malformed state", func(t *testing.T) {
 		r := io.MultiReader(strings.NewReader(malformed+"\n"), &scanFailingReader{err: sentinel})
-		found, malformedSeen, err := ScanStreamResult(r, &bytes.Buffer{}, sc, false)
+		found, malformedSeen, err := ScanStreamResult(r, &bytes.Buffer{}, sc, false, nil)
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("err = %v, want the injected reader failure", err)
 		}
@@ -209,7 +209,7 @@ func TestScanStreamResultReportsIOFailures(t *testing.T) {
 	})
 
 	t.Run("writer failure preserves a prior finding", func(t *testing.T) {
-		found, _, err := ScanStreamResult(strings.NewReader(hostile+"\n"), &scanFailingWriter{err: sentinel}, sc, true)
+		found, _, err := ScanStreamResult(strings.NewReader(hostile+"\n"), &scanFailingWriter{err: sentinel}, sc, true, nil)
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("err = %v, want the injected writer failure", err)
 		}

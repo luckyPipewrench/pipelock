@@ -32,17 +32,29 @@ const (
 
 	// RuntimeMCPScan runs `pipelock mcp scan`, the one-shot stdin-driven
 	// scanner for MCP responses. Response scanning is the command's sole
-	// purpose so the fallback still fires, but the command does not wrap
-	// an upstream server and therefore skips MCP input / tool / policy
-	// auto-enable.
+	// purpose so the fallback still fires. The command does not wrap an
+	// upstream server, so request-side auto-enable (MCP input scanning,
+	// tool policy) does not apply - scan never sees a request. Tool
+	// scanning is response-side (it inspects tools/list definitions) and
+	// DOES auto-enable for this mode: see NeedsToolScanningAutoEnable.
 	RuntimeMCPScan
 )
 
 // WrapsMCP reports whether the mode routes MCP traffic through pipelock and
-// therefore needs MCP scanning auto-enable defaults. Scan mode is
-// excluded: it consumes responses from stdin without ever proxying.
+// therefore needs the request-side MCP scanning auto-enable defaults (input
+// scanning, tool policy). Scan mode is excluded from those two: it consumes
+// responses from stdin without ever proxying a request.
 func (m RuntimeMode) WrapsMCP() bool {
 	return m == RuntimeForwardWithMCPListener || m == RuntimeMCPProxy
+}
+
+// NeedsToolScanningAutoEnable reports whether the mode should auto-enable MCP
+// tool-definition scanning when the operator left it unconfigured. Tool
+// scanning inspects response content (tools/list definitions), so every mode
+// that processes MCP responses needs it - including RuntimeMCPScan, which
+// WrapsMCP() deliberately excludes because it has no request side.
+func (m RuntimeMode) NeedsToolScanningAutoEnable() bool {
+	return m.WrapsMCP() || m == RuntimeMCPScan
 }
 
 // NeedsResponseScanningFallback reports whether the mode requires the
@@ -136,6 +148,8 @@ func (c *Config) ResolveRuntime(opts RuntimeResolveOpts) (*Config, ResolveRuntim
 
 	if opts.Mode.WrapsMCP() {
 		applyMCPAutoEnable(clone, opts.DefaultToolPolicyRules, &info)
+	} else if opts.Mode.NeedsToolScanningAutoEnable() {
+		applyToolScanningAutoEnable(clone, &info)
 	}
 
 	return clone, info
@@ -197,12 +211,7 @@ func applyMCPAutoEnable(c *Config, defaultToolPolicyRules func() []ToolPolicyRul
 		c.MCPInputScanning.Action = ActionBlock
 		info.MCPInputScanningAutoEnabled = true
 	}
-	if !c.MCPToolScanning.Enabled && c.MCPToolScanning.Action == "" {
-		c.MCPToolScanning.Enabled = true
-		c.MCPToolScanning.Action = ActionWarn
-		c.MCPToolScanning.DetectDrift = true
-		info.MCPToolScanningAutoEnabled = true
-	}
+	applyToolScanningAutoEnable(c, info)
 	if !c.MCPToolPolicy.Enabled && c.MCPToolPolicy.Action == "" && len(c.MCPToolPolicy.Rules) == 0 {
 		c.MCPToolPolicy.Enabled = true
 		c.MCPToolPolicy.Action = ActionWarn
@@ -210,6 +219,22 @@ func applyMCPAutoEnable(c *Config, defaultToolPolicyRules func() []ToolPolicyRul
 			c.MCPToolPolicy.Rules = defaultToolPolicyRules()
 		}
 		info.MCPToolPolicyAutoEnabled = true
+	}
+}
+
+// applyToolScanningAutoEnable flips MCP tool-definition scanning on when the
+// operator left it unconfigured (Enabled false and Action empty - see
+// applyMCPAutoEnable's doc comment for why that combination means unset
+// rather than an explicit disable). Split out of applyMCPAutoEnable so
+// RuntimeMCPScan can auto-enable tool scanning without also auto-enabling the
+// request-side sections (input scanning, tool policy) it has no request path
+// to enforce.
+func applyToolScanningAutoEnable(c *Config, info *ResolveRuntimeInfo) {
+	if !c.MCPToolScanning.Enabled && c.MCPToolScanning.Action == "" {
+		c.MCPToolScanning.Enabled = true
+		c.MCPToolScanning.Action = ActionWarn
+		c.MCPToolScanning.DetectDrift = true
+		info.MCPToolScanningAutoEnabled = true
 	}
 }
 

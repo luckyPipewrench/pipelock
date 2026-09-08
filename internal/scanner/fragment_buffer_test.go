@@ -173,18 +173,30 @@ func TestFragmentBuffer_IdentityEvictionKeepsNewestAndSparesOthers(t *testing.T)
 	t.Cleanup(fb.Close)
 
 	victim := "client-victim"
-	fb.AppendOwned(victim, victim+"|raw", []byte("victim-evidence"))
-	victimBefore := fb.TotalBufferBytes()
+	victimStream := victim + "|raw"
+	fb.AppendOwned(victim, victimStream, []byte("victim-evidence"))
+	fb.mu.Lock()
+	victimBefore := fb.sessions[victimStream].totalBytes
+	fb.mu.Unlock()
 
 	greedy := "client-greedy"
 	for i := 0; i < 20; i++ {
 		fb.AppendOwnedInGroup(greedy, greedy+"|json", fmt.Sprintf("%s|bucket/%d", greedy, i), []byte("0123456789"))
 	}
 
-	// The victim still holds what it had: the greedy identity evicted only its
-	// own fragments to get under budget.
-	if got := fb.TotalBufferBytes(); got < victimBefore {
-		t.Fatalf("total = %d fell below the victim's own %d bytes; eviction crossed an identity boundary", got, victimBefore)
+	// Assert the VICTIM's own retained bytes, not the aggregate. The buffer
+	// total is the wrong instrument for an isolation claim: the greedy
+	// identity's own retention can hold the total up while the victim's
+	// fragments are evicted underneath it, so the aggregate check passes on
+	// exactly the failure this test names.
+	fb.mu.Lock()
+	victimStreamAfter := fb.sessions[victimStream]
+	fb.mu.Unlock()
+	if victimStreamAfter == nil {
+		t.Fatal("the victim's stream was deleted; eviction crossed an identity boundary")
+	}
+	if victimStreamAfter.totalBytes != victimBefore {
+		t.Fatalf("victim retains %d bytes, want %d; eviction crossed an identity boundary", victimStreamAfter.totalBytes, victimBefore)
 	}
 }
 

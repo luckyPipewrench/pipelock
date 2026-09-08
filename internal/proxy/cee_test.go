@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -400,6 +402,13 @@ func TestCEEFragmentOwnerMismatchFailsClosed(t *testing.T) {
 	// policy changed when nothing did.
 	if strings.Contains(result.Reason, "max_sessions") {
 		t.Fatalf("reason = %q, must not name a control that cannot fix this", result.Reason)
+	}
+	// The counter is the operator's only signal that this happened, so the block
+	// and the record are asserted together. Their MCP twin asserts the same
+	// thing; a signal proven on one transport and not the other is how a gap
+	// survives a review.
+	if got := testutil.ToFloat64(m.CrossRequestFragmentOwnerMismatch); got != 1 {
+		t.Fatalf("owner mismatch counter = %v, want 1; the block is invisible to an operator without it", got)
 	}
 }
 

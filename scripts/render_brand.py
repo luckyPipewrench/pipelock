@@ -161,6 +161,17 @@ def raster_fingerprint(png: Path, svg: Path) -> str:
     return f"svg {hashlib.sha256(svg_bytes).hexdigest()}\npng {hashlib.sha256(png.read_bytes()).hexdigest()}\n"
 
 
+def _require_tool(name: str, purpose: str, alternative: str | None = None) -> str:
+    """Resolve an external renderer, or refuse before any output is written."""
+    import shutil
+
+    found = shutil.which(name) or (shutil.which(alternative) if alternative else None)
+    if found is None:
+        wanted = name if alternative is None else f"{name} (or {alternative})"
+        raise SystemExit(f"render_brand: {wanted} is required to {purpose}")
+    return found
+
+
 def _run_renderer(command: list[str], failure: str) -> None:
     """Run one renderer, bounded, and report what it actually said on failure.
 
@@ -194,12 +205,7 @@ def _rasterize(svg: Path, png: Path, width: int, height: int) -> None:
     import shutil
     import subprocess
 
-    inkscape = shutil.which("inkscape")
-    if inkscape is None:
-        raise SystemExit(
-            "render_brand: inkscape is required to render rasters; "
-            "install it or leave the committed PNGs untouched"
-        )
+    inkscape = _require_tool("inkscape", "render rasters")
     png.parent.mkdir(parents=True, exist_ok=True)
     _run_renderer(
         [
@@ -220,9 +226,7 @@ def _write_ico(pngs: list[Path], target: Path) -> None:
     import shutil
     import subprocess
 
-    magick = shutil.which("magick") or shutil.which("convert")
-    if magick is None:
-        raise SystemExit("render_brand: ImageMagick is required to build the .ico")
+    magick = _require_tool("magick", "build the icon bundle", alternative="convert")
     target.parent.mkdir(parents=True, exist_ok=True)
     _run_renderer(
         [magick, *[str(p) for p in pngs], str(target)],
@@ -231,7 +235,16 @@ def _write_ico(pngs: list[Path], target: Path) -> None:
 
 
 def render_rasters() -> int:
-    """Regenerate every raster from its SVG and re-stamp provenance."""
+    """Regenerate every raster from its SVG and re-stamp provenance.
+
+    Both renderers are resolved before anything is written. Discovering
+    ImageMagick missing only at the bundling step would leave every raster
+    already overwritten with no icon bundle beside them, which is a worse state
+    to land in than refusing at the start.
+    """
+    _require_tool("inkscape", "render rasters")
+    _require_tool("magick", "build the icon bundle", alternative="convert")
+
     for png, (svg, width, height) in RASTERS.items():
         svg_path = ASSETS / svg
         png_path = ASSETS / png

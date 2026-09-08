@@ -41,7 +41,8 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Fireworks API keys use an "fw_" prefix with a 22-character
 	// alphanumeric suffix. Keep the trailing word boundary so longer
 	// opaque base64-ish IDs do not match a 22-character prefix.
-	// Source: https://docs.fireworks.ai/api-reference/authentication
+	// Source: unverified, current binding carried from defaults.
+	// Publisher documentation: https://docs.fireworks.ai/api-reference/authentication
 	{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.fireworks.ai"}},
 	// OpenRouter keys are "sk-or-v1-" + a hex token. Keep the suffix
 	// hex-only: allowing hyphens, underscores, or arbitrary letters lets
@@ -186,9 +187,11 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Replicate API tokens use an "r8_" prefix with a 40-character
 	// hex suffix. The previous broad alphanumeric suffix was the same
 	// short-prefix FP shape as Fireworks and Databricks.
-	// Source: https://replicate.com/docs/topics/authentication
+	// Source: unverified, current binding carried from defaults.
+	// Publisher documentation: https://replicate.com/docs/topics/authentication
 	{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.replicate.com"}},
-	// Source: https://docs.together.ai/docs/authentication
+	// Source: unverified, current binding carried from defaults.
+	// Publisher documentation: https://docs.together.ai/docs/authentication
 	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.together.ai"}},
 	// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 	// Source: https://docs.pinecone.io/guides/get-started/authentication

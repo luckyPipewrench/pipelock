@@ -17,21 +17,34 @@ import (
 // an authority, so both transports must retain the DLP match and block.
 func TestCredentialAudienceHost_DoesNotRelaxMCPStdioOrHTTPInput(t *testing.T) {
 	sc := testInputScanner(t)
-	key := "sk-" + "proj-" + strings.Repeat("a", 24)
-	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"target":"https://api.openai.com/v1","credential":"` + key + `"}}}`)
-	frame := ParseMCPFrame(msg)
-
-	stdio := EvaluateMCPInputGatesStdio(context.Background(), frame, msg, msg, nil, testOpts(sc), config.ActionBlock, config.ActionBlock)
-	if stdio.ContentVerdict.Clean || len(stdio.ContentVerdict.Matches) == 0 {
-		t.Fatalf("MCP stdio accepted audience-bound credential: %+v", stdio.ContentVerdict)
+	tests := []struct {
+		name       string
+		credential string
+		target     string
+	}{
+		{name: "OpenAI", credential: "sk-" + "proj-" + strings.Repeat("a", 24), target: "https://api.openai.com/v1"},
+		{name: "Anthropic", credential: "sk-" + "ant-" + strings.Repeat("a", 24), target: "https://api.anthropic.com/v1/messages"},
+		{name: "Discord", credential: "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27), target: "https://discord.com/api/v10"},
 	}
 
-	var log bytes.Buffer
-	httpBlocked := scanHTTPInput(msg, &log, "session-a", "audit-a", MCPProxyOpts{
-		Scanner:  sc,
-		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
-	})
-	if httpBlocked == nil {
-		t.Fatal("MCP HTTP input accepted audience-bound credential")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"target":"` + tt.target + `","credential":"` + tt.credential + `"}}}`)
+			frame := ParseMCPFrame(msg)
+
+			stdio := EvaluateMCPInputGatesStdio(context.Background(), frame, msg, msg, nil, testOpts(sc), config.ActionBlock, config.ActionBlock)
+			if stdio.ContentVerdict.Clean || len(stdio.ContentVerdict.Matches) == 0 {
+				t.Fatalf("MCP stdio accepted audience-bound credential: %+v", stdio.ContentVerdict)
+			}
+
+			var log bytes.Buffer
+			httpBlocked := scanHTTPInput(msg, &log, "session-a", "audit-a", MCPProxyOpts{
+				Scanner:  sc,
+				InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+			})
+			if httpBlocked == nil {
+				t.Fatal("MCP HTTP input accepted audience-bound credential")
+			}
+		})
 	}
 }

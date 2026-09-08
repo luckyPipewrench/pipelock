@@ -34,7 +34,7 @@ func TestRenderNFTManagedChainReloadScriptRemovesLegacyBlocksPreservesReplyRules
 	}, "\n")
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
 
-	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, operatorUID, proxyUID, agentUID, proxyPort)
+	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, operatorUID, proxyUID, agentUID)
 	for _, handle := range []int{20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35} {
 		want := "delete rule inet pipelock_containment output_filter handle "
 		if !strings.Contains(script, want+itoa(handle)) {
@@ -64,7 +64,7 @@ func TestLegacyManagedNFTRuleBlockHandlesDoesNotDeleteIncompleteLookalike(t *tes
 		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 24`,
 		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " accept # handle 25`,
 	}, "\n")
-	handles := legacyManagedNFTRuleBlockHandles(live, 1000, 967, 966, 8888)
+	handles := legacyManagedNFTRuleBlockHandles(live, 1000, 967, 966)
 	if len(handles) != 0 {
 		t.Fatalf("incomplete lookalike handles = %v, want none", handles)
 	}
@@ -497,7 +497,7 @@ func TestLegacyManagedNFTRuleBlockHandlesSkipsUnparseableHandle(t *testing.T) {
 		meta skuid 966 counter log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle notanumber
 	}
 }`
-	if got := legacyManagedNFTRuleBlockHandles(listing, 1000, 967, 966, 8888); len(got) != 0 {
+	if got := legacyManagedNFTRuleBlockHandles(listing, 1000, 967, 966); len(got) != 0 {
 		t.Fatalf("handles = %v, want none when every handle is unparseable", got)
 	}
 }

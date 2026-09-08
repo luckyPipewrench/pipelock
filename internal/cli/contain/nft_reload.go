@@ -95,7 +95,7 @@ func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
 	} else if code != 0 {
 		return fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out))
 	}
-	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID, header.proxyPort)
+	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID)
 	path := env.rulesPath + ".reload"
 	if err := env.writeFile(path, []byte(script), modeConfigSecret); err != nil {
 		return fmt.Errorf("write nft managed chain reload file %s: %w", path, err)
@@ -122,8 +122,8 @@ func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
 // risk deleting an operator rule. Requiring the complete ordered six-rule
 // block preserves interleaved and standalone foreign rules, including narrow
 // established-reply allows.
-func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID, proxyPort int) string {
-	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID, proxyPort)
+func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int) string {
+	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
 	var script strings.Builder
 	for _, handle := range handles {
 		_, _ = fmt.Fprintf(&script, "delete rule inet %s %s handle %d\n", table, chain, handle)
@@ -137,12 +137,12 @@ type nftRuleWithHandle struct {
 	handle int
 }
 
-func legacyManagedNFTRuleBlockHandles(live string, operatorUID, proxyUID, agentUID, proxyPort int) []int {
+func legacyManagedNFTRuleBlockHandles(live string, operatorUID, proxyUID, agentUID int) []int {
 	rules := nftRulesWithHandles(live)
 	var handles []int
 	for i := 0; i+5 < len(rules); {
 		block := rules[i : i+6]
-		if !isLegacyManagedNFTBlock(block, operatorUID, proxyUID, agentUID, proxyPort) {
+		if !isLegacyManagedNFTBlock(block, operatorUID, proxyUID, agentUID) {
 			i++
 			continue
 		}
@@ -173,11 +173,11 @@ func nftRulesWithHandles(live string) []nftRuleWithHandle {
 	return rules
 }
 
-func isLegacyManagedNFTBlock(block []nftRuleWithHandle, operatorUID, proxyUID, agentUID, proxyPort int) bool {
+func isLegacyManagedNFTBlock(block []nftRuleWithHandle, operatorUID, proxyUID, agentUID int) bool {
 	return len(block) == 6 &&
 		lineHasTerminalSkuidVerdict(block[0].line, operatorUID, "accept") &&
 		lineHasTerminalSkuidVerdict(block[1].line, proxyUID, "accept") &&
-		lineHasAgentProxyLoopbackAllow(block[2].line, agentUID, proxyPort) &&
+		lineHasAgentProxyLoopbackAllowAnyPort(block[2].line, agentUID) &&
 		lineHasManagedDNSDrop(block[3].line, agentUID, "udp") &&
 		lineHasManagedDNSDrop(block[4].line, agentUID, "tcp") &&
 		lineHasManagedCatchAllDrop(block[5].line, agentUID)

@@ -125,7 +125,10 @@ def social_preview() -> str:
 
 
 GENERATED = {"pipelock-logo.svg": logo, "pipelock-lockup.svg": lockup, "pipelock-lockup-stacked.svg": stacked_lockup, "pipelock-favicon.svg": favicon, "social-preview.svg": social_preview}
-RASTERS = {"pipelock-logo.png": "pipelock-logo.svg", "social-preview.png": "social-preview.svg"}
+RASTERS = {
+    "pipelock-logo.png": ("pipelock-logo.svg", 800, 800),
+    "social-preview.png": ("social-preview.svg", 1280, 640),
+}
 
 # Every size a consumer has actually asked us for, generated from the one SVG.
 # Before this ladder existed each size was exported by hand into whatever tool
@@ -180,7 +183,7 @@ def _run_renderer(command: list[str], failure: str) -> None:
         raise SystemExit(f"render_brand: {failure} (exit {result.returncode}):\n{detail}")
 
 
-def _rasterize(svg: Path, png: Path, size: int) -> None:
+def _rasterize(svg: Path, png: Path, width: int, height: int) -> None:
     """Render one SVG to a square transparent PNG.
 
     Rendering is a developer step, not a CI step: CI verifies the stamped
@@ -204,11 +207,11 @@ def _rasterize(svg: Path, png: Path, size: int) -> None:
             str(svg),
             "--export-type=png",
             f"--export-filename={png}",
-            f"--export-width={size}",
-            f"--export-height={size}",
+            f"--export-width={width}",
+            f"--export-height={height}",
             "--export-background-opacity=0",
         ],
-        f"inkscape failed rendering {svg.name} at {size}px",
+        f"inkscape failed rendering {svg.name} at {width}x{height}",
     )
 
 
@@ -229,13 +232,10 @@ def _write_ico(pngs: list[Path], target: Path) -> None:
 
 def render_rasters() -> int:
     """Regenerate every raster from its SVG and re-stamp provenance."""
-    for png, svg in RASTERS.items():
+    for png, (svg, width, height) in RASTERS.items():
         svg_path = ASSETS / svg
         png_path = ASSETS / png
-        if png == "social-preview.png":
-            # Social previews are wide, not square, so they keep their own export.
-            continue
-        _rasterize(svg_path, png_path, 800)
+        _rasterize(svg_path, png_path, width, height)
         source_file(png).write_text(
             raster_fingerprint(png_path, svg_path), encoding="utf-8"
         )
@@ -245,7 +245,7 @@ def render_rasters() -> int:
     for png, (svg, size) in icon_rasters().items():
         svg_path = ASSETS / svg
         png_path = ASSETS / png
-        _rasterize(svg_path, png_path, size)
+        _rasterize(svg_path, png_path, size, size)
         source_file(png).write_text(
             raster_fingerprint(png_path, svg_path), encoding="utf-8"
         )
@@ -269,7 +269,7 @@ def check() -> list[str]:
         path = ASSETS / filename
         if not path.exists() or path.read_text(encoding="utf-8") != render():
             problems.append(f"assets/{filename}: missing or stale; run scripts/render_brand.py")
-    for png, svg in RASTERS.items():
+    for png, (svg, _width, _height) in RASTERS.items():
         png_path = ASSETS / png
         svg_path = ASSETS / svg
         stamp = source_file(png)
@@ -319,7 +319,7 @@ def main() -> int:
     if args.render_rasters:
         return render_rasters()
     if args.stamp_png:
-        stampable = dict(RASTERS)
+        stampable = {png: svg for png, (svg, _w, _h) in RASTERS.items()}
         stampable.update({png: svg for png, (svg, _size) in icon_rasters().items()})
         stampable[ICO_NAME] = "pipelock-logo.svg"
         for png, svg in stampable.items():

@@ -1379,8 +1379,11 @@ type CrossRequestEntropyBudget struct {
 type CrossRequestFragments struct {
 	Enabled        bool `yaml:"enabled"`
 	MaxBufferBytes int  `yaml:"max_buffer_bytes"` // per-session rolling buffer cap
+	MaxSessions    int  `yaml:"max_sessions"`     // global fragment-stream cap
 	WindowMinutes  int  `yaml:"window_minutes"`   // fragment retention window (independent of entropy budget)
 }
+
+const DefaultCrossRequestFragmentMaxSessions = 10000
 
 // KillSwitch configures the emergency deny-all kill switch.
 // When active, all requests are rejected except health/metrics endpoints

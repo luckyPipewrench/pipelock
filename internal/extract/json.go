@@ -7,6 +7,8 @@ package extract
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"sort"
@@ -57,6 +59,31 @@ func JSONLeafPayloads(raw json.RawMessage, limits JSONLeafLimits) (payloads map[
 		return nil, false
 	}
 	return payloads, true
+}
+
+// JSONLeafPayloadsPartial returns every representable scalar leaf from a valid
+// JSON document. Unlike JSONLeafPayloads, input resource limits omit only the
+// affected leaf: callers retain the original payload for their raw fallback.
+// A false return means parsing failed and no leaf result is trustworthy.
+func JSONLeafPayloadsPartial(raw json.RawMessage, limits JSONLeafLimits) (payloads map[string][]byte, valid bool) {
+	if len(raw) == 0 || limits.MaxDepth < 0 || limits.MaxStreams <= 0 || limits.MaxPathBytes <= 0 {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	state := jsonLeafPartialState{payloads: make(map[string][]byte)}
+	if !appendJSONLeafPayloadPartial(decoder, &state, []byte("$"), 0, limits) {
+		return nil, false
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, false
+	}
+	return state.payloads, true
+}
+
+type jsonLeafPartialState struct {
+	payloads map[string][]byte
+	order    []string
 }
 
 func appendJSONLeafPayload(decoder *json.Decoder, payloads map[string][]byte, path []byte, depth int, limits JSONLeafLimits) bool {
@@ -117,6 +144,93 @@ func appendJSONLeafPayload(decoder *json.Decoder, payloads map[string][]byte, pa
 	}
 }
 
+func appendJSONLeafPayloadPartial(decoder *json.Decoder, state *jsonLeafPartialState, path []byte, depth int, limits JSONLeafLimits) bool {
+	if depth > limits.MaxDepth {
+		return skipJSONValue(decoder)
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return false
+	}
+	switch value := token.(type) {
+	case json.Delim:
+		switch value {
+		case '{':
+			for decoder.More() {
+				key, err := decoder.Token()
+				if err != nil {
+					return false
+				}
+				keyString, ok := key.(string)
+				if !ok {
+					return false
+				}
+				nextPath := appendJSONLeafPathPartPartial(path, keyString, limits.MaxPathBytes)
+				if !appendJSONLeafPayloadPartial(decoder, state, nextPath, depth+1, limits) {
+					return false
+				}
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim('}')
+		case '[':
+			for index := 0; decoder.More(); index++ {
+				nextPath := appendJSONLeafPathPartPartial(path, strconv.Itoa(index), limits.MaxPathBytes)
+				if !appendJSONLeafPayloadPartial(decoder, state, nextPath, depth+1, limits) {
+					return false
+				}
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim(']')
+		default:
+			return false
+		}
+	case nil:
+		return true
+	case string:
+		appendJSONLeafValuePartial(state, path, value, limits.MaxStreams)
+		return true
+	case json.Number:
+		appendJSONLeafValuePartial(state, path, value.String(), limits.MaxStreams)
+		return true
+	case bool:
+		appendJSONLeafValuePartial(state, path, strconv.FormatBool(value), limits.MaxStreams)
+		return true
+	default:
+		return false
+	}
+}
+
+func skipJSONValue(decoder *json.Decoder) bool {
+	token, err := decoder.Token()
+	if err != nil {
+		return false
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return true
+	}
+	switch delim {
+	case '{':
+		for decoder.More() {
+			if _, err := decoder.Token(); err != nil || !skipJSONValue(decoder) {
+				return false
+			}
+		}
+		end, err := decoder.Token()
+		return err == nil && end == json.Delim('}')
+	case '[':
+		for decoder.More() {
+			if !skipJSONValue(decoder) {
+				return false
+			}
+		}
+		end, err := decoder.Token()
+		return err == nil && end == json.Delim(']')
+	default:
+		return false
+	}
+}
+
 func appendJSONLeafPathPart(path []byte, part string, maxPathBytes int) ([]byte, bool) {
 	pathBytes := len(path) + 1 + len(part) + strings.Count(part, "~") + strings.Count(part, "/")
 	if pathBytes > maxPathBytes {
@@ -136,6 +250,17 @@ func appendJSONLeafPathPart(path []byte, part string, maxPathBytes int) ([]byte,
 	return path, true
 }
 
+func appendJSONLeafPathPartPartial(path []byte, part string, maxPathBytes int) []byte {
+	next, ok := appendJSONLeafPathPart(path, part, maxPathBytes)
+	if ok {
+		return next
+	}
+	fullPath := append(append([]byte(nil), path...), '/')
+	fullPath = append(fullPath, part...)
+	digest := sha256.Sum256(fullPath)
+	return append([]byte("$#"), []byte(hex.EncodeToString(digest[:]))...)
+}
+
 func appendJSONLeafValue(payloads map[string][]byte, path []byte, value string, maxStreams int) bool {
 	stream := string(path)
 	if _, exists := payloads[stream]; !exists && len(payloads) >= maxStreams {
@@ -143,6 +268,18 @@ func appendJSONLeafValue(payloads map[string][]byte, path []byte, value string, 
 	}
 	payloads[stream] = append(payloads[stream], value...)
 	return true
+}
+
+func appendJSONLeafValuePartial(state *jsonLeafPartialState, path []byte, value string, maxStreams int) {
+	stream := string(path)
+	if _, exists := state.payloads[stream]; !exists {
+		if len(state.payloads) >= maxStreams {
+			delete(state.payloads, state.order[0])
+			state.order = state.order[1:]
+		}
+		state.order = append(state.order, stream)
+	}
+	state.payloads[stream] = append(state.payloads[stream], value...)
 }
 
 // JSONStringsResult is the bounded extraction result. Truncated is true when

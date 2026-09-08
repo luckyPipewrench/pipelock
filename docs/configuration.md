@@ -1781,7 +1781,7 @@ cross_request_detection:
     action: block
   fragment_reassembly:
     enabled: false
-    max_buffer_bytes: 131072
+    max_buffer_bytes: 65536
     window_minutes: 5
 ```
 
@@ -1827,10 +1827,11 @@ Buffers outbound payloads (URLs, request bodies, MCP JSON-RPC payloads, WebSocke
 | Field | Default | Description |
 |-------|---------|-------------|
 | `fragment_reassembly.enabled` | `false` | Enable fragment reassembly |
-| `fragment_reassembly.max_buffer_bytes` | `131072` | Max buffer size per session (128 KB). Sized to hold two body captures at the cross-request body-read cap, so a single large request body cannot evict the earlier fragment it needs to be compared against. Older fragments are evicted when exceeded. |
+| `fragment_reassembly.max_buffer_bytes` | `65536` | Max buffer size per session (64 KB). Older fragments are evicted when exceeded. |
+| `fragment_reassembly.max_sessions` | `10000` | Maximum fragment streams held across the proxy. Requests are denied when this global evidence ledger is full. |
 | `fragment_reassembly.window_minutes` | `5` | Fragment retention window in minutes. Fragments older than this are pruned. |
 
-**Memory:** Each tracked session uses up to `max_buffer_bytes`. With 10,000 concurrent sessions (hard cap), the worst-case memory is `max_buffer_bytes * 10000` (1.28 GB at defaults). Reduce `max_buffer_bytes` in memory-constrained environments. Lowering it below twice the cross-request body-read cap reintroduces the eviction case above, where one maximal request body clears the buffer before a second fragment can be compared against it.
+**Memory:** Each tracked stream uses up to `max_buffer_bytes`. At the default `max_sessions` cap, the worst-case payload memory is `max_buffer_bytes * max_sessions` (640 MB). Reduce either limit in memory-constrained environments; reducing `max_sessions` can refuse new fragment streams while existing evidence is retained.
 
 **Scope note:** Cross-request detection scans all outbound content visible to the proxy: URLs, request bodies, MCP JSON-RPC payloads, and WebSocket frames. CONNECT tunnels without TLS interception only expose the target hostname (entropy tracking only). Enable `tls_interception` for full cross-request coverage on tunneled traffic.
 

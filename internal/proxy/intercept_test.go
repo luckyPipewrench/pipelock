@@ -3059,6 +3059,67 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 	}
 }
 
+func TestInterceptTunnel_CEEPartitionsJSONBodyFields(t *testing.T) {
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	sc.Close()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = config.ActionBlock
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 2 * ceeForwardConversationPaddingBytes
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.ApplyDefaults()
+	sc = scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	rt := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})
+	secret := testCEEAWSKeyPrefix + testCEEAWSKeySuffix
+	half := len(secret) / 2
+	padding := strings.Repeat("ordinary prose ", ceeForwardConversationPaddingBytes/len("ordinary prose "))
+
+	post := func(body, contentType string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+testLoopbackIP+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		return interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+			&InterceptContext{Proxy: p, TargetHost: testLoopbackIP, TargetPort: "443"}, req)
+	}
+
+	first := post(forwardCEEJSONPostBody(secret[:half], padding), "application/json")
+	defer func() { _ = first.Body.Close() }()
+	if first.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(first.Body)
+		t.Fatalf("first status = %d, want 200; body=%s", first.StatusCode, body)
+	}
+	second := post(forwardCEEJSONPostBody(secret[half:], padding), "application/json")
+	defer func() { _ = second.Body.Close() }()
+	if second.StatusCode != http.StatusForbidden {
+		t.Fatalf("completing status = %d, want 403", second.StatusCode)
+	}
+
+	ResetCEEState("", testClientIP, nil, p.fragmentBufferPtr.Load())
+	first = post(secret[:half], "text/plain")
+	defer func() { _ = first.Body.Close() }()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("sole-content first status = %d, want 200", first.StatusCode)
+	}
+	second = post(secret[half:], "text/plain")
+	defer func() { _ = second.Body.Close() }()
+	if second.StatusCode != http.StatusForbidden {
+		t.Fatalf("sole-content completing status = %d, want 403", second.StatusCode)
+	}
+}
+
 func TestInterceptHandler_CEELiveDisableReleasesReloadLock(t *testing.T) {
 	// Long-lived intercept tunnels retain their setup-time config. Re-resolve
 	// against a live CEE disable and verify the request does not retain the

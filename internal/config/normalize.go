@@ -690,7 +690,10 @@ func (c *Config) ApplyDefaults() {
 		}
 		if c.CrossRequestDetection.FragmentReassembly.Enabled {
 			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
-				c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 131072 // 128KB: two capped CEE bodies per session
+				c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536
+			}
+			if c.CrossRequestDetection.FragmentReassembly.MaxSessions <= 0 {
+				c.CrossRequestDetection.FragmentReassembly.MaxSessions = DefaultCrossRequestFragmentMaxSessions
 			}
 			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5

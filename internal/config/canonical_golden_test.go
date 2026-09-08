@@ -360,7 +360,7 @@ const (
 	// Re-bumped for Credential in URL grammar: line-start assignments require
 	// adjacency around '=', while delimiter-led query parameters retain
 	// whitespace tolerance. This detection-relevant default changes policy.
-	goldenHashDefaults = "43c689f65d90d4cd7e6a90a298df97a6b4d01150066006d37e7e618d1f968063"
+	goldenHashDefaults = "79e86a78f054e3dbfabdb6221f5ea34f2a81698e941f3648dfc98f55252b443d"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -546,7 +546,7 @@ const (
 	// goldenHashDefaults above.
 	// Re-bumped for the Credential in URL grammar change above; the rich
 	// fixture inherits the built-in DLP patterns.
-	goldenHashRichConfig = "649c59d3cf9cb07e446c22dc88769316c6ea3ba3600659a669bb5ade43b7e7af"
+	goldenHashRichConfig = "ee43de75debebd876bb0e5d8524524aa0bd6e100ae0547724f0814c3638a5f6b"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

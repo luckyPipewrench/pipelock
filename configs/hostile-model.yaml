@@ -519,7 +519,7 @@ cross_request_detection:
     action: block
   fragment_reassembly:
     enabled: true
-    max_buffer_bytes: 131072
+    max_buffer_bytes: 65536
     window_minutes: 5
 
 # Kill switch preconfigured with sentinel file.

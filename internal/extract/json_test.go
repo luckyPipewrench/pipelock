@@ -118,6 +118,8 @@ func TestJSONLeafPayloads(t *testing.T) {
 		{name: "depth limit fails closed", raw: `[[["deep"]]]`, limits: limits},
 		{name: "stream limit fails closed", raw: `{"one":"1","two":"2","three":"3"}`, limits: limits},
 		{name: "path limit fails closed", raw: `{"this-path-is-too-long":"value"}`, limits: JSONLeafLimits{MaxDepth: 2, MaxStreams: 2, MaxPathBytes: 16}},
+		{name: "invalid limits fail closed", raw: `"value"`, limits: JSONLeafLimits{}},
+		{name: "trailing content fails closed", raw: `{"value":"ok"} trailing`, limits: limits},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -137,6 +139,82 @@ func TestJSONLeafPayloads(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestJSONLeafPayloadsPartial(t *testing.T) {
+	t.Run("retains newest representable leaves", func(t *testing.T) {
+		got, valid := JSONLeafPayloadsPartial(json.RawMessage(`{"one":"1","two":2,"three":true,"four":null}`), JSONLeafLimits{
+			MaxDepth: 4, MaxStreams: 2, MaxPathBytes: 64,
+		})
+		if !valid {
+			t.Fatal("partial extraction rejected valid JSON")
+		}
+		if len(got) != 2 || string(got["$/two"]) != "2" || string(got["$/three"]) != "true" {
+			t.Fatalf("partial payloads = %#v, want newest scalar leaves", got)
+		}
+	})
+
+	t.Run("long paths receive stable opaque keys", func(t *testing.T) {
+		limits := JSONLeafLimits{MaxDepth: 4, MaxStreams: 2, MaxPathBytes: 8}
+		first, valid := JSONLeafPayloadsPartial(json.RawMessage(`{"this-key-is-long":"first"}`), limits)
+		if !valid || len(first) != 1 {
+			t.Fatalf("first payloads = %#v, valid=%t", first, valid)
+		}
+		second, valid := JSONLeafPayloadsPartial(json.RawMessage(`{"this-key-is-long":"second"}`), limits)
+		if !valid || len(second) != 1 {
+			t.Fatalf("second payloads = %#v, valid=%t", second, valid)
+		}
+		for path := range first {
+			if string(second[path]) != "second" {
+				t.Fatalf("opaque path %q was not stable: %#v", path, second)
+			}
+		}
+	})
+
+	t.Run("depth limit omits only deep leaves", func(t *testing.T) {
+		got, valid := JSONLeafPayloadsPartial(json.RawMessage(`{"shallow":"kept","deep":{"nested":{"value":"omitted"}}}`), JSONLeafLimits{
+			MaxDepth: 1, MaxStreams: 2, MaxPathBytes: 64,
+		})
+		if !valid || string(got["$/shallow"]) != "kept" {
+			t.Fatalf("depth-limited payloads = %#v, valid=%t", got, valid)
+		}
+		if _, ok := got["$/deep/nested/value"]; ok {
+			t.Fatalf("depth-limited payloads retained deep leaf: %#v", got)
+		}
+	})
+
+	t.Run("arrays nulls and escaped keys remain representable", func(t *testing.T) {
+		got, valid := JSONLeafPayloadsPartial(json.RawMessage(`{"a/b~c":[null,2,true,"text"]}`), JSONLeafLimits{
+			MaxDepth: 4, MaxStreams: 8, MaxPathBytes: 64,
+		})
+		if !valid || string(got["$/a~1b~0c/1"]) != "2" || string(got["$/a~1b~0c/2"]) != "true" || string(got["$/a~1b~0c/3"]) != "text" {
+			t.Fatalf("array payloads = %#v, valid=%t", got, valid)
+		}
+	})
+
+	t.Run("depth skip consumes nested arrays", func(t *testing.T) {
+		got, valid := JSONLeafPayloadsPartial(json.RawMessage(`{"keep":"yes","drop":[{"nested":"no"}]}`), JSONLeafLimits{
+			MaxDepth: 1, MaxStreams: 4, MaxPathBytes: 64,
+		})
+		if !valid || string(got["$/keep"]) != "yes" || len(got) != 1 {
+			t.Fatalf("array depth-skip payloads = %#v, valid=%t", got, valid)
+		}
+	})
+
+	for _, limits := range []JSONLeafLimits{{}, {MaxDepth: -1, MaxStreams: 1, MaxPathBytes: 1}} {
+		if got, valid := JSONLeafPayloadsPartial(json.RawMessage(`"value"`), limits); valid || got != nil {
+			t.Fatalf("invalid limits payload = %#v, valid=%t", got, valid)
+		}
+	}
+	if got, valid := JSONLeafPayloadsPartial(json.RawMessage(`{"value":"ok"} trailing`), JSONLeafLimits{MaxDepth: 2, MaxStreams: 2, MaxPathBytes: 16}); valid || got != nil {
+		t.Fatalf("trailing payload = %#v, valid=%t", got, valid)
+	}
+
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`{"unterminated"`)} {
+		if got, valid := JSONLeafPayloadsPartial(raw, JSONLeafLimits{MaxDepth: 2, MaxStreams: 2, MaxPathBytes: 16}); valid || got != nil {
+			t.Fatalf("invalid partial payload = %#v, valid=%t", got, valid)
+		}
 	}
 }
 

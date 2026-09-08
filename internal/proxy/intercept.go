@@ -1371,7 +1371,11 @@ func newInterceptHandler(
 		// fragment analysis. When p is non-nil, resolve CEE objects per-request
 		// so hot-reloads during long-lived CONNECT tunnels use fresh state.
 		sessionKey := ceeSessionKey(ic.Agent, ic.ClientIP, ic.ActorAuth)
-		outboundPayloads := extractOutboundPayloads(r)
+		partitionJSON := ceeJSONBodyPartitioningEnabled(ic.Config)
+		if ic.Proxy != nil {
+			partitionJSON = ceeJSONBodyPartitioningEnabled(ic.Proxy.ConfigPtr().Load())
+		}
+		outboundPayloads := extractOutboundPayloads(r, partitionJSON)
 		outbound := outboundPayloads.outbound
 		keys := queryParamKeys(r.URL)
 		paths := pathSegments(r.URL)

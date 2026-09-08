@@ -148,6 +148,13 @@ const (
 	ctxKeySSRFDialPort
 )
 
+func ceeFragmentMaxSessions(fragments config.CrossRequestFragments) int {
+	if fragments.MaxSessions > 0 {
+		return fragments.MaxSessions
+	}
+	return config.DefaultCrossRequestFragmentMaxSessions
+}
+
 type envelopeEmitterSnapshot struct {
 	emitter *envelope.Emitter
 }
@@ -156,10 +163,9 @@ const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
 
-	// maxCEESessions bounds memory used by fragment tracking across all sessions.
-	// 10,000 sessions at 64KB each = ~640MB worst case. In practice, most
-	// deployments have <100 concurrent sessions.
-	maxCEESessions = 10000
+	// maxCEEStreamsPerSession prevents one logical conversation from consuming
+	// the proxy-wide fragment ledger with adversarially varied JSON paths.
+	maxCEEStreamsPerSession = 256
 
 	browserShieldLayer             = "browser_shield"
 	browserShieldPattern           = "browser_shield_rewrite"
@@ -2206,11 +2212,12 @@ func (p *Proxy) prepareCEE(ceeCfg *config.CrossRequestDetection) {
 
 	if ceeCfg.Enabled && ceeCfg.FragmentReassembly.Enabled {
 		if fb := p.fragmentBufferPtr.Load(); fb != nil {
-			fb.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeCfg.FragmentReassembly.WindowMinutes*60)
+			fb.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeCfg.FragmentReassembly.WindowMinutes*60, ceeFragmentMaxSessions(ceeCfg.FragmentReassembly))
 		} else {
-			p.fragmentBufferPtr.Store(scanner.NewFragmentBuffer(
+			p.fragmentBufferPtr.Store(scanner.NewFragmentBufferWithStreamLimit(
 				ceeCfg.FragmentReassembly.MaxBufferBytes,
-				maxCEESessions,
+				ceeFragmentMaxSessions(ceeCfg.FragmentReassembly),
+				maxCEEStreamsPerSession,
 				ceeCfg.FragmentReassembly.WindowMinutes*60,
 			))
 		}
@@ -2404,9 +2411,10 @@ func (p *Proxy) buildCEE(ceeCfg *config.CrossRequestDetection) (*scanner.Entropy
 			)
 		}
 		if ceeCfg.FragmentReassembly.Enabled {
-			fb = scanner.NewFragmentBuffer(
+			fb = scanner.NewFragmentBufferWithStreamLimit(
 				ceeCfg.FragmentReassembly.MaxBufferBytes,
-				maxCEESessions,
+				ceeFragmentMaxSessions(ceeCfg.FragmentReassembly),
+				maxCEEStreamsPerSession,
 				ceeCfg.FragmentReassembly.WindowMinutes*60, // minutes to seconds
 			)
 		}

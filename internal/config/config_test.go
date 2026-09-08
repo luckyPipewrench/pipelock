@@ -10737,8 +10737,11 @@ func TestApplyDefaults_CrossRequestDetection_Enabled(t *testing.T) {
 	if cfg.CrossRequestDetection.EntropyBudget.Action != ActionWarn {
 		t.Fatalf("expected default entropy_budget action %q, got %q", ActionWarn, cfg.CrossRequestDetection.EntropyBudget.Action)
 	}
-	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 131072 {
-		t.Fatalf("expected default max_buffer_bytes 131072, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 65536 {
+		t.Fatalf("expected default max_buffer_bytes 65536, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxSessions != DefaultCrossRequestFragmentMaxSessions {
+		t.Fatalf("expected default max_sessions %d, got %d", DefaultCrossRequestFragmentMaxSessions, cfg.CrossRequestDetection.FragmentReassembly.MaxSessions)
 	}
 	if cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes != 5 {
 		t.Fatalf("expected default fragment window_minutes 5, got %d", cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes)
@@ -10789,7 +10792,8 @@ func TestApplyDefaults_CrossRequestDetection_UserValuesPreserved(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 10
 	cfg.CrossRequestDetection.EntropyBudget.Action = ActionBlock
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
-	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 131072
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536
+	cfg.CrossRequestDetection.FragmentReassembly.MaxSessions = 2000
 	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 10
 	cfg.ApplyDefaults()
 
@@ -10805,8 +10809,11 @@ func TestApplyDefaults_CrossRequestDetection_UserValuesPreserved(t *testing.T) {
 	if cfg.CrossRequestDetection.EntropyBudget.Action != ActionBlock {
 		t.Fatalf("user entropy_budget action overwritten: got %q", cfg.CrossRequestDetection.EntropyBudget.Action)
 	}
-	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 131072 {
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 65536 {
 		t.Fatalf("user max_buffer_bytes overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxSessions != 2000 {
+		t.Fatalf("user max_sessions overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxSessions)
 	}
 	if cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes != 10 {
 		t.Fatalf("user fragment window_minutes overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes)

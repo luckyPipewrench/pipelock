@@ -46,10 +46,15 @@ def favicon() -> str:
 
 
 def lockup() -> str:
+    # The mark's right edge lands at x=90.5 after the scale above, and the
+    # wordmark's cap height is 39 units at font-size 52. The gap between them is
+    # 0.75 of that cap height, which is the spacing unit the brand guidelines
+    # already use for clear space. It used to be 1.31, wide enough that the mark
+    # and the wordmark read as two objects instead of one lockup.
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="465" height="112" viewBox="-32 0 465 112" role="img" aria-label="Pipelock logo lockup">
   <g transform="scale(.4666667)">{mark()}</g>
-  <text x="140" y="70" font-family="{MONO}" font-size="52" font-weight="700" letter-spacing="-.02em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
-  <text x="143" y="94" font-family="{SANS}" font-size="14" fill="{MUTED}" letter-spacing=".286em">AGENT FIREWALL</text>
+  <text x="119.8" y="70" font-family="{MONO}" font-size="52" font-weight="700" letter-spacing="-.02em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
+  <text x="122.8" y="94" font-family="{SANS}" font-size="14" fill="{MUTED}" letter-spacing=".286em">AGENT FIREWALL</text>
 </svg>
 '''
 

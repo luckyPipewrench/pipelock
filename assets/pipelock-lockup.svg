@@ -6,6 +6,6 @@
     <circle cx="120" cy="150" r="13" fill="#00e5a0"/><circle cx="120" cy="150" r="6" fill="#09090b"/>
     <path d="M116 158h8v24a4 4 0 0 1-8 0z" fill="#00e5a0"/>
   </g></g>
-  <text x="140" y="70" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="52" font-weight="700" letter-spacing="-.02em"><tspan fill="#e2e8f0">Pipe</tspan><tspan fill="#00e5a0">lock</tspan></text>
-  <text x="143" y="94" font-family="Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" fill="#94a3b8" letter-spacing=".286em">AGENT FIREWALL</text>
+  <text x="119.8" y="70" font-family="'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="52" font-weight="700" letter-spacing="-.02em"><tspan fill="#e2e8f0">Pipe</tspan><tspan fill="#00e5a0">lock</tspan></text>
+  <text x="122.8" y="94" font-family="Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" fill="#94a3b8" letter-spacing=".286em">AGENT FIREWALL</text>
 </svg>

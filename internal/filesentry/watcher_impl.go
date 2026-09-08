@@ -457,7 +457,9 @@ func (w *fsWatcher) addRecursive(root string) error {
 // failure. Symlinks are never followed: a child symlink could leave the
 // configured tree, while a root symlink has no trustworthy direct watch root.
 func (w *fsWatcher) addRecursiveDetailed(root string) recursiveAddResult {
-	return addRecursiveDetailed(root, w.isIgnored, w.addDirectory)
+	// Arm must watch every directory it can. The coverage entry budget is a
+	// diagnostic bound only; applying it here would leave the remainder unwatched.
+	return addRecursiveDetailed(root, w.isIgnored, w.addDirectory, nil)
 }
 
 // maxCoverageWalkEntries bounds one CheckCoverage call across all configured
@@ -481,11 +483,15 @@ var errCoverageWalkBudget = errors.New("coverage walk entry budget exhausted")
 // is bounded by maxCoverageWalkEntries; either stop sets Truncated so a partial
 // scan is never read as proof of coverage.
 func CheckCoverage(ctx context.Context, cfg *config.FileSentry) CoverageReport {
+	return checkCoverageWithBudget(ctx, cfg, maxCoverageWalkEntries)
+}
+
+func checkCoverageWithBudget(ctx context.Context, cfg *config.FileSentry, budget int) CoverageReport {
 	if cfg == nil {
 		return CoverageReport{Failures: []CoverageFailure{{Error: "file_sentry configuration is unavailable"}}, FailureCount: 1}
 	}
 	report := CoverageReport{}
-	budget := maxCoverageWalkEntries
+	remaining := budget
 	for _, wp := range cfg.WatchPaths {
 		root, err := filepath.Abs(wp.Path)
 		if err != nil {
@@ -497,20 +503,22 @@ func CheckCoverage(ctx context.Context, cfg *config.FileSentry) CoverageReport {
 		visited := 0
 		result := addRecursiveDetailed(root,
 			func(path string) bool { return isIgnored(cfg.IgnorePatterns, path) },
-			func(string) (bool, error) {
-				// Cancellation and the entry budget share one stop path, so a
-				// caller that gives up and a tree too large to walk produce the
-				// same honest answer: the scan is a lower bound, not coverage.
+			func(string) (bool, error) { return true, nil },
+			func() error {
+				// Count every WalkDir entry, including files, before directory
+				// filtering. A large flat tree would otherwise walk unbounded
+				// while the budget only saw directories, and ctx.Err() would
+				// stay unchecked on those file visits.
 				if ctx.Err() != nil {
-					return false, errCoverageWalkBudget
+					return errCoverageWalkBudget
 				}
 				visited++
-				if visited > budget {
-					return false, errCoverageWalkBudget
+				if visited > remaining {
+					return errCoverageWalkBudget
 				}
-				return true, nil
+				return nil
 			})
-		budget -= visited
+		remaining -= visited
 		for _, skipped := range result.skipped {
 			if errors.Is(skipped.cause, errCoverageWalkBudget) {
 				report.Truncated = true
@@ -537,7 +545,7 @@ func (r *CoverageReport) add(path, root string, required bool, cause error) {
 	}
 }
 
-func addRecursiveDetailed(root string, ignored func(string) bool, addDirectory func(string) (bool, error)) recursiveAddResult {
+func addRecursiveDetailed(root string, ignored func(string) bool, addDirectory func(string) (bool, error), observe func() error) recursiveAddResult {
 	result := recursiveAddResult{}
 	info, err := os.Lstat(root)
 	if err != nil {
@@ -554,6 +562,12 @@ func addRecursiveDetailed(root string, ignored func(string) bool, addDirectory f
 	}
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if observe != nil {
+			if err := observe(); err != nil {
+				result.addSkipped(path, root, err)
+				return err
+			}
+		}
 		if walkErr != nil {
 			result.addSkipped(path, root, fmt.Errorf("inaccessible path: %w", walkErr))
 			return filepath.SkipDir
@@ -575,11 +589,10 @@ func addRecursiveDetailed(root string, ignored func(string) bool, addDirectory f
 		}
 		return nil
 	})
-	// The callback returns only nil or SkipDir today, so this is unreachable in
-	// practice. It stays fail-closed rather than discarded: if the callback
-	// ever returns a real error, the walk must count as incomplete coverage
-	// instead of silently reporting a clean traversal.
-	if walkErr != nil {
+	// Budget exhaustion is recorded on the entry that stopped the walk and is
+	// not a coverage failure. Any other callback error still means incomplete
+	// coverage rather than a silently clean traversal.
+	if walkErr != nil && !errors.Is(walkErr, errCoverageWalkBudget) {
 		result.addSkipped(root, root, fmt.Errorf("walk root: %w", walkErr))
 	}
 	return result

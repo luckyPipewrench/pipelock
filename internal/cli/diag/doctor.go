@@ -616,12 +616,18 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 // separate from the walk so every verdict, including the ones a real filesystem
 // cannot easily produce on demand, is directly testable from a report value.
 func fileSentryCoverageVerdict(check doctorReportCheck, cfg *config.Config, coverage filesentry.CoverageReport, checkedUser string) doctorReportCheck {
+	truncatedDetail := ""
+	if coverage.Truncated {
+		// Reachable stays false: a partial walk is a lower bound, not coverage.
+		truncatedDetail = "; traversal stopped at its entry budget, so the unvisited remainder is unchecked rather than proven reachable"
+	}
+
 	if coverage.FailureCount > 0 {
 		check.Status = doctorStatusFail
 		if cfg.FileSentry.BestEffort && !fileSentryRequiredCoverageFailed(cfg.FileSentry.WatchPaths, coverage) {
 			check.Status = doctorStatusWarn
 		}
-		check.Detail = "coverage preflight checked as " + checkedUser + "; inaccessible subtree(s): " + formatFileSentryCoverageFailures(coverage)
+		check.Detail = "coverage preflight checked as " + checkedUser + "; inaccessible subtree(s): " + formatFileSentryCoverageFailures(coverage) + truncatedDetail
 		check.Next = "grant the service user read and execute access, add a matching file_sentry.ignore_patterns entry, or set file_sentry.best_effort: true to trade coverage for availability"
 		if fileSentryRequiredCoverageFailed(cfg.FileSentry.WatchPaths, coverage) {
 			// best_effort cannot rescue a required root, so offering it here
@@ -640,15 +646,14 @@ func fileSentryCoverageVerdict(check doctorReportCheck, cfg *config.Config, cove
 		check.Next = "narrow file_sentry.ignore_patterns so at least one configured root remains watchable, or disable file_sentry deliberately"
 		return check
 	}
-	check.Status = doctorStatusOK
-	check.Reachable = true
 	if coverage.Truncated {
-		// A bounded walk proves nothing about what it never visited.
 		check.Status = doctorStatusWarn
-		check.Detail = "coverage preflight checked as " + checkedUser + "; traversal stopped at its entry budget, so the unvisited remainder is unchecked rather than proven reachable"
+		check.Detail = "coverage preflight checked as " + checkedUser + truncatedDetail
 		check.Next = "narrow watch_paths or ignore_patterns so the configured tree can be traversed within the preflight budget"
 		return check
 	}
+	check.Status = doctorStatusOK
+	check.Reachable = true
 	// Enforcing stays false deliberately. A traversal preflight proves coverage
 	// is reachable, not that the watcher is running: file sentry applies to
 	// subprocess MCP mode, so enforcement still depends on the agent launching

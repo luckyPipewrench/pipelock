@@ -1016,19 +1016,26 @@ func TestFileSentryCoverageVerdict(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		cfg        *config.Config
-		report     filesentry.CoverageReport
-		wantStatus string
-		wantDetail string
-		denyNext   string
+		name          string
+		cfg           *config.Config
+		report        filesentry.CoverageReport
+		wantStatus    string
+		wantDetails   []string
+		wantReachable bool
+		denyNext      string
 	}{
-		{name: "strict failure", cfg: strict, report: optional, wantStatus: doctorStatusFail, wantDetail: "inaccessible subtree"},
-		{name: "best effort warns", cfg: bestEffort, report: optional, wantStatus: doctorStatusWarn, wantDetail: "inaccessible subtree"},
-		{name: "required fails under best effort", cfg: bestEffort, report: required, wantStatus: doctorStatusFail, wantDetail: "inaccessible subtree", denyNext: "best_effort"},
-		{name: "ignored away", cfg: strict, report: filesentry.CoverageReport{}, wantStatus: doctorStatusFail, wantDetail: "nothing to watch", denyNext: "best_effort"},
-		{name: "truncated warns", cfg: strict, report: filesentry.CoverageReport{Truncated: true, WatchablePaths: 5}, wantStatus: doctorStatusWarn, wantDetail: "unvisited remainder"},
-		{name: "clean", cfg: strict, report: filesentry.CoverageReport{WatchablePaths: 5}, wantStatus: doctorStatusOK, wantDetail: "still unproven"},
+		{name: "strict failure", cfg: strict, report: optional, wantStatus: doctorStatusFail, wantDetails: []string{"inaccessible subtree"}},
+		{name: "best effort warns", cfg: bestEffort, report: optional, wantStatus: doctorStatusWarn, wantDetails: []string{"inaccessible subtree"}},
+		{name: "required fails under best effort", cfg: bestEffort, report: required, wantStatus: doctorStatusFail, wantDetails: []string{"inaccessible subtree"}, denyNext: "best_effort"},
+		{name: "ignored away", cfg: strict, report: filesentry.CoverageReport{}, wantStatus: doctorStatusFail, wantDetails: []string{"nothing to watch"}, denyNext: "best_effort"},
+		{name: "truncated warns", cfg: strict, report: filesentry.CoverageReport{Truncated: true, WatchablePaths: 5}, wantStatus: doctorStatusWarn, wantDetails: []string{"unvisited remainder"}},
+		{name: "optional failure with truncated", cfg: bestEffort, report: filesentry.CoverageReport{
+			Failures: optional.Failures, FailureCount: 1, WatchablePaths: 3, Truncated: true,
+		}, wantStatus: doctorStatusWarn, wantDetails: []string{"inaccessible subtree", "unvisited remainder"}},
+		{name: "strict failure with truncated", cfg: strict, report: filesentry.CoverageReport{
+			Failures: optional.Failures, FailureCount: 1, WatchablePaths: 3, Truncated: true,
+		}, wantStatus: doctorStatusFail, wantDetails: []string{"inaccessible subtree", "unvisited remainder"}},
+		{name: "clean", cfg: strict, report: filesentry.CoverageReport{WatchablePaths: 5}, wantStatus: doctorStatusOK, wantDetails: []string{"still unproven"}, wantReachable: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1036,11 +1043,16 @@ func TestFileSentryCoverageVerdict(t *testing.T) {
 			if got.Status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q; check=%+v", got.Status, tt.wantStatus, got)
 			}
-			if !strings.Contains(got.Detail, tt.wantDetail) {
-				t.Fatalf("detail = %q, want substring %q", got.Detail, tt.wantDetail)
+			for _, want := range tt.wantDetails {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("detail = %q, want substring %q", got.Detail, want)
+				}
 			}
 			if !strings.Contains(got.Detail, "svc") {
 				t.Fatalf("detail = %q, want the checked user named", got.Detail)
+			}
+			if got.Reachable != tt.wantReachable {
+				t.Fatalf("reachable = %v, want %v; a truncated or failed walk must not read as proven coverage", got.Reachable, tt.wantReachable)
 			}
 			if tt.denyNext != "" && strings.Contains(got.Next, tt.denyNext) {
 				t.Fatalf("next = %q, must not offer %q for this failure", got.Next, tt.denyNext)

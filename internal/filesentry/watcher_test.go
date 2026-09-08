@@ -3012,3 +3012,41 @@ func TestCheckCoverage_CancelledContextTruncates(t *testing.T) {
 		t.Fatal("NoWatchablePaths() = true on a cancelled walk; truncation is not proof of absence")
 	}
 }
+
+// TestCheckCoverage_FlatFilesCountTowardWalkBudget proves the entry budget
+// counts files, not only directories. A watch root that is a large flat
+// directory would otherwise walk unbounded while the budget only saw the root.
+func TestCheckCoverage_FlatFilesCountTowardWalkBudget(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 8; i++ {
+		path := filepath.Join(root, fmt.Sprintf("f-%d", i))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Budget 3: root directory plus eight files is nine entries. Counting only
+	// directories would visit one dir and report complete coverage.
+	report := checkCoverageWithBudget(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}}, 3)
+	if !report.Truncated {
+		t.Fatalf("report = %+v, want Truncated when flat files exceed the entry budget", report)
+	}
+	if report.FailureCount != 0 {
+		t.Fatalf("FailureCount = %d, want 0; budget exhaustion is not a coverage failure", report.FailureCount)
+	}
+}
+
+// TestCheckCoverage_FlatFilesUnderBudgetAreNotTruncated is the negative control
+// for the flat-file budget: a small tree must still complete.
+func TestCheckCoverage_FlatFilesUnderBudgetAreNotTruncated(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := checkCoverageWithBudget(context.Background(), &config.FileSentry{WatchPaths: []config.WatchPath{{Path: root}}}, 8)
+	if report.Truncated || report.FailureCount != 0 || report.NoWatchablePaths() {
+		t.Fatalf("report = %+v, want a complete one-dir walk", report)
+	}
+	if report.WatchablePaths != 1 {
+		t.Fatalf("WatchablePaths = %d, want the root directory only", report.WatchablePaths)
+	}
+}

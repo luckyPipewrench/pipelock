@@ -133,8 +133,18 @@ func TestEmitter_RetireNativeAELBricksFurtherEmission(t *testing.T) {
 	}
 
 	// Retiring twice must stay safe: reload paths can race a second rotation.
+	// Safe means still terminal, not merely a nil return. A second retirement
+	// that reactivated the emitter would satisfy a nil-error check and then
+	// let the next caller append under the rotated-out key, so re-assert the
+	// refusal and the receipt count afterwards.
 	if err := e.RetireNativeAEL(); err != nil {
 		t.Fatalf("second RetireNativeAEL: %v", err)
+	}
+	if err := emit(); err == nil {
+		t.Fatal("Emit succeeded after a second RetireNativeAEL; retirement must stay terminal")
+	}
+	if after := len(readReceiptsRaw(t, dir)); after != before {
+		t.Fatalf("receipt count went %d -> %d after a second retirement; the emitter was reactivated", before, after)
 	}
 }
 

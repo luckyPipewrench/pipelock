@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,6 +68,38 @@ func TestClient_List_RejectsDuplicateAndOversizedResponse(t *testing.T) {
 				t.Fatal("List accepted hostile admin response")
 			}
 		})
+	}
+}
+
+func TestClient_List_RejectsInterruptedResponse(t *testing.T) {
+	bodyBytes, err := json.Marshal(listResponse{Sessions: makeSnapshotList(), Count: 1})
+	if err != nil {
+		t.Fatalf("marshal valid list response: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack response: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if _, err := fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(bodyBytes)+1, bodyBytes); err != nil {
+			t.Errorf("write truncated response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	c := newClient(endpoint{URL: srv.URL, Token: testToken})
+	resp, err := c.List(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "read response") {
+		t.Fatalf("List error = %v, want interrupted response read error", err)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("List error = %v, want io.ErrUnexpectedEOF", err)
+	}
+	if resp.Count != 0 || len(resp.Sessions) != 0 {
+		t.Fatalf("List accepted partial response: %+v", resp)
 	}
 }
 

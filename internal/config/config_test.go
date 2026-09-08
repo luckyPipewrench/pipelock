@@ -16320,6 +16320,44 @@ func TestValidate_SandboxBestEffortExpiryHorizon(t *testing.T) {
 	}
 }
 
+func TestBestEffortConfigHorizon_RefusesLoadAndDoesNotPublishReload(t *testing.T) {
+	expiry := time.Now().Add(60 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	yaml := "sandbox:\n  best_effort: true\n  best_effort_reason: container user namespaces disabled\n  best_effort_expiry: " + expiry + "\n"
+	if _, err := LoadBytes([]byte(yaml)); err == nil || !strings.Contains(err.Error(), "more than 720h0m0s after now") {
+		t.Fatalf("LoadBytes() error = %v, want horizon refusal", err)
+	}
+
+	old := Defaults()
+	old.Sandbox.BestEffort = true
+	old.Sandbox.BestEffortReason = "container user namespaces disabled"
+	old.Sandbox.BestEffortExpiry = time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	updated := *old
+	updated.Sandbox = old.Sandbox
+	updated.Sandbox.BestEffortExpiry = expiry
+	warned := false
+	for _, warning := range ValidateReload(old, &updated) {
+		if warning.Field == fieldSandbox {
+			warned = true
+			break
+		}
+	}
+	if !warned {
+		t.Fatal("ValidateReload() must flag a changed best_effort_expiry for restart")
+	}
+
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	reloader := NewReloader(path)
+	reloader.tryReload()
+	select {
+	case cfg := <-reloader.Changes():
+		t.Fatalf("reloader published invalid config: %+v", cfg.Sandbox)
+	default:
+	}
+}
+
 func TestValidateBestEffortAuthorization_HorizonIsMeasuredFromNow(t *testing.T) {
 	// The horizon is relative to validation time, not to any timestamp in the
 	// file, so a config validated later against the same expiry stays inside
@@ -16334,6 +16372,42 @@ func TestValidateBestEffortAuthorization_HorizonIsMeasuredFromNow(t *testing.T) 
 	}
 	if err := validateBestEffortAuthorization("sandbox", "reason", expiry, now.Add(MaxBestEffortConfigHorizon)); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expiry reached must be refused as expired, got %v", err)
+	}
+}
+
+func TestValidateBestEffortAuthorization_RFC3339Boundaries(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name    string
+		expiry  string
+		wantErr string
+	}{
+		{
+			name:   "horizon in a positive offset",
+			expiry: now.Add(MaxBestEffortConfigHorizon).In(time.FixedZone("+05", 5*60*60)).Format(time.RFC3339),
+		},
+		{
+			name:   "RFC3339Nano timestamp",
+			expiry: now.Add(time.Hour + time.Nanosecond).Format(time.RFC3339Nano),
+		},
+		{
+			name:    "leap second is rejected",
+			expiry:  "2026-09-08T12:00:60Z",
+			wantErr: "must be an RFC3339 timestamp",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBestEffortAuthorization("sandbox", "reason", tt.expiry, now)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateBestEffortAuthorization() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateBestEffortAuthorization() error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -16366,6 +16440,76 @@ func TestValidate_AgentSandboxBestEffortAuthorization(t *testing.T) {
 			cfg.Internal = nil
 			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 			cfg.Agents = map[string]AgentProfile{"worker": {Sandbox: tt.override}}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidate_AgentSandboxBestEffortAndStrictRespectInheritedValues(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+
+	for _, tt := range []struct {
+		name     string
+		base     Sandbox
+		override *AgentSandboxOverride
+		wantErr  string
+	}{
+		{
+			name: "profile strict inherits top-level best effort",
+			base: Sandbox{
+				BestEffort:       true,
+				BestEffortReason: "container user namespaces disabled",
+				BestEffortExpiry: future,
+			},
+			override: &AgentSandboxOverride{Strict: boolPtr(true)},
+			wantErr:  "agents.worker.sandbox: best_effort and strict are mutually exclusive",
+		},
+		{
+			name: "profile best effort inherits top-level strict",
+			base: Sandbox{
+				Strict: true,
+			},
+			override: &AgentSandboxOverride{
+				BestEffort:       boolPtr(true),
+				BestEffortReason: "container user namespaces disabled",
+				BestEffortExpiry: future,
+			},
+			wantErr: "agents.worker.sandbox: best_effort and strict are mutually exclusive",
+		},
+		{
+			name: "profile inherits top-level best effort authorization",
+			base: Sandbox{
+				BestEffort:       true,
+				BestEffortReason: "container user namespaces disabled",
+				BestEffortExpiry: future,
+			},
+			override: &AgentSandboxOverride{Enabled: boolPtr(true)},
+		},
+		{
+			name: "profile explicitly keeps inherited strict without best effort",
+			base: Sandbox{
+				Strict: true,
+			},
+			override: &AgentSandboxOverride{BestEffort: boolPtr(false)},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
+			cfg.Sandbox = tt.base
+			cfg.Agents = map[string]AgentProfile{"worker": {Sandbox: tt.override}}
+
 			err := cfg.Validate()
 			if tt.wantErr == "" {
 				if err != nil {

@@ -2297,6 +2297,8 @@ CIDRs must not overlap between different agents (containment and exact matches a
 
 An agent profile may carry a `sandbox` block that overrides the top-level sandbox settings for that agent. Boolean fields left unset inherit the top-level value; filesystem paths are appended to the top-level policy.
 
+The expiry below is a template, not a ready-to-run value. Replace it before use with a future RFC3339 timestamp no more than 30 days away.
+
 ```yaml
 agents:
   ci-runner:
@@ -2304,7 +2306,7 @@ agents:
     sandbox:
       best_effort: true
       best_effort_reason: "runner image blocks user namespaces"
-      best_effort_expiry: "2026-10-01T00:00:00Z"
+      best_effort_expiry: "<replace with an RFC3339 timestamp within 30 days>"
 ```
 
 A profile that sets `best_effort: true` must carry its own `best_effort_reason` and `best_effort_expiry`; it never inherits them from the top-level block, so one override cannot ride on an authorization written for a different scope. The same rules apply as at the top level: the expiry is an RFC3339 timestamp (durations are command-line only), it must be in the future, and it may lie at most 30 days after validation time. A profile that sets `best_effort: false` drops the top-level authorization for that agent. Supplying a reason or expiry without `best_effort: true` in the same profile is refused, so a profile cannot read as authorized while the override is off. Changing any of these fields on reload produces the same restart warning as the top-level sandbox block.

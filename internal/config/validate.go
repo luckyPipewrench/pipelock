@@ -3475,13 +3475,13 @@ func (c *Config) validateAgents() error {
 		if err := ap.Budget.ValidateDoW(); err != nil {
 			return fmt.Errorf("agents.%s.budget: %w", name, err)
 		}
-		// A per-agent best_effort override carries the same authorization the
-		// top-level block requires. Checked here for OSS and enterprise alike:
-		// OSS never applies profiles, but a config that would be refused once a
-		// license arrives should be refused before it.
-		if err := validateAgentSandboxOverride(name, ap.Sandbox, time.Now()); err != nil {
-			return err
-		}
+	}
+	// A per-agent best_effort override carries the same authorization the
+	// top-level block requires. The loader also runs this before license gating
+	// so an unlicensed named profile cannot hide a malformed override until a
+	// license arrives.
+	if err := c.validateAgentSandboxOverrides(time.Now()); err != nil {
+		return err
 	}
 	// Validate agent profiles (enterprise hook; nil in OSS).
 	if ValidateAgentsFunc != nil {
@@ -3780,23 +3780,40 @@ func validateBestEffortAuthorization(field, reason, expiry string, now time.Time
 	return nil
 }
 
+// validateAgentSandboxOverrides checks every profile against the effective
+// top-level sandbox state that profile inherits.
+func (c *Config) validateAgentSandboxOverrides(now time.Time) error {
+	for name, ap := range c.Agents {
+		if err := validateAgentSandboxOverride(name, c.Sandbox, ap.Sandbox, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // validateAgentSandboxOverride applies the top-level best_effort authorization
 // rules to one agent profile's sandbox override. The profile must carry its
 // own reason and expiry; inheriting them from the top-level block would let a
 // per-agent override ride on an authorization written for a different scope.
 // Reason and expiry without an enabling best_effort are refused too, so a
 // profile cannot look authorized while the override is actually off.
-func validateAgentSandboxOverride(name string, override *AgentSandboxOverride, now time.Time) error {
+func validateAgentSandboxOverride(name string, base Sandbox, override *AgentSandboxOverride, now time.Time) error {
 	if override == nil {
 		return nil
 	}
 	field := fmt.Sprintf("agents.%s.sandbox", name)
-	bestEffort := override.BestEffort != nil && *override.BestEffort
-	strict := override.Strict != nil && *override.Strict
+	bestEffort := base.BestEffort
+	if override.BestEffort != nil {
+		bestEffort = *override.BestEffort
+	}
+	strict := base.Strict
+	if override.Strict != nil {
+		strict = *override.Strict
+	}
 	if bestEffort && strict {
 		return fmt.Errorf("%s: best_effort and strict are mutually exclusive", field)
 	}
-	if bestEffort {
+	if override.BestEffort != nil && *override.BestEffort {
 		return validateBestEffortAuthorization(field, override.BestEffortReason, override.BestEffortExpiry, now)
 	}
 	if strings.TrimSpace(override.BestEffortReason) != "" || strings.TrimSpace(override.BestEffortExpiry) != "" {

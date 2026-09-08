@@ -131,6 +131,18 @@ func TestAgentProfileParsing(t *testing.T) {
 	}
 }
 
+func TestLoadBytes_RejectsInvalidNamedAgentSandboxBeforeLicenseGate(t *testing.T) {
+	_, err := config.LoadBytes([]byte(`
+agents:
+  worker:
+    sandbox:
+      best_effort: true
+`))
+	if err == nil || !strings.Contains(err.Error(), "agents.worker.sandbox: best_effort_reason is required") {
+		t.Fatalf("LoadBytes() error = %v, want named agent sandbox authorization refusal before license gating", err)
+	}
+}
+
 // Integration tests: Validate() calls ValidateAgentsFunc hook.
 
 func TestValidateAgentsDuplicateListeners(t *testing.T) {

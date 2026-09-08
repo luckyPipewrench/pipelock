@@ -136,6 +136,15 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 
 	cfg.ApplyDefaults()
 
+	// Validate named-agent sandbox overrides before the enterprise license gate
+	// can strip named profiles. A configuration must not become valid merely
+	// because its currently unavailable edition would ignore the bad profile.
+	if !opts.skipValidate && (opts.resolveLicense || opts.fullValidateWithoutLicense) {
+		if err := cfg.validateAgentSandboxOverrides(time.Now()); err != nil {
+			return nil, fmt.Errorf("invalid config: %w", err)
+		}
+	}
+
 	if opts.resolveLicense {
 		// Resolve license key from multiple sources. Priority:
 		// - PIPELOCK_LICENSE_KEY env var (containers, CI)

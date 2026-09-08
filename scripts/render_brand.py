@@ -22,6 +22,7 @@ FOOTER = "Apache 2.0 core  ·  maintained by PipeLab"
 
 
 def mark() -> str:
+    """The padlock mark itself, the one shape every other asset is built from."""
     return f'''  <g aria-label="Pipelock lock mark">
     <path d="M72 112V68C72 35 93 18 120 18S168 35 168 68V112" fill="none" stroke="{ACCENT}" stroke-width="22" stroke-linecap="round"/>
     <rect x="46" y="104" width="148" height="110" rx="14" fill="{ELEVATED}" stroke="{ACCENT}" stroke-width="3"/>
@@ -32,6 +33,7 @@ def mark() -> str:
 
 
 def logo() -> str:
+    """The mark alone on a square canvas, the source of every raster size."""
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-label="Pipelock logo">
 {mark()}
 </svg>
@@ -39,6 +41,7 @@ def logo() -> str:
 
 
 def favicon() -> str:
+    """The mark trimmed for the small sizes a browser tab actually renders."""
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Pipelock favicon">
   <rect width="64" height="64" rx="12" fill="{ELEVATED}"/><g transform="translate(8 8) scale(.2)">{mark()}</g>
 </svg>
@@ -46,6 +49,7 @@ def favicon() -> str:
 
 
 def lockup() -> str:
+    """The horizontal lockup: mark left, wordmark and tagline right."""
     # The mark's right edge lands at x=90.5 after the scale above, and the
     # wordmark's cap height is 39 units at font-size 52. The gap between them is
     # 0.75 of that cap height, which is the spacing unit the brand guidelines
@@ -60,6 +64,7 @@ def lockup() -> str:
 
 
 def stacked_lockup() -> str:
+    """The vertical lockup: mark above, wordmark and tagline beneath."""
     # The mark's lower edge is at y=214 and the wordmark's cap height is 39 at
     # font-size 52, so a baseline of 281 leaves 0.75 of a cap height between
     # them, matching the horizontal lockup. The wordmark used to sit at 258,
@@ -75,6 +80,7 @@ def stacked_lockup() -> str:
 
 
 def particles() -> str:
+    """Scatter the background dots of the preview card, deterministically."""
     rng = random.Random(340)
     pts = []
     while len(pts) < 42:
@@ -95,6 +101,7 @@ def particles() -> str:
 
 
 def social_preview() -> str:
+    """The wide link-preview card: mark, wordmark, tagline and footer."""
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="Pipelock. Agent firewall with signed decision evidence. {FOOTER}.">
   <defs>
     <radialGradient id="teal" cx="28%" cy="22%" r="58%"><stop offset="0" stop-color="{ACCENT}" stop-opacity=".22"/><stop offset="1" stop-color="{ACCENT}" stop-opacity="0"/></radialGradient>
@@ -128,6 +135,8 @@ ICON_SIZES = (16, 32, 48, 64, 128, 256, 512, 1024)
 ICON_DIR = "icons"
 ICO_SIZES = (16, 32, 48, 64, 128, 256)
 ICO_NAME = "icons/pipelock.ico"
+# Bound each renderer so a hung export fails loudly rather than never returning.
+RENDER_TIMEOUT_SECONDS = 300
 
 
 def icon_rasters() -> dict[str, tuple[str, int]]:
@@ -139,6 +148,7 @@ def icon_rasters() -> dict[str, tuple[str, int]]:
 
 
 def source_file(png: str) -> Path:
+    """Where the provenance record for one raster lives."""
     return ASSETS / f"{png}.source"
 
 
@@ -146,6 +156,28 @@ def raster_fingerprint(png: Path, svg: Path) -> str:
     """Bind a raster provenance record to both its SVG source and PNG bytes."""
     svg_bytes = svg.read_bytes().replace(b"\r\n", b"\n")
     return f"svg {hashlib.sha256(svg_bytes).hexdigest()}\npng {hashlib.sha256(png.read_bytes()).hexdigest()}\n"
+
+
+def _run_renderer(command: list[str], failure: str) -> None:
+    """Run one renderer, bounded, and report what it actually said on failure.
+
+    A renderer that hangs would otherwise block the export forever, and an
+    unbounded CalledProcessError traceback shows the command and exit status
+    while discarding the captured stderr, which is the only part that says why.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            command, check=False, capture_output=True, text=True, timeout=RENDER_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"render_brand: {failure}: no output after {RENDER_TIMEOUT_SECONDS}s"
+        ) from None
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "no diagnostics on either stream"
+        raise SystemExit(f"render_brand: {failure} (exit {result.returncode}):\n{detail}")
 
 
 def _rasterize(svg: Path, png: Path, size: int) -> None:
@@ -166,7 +198,7 @@ def _rasterize(svg: Path, png: Path, size: int) -> None:
             "install it or leave the committed PNGs untouched"
         )
     png.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
+    _run_renderer(
         [
             inkscape,
             str(svg),
@@ -176,8 +208,7 @@ def _rasterize(svg: Path, png: Path, size: int) -> None:
             f"--export-height={size}",
             "--export-background-opacity=0",
         ],
-        check=True,
-        capture_output=True,
+        f"inkscape failed rendering {svg.name} at {size}px",
     )
 
 
@@ -190,8 +221,9 @@ def _write_ico(pngs: list[Path], target: Path) -> None:
     if magick is None:
         raise SystemExit("render_brand: ImageMagick is required to build the .ico")
     target.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [magick, *[str(p) for p in pngs], str(target)], check=True, capture_output=True
+    _run_renderer(
+        [magick, *[str(p) for p in pngs], str(target)],
+        f"ImageMagick failed building {target.name}",
     )
 
 
@@ -231,6 +263,7 @@ def render_rasters() -> int:
 
 
 def check() -> list[str]:
+    """Every committed brand asset that is missing, stale, or off-palette."""
     problems = []
     for filename, render in GENERATED.items():
         path = ASSETS / filename
@@ -247,22 +280,24 @@ def check() -> list[str]:
             problems.append(f"assets/{png}: PNG or assets/{svg} changed since export")
     # The ladder is verified the same way as the other rasters: a raster whose
     # bytes or SVG source moved since export is reported, never silently kept.
-    for png, (svg, size) in icon_rasters().items():
+    for png, (svg, _size) in icon_rasters().items():
         png_path = ASSETS / png
         svg_path = ASSETS / svg
         stamp = source_file(png)
-        if not png_path.exists() or not stamp.exists():
+        # The vector is checked here too. Without it a deleted SVG reaches
+        # raster_fingerprint, which reads it and raises, so check-brand ends in a
+        # traceback instead of naming the missing asset.
+        if not png_path.exists() or not svg_path.exists() or not stamp.exists():
             problems.append(f"assets/{png}: raster or provenance sidecar missing")
             continue
         if stamp.read_text(encoding="utf-8") != raster_fingerprint(png_path, svg_path):
             problems.append(f"assets/{png}: PNG or assets/{svg} changed since export")
     ico_path = ASSETS / ICO_NAME
     ico_stamp = source_file(ICO_NAME)
-    if not ico_path.exists() or not ico_stamp.exists():
+    ico_svg = ASSETS / "pipelock-logo.svg"
+    if not ico_path.exists() or not ico_stamp.exists() or not ico_svg.exists():
         problems.append(f"assets/{ICO_NAME}: icon bundle or provenance sidecar missing")
-    elif ico_stamp.read_text(encoding="utf-8") != raster_fingerprint(
-        ico_path, ASSETS / "pipelock-logo.svg"
-    ):
+    elif ico_stamp.read_text(encoding="utf-8") != raster_fingerprint(ico_path, ico_svg):
         problems.append(f"assets/{ICO_NAME}: bundle or its SVG source changed since export")
     for path in (ASSETS / "pipelock-logo.svg", ASSETS / "pipelock-favicon.svg", ASSETS / "social-preview.svg"):
         if path.exists() and "#00ffc8" in path.read_text(encoding="utf-8").lower():
@@ -271,6 +306,7 @@ def check() -> list[str]:
 
 
 def main() -> int:
+    """Write the brand assets, or compare them without writing under --check."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--stamp-png", action="store_true")

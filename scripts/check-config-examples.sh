@@ -143,6 +143,7 @@ fragment_expected_error() {
         mediation-signing | federation-inbound-key) echo "mediation_envelope.verify_inbound.trust_list[0].public_key" ;;
         conductor-follower) echo "flight_recorder.signing_key_path required when conductor.enabled is true" ;;
         learn-lock) echo "learn_lock.pinned_root_fingerprint" ;;
+        agent-sandbox-best-effort) echo "best_effort_expiry must be an RFC3339 timestamp" ;;
         *) echo "" ;;
     esac
 }

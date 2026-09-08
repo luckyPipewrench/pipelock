@@ -1533,7 +1533,7 @@ func TestMergeAgentProfile_SandboxBestEffortCarriesAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeAgentProfile: %v", err)
 	}
-	if !merged.Sandbox.BestEffort || merged.Sandbox.BestEffortReason != "top-level override" {
+	if !merged.Sandbox.BestEffort || merged.Sandbox.BestEffortReason != "top-level override" || merged.Sandbox.BestEffortExpiry != expiry {
 		t.Fatal("a profile that says nothing about best_effort must inherit the top-level override and its authorization")
 	}
 }

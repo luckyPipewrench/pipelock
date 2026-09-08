@@ -2299,7 +2299,8 @@ An agent profile may carry a `sandbox` block that overrides the top-level sandbo
 
 The expiry below is a template, not a ready-to-run value. Replace it before use with a future RFC3339 timestamp no more than 30 days away.
 
-```yaml
+```yaml pipelock-fragment
+# pipelock-fragment-id: agent-sandbox-best-effort
 agents:
   ci-runner:
     listeners: [":8891"]

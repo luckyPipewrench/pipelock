@@ -198,6 +198,15 @@ func (fb *FragmentBuffer) AppendOwnedInGroup(owner, group, streamKey string, pay
 // buffer contents can do so atomically with the append itself.
 func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload []byte) FragmentAppendResult {
 	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
+	// Normalized once here so everything below can assume a non-empty owner:
+	// a caller that keeps one stream per client passes no owner, and that
+	// stream is then its own identity.
+	if owner == "" {
+		owner = streamID
+	}
+	if group == "" {
+		group = streamID
+	}
 	sb, exists := fb.sessions[streamKey]
 	if !exists {
 		if !fb.canAdmitOwnerLocked(owner) {
@@ -235,21 +244,12 @@ func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload [
 	}
 	// The per-stream cap above bounds one stream; this bounds the identity that
 	// owns it, which is the unit the ledger admits.
-	fb.enforceOwnerBudgetLocked(ownerFor(owner, streamID), streamID)
+	fb.enforceOwnerBudgetLocked(owner, streamID)
 	return FragmentAppendResult{}
 }
 
 func (fb *FragmentBuffer) sessionCountLocked() int {
 	return len(fb.owners)
-}
-
-// ownerFor resolves the identity an append is charged to. An empty owner means
-// the caller keeps one stream per client, so the stream is its own identity.
-func ownerFor(owner, streamID string) string {
-	if owner == "" {
-		return streamID
-	}
-	return owner
 }
 
 func fragmentStreamID(kind, streamKey string) string {
@@ -275,16 +275,10 @@ func (fb *FragmentBuffer) streamOwnedByLocked(streamID, owner string) bool {
 	if !ok {
 		return false
 	}
-	if owner == "" {
-		return recorded == streamID
-	}
 	return recorded == owner
 }
 
 func (fb *FragmentBuffer) trackOwnerStreamLocked(owner, group, streamID string) {
-	if owner == "" {
-		owner = streamID
-	}
 	fb.streamOwners[streamID] = owner
 	state := fb.owners[owner]
 	if state == nil {
@@ -296,9 +290,6 @@ func (fb *FragmentBuffer) trackOwnerStreamLocked(owner, group, streamID string) 
 		fb.owners[owner] = state
 	}
 	state.streams[streamID] = struct{}{}
-	if group == "" {
-		group = streamID
-	}
 	state.groupOf[streamID] = group
 	if state.budgets[group] == nil {
 		state.budgets[group] = make(map[string]struct{})
@@ -342,17 +333,12 @@ func (fb *FragmentBuffer) groupBytesLocked(members map[string]struct{}) int {
 	return total
 }
 
+// streamBytesLocked reports one grouped stream's retained bytes. Only data
+// streams are ever grouped: a session has exactly one path stream, so it keeps
+// the plain per-stream cap and never shares a budget.
 func (fb *FragmentBuffer) streamBytesLocked(streamID string) int {
-	kind, key := streamID[:len(fragmentStreamKindData)], streamID[len(fragmentStreamKindData):]
-	switch kind {
-	case fragmentStreamKindData:
-		if sb := fb.sessions[key]; sb != nil {
-			return sb.totalBytes
-		}
-	case fragmentStreamKindPath:
-		if ps := fb.pathSessions[key]; ps != nil {
-			return ps.totalBytes
-		}
+	if sb := fb.sessions[strings.TrimPrefix(streamID, fragmentStreamKindData)]; sb != nil {
+		return sb.totalBytes
 	}
 	return 0
 }
@@ -392,58 +378,24 @@ func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
 // from spinning.
 func (fb *FragmentBuffer) evictOldestOwnerFragmentLocked(members map[string]struct{}) bool {
 	var (
-		oldest    *[]fragment
-		oldestAt  time.Time
-		container interface{ addBytes(int) }
-		found     bool
+		oldest   *sessionBuffer
+		oldestAt time.Time
 	)
 	for streamID := range members {
-		kind, key := streamID[:len(fragmentStreamKindData)], streamID[len(fragmentStreamKindData):]
-		switch kind {
-		case fragmentStreamKindData:
-			sb := fb.sessions[key]
-			if sb == nil || len(sb.fragments) == 0 {
-				continue
-			}
-			if !found || sb.fragments[0].at.Before(oldestAt) {
-				oldest, oldestAt, container, found = &sb.fragments, sb.fragments[0].at, sb, true
-			}
-		case fragmentStreamKindPath:
-			ps := fb.pathSessions[key]
-			if ps == nil {
-				continue
-			}
-			for _, pb := range ps.positions {
-				if len(pb.fragments) == 0 {
-					continue
-				}
-				if !found || pb.fragments[0].at.Before(oldestAt) {
-					oldest, oldestAt, container, found = &pb.fragments, pb.fragments[0].at, pathBytesAdder{ps: ps, pb: pb}, true
-				}
-			}
+		sb := fb.sessions[strings.TrimPrefix(streamID, fragmentStreamKindData)]
+		if sb == nil || len(sb.fragments) == 0 {
+			continue
+		}
+		if oldest == nil || sb.fragments[0].at.Before(oldestAt) {
+			oldest, oldestAt = sb, sb.fragments[0].at
 		}
 	}
-	if !found {
+	if oldest == nil {
 		return false
 	}
-	removed := len((*oldest)[0].data)
-	*oldest = (*oldest)[1:]
-	container.addBytes(-removed)
+	oldest.totalBytes -= len(oldest.fragments[0].data)
+	oldest.fragments = oldest.fragments[1:]
 	return true
-}
-
-func (sb *sessionBuffer) addBytes(delta int) { sb.totalBytes += delta }
-
-// pathBytesAdder keeps a path position's byte total and its session total in
-// step, because both are consulted independently.
-type pathBytesAdder struct {
-	ps *pathSessionBuffer
-	pb *pathPositionBuffer
-}
-
-func (a pathBytesAdder) addBytes(delta int) {
-	a.pb.totalBytes += delta
-	a.ps.totalBytes += delta
 }
 
 // minFragmentsForMatch is the minimum number of in-window fragments a session
@@ -518,6 +470,9 @@ func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segme
 	fb.maybeCleanupLocked(time.Now())
 
 	pathStreamID := fragmentStreamID(fragmentStreamKindPath, streamKey)
+	if owner == "" {
+		owner = pathStreamID
+	}
 	ps, exists := fb.pathSessions[streamKey]
 	if !exists {
 		if !fb.canAdmitOwnerLocked(owner) {
@@ -555,8 +510,9 @@ func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segme
 		// half of a split secret after an attacker primed it earlier.
 		fb.appendPathFragmentLocked(ps, pb, segment)
 	}
+	// A session has exactly one path stream, so enforcePathMaxBytesLocked above
+	// is already its whole budget; there is no group for it to share.
 	fb.enforcePathMaxBytesLocked(ps)
-	fb.enforceOwnerBudgetLocked(ownerFor(owner, pathStreamID), pathStreamID)
 	return FragmentAppendResult{}
 }
 

@@ -695,6 +695,57 @@ func TestCeeRecordMCP_DoesNotJoinSamePathValuesAcrossTools(t *testing.T) {
 	}
 }
 
+// The ownership guard's failure direction on the MCP transport. A stream that
+// already holds another identity's evidence cannot accept this frame, and the
+// frame must be reported as uninspected rather than scanned against a blend of
+// two sessions' data. Production keys embed the session key, so the conflict is
+// seeded here by claiming the exact key this frame will use.
+func TestCeeRecordMCP_OwnerMismatchFailsClosed(t *testing.T) {
+	buffer := scanner.NewFragmentBuffer(1024, 10, testMCPWindowSecs)
+	t.Cleanup(buffer.Close)
+	cee := &CEEDeps{
+		Buffer: buffer,
+		Config: &config.CrossRequestDetection{
+			Action: config.ActionBlock,
+			FragmentReassembly: config.CrossRequestFragments{
+				Enabled:        true,
+				MaxBufferBytes: 1024,
+				WindowMinutes:  testMCPWindowSecs / 60,
+			},
+		},
+	}
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	var logBuf bytes.Buffer
+
+	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///tmp/x"}}`))
+	record := func() string {
+		return ceeRecordMCP(ceeRecordMCPOptions{
+			sessionKey: testMCPSessionKey, entropyPayload: frame.Raw, frame: frame,
+			cee: cee, sc: sc, logW: &logBuf,
+		})
+	}
+
+	// Control: the same frame is admitted while the stream is unclaimed, so the
+	// block below is attributable to ownership rather than to the setup.
+	if reason := record(); reason != "" {
+		t.Fatalf("unclaimed stream = %q, want admission", reason)
+	}
+
+	buffer.Close()
+	fragmentKey := mcpCEEFragmentSessionKey(testMCPSessionKey, "")
+	if seeded := buffer.AppendOwned("another-session", fragmentKey, []byte("foreign")); seeded.OwnerMismatch {
+		t.Fatalf("seeding a foreign-owned stream = %+v, want admission", seeded)
+	}
+	reason := record()
+	if !strings.Contains(reason, "belongs to another identity") {
+		t.Fatalf("reason = %q, want a fail-closed ownership block", reason)
+	}
+	if strings.Contains(reason, "max_sessions") {
+		t.Fatalf("reason = %q, must not name a control that cannot fix this", reason)
+	}
+}
+
 func TestCeeRecordMCP_HighLeafFallbackPreservesExistingFragment(t *testing.T) {
 	buffer := scanner.NewFragmentBuffer(64, 3, testMCPWindowSecs)
 	t.Cleanup(buffer.Close)

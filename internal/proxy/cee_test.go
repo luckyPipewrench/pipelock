@@ -345,6 +345,63 @@ func TestResetCEEStateClearsJSONBodyStreams(t *testing.T) {
 	}
 }
 
+// The ownership guard's failure direction, at the gate rather than the buffer.
+// A stream that already holds another identity's evidence cannot accept this
+// request's fragment, and the request must be reported as uninspected instead
+// of being scanned against a blend of two clients' data. Unreachable through
+// production keys, which embed the session key, so it is driven here by
+// seeding the exact key the gate will use under a different owner.
+func TestCEEFragmentOwnerMismatchFailsClosed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = config.ActionBlock
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 1024
+	cfg.CrossRequestDetection.FragmentReassembly.MaxSessions = 10
+	cfg.ApplyDefaults()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := scanner.NewFragmentBuffer(1024, 10, 300)
+	t.Cleanup(fb.Close)
+	logger := audit.NewNop()
+	m := metrics.New()
+
+	const sessionKey = "victim-session"
+	admit := func() ceeResult {
+		return ceeAdmit(t.Context(), ceeAdmitOptions{
+			SessionKey: sessionKey, Outbound: []byte("ordinary"),
+			TargetURL: "http://api.vendor.example", Config: cfg.CrossRequestDetection,
+			Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
+		})
+	}
+
+	// Control: the same call is admitted when the stream is unclaimed, so a
+	// block below is attributable to ownership and not to the setup.
+	if control := admit(); control.Blocked {
+		t.Fatalf("unclaimed stream = %+v, want admission", control)
+	}
+
+	fb.Close()
+	if seeded := fb.AppendOwned("another-identity", sessionKey, []byte("foreign")); seeded.OwnerMismatch || seeded.CapacityExceeded {
+		t.Fatalf("seeding a foreign-owned stream = %+v, want admission", seeded)
+	}
+	result := admit()
+	if !result.Blocked {
+		t.Fatalf("foreign-owned stream = %+v, want fail-closed block", result)
+	}
+	if !strings.Contains(result.Reason, "belongs to another identity") {
+		t.Fatalf("reason = %q, want it to name the ownership conflict", result.Reason)
+	}
+	// The remedy must not point at a tunable: no configuration permits blending
+	// two identities' fragments, so naming one would teach the operator that
+	// policy changed when nothing did.
+	if strings.Contains(result.Reason, "max_sessions") {
+		t.Fatalf("reason = %q, must not name a control that cannot fix this", result.Reason)
+	}
+}
+
 func TestCEEFragmentGlobalCapacityFailsClosed(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

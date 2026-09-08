@@ -118,6 +118,43 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 	}
 }
 
+func TestReceiptsCmdDoesNotWriteArtifactsWhenLocalSubmitFails(t *testing.T) {
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	logParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(logParent, []byte("regular file"), 0o600); err != nil {
+		t.Fatalf("WriteFile log parent: %v", err)
+	}
+	logPath := filepath.Join(logParent, "anchor.jsonl")
+	bundlePath := filepath.Join(filepath.Dir(receiptsPath), "bundle.json")
+
+	cmd := receiptsCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyHex,
+		"--local-log", logPath,
+		"--out", bundlePath,
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "create local anchor log lock directory") {
+		t.Fatalf("Execute error = %v, want local submit failure", err)
+	}
+	if strings.Contains(out.String(), "ANCHOR BUNDLE WRITTEN") {
+		t.Fatalf("success output after failed local submit: %q", out.String())
+	}
+	if _, err := os.Stat(bundlePath); !os.IsNotExist(err) {
+		t.Fatalf("bundle after failed local submit = %v, want absent", err)
+	}
+	markers, err := anchorpkg.LoadStateMarkers(filepath.Dir(receiptsPath))
+	if err != nil {
+		t.Fatalf("LoadStateMarkers: %v", err)
+	}
+	if len(markers) != 0 {
+		t.Fatalf("state markers after failed local submit = %+v, want none", markers)
+	}
+}
+
 func TestReceiptsCmdRefusesOutputAliasingKeyFile(t *testing.T) {
 	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T13:00:00Z")
 	receiptsPath, keyHex := cliReceiptJSONL(t)

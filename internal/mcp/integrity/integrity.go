@@ -754,5 +754,12 @@ func isInsideDir(path, dir string) bool {
 		return false
 	}
 
-	return !strings.HasPrefix(rel, "..")
+	// Compare against ".." as a whole path component, not as a string prefix.
+	// A bare prefix test also matches an ordinary name that merely starts with
+	// two dots, so a binary at <dir>/..name would be reported as OUTSIDE dir.
+	// Callers set Suspicious from this result, and false means not suspicious,
+	// so the loose form drops the warning for a binary an agent can write
+	// inside its own working directory. internal/securefile already uses this
+	// component-wise form for the same containment question.
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

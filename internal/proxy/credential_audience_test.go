@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -68,22 +69,68 @@ func TestCredentialAudienceHosts_WebSocketFrameAndFragmentedDirectText(t *testin
 	cfg.Internal = nil
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
-	key := "sk-" + "proj-" + strings.Repeat("a", 24)
-	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
-	relay := &wsRelay{scanner: sc, proxy: p, cfg: cfg, targetURL: "wss://api.openai.com/v1/realtime", hostname: "api.openai.com", path: "/v1/realtime", maxMsg: 1 << 20}
-	relay.resetCredentialAudienceAllows()
 
-	_, bodyResult := relay.scanClientMessageBody(context.Background(), []byte(`{"credential":"`+key+`"}`))
-	if !bodyResult.Clean {
-		t.Fatalf("WebSocket body path blocked audience credential: %+v", bodyResult)
+	for _, tc := range credentialAudienceCarrierCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			audienceTarget := strings.Replace(tc.target, "https://", "wss://", 1)
+
+			bodyRelay := newCredentialAudienceWebSocketRelay(sc, cfg, audienceTarget)
+			_, bodyResult := bodyRelay.scanClientMessageBody(context.Background(), []byte(`{"credential":"`+tc.credential+`"}`))
+			if !bodyResult.Clean {
+				t.Fatalf("WebSocket body path blocked audience credential: %+v", bodyResult)
+			}
+			assertCredentialAudienceWebSocketMetric(t, bodyRelay.proxy.metrics, tc.pattern)
+
+			directRelay := newCredentialAudienceWebSocketRelay(sc, cfg, audienceTarget)
+			if directRelay.scanClientText(context.Background(), audit.NewNop(), []byte(tc.credential)) {
+				t.Fatal("WebSocket direct text path blocked audience credential")
+			}
+			assertCredentialAudienceWebSocketMetric(t, directRelay.proxy.metrics, tc.pattern)
+
+			fragmentRelay := newCredentialAudienceWebSocketRelay(sc, cfg, audienceTarget)
+			// The complete match arrives across two frame-like pieces. This exercises
+			// the direct fragmented-text path, which has no independent authority.
+			if fragmentRelay.scanClientCrossMessageText(context.Background(), audit.NewNop(), []byte(tc.credential[:10]), []byte(tc.credential[10:])) {
+				t.Fatal("WebSocket fragmented direct text path blocked audience credential")
+			}
+			assertCredentialAudienceWebSocketMetric(t, fragmentRelay.proxy.metrics, tc.pattern)
+
+			blockedRelay := newCredentialAudienceWebSocketRelay(sc, cfg, "wss://api.vendor.example/v1")
+			_, blockedBody := blockedRelay.scanClientMessageBody(context.Background(), []byte(`{"credential":"`+tc.credential+`"}`))
+			if blockedBody.Clean {
+				t.Fatal("WebSocket body path allowed non-audience credential")
+			}
+			if !blockedRelay.scanClientText(context.Background(), audit.NewNop(), []byte(tc.credential)) {
+				t.Fatal("WebSocket direct text path allowed non-audience credential")
+			}
+			if !blockedRelay.scanClientCrossMessageText(context.Background(), audit.NewNop(), []byte(tc.credential[:10]), []byte(tc.credential[10:])) {
+				t.Fatal("WebSocket fragmented direct text path allowed non-audience credential")
+			}
+		})
 	}
-	if relay.scanClientText(context.Background(), audit.NewNop(), []byte(key)) {
-		t.Fatal("WebSocket direct text path blocked audience credential")
+}
+
+func newCredentialAudienceWebSocketRelay(sc *scanner.Scanner, cfg *config.Config, target string) *wsRelay {
+	return &wsRelay{
+		scanner:      sc,
+		proxy:        &Proxy{logger: audit.NewNop(), metrics: metrics.New()},
+		cfg:          cfg,
+		targetURL:    target,
+		hostname:     strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(target, "wss://"), "ws://"), "/v1"),
+		path:         "/v1",
+		maxMsg:       1 << 20,
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
 	}
-	// The complete match arrives across two frame-like pieces. This exercises
-	// the direct fragmented-text path, which has no independent authority.
-	if relay.scanClientCrossMessageText(context.Background(), audit.NewNop(), []byte(key[:10]), []byte(key[10:])) {
-		t.Fatal("WebSocket fragmented direct text path blocked audience credential")
+}
+
+func assertCredentialAudienceWebSocketMetric(t *testing.T, m *metrics.Metrics, pattern string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	want := `pipelock_dlp_credential_audience_allows_total{pattern="` + pattern + `",surface="websocket_frame"} 1`
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("credential audience WebSocket metric missing or not exactly one: want %q in %s", want, rec.Body.String())
 	}
 }
 

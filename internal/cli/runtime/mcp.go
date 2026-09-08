@@ -1785,7 +1785,7 @@ Key-free evidence capture:
 							_, _ = fmt.Fprintf(logW, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", armErr)
 							watcher = nil
 						} else {
-							return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
+							return fileSentryArmFailure(armErr)
 						}
 					}
 				}

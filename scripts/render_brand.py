@@ -60,10 +60,16 @@ def lockup() -> str:
 
 
 def stacked_lockup() -> str:
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="420" height="290" viewBox="0 0 420 290" role="img" aria-label="Pipelock stacked logo lockup">
+    # The mark's lower edge is at y=214 and the wordmark's cap height is 39 at
+    # font-size 52, so a baseline of 281 leaves 0.75 of a cap height between
+    # them, matching the horizontal lockup. The wordmark used to sit at 258,
+    # six units below the lock, close enough that the ascenders read as
+    # touching it. The canvas grew from 290 to 313 to keep the tagline's
+    # existing spacing below the wordmark.
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="420" height="313" viewBox="0 0 420 313" role="img" aria-label="Pipelock stacked logo lockup">
   <g transform="translate(90)">{mark()}</g>
-  <text x="210" y="258" text-anchor="middle" font-family="{MONO}" font-size="52" font-weight="700" letter-spacing="-.02em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
-  <text x="210" y="282" text-anchor="middle" font-family="{SANS}" font-size="14" fill="{MUTED}" letter-spacing=".286em">AGENT FIREWALL</text>
+  <text x="210" y="281" text-anchor="middle" font-family="{MONO}" font-size="52" font-weight="700" letter-spacing="-.02em"><tspan fill="{TEXT}">Pipe</tspan><tspan fill="{ACCENT}">lock</tspan></text>
+  <text x="210" y="305" text-anchor="middle" font-family="{SANS}" font-size="14" fill="{MUTED}" letter-spacing=".286em">AGENT FIREWALL</text>
 </svg>
 '''
 

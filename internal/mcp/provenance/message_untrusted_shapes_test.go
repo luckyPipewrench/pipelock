@@ -210,8 +210,12 @@ func TestEmbedMessageSignature_RejectsUnusableEnvelopes(t *testing.T) {
 		if err := json.Unmarshal(out, &env); err != nil {
 			t.Fatalf("unmarshal result: %v", err)
 		}
-		if _, ok := env.Meta["progressToken"]; !ok {
-			t.Error("embedding the signature dropped the caller's existing _meta key")
+		// Compare the value, not just the key's presence. Checking presence
+		// alone passes an implementation that rewrites the caller's token to
+		// null or to anything else, which breaks the caller just as surely as
+		// dropping the key would.
+		if got := string(env.Meta["progressToken"]); got != `"abc"` {
+			t.Errorf("progressToken = %s, want %q: embedding the signature must preserve the caller's existing _meta value", got, `"abc"`)
 		}
 		if _, ok := env.Meta[MessageMetaKey]; !ok {
 			t.Error("embedding the signature did not add the signature key")

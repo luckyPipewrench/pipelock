@@ -114,6 +114,36 @@ func TestCEEDepsReconfigure_RetiresAndRecreatesComponents(t *testing.T) {
 	}
 }
 
+func TestCEEDepsFragmentMaxSessionsAppliesAtConstructionAndReload(t *testing.T) {
+	cfg := config.CrossRequestDetection{
+		Enabled: true,
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled: true, MaxBufferBytes: 128, MaxSessions: 1, WindowMinutes: 5,
+		},
+	}
+	cee := NewCEEDeps(cfg, metrics.New())
+	_, buffer := cee.Components()
+	if buffer == nil {
+		t.Fatal("NewCEEDeps did not construct fragment buffer")
+	}
+	if result := buffer.Append("first", []byte("one")); result.CapacityExceeded {
+		t.Fatalf("first stream result = %+v, want admission", result)
+	}
+	if result := buffer.Append("second", []byte("two")); !result.CapacityExceeded {
+		t.Fatalf("second stream result = %+v, want configured capacity denial", result)
+	}
+
+	cfg.FragmentReassembly.MaxSessions = 2
+	cee.Reconfigure(cfg, metrics.New())
+	_, reloaded := cee.Components()
+	if reloaded != buffer {
+		t.Fatal("reload replaced fragment buffer instead of applying configured capacity")
+	}
+	if result := reloaded.Append("second", []byte("two")); result.CapacityExceeded {
+		t.Fatalf("reloaded second stream result = %+v, want admission", result)
+	}
+}
+
 func TestCEEDepsReconfigure_PreservesHistoryAndAppliesStricterPolicy(t *testing.T) {
 	cfg := config.CrossRequestDetection{
 		Enabled: true,

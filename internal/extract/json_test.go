@@ -5,6 +5,7 @@ package extract
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -216,6 +217,93 @@ func TestJSONLeafPayloadsPartial(t *testing.T) {
 			t.Fatalf("invalid partial payload = %#v, valid=%t", got, valid)
 		}
 	}
+}
+
+func TestJSONLeafBucketPayloadsKeepsEveryLeafWithinFixedBuckets(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 2, MaxPathBytes: 32}
+
+	t.Run("arrays and scalar kinds remain represented", func(t *testing.T) {
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`[null,2,true,"text"]`), limits, 8)
+		if !valid {
+			t.Fatal("valid scalar array was rejected")
+		}
+		var all strings.Builder
+		for _, value := range buckets {
+			all.Write(value)
+		}
+		for _, want := range []string{"2", "true", "text"} {
+			if !strings.Contains(all.String(), want) {
+				t.Fatalf("bucket output omitted %q: %#v", want, buckets)
+			}
+		}
+	})
+
+	t.Run("invalid input and limits fail closed", func(t *testing.T) {
+		for _, tt := range []struct {
+			raw     json.RawMessage
+			limits  JSONLeafLimits
+			buckets int
+		}{
+			{raw: json.RawMessage(`{"unterminated"`), limits: limits, buckets: 8},
+			{raw: json.RawMessage(`{"value":"ok"} trailing`), limits: limits, buckets: 8},
+			{raw: json.RawMessage(`{"value":"ok"}`), limits: JSONLeafLimits{}, buckets: 8},
+			{raw: json.RawMessage(`{"value":"ok"}`), limits: limits, buckets: 0},
+			{raw: json.RawMessage(`{"value":"ok"}`), limits: limits, buckets: maxJSONLeafBuckets + 1},
+		} {
+			if buckets, valid := JSONLeafBucketPayloads(tt.raw, tt.limits, tt.buckets); valid || buckets != nil {
+				t.Fatalf("invalid bucket extraction = %#v, valid=%t", buckets, valid)
+			}
+		}
+	})
+
+	if got := jsonLeafBucketIndex(nil, 0, 0, maxJSONLeafBuckets+1); got != 0 {
+		t.Fatalf("out-of-range bucket count index = %d, want 0", got)
+	}
+
+	t.Run("deep leaf uses a stable bucket", func(t *testing.T) {
+		first, valid := JSONLeafBucketPayloads(nestedJSON(66), limits, 8)
+		if !valid || len(first) != 1 {
+			t.Fatalf("first buckets = %#v, valid=%t", first, valid)
+		}
+		second, valid := JSONLeafBucketPayloads(nestedJSON(66), limits, 8)
+		if !valid || len(second) != 1 {
+			t.Fatalf("second buckets = %#v, valid=%t", second, valid)
+		}
+		for bucket, value := range first {
+			if string(value) != "deep" || string(second[bucket]) != "deep" {
+				t.Fatalf("deep value was not retained in stable bucket %q: first=%q second=%q", bucket, value, second[bucket])
+			}
+		}
+	})
+
+	t.Run("more paths than buckets retain first and last leaves", func(t *testing.T) {
+		var raw strings.Builder
+		raw.WriteByte('{')
+		for index := range 20 {
+			if index > 0 {
+				raw.WriteByte(',')
+			}
+			raw.WriteString(`"field_`)
+			raw.WriteString(strconv.Itoa(index))
+			raw.WriteString(`":"value_`)
+			raw.WriteString(strconv.Itoa(index))
+			raw.WriteByte('"')
+		}
+		raw.WriteByte('}')
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(raw.String()), limits, 4)
+		if !valid || len(buckets) > 4 {
+			t.Fatalf("buckets = %#v, valid=%t", buckets, valid)
+		}
+		var all strings.Builder
+		for _, value := range buckets {
+			all.Write(value)
+		}
+		for _, want := range []string{"value_0", "value_19"} {
+			if !strings.Contains(all.String(), want) {
+				t.Fatalf("bucket output omitted %q: %#v", want, buckets)
+			}
+		}
+	})
 }
 
 func TestAllStringsFromJSON_InvalidJSON(t *testing.T) {

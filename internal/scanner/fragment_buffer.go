@@ -64,9 +64,6 @@ type FragmentAppendResult struct {
 	// CapacityExceeded means a new session could not be admitted without
 	// discarding another session's accumulated detection state.
 	CapacityExceeded bool
-	// StreamLimitExceeded means the owning logical CEE session has reached its
-	// stream cap. The caller must retain a complete raw fallback for this input.
-	StreamLimitExceeded bool
 	// PathDepthExceeded means a URL carried more than MaxPathPositions
 	// non-empty segments. The caller must not treat the request as fully
 	// inspected: untracked positions could otherwise carry split fragments.
@@ -81,12 +78,9 @@ type FragmentBuffer struct {
 	mu           sync.Mutex
 	maxBytes     int // per-session byte cap
 	maxSessions  int // global session count cap (new sessions are denied at capacity)
-	maxStreams   int // per-logical-session stream cap
 	windowSecs   int // fragment retention window in seconds
 	sessions     map[string]*sessionBuffer
 	pathSessions map[string]*pathSessionBuffer
-	streamOwners map[string]string
-	ownerStreams map[string]int
 	lastCleanup  time.Time
 }
 
@@ -99,20 +93,8 @@ func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *Fragmen
 		windowSecs:   windowSecs,
 		sessions:     make(map[string]*sessionBuffer),
 		pathSessions: make(map[string]*pathSessionBuffer),
-		streamOwners: make(map[string]string),
-		ownerStreams: make(map[string]int),
 		lastCleanup:  time.Now(),
 	}
-	return fb
-}
-
-// NewFragmentBufferWithStreamLimit also bounds how many independently tracked
-// streams one logical session can create. The global cap remains fail-closed;
-// callers can safely omit a partition over this cap only when they retain a
-// complete raw stream for the same request.
-func NewFragmentBufferWithStreamLimit(maxBytesPerSession, maxSessions, maxStreamsPerSession, windowSecs int) *FragmentBuffer {
-	fb := NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs)
-	fb.maxStreams = maxStreamsPerSession
 	return fb
 }
 
@@ -121,27 +103,23 @@ func NewFragmentBufferWithStreamLimit(maxBytesPerSession, maxSessions, maxStream
 // Refuses a new session when the global session cap is reached: accumulated
 // fragment state is security evidence and must not be silently evicted.
 func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) FragmentAppendResult {
-	return fb.AppendForSession(sessionKey, sessionKey, payload)
+	return fb.AppendForSession(sessionKey, payload)
 }
 
-// AppendForSession appends an independently scanned stream owned by one
-// logical CEE session.
-func (fb *FragmentBuffer) AppendForSession(logicalSessionKey, streamKey string, payload []byte) FragmentAppendResult {
+// AppendForSession appends an independently scanned stream.
+func (fb *FragmentBuffer) AppendForSession(streamKey string, payload []byte) FragmentAppendResult {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
-	return fb.appendLocked(logicalSessionKey, streamKey, payload)
+	return fb.appendLocked(streamKey, payload)
 }
 
 // appendLocked performs the buffer append. Must be called with fb.mu held and
 // after any due cleanup, so callers that must decide something about existing
 // buffer contents can do so atomically with the append itself.
-func (fb *FragmentBuffer) appendLocked(logicalSessionKey, streamKey string, payload []byte) FragmentAppendResult {
+func (fb *FragmentBuffer) appendLocked(streamKey string, payload []byte) FragmentAppendResult {
 	sb, exists := fb.sessions[streamKey]
 	if !exists {
-		if fb.maxStreams > 0 && fb.ownerStreams[logicalSessionKey] >= fb.maxStreams {
-			return FragmentAppendResult{StreamLimitExceeded: true}
-		}
 		// Check global session cap before creating a new session. Do not evict
 		// another session: a later fragment could otherwise complete a secret
 		// in an empty bucket and pass uninspected.
@@ -150,8 +128,6 @@ func (fb *FragmentBuffer) appendLocked(logicalSessionKey, streamKey string, payl
 		}
 		sb = &sessionBuffer{}
 		fb.sessions[streamKey] = sb
-		fb.streamOwners[streamKey] = logicalSessionKey
-		fb.ownerStreams[logicalSessionKey]++
 	}
 
 	// Copy payload to prevent caller mutation of buffered data.
@@ -221,12 +197,11 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 // positions. A path depth cannot consume the global session cap one position at
 // a time.
 func (fb *FragmentBuffer) AppendPathSegments(sessionKey string, segments [][]byte) FragmentAppendResult {
-	return fb.AppendPathSegmentsForSession(sessionKey, sessionKey, segments)
+	return fb.AppendPathSegmentsForSession(sessionKey, segments)
 }
 
-// AppendPathSegmentsForSession appends a position-aware stream owned by one
-// logical CEE session.
-func (fb *FragmentBuffer) AppendPathSegmentsForSession(logicalSessionKey, streamKey string, segments [][]byte) FragmentAppendResult {
+// AppendPathSegmentsForSession appends a position-aware stream.
+func (fb *FragmentBuffer) AppendPathSegmentsForSession(streamKey string, segments [][]byte) FragmentAppendResult {
 	if fb == nil || len(segments) == 0 {
 		return FragmentAppendResult{}
 	}
@@ -250,16 +225,11 @@ func (fb *FragmentBuffer) AppendPathSegmentsForSession(logicalSessionKey, stream
 
 	ps, exists := fb.pathSessions[streamKey]
 	if !exists {
-		if fb.maxStreams > 0 && fb.ownerStreams[logicalSessionKey] >= fb.maxStreams {
-			return FragmentAppendResult{StreamLimitExceeded: true}
-		}
 		if fb.sessionCountLocked() >= fb.maxSessions {
 			return FragmentAppendResult{CapacityExceeded: true}
 		}
 		ps = &pathSessionBuffer{positions: make(map[int]*pathPositionBuffer)}
 		fb.pathSessions[streamKey] = ps
-		fb.streamOwners[streamKey] = logicalSessionKey
-		fb.ownerStreams[logicalSessionKey]++
 	}
 
 	for position, segment := range segments {
@@ -412,7 +382,7 @@ func (fb *FragmentBuffer) TotalBufferBytes() int {
 // remain valid under them. It removes expired data first, then retains each
 // session's newest suffix within the new byte cap. This lets a reload tighten
 // limits immediately without creating a fresh split-secret window.
-func (fb *FragmentBuffer) UpdateConfig(maxBytesPerSession, windowSecs int, maxSessions ...int) {
+func (fb *FragmentBuffer) UpdateConfig(maxBytesPerSession, maxSessions, windowSecs int) {
 	if maxBytesPerSession <= 0 {
 		maxBytesPerSession = 1
 	}
@@ -425,8 +395,8 @@ func (fb *FragmentBuffer) UpdateConfig(maxBytesPerSession, windowSecs int, maxSe
 
 	fb.maxBytes = maxBytesPerSession
 	fb.windowSecs = windowSecs
-	if len(maxSessions) > 0 && maxSessions[0] > 0 {
-		fb.maxSessions = maxSessions[0]
+	if maxSessions > 0 {
+		fb.maxSessions = maxSessions
 	}
 	now := time.Now()
 	fb.cleanupLocked(now)
@@ -526,20 +496,11 @@ func (fb *FragmentBuffer) Close() {
 	defer fb.mu.Unlock()
 	fb.sessions = make(map[string]*sessionBuffer)
 	fb.pathSessions = make(map[string]*pathSessionBuffer)
-	fb.streamOwners = make(map[string]string)
-	fb.ownerStreams = make(map[string]int)
 }
 
 func (fb *FragmentBuffer) deleteStreamLocked(key string) {
 	delete(fb.sessions, key)
 	delete(fb.pathSessions, key)
-	if owner, ok := fb.streamOwners[key]; ok {
-		delete(fb.streamOwners, key)
-		fb.ownerStreams[owner]--
-		if fb.ownerStreams[owner] == 0 {
-			delete(fb.ownerStreams, owner)
-		}
-	}
 }
 
 // cleanupInterval is derived from the configured window: at most 60s and at

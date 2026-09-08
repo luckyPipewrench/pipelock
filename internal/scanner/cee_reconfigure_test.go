@@ -38,7 +38,7 @@ func TestFragmentBufferUpdateConfig_PreservesNewestSuffix(t *testing.T) {
 	buffer := NewFragmentBuffer(32, 100, 300)
 	buffer.Append("session", []byte("first-second"))
 
-	buffer.UpdateConfig(8, 300)
+	buffer.UpdateConfig(8, 100, 300)
 	if got := buffer.TotalBufferBytes(); got != 8 {
 		t.Fatalf("total bytes = %d, want 8", got)
 	}
@@ -61,7 +61,7 @@ func TestCEEUpdateConfig_ClampsNonPositiveLimits(t *testing.T) {
 
 	buffer := NewFragmentBuffer(32, 100, 300)
 	buffer.Append("session", []byte("first-second"))
-	buffer.UpdateConfig(-1, -1)
+	buffer.UpdateConfig(-1, -1, -1)
 	buffer.mu.Lock()
 	if buffer.maxBytes != 1 || buffer.windowSecs != 1 {
 		t.Fatalf("buffer limits = %d/%d, want 1/1", buffer.maxBytes, buffer.windowSecs)
@@ -78,7 +78,7 @@ func TestFragmentBufferUpdateConfig_DropsOldestFragments(t *testing.T) {
 	buffer.Append("session", []byte("bbbbbbbb"))
 	buffer.Append("session", []byte("cccccccc"))
 
-	buffer.UpdateConfig(16, 300)
+	buffer.UpdateConfig(16, 100, 300)
 	buffer.mu.Lock()
 	fragments := buffer.sessions["session"].fragments
 	got := make([]string, len(fragments))

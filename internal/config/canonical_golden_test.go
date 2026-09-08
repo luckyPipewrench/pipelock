@@ -360,6 +360,10 @@ const (
 	// Re-bumped for Credential in URL grammar: line-start assignments require
 	// adjacency around '=', while delimiter-led query parameters retain
 	// whitespace tolerance. This detection-relevant default changes policy.
+	// Re-bumped for cross_request_detection.fragment_reassembly.max_sessions:
+	// this fail-closed evidence-capacity field changes whether cross-request
+	// detection can retain and inspect a new fragment stream, so mixed versions
+	// must not report the same policy identity.
 	goldenHashDefaults = "79e86a78f054e3dbfabdb6221f5ea34f2a81698e941f3648dfc98f55252b443d"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
@@ -546,6 +550,9 @@ const (
 	// goldenHashDefaults above.
 	// Re-bumped for the Credential in URL grammar change above; the rich
 	// fixture inherits the built-in DLP patterns.
+	// Re-bumped for fragment_reassembly.max_sessions: see goldenHashDefaults.
+	// The rich fixture sets cross-request detection, so a changed evidence
+	// capacity must produce a distinct policy identity here as well.
 	goldenHashRichConfig = "ee43de75debebd876bb0e5d8524524aa0bd6e100ae0547724f0814c3638a5f6b"
 )
 

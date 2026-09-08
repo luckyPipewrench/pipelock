@@ -86,42 +86,36 @@ func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 	}
 }
 
-func TestFragmentBuffer_StreamLimitIsolatesLogicalSessions(t *testing.T) {
-	fb := NewFragmentBufferWithStreamLimit(1024, 3, 2, testWindowSecs)
+func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {
+	fb := NewFragmentBuffer(1024, 3, testWindowSecs)
 	t.Cleanup(fb.Close)
 
-	for _, stream := range []string{"attacker/raw", "attacker/field-a"} {
-		if result := fb.AppendForSession("attacker", stream, []byte("ordinary")); result.CapacityExceeded || result.StreamLimitExceeded {
-			t.Fatalf("attacker stream %q result = %+v, want admission", stream, result)
+	for _, stream := range []string{"first", "second", "third"} {
+		if result := fb.AppendForSession(stream, []byte("ordinary")); result.CapacityExceeded {
+			t.Fatalf("stream %q result = %+v, want admission", stream, result)
 		}
 	}
-	if result := fb.AppendForSession("attacker", "attacker/field-b", []byte("ordinary")); !result.StreamLimitExceeded || result.CapacityExceeded {
-		t.Fatalf("attacker over-limit result = %+v, want only stream limit", result)
-	}
-	if result := fb.AppendForSession("victim", "victim/raw", []byte("benign")); result.CapacityExceeded || result.StreamLimitExceeded {
-		t.Fatalf("neighbour result = %+v, want admission", result)
+	if result := fb.AppendForSession("fourth", []byte("ordinary")); !result.CapacityExceeded {
+		t.Fatalf("over-capacity result = %+v, want capacity denial", result)
 	}
 }
 
-func TestFragmentBuffer_StreamLimitAppliesToPathAndDeletesOwners(t *testing.T) {
-	fb := NewFragmentBufferWithStreamLimit(1024, 4, 2, testWindowSecs)
+func TestFragmentBuffer_DeletesPrefixAcrossStreamsAndPaths(t *testing.T) {
+	fb := NewFragmentBuffer(1024, 4, testWindowSecs)
 	t.Cleanup(fb.Close)
-	if result := fb.AppendForSession("owner", "owner/raw", []byte("raw")); result.CapacityExceeded || result.StreamLimitExceeded {
+	if result := fb.AppendForSession("owner/raw", []byte("raw")); result.CapacityExceeded {
 		t.Fatalf("raw result = %+v", result)
 	}
-	if result := fb.AppendPathSegmentsForSession("owner", "owner/path", [][]byte{[]byte("route")}); result.CapacityExceeded || result.StreamLimitExceeded {
+	if result := fb.AppendPathSegmentsForSession("owner/path", [][]byte{[]byte("route")}); result.CapacityExceeded {
 		t.Fatalf("path result = %+v", result)
 	}
-	if result := fb.AppendPathSegmentsForSession("owner", "owner/overflow", [][]byte{[]byte("route")}); !result.StreamLimitExceeded {
-		t.Fatalf("overflow path result = %+v, want stream limit", result)
-	}
-	fb.UpdateConfig(512, testWindowSecs, 2)
+	fb.UpdateConfig(512, 2, testWindowSecs)
 	if fb.maxSessions != 2 {
 		t.Fatalf("max sessions = %d, want 2", fb.maxSessions)
 	}
 	fb.DeletePrefix("owner/")
-	if len(fb.sessions) != 0 || len(fb.pathSessions) != 0 || len(fb.streamOwners) != 0 || len(fb.ownerStreams) != 0 {
-		t.Fatalf("DeletePrefix retained stream ownership: sessions=%d paths=%d owners=%#v counts=%#v", len(fb.sessions), len(fb.pathSessions), fb.streamOwners, fb.ownerStreams)
+	if len(fb.sessions) != 0 || len(fb.pathSessions) != 0 {
+		t.Fatalf("DeletePrefix retained streams: sessions=%d paths=%d", len(fb.sessions), len(fb.pathSessions))
 	}
 }
 

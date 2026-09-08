@@ -163,10 +163,6 @@ const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
 
-	// maxCEEStreamsPerSession prevents one logical conversation from consuming
-	// the proxy-wide fragment ledger with adversarially varied JSON paths.
-	maxCEEStreamsPerSession = 256
-
 	browserShieldLayer             = "browser_shield"
 	browserShieldPattern           = "browser_shield_rewrite"
 	browserShieldSeverity          = config.SeverityInfo
@@ -2212,12 +2208,11 @@ func (p *Proxy) prepareCEE(ceeCfg *config.CrossRequestDetection) {
 
 	if ceeCfg.Enabled && ceeCfg.FragmentReassembly.Enabled {
 		if fb := p.fragmentBufferPtr.Load(); fb != nil {
-			fb.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeCfg.FragmentReassembly.WindowMinutes*60, ceeFragmentMaxSessions(ceeCfg.FragmentReassembly))
+			fb.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeFragmentMaxSessions(ceeCfg.FragmentReassembly), ceeCfg.FragmentReassembly.WindowMinutes*60)
 		} else {
-			p.fragmentBufferPtr.Store(scanner.NewFragmentBufferWithStreamLimit(
+			p.fragmentBufferPtr.Store(scanner.NewFragmentBuffer(
 				ceeCfg.FragmentReassembly.MaxBufferBytes,
 				ceeFragmentMaxSessions(ceeCfg.FragmentReassembly),
-				maxCEEStreamsPerSession,
 				ceeCfg.FragmentReassembly.WindowMinutes*60,
 			))
 		}
@@ -2411,10 +2406,9 @@ func (p *Proxy) buildCEE(ceeCfg *config.CrossRequestDetection) (*scanner.Entropy
 			)
 		}
 		if ceeCfg.FragmentReassembly.Enabled {
-			fb = scanner.NewFragmentBufferWithStreamLimit(
+			fb = scanner.NewFragmentBuffer(
 				ceeCfg.FragmentReassembly.MaxBufferBytes,
 				ceeFragmentMaxSessions(ceeCfg.FragmentReassembly),
-				maxCEEStreamsPerSession,
 				ceeCfg.FragmentReassembly.WindowMinutes*60, // minutes to seconds
 			)
 		}

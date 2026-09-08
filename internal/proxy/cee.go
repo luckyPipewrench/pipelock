@@ -167,8 +167,12 @@ const maxCEEBodyRead = 65536 // 64KB
 
 const (
 	ceeJSONBodyMaxDepth     = extract.DefaultJSONLeafMaxDepth
-	ceeJSONBodyMaxStreams   = extract.DefaultJSONLeafMaxStreams
 	ceeJSONBodyMaxPathBytes = extract.DefaultJSONLeafMaxPathBytes
+	// ceeJSONBodyBucketCount bounds JSON leaf state to 4096 stable streams per
+	// logical session. At the 64 KiB per-stream cap that is at most 256 MiB for
+	// one active session; the global max_sessions ledger still bounds all
+	// retained stream payloads across the proxy.
+	ceeJSONBodyBucketCount = 4096
 )
 
 type ceeOutboundPayloads struct {
@@ -413,9 +417,9 @@ func jsonBodyFragmentPayloads(contentType string, body []byte) map[string][]byte
 	if err != nil || (mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json")) {
 		return nil
 	}
-	payloads, valid := extract.JSONLeafPayloadsPartial(body, extract.JSONLeafLimits{
-		MaxDepth: ceeJSONBodyMaxDepth, MaxStreams: ceeJSONBodyMaxStreams, MaxPathBytes: ceeJSONBodyMaxPathBytes,
-	})
+	payloads, valid := extract.JSONLeafBucketPayloads(body, extract.JSONLeafLimits{
+		MaxDepth: ceeJSONBodyMaxDepth, MaxPathBytes: ceeJSONBodyMaxPathBytes,
+	}, ceeJSONBodyBucketCount)
 	if !valid {
 		return nil
 	}
@@ -426,9 +430,8 @@ func ceeJSONBodyPartitioningEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.CrossRequestDetection.Enabled && cfg.CrossRequestDetection.FragmentReassembly.Enabled
 }
 
-func ceeJSONBodyFragmentSessionKey(sessionKey, path string) string {
-	digest := sha256.Sum256([]byte(path))
-	return sessionKey + ceeJSONBodyStreamPrefix + hex.EncodeToString(digest[:])
+func ceeJSONBodyFragmentSessionKey(sessionKey, bucket string) string {
+	return sessionKey + ceeJSONBodyStreamPrefix + bucket
 }
 
 func sortedCEEJSONBodyPayloadPaths(payloads map[string][]byte) []string {
@@ -571,7 +574,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 	}
 	if fb != nil && ceeCfg.FragmentReassembly.Enabled {
 		// Stream 1: values + bare tokens + body.
-		if res := ceeFragmentScan(ctx, sessionKey, sessionKey, outbound, sctx); res != nil {
+		if res := ceeFragmentScan(ctx, sessionKey, outbound, sctx); res != nil {
 			result.FragmentHit = true
 			if res.Blocked {
 				result.Blocked = true
@@ -580,12 +583,10 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 			}
 		}
 
-		// JSON body leaves are isolated by JSON pointer, preserving contiguity
-		// across repeated LLM conversation fields while keeping unrelated prose
-		// out of the stream. A parser limit falls back to the raw stream above,
-		// which is weaker but never silently skips inspection.
+		// JSON body leaves are mapped into stable, fixed-cardinality buckets. No
+		// valid leaf is omitted for a per-request path or depth ceiling.
 		for _, path := range sortedCEEJSONBodyPayloadPaths(bodyFragmentPayloads) {
-			if res := ceeFragmentScan(ctx, sessionKey, ceeJSONBodyFragmentSessionKey(sessionKey, path), bodyFragmentPayloads[path], sctx); res != nil {
+			if res := ceeFragmentScan(ctx, ceeJSONBodyFragmentSessionKey(sessionKey, path), bodyFragmentPayloads[path], sctx); res != nil {
 				result.FragmentHit = true
 				if res.Blocked {
 					result.Blocked = true
@@ -599,7 +600,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		// split across param names like ?AKIA=1 then ?IOSFODNN7EXAMPLE=2).
 		if len(keyPayload) > 0 {
 			keySessionKey := sessionKey + ceeStreamKeysSuffix
-			if res := ceeFragmentScan(ctx, sessionKey, keySessionKey, keyPayload, sctx); res != nil {
+			if res := ceeFragmentScan(ctx, keySessionKey, keyPayload, sctx); res != nil {
 				result.FragmentHit = true
 				if res.Blocked {
 					result.Blocked = true
@@ -613,7 +614,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		// a position that varies keeps every value in arrival order.
 		if pathPayload != nil && (len(pathPayload.segments) > 0 || pathPayload.depthExceeded) {
 			pathSessionKey := sessionKey + ceeStreamPathSuffix
-			if res := ceeFragmentScanSegments(ctx, sessionKey, pathSessionKey, pathPayload, sctx); res != nil {
+			if res := ceeFragmentScanSegments(ctx, pathSessionKey, pathPayload, sctx); res != nil {
 				result.FragmentHit = true
 				if res.Blocked {
 					result.Blocked = true
@@ -644,25 +645,25 @@ type ceeStreamContext struct {
 	Metrics   *metrics.Metrics
 }
 
-func ceeFragmentScan(ctx context.Context, logicalSessionKey, bufferKey string, data []byte, sctx ceeStreamContext) *ceeResult {
+func ceeFragmentScan(ctx context.Context, bufferKey string, data []byte, sctx ceeStreamContext) *ceeResult {
 	fb := sctx.Fragments
 	if len(data) == 0 {
 		return nil
 	}
-	return ceeFragmentEvaluate(ctx, bufferKey, fb.AppendForSession(logicalSessionKey, bufferKey, data), false, sctx)
+	return ceeFragmentEvaluate(ctx, bufferKey, fb.AppendForSession(bufferKey, data), false, sctx)
 }
 
 // ceeFragmentScanSegments is ceeFragmentScan for a position-aware path stream.
 // Static positions contribute once; changing positions retain every later
 // value, including repeats, so priming cannot suppress a completing suffix.
-func ceeFragmentScanSegments(ctx context.Context, logicalSessionKey, bufferKey string, payload *ceePathPayload, sctx ceeStreamContext) *ceeResult {
+func ceeFragmentScanSegments(ctx context.Context, bufferKey string, payload *ceePathPayload, sctx ceeStreamContext) *ceeResult {
 	fb := sctx.Fragments
 	if payload == nil {
 		return nil
 	}
 	// Over-depth paths are denied earlier in ceeAdmit, before the
 	// fragment-reassembly gate, so they never reach this point.
-	appendResult := fb.AppendPathSegmentsForSession(logicalSessionKey, bufferKey, payload.segments)
+	appendResult := fb.AppendPathSegmentsForSession(bufferKey, payload.segments)
 	return ceeFragmentEvaluate(ctx, bufferKey, appendResult, true, sctx)
 }
 
@@ -696,12 +697,6 @@ func ceeFragmentEvaluate(ctx context.Context, bufferKey string, appendResult sca
 			FragmentHit: true,
 			Reason:      detail,
 		}
-	}
-	if appendResult.StreamLimitExceeded {
-		// The raw outbound stream remains complete, so refusing an additional
-		// partition does not make the request uninspected. Do not let one
-		// logical session consume the global ledger and deny its neighbours.
-		return nil
 	}
 	matches := fb.ScanForSecrets(ctx, bufferKey, sc)
 	if pathStream {

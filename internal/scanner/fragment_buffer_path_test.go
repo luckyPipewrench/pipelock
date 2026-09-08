@@ -209,7 +209,7 @@ func TestFragmentBufferPath_ReloadAndCloseBoundPathState(t *testing.T) {
 
 	// Invalid reload values are clamped and immediately trim the shared path
 	// budget instead of leaving position buffers at their old size.
-	fb.UpdateConfig(0, 0)
+	fb.UpdateConfig(0, 10, 0)
 	if got := fb.TotalBufferBytes(); got > 1 {
 		t.Fatalf("reload retained %d path bytes, want at most 1", got)
 	}

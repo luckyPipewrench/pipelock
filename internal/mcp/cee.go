@@ -49,7 +49,7 @@ func NewCEEDeps(ceeCfg config.CrossRequestDetection, m *metrics.Metrics) *CEEDep
 		runtime.tracker = scanner.NewEntropyTracker(ceeCfg.EntropyBudget.BitsPerWindow, ceeCfg.EntropyBudget.WindowMinutes*60)
 	}
 	if ceeCfg.Enabled && ceeCfg.FragmentReassembly.Enabled {
-		runtime.buffer = scanner.NewFragmentBuffer(ceeCfg.FragmentReassembly.MaxBufferBytes, 10000, ceeCfg.FragmentReassembly.WindowMinutes*60)
+		runtime.buffer = scanner.NewFragmentBuffer(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeFragmentMaxSessions(ceeCfg.FragmentReassembly), ceeCfg.FragmentReassembly.WindowMinutes*60)
 	}
 	return &CEEDeps{
 		runtime: runtime,
@@ -81,9 +81,9 @@ func (cee *CEEDeps) Reconfigure(ceeCfg config.CrossRequestDetection, m *metrics.
 	}
 	if ceeCfg.Enabled && ceeCfg.FragmentReassembly.Enabled {
 		if runtime.buffer == nil {
-			runtime.buffer = scanner.NewFragmentBuffer(ceeCfg.FragmentReassembly.MaxBufferBytes, 10000, ceeCfg.FragmentReassembly.WindowMinutes*60)
+			runtime.buffer = scanner.NewFragmentBuffer(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeFragmentMaxSessions(ceeCfg.FragmentReassembly), ceeCfg.FragmentReassembly.WindowMinutes*60)
 		} else {
-			runtime.buffer.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeCfg.FragmentReassembly.WindowMinutes*60)
+			runtime.buffer.UpdateConfig(ceeCfg.FragmentReassembly.MaxBufferBytes, ceeFragmentMaxSessions(ceeCfg.FragmentReassembly), ceeCfg.FragmentReassembly.WindowMinutes*60)
 		}
 	} else {
 		if runtime.buffer != nil {
@@ -93,6 +93,13 @@ func (cee *CEEDeps) Reconfigure(ceeCfg config.CrossRequestDetection, m *metrics.
 	}
 	runtime.config = ceeCfg
 	runtime.metrics = m
+}
+
+func ceeFragmentMaxSessions(fragments config.CrossRequestFragments) int {
+	if fragments.MaxSessions > 0 {
+		return fragments.MaxSessions
+	}
+	return config.DefaultCrossRequestFragmentMaxSessions
 }
 
 // Close retires all stateful detectors and clears buffered request data.

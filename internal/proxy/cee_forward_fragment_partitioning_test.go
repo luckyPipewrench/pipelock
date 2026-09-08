@@ -92,6 +92,12 @@ func TestForwardCEEFragmentReassemblyPartitionsJSONBodyFields(t *testing.T) {
 			},
 		},
 		{
+			name: "trailing decoys do not displace secret field",
+			body: func(content string) string {
+				return forwardCEEJSONWithTrailingDecoys(content, strings.Repeat("ordinary prose ", ceeForwardConversationPaddingBytes/len("ordinary prose ")))
+			},
+		},
+		{
 			name: "long key receives a stable opaque partition",
 			body: func(content string) string {
 				return forwardCEEJSONWithLongKey(content, strings.Repeat("ordinary prose ", ceeForwardConversationPaddingBytes/len("ordinary prose ")))
@@ -113,6 +119,43 @@ func TestForwardCEEFragmentReassemblyPartitionsJSONBodyFields(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("stream budget priming does not disable partitioning", func(t *testing.T) {
+		ResetCEEState("", "127.0.0.1", nil, p.fragmentBufferPtr.Load())
+		for index := range 3 {
+			response := forwardCEEPost(t, client, forwardCEEJSONWithDistinctLeaves(index), "application/json")
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("priming request %d status = %d, want 200", index, response.StatusCode)
+			}
+		}
+		firstResponse := forwardCEEJSONPost(t, client, first, strings.Repeat("ordinary prose ", ceeForwardConversationPaddingBytes/len("ordinary prose ")))
+		defer func() { _ = firstResponse.Body.Close() }()
+		if firstResponse.StatusCode != http.StatusOK {
+			t.Fatalf("first status = %d, want 200", firstResponse.StatusCode)
+		}
+		secondResponse := forwardCEEJSONPost(t, client, second, strings.Repeat("ordinary prose ", ceeForwardConversationPaddingBytes/len("ordinary prose ")))
+		defer func() { _ = secondResponse.Body.Close() }()
+		if secondResponse.StatusCode != http.StatusForbidden {
+			body, _ := io.ReadAll(secondResponse.Body)
+			t.Fatalf("completing status = %d, want 403; body=%s", secondResponse.StatusCode, body)
+		}
+	})
+
+	t.Run("over-depth leaf remains partitioned", func(t *testing.T) {
+		ResetCEEState("", "127.0.0.1", nil, p.fragmentBufferPtr.Load())
+		firstResponse := forwardCEEPost(t, client, forwardCEENestedJSONBody(first, ceeJSONBodyMaxDepth+2), "application/json")
+		defer func() { _ = firstResponse.Body.Close() }()
+		if firstResponse.StatusCode != http.StatusOK {
+			t.Fatalf("first status = %d, want 200", firstResponse.StatusCode)
+		}
+		secondResponse := forwardCEEPost(t, client, forwardCEENestedJSONBody(second, ceeJSONBodyMaxDepth+2), "application/json")
+		defer func() { _ = secondResponse.Body.Close() }()
+		if secondResponse.StatusCode != http.StatusForbidden {
+			body, _ := io.ReadAll(secondResponse.Body)
+			t.Fatalf("completing status = %d, want 403; body=%s", secondResponse.StatusCode, body)
+		}
+	})
 }
 
 func forwardCEEJSONPost(t *testing.T, client *http.Client, content, padding string) *http.Response {
@@ -127,7 +170,7 @@ func forwardCEEJSONPostBody(content, padding string) string {
 func forwardCEEJSONWithDecoys(content, padding string) string {
 	var body strings.Builder
 	body.WriteByte('{')
-	for index := range ceeJSONBodyMaxStreams {
+	for index := range 132 {
 		if index > 0 {
 			body.WriteByte(',')
 		}
@@ -140,6 +183,69 @@ func forwardCEEJSONWithDecoys(content, padding string) string {
 	body.WriteString(`"}],"history":"`)
 	body.WriteString(padding)
 	body.WriteString(`"}`)
+	return body.String()
+}
+
+func forwardCEEJSONWithTrailingDecoys(content, padding string) string {
+	var body strings.Builder
+	body.WriteString(`{"messages":[{"role":"user","content":"`)
+	body.WriteString(content)
+	body.WriteString(`"}],"history":"`)
+	body.WriteString(padding)
+	body.WriteByte('"')
+	for index := range 132 {
+		body.WriteString(`,"decoy_`)
+		body.WriteString(strconv.Itoa(index))
+		body.WriteString(`":"ordinary"`)
+	}
+	body.WriteByte('}')
+	return body.String()
+}
+
+func forwardCEEJSONWithDistinctLeaves(requestIndex int) string {
+	var body strings.Builder
+	body.WriteByte('{')
+	for index := range 128 {
+		if index > 0 {
+			body.WriteByte(',')
+		}
+		body.WriteString(`"prime_`)
+		body.WriteString(strconv.Itoa(requestIndex))
+		body.WriteByte('_')
+		body.WriteString(strconv.Itoa(index))
+		body.WriteString(`":"ordinary"`)
+	}
+	body.WriteByte('}')
+	return body.String()
+}
+
+func forwardCEEJSONWithManyLeaves(first, last string) string {
+	var body strings.Builder
+	body.WriteString(`{"first":"`)
+	body.WriteString(first)
+	body.WriteByte('"')
+	for index := range 132 {
+		body.WriteString(`,"field_`)
+		body.WriteString(strconv.Itoa(index))
+		body.WriteString(`":"ordinary"`)
+	}
+	body.WriteString(`,"last":"`)
+	body.WriteString(last)
+	body.WriteString(`"}`)
+	return body.String()
+}
+
+func forwardCEENestedJSONBody(content string, depth int) string {
+	var body strings.Builder
+	for range depth {
+		body.WriteString(`{"a":`)
+	}
+	body.WriteByte('"')
+	body.WriteString(content)
+	body.WriteByte('"')
+	for range depth {
+		body.WriteByte('}')
+	}
 	return body.String()
 }
 

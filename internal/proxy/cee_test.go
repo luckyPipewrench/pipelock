@@ -6,7 +6,6 @@ package proxy
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -178,38 +177,38 @@ func TestExtractOutboundPayload_NilBody(t *testing.T) {
 	}
 }
 
-func TestJSONBodyFragmentPayloadsDegradesToRawStreamPerLeaf(t *testing.T) {
-	var limitsExceeded strings.Builder
-	limitsExceeded.WriteByte('{')
-	for index := range ceeJSONBodyMaxStreams + 1 {
-		if index > 0 {
-			limitsExceeded.WriteByte(',')
-		}
-		_, _ = fmt.Fprintf(&limitsExceeded, `"field_%d":"value"`, index)
-	}
-	limitsExceeded.WriteByte('}')
+func TestJSONBodyFragmentPayloadsUseFixedStableBuckets(t *testing.T) {
 	tests := []struct {
 		name        string
 		contentType string
 		body        string
-		wantPath    string
+		wantValue   string
 	}{
-		{name: "valid JSON partitions leaf", contentType: "application/json", body: `{"messages":[{"content":"value"}]}`, wantPath: "$/messages/0/content"},
+		{name: "valid JSON partitions leaf", contentType: "application/json", body: `{"messages":[{"content":"value"}]}`, wantValue: "value"},
 		{name: "malformed JSON stays raw", contentType: "application/json", body: `{"unterminated"`},
 		{name: "non JSON stays raw", contentType: "text/plain", body: `{"content":"value"}`},
-		{name: "stream ceiling retains newest leaves", contentType: "application/json", body: limitsExceeded.String(), wantPath: "$/field_128"},
+		{name: "every leaf remains represented above the former stream ceiling", contentType: "application/json", body: forwardCEEJSONWithManyLeaves("first", "last"), wantValue: "firstlast"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := jsonBodyFragmentPayloads(tt.contentType, []byte(tt.body))
-			if tt.wantPath == "" {
+			if tt.wantValue == "" {
 				if got != nil {
 					t.Fatalf("payloads = %#v, want no partitions", got)
 				}
 				return
 			}
-			if value := string(got[tt.wantPath]); value != "value" {
-				t.Fatalf("payload %q = %q, want value", tt.wantPath, value)
+			var values strings.Builder
+			for _, value := range got {
+				values.Write(value)
+			}
+			for _, want := range []string{"first", "last"} {
+				if tt.wantValue == "value" {
+					want = tt.wantValue
+				}
+				if !strings.Contains(values.String(), want) {
+					t.Fatalf("bucket payloads = %#v, missing %q", got, want)
+				}
 			}
 		})
 	}
@@ -222,7 +221,14 @@ func TestResetCEEStateClearsJSONBodyStreams(t *testing.T) {
 	t.Cleanup(sc.Close)
 	fb := scanner.NewFragmentBuffer(1024, 10, 60)
 	sessionKey := CeeSessionKey(testCEEAgent, testCEEClientIP)
-	bodyKey := ceeJSONBodyFragmentSessionKey(sessionKey, "$/messages/0/content")
+	buckets := jsonBodyFragmentPayloads("application/json", []byte(`{"messages":[{"content":"value"}]}`))
+	if len(buckets) != 1 {
+		t.Fatalf("bucket count = %d, want 1", len(buckets))
+	}
+	var bucket string
+	for bucket = range buckets {
+	}
+	bodyKey := ceeJSONBodyFragmentSessionKey(sessionKey, bucket)
 
 	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
 		t.Fatal("first body fragment exceeded capacity")
@@ -246,7 +252,7 @@ func TestResetCEEStateClearsJSONBodyStreams(t *testing.T) {
 	}
 }
 
-func TestCEEFragmentStreamLimitDoesNotDenyNeighbour(t *testing.T) {
+func TestCEEFragmentGlobalCapacityFailsClosed(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.CrossRequestDetection.Enabled = true
@@ -258,7 +264,7 @@ func TestCEEFragmentStreamLimitDoesNotDenyNeighbour(t *testing.T) {
 	cfg.ApplyDefaults()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
-	fb := scanner.NewFragmentBufferWithStreamLimit(1024, 3, 2, 300)
+	fb := scanner.NewFragmentBuffer(1024, 3, 300)
 	t.Cleanup(fb.Close)
 	logger := audit.NewNop()
 	m := metrics.New()
@@ -270,15 +276,8 @@ func TestCEEFragmentStreamLimitDoesNotDenyNeighbour(t *testing.T) {
 		TargetURL: "http://api.vendor.example", Config: cfg.CrossRequestDetection,
 		Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
 	})
-	if attacker.Blocked {
-		t.Fatalf("attacker at per-session stream limit = %+v, want raw fallback", attacker)
-	}
-	victim := ceeAdmit(t.Context(), ceeAdmitOptions{
-		SessionKey: "victim", Outbound: []byte("benign"), TargetURL: "http://api.vendor.example",
-		Config: cfg.CrossRequestDetection, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
-	})
-	if victim.Blocked {
-		t.Fatalf("neighbour benign request = %+v, want admission", victim)
+	if !attacker.Blocked {
+		t.Fatalf("attacker at global stream capacity = %+v, want fail-closed block", attacker)
 	}
 }
 
@@ -658,7 +657,7 @@ func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 }
 
 func TestCeeFragmentScanSegments_NilPayloadNoop(t *testing.T) {
-	result := ceeFragmentScanSegments(t.Context(), "session", "session", nil, ceeStreamContext{
+	result := ceeFragmentScanSegments(t.Context(), "session", nil, ceeStreamContext{
 		TargetURL: "http://example.com", Agent: testCEEAgent,
 		ClientIP: testCEEClientIP, RequestID: testCEERequestID,
 	})

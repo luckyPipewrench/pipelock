@@ -1828,10 +1828,10 @@ Buffers outbound payloads (URLs, request bodies, MCP JSON-RPC payloads, WebSocke
 |-------|---------|-------------|
 | `fragment_reassembly.enabled` | `false` | Enable fragment reassembly |
 | `fragment_reassembly.max_buffer_bytes` | `65536` | Max buffer size per session (64 KB). Older fragments are evicted when exceeded. |
-| `fragment_reassembly.max_sessions` | `10000` | Maximum fragment streams held across the proxy. Requests are denied when this global evidence ledger is full. |
+| `fragment_reassembly.max_sessions` | `10000` | Maximum fragment streams held across the proxy and MCP transports. Requests are denied when this global evidence ledger is full. |
 | `fragment_reassembly.window_minutes` | `5` | Fragment retention window in minutes. Fragments older than this are pruned. |
 
-**Memory:** Each tracked stream uses up to `max_buffer_bytes`. At the default `max_sessions` cap, the worst-case payload memory is `max_buffer_bytes * max_sessions` (640 MB). Reduce either limit in memory-constrained environments; reducing `max_sessions` can refuse new fragment streams while existing evidence is retained.
+**Memory:** Each tracked stream uses up to `max_buffer_bytes`. At the default `max_sessions` cap, the worst-case payload memory is `max_buffer_bytes * max_sessions` = 655,360,000 bytes (625 MiB, or 655 MB decimal). JSON request bodies use 4,096 stable path-hash buckets per logical proxy session, so one session can occupy up to 256 MiB before the global stream ledger applies. Reduce either limit in memory-constrained environments; reducing `max_sessions` can refuse new fragment streams while existing evidence is retained.
 
 **Scope note:** Cross-request detection scans all outbound content visible to the proxy: URLs, request bodies, MCP JSON-RPC payloads, and WebSocket frames. CONNECT tunnels without TLS interception only expose the target hostname (entropy tracking only). Enable `tls_interception` for full cross-request coverage on tunneled traffic.
 

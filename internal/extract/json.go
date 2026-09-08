@@ -8,6 +8,7 @@ package extract
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -80,6 +81,112 @@ func JSONLeafPayloadsPartial(raw json.RawMessage, limits JSONLeafLimits) (payloa
 	}
 	return state.payloads, true
 }
+
+// JSONLeafBucketPayloads groups every scalar JSON leaf into one of bucketCount
+// stable buckets. Unlike JSONLeafPayloadsPartial, it never discards a leaf to
+// enforce a path-count ceiling: the fixed bucket count is the resource bound.
+// Deep paths are reduced to a truncated-plus-digest representation before
+// bucket selection, so a depth limit does not omit their content.
+func JSONLeafBucketPayloads(raw json.RawMessage, limits JSONLeafLimits, bucketCount int) (payloads map[string][]byte, valid bool) {
+	if len(raw) == 0 || limits.MaxDepth < 0 || limits.MaxPathBytes <= 0 || bucketCount <= 0 || bucketCount > maxJSONLeafBuckets {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	state := jsonLeafBucketState{payloads: make(map[string][]byte), bucketCount: bucketCount}
+	if !appendJSONLeafBucketPayload(decoder, &state, []byte("$"), 0, limits) {
+		return nil, false
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, false
+	}
+	return state.payloads, true
+}
+
+type jsonLeafBucketState struct {
+	payloads    map[string][]byte
+	bucketCount int
+}
+
+func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth int, limits JSONLeafLimits) bool {
+	token, err := decoder.Token()
+	if err != nil {
+		return false
+	}
+	switch value := token.(type) {
+	case json.Delim:
+		switch value {
+		case '{':
+			for decoder.More() {
+				key, err := decoder.Token()
+				if err != nil {
+					return false
+				}
+				keyString, ok := key.(string)
+				if !ok {
+					return false
+				}
+				nextPath := appendJSONLeafPathPartPartial(path, keyString, limits.MaxPathBytes)
+				if !appendJSONLeafBucketPayload(decoder, state, nextPath, depth+1, limits) {
+					return false
+				}
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim('}')
+		case '[':
+			for index := 0; decoder.More(); index++ {
+				nextPath := appendJSONLeafPathPartPartial(path, strconv.Itoa(index), limits.MaxPathBytes)
+				if !appendJSONLeafBucketPayload(decoder, state, nextPath, depth+1, limits) {
+					return false
+				}
+			}
+			end, err := decoder.Token()
+			return err == nil && end == json.Delim(']')
+		default:
+			return false
+		}
+	case nil:
+		return true
+	case string:
+		appendJSONLeafBucketValue(state, path, depth, limits.MaxDepth, value)
+		return true
+	case json.Number:
+		appendJSONLeafBucketValue(state, path, depth, limits.MaxDepth, value.String())
+		return true
+	case bool:
+		appendJSONLeafBucketValue(state, path, depth, limits.MaxDepth, strconv.FormatBool(value))
+		return true
+	default:
+		return false
+	}
+}
+
+func appendJSONLeafBucketValue(state *jsonLeafBucketState, path []byte, depth, maxDepth int, value string) {
+	bucket := strconv.Itoa(jsonLeafBucketIndex(path, depth, maxDepth, state.bucketCount))
+	state.payloads[bucket] = append(state.payloads[bucket], value...)
+}
+
+func jsonLeafBucketIndex(path []byte, depth, maxDepth, bucketCount int) int {
+	if bucketCount <= 0 || bucketCount > maxJSONLeafBuckets {
+		return 0
+	}
+	material := path
+	if depth > maxDepth {
+		digest := sha256.Sum256(path)
+		prefixLen := min(len(path), maxPathBytesForBucketPrefix)
+		material = make([]byte, prefixLen+1+hex.EncodedLen(len(digest)))
+		copy(material, path[:prefixLen])
+		material[prefixLen] = '#'
+		hex.Encode(material[prefixLen+1:], digest[:])
+	}
+	digest := sha256.Sum256(material)
+	return int(binary.BigEndian.Uint16(digest[:2]) % uint16(bucketCount))
+}
+
+const (
+	maxJSONLeafBuckets          = 65535
+	maxPathBytesForBucketPrefix = 64
+)
 
 type jsonLeafPartialState struct {
 	payloads map[string][]byte

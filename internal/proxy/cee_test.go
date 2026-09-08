@@ -1288,10 +1288,12 @@ func TestCeeAdmit_EntropyBudgetRecordsOutboundBytes(t *testing.T) {
 	}
 }
 
-func TestCeeAdmit_PathQueryBoundarySecret(t *testing.T) {
-	// Tests ceeAdmit directly with path-containing payload. HTTP handlers
-	// no longer include paths, but this validates fragment reassembly DLP
-	// works for any input data shape.
+func TestCeeAdmit_OutboundFragmentReassemblySecret(t *testing.T) {
+	// Named for what it proves: fragment-reassembly DLP over the Outbound
+	// byte stream. The fixture bytes are path-shaped, but production sends
+	// URL paths through PathPayload, not Outbound, so this does NOT cover
+	// HTTP path or query handling. Renamed from PathQueryBoundarySecret,
+	// whose name asserted that coverage.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}

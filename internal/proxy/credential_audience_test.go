@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -392,4 +393,102 @@ func TestReverseProxy_RecordCredentialAudienceAllows_Deduplicates(t *testing.T) 
 	if audience != 1 {
 		t.Fatalf("emitted %d audience receipts, want 1", audience)
 	}
+}
+
+// The fallback exists so a malformed ADVISORY extension never costs the SIGNED
+// receipt: losing the whole record is a worse failure direction than dropping
+// optional metadata. Each branch is asserted by what it emits, because a defect
+// here is silent, and it is the audit record that would be missing.
+func TestEmitCredentialAudienceReceiptWithFallback_Branches(t *testing.T) {
+	base := receipt.EmitOpts{
+		ActionID:  "fallback-branches",
+		Verdict:   config.ActionAllow,
+		Layer:     credentialAudienceReceiptExtensionKey,
+		Extension: json.RawMessage(`{"k":"v"}`),
+	}
+
+	t.Run("v1 succeeds, v2 mirrors it, extension kept", func(t *testing.T) {
+		var v1, v2 []receipt.EmitOpts
+		var failures, dropped int
+		emitCredentialAudienceReceiptWithFallback(base,
+			func(o receipt.EmitOpts) error { v1 = append(v1, o); return nil },
+			func(o receipt.EmitOpts) error { v2 = append(v2, o); return nil },
+			func(receipt.EmitOpts, error) { failures++ },
+			func(receipt.EmitOpts) { dropped++ },
+		)
+		if len(v1) != 1 || len(v2) != 1 {
+			t.Fatalf("v1=%d v2=%d, want 1 and 1", len(v1), len(v2))
+		}
+		if len(v1[0].Extension) == 0 {
+			t.Fatal("happy path dropped the extension")
+		}
+		if failures != 0 || dropped != 0 {
+			t.Fatalf("failures=%d dropped=%d, want 0 and 0", failures, dropped)
+		}
+	})
+
+	t.Run("a non-merge error is reported and not retried", func(t *testing.T) {
+		var v1, v2 []receipt.EmitOpts
+		var failures, dropped int
+		emitCredentialAudienceReceiptWithFallback(base,
+			func(o receipt.EmitOpts) error { v1 = append(v1, o); return errors.New("disk full") },
+			func(o receipt.EmitOpts) error { v2 = append(v2, o); return nil },
+			func(receipt.EmitOpts, error) { failures++ },
+			func(receipt.EmitOpts) { dropped++ },
+		)
+		if len(v1) != 1 {
+			t.Fatalf("retried a non-merge failure %d times", len(v1))
+		}
+		if failures != 1 || dropped != 0 || len(v2) != 0 {
+			t.Fatalf("failures=%d dropped=%d v2=%d, want 1, 0, 0", failures, dropped, len(v2))
+		}
+	})
+
+	t.Run("a merge error retries without the extension and keeps the receipt", func(t *testing.T) {
+		var v1, v2 []receipt.EmitOpts
+		var failures, dropped int
+		emitCredentialAudienceReceiptWithFallback(base,
+			func(o receipt.EmitOpts) error {
+				v1 = append(v1, o)
+				if len(o.Extension) > 0 {
+					return receipt.ErrExtensionMerge
+				}
+				return nil
+			},
+			func(o receipt.EmitOpts) error { v2 = append(v2, o); return nil },
+			func(receipt.EmitOpts, error) { failures++ },
+			func(receipt.EmitOpts) { dropped++ },
+		)
+		if len(v1) != 2 {
+			t.Fatalf("v1 attempts = %d, want 2 (with extension, then without)", len(v1))
+		}
+		if len(v1[1].Extension) != 0 {
+			t.Fatal("retry still carried the malformed extension")
+		}
+		if dropped != 1 || failures != 0 {
+			t.Fatalf("dropped=%d failures=%d, want 1 and 0", dropped, failures)
+		}
+		if len(v2) != 1 || len(v2[0].Extension) != 0 {
+			t.Fatalf("v2 did not mirror the extension-free fallback: %+v", v2)
+		}
+	})
+
+	t.Run("a failed fallback is reported and emits nothing", func(t *testing.T) {
+		var v2 []receipt.EmitOpts
+		var failures, dropped int
+		emitCredentialAudienceReceiptWithFallback(base,
+			func(o receipt.EmitOpts) error {
+				if len(o.Extension) > 0 {
+					return receipt.ErrExtensionMerge
+				}
+				return errors.New("disk full")
+			},
+			func(o receipt.EmitOpts) error { v2 = append(v2, o); return nil },
+			func(receipt.EmitOpts, error) { failures++ },
+			func(receipt.EmitOpts) { dropped++ },
+		)
+		if failures != 1 || dropped != 0 || len(v2) != 0 {
+			t.Fatalf("failures=%d dropped=%d v2=%d, want 1, 0, 0", failures, dropped, len(v2))
+		}
+	})
 }

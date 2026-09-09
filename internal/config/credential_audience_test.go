@@ -283,3 +283,31 @@ func TestCredentialAudienceDomainContains_Direction(t *testing.T) {
 		}
 	}
 }
+
+// A legacy exempt_domains entry on an audience-bearing pattern is tolerated only
+// when it is contained by the compiled audience, and an entry that cannot be
+// validated as a domain must not be treated as contained. That is the
+// fail-closed direction: an unparseable value must never widen an audience.
+func TestCredentialAudienceExemptDomainsSubset_Direction(t *testing.T) {
+	audience := []string{"*.anthropic.com"}
+	tests := []struct {
+		name    string
+		domains []string
+		want    bool
+	}{
+		{"no entries is vacuously contained", nil, true},
+		{"exact apex is contained", []string{"anthropic.com"}, true},
+		{"subdomain is contained", []string{"api.anthropic.com"}, true},
+		{"unrelated host is not contained", []string{"relay.internal.example"}, false},
+		{"lookalike suffix is not contained", []string{"notanthropic.com"}, false},
+		{"one contained and one not is not contained", []string{"api.anthropic.com", "evil.example"}, false},
+		{"an invalid domain is refused rather than assumed", []string{"http://api.anthropic.com/x"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := credentialAudienceExemptDomainsSubset(tt.domains, audience); got != tt.want {
+				t.Fatalf("credentialAudienceExemptDomainsSubset(%v) = %v, want %v", tt.domains, got, tt.want)
+			}
+		})
+	}
+}

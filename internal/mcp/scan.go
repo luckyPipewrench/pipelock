@@ -1113,7 +1113,7 @@ func writeTextVerdict(w io.Writer, v jsonrpc.ScanVerdict) error {
 		// No matches: this is not a finding, either an uninspected-field
 		// notice or an inert verdict this branch does not otherwise print.
 		if len(v.Unscanned) > 0 {
-			_, err := fmt.Fprintf(w, "line %d: [UNSCANNED] %s not inspected\n", v.Line, strings.Join(v.Unscanned, ", ")) //nolint:gosec // G705: CLI output, not web
+			_, err := io.WriteString(w, fmt.Sprintf("line %d: [UNSCANNED] %s not inspected\n", v.Line, strings.Join(v.Unscanned, ", ")))
 			return err
 		}
 		return nil

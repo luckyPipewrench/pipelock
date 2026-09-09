@@ -382,3 +382,55 @@ func TestExactRouteHostsGetTheSameGrammar(t *testing.T) {
 		}
 	}
 }
+
+// A hyphen in the third and fourth positions of a label is legal DNS and was
+// being refused, because idna.Lookup enables the UTS #46 CheckHyphens rule,
+// which is a registration-era restriction rather than a DNS one. That made
+// validation STRICTER THAN MATCHING: MatchDomain matches "my--host.example.com"
+// without complaint, so a host list carrying one loaded before this branch and
+// refused after it. An operator whose working config stops loading is the
+// failure direction that gets a security check switched off, so this pins both
+// halves: the legal shapes load, and IDNA is still doing its other job.
+func TestDoubleHyphenLabelsAreLegalAndPunycodeIsStillChecked(t *testing.T) {
+	t.Parallel()
+
+	accepted := []string{
+		"my--host.example.com",
+		"ab--cd.example",
+		// x/net's own CheckHyphens documentation names this shape as in common
+		// use; it is a googlevideo CDN host, and *.googlevideo.com already
+		// appears in this repository's shipped patterns.
+		"r3---sn-apo3qvuoxuxbt-j5pe.googlevideo.com",
+		"xn--bcher-kva.example",
+		"*.my--host.example.com",
+	}
+	for _, host := range accepted {
+		t.Run("accept "+host, func(t *testing.T) {
+			t.Parallel()
+			if err := ValidateTrustedDomains([]string{host}, "trusted_domains"); err != nil {
+				t.Errorf("%q is a legal hostname and the matcher matches it, but validation refused it: %v", host, err)
+			}
+		})
+	}
+
+	// The calibration, and the reason this test is not just an acceptance
+	// list. Turning CheckHyphens off must not turn IDNA off: a malformed
+	// punycode label has to stay refused, or the "fix" for the hyphen rule
+	// would have quietly widened the grammar instead of correcting it.
+	refused := []string{
+		"xn--0.example",
+		"xn--a.example",
+	}
+	for _, host := range refused {
+		t.Run("refuse "+host, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateTrustedDomains([]string{host}, "trusted_domains")
+			if err == nil {
+				t.Fatalf("%q is malformed punycode and must stay refused; IDNA validation was lost along with the hyphen rule", host)
+			}
+			if !strings.Contains(err.Error(), "IDNA") {
+				t.Errorf("%q was refused for an unexpected reason, so this may not be the punycode check: %v", host, err)
+			}
+		})
+	}
+}

@@ -1347,55 +1347,15 @@ func HostPatternBreadthError(normalized string) error {
 	return nil
 }
 
-// wildcardBaseBreadthError reports why `*.base` is too broad to be a scoped
-// match, or nil when it is acceptable.
-//
-// TWO rules, and both are needed. The single-label test catches "*.com" and
-// "*.example": a base with no dot is a whole top-level namespace. The
-// public-suffix test catches what counting dots cannot, because a registry
-// suffix can be several labels: "*.co.uk" has a dot and is every UK commercial
-// domain. Before this, the dot count alone accepted it, and the pattern then
-// exempted every host under that suffix from whichever gate the list governs,
-// including the SSRF internal-IP check that trusted_domains controls.
-//
-// The ICANN flag is the discriminator, and using it is the difference between a
-// fix and a regression. publicsuffix reports icann=true for registry-operated
-// suffixes (com, co.uk, com.au) and icann=false for PRIVATE registrations that
-// a company added for its own subdomains (s3.amazonaws.com, github.io,
-// cloudfront.net). Rejecting every bare public suffix would therefore refuse
-// "*.s3.amazonaws.com", which is a pattern an operator legitimately writes.
-// Rejecting only the ICANN ones refuses what has no legitimate use and accepts
-// what does.
-//
-// A private-suffix wildcard is broad without being wrong, and rejecting the
-// whole class was tried and REPRODUCED AS A BREAK: five patterns this
-// repository itself ships are private PSL boundaries, including
-// "*.googleapis.com" and "*.githubusercontent.com" in configs/claude-code.yaml
-// and the DLP exempt lists in defaults.go, plus "*.ngrok.io",
-// "*.ngrok-free.app" and "*.readthedocs.io". A rule that refuses Pipelock's own
-// presets is worse than the weakness it replaces. The principled objection is
-// real (a PSL boundary marks a REGISTRATION boundary, not an ownership one, so
-// "*.googleapis.com" is every Google-hosted API namespace and not just yours)
-// and the answer to it is `pipelock doctor` surfacing breadth, not a refusal
-// here.
-//
-// THIS RULE IS FOR ALLOW, TRUST AND DETECTOR-BYPASS SURFACES ONLY. A DENY or
-// MATCH surface must use HostPatternSyntaxError instead, because there a broad
-// wildcard is the POINT: "*.co.uk" as a trust exemption gives away every UK
-// commercial domain, while the same pattern as a request_policy block is a
-// legitimate policy. The domain blocklist was already validated for nothing but
-// emptiness. Getting this wrong is not hypothetical: an earlier revision of
-// this change applied the breadth rule to request_policy route hosts, which
-// support `block`, and so refused a legitimate broad block.
-// The caller guarantees a non-empty base: NormalizeHostPattern collapses "*."
-// and "*.." to "*", which the wildcard-character branch above rejects before
-// this is reached. An explicit empty check here would be unreachable, and an
-// unreachable branch cannot be tested, so the invariant is written down instead.
-// Should it ever be reached, the single-label test below refuses it anyway.
 // RawHostASCIIError rejects a host value carrying non-ASCII BEFORE any case
 // folding. It is separate and exported because the ORDER is the security
-// property, and four different validators need it: a check applied after
-// folding is not the same check.
+// property, not a style choice: a check applied after folding is not the same
+// check. Five call sites reach it directly, one of them the scanner's
+// unvalidated-config builder in another package, and four more reach it through
+// NormalizeAndCheckHostPattern. Counting them by eye went wrong four separate
+// times in this area, so count them rather than trusting this sentence:
+//
+//	grep -rn 'RawHostASCIIError(' --include='*.go' internal/ enterprise/
 //
 // U+212A KELVIN SIGN lowercases to ASCII "k", so "Kexample.com" written with
 // that rune folds to "kexample.com". A validator that folds first then tests
@@ -1517,12 +1477,87 @@ func hostLabelGrammarError(base, what string) error {
 			return fmt.Errorf("%s must contain only DNS label characters", what)
 		}
 	}
-	if _, err := idna.Lookup.ToASCII(base); err != nil {
+	if _, err := hostIDNAProfile.ToASCII(base); err != nil {
 		return fmt.Errorf("%s must be valid under IDNA lookup processing: %w", what, err)
 	}
 	return nil
 }
 
+// hostIDNAProfile is idna.Lookup with the CheckHyphens rule turned OFF, and
+// nothing else changed.
+//
+// CheckHyphens forbids a hyphen in the third and fourth positions of a label,
+// which is a UTS #46 registration-era rule and NOT a DNS rule: "my--host" and
+// "ab--cd" are legal RFC 1123 hostnames. x/net says so in CheckHyphens' own
+// documentation, naming "r3---sn-apo3qvuoxuxbt-j5pe" as a label in common use,
+// and that is a googlevideo CDN host - a shape this repository's own shipped
+// patterns already reach through *.googlevideo.com.
+//
+// Using idna.Lookup here made validation STRICTER THAN MATCHING, which is the
+// failure direction that gets a check switched off: MatchDomain matches
+// "my--host.example.com" happily, so an operator with one in a host list would
+// have had a config that worked before the upgrade and refuses to load after.
+// Caught in review, and the tests below pin both directions.
+//
+// The ORDER of these options is load-bearing. MapForLookup calls
+// ValidateLabels(true) internally, which sets checkHyphens AND installs the
+// punycode validator; CheckHyphens(false) must come after it to switch off the
+// hyphen rule alone. Reversing them re-enables the rule. Everything Lookup
+// enforces beyond hyphens is retained on purpose, and an invalid xn-- label is
+// still refused - the test asserts that, because dropping IDNA entirely would
+// have "fixed" this finding while silently accepting malformed punycode.
+var hostIDNAProfile = idna.New(
+	idna.MapForLookup(),
+	idna.BidiRule(),
+	idna.CheckHyphens(false),
+)
+
+// wildcardBaseBreadthError reports why `*.base` is too broad to be a scoped
+// match, or nil when it is acceptable.
+//
+// TWO rules, and both are needed. The single-label test catches "*.com" and
+// "*.example": a base with no dot is a whole top-level namespace. The
+// public-suffix test catches what counting dots cannot, because a registry
+// suffix can be several labels: "*.co.uk" has a dot and is every UK commercial
+// domain. Before this, the dot count alone accepted it, and the pattern then
+// exempted every host under that suffix from whichever gate the list governs,
+// including the SSRF internal-IP check that trusted_domains controls.
+//
+// The ICANN flag is the discriminator, and using it is the difference between a
+// fix and a regression. publicsuffix reports icann=true for registry-operated
+// suffixes (com, co.uk, com.au) and icann=false for suffixes in the list's
+// PRIVATE section (s3.amazonaws.com, github.io, cloudfront.net). The private
+// section says who ADMINISTERS the boundary and nothing about tenancy:
+// github.io and blogspot.com sit above content owned by unrelated people. Rejecting every bare public suffix would therefore refuse
+// "*.s3.amazonaws.com", which is a pattern an operator legitimately writes.
+// Rejecting only the ICANN ones refuses what has no legitimate use and accepts
+// what does.
+//
+// A private-suffix wildcard is broad without being wrong, and rejecting the
+// whole class was tried and REPRODUCED AS A BREAK: five patterns this
+// repository itself ships are private PSL boundaries, including
+// "*.googleapis.com" and "*.githubusercontent.com" in configs/claude-code.yaml
+// and the DLP exempt lists in defaults.go, plus "*.ngrok.io",
+// "*.ngrok-free.app" and "*.readthedocs.io". A rule that refuses Pipelock's own
+// presets is worse than the weakness it replaces. The principled objection is
+// real (a PSL boundary marks a REGISTRATION boundary, not an ownership one, so
+// "*.googleapis.com" is every Google-hosted API namespace and not just yours).
+// Surfacing breadth as an advisory rather than refusing it is the direction
+// this leans, and nothing here does that yet.
+//
+// THIS RULE IS FOR ALLOW, TRUST AND DETECTOR-BYPASS SURFACES ONLY. A DENY or
+// MATCH surface must use HostPatternSyntaxError instead, because there a broad
+// wildcard is the POINT: "*.co.uk" as a trust exemption gives away every UK
+// commercial domain, while the same pattern as a request_policy block is a
+// legitimate policy. The domain blocklist was already validated for nothing but
+// emptiness. Getting this wrong is not hypothetical: an earlier revision of
+// this change applied the breadth rule to request_policy route hosts, which
+// support `block`, and so refused a legitimate broad block.
+// The caller guarantees a non-empty base: NormalizeHostPattern collapses "*."
+// and "*.." to "*", which the wildcard-character branch above rejects before
+// this is reached. An explicit empty check here would be unreachable, and an
+// unreachable branch cannot be tested, so the invariant is written down instead.
+// Should it ever be reached, the single-label test below refuses it anyway.
 func wildcardBaseBreadthError(base string) error {
 	if !strings.Contains(base, ".") {
 		return fmt.Errorf("wildcard must target a concrete domain like *.example.com, not the whole %q namespace", base)

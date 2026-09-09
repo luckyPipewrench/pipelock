@@ -54,7 +54,7 @@ func (s *Scanner) ScanNumericChannelForKnownValues(numeric string) []TextDLPMatc
 	} {
 		for _, secret := range known.secrets {
 			for _, candidate := range []string{decimalCharacterCodes(secret, ","), decimalCharacterCodes(secret, " ")} {
-				if start, end, viewLabel, ok := indexAnyView(candidate, texts); ok {
+				if start, end, viewLabel, ok := indexWholeNumericSequence(candidate, texts); ok {
 					matches = append(matches, TextDLPMatch{
 						PatternName: known.patternName,
 						Severity:    "critical",
@@ -75,11 +75,11 @@ func (s *Scanner) ScanNumericChannelForKnownValues(numeric string) []TextDLPMatc
 				continue
 			}
 			patternName := "Canary Token (" + token.name + ")"
-			if start := strings.Index(numeric, needle); start >= 0 {
+			if start, end, _, ok := indexWholeNumericSequence(needle, texts); ok {
 				matches = append(matches, TextDLPMatch{
 					PatternName: patternName,
 					Severity:    "critical",
-					span:        newMatchSpan(start, start+len(needle), ViewNumericChannel, patternName, "", ""),
+					span:        newMatchSpan(start, end, ViewNumericChannel, patternName, "", ""),
 				})
 				continue
 			}
@@ -95,6 +95,35 @@ func (s *Scanner) ScanNumericChannelForKnownValues(numeric string) []TextDLPMatc
 	}
 
 	return deduplicateMatches(matches)
+}
+
+// indexWholeNumericSequence finds candidate in a numeric-leaf view without
+// treating digits inside a larger JSON number as a separate value. Numeric
+// leaves arrive comma-separated from ExtractNumericLeaves; space is accepted
+// too so direct callers retain the documented decimal-code spelling.
+func indexWholeNumericSequence(candidate string, views []spanTextView) (int, int, string, bool) {
+	if candidate == "" {
+		return 0, 0, "", false
+	}
+	for _, view := range views {
+		for offset := 0; offset <= len(view.text)-len(candidate); {
+			start := strings.Index(view.text[offset:], candidate)
+			if start < 0 {
+				break
+			}
+			start += offset
+			end := start + len(candidate)
+			if numericLeafBoundary(view.text, start) && numericLeafBoundary(view.text, end) {
+				return start, end, view.viewLabel, true
+			}
+			offset = start + 1
+		}
+	}
+	return 0, 0, "", false
+}
+
+func numericLeafBoundary(text string, index int) bool {
+	return index == 0 || index == len(text) || text[index-1] == ',' || text[index-1] == ' ' || text[index] == ',' || text[index] == ' '
 }
 
 // decodeDecimalCharacterCodes turns runs of comma or space separated integers

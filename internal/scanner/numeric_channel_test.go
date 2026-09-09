@@ -72,6 +72,27 @@ func TestScanNumericChannel_NumericCanaryMatchesAsPlainNumber(t *testing.T) {
 	}
 }
 
+func TestScanNumericChannel_RequiresWholeNumericLeaves(t *testing.T) {
+	canary := "canary-" + "7F3a9c2e4b1d"
+	secret := "sk-" + "ant-numericchannel0123456789"
+	s := numericChannelCanaryScanner(t, canary, secret)
+
+	// A larger integer can contain a decimal-code sequence as a byte substring
+	// without spelling the protected value. Likewise, neither side of a
+	// digits-only canary may match a larger JSON number.
+	codesWithLargerFirstLeaf := "1" + decimalCharacterCodes(canary, ",")
+	for _, numeric := range []string{
+		codesWithLargerFirstLeaf,
+		"18675309123456789",
+		"86753091234567890",
+		"1" + decimalCharacterCodes(secret, ","),
+	} {
+		if matches := s.ScanNumericChannelForKnownValues(numeric); len(matches) != 0 {
+			t.Fatalf("numeric leaves must match known values only as complete leaves; numeric=%q matches=%+v", numeric, matches)
+		}
+	}
+}
+
 func TestScanNumericChannel_PlainNumericSecretIsNotALeak(t *testing.T) {
 	// A configured secret received as a plain number is legitimately received
 	// data, the same reason the inbound text scan skips secret-leak matching.

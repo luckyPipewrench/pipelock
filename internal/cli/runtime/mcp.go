@@ -650,8 +650,11 @@ outranks an inspection failure. Scanning covers response injection, inbound
 DLP, and (auto-enabled by default, like the proxy) tool-definition scanning
 for tools/list responses. It does not include tool call policy or request-side
 input scanning, because scan only ever sees one side of the conversation: the
-response stream on stdin, never the paired request. Use pipelock mcp proxy for
-full bidirectional protection.
+response stream on stdin, never the paired request. Numeric JSON leaves are
+kept out of prompt-injection and pattern-DLP matching; they are compared only
+against registered canary tokens (as a plain number or decimal character
+codes) and configured environment or file secrets spelled as decimal character
+codes. Use pipelock mcp proxy for full bidirectional protection.
 In text mode, findings and input-inspection errors are printed. In JSON mode,
 each line that can be read produces a verdict.
 

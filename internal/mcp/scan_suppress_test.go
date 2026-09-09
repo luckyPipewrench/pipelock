@@ -415,7 +415,7 @@ func TestIsToolsListResponse(t *testing.T) {
 	}{
 		{"tools-list", `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"x"}]}}`, true},
 		{"content-response", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}`, false},
-		{"empty-tools", `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, false},
+		{"empty-tools", `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, true},
 		{"error-no-result", `{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x"}}`, false},
 		{"invalid", `not json`, false},
 	}

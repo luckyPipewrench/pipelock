@@ -325,7 +325,7 @@ func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.Too
 }
 
 // isToolsListResponse reports whether line is a JSON-RPC response whose result
-// carries a non-empty "tools" array (the tools/list shape). It mirrors the
+// carries a valid "tools" array (the tools/list shape). It mirrors the
 // shape detection in internal/mcp/tools (isToolsListResult); kept here as a
 // lightweight check so the explain path need not run the full tool scanner.
 func isToolsListResponse(line []byte) bool {
@@ -334,12 +334,26 @@ func isToolsListResponse(line []byte) bool {
 		return false
 	}
 	var probe struct {
-		Tools []json.RawMessage `json:"tools"`
+		Tools json.RawMessage `json:"tools"`
 	}
 	if json.Unmarshal(rpc.Result, &probe) != nil {
 		return false
 	}
-	return len(probe.Tools) > 0
+	tools := bytes.TrimSpace(probe.Tools)
+	if len(tools) == 0 || tools[0] != '[' {
+		return false
+	}
+	var elements []json.RawMessage
+	if json.Unmarshal(tools, &elements) != nil {
+		return false
+	}
+	for _, element := range elements {
+		element = bytes.TrimSpace(element)
+		if len(element) == 0 || element[0] != '{' {
+			return false
+		}
+	}
+	return true
 }
 
 // scanToolsListNonToolFields scans a tools/list response for injection in
@@ -532,6 +546,8 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 
 	var allMatches []scanner.ResponseMatch
 	var allDLPMatches []scanner.TextDLPMatch
+	var allToolFindings []jsonrpc.ToolFinding
+	var allUnscanned []string
 	var firstID json.RawMessage
 	var action string
 	var hasError bool
@@ -555,21 +571,44 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 		if !v.Clean && v.Error == "" {
 			allMatches = append(allMatches, v.Matches...)
 			allDLPMatches = append(allDLPMatches, v.DLPMatches...)
-			if action == "" {
-				action = v.Action
+			allToolFindings = append(allToolFindings, v.ToolFindings...)
+			allUnscanned = appendUniqueScanScopes(allUnscanned, v.Unscanned)
+			if v.Action != "" {
+				if action == "" {
+					action = v.Action
+				} else {
+					action = config.StricterAction(action, v.Action)
+				}
 			}
 		}
 	}
 
 	if hasError {
-		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Action: errorAction, Error: firstError}, len(allMatches) > 0 || len(allDLPMatches) > 0
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Action: errorAction, Error: firstError}, len(allMatches) > 0 || len(allDLPMatches) > 0 || len(allToolFindings) > 0
 	}
-	if len(allMatches) == 0 && len(allDLPMatches) == 0 {
+	if len(allMatches) == 0 && len(allDLPMatches) == 0 && len(allToolFindings) == 0 && len(allUnscanned) == 0 {
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}, false
 	}
 	return jsonrpc.ScanVerdict{
 		ID: firstID, Clean: false, Action: action, Matches: allMatches, DLPMatches: allDLPMatches,
-	}, true
+		ToolFindings: allToolFindings, Unscanned: allUnscanned,
+	}, len(allMatches) > 0 || len(allDLPMatches) > 0 || len(allToolFindings) > 0
+}
+
+func appendUniqueScanScopes(scopes, additions []string) []string {
+	for _, addition := range additions {
+		found := false
+		for _, scope := range scopes {
+			if scope == addition {
+				found = true
+				break
+			}
+		}
+		if !found {
+			scopes = append(scopes, addition)
+		}
+	}
+	return scopes
 }
 
 // ScanStream reads newline-delimited JSON-RPC 2.0 responses from r, scans each
@@ -622,10 +661,9 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 		if overLimit {
 			sawMalformed = true
 			verdict := jsonrpc.ScanVerdict{
-				Line:    lineNum,
-				Clean:   false,
-				Error:   fmt.Sprintf("line exceeds the %d byte scan limit and was not inspected", transport.MaxLineSize),
-				Scanned: scanVerdictScopes(toolCfg),
+				Line:  lineNum,
+				Clean: false,
+				Error: fmt.Sprintf("line exceeds the %d byte scan limit and was not inspected", transport.MaxLineSize),
 			}
 			if writeErr := emitVerdict(w, verdict, jsonOutput); writeErr != nil {
 				return foundFinding, sawMalformed, writeErr
@@ -649,7 +687,7 @@ func ScanStreamResult(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput 
 
 		verdict, lineFound := scanStreamResponse([]byte(line), sc, toolCfg)
 		verdict.Line = lineNum
-		verdict.Scanned = scanVerdictScopes(toolCfg)
+		verdict.Scanned = scanVerdictScopes([]byte(line), toolCfg, verdict)
 
 		// An Unscanned field family (e.g. tool scanning explicitly disabled)
 		// is not a protocol error, but the line still was not fully
@@ -753,17 +791,19 @@ func emitVerdict(w io.Writer, verdict jsonrpc.ScanVerdict, jsonOutput bool) erro
 func scanStreamResponse(line []byte, sc *scanner.Scanner, toolCfg *tools.ToolScanConfig) (jsonrpc.ScanVerdict, bool) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		// Batch (JSON array) tools/list responses are not routed through the
-		// dedicated tool scanner here: scanBatch has no per-element tools/list
-		// dispatch. This is a known, narrower gap than the single-response
-		// path fixed above; see the deliberately-not-done note in the build
-		// report rather than papering over it with an incomplete fix here.
-		return scanBatch(trimmed, sc, ResponseScanOptions{}, true)
+		var batch []json.RawMessage
+		if err := json.Unmarshal(trimmed, &batch); err != nil {
+			return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}, false
+		}
+		return scanBatchElements(batch, func(elem []byte) jsonrpc.ScanVerdict {
+			verdict, _ := scanStreamResponse(elem, sc, toolCfg)
+			return verdict
+		})
 	}
 
 	if isToolsListResponse(line) {
 		verdict := scanToolsListCertified(line, sc, toolCfg, ResponseScanOptions{})
-		found := !verdict.Clean && verdict.Error == "" && len(verdict.Unscanned) == 0
+		found := !verdict.Clean && verdict.Error == "" && (len(verdict.Matches) > 0 || len(verdict.DLPMatches) > 0 || len(verdict.ToolFindings) > 0)
 		return verdict, found
 	}
 
@@ -771,12 +811,29 @@ func scanStreamResponse(line []byte, sc *scanner.Scanner, toolCfg *tools.ToolSca
 	return verdict, !verdict.Clean && verdict.Error == ""
 }
 
-func scanVerdictScopes(toolCfg *tools.ToolScanConfig) []string {
+func scanVerdictScopes(line []byte, toolCfg *tools.ToolScanConfig, verdict jsonrpc.ScanVerdict) []string {
 	scopes := []string{jsonrpc.ScanScopeResponseInjection, jsonrpc.ScanScopeResponseDLP}
-	if toolCfg != nil {
+	if toolCfg != nil && verdict.Error == "" && hasToolsListResponse(line) {
 		scopes = append(scopes, jsonrpc.ScanScopeToolScanning)
 	}
 	return scopes
+}
+
+func hasToolsListResponse(line []byte) bool {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var batch []json.RawMessage
+		if json.Unmarshal(trimmed, &batch) != nil {
+			return false
+		}
+		for _, elem := range batch {
+			if isToolsListResponse(elem) {
+				return true
+			}
+		}
+		return false
+	}
+	return isToolsListResponse(trimmed)
 }
 
 // A2AResponseOpts groups A2A-specific dependencies for response scanning.

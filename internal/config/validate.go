@@ -1204,9 +1204,13 @@ func (c *Config) validateFetchProxy() error {
 
 func validateHostnamePatternList(field string, entries []string) error {
 	for i, raw := range entries {
-		// Normalize the trailing dot BEFORE the breadth check so a
-		// trailing-dot input like "*.com." cannot pass as "*.com." and then
-		// normalize down to the over-broad "*.com".
+		// The RAW value is gated before folding; see RawHostASCIIError. Then
+		// the trailing dot is normalized before the breadth check, so a
+		// trailing-dot input like "*.com." cannot pass and then normalize down
+		// to the over-broad "*.com".
+		if err := RawHostASCIIError(raw); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", field, i, raw, err)
+		}
 		d := NormalizeHostPattern(raw)
 		if d == "" {
 			return fmt.Errorf("%s[%d] is empty", field, i)
@@ -1307,6 +1311,29 @@ func HostPatternBreadthError(normalized string) error {
 // this is reached. An explicit empty check here would be unreachable, and an
 // unreachable branch cannot be tested, so the invariant is written down instead.
 // Should it ever be reached, the single-label test below refuses it anyway.
+// RawHostASCIIError rejects a host value carrying non-ASCII BEFORE any case
+// folding. It is separate and exported because the ORDER is the security
+// property, and four different validators need it: a check applied after
+// folding is not the same check.
+//
+// U+212A KELVIN SIGN lowercases to ASCII "k", so "Kexample.com" written with
+// that rune folds to "kexample.com". A validator that folds first then tests
+// for ASCII sees a clean ASCII hostname and installs an exemption for a
+// DIFFERENT host than the operator typed. The first repair for this covered
+// only three surfaces and left five entropy-exemption lists, the scanner's
+// defensive builder and the query-parameter host validator still folding
+// first, which is what this function exists to stop recurring.
+//
+// An ASCII A-label such as "xn--..." is unaffected: that is how an
+// internationalized name is written here, because runtime matching folds case
+// rather than performing IDNA normalization.
+func RawHostASCIIError(raw string) error {
+	if strings.IndexFunc(raw, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+		return errors.New("host must be ASCII; write an internationalized name in its xn-- A-label form")
+	}
+	return nil
+}
+
 // NormalizeAndCheckHostPattern normalizes a RAW host pattern and validates its
 // shape, returning the normalized value. It is the entry point every caller
 // should use, and it exists because doing these two steps separately has
@@ -1320,8 +1347,8 @@ func HostPatternBreadthError(normalized string) error {
 // different host. An ASCII A-label such as "xn--..." is unaffected and stays
 // supported.
 func NormalizeAndCheckHostPattern(raw string) (string, error) {
-	if strings.IndexFunc(raw, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
-		return "", errors.New("host pattern must be ASCII; write an internationalized name in its xn-- A-label form")
+	if err := RawHostASCIIError(raw); err != nil {
+		return "", err
 	}
 	normalized := NormalizeHostPattern(raw)
 	if err := HostPatternSyntaxError(normalized); err != nil {
@@ -1438,6 +1465,9 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 			return fmt.Errorf("%s.scheme %q must be https", field, entry.Scheme)
 		}
 
+		if err := RawHostASCIIError(entry.Host); err != nil {
+			return fmt.Errorf("%s.host %q: %w", field, entry.Host, err)
+		}
 		// One normalizer, so this cannot accidentally trim a second dot that
 		// validateHostnamePatternList also trims. That double-trim is what made
 		// validation reject "*.com.." while the single-normalizing runtime
@@ -1559,6 +1589,9 @@ func normalizeQueryEntropyParamHost(raw string) (string, error) {
 		return unicode.IsSpace(r) || unicode.IsControl(r)
 	}) >= 0 {
 		return "", errors.New("host must not contain spaces or control characters")
+	}
+	if err := RawHostASCIIError(raw); err != nil {
+		return "", err
 	}
 	host := NormalizeHostPattern(raw)
 	if host == "" {

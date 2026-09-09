@@ -3677,6 +3677,13 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		// value first let "." survive as non-empty and then normalize to "",
 		// which the predicate now also rejects; doing both means neither the
 		// order here nor the predicate alone is load-bearing.
+		// The RAW host is gated before folding, matching validation. Without
+		// it an unvalidated Config could install an exemption for a folded
+		// ASCII host the operator never wrote, since some non-ASCII runes fold
+		// into ASCII.
+		if config.RawHostASCIIError(entry.Host) != nil {
+			continue
+		}
 		host := config.NormalizeHostPattern(entry.Host)
 		prefix := strings.TrimSpace(entry.PathPrefix)
 		if host == "" || prefix == "" {

@@ -1297,6 +1297,9 @@ func agentSandboxChanged(old, updated *AgentSandboxOverride) bool {
 	if !boolPtrEqual(old.Enabled, updated.Enabled) || !boolPtrEqual(old.Strict, updated.Strict) || !boolPtrEqual(old.BestEffort, updated.BestEffort) {
 		return true
 	}
+	if old.BestEffortReason != updated.BestEffortReason || old.BestEffortExpiry != updated.BestEffortExpiry {
+		return true
+	}
 	if old.Workspace != updated.Workspace {
 		return true
 	}

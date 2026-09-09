@@ -470,6 +470,12 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 		}
 		if profile.Sandbox.BestEffort != nil {
 			merged.Sandbox.BestEffort = *profile.Sandbox.BestEffort
+			// The authorization travels with the override that enables it.
+			// Validation already required both fields when the profile sets
+			// best_effort: true; when it sets false, the top-level reason and
+			// expiry describe an override this agent no longer has.
+			merged.Sandbox.BestEffortReason = profile.Sandbox.BestEffortReason
+			merged.Sandbox.BestEffortExpiry = profile.Sandbox.BestEffortExpiry
 		}
 		if profile.Sandbox.Workspace != "" {
 			merged.Sandbox.Workspace = profile.Sandbox.Workspace

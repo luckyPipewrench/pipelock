@@ -474,6 +474,31 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 	}
 }
 
+func TestCanonicalPolicyHash_AgentBestEffortAuthorizationIsInert(t *testing.T) {
+	bestEffort := true
+	first := canonicalHashOf(t, func(c *Config) {
+		c.Agents = map[string]AgentProfile{
+			"worker": {Sandbox: &AgentSandboxOverride{
+				BestEffort:       &bestEffort,
+				BestEffortReason: "container user namespaces disabled",
+				BestEffortExpiry: "2026-09-09T12:00:00Z",
+			}},
+		}
+	})
+	second := canonicalHashOf(t, func(c *Config) {
+		c.Agents = map[string]AgentProfile{
+			"worker": {Sandbox: &AgentSandboxOverride{
+				BestEffort:       &bestEffort,
+				BestEffortReason: "runner image disables user namespaces",
+				BestEffortExpiry: "2026-09-10T12:00:00Z",
+			}},
+		}
+	})
+	if first != second {
+		t.Fatalf("agent best-effort authorization changed canonical policy hash:\n  first  = %s\n  second = %s", first, second)
+	}
+}
+
 func TestCanonicalPolicyHash_RedactionProviderOrderCanonical(t *testing.T) {
 	t.Parallel()
 

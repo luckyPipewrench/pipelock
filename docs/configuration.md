@@ -798,16 +798,16 @@ Use `exempt_domains` to skip a specific DLP pattern for specific destination dom
 
 This is useful for APIs that embed credentials in URL paths by design (e.g., Telegram bot API uses `/bot<token>/sendMessage`). The token should be allowed when talking to Telegram but blocked if it appears in requests to other domains.
 
-To exempt a built-in pattern, override it by name and add `exempt_domains`:
+Built-in provider-key patterns cannot use `exempt_domains` to create or extend an audience. A legacy entry that only repeats a compiled audience host still loads, produces a warning, and is ignored. Remove the stale entry when you update the config. Use `exempt_domains` only with a custom pattern:
 
 ```yaml
 dlp:
   patterns:
-    - name: "Anthropic API Key"    # same name as built-in — overrides it
-      regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
+    - name: "Internal Provider API Key"
+      regex: '\bintprov_[A-Za-z0-9_-]{32,}\b'
       severity: critical
       exempt_domains:
-        - "*.anthropic.com"
+        - "api.provider.example"
 ```
 
 Built-in provider-key patterns and the Discord bot-token pattern carry a compiled, immutable credential-audience host set. When one of those credentials is sent to its declared API authority, URL, request-body, request-header, and outbound WebSocket-frame DLP allow that one match and record `dlp_credential_audience_allow`; the counter is `pipelock_dlp_credential_audience_allows_total{pattern,surface}`. The same credential stays blocked for every other destination, including lookalike hosts. The set is not YAML configuration: it cannot be extended, cleared, or used as a whole-host bypass. MCP input remains blocked because it has no verified upstream authority. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.

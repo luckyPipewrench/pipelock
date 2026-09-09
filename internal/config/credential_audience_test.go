@@ -52,7 +52,57 @@ func TestMarkBuiltInCredentialAudienceHosts_OnlyExactBuiltins(t *testing.T) {
 	}
 }
 
-func TestValidate_CredentialAudienceControlsCannotWeakenBuiltins(t *testing.T) {
+func TestLoad_CredentialAudienceLegacySubsetControlsWarn(t *testing.T) {
+	const legacy = `version: 1
+mode: balanced
+dlp:
+  patterns:
+    - name: OpenAI API Key
+      regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+      exempt_domains:
+        - '*.openai.com'
+suppress:
+  - rule: OpenAI API Key
+    path: '*.openai.com*'
+    reason: provider-bound credential
+`
+	cfg, err := LoadBytes([]byte(legacy))
+	if err != nil {
+		t.Fatalf("LoadBytes legacy preset stanza: %v", err)
+	}
+	foundAudience := false
+	for _, pattern := range cfg.DLP.Patterns {
+		if pattern.Name == "OpenAI API Key" && len(pattern.CredentialAudienceHosts) == 1 && pattern.CredentialAudienceHosts[0] == "*.openai.com" {
+			foundAudience = true
+			break
+		}
+		if pattern.Name == "OpenAI API Key" {
+			t.Fatalf("legacy OpenAI pattern lost compiled audience: %#v", pattern.CredentialAudienceHosts)
+		}
+	}
+	if !foundAudience {
+		t.Fatal("legacy OpenAI pattern missing compiled audience")
+	}
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings legacy preset stanza: %v", err)
+	}
+	var patternWarning, suppressWarning bool
+	for _, warning := range warnings {
+		switch {
+		case strings.HasPrefix(warning.Field, "dlp.patterns[") && strings.HasSuffix(warning.Field, ".exempt_domains"):
+			patternWarning = strings.Contains(warning.Message, warning.Field)
+		case warning.Field == "suppress[0].path":
+			suppressWarning = strings.Contains(warning.Message, warning.Field)
+		}
+	}
+	if !patternWarning || !suppressWarning {
+		t.Fatalf("legacy config warnings missing or did not name their fields: %#v", warnings)
+	}
+}
+
+func TestValidate_CredentialAudienceWideningControlsAreActionable(t *testing.T) {
 	const pattern = "OpenAI API Key"
 	tests := []struct {
 		name      string
@@ -64,18 +114,18 @@ func TestValidate_CredentialAudienceControlsCannotWeakenBuiltins(t *testing.T) {
 			configure: func(cfg *Config) {
 				for i := range cfg.DLP.Patterns {
 					if cfg.DLP.Patterns[i].Name == pattern {
-						cfg.DLP.Patterns[i].ExemptDomains = []string{"api.vendor.example"}
+						cfg.DLP.Patterns[i].ExemptDomains = []string{"api.attacker.example"}
 					}
 				}
 			},
-			want: "immutable credential audience",
+			want: "delete dlp.patterns",
 		},
 		{
 			name: "suppression",
 			configure: func(cfg *Config) {
-				cfg.Suppress = []SuppressEntry{{Rule: pattern, Path: "https://api.vendor.example/*"}}
+				cfg.Suppress = []SuppressEntry{{Rule: pattern, Path: "https://api.attacker.example/*"}}
 			},
-			want: "immutable credential audience",
+			want: "delete suppress[0]",
 		},
 		{
 			name: "disable body scanning",
@@ -101,5 +151,34 @@ func TestValidate_CredentialAudienceControlsCannotWeakenBuiltins(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidate_CredentialAudienceProperSubsetControlsWarn(t *testing.T) {
+	const pattern = "OpenAI API Key"
+	cfg := Defaults()
+	for i := range cfg.DLP.Patterns {
+		if cfg.DLP.Patterns[i].Name == pattern {
+			cfg.DLP.Patterns[i].ExemptDomains = []string{"api.openai.com"}
+			break
+		}
+	}
+	cfg.Suppress = []SuppressEntry{{Rule: pattern, Path: "https://api.openai.com/*"}}
+
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings proper audience subset: %v", err)
+	}
+	var patternWarning, suppressWarning bool
+	for _, warning := range warnings {
+		switch {
+		case strings.HasPrefix(warning.Field, "dlp.patterns[") && strings.HasSuffix(warning.Field, ".exempt_domains"):
+			patternWarning = strings.Contains(warning.Message, warning.Field)
+		case warning.Field == "suppress[0].path":
+			suppressWarning = strings.Contains(warning.Message, warning.Field)
+		}
+	}
+	if !patternWarning || !suppressWarning {
+		t.Fatalf("proper-subset warnings missing or did not name their fields: %#v", warnings)
 	}
 }

@@ -7,27 +7,26 @@ session IDs, request IDs, and opaque model/provider IDs.
 
 ## Covered By Default
 
-These rules are enforced on every destination except the provider's own API host,
-where URL DLP is exempted and matching body/header findings are suppressed as
-provider-bound credentials:
+Each row has a compiled credential-audience host set. Pipelock allows the matching credential only when the proxy's verified destination host is in that set. The decision applies to URL, request-body, request-header, and outbound WebSocket-frame DLP, and records `dlp_credential_audience_allow`. A match for the same credential at another host remains blocked. These entries do not trust a whole provider host or use `exempt_domains` or `suppress`.
 
-| Rule | Shape | Provider host exemption |
-|------|-------|-------------------------|
-| Anthropic API Key | `sk-ant-` + 20+ token chars | `*.anthropic.com` |
-| OpenAI API Key | `sk-proj-` + 20+ token chars | `*.openai.com` |
-| OpenAI Service Key | `sk-svcacct-` + 20+ token chars | `*.openai.com` |
-| Fireworks API Key | `fw_` + 22 alphanumeric chars | `*.fireworks.ai` |
-| LLM Router API Key | `sk-or-v1-` + 20+ hex chars | `*.openrouter.ai` |
-| Answer Engine API Key | `pplx-` + 20+ alphanumeric chars | `*.perplexity.ai` |
-| Web Research API Key | `tvly-` + 20+ alphanumeric chars | `*.tavily.com` |
-| Google API Key | `AIza` + 35 token chars | `*.googleapis.com` |
-| Hugging Face Token | `hf_` + bounded alphanumeric suffix | `*.huggingface.co` |
-| Databricks Token | `dapi` + 32+ hex chars | `*.databricks.com` |
-| Replicate API Token | `r8_` + 40 hex chars | `*.replicate.com` |
-| Together AI Key | `tok_` + 40+ lowercase alphanumeric chars | `*.together.ai` |
-| Pinecone API Key | `pcsk_` + 36+ alphanumeric chars | `*.pinecone.io` |
-| Groq API Key | `gsk_` + 48+ alphanumeric chars | `*.groq.com` |
-| xAI API Key | `xai-` + 80+ token chars | `*.x.ai` |
+| Rule | Shape | Immutable audience hosts | Source |
+|------|-------|--------------------------|--------|
+| Anthropic API Key | `sk-ant-` + 20+ token chars | `*.anthropic.com` | [Anthropic API overview](https://platform.claude.com/docs/en/api/overview) |
+| OpenAI API Key | `sk-proj-` + 20+ token chars | `*.openai.com` | [OpenAI API overview](https://developers.openai.com/api/reference/overview) |
+| OpenAI Service Key | `sk-svcacct-` + 20+ token chars | `*.openai.com` | [OpenAI API overview](https://developers.openai.com/api/reference/overview) |
+| Fireworks API Key | `fw_` + 22 alphanumeric chars | `*.fireworks.ai` | [Fireworks authentication](https://docs.fireworks.ai/api-reference/authentication); unverified binding carried from prior defaults |
+| LLM Router API Key | `sk-or-v1-` + 20+ hex chars | `*.openrouter.ai` | [OpenRouter API overview](https://openrouter.ai/docs/api_reference/overview) |
+| Answer Engine API Key | `pplx-` + 20+ alphanumeric chars | `*.perplexity.ai` | [Perplexity quickstart](https://docs.perplexity.ai/docs/getting-started/quickstart) |
+| Web Research API Key | `tvly-` + 20+ token chars | `*.tavily.com` | [Tavily quickstart](https://docs.tavily.com/documentation/quickstart) |
+| Google API Key | `AIza` + 35 token chars | `*.googleapis.com` | [Google API keys](https://cloud.google.com/docs/authentication/api-keys) |
+| Discord Bot Token | three base64url segments | `discord.com` | [Discord developer reference](https://docs.discord.com/developers/reference) |
+| Hugging Face Token | `hf_` + bounded alphanumeric suffix | `*.huggingface.co` | [Hugging Face tokens](https://huggingface.co/docs/hub/security-tokens) |
+| Databricks Token | `dapi` + 32+ hex chars | `*.databricks.com` | [Databricks PAT authentication](https://docs.databricks.com/aws/en/dev-tools/auth/pat) |
+| Replicate API Token | `r8_` + 40 hex chars | `*.replicate.com` | [Replicate authentication](https://replicate.com/docs/topics/authentication); unverified binding carried from prior defaults |
+| Together AI Key | `tok_` + 40+ lowercase alphanumeric chars | `*.together.ai` | [Together authentication](https://docs.together.ai/docs/authentication); unverified binding carried from prior defaults |
+| Pinecone API Key | `pcsk_` + 36+ alphanumeric chars | `*.pinecone.io` | [Pinecone authentication](https://docs.pinecone.io/guides/get-started/authentication) |
+| Groq API Key | `gsk_` + 48+ alphanumeric chars | `*.groq.com` | [Groq API keys](https://console.groq.com/docs/api-keys) |
+| xAI API Key | `xai-` + 80+ token chars | `*.x.ai` | [xAI API reference](https://docs.x.ai/docs/api-reference) |
 
 ## Intentionally Not Covered By Default
 
@@ -63,11 +62,9 @@ suppress:
     reason: "provider-bound credential"
 ```
 
-`exempt_domains` prevents URL DLP from blocking a key on the provider's own host.
-`suppress` covers request-body and request-header findings on the same provider
-route. The same key remains blocked on every other destination.
+`exempt_domains` prevents URL DLP from blocking a custom key on the provider's own host. `suppress` covers request-body and request-header findings on the same provider route. The same key remains blocked on every other destination.
 
-The shipped provider-key suppressions name only configurable provider patterns. None target immutable core DLP names, which cannot be suppressed.
+The compiled audience entries do not use suppressions. Immutable core DLP names cannot be suppressed.
 
 ## Provider-Opaque Fields
 

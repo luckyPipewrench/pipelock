@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -170,6 +172,38 @@ func TestCredentialAudienceHosts_RuntimeBodyKnobsCannotBypassMismatch(t *testing
 	})
 	if result.Clean || result.Action != config.ActionBlock {
 		t.Fatalf("runtime body knobs weakened audience mismatch: %+v", result)
+	}
+}
+
+func TestCredentialAudienceReceiptExtensionFallbackKeepsSignedReceipt(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	rph := newReceiptProxyHelper(t)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Layer:     credentialAudienceReceiptExtensionKey,
+		Pattern:   "OpenAI API Key",
+		Transport: TransportFetch,
+		Method:    http.MethodPost,
+		Target:    "https://api.openai.com/v1/responses",
+		RequestID: "credential-audience-extension-fallback",
+		Extension: json.RawMessage("null"),
+	})
+
+	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
+	if len(got.Ext) != 0 {
+		t.Fatalf("fallback receipt kept malformed extension: %s", got.Ext)
+	}
+	if got.ActionRecord.Pattern != "OpenAI API Key" || got.ActionRecord.Verdict != config.ActionAllow {
+		t.Fatalf("fallback receipt lost signed audience record: %+v", got.ActionRecord)
 	}
 }
 

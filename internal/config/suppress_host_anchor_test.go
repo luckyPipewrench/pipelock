@@ -49,27 +49,6 @@ func TestMatchesPath_HostGlobAnchorsToHost(t *testing.T) {
 	}
 }
 
-func TestMergeDefaultSuppressions_DedupesRuleAndPathCaseInsensitive(t *testing.T) {
-	defaults := []SuppressEntry{
-		{Rule: "Anthropic API Key", Path: "*.anthropic.com*", Reason: "provider-bound credential"},
-	}
-	user := []SuppressEntry{
-		{Rule: "anthropic api key", Path: "*.ANTHROPIC.COM*", Reason: "duplicate casing"},
-		{Rule: "Anthropic API Key", Path: "*.example.com*", Reason: "user fp"},
-	}
-
-	got := mergeDefaultSuppressions(user, defaults)
-	if len(got) != 2 {
-		t.Fatalf("mergeDefaultSuppressions length = %d, want 2: %#v", len(got), got)
-	}
-	if got[0].Reason != "provider-bound credential" {
-		t.Fatalf("default suppression should be retained first, got %#v", got[0])
-	}
-	if got[1].Path != "*.example.com*" {
-		t.Fatalf("distinct user suppression missing, got %#v", got[1])
-	}
-}
-
 func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testing.T) {
 	cfg := Defaults()
 	patternByName := make(map[string]DLPPattern, len(cfg.DLP.Patterns))

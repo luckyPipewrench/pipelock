@@ -88,6 +88,12 @@ const (
 	FailReasonUnavailable = "unavailable"
 )
 
+// ErrExtensionMerge identifies a malformed or conflicting advisory extension.
+// The signed action record is still valid without an extension, so callers
+// that attach optional evidence can retry without it rather than drop the
+// receipt altogether.
+var ErrExtensionMerge = errors.New("receipt extension merge failed")
+
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
@@ -662,7 +668,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		rcpt.Ext, err = mergeReceiptExtensions(rcpt.Ext, opts.Extension)
 		if err != nil {
 			e.recordFailure(FailReasonMarshal)
-			return fmt.Errorf("marshaling receipt extension: %w", err)
+			return fmt.Errorf("%w: %w", ErrExtensionMerge, err)
 		}
 	}
 	if isSessionOpenControl(sessionControl) && e.postureAvailability != "" {

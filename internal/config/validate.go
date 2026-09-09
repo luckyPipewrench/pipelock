@@ -475,7 +475,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	c.validateLicenseIntermediate(&warnings)
-	if err := c.validateDLP(); err != nil {
+	if err := c.validateDLP(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.validateFetchProxy(); err != nil {
@@ -555,7 +555,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPWSListener(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateSuppress(); err != nil {
+	if err := c.validateSuppress(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.validateKillSwitch(); err != nil {
@@ -1072,8 +1072,8 @@ func (c *Config) validateLogging() error {
 	return nil
 }
 
-func (c *Config) validateDLP() error {
-	if err := c.validateDLPPatternConfig(); err != nil {
+func (c *Config) validateDLP(warnings *[]Warning) error {
+	if err := c.validateDLPPatternConfig(warnings); err != nil {
 		return err
 	}
 
@@ -1095,7 +1095,7 @@ func (c *Config) validateDLP() error {
 	return nil
 }
 
-func (c *Config) validateDLPPatternConfig() error {
+func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
 	// is not implemented - DLP matches follow the transport-level action
 	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
@@ -1106,7 +1106,7 @@ func (c *Config) validateDLPPatternConfig() error {
 	}
 
 	// Validate DLP patterns compile as valid regexes
-	for _, p := range c.DLP.Patterns {
+	for i, p := range c.DLP.Patterns {
 		if p.Name == "" {
 			return fmt.Errorf("DLP pattern missing name")
 		}
@@ -1142,7 +1142,16 @@ func (c *Config) validateDLPPatternConfig() error {
 			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential classes are blocked on every destination", p.Name)
 		}
 		if len(p.ExemptDomains) > 0 && IsCredentialAudiencePatternName(p.Name) {
-			return fmt.Errorf("DLP pattern %q has immutable credential audience hosts and cannot set exempt_domains; use the credential only at its declared audience", p.Name)
+			if credentialAudienceDomainSubset(p.ExemptDomains, credentialAudienceHostsForPattern(p.Name)) {
+				if warnings != nil {
+					*warnings = append(*warnings, Warning{
+						Field:   fmt.Sprintf("dlp.patterns[%d].exempt_domains", i),
+						Message: fmt.Sprintf("dlp.patterns[%d].exempt_domains is a redundant subset of the compiled credential audience for %q and is ignored; remove it", i, p.Name),
+					})
+				}
+				continue
+			}
+			return fmt.Errorf("dlp.patterns[%d].exempt_domains for %q would widen its compiled credential audience; delete dlp.patterns[%d].exempt_domains", i, p.Name, i)
 		}
 	}
 
@@ -3072,7 +3081,7 @@ func (c *Config) validateMCPWSListener() error {
 	return nil
 }
 
-func (c *Config) validateSuppress() error {
+func (c *Config) validateSuppress(warnings *[]Warning) error {
 	// Validate suppress entries have required fields
 	for i, s := range c.Suppress {
 		if s.Rule == "" {
@@ -3080,9 +3089,6 @@ func (c *Config) validateSuppress() error {
 		}
 		if IsCoreDLPPatternName(s.Rule) {
 			return fmt.Errorf("suppress entry %d rule %q targets a core floor pattern; core floor patterns cannot be suppressed: dlp.patterns[].exempt_domains applies only to configurable URL DLP patterns, so fix this core pattern's precision", i, s.Rule)
-		}
-		if IsCredentialAudiencePatternName(s.Rule) {
-			return fmt.Errorf("suppress entry %d rule %q targets immutable credential audience hosts and cannot be suppressed", i, s.Rule)
 		}
 		if IsCoreResponsePatternName(s.Rule) {
 			return fmt.Errorf("suppress entry %d rule %q targets a core floor pattern; core floor patterns cannot be suppressed: tighten the response pattern to fix the false positive", i, s.Rule)
@@ -3097,6 +3103,18 @@ func (c *Config) validateSuppress() error {
 				return fmt.Errorf("suppress entry %d (%s) has invalid path pattern %q: %w", i, s.Rule, s.Path, err)
 			}
 		}
+		if IsCredentialAudiencePatternName(s.Rule) {
+			if credentialAudienceSuppressPathSubset(s.Path, credentialAudienceHostsForPattern(s.Rule)) {
+				if warnings != nil {
+					*warnings = append(*warnings, Warning{
+						Field:   fmt.Sprintf("suppress[%d].path", i),
+						Message: fmt.Sprintf("suppress[%d].path is a redundant subset of the compiled credential audience for %q and is ignored; remove suppress[%d]", i, s.Rule, i),
+					})
+				}
+				continue
+			}
+			return fmt.Errorf("suppress[%d] rule %q would widen its compiled credential audience; delete suppress[%d]", i, s.Rule, i)
+		}
 	}
 	return nil
 }
@@ -3105,7 +3123,64 @@ func (c *Config) validateSuppress() error {
 // full config. Runtime boundaries use it when callers provide an in-memory
 // config that did not pass through Load.
 func (c *Config) ValidateSuppressions() error {
-	return c.validateSuppress()
+	return c.validateSuppress(nil)
+}
+
+// credentialAudienceDomainSubset reports whether every candidate domain is
+// contained by at least one compiled audience domain. Inputs have already
+// passed ValidateTrustedDomains, so only exact hosts and leading-wildcard
+// domain patterns reach this comparison.
+func credentialAudienceDomainSubset(candidates, audience []string) bool {
+	for _, candidate := range candidates {
+		contained := false
+		for _, allowed := range audience {
+			if credentialAudienceDomainContains(allowed, candidate) {
+				contained = true
+				break
+			}
+		}
+		if !contained {
+			return false
+		}
+	}
+	return true
+}
+
+// credentialAudienceDomainContains reports whether the candidate host pattern
+// can name only hosts named by allowed. A wildcard candidate includes its base
+// domain, so it is contained only when its base is the allowed base or a
+// dot-bounded subdomain of it.
+func credentialAudienceDomainContains(allowed, candidate string) bool {
+	if !strings.HasPrefix(allowed, "*.") {
+		return allowed == candidate
+	}
+	allowedBase := strings.TrimPrefix(allowed, "*.")
+	if !strings.HasPrefix(candidate, "*.") {
+		return destination.MatchDomain(candidate, allowed)
+	}
+	candidateBase := strings.TrimPrefix(candidate, "*.")
+	return candidateBase == allowedBase || strings.HasSuffix(candidateBase, "."+allowedBase)
+}
+
+// credentialAudienceSuppressPathSubset recognizes the two suppress forms that
+// can prove their hostname scope: the legacy host glob and an HTTP(S) URL
+// pattern. Other suppress syntax can match a URL path, basename, or query, so
+// it cannot prove that the suppression is limited to the compiled audience.
+func credentialAudienceSuppressPathSubset(raw string, audience []string) bool {
+	p := strings.ToLower(strings.TrimSpace(toSlash(raw)))
+	if isHostDomainGlob(p) {
+		domain := strings.TrimPrefix(strings.Trim(p, "*"), ".")
+		return credentialAudienceDomainSubset([]string{"*." + domain}, audience)
+	}
+	u, err := url.Parse(p)
+	if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.User != nil || u.Hostname() == "" {
+		return false
+	}
+	hosts := []string{u.Hostname()}
+	if err := ValidateTrustedDomains(hosts, "suppress path host"); err != nil {
+		return false
+	}
+	return credentialAudienceDomainSubset(hosts, audience)
 }
 
 func (c *Config) validateKillSwitch() error {

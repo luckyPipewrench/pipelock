@@ -65,9 +65,12 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 }
 
 // canonicalCredentialAudienceDestination reuses destination's normalized host
-// and port validation. WebSocket frame DLP accepts ws/wss because the proxy's
-// parsed upstream URL is its verified destination authority; raw MCP input has
-// no such target and intentionally never calls this helper.
+// and port validation. Credential audiences establish host ownership, so this
+// intentionally ignores the validated port; it is not an exact-destination
+// grant, which must continue to bind host and port. WebSocket frame DLP accepts
+// ws/wss because the proxy's parsed upstream URL is its verified destination
+// authority; raw MCP input has no such target and intentionally never calls
+// this helper.
 func canonicalCredentialAudienceDestination(target string) (string, bool) {
 	parsed, err := url.Parse(target)
 	if err != nil || parsed == nil || parsed.User != nil || parsed.Hostname() == "" {

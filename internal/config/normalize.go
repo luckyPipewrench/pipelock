@@ -912,7 +912,10 @@ func markBuiltInCredentialURLWhitespaceGrammar(patterns []DLPPattern) {
 // markBuiltInCredentialAudienceHosts restores the immutable audience property
 // for generated preset YAML. The field is excluded from YAML, so only an exact
 // copy of a shipped pattern receives it after default merging. A changed regex,
-// severity, validator, or operator exemption stays a normal blocking pattern.
+// severity, validator, or widening operator exemption stays a normal blocking
+// pattern. A legacy exemption that is already a subset of the compiled
+// audience remains an audience-bound pattern; validation warns that the stale
+// stanza is ignored instead of making a shipped config fail on upgrade.
 func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	for _, builtIn := range defaultDLPPatternSet {
 		if len(builtIn.CredentialAudienceHosts) == 0 {
@@ -922,7 +925,8 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 			candidate := &patterns[i]
 			if candidate.Bundle != "" || candidate.Name != builtIn.Name ||
 				candidate.Regex != builtIn.Regex || candidate.Severity != builtIn.Severity ||
-				candidate.Validator != builtIn.Validator || len(candidate.ExemptDomains) != 0 {
+				candidate.Validator != builtIn.Validator ||
+				!credentialAudienceExemptDomainsSubset(candidate.ExemptDomains, builtIn.CredentialAudienceHosts) {
 				continue
 			}
 			candidate.CredentialAudienceHosts = append([]string(nil), builtIn.CredentialAudienceHosts...)
@@ -930,29 +934,15 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	}
 }
 
-func mergeDefaultSuppressions(user, defaults []SuppressEntry) []SuppressEntry {
-	if len(defaults) == 0 {
-		return user
+func credentialAudienceExemptDomainsSubset(domains, audience []string) bool {
+	if len(domains) == 0 {
+		return true
 	}
-	keyFor := func(e SuppressEntry) string {
-		return strings.ToLower(e.Rule) + "\x00" + strings.ToLower(e.Path)
+	normalized := append([]string(nil), domains...)
+	if err := ValidateTrustedDomains(normalized, "credential audience exempt_domains"); err != nil {
+		return false
 	}
-	seen := make(map[string]struct{}, len(defaults)+len(user))
-	merged := make([]SuppressEntry, 0, len(defaults)+len(user))
-	for _, e := range defaults {
-		key := keyFor(e)
-		seen[key] = struct{}{}
-		merged = append(merged, e)
-	}
-	for _, e := range user {
-		key := keyFor(e)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		merged = append(merged, e)
-	}
-	return merged
+	return credentialAudienceDomainSubset(normalized, audience)
 }
 
 // mergeResponsePatterns merges default response scanning patterns with user-defined patterns.

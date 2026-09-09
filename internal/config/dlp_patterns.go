@@ -422,12 +422,20 @@ func IsCoreDLPPatternName(name string) bool {
 // credential class whose destination is constrained by compiled audience hosts.
 // The name list is derived from the compiled defaults, never from operator YAML.
 func IsCredentialAudiencePatternName(name string) bool {
-	for _, pattern := range DefaultDLPPatterns() {
+	return len(credentialAudienceHostsForPattern(name)) > 0
+}
+
+// credentialAudienceHostsForPattern returns the compiled audience for name.
+// Callers must treat the returned slice as read-only. Unlike
+// DefaultDLPPatterns, this helper does not clone the full default registry, so
+// per-match audience checks do not allocate a new pattern set.
+func credentialAudienceHostsForPattern(name string) []string {
+	for _, pattern := range defaultDLPPatternSet {
 		if len(pattern.CredentialAudienceHosts) > 0 && strings.EqualFold(name, pattern.Name) {
-			return true
+			return pattern.CredentialAudienceHosts
 		}
 	}
-	return false
+	return nil
 }
 
 // PresetDLPPatterns returns the generated DLP pattern set for a shipped preset

@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -42,7 +43,7 @@ func (p *Proxy) recordCredentialAudienceAllow(ctx audit.LogContext, allow scanne
 	if err != nil {
 		return
 	}
-	_ = p.emitReceipt(receipt.EmitOpts{
+	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -54,6 +55,32 @@ func (p *Proxy) recordCredentialAudienceAllow(ctx audit.LogContext, allow scanne
 		Agent:     agent,
 		Extension: extension,
 	})
+}
+
+// emitCredentialAudienceReceipt preserves the signed allow record when its
+// unsigned advisory extension is malformed. The extension never decides a
+// verdict, and losing the entire receipt is a worse failure direction than
+// omitting that optional metadata.
+func (p *Proxy) emitCredentialAudienceReceipt(opts receipt.EmitOpts) {
+	if p == nil {
+		return
+	}
+	if cfg := p.cfgPtr.Load(); cfg != nil {
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	}
+	e := p.receiptEmitterPtr.Load()
+	if e == nil {
+		return
+	}
+	emitCredentialAudienceReceiptWithFallback(
+		opts,
+		e.Emit,
+		p.emitV2Receipt,
+		p.logReceiptEmissionFailure,
+		func(fallback receipt.EmitOpts) {
+			logCredentialAudienceReceiptExtensionDropped(p.logger, fallback)
+		},
+	)
 }
 
 func (p *Proxy) recordCredentialAudienceAllows(ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) {
@@ -73,7 +100,7 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(ctx audit.LogContex
 	if err != nil {
 		return
 	}
-	_ = rp.emitReceipt(receipt.EmitOpts{
+	rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -85,6 +112,67 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(ctx audit.LogContex
 		Agent:     agent,
 		Extension: extension,
 	})
+}
+
+func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(opts receipt.EmitOpts) {
+	if rp == nil {
+		return
+	}
+	if rp.cfgPtr != nil {
+		if cfg := rp.cfgPtr.Load(); cfg != nil {
+			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		}
+	}
+	e := rp.receiptEmitter()
+	if e == nil {
+		return
+	}
+	emitCredentialAudienceReceiptWithFallback(
+		opts,
+		e.Emit,
+		func(v2Opts receipt.EmitOpts) error {
+			return emitV2(rp.v2EmitterPtr, v2Opts, func(err error) {
+				recordV2ReceiptEmitFailure(rp.metrics)
+				logV2EmitFailure(rp.logger, v2Opts, err)
+			})
+		},
+		rp.logReceiptEmissionFailure,
+		func(fallback receipt.EmitOpts) {
+			logCredentialAudienceReceiptExtensionDropped(rp.logger, fallback)
+		},
+	)
+}
+
+func emitCredentialAudienceReceiptWithFallback(
+	opts receipt.EmitOpts,
+	emitV1 func(receipt.EmitOpts) error,
+	emitV2 func(receipt.EmitOpts) error,
+	logFailure func(receipt.EmitOpts, error),
+	logDropped func(receipt.EmitOpts),
+) {
+	if err := emitV1(opts); err == nil {
+		_ = emitV2(opts)
+		return
+	} else if !errors.Is(err, receipt.ErrExtensionMerge) {
+		logFailure(opts, err)
+		return
+	}
+
+	fallback := opts
+	fallback.Extension = nil
+	if err := emitV1(fallback); err != nil {
+		logFailure(fallback, err)
+		return
+	}
+	logDropped(fallback)
+	_ = emitV2(fallback)
+}
+
+func logCredentialAudienceReceiptExtensionDropped(logger *audit.Logger, opts receipt.EmitOpts) {
+	if logger == nil {
+		return
+	}
+	logger.LogError(audit.NewRequestLogContext(opts.RequestID), errors.New("credential audience receipt extension could not be merged; signed receipt emitted without the extension"))
 }
 
 func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string) {

@@ -120,3 +120,65 @@ func TestMatchListErrorNamesFieldAndValue(t *testing.T) {
 		}
 	}
 }
+
+// In strict mode `api_allowlist` decides what may leave at all, so a wildcard
+// over a registry boundary is not a broad grant but the absence of one:
+// "*.com" permits every host under an entire registry, which reads in the file
+// like strict mode is on and behaves like it is off.
+//
+// The breadth rule already governed the other grant surfaces - trusted_domains,
+// DLP exempt_domains, the entropy exemption lists - and this list was simply
+// missed, which two independent reviews rated high on this change. The test
+// pins the DIRECTIONALITY as much as the refusal: the same pattern stays valid
+// on a deny or match list, where breadth is the operator's policy.
+func TestGrantListRefusesRegistryWildcardsButDenyListsKeepThem(t *testing.T) {
+	t.Parallel()
+
+	registryWildcards := []string{"*.com", "*.co.uk", "*.com.au"}
+
+	for _, pattern := range registryWildcards {
+		t.Run("api_allowlist refuses "+pattern, func(t *testing.T) {
+			t.Parallel()
+			_, err := LoadBytes([]byte("mode: strict\napi_allowlist: [\"" + pattern + "\"]\n"))
+			if err == nil {
+				t.Fatalf("%q was accepted on api_allowlist; in strict mode that grants egress to every host under a registry", pattern)
+			}
+		})
+
+		// The control that makes the case above about BREADTH rather than about
+		// the pattern being malformed. A deny list must still accept it.
+		t.Run("blocklist keeps "+pattern, func(t *testing.T) {
+			t.Parallel()
+			if _, err := LoadBytes([]byte("fetch_proxy:\n  monitoring:\n    blocklist: [\"" + pattern + "\"]\n")); err != nil {
+				t.Errorf("%q was refused on the blocklist; a broad wildcard on a deny list is a policy, not a mistake: %v", pattern, err)
+			}
+		})
+
+		t.Run("request_policy route keeps "+pattern, func(t *testing.T) {
+			t.Parallel()
+			yaml := "request_policy:\n  enabled: true\n  rules:\n    - name: deny-broad\n      action: block\n      route:\n        hosts: [\"" + pattern + "\"]\n"
+			if _, err := LoadBytes([]byte(yaml)); err != nil {
+				t.Errorf("%q was refused on a request_policy route; blocking a whole registry is a legitimate policy: %v", pattern, err)
+			}
+		})
+	}
+
+	// Calibration: the shapes the shipped presets and defaults actually use
+	// must all survive on the allowlist, including PRIVATE boundaries, which
+	// breadth deliberately does not refuse. Without this the refusals above
+	// would pass on a rule that rejected every wildcard.
+	for _, pattern := range []string{
+		"*.anthropic.com",
+		"*.example.com",
+		"*.googleapis.com",        // private boundary, shipped in four presets
+		"*.githubusercontent.com", // private boundary, shipped in two presets
+		"api.vendor.example",
+	} {
+		t.Run("api_allowlist keeps "+pattern, func(t *testing.T) {
+			t.Parallel()
+			if _, err := LoadBytes([]byte("mode: strict\napi_allowlist: [\"" + pattern + "\"]\n")); err != nil {
+				t.Errorf("api_allowlist refused %q, which this repository's own presets rely on: %v", pattern, err)
+			}
+		})
+	}
+}

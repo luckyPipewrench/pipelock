@@ -1124,7 +1124,7 @@ func (c *Config) validateMode() error {
 	// PERMITS sub.kexample.com. That is an egress grant for a host the operator
 	// never wrote, which is the fail-open direction on the list that decides
 	// what may leave at all.
-	if err := ValidateHostMatchList(c.APIAllowlist, "api_allowlist"); err != nil {
+	if err := ValidateHostGrantList(c.APIAllowlist, "api_allowlist"); err != nil {
 		return err
 	}
 	return nil
@@ -1152,6 +1152,46 @@ func (c *Config) validateMode() error {
 //
 // Shared with the per-agent allowlists, which the enterprise merge REPLACES
 // rather than merges, so they never passed through the top-level check.
+// ValidateHostGrantList is ValidateHostMatchList plus the wildcard BREADTH
+// rule, for a list that GRANTS reachability rather than matching or denying it.
+//
+// The split exists because the same shared checker serves three fields and only
+// two of them grant: the top-level and per-agent api_allowlist do, and
+// fetch_proxy.monitoring.blocklist does not. Breadth is directional, so adding
+// it inside the shared function would refuse a broad wildcard on a DENY list,
+// where breadth is the operator's policy rather than a mistake. An earlier
+// revision of this branch made exactly that error on request_policy routes.
+//
+// Why an allowlist needs it. In strict mode this list decides what may leave at
+// all, so "*.com" is not a broad grant but the absence of one: it permits every
+// host under an entire registry, which is strict mode spelled as if it were
+// enabled while behaving as if it were off. That is the same silent-no-op class
+// this file already refuses elsewhere, in its most consequential form, and two
+// independent reviews rated it high on this change.
+//
+// It is safe for shipped configuration BECAUSE breadth refuses only ICANN
+// boundaries. Every wildcard in this repository's presets and defaults is
+// either an ordinary registrable domain ("*.anthropic.com") or a PRIVATE
+// boundary ("*.googleapis.com", "*.githubusercontent.com"), and private ones
+// stay accepted. Verified by classifying all 84 wildcard patterns under
+// configs/, charts/, docs/ and examples/ against the list: the only ICANN-
+// boundary mentions are documentation prose describing the refusal.
+func ValidateHostGrantList(hosts []string, label string) error {
+	if err := ValidateHostMatchList(hosts, label); err != nil {
+		return err
+	}
+	for i, raw := range hosts {
+		normalized := NormalizeHostPattern(raw)
+		if !strings.HasPrefix(normalized, "*.") {
+			continue
+		}
+		if err := wildcardBaseBreadthError(normalized[2:]); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
+		}
+	}
+	return nil
+}
+
 func ValidateHostMatchList(hosts []string, label string) error {
 	for i, raw := range hosts {
 		normalized, err := NormalizeAndCheckHostPattern(raw)

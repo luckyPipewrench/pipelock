@@ -219,7 +219,7 @@ func ValidateAgents(cfg *config.Config) error {
 		// egress grant the operator never wrote, and a malformed one matches
 		// nothing and denies traffic they meant to permit. Breadth is
 		// deliberately not judged here.
-		if err := config.ValidateHostMatchList(profile.APIAllowlist, fmt.Sprintf("agent %q api_allowlist", name)); err != nil {
+		if err := config.ValidateHostGrantList(profile.APIAllowlist, fmt.Sprintf("agent %q api_allowlist", name)); err != nil {
 			return err
 		}
 

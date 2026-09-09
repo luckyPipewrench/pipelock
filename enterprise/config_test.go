@@ -1604,3 +1604,27 @@ func TestValidateAgents_APIAllowlistRefusesFoldingHost(t *testing.T) {
 		t.Errorf("rejected for an unexpected reason, so this may not be the folding gate: %v", err)
 	}
 }
+
+// A per-agent api_allowlist REPLACES the base list, so the breadth rule has to
+// reach it independently or an agent profile becomes the way around a check the
+// top level enforces. Same reasoning as the top-level case: in strict mode this
+// list decides what may leave at all.
+func TestValidateAgents_APIAllowlistRefusesRegistryWildcard(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"claude-code": {Mode: config.ModeStrict, APIAllowlist: []string{"*.com"}},
+	}
+	if err := ValidateAgents(cfg); err == nil {
+		t.Error("\"*.com\" was accepted on a per-agent api_allowlist; that grants egress to every host under a registry")
+	}
+
+	// Control: a private boundary stays accepted here too, matching the
+	// top-level rule and this repository's own presets.
+	cfg = testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"claude-code": {Mode: config.ModeStrict, APIAllowlist: []string{"*.googleapis.com"}},
+	}
+	if err := ValidateAgents(cfg); err != nil {
+		t.Errorf("a private-boundary wildcard must stay accepted on a per-agent allowlist: %v", err)
+	}
+}

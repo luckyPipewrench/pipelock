@@ -282,3 +282,78 @@ func TestMCPToolScanning_DefaultDisabled(t *testing.T) {
 		t.Fatal("test assumption changed: MCPToolScanning now defaults to enabled; re-check whether the default path is still reachable")
 	}
 }
+
+// Text mode must print the same facts the JSON verdict carries: a tool
+// finding names the tool and the poison, and an uninspected family prints an
+// UNSCANNED line instead of nothing.
+func TestScanStreamResult_TextModePrintsToolFindingsAndUnscanned(t *testing.T) {
+	sc := testScanner(t)
+
+	var poisoned bytes.Buffer
+	found, _, err := ScanStreamResult(strings.NewReader(poisonedToolsListLine), &poisoned, sc, false, defaultEnabledToolScanConfig())
+	if err != nil {
+		t.Fatalf("ScanStreamResult: %v", err)
+	}
+	if !found || !strings.Contains(poisoned.String(), "[TOOL POISON]") || !strings.Contains(poisoned.String(), "do_thing:") {
+		t.Fatalf("text mode must name the poisoned tool, got found=%v output=%q", found, poisoned.String())
+	}
+
+	var disabled bytes.Buffer
+	found, malformed, err := ScanStreamResult(strings.NewReader(poisonedToolsListLine), &disabled, sc, false, nil)
+	if err != nil {
+		t.Fatalf("ScanStreamResult: %v", err)
+	}
+	if !malformed || !strings.Contains(disabled.String(), "[UNSCANNED] tool_scanning") {
+		t.Fatalf("text mode must print the uninspected family, got found=%v malformed=%v output=%q", found, malformed, disabled.String())
+	}
+}
+
+// A batch that is not valid JSON is an error verdict, and a batch whose
+// elements are all uninspected reports the family once, not once per element.
+func TestScanStreamResult_BatchErrorsAndDuplicateUnscanned(t *testing.T) {
+	sc := testScanner(t)
+
+	var broken bytes.Buffer
+	found, malformed, err := ScanStreamResult(strings.NewReader("[{\"jsonrpc\":\"2.0\",\n"), &broken, sc, true, defaultEnabledToolScanConfig())
+	if err != nil {
+		t.Fatalf("ScanStreamResult: %v", err)
+	}
+	if found || !malformed {
+		t.Fatalf("invalid batch must be malformed, not a finding: found=%v malformed=%v output=%q", found, malformed, broken.String())
+	}
+
+	benign := strings.TrimSpace(benignToolsListLine)
+	var twice bytes.Buffer
+	_, malformed, err = ScanStreamResult(strings.NewReader("["+benign+","+benign+"]\n"), &twice, sc, true, nil)
+	if err != nil {
+		t.Fatalf("ScanStreamResult: %v", err)
+	}
+	var verdict jsonrpc.ScanVerdict
+	if err := json.Unmarshal(twice.Bytes(), &verdict); err != nil {
+		t.Fatalf("decode verdict: %v (%q)", err, twice.String())
+	}
+	if !malformed || len(verdict.Unscanned) != 1 || verdict.Unscanned[0] != jsonrpc.ScanScopeToolScanning {
+		t.Fatalf("duplicate unscanned families must collapse to one, got malformed=%v unscanned=%v", malformed, verdict.Unscanned)
+	}
+}
+
+func TestIsToolsListResponse_RejectsNonObjectTools(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "tools is a string", line: `{"jsonrpc":"2.0","id":1,"result":{"tools":"x"}}`, want: false},
+		{name: "tools holds a non-object", line: `{"jsonrpc":"2.0","id":1,"result":{"tools":[1]}}`, want: false},
+		{name: "tools is malformed", line: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{]}}`, want: false},
+		{name: "batch with a tools list", line: `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"x"}]}}]`, want: true},
+		{name: "batch that is not JSON", line: `[{`, want: false},
+		{name: "batch without a tools list", line: `[{"jsonrpc":"2.0","id":1,"result":{"content":[]}}]`, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasToolsListResponse([]byte(tt.line)); got != tt.want {
+				t.Fatalf("hasToolsListResponse = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

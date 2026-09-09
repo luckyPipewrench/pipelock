@@ -142,7 +142,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// natural-language prose collapses into the 3-part dotted shape (a real
 	// false positive). (?-i:...) pins the structural anchor to uppercase.
 	// Source: https://docs.discord.com/developers/reference
-	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"discord.com"}},
+	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"discord.com", "gateway.discord.gg"}},
 
 	// Communication service keys
 	// Twilio API Key SIDs are an "SK" prefix + exactly 32 hex chars

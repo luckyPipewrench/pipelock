@@ -435,8 +435,7 @@ func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Confi
 			continue
 		}
 		if cfg.RequestBodyScanning.PatternActions[match.PatternName] == config.ActionWarn &&
-			!config.IsCoreDLPPatternName(match.PatternName) &&
-			!config.IsCredentialAudiencePatternName(match.PatternName) {
+			!config.IsCoreDLPPatternName(match.PatternName) {
 			continue
 		}
 		return true
@@ -1375,7 +1374,12 @@ func bodyDLPDisabledSet(patterns []string) map[string]struct{} {
 	}
 	disabled := make(map[string]struct{}, len(patterns))
 	for _, pattern := range patterns {
-		if config.IsCoreDLPPatternName(pattern) || config.IsCredentialAudiencePatternName(pattern) {
+		// Credential-audience patterns honor this control like any other
+		// configurable pattern. Validation ACCEPTS the entry with a warning
+		// naming the audience it widens, so ignoring it here would make the
+		// accepted control inert and keep blocking traffic the operator was
+		// told they had allowed. Only the immutable CORE floor is excluded.
+		if config.IsCoreDLPPatternName(pattern) {
 			continue
 		}
 		disabled[pattern] = struct{}{}
@@ -1409,8 +1413,7 @@ func requestBodyDLPAction(matches []scanner.TextDLPMatch, defaultAction string, 
 	for _, match := range matches {
 		matchAction := defaultAction
 		if override := patternActions[match.PatternName]; override != "" &&
-			!config.IsCoreDLPPatternName(match.PatternName) &&
-			!config.IsCredentialAudiencePatternName(match.PatternName) {
+			!config.IsCoreDLPPatternName(match.PatternName) {
 			matchAction = override
 		}
 		if matchAction == config.ActionBlock {

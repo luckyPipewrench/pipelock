@@ -80,11 +80,14 @@ func canonicalCredentialAudienceDestination(target string) (string, bool) {
 	scheme := strings.ToLower(parsed.Scheme)
 	var defaultPort string
 	switch scheme {
-	case "http", "ws":
-		defaultPort = "80"
 	case "https", "wss":
 		defaultPort = "443"
 	default:
+		// Only an encrypted scheme may earn an audience allow. Host ownership
+		// says who the destination is; it says nothing about who else can read
+		// the credential in transit. Removing a DLP match for a cleartext
+		// http:// or ws:// request would hand the credential to any observer
+		// on the path, so cleartext keeps the match and blocks.
 		return "", false
 	}
 	port := parsed.Port()

@@ -159,7 +159,12 @@ func TestCredentialAudienceHosts_CorePatternStillBlocksAtAudience(t *testing.T) 
 	}
 }
 
-func TestCredentialAudienceHosts_RuntimeBodyKnobsCannotBypassMismatch(t *testing.T) {
+// Runtime body knobs DO apply to credential-audience patterns, because config
+// validation ACCEPTS them with a warning naming the audience they widen. A knob
+// the config accepts and the runtime ignores is worse than either choice alone:
+// the operator is told the control took effect while traffic keeps blocking.
+// The immutable CORE floor is what these knobs still cannot touch.
+func TestCredentialAudienceHosts_RuntimeBodyKnobsApplyWhenConfigured(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.RequestBodyScanning.DisablePatterns = []string{"OpenAI API Key"}
@@ -178,8 +183,27 @@ func TestCredentialAudienceHosts_RuntimeBodyKnobsCannotBypassMismatch(t *testing
 		DisablePatterns: cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:  cfg.RequestBodyScanning.PatternActions,
 	})
-	if result.Clean || result.Action != config.ActionBlock {
-		t.Fatalf("runtime body knobs weakened audience mismatch: %+v", result)
+	if result.Action == config.ActionBlock {
+		t.Fatalf("an accepted runtime knob was ignored and still blocked: %+v", result)
+	}
+
+	// CONTROL: with no knobs configured the same out-of-audience credential
+	// blocks. Without this the assertion above would pass even if the pattern
+	// had simply stopped matching.
+	plain := config.Defaults()
+	plain.Internal = nil
+	psc := scanner.MustNew(plain)
+	defer psc.Close()
+	_, control := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(`{"credential":"` + key + `"}`),
+		ContentType: "application/json",
+		MaxBytes:    plain.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     psc,
+		Target:      "https://api.vendor.example/v1",
+		Action:      config.ActionBlock,
+	})
+	if control.Clean || control.Action != config.ActionBlock {
+		t.Fatalf("control failed: an out-of-audience credential must block by default: %+v", control)
 	}
 }
 
@@ -631,8 +655,14 @@ func TestForwardProxy_CredentialAudienceAllowIsRecorded(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("credential sent to its declared audience was blocked: status %d", resp.StatusCode)
+	// CLEARTEXT EARNS NO ALLOW. The upstream here is plain http, and host
+	// ownership does not prove transport confidentiality: removing the DLP match
+	// would hand the credential to any observer on the path. So even at its
+	// declared audience a cleartext request keeps the match and blocks. The
+	// allow path over an encrypted scheme is proven by the CONNECT test, which
+	// uses a TLS upstream.
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("a credential sent over cleartext earned an audience allow: status %d", resp.StatusCode)
 	}
 }
 
@@ -808,9 +838,12 @@ func TestReverseProxy_CredentialAudienceAllowAndControl(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	t.Run("inside its audience the credential is delivered", func(t *testing.T) {
-		if got := run(t, "127.0.0.1"); got != http.StatusOK {
-			t.Fatalf("credential at its declared audience was blocked: status %d", got)
+	// This harness's upstream is cleartext http, so the audience allow is
+	// correctly withheld: an encrypted scheme is required before a credential
+	// match may be removed.
+	t.Run("cleartext earns no allow even at the audience host", func(t *testing.T) {
+		if got := run(t, "127.0.0.1"); got == http.StatusOK {
+			t.Fatalf("a cleartext request earned an audience allow: status %d", got)
 		}
 	})
 	t.Run("outside its audience the credential is blocked", func(t *testing.T) {

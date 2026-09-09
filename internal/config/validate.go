@@ -1120,7 +1120,12 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 			if p.Action != ActionWarn {
 				return fmt.Errorf("DLP pattern %q has unsupported action %q; only %q is allowed as a per-pattern action", p.Name, p.Action, ActionWarn)
 			}
-			if p.Compiled || IsCredentialAudiencePatternName(p.Name) {
+			// Gate on the pattern's OWN compiled audience, not on the name. A
+			// user pattern that reuses a built-in name with a custom regex is
+			// not the built-in: normalize clears its audience, so it never
+			// earns an audience allow and has no reason to be refused a warn
+			// action. Rejecting by name alone refuses a legitimate config.
+			if p.Compiled || len(p.CredentialAudienceHosts) > 0 {
 				return fmt.Errorf("DLP pattern %q is a built-in default and cannot be set to warn mode; built-in patterns always enforce", p.Name)
 			}
 		}

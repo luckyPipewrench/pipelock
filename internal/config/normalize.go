@@ -917,6 +917,18 @@ func markBuiltInCredentialURLWhitespaceGrammar(patterns []DLPPattern) {
 // audience remains an audience-bound pattern; validation warns that the stale
 // stanza is ignored instead of making a shipped config fail on upgrade.
 func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
+	// Clear every candidate ONCE, before matching. A clone carries the audience
+	// field, so a pattern whose regex, severity or validator was customized
+	// would otherwise keep the built-in audience and earn an allow it no longer
+	// qualifies for. Fail closed: only a candidate that passes the identity
+	// checks below gets an audience back.
+	//
+	// This cannot move inside the loop over built-ins: that runs once per
+	// built-in pattern, so a later iteration would wipe the audience an earlier
+	// one had just assigned and every pattern but the last would lose it.
+	for i := range patterns {
+		patterns[i].CredentialAudienceHosts = nil
+	}
 	for _, builtIn := range defaultDLPPatternSet {
 		if len(builtIn.CredentialAudienceHosts) == 0 {
 			continue

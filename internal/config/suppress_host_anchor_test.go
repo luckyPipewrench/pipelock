@@ -3,7 +3,10 @@
 
 package config
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // matchesPath: host-style globs (no scheme, no path separator) anchor to the
 // URL host; path/scheme-qualified patterns keep full-URL matching.
@@ -56,25 +59,28 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		patternByName[p.Name] = p
 	}
 
-	expected := map[string]string{ // #nosec G101 -- compiled audience host assertions, not credential material
-		"Anthropic API Key":     "*.anthropic.com",
-		"OpenAI API Key":        "*.openai.com",
-		"OpenAI Service Key":    "*.openai.com",
-		"Fireworks API Key":     "*.fireworks.ai",
-		"LLM Router API Key":    "*.openrouter.ai",
-		"Answer Engine API Key": "*.perplexity.ai",
-		"Web Research API Key":  "*.tavily.com",
-		"Google API Key":        "*.googleapis.com",
-		"Hugging Face Token":    "*.huggingface.co",
-		"Databricks Token":      "*.databricks.com",
-		"Replicate API Token":   "*.replicate.com",
-		"Together AI Key":       "*.together.ai",
-		"Pinecone API Key":      "*.pinecone.io",
-		"Groq API Key":          "*.groq.com",
-		"xAI API Key":           "*.x.ai",
-		"Discord Bot Token":     "discord.com",
+	// A pattern may legitimately carry more than one audience host when the
+	// vendor serves the credential on several domains, so this asserts the
+	// exact SET rather than a single value.
+	expected := map[string][]string{ // #nosec G101 -- compiled audience host assertions, not credential material
+		"Anthropic API Key":     {"*.anthropic.com"},
+		"OpenAI API Key":        {"*.openai.com"},
+		"OpenAI Service Key":    {"*.openai.com"},
+		"Fireworks API Key":     {"*.fireworks.ai"},
+		"LLM Router API Key":    {"*.openrouter.ai"},
+		"Answer Engine API Key": {"*.perplexity.ai"},
+		"Web Research API Key":  {"*.tavily.com"},
+		"Google API Key":        {"*.googleapis.com"},
+		"Hugging Face Token":    {"*.huggingface.co"},
+		"Databricks Token":      {"*.databricks.com"},
+		"Replicate API Token":   {"*.replicate.com"},
+		"Together AI Key":       {"*.together.ai"},
+		"Pinecone API Key":      {"*.pinecone.io"},
+		"Groq API Key":          {"*.groq.com"},
+		"xAI API Key":           {"*.x.ai"},
+		"Discord Bot Token":     {"discord.com", "gateway.discord.gg"},
 	}
-	for name, host := range expected {
+	for name, hosts := range expected {
 		t.Run(name, func(t *testing.T) {
 			p, ok := patternByName[name]
 			if !ok {
@@ -83,8 +89,8 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 			if len(p.ExemptDomains) != 0 {
 				t.Fatalf("%q inherited URL-only exempt_domains = %#v", name, p.ExemptDomains)
 			}
-			if len(p.CredentialAudienceHosts) != 1 || p.CredentialAudienceHosts[0] != host {
-				t.Fatalf("%q credential audience hosts = %#v, want [%q]", name, p.CredentialAudienceHosts, host)
+			if !slices.Equal(p.CredentialAudienceHosts, hosts) {
+				t.Fatalf("%q credential audience hosts = %#v, want %#v", name, p.CredentialAudienceHosts, hosts)
 			}
 		})
 	}

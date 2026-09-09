@@ -549,3 +549,28 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_HashAndV2Fallback(t *testing
 		t.Fatalf("fallback lost the signed audience record: %+v", got.ActionRecord)
 	}
 }
+
+// The emit path must stay inert rather than panic when its collaborators are
+// absent. A receipt is optional; a crash in the proxy is not.
+func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t *testing.T) {
+	t.Run("no emitter pointer", func(t *testing.T) {
+		rp := &ReverseProxyHandler{logger: audit.NewNop(), metrics: metrics.New()}
+		rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
+	})
+	t.Run("emitter pointer holding nil", func(t *testing.T) {
+		var v1Ptr atomic.Pointer[receipt.Emitter]
+		rp := &ReverseProxyHandler{
+			logger:            audit.NewNop(),
+			metrics:           metrics.New(),
+			receiptEmitterPtr: &v1Ptr,
+		}
+		rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
+	})
+}
+
+// The drop notice is best-effort: with no logger there is nothing to write and
+// the caller must not fail because of it.
+func TestLogCredentialAudienceReceiptExtensionDropped_NilLoggerIsInert(t *testing.T) {
+	logCredentialAudienceReceiptExtensionDropped(nil, receipt.EmitOpts{RequestID: "req-1"})
+	logCredentialAudienceReceiptExtensionDropped(audit.NewNop(), receipt.EmitOpts{RequestID: "req-1"})
+}

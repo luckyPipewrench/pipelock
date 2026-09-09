@@ -221,3 +221,108 @@ func credentialAudienceCarrierCases() []credentialAudienceCarrierCase {
 		{name: "Discord", pattern: "Discord Bot Token", credential: "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27), target: "https://discord.com/api/v10"},
 	}
 }
+
+// An allow at the declared audience must reach the receipt channel with its
+// advisory extension intact. The signed record stays a plain allow; the
+// extension carries the audience detail without becoming a signed
+// authorization claim.
+func TestRecordCredentialAudienceAllow_EmitsReceiptWithExtension(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	rph := newReceiptProxyHelper(t)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	allow := scanner.CredentialAudienceAllow{
+		PatternName: "OpenAI API Key",
+		Surface:     "header",
+		Destination: "api.openai.com",
+	}
+	p.recordCredentialAudienceAllow(audit.LogContext{}, allow, TransportFetch, http.MethodPost,
+		"https://api.openai.com/v1/responses", "credential-audience-allow", "agent-1")
+
+	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
+	if got.ActionRecord.Verdict != config.ActionAllow {
+		t.Fatalf("verdict = %q, want allow", got.ActionRecord.Verdict)
+	}
+	if got.ActionRecord.Pattern != "OpenAI API Key" {
+		t.Fatalf("pattern = %q", got.ActionRecord.Pattern)
+	}
+	if len(got.Ext) == 0 {
+		t.Fatal("advisory audience extension was dropped on the happy path")
+	}
+	if !strings.Contains(string(got.Ext), "api.openai.com") {
+		t.Fatalf("extension does not name the destination: %s", got.Ext)
+	}
+}
+
+// Repeated allows for the same pattern, surface and destination collapse to one
+// record. Without this a single request carrying the credential in several
+// places would emit a receipt per occurrence.
+func TestRecordCredentialAudienceAllows_DeduplicatesBeforeEmitting(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	rph := newReceiptProxyHelper(t)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	allow := scanner.CredentialAudienceAllow{
+		PatternName: "OpenAI API Key",
+		Surface:     "header",
+		Destination: "api.openai.com",
+	}
+	other := scanner.CredentialAudienceAllow{
+		PatternName: "Anthropic API Key",
+		Surface:     "body",
+		Destination: "api.anthropic.com",
+	}
+	p.recordCredentialAudienceAllows(audit.LogContext{},
+		[]scanner.CredentialAudienceAllow{allow, allow, other, allow},
+		TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "dedup", "agent-1")
+
+	var audience int
+	for _, r := range rph.findReceipts(t) {
+		if r.ActionRecord.Layer == credentialAudienceReceiptExtensionKey {
+			audience++
+		}
+	}
+	if audience != 2 {
+		t.Fatalf("emitted %d audience receipts, want 2 (one per distinct allow)", audience)
+	}
+}
+
+// A proxy with no receipt emitter configured must record the allow and return,
+// not panic. Receipts are optional; the audit and metric paths are not.
+func TestRecordCredentialAudienceAllow_NoReceiptEmitterIsSafe(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{
+		PatternName: "OpenAI API Key",
+		Surface:     "header",
+		Destination: "api.openai.com",
+	}, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "no-emitter", "agent-1")
+}
+
+// A nil receiver is reachable through the reverse-proxy handler path and must
+// not panic.
+func TestRecordCredentialAudienceAllow_NilReceiversAreInert(t *testing.T) {
+	var p *Proxy
+	p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, TransportFetch, http.MethodGet, "", "", "")
+	p.emitCredentialAudienceReceipt(receipt.EmitOpts{})
+	var rp *ReverseProxyHandler
+	rp.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, http.MethodGet, "", "", "")
+}

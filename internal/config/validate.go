@@ -1065,21 +1065,37 @@ func (c *Config) validateMode() error {
 	// PERMITS sub.kexample.com. That is an egress grant for a host the operator
 	// never wrote, which is the fail-open direction on the list that decides
 	// what may leave at all.
-	if err := validateAPIAllowlistHosts(c.APIAllowlist, "api_allowlist"); err != nil {
+	if err := ValidateHostMatchList(c.APIAllowlist, "api_allowlist"); err != nil {
 		return err
 	}
 	return nil
 }
 
-// validateAPIAllowlistHosts applies the raw-input gate to an allowlist without
-// judging breadth. Exported behaviour is unchanged for every ASCII pattern, so
-// existing wildcard semantics are preserved; only a value that would silently
-// fold into a different host is refused. Shared with the per-agent allowlists,
-// which the enterprise merge REPLACES rather than merges, so they never passed
-// through the top-level check.
-func validateAPIAllowlistHosts(hosts []string, label string) error {
+// ValidateHostMatchList validates an allowlist or blocklist entry's RAW
+// bytes and its SHAPE, without judging breadth. Breadth is directional and does
+// not belong here: a broad wildcard on one of these lists is the operator's
+// policy. The other two halves are not directional, and leaving either one out
+// has now produced a defect each:
+//
+//   - Raw bytes: a value that folds into a different host retargets the rule.
+//   - Shape: a malformed pattern is compared LITERALLY by MatchDomain, so it
+//     matches nothing. On the blocklist that is a deny rule that never denies -
+//     "example.com#disabled" is accepted and lets example.com straight through.
+//     On an allowlist it instead denies traffic the operator meant to permit.
+//
+// Wildcard semantics for every well-formed ASCII pattern are unchanged, and an
+// exact IP literal stays valid because MatchDomain compares an IP hostname for
+// equality. A WILDCARD over an IP such as "*.8.8.8.8" stays ACCEPTED: numeric
+// labels are legal DNS labels, and while the pattern is inert against real IP
+// traffic (MatchDomain takes an equality-only branch once the hostname parses
+// as an IP) it does match a domain like "foo.8.8.8.8". Refusing it here was
+// tried and reverted on an earlier round as over-strict rather than unsafe.
+//
+// Shared with the per-agent allowlists, which the enterprise merge REPLACES
+// rather than merges, so they never passed through the top-level check.
+func ValidateHostMatchList(hosts []string, label string) error {
 	for i, raw := range hosts {
-		if err := RawHostASCIIError(raw); err != nil {
+		if _, err := NormalizeAndCheckHostPattern(raw); err != nil {
 			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
 		}
 	}
@@ -1193,20 +1209,18 @@ func (c *Config) validateFetchProxy() error {
 		return err
 	}
 
-	// Validate blocklist patterns are well-formed. The RAW gate applies here
-	// even though the BREADTH rule deliberately does not: breadth is
-	// directional, because a broad wildcard on a deny list is a policy, but
-	// retargeting is wrong in EVERY direction. "*.<KELVIN>example.com" folds to
-	// "*.kexample.com" at match time and would block a host the operator never
-	// wrote. That direction fails closed rather than open, and it is still not
-	// the operator's policy.
-	for i, b := range c.FetchProxy.Monitoring.Blocklist {
+	// Validate blocklist patterns are well-formed. The RAW and SHAPE gates
+	// apply here even though the BREADTH rule deliberately does not: breadth is
+	// directional, because a broad wildcard on a deny list is a policy, but a
+	// retargeted or unmatchable pattern is wrong in EVERY direction. See
+	// ValidateHostMatchList for both failure directions.
+	for _, b := range c.FetchProxy.Monitoring.Blocklist {
 		if b == "" {
 			return fmt.Errorf("empty blocklist entry")
 		}
-		if err := RawHostASCIIError(b); err != nil {
-			return fmt.Errorf("fetch_proxy.monitoring.blocklist[%d] %q: %w", i, b, err)
-		}
+	}
+	if err := ValidateHostMatchList(c.FetchProxy.Monitoring.Blocklist, "fetch_proxy.monitoring.blocklist"); err != nil {
+		return err
 	}
 
 	if err := validateHostnamePatternList("subdomain_entropy_exclusions", c.FetchProxy.Monitoring.SubdomainEntropyExclusions); err != nil {

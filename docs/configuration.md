@@ -1985,6 +1985,8 @@ A pattern whose base is a *private* suffix, one a company registered for its own
 
 This breadth rule governs the lists that GRANT something: trust, an allowance, or a detector bypass. It does not govern a list that MATCHES or DENIES traffic, where a deliberately broad wildcard is a policy rather than a mistake, so a `request_policy` route or the domain blocklist accepts one. Wildcard breadth on `api_allowlist` is not yet checked.
 
+**Every host list is checked for spelling, in every direction.** A pattern must be ASCII (write an internationalized name in its `xn--` form) and must be a legal hostname: no URL, no `host:port`, no fragment, no interior wildcard, and no malformed DNS label. This applies to `api_allowlist`, a per-agent `api_allowlist`, `fetch_proxy.monitoring.blocklist`, `request_policy` route hosts, `trusted_domains`, and the entropy exemption lists. It is separate from the breadth rule above and is not directional, because a misspelled pattern is compared literally and therefore matches nothing: on a deny list that is a rule that never denies, and on an allowlist it refuses traffic you meant to permit. An exact IP literal stays valid on the lists that match one.
+
 **Important:** This is a **top-level** config field, not nested under `forward_proxy`. Placing it under `forward_proxy` will silently do nothing. DLP and other content scanning still runs on trusted domains -- only the SSRF IP check is bypassed.
 
 **Strict mode:** `trusted_domains` does not override `api_allowlist`. In strict mode, a domain must be in **both** `api_allowlist` (to be reachable) and `trusted_domains` (to resolve to internal IPs). If a domain is only in `api_allowlist` and resolves internally, pipelock blocks it with a hint to add it to `trusted_domains`.

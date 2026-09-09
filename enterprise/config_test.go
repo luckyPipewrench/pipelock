@@ -1546,6 +1546,32 @@ func TestMergeAgentProfile_SandboxBestEffortCarriesAuthorization(t *testing.T) {
 // a host the operator never wrote. Written as a Go escape on purpose: the same
 // input lost its rune to a shell heredoc once and silently became ASCII "K",
 // which is legitimately accepted and asserts nothing.
+// The other half of the per-agent contract. A malformed pattern is compared
+// literally by MatchDomain, so in strict mode it matches nothing and denies
+// traffic the operator meant to permit. The first repair here gated raw bytes
+// only, which left this accepted.
+func TestValidateAgents_APIAllowlistRefusesMalformedHost(t *testing.T) {
+	for _, pattern := range []string{
+		"example.com#disabled",
+		"bad_host.example.com",
+		"example.com:443",
+		"https://example.com",
+	} {
+		cfg := testConfig()
+		cfg.Agents = map[string]config.AgentProfile{
+			"claude-code": {Mode: config.ModeStrict, APIAllowlist: []string{pattern}},
+		}
+		err := ValidateAgents(cfg)
+		if err == nil {
+			t.Errorf("%q was accepted on a per-agent api_allowlist; it matches nothing and silently denies the traffic it names", pattern)
+			continue
+		}
+		if !strings.Contains(err.Error(), "api_allowlist") {
+			t.Errorf("error for %q does not name the field, so the operator cannot locate it: %v", pattern, err)
+		}
+	}
+}
+
 func TestValidateAgents_APIAllowlistRefusesFoldingHost(t *testing.T) {
 	const kelvin = "*.\u212Aexample.com" // U+212A KELVIN SIGN, written as an escape on purpose
 

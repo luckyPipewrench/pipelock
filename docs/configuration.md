@@ -1977,7 +1977,13 @@ trusted_domains:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `trusted_domains` | `[]` | Top-level list. Supports `*.example.com` wildcards (also matches apex `example.com`). |
+| `trusted_domains` | `[]` | Top-level list. Supports `*.example.com` wildcards (also matches apex `example.com`). A wildcard must target a registrable domain: `*.co.uk`, `*.com.au` and `*.com` are refused at load because each matches every domain registered under a public suffix. |
+
+**Wildcard breadth is checked against the published public suffix list.** A pattern whose base is a registry-operated suffix is refused at load, so `*.co.uk` cannot be configured on this list; it would exempt every UK commercial domain from the internal-IP check.
+
+A pattern whose base is a *private* suffix, one a company registered for its own subdomains, is accepted. `*.googleapis.com` and `*.githubusercontent.com` are examples, and both ship in this repository's own presets. Such a pattern still covers every tenant of that service rather than only yours, so prefer the narrowest host that works.
+
+This breadth rule governs the lists that GRANT something: trust, an allowance, or a detector bypass. It does not govern a list that MATCHES or DENIES traffic, where a deliberately broad wildcard is a policy rather than a mistake, so a `request_policy` route or the domain blocklist accepts one. Wildcard breadth on `api_allowlist` is not yet checked.
 
 **Important:** This is a **top-level** config field, not nested under `forward_proxy`. Placing it under `forward_proxy` will silently do nothing. DLP and other content scanning still runs on trusted domains -- only the SSRF IP check is bypassed.
 

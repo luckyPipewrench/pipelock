@@ -59,19 +59,20 @@ func ValidateTrustedDomains(domains []string, label string) error {
 		if d == "" {
 			return fmt.Errorf("%s[%d] is empty", label, i)
 		}
-		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-			return fmt.Errorf("%s[%d] %q: use a hostname pattern, not a URL or host:port", label, i, raw)
-		}
+		// The bare wildcard keeps its own message, because "disables all SSRF
+		// protection" tells the operator something the generic breadth error
+		// cannot: what this particular list controls.
 		if d == "*" {
 			return fmt.Errorf("%s[%d]: bare wildcard disables all SSRF protection", label, i)
 		}
-		if strings.HasPrefix(d, "*.") {
-			// Wildcard must target a concrete domain (*.com is too broad).
-			if strings.Count(d[2:], ".") < 1 {
-				return fmt.Errorf("%s[%d] %q: wildcard must target a concrete domain like *.example.com", label, i, raw)
-			}
-		} else if strings.ContainsAny(d, "*?[]") {
-			return fmt.Errorf("%s[%d] %q: only exact hosts and *.example.com wildcards are supported", label, i, raw)
+		// Everything else goes through the ONE shared breadth predicate. This
+		// list previously carried a DUPLICATE of the rule rather than calling
+		// it, so it did not inherit the public-suffix fix: both copies counted
+		// dots and both accepted "*.co.uk", and fixing one left the other
+		// behind. That is the cost of a second implementation, and it is why
+		// this list calls the predicate instead of restating it.
+		if err := HostPatternBreadthError(d); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
 		}
 		domains[i] = d
 	}
@@ -1255,13 +1256,93 @@ func HostPatternBreadthError(normalized string) error {
 		return errors.New("use a hostname pattern, not a URL or host:port")
 	}
 	if strings.HasPrefix(normalized, "*.") {
-		if strings.Count(normalized[2:], ".") < 1 {
-			return errors.New("wildcard must target a concrete domain like *.example.com")
+		return wildcardBaseBreadthError(normalized[2:])
+	}
+	if strings.ContainsAny(normalized, "*?[]") {
+		return errors.New("only exact hosts and *.example.com wildcards are supported")
+	}
+	return nil
+}
+
+// wildcardBaseBreadthError reports why `*.base` is too broad to be a scoped
+// match, or nil when it is acceptable.
+//
+// TWO rules, and both are needed. The single-label test catches "*.com" and
+// "*.example": a base with no dot is a whole top-level namespace. The
+// public-suffix test catches what counting dots cannot, because a registry
+// suffix can be several labels: "*.co.uk" has a dot and is every UK commercial
+// domain. Before this, the dot count alone accepted it, and the pattern then
+// exempted every host under that suffix from whichever gate the list governs,
+// including the SSRF internal-IP check that trusted_domains controls.
+//
+// The ICANN flag is the discriminator, and using it is the difference between a
+// fix and a regression. publicsuffix reports icann=true for registry-operated
+// suffixes (com, co.uk, com.au) and icann=false for PRIVATE registrations that
+// a company added for its own subdomains (s3.amazonaws.com, github.io,
+// cloudfront.net). Rejecting every bare public suffix would therefore refuse
+// "*.s3.amazonaws.com", which is a pattern an operator legitimately writes.
+// Rejecting only the ICANN ones refuses what has no legitimate use and accepts
+// what does.
+//
+// A private-suffix wildcard is broad without being wrong, and rejecting the
+// whole class was tried and REPRODUCED AS A BREAK: five patterns this
+// repository itself ships are private PSL boundaries, including
+// "*.googleapis.com" and "*.githubusercontent.com" in configs/claude-code.yaml
+// and the DLP exempt lists in defaults.go, plus "*.ngrok.io",
+// "*.ngrok-free.app" and "*.readthedocs.io". A rule that refuses Pipelock's own
+// presets is worse than the weakness it replaces. The principled objection is
+// real (a PSL boundary marks a REGISTRATION boundary, not an ownership one, so
+// "*.googleapis.com" is every Google-hosted API namespace and not just yours)
+// and the answer to it is `pipelock doctor` surfacing breadth, not a refusal
+// here.
+//
+// THIS RULE IS FOR ALLOW, TRUST AND DETECTOR-BYPASS SURFACES ONLY. A DENY or
+// MATCH surface must use HostPatternSyntaxError instead, because there a broad
+// wildcard is the POINT: "*.co.uk" as a trust exemption gives away every UK
+// commercial domain, while the same pattern as a request_policy block is a
+// legitimate policy. The domain blocklist was already validated for nothing but
+// emptiness. Getting this wrong is not hypothetical: an earlier revision of
+// this change applied the breadth rule to request_policy route hosts, which
+// support `block`, and so refused a legitimate broad block.
+// The caller guarantees a non-empty base: NormalizeHostPattern collapses "*."
+// and "*.." to "*", which the wildcard-character branch above rejects before
+// this is reached. An explicit empty check here would be unreachable, and an
+// unreachable branch cannot be tested, so the invariant is written down instead.
+// Should it ever be reached, the single-label test below refuses it anyway.
+// HostPatternSyntaxError reports whether a normalized host pattern is
+// well-formed, WITHOUT judging how much of the internet it covers. Use it for
+// DENY and MATCH surfaces, where breadth is the operator's intent rather than a
+// mistake: a request_policy route that blocks "*.co.uk" is a policy, not a
+// misconfiguration, and refusing it would remove the ability to express one.
+//
+// It keeps every shape rule from the breadth check and drops only the
+// single-label and public-suffix tests, so a URL, a host:port, a mid-pattern
+// wildcard and an empty pattern are still refused on both kinds of surface.
+func HostPatternSyntaxError(normalized string) error {
+	if normalized == "" {
+		return errors.New("host pattern is empty")
+	}
+	if strings.Contains(normalized, "://") || strings.Contains(normalized, "/") || strings.Contains(normalized, ":") {
+		return errors.New("use a hostname pattern, not a URL or host:port")
+	}
+	if strings.HasPrefix(normalized, "*.") {
+		if !strings.Contains(normalized[2:], ".") && normalized[2:] == "" {
+			return errors.New("wildcard must name a domain, as in *.example.com")
 		}
 		return nil
 	}
 	if strings.ContainsAny(normalized, "*?[]") {
 		return errors.New("only exact hosts and *.example.com wildcards are supported")
+	}
+	return nil
+}
+
+func wildcardBaseBreadthError(base string) error {
+	if !strings.Contains(base, ".") {
+		return fmt.Errorf("wildcard must target a concrete domain like *.example.com, not the whole %q namespace", base)
+	}
+	if suffix, icann := publicsuffix.PublicSuffix(base); icann && suffix == base {
+		return fmt.Errorf("wildcard must target a registrable domain like *.example.%s, not the public suffix %q, which would match every domain registered under it", base, base)
 	}
 	return nil
 }
@@ -2108,8 +2189,15 @@ func validateRequestPolicyRoute(route *RequestPolicyRoute, label string) error {
 		len(route.ContentTypes) == 0 {
 		return fmt.Errorf("%s has no route constraints; set at least one of hosts/methods/path_prefixes/path_patterns/content_types", label)
 	}
-	if err := ValidateTrustedDomains(route.Hosts, label+" hosts"); err != nil {
-		return err
+	// A request_policy route MATCHES traffic and its action may be `block`, so
+	// its hosts get shape validation only. Running the breadth rule here
+	// refused a legitimate broad block, which is why the two validators exist.
+	for i := range route.Hosts {
+		normalized := NormalizeHostPattern(route.Hosts[i])
+		if err := HostPatternSyntaxError(normalized); err != nil {
+			return fmt.Errorf("%s hosts[%d] %q: %w", label, i, route.Hosts[i], err)
+		}
+		route.Hosts[i] = normalized
 	}
 	for j, m := range route.Methods {
 		up := strings.ToUpper(strings.TrimSpace(m))

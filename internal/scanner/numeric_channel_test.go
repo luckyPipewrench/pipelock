@@ -37,6 +37,8 @@ func TestScanNumericChannelForKnownValues(t *testing.T) {
 		{name: "ordinary telemetry", numeric: "1,2,3,4,5,6,7,8,9,10,4111111111111112,255,255,255"},
 		{name: "run shorter than the floor is not decoded", numeric: decimalCharacterCodes("canary-", ",")},
 		{name: "canary as comma separated character codes", numeric: decimalCharacterCodes(canary, ","), wantPattern: "Canary Token (planted)", wantEncoded: encodingDecimal},
+		{name: "canary as integral decimal floats", numeric: strings.ReplaceAll(decimalCharacterCodes(canary, ","), ",", ".0,") + ".0", wantPattern: "Canary Token (planted)", wantEncoded: encodingDecimal},
+		{name: "canary with exponent character code", numeric: strings.Replace(decimalCharacterCodes(canary, ","), "99,", "9.9e1,", 1), wantPattern: "Canary Token (planted)", wantEncoded: encodingDecimal},
 		{name: "canary codes after telemetry", numeric: "3.14,42," + decimalCharacterCodes(canary, ",") + ",7", wantPattern: "Canary Token (planted)", wantEncoded: encodingDecimal},
 		{name: "float inside the codes breaks the run", numeric: strings.Replace(decimalCharacterCodes(canary, ","), ",", ",1.5,", 1)},
 		{name: "environment secret as character codes", numeric: decimalCharacterCodes(secret, ","), wantPattern: "Environment Variable Leak", wantEncoded: "env"},

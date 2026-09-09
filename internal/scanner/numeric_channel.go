@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -127,11 +128,12 @@ func numericLeafBoundary(text string, index int) bool {
 }
 
 // decodeDecimalCharacterCodes turns runs of comma or space separated integers
-// that are valid Unicode code points into the text they spell. A leaf that is
-// not such a code point (a float, a negative number, a value past the Unicode
-// range) ends the current run, and runs shorter than minDecimalCodeRun are
-// dropped, so ordinary numeric data decodes to nothing rather than to noise.
-// Runs are joined with newlines so a needle cannot straddle two of them.
+// that are valid Unicode code points into the text they spell. Integral JSON
+// number forms such as 57.0 and 5.7e1 are equivalent to the code point 57 and
+// therefore remain in the run; fractional, negative, non-finite, or
+// out-of-range values end it. Runs shorter than minDecimalCodeRun are dropped,
+// so ordinary numeric data decodes to nothing rather than to noise. Runs are
+// joined with newlines so a needle cannot straddle two of them.
 func decodeDecimalCharacterCodes(numeric string) string {
 	var out strings.Builder
 	var run strings.Builder
@@ -148,14 +150,37 @@ func decodeDecimalCharacterCodes(numeric string) string {
 	}
 	fields := strings.FieldsFunc(numeric, func(r rune) bool { return r == ',' || r == ' ' })
 	for _, field := range fields {
-		code, err := strconv.Atoi(field)
-		if err != nil || code < 0 || code > utf8.MaxRune || !utf8.ValidRune(rune(code)) {
+		code, ok := parseDecimalCharacterCode(field)
+		if !ok {
 			flush()
 			continue
 		}
-		run.WriteRune(rune(code))
+		run.WriteRune(code)
 		runLen++
 	}
 	flush()
 	return out.String()
+}
+
+// parseDecimalCharacterCode accepts only an exact non-negative JSON number
+// value that is a valid Unicode code point. It fast-paths integer spellings and
+// permits equivalent decimal/exponent forms without ever rounding a value into
+// a code point: every accepted value is bounded by utf8.MaxRune, which float64
+// represents exactly.
+func parseDecimalCharacterCode(field string) (rune, bool) {
+	if code, err := strconv.ParseInt(field, 10, 32); err == nil {
+		return validDecimalCharacterCode(code)
+	}
+	value, err := strconv.ParseFloat(field, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
+		return 0, false
+	}
+	return validDecimalCharacterCode(int64(value))
+}
+
+func validDecimalCharacterCode(code int64) (rune, bool) {
+	if code < 0 || code > utf8.MaxRune || !utf8.ValidRune(rune(code)) {
+		return 0, false
+	}
+	return rune(code), true
 }

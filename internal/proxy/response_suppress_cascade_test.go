@@ -245,7 +245,10 @@ func assertMetricSampleValue(t *testing.T, m *metrics.Metrics, wantPrefix string
 	body := rec.Body.String()
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, wantPrefix) {
-			got, err := strconv.ParseFloat(strings.TrimPrefix(line, wantPrefix), 64)
+			// Trim the separator between the label set and the value so a
+			// caller may pass the prefix with or without its trailing space.
+			// Callers that already include the space are unaffected.
+			got, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(line, wantPrefix)), 64)
 			if err != nil {
 				t.Fatalf("parse metric sample from %q: %v", line, err)
 			}

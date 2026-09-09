@@ -761,6 +761,11 @@ func TestInterceptTunnel_CredentialAudienceAllowIsRecorded(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("credential sent to its declared audience over CONNECT was blocked: status %d", resp.StatusCode)
 	}
+	// A 200 alone would still pass if the callback that RECORDS the allow were
+	// deleted, so assert the telemetry too. Without this the test proves the
+	// request succeeded, not that the decision was accounted for.
+	assertMetricSampleValue(t, m,
+		`pipelock_dlp_credential_audience_allows_total{pattern="Test Audience Key",surface="header"}`, 1)
 }
 
 // Control for the CONNECT case: outside its audience the same credential must

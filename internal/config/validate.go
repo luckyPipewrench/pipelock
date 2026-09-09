@@ -1206,11 +1206,18 @@ func validateHostnamePatternList(field string, entries []string) error {
 }
 
 // NormalizeHostPattern lowercases a host pattern and strips surrounding space
-// and the trailing DNS dot. The trailing dot must go BEFORE any breadth check,
-// or "*.com." passes the check and then normalizes down to the over-broad
+// and EVERY trailing DNS dot. The dots must go BEFORE any breadth check, or
+// "*.com." passes the check and then normalizes down to the over-broad
 // "*.com".
+//
+// TrimRight rather than TrimSuffix, and that is the whole point: TrimSuffix
+// removes ONE dot, so "*.com.." became "*.com.", whose breadth test counts the
+// remaining dot as a domain label and accepts it. Runtime matching then strips
+// that dot and matched every .com host. Repeated trailing dots are the same
+// host by DNS rules, so collapsing them all is the correct reading and not a
+// special case for one input.
 func NormalizeHostPattern(raw string) string {
-	return strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+	return strings.TrimRight(strings.TrimSpace(strings.ToLower(raw)), ".")
 }
 
 // HostPatternBreadthError reports why a normalized host pattern is too broad or
@@ -1231,6 +1238,14 @@ func NormalizeHostPattern(raw string) string {
 // behavior for trusted_domains and the other host lists too, so it is not done
 // here.
 func HostPatternBreadthError(normalized string) error {
+	// Empty is rejected HERE so the predicate does not depend on its caller
+	// having checked emptiness first. A caller that tested the raw value and
+	// then normalized would otherwise pass "." through as "", and a predicate
+	// whose safety depends on call order is a predicate that will be called in
+	// the wrong order.
+	if normalized == "" {
+		return errors.New("host pattern is empty")
+	}
 	if strings.Contains(normalized, "://") || strings.Contains(normalized, "/") || strings.Contains(normalized, ":") {
 		return errors.New("use a hostname pattern, not a URL or host:port")
 	}
@@ -1264,7 +1279,12 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 			return fmt.Errorf("%s.scheme %q must be https", field, entry.Scheme)
 		}
 
-		host := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(entry.Host)), ".")
+		// One normalizer, so this cannot accidentally trim a second dot that
+		// validateHostnamePatternList also trims. That double-trim is what made
+		// validation reject "*.com.." while the single-normalizing runtime
+		// builder accepted it: the two paths disagreed by an implementation
+		// detail rather than by intent.
+		host := NormalizeHostPattern(entry.Host)
 		if host == "" {
 			return fmt.Errorf("%s.host is required; an entry without a host would exempt every host", field)
 		}
@@ -1381,7 +1401,7 @@ func normalizeQueryEntropyParamHost(raw string) (string, error) {
 	}) >= 0 {
 		return "", errors.New("host must not contain spaces or control characters")
 	}
-	host := strings.TrimSuffix(strings.ToLower(raw), ".")
+	host := NormalizeHostPattern(raw)
 	if host == "" {
 		return "", errors.New("host is required")
 	}

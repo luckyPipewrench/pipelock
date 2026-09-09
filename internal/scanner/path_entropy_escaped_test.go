@@ -226,6 +226,24 @@ func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 			reason: "MatchDomain matches *.com against every .com host, so the route prefix would exempt requests far outside the intended domain",
 		},
 		{
+			name:   "repeated trailing dots must not survive the breadth check",
+			entry:  config.PathEntropyExclusion{Host: "*.com..", PathPrefix: "/document/d/"},
+			probe:  "https://evil.com/document/d/" + highEntropyID,
+			reason: "one TrimSuffix left *.com. whose remaining dot read as a domain label, and runtime matching then stripped it and matched every .com host",
+		},
+		{
+			name:   "a single trailing dot is the same host and is still refused",
+			entry:  config.PathEntropyExclusion{Host: "*.com.", PathPrefix: "/document/d/"},
+			probe:  "https://evil.com/document/d/" + highEntropyID,
+			reason: "trailing dots are DNS-equivalent, so this is *.com by another spelling",
+		},
+		{
+			name:   "a bare dot host normalizes to nothing and is dropped",
+			entry:  config.PathEntropyExclusion{Host: ".", PathPrefix: "/document/d/"},
+			probe:  exempted,
+			reason: "an entry that cannot name a host is dead config, and the builder claims to drop dead config",
+		},
+		{
 			name:   "a bare wildcard host is not a scoped route",
 			entry:  config.PathEntropyExclusion{Host: "*", PathPrefix: "/document/d/"},
 			probe:  exempted,
@@ -268,6 +286,61 @@ func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 			s.Close()
 			if res.Allowed {
 				t.Fatalf("entry %+v was installed and exempted %q; it must be dropped (%s)", tt.entry, tt.probe, tt.reason)
+			}
+		})
+	}
+}
+
+// The escaped-path cases above drive checkEntropy on a pre-parsed URL, which
+// exercises the matcher but not the real entry point. A review round asked
+// whether Scan preserves the raw path far enough for the EscapedPath comparison
+// to matter in production, and that is the right question: if Scan re-parsed
+// and lost RawPath, the fix would be inert where it counts. It does not.
+func TestPathEntropyExclusion_EscapedMatchingHoldsThroughScan(t *testing.T) {
+	t.Parallel()
+
+	s := pathExclusionScanner(t, config.PathEntropyExclusion{
+		Host:       "docs.vendor.example",
+		PathPrefix: "/document/d/",
+	})
+	defer s.Close()
+
+	tests := []struct {
+		name      string
+		rawURL    string
+		wantBlock bool
+	}{
+		{
+			name:      "the literal exempted route passes the whole pipeline",
+			rawURL:    "https://docs.vendor.example/document/d/" + highEntropyID,
+			wantBlock: false,
+		},
+		{
+			name:      "an encoded separator is denied by the whole pipeline",
+			rawURL:    "https://docs.vendor.example/document%2Fd/" + highEntropyID,
+			wantBlock: true,
+		},
+		{
+			name:      "a dot segment is denied by the whole pipeline",
+			rawURL:    "https://docs.vendor.example/document/./d/" + highEntropyID,
+			wantBlock: true,
+		},
+		{
+			name:      "an unexempted route on the same host is denied",
+			rawURL:    "https://docs.vendor.example/collect/" + highEntropyID,
+			wantBlock: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			res := s.Scan(context.Background(), tt.rawURL)
+			if blocked := !res.Allowed; blocked != tt.wantBlock {
+				t.Fatalf("Scan(%q) blocked = %v, want %v (scanner=%q reason=%q)", tt.rawURL, blocked, tt.wantBlock, res.Scanner, res.Reason)
+			}
+			if tt.wantBlock && res.Scanner != ScannerEntropy {
+				t.Errorf("expected the entropy scanner to own the denial, got %q (%s)", res.Scanner, res.Reason)
 			}
 		})
 	}

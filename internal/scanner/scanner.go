@@ -3673,7 +3673,11 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		// host, which is a host-wide exemption wearing a scoped name. Drop it
 		// here as well as rejecting it in validation, so a config that somehow
 		// reaches the scanner cannot silently disable the gate.
-		host := strings.TrimSpace(entry.Host)
+		// Normalize the host BEFORE testing it, not after. Checking the raw
+		// value first let "." survive as non-empty and then normalize to "",
+		// which the predicate now also rejects; doing both means neither the
+		// order here nor the predicate alone is load-bearing.
+		host := config.NormalizeHostPattern(entry.Host)
 		prefix := strings.TrimSpace(entry.PathPrefix)
 		if host == "" || prefix == "" {
 			continue
@@ -3693,7 +3697,6 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		// domain. Porting three of validation's four over-broad spellings and
 		// missing this one is what made a second round of this finding
 		// necessary; calling the predicate removes the chance of a third.
-		host = config.NormalizeHostPattern(host)
 		if config.HostPatternBreadthError(host) != nil {
 			continue
 		}

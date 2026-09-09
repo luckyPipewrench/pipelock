@@ -84,6 +84,20 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 			wantErr: "wildcard must target a concrete domain",
 		},
 		{
+			// NOT the proof for the trailing-dot fix, and it cannot be: this path
+			// normalizes twice, so it rejected two dots even before the fix. See
+			// TestHostPatternNormalizationCollapsesEveryTrailingDot for the
+			// non-vacuous version. Kept as an outcome guard for this entry point.
+			name:    "repeated trailing dots cannot smuggle an over-broad wildcard",
+			entry:   PathEntropyExclusion{Host: "*.com..", PathPrefix: "/document/d/"},
+			wantErr: "wildcard must target a concrete domain",
+		},
+		{
+			name:    "a bare dot is not a host",
+			entry:   PathEntropyExclusion{Host: ".", PathPrefix: "/document/d/"},
+			wantErr: "host is required",
+		},
+		{
 			name:    "a host:port is not a hostname",
 			entry:   PathEntropyExclusion{Host: "docs.vendor.example:443", PathPrefix: "/document/d/"},
 			wantErr: "not a URL or host:port",
@@ -181,5 +195,49 @@ func TestPathEntropyExclusionsDefaultEmpty(t *testing.T) {
 	t.Parallel()
 	if got := Defaults().FetchProxy.Monitoring.PathEntropyExclusions; len(got) != 0 {
 		t.Fatalf("default path_entropy_exclusions = %+v, want empty; a shipped default needs the vendor's published route contract behind it", got)
+	}
+}
+
+// The predicate is tested directly because the validation path normalizes
+// twice by structure: validatePathEntropyExclusions normalizes and then
+// validateHostnamePatternList normalizes again. Two single-dot trims happened
+// to reduce "*.com.." to "*.com", so a validation-level case at two dots
+// cannot distinguish TrimRight from TrimSuffix and would pass either way. The
+// runtime builder normalizes ONCE, which is why it was the reachable path.
+// Testing the predicate removes the dot-counting arithmetic from the test.
+func TestHostPatternNormalizationCollapsesEveryTrailingDot(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"*.com", "*.com.", "*.com..", "*.com...", "  *.COM..  "} {
+		normalized := NormalizeHostPattern(raw)
+		if normalized != "*.com" {
+			t.Errorf("NormalizeHostPattern(%q) = %q, want %q; a surviving dot reads as a domain label and passes the breadth check", raw, normalized, "*.com")
+		}
+		if err := HostPatternBreadthError(normalized); err == nil {
+			t.Errorf("HostPatternBreadthError(%q from %q) = nil, want an over-broad rejection", normalized, raw)
+		}
+	}
+
+	// Control: a concrete wildcard must still be accepted, in every trailing-dot
+	// spelling, or the fix would be refusing legitimate config instead.
+	for _, raw := range []string{"*.vendor.example", "*.vendor.example.", "*.vendor.example.."} {
+		normalized := NormalizeHostPattern(raw)
+		if normalized != "*.vendor.example" {
+			t.Errorf("NormalizeHostPattern(%q) = %q, want %q", raw, normalized, "*.vendor.example")
+		}
+		if err := HostPatternBreadthError(normalized); err != nil {
+			t.Errorf("HostPatternBreadthError(%q) = %v, want nil; a concrete wildcard is legitimate", normalized, err)
+		}
+	}
+
+	// An input that is nothing but dots normalizes to empty, and the predicate
+	// rejects that itself rather than relying on a caller having checked first.
+	for _, raw := range []string{".", "..", "  .  "} {
+		if got := NormalizeHostPattern(raw); got != "" {
+			t.Errorf("NormalizeHostPattern(%q) = %q, want empty", raw, got)
+		}
+		if err := HostPatternBreadthError(""); err == nil {
+			t.Error("HostPatternBreadthError(\"\") = nil, want an empty rejection")
+		}
 	}
 }

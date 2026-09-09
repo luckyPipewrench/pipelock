@@ -210,15 +210,21 @@ func TestTruncateCmdline(t *testing.T) {
 }
 
 func TestReadProcCmdline_NonexistentPID(t *testing.T) {
-	// PID 0 is the swapper/idle thread and its cmdline is unreadable.
-	// readProcCmdline returns "" on any read error.
-	got := readProcCmdline(0)
-	if got != "" {
-		t.Errorf("readProcCmdline(0) = %q, want empty", got)
-	}
-	// Also check a clearly-bogus PID.
-	got = readProcCmdline(os.Getpid() + 999999)
-	if got != "" {
-		t.Errorf("readProcCmdline(huge) = %q, want empty", got)
+	// The invariant under test is that readProcCmdline returns "" on ANY read
+	// error, so the inputs must be PIDs that cannot name a live process rather
+	// than PIDs assumed to be free.
+	//
+	// The previous version used os.Getpid()+999999 as "clearly bogus". That is
+	// an assumption about machine state, not a property: pid_max is 4194304
+	// here and live PIDs sit around 1.6 million, so the sum lands inside the
+	// occupied range and the read SUCCEEDS. Observed 2026-09-09, where it
+	// returned a live process's command line and failed the assertion.
+	for _, pid := range []int{
+		0,  // /proc/0 does not exist; PID 0 is the idle task and has no entry
+		-1, // a negative PID can never name a process, so /proc/-1 cannot exist
+	} {
+		if got := readProcCmdline(pid); got != "" {
+			t.Errorf("readProcCmdline(%d) = %q, want empty", pid, got)
+		}
 	}
 }

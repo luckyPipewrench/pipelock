@@ -3686,6 +3686,17 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		if prefix == "/" {
 			continue
 		}
+		// The host pattern gets the SAME breadth test validation applies, from
+		// the same predicate rather than a copy of it. Without this the builder
+		// installed "*.com", which MatchDomain matches against every .com host,
+		// so a route prefix could exempt requests far outside the intended
+		// domain. Porting three of validation's four over-broad spellings and
+		// missing this one is what made a second round of this finding
+		// necessary; calling the predicate removes the chance of a third.
+		host = config.NormalizeHostPattern(host)
+		if config.HostPatternBreadthError(host) != nil {
+			continue
+		}
 		scheme := strings.ToLower(strings.TrimSpace(entry.Scheme))
 		if scheme == "" {
 			scheme = config.QueryEntropyParamDefaultScheme
@@ -3698,7 +3709,7 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		}
 		out = append(out, pathEntropyExclusion{
 			scheme:     scheme,
-			host:       strings.TrimSuffix(strings.ToLower(host), "."),
+			host:       host,
 			pathPrefix: prefix,
 		})
 	}

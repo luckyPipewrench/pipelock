@@ -173,39 +173,102 @@ func TestPathEntropyExclusion_ConstructionCompilesTheCurrentList(t *testing.T) {
 func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 	t.Parallel()
 
-	raw := "https://docs.vendor.example/document/d/" + highEntropyID
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("url.Parse: %v", err)
-	}
+	exempted := "https://docs.vendor.example/document/d/" + highEntropyID
 
-	// Control: a well-formed entry DOES exempt, so a block below means the
-	// entry was dropped rather than the fixture being wrong.
-	ok := pathExclusionScanner(t, config.PathEntropyExclusion{
+	// Control: a well-formed entry DOES exempt its route, so a block below
+	// means the entry was dropped rather than the fixture being wrong.
+	okScanner := pathExclusionScanner(t, config.PathEntropyExclusion{
 		Host: "docs.vendor.example", PathPrefix: "/document/d/",
 	})
-	if res := ok.checkEntropy(parsed); !res.Allowed {
-		ok.Close()
+	control, err := url.Parse(exempted)
+	if err != nil {
+		okScanner.Close()
+		t.Fatalf("url.Parse: %v", err)
+	}
+	if res := okScanner.checkEntropy(control); !res.Allowed {
+		okScanner.Close()
 		t.Fatalf("control failed: a valid entry did not exempt the route (%s)", res.Reason)
 	}
-	ok.Close()
+	okScanner.Close()
 
-	for name, entry := range map[string]config.PathEntropyExclusion{
-		"a bare root prefix exempts the whole host": {
-			Host: "docs.vendor.example", PathPrefix: "/",
+	// Each case names the URL its OWN pattern would match if the entry were
+	// installed. Probing one fixed host would make the wildcard cases vacuous:
+	// *.com never matches docs.vendor.example, so such a case would pass
+	// whether or not the entry was dropped.
+	tests := []struct {
+		name   string
+		entry  config.PathEntropyExclusion
+		probe  string
+		reason string
+	}{
+		{
+			name:   "a bare root prefix exempts the whole host",
+			entry:  config.PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/"},
+			probe:  "https://docs.vendor.example/anything/" + highEntropyID,
+			reason: "a / prefix is a host-wide exemption in a different spelling",
 		},
-		"a cleartext scheme must never be installed": {
-			Scheme: "http", Host: "docs.vendor.example", PathPrefix: "/document/d/",
+		{
+			name:   "a cleartext scheme must never be installed",
+			entry:  config.PathEntropyExclusion{Scheme: "http", Host: "docs.vendor.example", PathPrefix: "/document/d/"},
+			probe:  "http://docs.vendor.example/document/d/" + highEntropyID,
+			reason: "an exemption never covers cleartext",
 		},
-		"an unknown scheme is not silently treated as https": {
-			Scheme: "ftp", Host: "docs.vendor.example", PathPrefix: "/document/d/",
+		{
+			name:   "an unknown scheme is not silently treated as https",
+			entry:  config.PathEntropyExclusion{Scheme: "ftp", Host: "docs.vendor.example", PathPrefix: "/document/d/"},
+			probe:  exempted,
+			reason: "an unrecognized scheme must not default into the https slot",
 		},
-	} {
-		s := pathExclusionScanner(t, entry)
-		res := s.checkEntropy(parsed)
-		s.Close()
-		if res.Allowed {
-			t.Errorf("%s: entry %+v was installed and exempted the route; it must be dropped", name, entry)
-		}
+		{
+			name:   "a public-suffix wildcard exempts most of the internet",
+			entry:  config.PathEntropyExclusion{Host: "*.com", PathPrefix: "/document/d/"},
+			probe:  "https://evil.com/document/d/" + highEntropyID,
+			reason: "MatchDomain matches *.com against every .com host, so the route prefix would exempt requests far outside the intended domain",
+		},
+		{
+			name:   "a bare wildcard host is not a scoped route",
+			entry:  config.PathEntropyExclusion{Host: "*", PathPrefix: "/document/d/"},
+			probe:  exempted,
+			reason: "a bare wildcard names no domain at all",
+		},
+		{
+			name:   "a wildcard in the middle is not a supported pattern",
+			entry:  config.PathEntropyExclusion{Host: "docs.*.example", PathPrefix: "/document/d/"},
+			probe:  exempted,
+			reason: "only exact hosts and leading *. wildcards are supported",
+		},
+		{
+			name:   "a host:port is not a hostname",
+			entry:  config.PathEntropyExclusion{Host: "docs.vendor.example:443", PathPrefix: "/document/d/"},
+			probe:  exempted,
+			reason: "a port makes the pattern unmatchable and is refused rather than trimmed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := url.Parse(tt.probe)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", tt.probe, err)
+			}
+
+			// Calibrate this case: with the entry dropped, the probe must be
+			// blockable at all. A probe the gate would allow anyway proves
+			// nothing about whether the entry was installed.
+			bare := pathExclusionScanner(t)
+			bareAllowed := bare.checkEntropy(parsed).Allowed
+			bare.Close()
+			if bareAllowed {
+				t.Fatalf("probe %q is allowed with NO exclusions configured, so this case cannot detect an installed entry", tt.probe)
+			}
+
+			s := pathExclusionScanner(t, tt.entry)
+			res := s.checkEntropy(parsed)
+			s.Close()
+			if res.Allowed {
+				t.Fatalf("entry %+v was installed and exempted %q; it must be dropped (%s)", tt.entry, tt.probe, tt.reason)
+			}
+		})
 	}
 }

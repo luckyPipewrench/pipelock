@@ -1193,21 +1193,55 @@ func validateHostnamePatternList(field string, entries []string) error {
 		// Normalize the trailing dot BEFORE the breadth check so a
 		// trailing-dot input like "*.com." cannot pass as "*.com." and then
 		// normalize down to the over-broad "*.com".
-		d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+		d := NormalizeHostPattern(raw)
 		if d == "" {
 			return fmt.Errorf("%s[%d] is empty", field, i)
 		}
-		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-			return fmt.Errorf("%s[%d] %q: use a hostname pattern, not a URL or host:port", field, i, raw)
-		}
-		if strings.HasPrefix(d, "*.") {
-			if strings.Count(d[2:], ".") < 1 {
-				return fmt.Errorf("%s[%d] %q: wildcard must target a concrete domain like *.example.com", field, i, raw)
-			}
-		} else if strings.ContainsAny(d, "*?[]") {
-			return fmt.Errorf("%s[%d] %q: only exact hosts and *.example.com wildcards are supported", field, i, raw)
+		if err := HostPatternBreadthError(d); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", field, i, raw, err)
 		}
 		entries[i] = d
+	}
+	return nil
+}
+
+// NormalizeHostPattern lowercases a host pattern and strips surrounding space
+// and the trailing DNS dot. The trailing dot must go BEFORE any breadth check,
+// or "*.com." passes the check and then normalizes down to the over-broad
+// "*.com".
+func NormalizeHostPattern(raw string) string {
+	return strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+}
+
+// HostPatternBreadthError reports why a normalized host pattern is too broad or
+// malformed to use as a scoped match, or nil when it is acceptable. It returns
+// the reason without a field prefix so both config validation and a runtime
+// compiler can use one predicate.
+//
+// This is exported because the scanner needs the SAME answer at the point of
+// use. A Config can reach the scanner without having been validated, and a
+// runtime compiler that re-implements a subset of these rules drifts from them:
+// the path-entropy builder did exactly that, dropping an empty host, a bare
+// root prefix and a cleartext scheme while still installing "*.com", which
+// MatchDomain then matched against every .com host. One predicate, two callers.
+//
+// Known limitation, pre-existing and shared with every caller of this rule: the
+// breadth test counts dots rather than consulting a public-suffix list, so
+// "*.co.uk" is accepted and is over-broad in reality. Fixing that changes
+// behavior for trusted_domains and the other host lists too, so it is not done
+// here.
+func HostPatternBreadthError(normalized string) error {
+	if strings.Contains(normalized, "://") || strings.Contains(normalized, "/") || strings.Contains(normalized, ":") {
+		return errors.New("use a hostname pattern, not a URL or host:port")
+	}
+	if strings.HasPrefix(normalized, "*.") {
+		if strings.Count(normalized[2:], ".") < 1 {
+			return errors.New("wildcard must target a concrete domain like *.example.com")
+		}
+		return nil
+	}
+	if strings.ContainsAny(normalized, "*?[]") {
+		return errors.New("only exact hosts and *.example.com wildcards are supported")
 	}
 	return nil
 }

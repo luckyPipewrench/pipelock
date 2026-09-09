@@ -838,6 +838,15 @@ func TestScanStream_JSONOutputIncludesResponseInjectionScope(t *testing.T) {
 			if (verdict.Error != "") != tt.wantError {
 				t.Fatalf("Error = %q, wantError=%v", verdict.Error, tt.wantError)
 			}
+			if tt.wantError {
+				// A line that could not be inspected completed no scope.
+				// Listing response injection and DLP here would claim two
+				// checks finished on input the scanner never read.
+				if len(verdict.Scanned) != 0 {
+					t.Fatalf("scanned = %v, want none on an error verdict", verdict.Scanned)
+				}
+				return
+			}
 			assertScanScope(t, verdict.Scanned)
 		})
 	}

@@ -520,7 +520,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateA2AScanning(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateRequestBodyScanning(); err != nil {
+	if err := c.validateRequestBodyScanning(&warnings); err != nil {
 		return warnings, err
 	}
 	if len(c.RequestBodyScanning.SigV4CredentialRoutes) > 0 {
@@ -2666,7 +2666,7 @@ func validOptionalCardOriginPort(hostport, port string) bool {
 	return port != ""
 }
 
-func (c *Config) validateRequestBodyScanning() error {
+func (c *Config) validateRequestBodyScanning(warnings *[]Warning) error {
 	if err := validateRequestBodySigV4CredentialRoutes(&c.RequestBodyScanning); err != nil {
 		return err
 	}
@@ -2688,7 +2688,18 @@ func (c *Config) validateRequestBodyScanning() error {
 			return fmt.Errorf("request_body_scanning.disable_patterns[%d] %q targets immutable core DLP and cannot be disabled", i, pattern)
 		}
 		if IsCredentialAudiencePatternName(pattern) {
-			return fmt.Errorf("request_body_scanning.disable_patterns[%d] %q targets immutable credential audience hosts and cannot be disabled", i, pattern)
+			// An operator may knowingly allow a provider credential to a
+			// destination its vendor does not own, most often an internal
+			// relay. Warn rather than refuse: rejecting here stops a
+			// PREVIOUSLY VALID config from loading on upgrade and takes the
+			// proxy down. The core DLP floor above stays a hard error; it is
+			// immutable and predates credential audiences.
+			if warnings != nil {
+				*warnings = append(*warnings, Warning{
+					Field:   fmt.Sprintf("request_body_scanning.disable_patterns[%d]", i),
+					Message: fmt.Sprintf("%q has compiled credential audience hosts %v; disabling it stops enforcing that credential's destination entirely", pattern, credentialAudienceHostsForPattern(pattern)),
+				})
+			}
 		}
 		disabledPatterns[pattern] = struct{}{}
 	}
@@ -2709,7 +2720,18 @@ func (c *Config) validateRequestBodyScanning() error {
 			return fmt.Errorf("request_body_scanning.pattern_actions[%q] cannot downgrade immutable core DLP to warn", pattern)
 		}
 		if action == ActionWarn && IsCredentialAudiencePatternName(pattern) {
-			return fmt.Errorf("request_body_scanning.pattern_actions[%q] cannot downgrade immutable credential audience hosts to warn", pattern)
+			// An operator may knowingly allow a provider credential to a
+			// destination its vendor does not own, most often an internal
+			// relay. Warn rather than refuse: rejecting here stops a
+			// PREVIOUSLY VALID config from loading on upgrade and takes the
+			// proxy down. The core DLP floor above stays a hard error; it is
+			// immutable and predates credential audiences.
+			if warnings != nil {
+				*warnings = append(*warnings, Warning{
+					Field:   fmt.Sprintf("request_body_scanning.pattern_actions[%q]", pattern),
+					Message: fmt.Sprintf("%q has compiled credential audience hosts %v; warn delivers the request instead of blocking a credential bound elsewhere", pattern, credentialAudienceHostsForPattern(pattern)),
+				})
+			}
 		}
 		if _, disabled := disabledPatterns[pattern]; disabled {
 			return fmt.Errorf("request_body_scanning.pattern_actions[%q] is inert because the pattern is also listed in request_body_scanning.disable_patterns", pattern)
@@ -3113,7 +3135,29 @@ func (c *Config) validateSuppress(warnings *[]Warning) error {
 				}
 				continue
 			}
-			return fmt.Errorf("suppress[%d] rule %q would widen its compiled credential audience; delete suppress[%d]", i, s.Rule, i)
+			// A suppress entry that reaches beyond the compiled audience is
+			// the operator deliberately allowing a provider credential to a
+			// destination the vendor does not own. That is a real decision an
+			// operator is entitled to make, most often for an internal relay
+			// that forwards the credential on their behalf, so it warns loudly
+			// rather than refusing the config.
+			//
+			// Failure direction, chosen knowingly: this permits a widened
+			// audience instead of denying it. Refusing here would stop a
+			// PREVIOUSLY VALID config from loading on upgrade, taking the whole
+			// proxy down on a security product where every request depends on
+			// it, and the remedy the operator is given would be to delete a
+			// suppression they may genuinely need. An over-strict control that
+			// gets routed around by disabling something broader is the outcome
+			// this avoids. The widening stays visible: the entry is named here
+			// and each match is audited.
+			if warnings != nil {
+				*warnings = append(*warnings, Warning{
+					Field:   fmt.Sprintf("suppress[%d].path", i),
+					Message: fmt.Sprintf("suppress[%d] widens the compiled credential audience for %q beyond %v; the credential is allowed to leave for a destination its vendor does not own, and every match is audited", i, s.Rule, credentialAudienceHostsForPattern(s.Rule)),
+				})
+			}
+			continue
 		}
 	}
 	return nil

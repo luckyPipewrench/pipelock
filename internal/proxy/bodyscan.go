@@ -1345,15 +1345,19 @@ func filterBodyDLPMatches(matches []scanner.TextDLPMatch, target string, suppres
 	filtered := matches[:0]
 	for _, match := range matches {
 		if _, skip := disabled[match.PatternName]; skip &&
-			!config.IsCoreDLPPatternName(match.PatternName) &&
-			!config.IsCredentialAudiencePatternName(match.PatternName) {
+			!config.IsCoreDLPPatternName(match.PatternName) {
 			if onDropped != nil {
 				onDropped(match, "disabled")
 			}
 			continue
 		}
+		// Credential-audience patterns honor disable and suppress like any
+		// other configurable pattern. The operator controls are the decision
+		// point, and each one warns at config load; the audience list makes the
+		// scanner QUIETER at the vendor's own host rather than adding a floor
+		// the operator cannot reach. Only the immutable CORE floor is excluded
+		// here.
 		if !config.IsCoreDLPPatternName(match.PatternName) &&
-			!config.IsCredentialAudiencePatternName(match.PatternName) &&
 			config.IsSuppressed(match.PatternName, target, suppress) {
 			if onDropped != nil {
 				onDropped(match, "suppressed")

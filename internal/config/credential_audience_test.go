@@ -120,27 +120,6 @@ func TestValidate_CredentialAudienceWideningControlsAreActionable(t *testing.T) 
 			},
 			want: "delete dlp.patterns",
 		},
-		{
-			name: "suppression",
-			configure: func(cfg *Config) {
-				cfg.Suppress = []SuppressEntry{{Rule: pattern, Path: "https://api.attacker.example/*"}}
-			},
-			want: "delete suppress[0]",
-		},
-		{
-			name: "disable body scanning",
-			configure: func(cfg *Config) {
-				cfg.RequestBodyScanning.DisablePatterns = []string{pattern}
-			},
-			want: "immutable credential audience",
-		},
-		{
-			name: "warn body scanning",
-			configure: func(cfg *Config) {
-				cfg.RequestBodyScanning.PatternActions = map[string]string{pattern: ActionWarn}
-			},
-			want: "immutable credential audience",
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -180,5 +159,67 @@ func TestValidate_CredentialAudienceProperSubsetControlsWarn(t *testing.T) {
 	}
 	if !patternWarning || !suppressWarning {
 		t.Fatalf("proper-subset warnings missing or did not name their fields: %#v", warnings)
+	}
+}
+
+// The three controls below WIDEN a compiled credential audience: they let a
+// provider credential leave for a destination the vendor does not own. That is
+// a decision an operator is entitled to make, most often for an internal relay,
+// so each one warns and the config still loads.
+//
+// This is deliberately a permissive failure direction, chosen over the
+// alternative it replaced. Rejecting these stopped a previously valid config
+// from loading on upgrade, which takes the whole proxy down on a product every
+// request depends on, and told the operator to delete a control they may
+// genuinely need. An over-strict guard that gets routed around by disabling
+// something broader is the outcome this avoids. The immutable CORE DLP floor is
+// unaffected and still rejects all three; see the sibling test above.
+func TestValidate_CredentialAudienceWideningWarnsAndLoads(t *testing.T) {
+	const pattern = "Anthropic API Key"
+	tests := []struct {
+		name      string
+		configure func(*Config)
+		wantField string
+	}{
+		{
+			name: "suppression",
+			configure: func(cfg *Config) {
+				cfg.Suppress = []SuppressEntry{{Rule: pattern, Path: "https://relay.internal.example/*"}}
+			},
+			wantField: "suppress[0]",
+		},
+		{
+			name: "disable body scanning",
+			configure: func(cfg *Config) {
+				cfg.RequestBodyScanning.DisablePatterns = []string{pattern}
+			},
+			wantField: "request_body_scanning.disable_patterns[0]",
+		},
+		{
+			name: "warn body scanning",
+			configure: func(cfg *Config) {
+				cfg.RequestBodyScanning.PatternActions = map[string]string{pattern: ActionWarn}
+			},
+			wantField: "request_body_scanning.pattern_actions",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			tt.configure(cfg)
+			warnings, err := cfg.ValidateWithWarnings()
+			if err != nil {
+				t.Fatalf("config must still load: %v", err)
+			}
+			var found bool
+			for _, w := range warnings {
+				if strings.Contains(w.Field, tt.wantField) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("widening the audience produced no warning naming %q: %+v", tt.wantField, warnings)
+			}
+		})
 	}
 }

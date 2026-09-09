@@ -2728,13 +2728,20 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         lines.append("**The whole diff was reviewed, but this is not clean: manual verification is required.**")
     elif state == "superseded":
         lines.append("**This is historical only because the pull request head changed before completion.**")
-    lines.extend(
-        [
-            f"**Findings:** high {counts['high']}, medium {counts['medium']}, low {counts['low']}.",
-            "",
-            "### Findings",
-        ]
-    )
+    # Say what the count MEANS when the review did not finish. A bare
+    # "Findings: high 0, medium 0, low 0" on a partial run reads as a clean
+    # result to anyone who does not open the collapsed sections, and that is
+    # exactly how a timed-out review gets mistaken for a passing one.
+    if state == "partial":
+        lines.append(
+            f"**Findings:** high {counts['high']}, medium {counts['medium']}, low {counts['low']} "
+            "VERIFIED. The review did not finish, so this is not a count of what is in the diff."
+        )
+    else:
+        lines.append(
+            f"**Findings:** high {counts['high']}, medium {counts['medium']}, low {counts['low']}."
+        )
+    lines.extend(["", "### Findings"])
     if not findings:
         lines.append("No verified material findings were published.")
     else:

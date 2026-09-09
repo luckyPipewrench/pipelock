@@ -2774,6 +2774,31 @@ class StatusPresentationTest(unittest.TestCase):
         self.assertIn("- and 163 more", status)
         self.assertLess(len(status.encode("utf-8")), 2_500)
 
+    def test_partial_findings_count_says_it_is_not_a_count_of_the_diff(self) -> None:
+        # A bare "Findings: high 0, medium 0, low 0" on a review that did not
+        # finish reads as a clean result. On #1523 that is exactly how a
+        # timed-out review was mistaken for a passing one, so the count must
+        # say what it means without opening a collapsed section.
+        progress = pr_review.ReviewProgress(
+            expected_units=10,
+            reviewed_units=4,
+            incomplete_reasons=["wall-clock budget exhausted before the judge pass"],
+        )
+        status = pr_review.render_status(self._binding(), "deep", ["source:go"], progress, "partial", [])
+        lead = status[: status.index("<details>")]
+        self.assertIn("VERIFIED", lead)
+        self.assertIn("did not finish", lead)
+        self.assertNotIn("low 0.", lead)
+
+    def test_complete_findings_count_stays_plain(self) -> None:
+        # The qualifier belongs only on an unfinished review; a completed one
+        # must not acquire hedging that makes a real clean result read as doubt.
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1)
+        status = pr_review.render_status(self._binding(), "default", ["source:go"], progress, "clean", [])
+        lead = status[: status.index("<details>")]
+        self.assertIn("Findings:** high 0, medium 0, low 0.", lead)
+        self.assertNotIn("VERIFIED", lead)
+
     def test_no_findings_status_is_compact_but_keeps_details_available(self) -> None:
         progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1)
         status = pr_review.render_status(self._binding(), "default", ["source:go"], progress, "clean", [])

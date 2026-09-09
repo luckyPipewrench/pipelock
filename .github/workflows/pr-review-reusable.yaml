@@ -32,6 +32,14 @@ permissions:
   # /review in the repository failed until it was restored. Do not narrow it
   # again without running a real /review against a pull request.
   pull-requests: write
+  # A comment-triggered run contributes NO check to the pull request, because
+  # its workflow run is attached to the default branch rather than the PR. The
+  # completeness job below therefore publishes its verdict as a COMMIT STATUS on
+  # the reviewed head, which does appear in the PR's merge box. Without this a
+  # review that timed out fails its own run while the pull request still reads
+  # all green, and the only surface saying otherwise is prose inside a comment
+  # whose headline is "Findings: 0". Observed on #1523, 2026-09-09.
+  statuses: write
 
 jobs:
   admit:
@@ -258,6 +266,43 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Publish the verdict where a merge decision is actually made. This runs
+      # BEFORE the gate below so an incomplete review is visible on the pull
+      # request even though the gate then fails this job. A status is used
+      # rather than a check run because a comment-triggered run cannot add a
+      # check to a pull request it is not attached to.
+      #
+      # Failure direction: if the status POST itself fails, this step does not
+      # fail the job. The gate below is still authoritative, and losing the
+      # visibility improvement must not convert into losing the gate.
+      - name: Publish review coverage as a commit status
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ needs.review.outputs.state }}
+          COMPLETE: ${{ needs.review.outputs.complete }}
+          HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          if [ -z "${HEAD_SHA}" ]; then
+            echo "no reviewed head recorded; skipping status" >&2
+            exit 0
+          fi
+          if [ "${COMPLETE}" = "true" ]; then
+            STATUS_STATE=success
+            DESCRIPTION="Review covered the whole diff (${STATE})"
+          else
+            STATUS_STATE=failure
+            DESCRIPTION="Review did NOT cover the whole diff (state=${STATE:-none})"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state="${STATUS_STATE}" \
+            -f context="pr-review/coverage" \
+            -f description="${DESCRIPTION}" \
+            -f target_url="${RUN_URL}" >/dev/null
+
       - name: Require a review that covered the whole diff
         env:
           STATE: ${{ needs.review.outputs.state }}

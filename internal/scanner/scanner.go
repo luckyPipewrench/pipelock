@@ -227,7 +227,13 @@ type Scanner struct {
 	// the lists are fixed for a scanner's lifetime (a reload builds a new
 	// scanner), and rebuilding it per scan cost more than the scan itself once
 	// a host had a realistic number of high-entropy environment values.
-	knownSecretWindows         knownValueWindowSet
+	knownSecretWindows knownValueWindowSet
+	// knownSecretDecimalCodes holds each configured environment and file
+	// secret spelled as decimal character codes, compiled once. A secrets
+	// file can hold a thousand entries and the numeric channel runs per
+	// response line and per batch element, so rebuilding these per scan was
+	// two encodings per secret per line.
+	knownSecretDecimalCodes    map[string][]string
 	minEnvSecretLen            int // minimum env var length for leak detection
 	responsePatterns           []*compiledPattern
 	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
@@ -536,6 +542,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 	// Build partial-match windows across both known-value lists together, so a
 	// stem shared by an env secret and a file secret is excluded from both.
 	s.knownSecretWindows = buildKnownValueWindows(s.envSecrets, s.fileSecrets)
+	s.knownSecretDecimalCodes = buildKnownSecretDecimalCodes(s.envSecrets, s.fileSecrets)
 
 	// Compile response scanning patterns - must succeed since config.Validate checks these
 	if cfg.ResponseScanning.Enabled {

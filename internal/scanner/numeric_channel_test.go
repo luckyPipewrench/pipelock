@@ -4,6 +4,8 @@
 package scanner
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,7 +21,9 @@ func numericChannelCanaryScanner(t *testing.T, canary string, envSecret string) 
 		cfg.DLP.ScanEnv = true
 		t.Setenv("PIPELOCK_TEST_NUMERIC_SECRET", envSecret)
 	}
-	return MustNew(cfg)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	return s
 }
 
 func TestScanNumericChannelForKnownValues(t *testing.T) {
@@ -112,6 +116,7 @@ func TestScanNumericChannel_NoKnownValuesIsInert(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = false
 	s := MustNew(cfg)
+	t.Cleanup(s.Close)
 	if matches := s.ScanNumericChannelForKnownValues(decimalCharacterCodes("anything-at-all-here", ",")); len(matches) != 0 {
 		t.Fatalf("no configured known values must mean no matches, got %+v", matches)
 	}
@@ -137,5 +142,36 @@ func TestDecodeDecimalCharacterCodes(t *testing.T) {
 				t.Fatalf("decodeDecimalCharacterCodes(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// The file-secret half of the channel had no coverage: only the environment
+// path was exercised, so a regression in the "Known Secret Leak" label or its
+// decimal encoding would have gone unnoticed.
+func TestScanNumericChannel_FileSecretAsCharacterCodes(t *testing.T) {
+	secret := strings.Join([]string{"Q7vP2mK9xR4nT8wB", "6cD3fG1hJ5sL0zA"}, "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.DLP.SecretsFile = path
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+
+	matches := s.ScanNumericChannelForKnownValues(decimalCharacterCodes(secret, ","))
+	if len(matches) != 1 {
+		t.Fatalf("a file secret spelled as character codes must be found once, got %+v", matches)
+	}
+	if matches[0].PatternName != "Known Secret Leak" || matches[0].Encoded != encodingDecimal {
+		t.Fatalf("match = (%q, %q), want (\"Known Secret Leak\", %q)", matches[0].PatternName, matches[0].Encoded, encodingDecimal)
+	}
+
+	// A plain numeric leaf carrying the same value is legitimately received
+	// data, the same rule the environment path follows.
+	if matches := s.ScanNumericChannelForKnownValues("12,34,56"); len(matches) != 0 {
+		t.Fatalf("unrelated telemetry must not match, got %+v", matches)
 	}
 }

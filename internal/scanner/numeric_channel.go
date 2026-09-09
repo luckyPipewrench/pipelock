@@ -54,7 +54,7 @@ func (s *Scanner) ScanNumericChannelForKnownValues(numeric string) []TextDLPMatc
 		{s.fileSecrets, "Known Secret Leak", encodingDecimal},
 	} {
 		for _, secret := range known.secrets {
-			for _, candidate := range []string{decimalCharacterCodes(secret, ","), decimalCharacterCodes(secret, " ")} {
+			for _, candidate := range s.knownSecretDecimalCodes[secret] {
 				if start, end, viewLabel, ok := indexWholeNumericSequence(candidate, texts); ok {
 					matches = append(matches, TextDLPMatch{
 						PatternName: known.patternName,
@@ -183,4 +183,23 @@ func validDecimalCharacterCode(code int64) (rune, bool) {
 		return 0, false
 	}
 	return rune(code), true
+}
+
+// buildKnownSecretDecimalCodes compiles the comma and space spellings of every
+// configured secret once. The scan path reads this map instead of encoding each
+// secret again for every response line.
+func buildKnownSecretDecimalCodes(lists ...[]string) map[string][]string {
+	out := make(map[string][]string)
+	for _, list := range lists {
+		for _, secret := range list {
+			if secret == "" {
+				continue
+			}
+			if _, seen := out[secret]; seen {
+				continue
+			}
+			out[secret] = []string{decimalCharacterCodes(secret, ","), decimalCharacterCodes(secret, " ")}
+		}
+	}
+	return out
 }

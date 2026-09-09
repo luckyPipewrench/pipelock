@@ -93,13 +93,17 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 
 	var matches []TextDLPMatch
 	matches = append(matches, s.matchCanaryTokens(cleaned, "", false, ViewDLPNormalized)...)
-	matches = append(matches, s.matchCanaryDecimalCodes(cleaned, ViewDLPNormalized)...)
+	matches = append(matches, s.matchCanaryDecimalCodes(cleaned, "", ViewDLPNormalized)...)
 
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {
-		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, spanViewLabel("url_decoded", ViewDLPNormalized))...)
+		label := spanViewLabel("url_decoded", ViewDLPNormalized)
+		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, label)...)
+		matches = append(matches, s.matchCanaryDecimalCodes(decoded, "url", label)...)
 	}
 	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
-		matches = append(matches, s.matchCanaryTokens(decoded, encodingHTML, false, spanViewLabel("html_decoded", ViewDLPNormalized))...)
+		label := spanViewLabel("html_decoded", ViewDLPNormalized)
+		matches = append(matches, s.matchCanaryTokens(decoded, encodingHTML, false, label)...)
+		matches = append(matches, s.matchCanaryDecimalCodes(decoded, encodingHTML, label)...)
 	}
 	if strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
@@ -119,7 +123,12 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 	// and the candidates are already generated for DLP, so this adds substring
 	// checks rather than decode work.
 	for _, d := range decodeEncodingsRecursiveWithURL(cleaned) {
-		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized))...)
+		label := spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized)
+		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
+		// A decimal-code spelling can itself arrive wrapped in another
+		// encoding; the known-value search runs on every decoded view, not
+		// only the first, for the same reason ordinary token matching does.
+		matches = append(matches, s.matchCanaryDecimalCodes(d.text, d.encoding, label)...)
 	}
 
 	for _, view := range textDLPEncodingSegmentViews(cleaned) {
@@ -132,7 +141,9 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 			// segment loops are separate call sites, so leaving this one
 			// single-pass would keep a query-value bypass open.
 			for _, d := range decodeEncodingsRecursiveWithURL(seg) {
-				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", view.viewLabel))...)
+				label := spanViewLabel(d.encoding+"_decoded", view.viewLabel)
+				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
+				matches = append(matches, s.matchCanaryDecimalCodes(d.text, d.encoding, label)...)
 			}
 			if collapsed := canonicalizeCanaryText(seg); collapsed != "" && collapsed != seg {
 				matches = append(matches, s.matchCanaryTokens(seg, "split", true, view.viewLabel)...)
@@ -221,9 +232,16 @@ func canonicalizeCanaryText(s string) string {
 // prove an exfiltration path, so it must not be the one known value this
 // spelling hides. Only whole tokens match: the encoded needle is the exact
 // code sequence of the exact value, so a match is that value and nothing else.
-func (s *Scanner) matchCanaryDecimalCodes(text, inputViewLabel string) []TextDLPMatch {
+func (s *Scanner) matchCanaryDecimalCodes(text, outerEncoding, inputViewLabel string) []TextDLPMatch {
 	if len(s.canaryTokens) == 0 || text == "" {
 		return nil
+	}
+	encoded := encodingDecimal
+	if outerEncoding != "" {
+		// The value arrived wrapped: report both layers so an operator reading
+		// the finding knows which decoding surfaced it, not only that it was
+		// spelled in decimal.
+		encoded = outerEncoding + "+" + encodingDecimal
 	}
 	var matches []TextDLPMatch
 	for _, token := range s.canaryTokens {
@@ -231,19 +249,58 @@ func (s *Scanner) matchCanaryDecimalCodes(text, inputViewLabel string) []TextDLP
 			if needle == "" {
 				continue
 			}
-			start := strings.Index(text, needle)
-			if start < 0 {
+			start, end, ok := indexDecimalCodeRun(text, needle)
+			if !ok {
 				continue
 			}
 			patternName := "Canary Token (" + token.name + ")"
 			matches = append(matches, TextDLPMatch{
 				PatternName: patternName,
 				Severity:    "critical",
-				Encoded:     encodingDecimal,
-				span:        newMatchSpan(start, start+len(needle), inputViewLabel, patternName, "", ""),
+				Encoded:     encoded,
+				span:        newMatchSpan(start, end, inputViewLabel, patternName, "", ""),
 			})
 			break
 		}
 	}
 	return matches
+}
+
+// indexDecimalCodeRun finds needle in text only where both ends sit on a
+// numeric-token boundary. Without it, a plain substring search matched a code
+// sequence inside a LARGER number, so "1"+codes reported a critical canary
+// finding for a value the text never carried. The rejected characters are the
+// ones that would make an adjacent digit run part of one number: digits
+// themselves, a decimal point, an exponent marker, and a sign. Everything else,
+// including the commas, spaces and brackets of a JSON array, is a boundary.
+func indexDecimalCodeRun(text, needle string) (int, int, bool) {
+	for offset := 0; offset+len(needle) <= len(text); {
+		rel := strings.Index(text[offset:], needle)
+		if rel < 0 {
+			return 0, 0, false
+		}
+		start := offset + rel
+		end := start + len(needle)
+		if decimalCodeTextBoundary(text, start-1) && decimalCodeTextBoundary(text, end) {
+			return start, end, true
+		}
+		offset = start + 1
+	}
+	return 0, 0, false
+}
+
+// decimalCodeTextBoundary reports whether index is outside text or holds a byte
+// that cannot continue a number.
+func decimalCodeTextBoundary(text string, index int) bool {
+	if index < 0 || index >= len(text) {
+		return true
+	}
+	switch c := text[index]; {
+	case c >= '0' && c <= '9':
+		return false
+	case c == '.' || c == 'e' || c == 'E' || c == '-' || c == '+':
+		return false
+	default:
+		return true
+	}
 }

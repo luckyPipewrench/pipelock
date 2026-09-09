@@ -452,3 +452,86 @@ func TestCanary_DecimalCharacterCodesAreDetected(t *testing.T) {
 		t.Fatalf("a partial code sequence must not match, got %+v", result.Matches)
 	}
 }
+
+// A decimal-code spelling wrapped in another encoding must still be found:
+// the known-value search runs on every decoded view, as token matching does.
+func TestCanary_DecimalCharacterCodesInsideEncodings(t *testing.T) {
+	s := testCanaryScanner()
+	defer s.Close()
+
+	codes := decimalCharacterCodes(testCanaryValue(), ",")
+	for _, tt := range []struct {
+		name string
+		text string
+	}{
+		{name: "url encoded commas", text: "payload=" + strings.ReplaceAll(codes, ",", "%2C")},
+		{name: "base64 wrapped", text: "blob: " + base64.StdEncoding.EncodeToString([]byte(codes))},
+		{name: "html entity commas", text: "payload: " + strings.ReplaceAll(codes, ",", "&#44;")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean {
+				t.Fatal("encoded decimal-code canary must be detected")
+			}
+			// A wrapped spelling reports both layers: the outer encoding that
+			// had to be peeled, then the decimal spelling underneath.
+			if !strings.HasSuffix(result.Matches[0].Encoded, "+"+encodingDecimal) {
+				t.Fatalf("match encoding = %q, want an outer encoding plus %q; matches=%+v", result.Matches[0].Encoded, encodingDecimal, result.Matches)
+			}
+		})
+	}
+}
+
+// A code sequence inside a LARGER number is not that value. Without a boundary
+// rule, a plain substring search reported a critical canary finding for text
+// that never carried the canary.
+func TestCanary_DecimalCodesRejectLargerNumbers(t *testing.T) {
+	s := testCanaryScanner()
+	defer s.Close()
+
+	codes := decimalCharacterCodes(testCanaryValue(), ",")
+	for _, tt := range []struct {
+		name string
+		text string
+	}{
+		{name: "leading digit", text: "value: 1" + codes},
+		{name: "trailing digit", text: "value: " + codes + "9"},
+		{name: "leading decimal point", text: "value: 1." + codes},
+		{name: "trailing decimal point", text: "value: " + codes + ".5"},
+		{name: "exponent marker", text: "value: 1e" + codes},
+		{name: "negative sign", text: "value: -" + codes},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			for _, m := range result.Matches {
+				if strings.HasPrefix(m.PatternName, "Canary Token (") {
+					t.Fatalf("a code run inside a larger number must not match, got %+v", m)
+				}
+			}
+		})
+	}
+
+	// Control: the same sequence at real boundaries still matches, so the
+	// rejections above are not passing because detection stopped working.
+	for _, tt := range []struct {
+		name string
+		text string
+	}{
+		{name: "json array", text: `{"bytes":[` + codes + `]}`},
+		{name: "surrounded by spaces", text: "value: " + codes + " end"},
+		{name: "quoted", text: `"` + codes + `"`},
+	} {
+		t.Run("control_"+tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			found := false
+			for _, m := range result.Matches {
+				if strings.HasPrefix(m.PatternName, "Canary Token (") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("a code run at a real boundary must still match, got %+v", result.Matches)
+			}
+		})
+	}
+}

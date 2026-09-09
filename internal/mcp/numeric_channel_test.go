@@ -29,7 +29,9 @@ func numericChannelScanner(t *testing.T, canary string) *scanner.Scanner {
 	// A digits-only DLP pattern that WOULD fire if numeric leaves were ever
 	// joined into the general text view.
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Sixteen Digits", Regex: `\b\d{16}\b`, Severity: "high"})
-	return scanner.MustNew(cfg)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	return sc
 }
 
 func hasCanaryMatch(matches []scanner.TextDLPMatch) bool {
@@ -87,8 +89,15 @@ func TestScanResponse_NumericLeavesNeverJoinPatternDLP(t *testing.T) {
 	sc := numericChannelScanner(t, "canary-"+"7f3a9c2e4b1d")
 	// Control: the pattern is live on text.
 	textLine := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"card 4111111111111112"}]}}`
-	if v := ScanResponse([]byte(textLine), sc); v.Clean {
-		t.Fatal("control failed: the digits pattern must fire on visible text")
+	control := ScanResponse([]byte(textLine), sc)
+	sawDigits := false
+	for _, m := range control.DLPMatches {
+		if m.PatternName == "Sixteen Digits" {
+			sawDigits = true
+		}
+	}
+	if control.Clean || !sawDigits {
+		t.Fatalf("control failed: the digits pattern must fire on visible text, got clean=%v dlp=%+v", control.Clean, control.DLPMatches)
 	}
 	numericLine := `{"jsonrpc":"2.0","id":1,"result":{"content":[],"structuredContent":{"samples":[4111111111111112,255,255,255,0,0,0,128]}}}`
 	v := ScanResponse([]byte(numericLine), sc)

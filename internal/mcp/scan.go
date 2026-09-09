@@ -113,7 +113,14 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	}
 
 	// Extract text from result (handles standard ToolResult and arbitrary shapes).
-	textResult := jsonrpc.ExtractTextResult(rpc.Result)
+	// An injection-only scan never consults the numeric channel, so it also
+	// skips building one: a message can be megabytes, and walking it a second
+	// time for a channel nobody reads is pure cost.
+	extract := jsonrpc.ExtractTextResult
+	if !includeDLP {
+		extract = jsonrpc.ExtractTextOnlyResult
+	}
+	textResult := extract(rpc.Result)
 	if textResult.Truncated {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 	}
@@ -135,7 +142,7 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			}
 			text += rpcErr.Message
 			// Also scan error.data if present.
-			errData := jsonrpc.ExtractTextResult(rpcErr.Data)
+			errData := extract(rpcErr.Data)
 			if errData.Truncated {
 				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 			}
@@ -145,7 +152,7 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
 			// Fallback: extract all strings from non-standard error shapes.
-			errText := jsonrpc.ExtractTextResult(rpc.Error)
+			errText := extract(rpc.Error)
 			if errText.Truncated {
 				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 			}
@@ -162,7 +169,7 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	// Scan notification params for injection content.
 	// MCP server notifications (method+params, no id) can carry payloads.
 	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
-		paramsText := jsonrpc.ExtractTextResult(rpc.Params)
+		paramsText := extract(rpc.Params)
 		if paramsText.Truncated {
 			return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 		}
@@ -297,10 +304,17 @@ func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.Too
 		// baseline capacity, epoch reset) is a failure to inspect, not a
 		// verified-clean result. Fail closed the same way the uninspectable-
 		// depth path above does: Error set, Clean false, no finding claimed.
+		// Keep what the sibling-field scan already found. A hostile response can
+		// carry an injection in result._meta and an oversized tool definition at
+		// once; reporting only the tool-scan error loses the finding, and a
+		// finding outranks an inspection failure.
 		return jsonrpc.ScanVerdict{
-			ID:    verdict.ID,
-			Clean: false,
-			Error: "tool definition scan: " + result.ResourceLimit,
+			ID:         verdict.ID,
+			Clean:      false,
+			Action:     verdict.Action,
+			Matches:    verdict.Matches,
+			DLPMatches: verdict.DLPMatches,
+			Error:      "tool definition scan: " + result.ResourceLimit,
 		}
 	}
 
@@ -329,31 +343,54 @@ func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.Too
 // shape detection in internal/mcp/tools (isToolsListResult); kept here as a
 // lightweight check so the explain path need not run the full tool scanner.
 func isToolsListResponse(line []byte) bool {
+	shape, _ := toolsListShape(line)
+	return shape != toolsListNone
+}
+
+// toolsListShape classifies a line by its "tools" array. The distinction is
+// security-relevant: a response CARRYING a tools array is a tools/list response
+// whatever its elements look like, and one whose elements are not all objects
+// cannot be handed to the tool-definition scanner. Collapsing those two into a
+// single false made a mixed-type array fall through to the generic scanner,
+// which returned clean:true over a poisoned tool description because the
+// poisoning patterns live only in the tool scanner.
+type toolsListKind int
+
+const (
+	// toolsListNone: no tools array, so this is not a tools/list response.
+	toolsListNone toolsListKind = iota
+	// toolsListScannable: every element is an object; the tool scanner can run.
+	toolsListScannable
+	// toolsListUninspectable: a tools array the tool scanner cannot read.
+	toolsListUninspectable
+)
+
+func toolsListShape(line []byte) (toolsListKind, json.RawMessage) {
 	var rpc jsonrpc.RPCResponse
 	if json.Unmarshal(line, &rpc) != nil || len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
-		return false
+		return toolsListNone, nil
 	}
 	var probe struct {
 		Tools json.RawMessage `json:"tools"`
 	}
 	if json.Unmarshal(rpc.Result, &probe) != nil {
-		return false
+		return toolsListNone, nil
 	}
-	tools := bytes.TrimSpace(probe.Tools)
-	if len(tools) == 0 || tools[0] != '[' {
-		return false
+	toolsRaw := bytes.TrimSpace(probe.Tools)
+	if len(toolsRaw) == 0 || toolsRaw[0] != '[' {
+		return toolsListNone, rpc.ID
 	}
 	var elements []json.RawMessage
-	if json.Unmarshal(tools, &elements) != nil {
-		return false
+	if json.Unmarshal(toolsRaw, &elements) != nil {
+		return toolsListUninspectable, rpc.ID
 	}
 	for _, element := range elements {
 		element = bytes.TrimSpace(element)
 		if len(element) == 0 || element[0] != '{' {
-			return false
+			return toolsListUninspectable, rpc.ID
 		}
 	}
-	return true
+	return toolsListScannable, rpc.ID
 }
 
 // scanToolsListNonToolFields scans a tools/list response for injection in
@@ -611,17 +648,6 @@ func appendUniqueScanScopes(scopes, additions []string) []string {
 	return scopes
 }
 
-// ScanStream reads newline-delimited JSON-RPC 2.0 responses from r, scans each
-// for prompt injection and enforceable inbound DLP, and writes results to w. In
-// text mode, only errors and detections are written (clean lines are silent). In
-// JSON mode, every scanned line produces an output object. Returns true if any
-// security finding was detected. Parse errors are reported but do not count as a
-// finding.
-func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (bool, error) {
-	found, _, err := ScanStreamResult(r, w, sc, jsonOutput, nil)
-	return found, err
-}
-
 // ScanStreamResult scans a stream and reports security findings and malformed
 // input separately.
 //
@@ -801,10 +827,27 @@ func scanStreamResponse(line []byte, sc *scanner.Scanner, toolCfg *tools.ToolSca
 		})
 	}
 
-	if isToolsListResponse(line) {
+	switch shape, id := toolsListShape(line); shape {
+	case toolsListScannable:
 		verdict := scanToolsListCertified(line, sc, toolCfg, ResponseScanOptions{})
 		found := !verdict.Clean && verdict.Error == "" && (len(verdict.Matches) > 0 || len(verdict.DLPMatches) > 0 || len(verdict.ToolFindings) > 0)
 		return verdict, found
+	case toolsListUninspectable:
+		// A tools array the tool scanner cannot read. Scan the sibling fields
+		// and the text as usual, then report the tool definitions as
+		// uninspected. Falling through to the generic scanner instead reported
+		// clean:true over a poisoned tool description, because the poisoning
+		// patterns live only in the tool scanner.
+		verdict := ScanResponse(line, sc)
+		if verdict.Error != "" {
+			return verdict, false
+		}
+		if len(verdict.ID) == 0 {
+			verdict.ID = id
+		}
+		verdict.Clean = false
+		verdict.Unscanned = appendUniqueScanScopes(verdict.Unscanned, []string{jsonrpc.ScanScopeToolScanning})
+		return verdict, len(verdict.Matches) > 0 || len(verdict.DLPMatches) > 0
 	}
 
 	verdict := ScanResponse(line, sc)
@@ -812,14 +855,23 @@ func scanStreamResponse(line []byte, sc *scanner.Scanner, toolCfg *tools.ToolSca
 }
 
 func scanVerdictScopes(line []byte, toolCfg *tools.ToolScanConfig, verdict jsonrpc.ScanVerdict) []string {
+	// An incomplete scan completed no scope. Listing response injection and DLP
+	// on an error verdict claims two checks finished when the line was never
+	// fully inspected.
+	if verdict.Error != "" {
+		return nil
+	}
 	scopes := []string{jsonrpc.ScanScopeResponseInjection, jsonrpc.ScanScopeResponseDLP}
-	if toolCfg != nil && verdict.Error == "" && hasToolsListResponse(line) {
+	if toolCfg != nil && hasScannableToolsList(line) {
 		scopes = append(scopes, jsonrpc.ScanScopeToolScanning)
 	}
 	return scopes
 }
 
-func hasToolsListResponse(line []byte) bool {
+// hasScannableToolsList reports whether the line carries a tools/list the tool
+// scanner could actually read. It gates the tool_scanning SCOPE, which claims a
+// completed check, so an array the scanner cannot read must not satisfy it.
+func hasScannableToolsList(line []byte) bool {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var batch []json.RawMessage
@@ -827,13 +879,14 @@ func hasToolsListResponse(line []byte) bool {
 			return false
 		}
 		for _, elem := range batch {
-			if isToolsListResponse(elem) {
+			if shape, _ := toolsListShape(elem); shape == toolsListScannable {
 				return true
 			}
 		}
 		return false
 	}
-	return isToolsListResponse(trimmed)
+	shape, _ := toolsListShape(trimmed)
+	return shape == toolsListScannable
 }
 
 // A2AResponseOpts groups A2A-specific dependencies for response scanning.
@@ -1106,6 +1159,12 @@ func writeTextVerdict(w io.Writer, v jsonrpc.ScanVerdict) error {
 		}
 		for _, p := range tf.ToolPoison {
 			names = append(names, tf.ToolName+":"+p)
+		}
+		// A drift-only finding carries neither, and the scan still reports the
+		// line as not clean. Naming the tool keeps text mode from printing
+		// nothing for a line the JSON verdict flags.
+		if len(tf.Matches) == 0 && len(tf.ToolPoison) == 0 && tf.ToolName != "" {
+			names = append(names, tf.ToolName+":definition changed")
 		}
 	}
 

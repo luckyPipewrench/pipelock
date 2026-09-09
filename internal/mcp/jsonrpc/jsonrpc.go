@@ -187,13 +187,28 @@ func ExtractText(raw json.RawMessage) string {
 // ExtractTextResult extracts text content and reports uninspectable depth in
 // the complete JSON value.
 func ExtractTextResult(raw json.RawMessage) TextResult {
+	return extractTextResult(raw, true)
+}
+
+// ExtractTextOnlyResult is ExtractTextResult without the numeric channel. An
+// injection-only scan never consults numeric leaves, and a message may be
+// megabytes, so walking the document a second time to build a channel nobody
+// reads is pure cost.
+func ExtractTextOnlyResult(raw json.RawMessage) TextResult {
+	return extractTextResult(raw, false)
+}
+
+func extractTextResult(raw json.RawMessage, includeNumeric bool) TextResult {
 	if len(raw) == 0 || string(raw) == Null {
 		return TextResult{}
 	}
 	if jsonDepthTruncated(raw) {
 		return TextResult{Truncated: true}
 	}
-	numeric := ExtractNumericLeaves(raw)
+	var numeric string
+	if includeNumeric {
+		numeric = ExtractNumericLeaves(raw)
+	}
 
 	// Try standard ToolResult structure first.
 	var tr ToolResult

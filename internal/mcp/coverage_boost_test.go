@@ -367,7 +367,7 @@ func TestScanStream_BatchInput(t *testing.T) {
 
 	batch := `[{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"clean"}]}}]`
 	var out bytes.Buffer
-	found, err := ScanStream(strings.NewReader(batch+"\n"), &out, sc, false)
+	found, _, err := ScanStreamResult(strings.NewReader(batch+"\n"), &out, sc, false, nil)
 	if err != nil {
 		t.Fatalf("ScanStream: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestScanStream_JSONModeBatch(t *testing.T) {
 
 	batch := `[{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"clean"}]}}]`
 	var out bytes.Buffer
-	found, err := ScanStream(strings.NewReader(batch+"\n"), &out, sc, true)
+	found, _, err := ScanStreamResult(strings.NewReader(batch+"\n"), &out, sc, true, nil)
 	if err != nil {
 		t.Fatalf("ScanStream: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestScanStream_MultipleLines(t *testing.T) {
 	input := clean1 + "\n" + clean2 + "\n"
 
 	var out bytes.Buffer
-	found, err := ScanStream(strings.NewReader(input), &out, sc, true)
+	found, _, err := ScanStreamResult(strings.NewReader(input), &out, sc, true, nil)
 	if err != nil {
 		t.Fatalf("ScanStream: %v", err)
 	}

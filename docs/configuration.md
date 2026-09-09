@@ -174,6 +174,8 @@ fetch_proxy:
 
 Reach for this instead of `subdomain_entropy_exclusions` when a path false positive is the problem. That list is host-wide AND governs both the path and subdomain gates, so using it to fix a path block silently gives up subdomain-entropy detection for that host as well.
 
+A `request_policy` route also suppresses path entropy, on exactly the paths it names, whenever it declares both an explicit host and path constraints. That is the right tool when you already govern the host's paths, because the exemption then follows rules you are enforcing anyway. Use `path_entropy_exclusions` when you want the one route quiet without adopting that enforcement rail.
+
 ```yaml
 fetch_proxy:
   monitoring:
@@ -185,7 +187,7 @@ fetch_proxy:
         expires: 2027-01-01            # optional, YYYY-MM-DD
 ```
 
-An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host or no path prefix is refused rather than treated as a wildcard.
+An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host or no path prefix is refused rather than treated as a wildcard. `reason`, `owner` and `expires` are governance metadata. Editing any of them does not change the policy hash a receipt carries. Nothing revokes an entry when its `expires` date passes; `pipelock doctor` reports the expired, unowned, unexplained and inert entries so a standing exemption gets revisited instead of quietly outliving its reason.
 
 This ships empty. A vendor route enters the shipped defaults only with that vendor's own published route contract behind it.
 

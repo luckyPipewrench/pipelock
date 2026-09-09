@@ -418,6 +418,24 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("query entropy exclusions added: %s — entropy detection coverage reduced on query parameters", strings.Join(added, ", ")),
 		})
 	}
+	if added := pathEntropyExclusionsAdded(
+		old.FetchProxy.Monitoring.PathEntropyExclusions,
+		updated.FetchProxy.Monitoring.PathEntropyExclusions,
+	); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.path_entropy_exclusions",
+			Message: fmt.Sprintf("path entropy exclusions added: %s — path-entropy coverage reduced on these exact routes", strings.Join(added, ", ")),
+		})
+	}
+	if removed := pathEntropyExclusionsRemoved(
+		old.FetchProxy.Monitoring.PathEntropyExclusions,
+		updated.FetchProxy.Monitoring.PathEntropyExclusions,
+	); len(removed) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.path_entropy_exclusions",
+			Message: fmt.Sprintf("path entropy exclusions removed: %s — path-entropy coverage restored on these routes", strings.Join(removed, ", ")),
+		})
+	}
 	if added := queryEntropyParamExclusionsAdded(
 		old.FetchProxy.Monitoring.QueryEntropyParamExclusions,
 		updated.FetchProxy.Monitoring.QueryEntropyParamExclusions,
@@ -918,6 +936,46 @@ func contentEntropyReloadConsumed(c *Config) bool {
 	}
 	wsTextScanEnabled := c.WebSocketProxy.ScanTextFrames == nil || *c.WebSocketProxy.ScanTextFrames
 	return c.WebSocketProxy.Enabled && wsTextScanEnabled
+}
+
+// pathEntropyExclusionTuple identifies a path exemption by the fields that
+// change DETECTION. Governance metadata is excluded deliberately, so editing a
+// reason on reload does not read as a policy downgrade, which matches how the
+// canonical policy hash treats the same fields.
+func pathEntropyExclusionTuple(entry PathEntropyExclusion) string {
+	return entry.Scheme + "://" + entry.Host + entry.PathPrefix
+}
+
+func pathEntropyExclusionsAdded(old, updated []PathEntropyExclusion) []string {
+	oldSet := make(map[string]struct{}, len(old))
+	for _, entry := range canonicalPathEntropyExclusions(old) {
+		oldSet[pathEntropyExclusionTuple(entry)] = struct{}{}
+	}
+	var added []string
+	for _, entry := range canonicalPathEntropyExclusions(updated) {
+		tuple := pathEntropyExclusionTuple(entry)
+		if _, ok := oldSet[tuple]; !ok {
+			added = append(added, tuple)
+		}
+	}
+	sort.Strings(added)
+	return added
+}
+
+func pathEntropyExclusionsRemoved(old, updated []PathEntropyExclusion) []string {
+	newSet := make(map[string]struct{}, len(updated))
+	for _, entry := range canonicalPathEntropyExclusions(updated) {
+		newSet[pathEntropyExclusionTuple(entry)] = struct{}{}
+	}
+	var removed []string
+	for _, entry := range canonicalPathEntropyExclusions(old) {
+		tuple := pathEntropyExclusionTuple(entry)
+		if _, ok := newSet[tuple]; !ok {
+			removed = append(removed, tuple)
+		}
+	}
+	sort.Strings(removed)
+	return removed
 }
 
 func queryEntropyParamExclusionsAdded(old, updated []QueryEntropyParamExclusion) []string {

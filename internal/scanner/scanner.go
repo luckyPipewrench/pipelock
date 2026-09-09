@@ -241,8 +241,8 @@ type Scanner struct {
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
 	queryParamExclusions       map[queryEntropyParamExclusionKey]struct{}
 	pathEntropyExclusions      []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
-	scanNestedURLs             bool          // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
-	nestedURLResolveBudget     time.Duration // shared deadline for all nested lookups in one request
+	scanNestedURLs             bool                   // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
+	nestedURLResolveBudget     time.Duration          // shared deadline for all nested lookups in one request
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
 	// already governs with a request_policy route (explicit host + path
 	// constraints). A nil or disabled matcher keeps path entropy fully active.

@@ -536,6 +536,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 	}
 
 	findings = append(findings, analyzeDoctorQueryEntropyParamExclusions(cfg)...)
+	findings = append(findings, analyzeDoctorPathEntropyExclusions(cfg)...)
 
 	for _, entry := range cfg.ResponseScanning.MCPServers {
 		if !cfg.ResponseScanning.Enabled {
@@ -724,4 +725,101 @@ func sortConfigSemanticFindings(findings []ConfigSemanticFinding) {
 		}
 		return findings[i].Detail < findings[j].Detail
 	})
+}
+
+// analyzeDoctorPathEntropyExclusions mirrors the query-parameter analyzer
+// above. An exemption is a standing decision that nothing revisits on its own,
+// so the doctor is the surface that makes a stale one visible: it reports the
+// entry that cannot fire, the entry a broader list already swallows, and the
+// entry nobody owns or has reviewed since its expiry passed. None of these
+// block; an expired entry keeps working, and saying so is the point.
+func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFinding {
+	entries := cfg.FetchProxy.Monitoring.PathEntropyExclusions
+	if len(entries) == 0 {
+		return nil
+	}
+	var findings []ConfigSemanticFinding
+	for _, entry := range entries {
+		tuple := pathEntropyAdvisoryTuple(entry)
+		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 {
+			findings = append(findings, newPathEntropyFinding(
+				ConfigSemanticKindInert,
+				tuple,
+				fmt.Sprintf("path_entropy_exclusions entry %s is configured but fetch_proxy.monitoring.entropy_threshold<=0; this exemption is inert", tuple),
+				"remove the path exemption while entropy is disabled, or re-enable entropy before relying on the narrow exemption",
+			))
+		}
+		// subdomain_entropy_exclusions drives the path gate as well as the
+		// subdomain gate, so a host on that list already exempts every path
+		// and makes this entry redundant. The right repair is the narrow one.
+		if pathEntropyCoveredByHostWide(entry, cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions) {
+			findings = append(findings, newPathEntropyFinding(
+				ConfigSemanticKindMisdirected,
+				tuple,
+				fmt.Sprintf("path_entropy_exclusions entry %s is redundant because subdomain_entropy_exclusions already exempts host %s from path entropy", tuple, entry.Host),
+				"keep the narrow path exemption and remove the host from subdomain_entropy_exclusions, which also disables subdomain entropy for that host",
+			))
+		}
+		if strings.TrimSpace(entry.Reason) == "" {
+			findings = append(findings, pathEntropyLifecycleCheck(tuple, "reason", "add a short reason so future operators know why this route is exempt"))
+		}
+		if strings.TrimSpace(entry.Owner) == "" {
+			findings = append(findings, pathEntropyLifecycleCheck(tuple, "owner", "add an owner so future operators know who can revalidate this exemption"))
+		}
+		expires := strings.TrimSpace(entry.Expires)
+		if expires == "" {
+			findings = append(findings, pathEntropyLifecycleCheck(tuple, "expires", "add an expires date in YYYY-MM-DD format so this exemption gets periodically reviewed"))
+			continue
+		}
+		parsed, err := time.Parse("2006-01-02", expires)
+		if err != nil {
+			findings = append(findings, newPathEntropyFinding(
+				ConfigSemanticKindAdvisory,
+				tuple,
+				fmt.Sprintf("path_entropy_exclusions entry %s has invalid expires %q; expected YYYY-MM-DD", tuple, expires),
+				"set expires to a valid YYYY-MM-DD date, or remove the exemption if it is no longer needed",
+			))
+			continue
+		}
+		if parsed.Before(todayUTC()) {
+			findings = append(findings, newPathEntropyFinding(
+				ConfigSemanticKindAdvisory,
+				tuple,
+				fmt.Sprintf("path_entropy_exclusions entry %s expired on %s; it is still in force", tuple, expires),
+				"review whether the route still needs the exemption; remove it or renew expires with a future YYYY-MM-DD date",
+			))
+		}
+	}
+	sortConfigSemanticFindings(findings)
+	return findings
+}
+
+func pathEntropyLifecycleCheck(tuple, field, next string) ConfigSemanticFinding {
+	return newPathEntropyFinding(
+		ConfigSemanticKindAdvisory,
+		tuple,
+		fmt.Sprintf("path_entropy_exclusions entry %s is missing advisory %s", tuple, field),
+		next,
+	)
+}
+
+func newPathEntropyFinding(kind, subject, detail, next string) ConfigSemanticFinding {
+	return newConfigSemanticFinding(kind, "fetch_proxy.monitoring.path_entropy_exclusions", subject, detail, next)
+}
+
+func pathEntropyCoveredByHostWide(entry config.PathEntropyExclusion, hostWide []string) bool {
+	for _, pattern := range hostWide {
+		if scanner.MatchDomain(entry.Host, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathEntropyAdvisoryTuple(entry config.PathEntropyExclusion) string {
+	scheme := entry.Scheme
+	if scheme == "" {
+		scheme = config.QueryEntropyParamDefaultScheme
+	}
+	return fmt.Sprintf("%s://%s%s", scheme, entry.Host, entry.PathPrefix)
 }

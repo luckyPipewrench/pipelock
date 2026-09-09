@@ -197,11 +197,11 @@ func TestPathEntropyExclusion_WildcardHost(t *testing.T) {
 	defer s.Close()
 
 	cases := map[string]bool{
-		"https://docs.vendor.example/document/d/" + highEntropyID:            false,
-		"https://sheets.vendor.example/document/d/" + highEntropyID:          false,
-		"https://vendor.example/document/d/" + highEntropyID:                 false,
-		"https://docs.vendor.example.evil.test/document/d/" + highEntropyID:  true,
-		"https://notvendor.example/document/d/" + highEntropyID:              true,
+		"https://docs.vendor.example/document/d/" + highEntropyID:           false,
+		"https://sheets.vendor.example/document/d/" + highEntropyID:         false,
+		"https://vendor.example/document/d/" + highEntropyID:                false,
+		"https://docs.vendor.example.evil.test/document/d/" + highEntropyID: true,
+		"https://notvendor.example/document/d/" + highEntropyID:             true,
 	}
 	for raw, wantBlock := range cases {
 		parsed, err := url.Parse(raw)

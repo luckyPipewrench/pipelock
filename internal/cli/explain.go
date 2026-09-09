@@ -816,7 +816,11 @@ func explainPatternName(result scanner.Result) string {
 //     an immutable floor and cannot be exempted.)
 //   - Query entropy is a SEPARATE gate from DLP, tuned by
 //     fetch_proxy.monitoring.query_entropy_exclusions.
-//   - Path entropy and subdomain entropy use
+//   - Path entropy is tuned by fetch_proxy.monitoring.path_entropy_exclusions
+//     (host + literal path prefix, path gate only). subdomain_entropy_exclusions
+//     also lifts path entropy but is host-wide AND disables subdomain entropy,
+//     so it gives up a second detection.
+//   - Subdomain entropy uses
 //     fetch_proxy.monitoring.subdomain_entropy_exclusions.
 //   - Domain blocklist is fetch_proxy.monitoring.blocklist.
 //   - Allowlist (strict mode) is api_allowlist (or switch mode).

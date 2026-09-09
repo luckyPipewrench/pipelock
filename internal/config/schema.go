@@ -1113,11 +1113,15 @@ type QueryEntropyParamExclusion struct {
 // one literal path prefix. It affects ONLY the path-entropy gate: subdomain
 // entropy, query entropy, DLP and SSRF all still run for the same request.
 //
-// It exists because the path gate is the one entropy gate with no scoped
-// exemption of its own. Before this, the only way to stop a path-entropy false
-// positive was subdomain_entropy_exclusions, which is host-wide AND also
-// disables subdomain entropy for that host, so fixing a path false positive
-// silently gave up an unrelated detection.
+// It exists because the path gate had no STANDALONE scoped exemption. Two
+// controls already reached it and neither is a plain path exemption. A
+// request_policy route that names both a host and path constraints suppresses
+// path entropy on exactly those paths (reqpolicy.Matcher.PathEntropyExempt),
+// but only as a side effect of adopting that enforcement rail for the host,
+// which an operator who just wants one route quiet has no other reason to do.
+// The one standalone knob, subdomain_entropy_exclusions, is host-wide AND also
+// drives the subdomain gate, so fixing a path false positive with it silently
+// gave up an unrelated detection.
 //
 // WHAT AN ENTRY ASSERTS, and it is deliberately narrow: on this exact route the
 // opaque segment is a service-issued resource identifier. It is a policy

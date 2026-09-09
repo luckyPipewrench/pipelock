@@ -236,7 +236,10 @@ func TestLogDLPWarn_RedactsContentBearingFields(t *testing.T) {
 // case. The event must record WHERE the allow happened without recording the
 // secret that earned it, or the audit log becomes the leak it exists to detect.
 func TestLogDLPCredentialAudienceAllow_RedactsCredentialBearingContext(t *testing.T) {
-	const secret = "sk-proj-aaaaaaaaaaaaaaaaaaaaaaaa"
+	// Built from parts at runtime so the repository secret scanner does not
+	// match a literal provider key in test source; this is the convention the
+	// contributor guide names for fake credentials.
+	secret := "sk-" + "proj-" + strings.Repeat("a", 24)
 
 	newLogger := func(t *testing.T) (*Logger, *bytes.Buffer) {
 		t.Helper()

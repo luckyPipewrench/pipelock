@@ -1446,3 +1446,44 @@ func readAllReceiptsFromDir(t *testing.T, dir string, pub ed25519.PublicKey) []R
 
 // Ensure crypto/rand is used (lint satisfaction for the import).
 var _ = rand.Reader
+
+// The merge is what stands between an advisory extension and the signed
+// receipt. Each rejection path matters: a malformed, non-object, or colliding
+// extension must fail with ErrExtensionMerge so the caller can fall back and
+// keep the signed record, rather than silently producing a receipt whose
+// extension says something the emitter never intended.
+func TestMergeReceiptExtensions_RejectionPaths(t *testing.T) {
+	tests := []struct {
+		name               string
+		existing, incoming json.RawMessage
+		wantErr            string
+	}{
+		// RejectDuplicateKeys scans first, so malformed JSON surfaces there.
+		{"malformed incoming", nil, json.RawMessage(`{"a":`), "invalid incoming extension"},
+		{"non-object incoming", nil, json.RawMessage(`"a string"`), "incoming extension"},
+		{"non-object existing", json.RawMessage(`[1,2]`), json.RawMessage(`{"b":1}`), "existing extension"},
+		{"duplicate keys within one extension", nil, json.RawMessage(`{"a":1,"a":2}`), "invalid incoming extension"},
+		{"colliding key across extensions", json.RawMessage(`{"a":1}`), json.RawMessage(`{"a":2}`), `duplicate extension key "a"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := mergeReceiptExtensions(tt.existing, tt.incoming)
+			if err == nil {
+				t.Fatalf("merge accepted a bad extension and produced %s", got)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	// CONTROL: two well-formed, non-colliding extensions merge cleanly, so the
+	// rejections above cannot be the merge simply refusing everything.
+	merged, err := mergeReceiptExtensions(json.RawMessage(`{"a":1}`), json.RawMessage(`{"b":2}`))
+	if err != nil {
+		t.Fatalf("control failed: a valid merge was rejected: %v", err)
+	}
+	if !strings.Contains(string(merged), `"a"`) || !strings.Contains(string(merged), `"b"`) {
+		t.Fatalf("control failed: merged extension lost a key: %s", merged)
+	}
+}

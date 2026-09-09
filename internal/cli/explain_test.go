@@ -102,8 +102,15 @@ func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
 	if err != nil || !allowed.Allowed {
 		t.Fatalf("audience explain = %+v, err=%v", allowed, err)
 	}
-	if !strings.Contains(strings.Join(allowed.Notes, "\n"), "allowed: credential audience match") || allowed.PatternName != "OpenAI API Key" {
+	notes := strings.Join(allowed.Notes, "\n")
+	if !strings.Contains(notes, "allowed: credential audience match") || allowed.PatternName != "OpenAI API Key" {
 		t.Fatalf("audience explain lacks explicit allow: %+v", allowed)
+	}
+	// Assert the destination the decision was actually made against. Without
+	// this the test passes even if explain reports the wrong host, which is the
+	// one field an operator uses to check the allow was for the right place.
+	if !strings.Contains(notes, "canonical destination api.openai.com") {
+		t.Fatalf("allow note omits the canonical destination: %+v", allowed.Notes)
 	}
 
 	blocked, err := decodeExplainJSON(t, "https://api.vendor.example/v1/responses?key="+key)
@@ -113,6 +120,9 @@ func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
 	var exitErr *cliutil.ExitError
 	if !errors.As(err, &exitErr) || exitErr.Code != cliutil.ExitSecurity {
 		t.Fatalf("non-audience explain should carry ExitSecurity, got %v", err)
+	}
+	if !strings.Contains(blocked.Reason, "canonical destination api.vendor.example") {
+		t.Fatalf("block reason omits the canonical destination: %q", blocked.Reason)
 	}
 	if !strings.Contains(blocked.Reason, "blocked: credential audience mismatch") || !strings.Contains(blocked.Reason, "*.openai.com") || blocked.Remediation == nil || !blocked.Remediation.Immutable {
 		t.Fatalf("non-audience explain lacks immutable mismatch guidance: %+v", blocked)

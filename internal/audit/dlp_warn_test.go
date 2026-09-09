@@ -230,3 +230,53 @@ func TestLogDLPWarn_RedactsContentBearingFields(t *testing.T) {
 		t.Fatalf("DLP warn emitted event leaked the matched credential: %s", rawEvent)
 	}
 }
+
+// The audience-allow event carries operator context, and that context can hold
+// credential material: an API key riding in a query string is the ordinary
+// case. The event must record WHERE the allow happened without recording the
+// secret that earned it, or the audit log becomes the leak it exists to detect.
+func TestLogDLPCredentialAudienceAllow_RedactsCredentialBearingContext(t *testing.T) {
+	const secret = "sk-proj-aaaaaaaaaaaaaaaaaaaaaaaa"
+
+	newLogger := func(t *testing.T) (*Logger, *bytes.Buffer) {
+		t.Helper()
+		var buf bytes.Buffer
+		logger, err := New("json", "custom", "", true, true)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		logger.zl = logger.zl.Output(&buf)
+		return logger, &buf
+	}
+
+	t.Run("url context", func(t *testing.T) {
+		logger, buf := newLogger(t)
+		ctx, err := NewHTTPLogContext("POST", "https://api.openai.com/v1?key="+secret, "192.0.2.1", "req-url", "agent")
+		if err != nil {
+			t.Fatalf("NewHTTPLogContext: %v", err)
+		}
+		logger.LogDLPCredentialAudienceAllow(ctx, "OpenAI API Key", "url", "api.openai.com")
+		if strings.Contains(buf.String(), secret) {
+			t.Fatalf("audit event leaked the credential: %s", buf.String())
+		}
+	})
+
+	// Deliberately NOT tested: a credential planted in the request ID. That
+	// field is a locally generated counter (internal/proxy/proxy.go builds it as
+	// "req-%d"), never client-supplied, so a secret cannot arrive in it and a
+	// test asserting otherwise would encode a threat that does not exist.
+
+	// CONTROL: the same logger DOES emit the non-secret context, so the
+	// assertions above cannot pass by the event being empty.
+	t.Run("control, context is still recorded", func(t *testing.T) {
+		logger, buf := newLogger(t)
+		ctx, err := NewHTTPLogContext("POST", "https://api.openai.com/v1", "192.0.2.1", "req-control", "agent")
+		if err != nil {
+			t.Fatalf("NewHTTPLogContext: %v", err)
+		}
+		logger.LogDLPCredentialAudienceAllow(ctx, "OpenAI API Key", "url", "api.openai.com")
+		if !strings.Contains(buf.String(), "req-control") || !strings.Contains(buf.String(), "api.openai.com") {
+			t.Fatalf("control failed: context missing from event: %s", buf.String())
+		}
+	})
+}

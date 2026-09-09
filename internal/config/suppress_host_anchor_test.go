@@ -89,8 +89,15 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 			if len(p.ExemptDomains) != 0 {
 				t.Fatalf("%q inherited URL-only exempt_domains = %#v", name, p.ExemptDomains)
 			}
-			if !slices.Equal(p.CredentialAudienceHosts, hosts) {
-				t.Fatalf("%q credential audience hosts = %#v, want %#v", name, p.CredentialAudienceHosts, hosts)
+			// Compare as SETS. Order is not policy: the canonical hash sorts
+			// audience hosts, so two orderings are the same policy and an
+			// order-sensitive assertion would fail on a harmless reordering.
+			got := append([]string(nil), p.CredentialAudienceHosts...)
+			want := append([]string(nil), hosts...)
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("%q credential audience hosts = %#v, want %#v (as sets)", name, p.CredentialAudienceHosts, hosts)
 			}
 		})
 	}

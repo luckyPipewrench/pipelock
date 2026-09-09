@@ -167,7 +167,10 @@ func TestCredentialAudienceHosts_CorePatternStillBlocksAtAudience(t *testing.T) 
 func TestCredentialAudienceHosts_RuntimeBodyKnobsApplyWhenConfigured(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.RequestBodyScanning.DisablePatterns = []string{"OpenAI API Key"}
+	// Only the WARN knob here. Setting DisablePatterns as well would remove the
+	// match before PatternActions could act on it, so the two together prove
+	// only that something suppressed the block, not which control did it.
+	// Disablement gets its own case below.
 	cfg.RequestBodyScanning.PatternActions = map[string]string{"OpenAI API Key": config.ActionWarn}
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
@@ -204,6 +207,26 @@ func TestCredentialAudienceHosts_RuntimeBodyKnobsApplyWhenConfigured(t *testing.
 	})
 	if control.Clean || control.Action != config.ActionBlock {
 		t.Fatalf("control failed: an out-of-audience credential must block by default: %+v", control)
+	}
+
+	// The disable knob, on its own, removes the match entirely. Proven
+	// separately so a regression in either control is independently visible.
+	disabled := config.Defaults()
+	disabled.Internal = nil
+	disabled.RequestBodyScanning.DisablePatterns = []string{"OpenAI API Key"}
+	dsc := scanner.MustNew(disabled)
+	defer dsc.Close()
+	_, disabledResult := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:            strings.NewReader(`{"credential":"` + key + `"}`),
+		ContentType:     "application/json",
+		MaxBytes:        disabled.RequestBodyScanning.MaxBodyBytes,
+		Scanner:         dsc,
+		Target:          "https://api.vendor.example/v1",
+		Action:          config.ActionBlock,
+		DisablePatterns: disabled.RequestBodyScanning.DisablePatterns,
+	})
+	if disabledResult.Action == config.ActionBlock {
+		t.Fatalf("disable_patterns was ignored and still blocked: %+v", disabledResult)
 	}
 }
 

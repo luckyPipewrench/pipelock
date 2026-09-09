@@ -1146,8 +1146,13 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 		if len(p.ExemptDomains) > 0 && IsCoreDLPPatternName(p.Name) {
 			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential classes are blocked on every destination", p.Name)
 		}
-		if len(p.ExemptDomains) > 0 && IsCredentialAudiencePatternName(p.Name) {
-			if credentialAudienceDomainSubset(p.ExemptDomains, credentialAudienceHostsForPattern(p.Name)) {
+		// Gate on the pattern's OWN compiled audience, matching the warn-action
+		// branch above. A customized pattern that merely reuses a built-in name
+		// carries no audience after normalize clears it, and the scanner also
+		// checks the compiled audience, so classifying its exempt_domains
+		// against the built-in list would make validation disagree with runtime.
+		if len(p.ExemptDomains) > 0 && len(p.CredentialAudienceHosts) > 0 {
+			if credentialAudienceDomainSubset(p.ExemptDomains, p.CredentialAudienceHosts) {
 				if warnings != nil {
 					*warnings = append(*warnings, Warning{
 						Field:   fmt.Sprintf("dlp.patterns[%d].exempt_domains", i),

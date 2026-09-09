@@ -1483,7 +1483,20 @@ func TestMergeReceiptExtensions_RejectionPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("control failed: a valid merge was rejected: %v", err)
 	}
-	if !strings.Contains(string(merged), `"a"`) || !strings.Contains(string(merged), `"b"`) {
-		t.Fatalf("control failed: merged extension lost a key: %s", merged)
+	// Assert the VALUES, not just the key names. Checking names alone passes
+	// even if the merge silently swapped or dropped what each key points at,
+	// which is the failure that would matter in a receipt.
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatalf("control failed: merged extension is not an object: %v", err)
+	}
+	want := map[string]string{"a": "1", "b": "2"}
+	if len(got) != len(want) {
+		t.Fatalf("control failed: merged extension has %d keys, want %d: %s", len(got), len(want), merged)
+	}
+	for k, v := range want {
+		if string(got[k]) != v {
+			t.Fatalf("control failed: merged[%q] = %s, want %s", k, got[k], v)
+		}
 	}
 }

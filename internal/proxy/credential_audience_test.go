@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -676,5 +679,103 @@ func TestForwardProxy_CredentialOutsideAudienceStillBlocks(t *testing.T) {
 
 	if resp.StatusCode == http.StatusOK {
 		t.Fatal("credential sent outside its declared audience was allowed")
+	}
+}
+
+// Transport parity for TLS-intercepted CONNECT, which is a separate code path
+// from the forward proxy and carries its own audience callback.
+func TestInterceptTunnel_CredentialAudienceAllowIsRecorded(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	addr := upstream.Listener.Addr().String()
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:                    "Test Audience Key",
+		Regex:                   `tstaud-[A-Za-z0-9]{24}`,
+		Severity:                config.SeverityCritical,
+		CredentialAudienceHosts: []string{host},
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
+	req.Header.Set("Authorization", "Bearer tstaud-"+strings.Repeat("A", 24))
+
+	proxy := &Proxy{captureObs: capture.NopObserver{}, metrics: m}
+	resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+		Upstream: upstream,
+		Cache:    cache,
+		Pool:     pool,
+		Config:   cfg,
+		Scanner:  sc,
+		Logger:   logger,
+		Metrics:  m,
+		Request:  req,
+		Proxy:    proxy,
+	})
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("credential sent to its declared audience over CONNECT was blocked: status %d", resp.StatusCode)
+	}
+}
+
+// Control for the CONNECT case: outside its audience the same credential must
+// still block, so the test above cannot pass by never matching.
+func TestInterceptTunnel_CredentialOutsideAudienceStillBlocks(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "unexpected")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	addr := upstream.Listener.Addr().String()
+
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:                    "Test Audience Key",
+		Regex:                   `tstaud-[A-Za-z0-9]{24}`,
+		Severity:                config.SeverityCritical,
+		CredentialAudienceHosts: []string{"audience.vendor.example"},
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
+	req.Header.Set("Authorization", "Bearer tstaud-"+strings.Repeat("A", 24))
+
+	proxy := &Proxy{captureObs: capture.NopObserver{}, metrics: m}
+	resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+		Upstream: upstream,
+		Cache:    cache,
+		Pool:     pool,
+		Config:   cfg,
+		Scanner:  sc,
+		Logger:   logger,
+		Metrics:  m,
+		Request:  req,
+		Proxy:    proxy,
+	})
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("credential sent outside its declared audience over CONNECT was allowed")
 	}
 }

@@ -3432,7 +3432,7 @@ browser_shield:
 | `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap DOM content |
 | `strip_tracking_pixels` | bool | `true` | Remove tracking pixels and beacon-style calls |
 | `inject_fingerprint_shims` | bool | `false` | Inject browser fingerprinting defense shims where supported |
-| `tracking_domains` | []string | `[]` | Additional tracking hostnames for the shield engine |
+| `tracking_domains` | []string | `[]` | Additional tracking hostnames for the shield engine. Exact hostnames only: entries are matched literally, so a wildcard is refused at load rather than accepted and silently never matched. |
 
 For production soak, start with:
 

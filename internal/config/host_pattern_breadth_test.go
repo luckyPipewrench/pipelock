@@ -165,3 +165,140 @@ func TestRequestPolicyRouteHostsGetSyntaxOnlyValidation(t *testing.T) {
 		t.Errorf("normalized to %q, want %q", route.Hosts[0], "*.vendor.example")
 	}
 }
+
+// An interior wildcard is a FAIL-OPEN on a deny surface, which is why the
+// shape rule is shared rather than duplicated. "*.example*.com" passes a naive
+// prefix check, and the request-policy runtime then compares hostnames against
+// the literal suffix ".example*.com", which no legal DNS name contains. A
+// `block` rule that matches nothing denies nothing, so a typo silently turns a
+// blocking policy off. Both validators reject it now because breadth layers on
+// top of shape instead of restating it.
+func TestHostPatternRejectsInteriorWildcards(t *testing.T) {
+	t.Parallel()
+
+	for _, pattern := range []string{
+		"*.example*.com",  // the reported case
+		"*.ex[a]mple.com", // character class
+		"*.exa?ple.com",   // single-character glob
+		"*.*.example.com", // a second wildcard label
+	} {
+		normalized := NormalizeHostPattern(pattern)
+
+		if err := HostPatternSyntaxError(normalized); err == nil {
+			t.Errorf("HostPatternSyntaxError(%q) = nil; an interior wildcard matches no legal hostname, so a block rule carrying it denies nothing", pattern)
+		}
+		// Breadth must inherit the shape rule rather than carry its own copy.
+		if err := HostPatternBreadthError(normalized); err == nil {
+			t.Errorf("HostPatternBreadthError(%q) = nil; the breadth validator must inherit the shape rule", pattern)
+		}
+		// And it must be refused on the real deny surface, end to end.
+		route := &RequestPolicyRoute{Hosts: []string{pattern}}
+		if err := validateRequestPolicyRoute(route, `request_policy rule "deny"`); err == nil {
+			t.Errorf("validateRequestPolicyRoute(hosts=[%q]) = nil; this admits a block rule that cannot match", pattern)
+		}
+	}
+
+	// Control: the ONE legal wildcard position still works on both surfaces.
+	for _, pattern := range []string{"*.vendor.example", "*.googleapis.com"} {
+		if err := HostPatternSyntaxError(NormalizeHostPattern(pattern)); err != nil {
+			t.Errorf("HostPatternSyntaxError(%q) = %v, want nil", pattern, err)
+		}
+		route := &RequestPolicyRoute{Hosts: []string{pattern}}
+		if err := validateRequestPolicyRoute(route, "control"); err != nil {
+			t.Errorf("validateRequestPolicyRoute(hosts=[%q]) = %v, want nil", pattern, err)
+		}
+	}
+}
+
+// browser_shield.tracking_domains is a detection INCLUSION list whose entries
+// the shield merges through regexp.QuoteMeta, so a wildcard compiles to a
+// regex for the literal characters and can never match a URL. It was routed
+// through the trust validator, which asked the wrong question: it judged
+// breadth on a list where breadth is not a grant, and it accepted a wildcard
+// that is inert. Refusing the wildcard is what stops the operator believing an
+// entry works when it cannot.
+func TestBrowserShieldTrackingDomainsRefuseInertWildcards(t *testing.T) {
+	t.Parallel()
+
+	base := func() *Config {
+		c := Defaults()
+		c.Internal = nil
+		c.BrowserShield.Enabled = true
+		return c
+	}
+
+	for _, entry := range []string{"*.tracker.example", "*.co.uk", "*"} {
+		cfg := base()
+		cfg.BrowserShield.TrackingDomains = []string{entry}
+		err := cfg.Validate()
+		if err == nil {
+			t.Errorf("Validate() accepted tracking_domains=[%q]; the shield matches these literally, so the entry would never fire", entry)
+			continue
+		}
+		if !strings.Contains(err.Error(), "wildcards are not supported here") {
+			t.Errorf("tracking_domains=[%q] rejected for the wrong reason: %v", entry, err)
+		}
+	}
+
+	// Control: exact hostnames are what this list is for, and they normalize.
+	cfg := base()
+	cfg.BrowserShield.TrackingDomains = []string{"Tracker.Example.", "pixel.vendor.example"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil for exact hostnames", err)
+	}
+	if cfg.BrowserShield.TrackingDomains[0] != "tracker.example" {
+		t.Errorf("normalized to %q, want %q", cfg.BrowserShield.TrackingDomains[0], "tracker.example")
+	}
+}
+
+// HostPatternSyntaxError is EXPORTED, so it can be handed a value no in-package
+// caller would produce. Every in-package caller normalizes first, and
+// NormalizeHostPattern collapses "*." to "*", so the empty-base branch is
+// unreachable from inside this package. It is still reachable across the
+// package boundary, which is the difference between this and the unexported
+// helper where the same branch WAS deleted as dead. Tested directly rather than
+// removed, because a defensive branch on an exported predicate earns its place
+// only if something proves it fires.
+func TestHostPatternSyntaxErrorHandlesUnnormalizedInput(t *testing.T) {
+	t.Parallel()
+
+	if err := HostPatternSyntaxError("*."); err == nil {
+		t.Error(`HostPatternSyntaxError("*.") = nil; a wildcard naming no domain must be refused`)
+	}
+	if err := HostPatternSyntaxError(""); err == nil {
+		t.Error(`HostPatternSyntaxError("") = nil; an empty pattern must be refused`)
+	}
+	// Sanity: the in-package invariant this branch backs up still holds, so the
+	// comment above stays true if NormalizeHostPattern ever changes.
+	if got := NormalizeHostPattern("*."); got != "*" {
+		t.Errorf(`NormalizeHostPattern("*.") = %q, want "*"; the empty-base branch reachability note needs revisiting`, got)
+	}
+}
+
+// The tracking-domain loop rejects more than wildcards, and those paths are
+// what an operator actually hits: a stray blank line in YAML, or a URL pasted
+// where a hostname belongs.
+func TestBrowserShieldTrackingDomainsRejectMalformedEntries(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"":                        "is empty",
+		"   ":                     "is empty",
+		"https://tracker.example": "not a URL or host:port",
+		"tracker.example:443":     "not a URL or host:port",
+	}
+	for entry, want := range cases {
+		cfg := Defaults()
+		cfg.Internal = nil
+		cfg.BrowserShield.Enabled = true
+		cfg.BrowserShield.TrackingDomains = []string{entry}
+		err := cfg.Validate()
+		if err == nil {
+			t.Errorf("Validate() accepted tracking_domains=[%q], want a rejection", entry)
+			continue
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("tracking_domains=[%q] rejected for the wrong reason: %v (want %q)", entry, err, want)
+		}
+	}
+}

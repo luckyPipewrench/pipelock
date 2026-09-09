@@ -1244,22 +1244,15 @@ func NormalizeHostPattern(raw string) string {
 // behavior for trusted_domains and the other host lists too, so it is not done
 // here.
 func HostPatternBreadthError(normalized string) error {
-	// Empty is rejected HERE so the predicate does not depend on its caller
-	// having checked emptiness first. A caller that tested the raw value and
-	// then normalized would otherwise pass "." through as "", and a predicate
-	// whose safety depends on call order is a predicate that will be called in
-	// the wrong order.
-	if normalized == "" {
-		return errors.New("host pattern is empty")
-	}
-	if strings.Contains(normalized, "://") || strings.Contains(normalized, "/") || strings.Contains(normalized, ":") {
-		return errors.New("use a hostname pattern, not a URL or host:port")
+	// SHAPE FIRST, from the one shape predicate, so the two cannot diverge.
+	// They did diverge once: both returned early after the "*." prefix and so
+	// both accepted an interior wildcard like "*.example*.com". Layering means
+	// a shape rule added for one surface protects the other for free.
+	if err := HostPatternSyntaxError(normalized); err != nil {
+		return err
 	}
 	if strings.HasPrefix(normalized, "*.") {
 		return wildcardBaseBreadthError(normalized[2:])
-	}
-	if strings.ContainsAny(normalized, "*?[]") {
-		return errors.New("only exact hosts and *.example.com wildcards are supported")
 	}
 	return nil
 }
@@ -1326,8 +1319,18 @@ func HostPatternSyntaxError(normalized string) error {
 		return errors.New("use a hostname pattern, not a URL or host:port")
 	}
 	if strings.HasPrefix(normalized, "*.") {
-		if !strings.Contains(normalized[2:], ".") && normalized[2:] == "" {
+		base := normalized[2:]
+		if base == "" {
 			return errors.New("wildcard must name a domain, as in *.example.com")
+		}
+		// The leading "*." is the ONLY wildcard a host pattern may carry. An
+		// interior one used to survive because the prefix check returned early:
+		// "*.example*.com" validated, and then matched nothing, because the
+		// runtime compares a literal suffix ".example*.com" that no legal DNS
+		// hostname contains. On a request_policy BLOCK rule that is a
+		// fail-open, since a rule that matches nothing denies nothing.
+		if strings.ContainsAny(base, "*?[]") {
+			return fmt.Errorf("wildcard may appear only as the leading *., not inside %q", base)
 		}
 		return nil
 	}
@@ -4443,8 +4446,28 @@ func (c *Config) validateBrowserShield() error {
 	if err := ValidateTrustedDomains(c.BrowserShield.ExemptDomains, "browser_shield.exempt_domains"); err != nil {
 		return err
 	}
-	if err := ValidateTrustedDomains(c.BrowserShield.TrackingDomains, "browser_shield.tracking_domains"); err != nil {
-		return err
+	// tracking_domains is a detection INCLUSION list, not a trust or bypass
+	// list, so the breadth rule is the wrong question for it: a broad entry
+	// here widens detection rather than granting anything. It also cannot take
+	// a wildcard at all. The shield merges each entry through
+	// regexp.QuoteMeta (internal/shield/shield.go), so "*.tracker.example"
+	// compiles to a regex for the LITERAL characters "*.tracker.example",
+	// which no URL contains; the entry is inert and the operator has no way to
+	// know. Refusing it is the only honest answer, and it matches the
+	// documented contract of "tracking hostnames".
+	for i, raw := range c.BrowserShield.TrackingDomains {
+		field := fmt.Sprintf("browser_shield.tracking_domains[%d]", i)
+		d := NormalizeHostPattern(raw)
+		if d == "" {
+			return fmt.Errorf("%s is empty", field)
+		}
+		if strings.HasPrefix(d, "*.") || strings.ContainsAny(d, "*?[]") {
+			return fmt.Errorf("%s %q: wildcards are not supported here; the shield matches these entries literally, so list the exact hostnames", field, raw)
+		}
+		if err := HostPatternSyntaxError(d); err != nil {
+			return fmt.Errorf("%s %q: %w", field, raw, err)
+		}
+		c.BrowserShield.TrackingDomains[i] = d
 	}
 
 	return nil

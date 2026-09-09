@@ -100,14 +100,14 @@ There is no top-level `dlp.action`. If you want DLP to stop blocking while you t
 
 ### Per-pattern domain exemptions
 
-Each DLP pattern supports an `exempt_domains` field. To exempt a domain for a specific pattern, add it as a custom pattern entry with the exemption. When `include_defaults` is true, custom patterns with the same name override the built-in:
+Each DLP pattern supports an `exempt_domains` field. To exempt a domain for a specific pattern, add it as a custom pattern entry with the exemption. When `include_defaults` is true, custom patterns with the same name override the built-in. The built-in provider key patterns that carry compiled audience hosts are the exception: an `exempt_domains` entry on one of those is refused unless it names only hosts already inside the compiled audience, in which case it loads with a warning and is ignored:
 
 ```yaml
 dlp:
   include_defaults: true
   patterns:
-    - name: "Google API Key"
-      regex: 'AIza[0-9A-Za-z\-_]{35}\b'
+    - name: "Internal Service Token"
+      regex: 'ist_[0-9A-Za-z]{32}\b'
       severity: "high"
       exempt_domains:
         - "internal-testing.example.com"

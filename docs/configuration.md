@@ -383,7 +383,7 @@ request_body_scanning:
   enabled: true
   action: warn              # warn or block (no strip for bodies)
   pattern_actions:          # optional per-DLP-pattern body/header action override
-    Google API Key: warn
+    Twilio API Key: warn    # core DLP patterns and provider keys with compiled audience hosts cannot be downgraded here
   disable_patterns: []      # optional exact DLP pattern names to skip on this surface
   max_body_bytes: 5242880   # 5MB; fail-closed above this
   scan_headers: true        # scan request headers for DLP

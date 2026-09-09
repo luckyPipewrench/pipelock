@@ -266,51 +266,76 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Publish the verdict where a merge decision is actually made. This runs
-      # BEFORE the gate below so an incomplete review is visible on the pull
-      # request even though the gate then fails this job. A status is used
-      # rather than a check run because a comment-triggered run cannot add a
-      # check to a pull request it is not attached to.
+      # ONE step, because splitting them forces a bad trade. A separate
+      # status step that fails would skip the gate entirely, since a failed
+      # step ends the job; making it continue-on-error instead buys the gate
+      # back by hiding a failed publish, and an unnoticed publish failure
+      # recreates the exact invisibility this status exists to remove.
       #
-      # Failure direction: if the status POST itself fails, this step does not
-      # fail the job. The gate below is still authoritative, and losing the
-      # visibility improvement must not convert into losing the gate.
-      - name: Publish review coverage as a commit status
+      # So: compute the verdict, publish it, then exit on the verdict.
+      #
+      # FAILURE DIRECTION, chosen deliberately: if the status cannot be
+      # published after bounded retries, the job FAILS even when the review
+      # itself was complete. An unpublished verdict on a merge-relevant gate
+      # is an unknown verdict, and the honest report of an unknown is red.
+      # The retries exist so a transient API blip does not spend that.
+      - name: Publish review coverage, then require it
         if: always()
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           STATE: ${{ needs.review.outputs.state }}
           COMPLETE: ${{ needs.review.outputs.complete }}
+          REVIEW_RESULT: ${{ needs.review.result }}
           HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -uo pipefail
-          if [ -z "${HEAD_SHA}" ]; then
-            echo "no reviewed head recorded; skipping status" >&2
-            exit 0
-          fi
+
           if [ "${COMPLETE}" = "true" ]; then
             STATUS_STATE=success
             DESCRIPTION="Review covered the whole diff (${STATE})"
+            GATE_EXIT=0
+          elif [ "${STATE}" = "clean" ] || [ "${STATE}" = "findings" ]; then
+            STATUS_STATE=failure
+            DESCRIPTION="Review did not reach the current base; re-run it"
+            GATE_EXIT=1
           else
             STATUS_STATE=failure
-            DESCRIPTION="Review did NOT cover the whole diff (state=${STATE:-none})"
+            DESCRIPTION="Review did NOT finish (state=${STATE:-none})"
+            GATE_EXIT=1
           fi
-          gh api "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
-            -f state="${STATUS_STATE}" \
-            -f context="pr-review/coverage" \
-            -f description="${DESCRIPTION}" \
-            -f target_url="${RUN_URL}" >/dev/null
 
-      - name: Require a review that covered the whole diff
-        env:
-          STATE: ${{ needs.review.outputs.state }}
-          COMPLETE: ${{ needs.review.outputs.complete }}
-          REVIEW_RESULT: ${{ needs.review.result }}
-        run: |
-          set -euo pipefail
-          if [ "${COMPLETE}" = "true" ]; then
+          # A comment-triggered run attaches to the default branch and so
+          # contributes no check to the pull request. A commit status is keyed
+          # to the SHA instead, which is why it reaches the merge box at all.
+          if [ -n "${HEAD_SHA}" ]; then
+            PUBLISHED=false
+            for attempt in 1 2 3; do
+              if gh api "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+                  -f state="${STATUS_STATE}" \
+                  -f context="pr-review/coverage" \
+                  -f description="${DESCRIPTION}" \
+                  -f target_url="${RUN_URL}" >/dev/null; then
+                PUBLISHED=true
+                break
+              fi
+              echo "status publish attempt ${attempt} failed" >&2
+              sleep $((attempt * 5))
+            done
+            if [ "${PUBLISHED}" != "true" ]; then
+              echo "pr-review coverage: could NOT publish the coverage status for ${HEAD_SHA}" >&2
+              echo "The verdict was ${STATUS_STATE} (${DESCRIPTION}), and the pull request will not show it." >&2
+              echo "A verdict nobody can see is the defect this status exists to remove, so this fails." >&2
+              echo "Check that the CALLING workflow grants statuses: write; a called workflow cannot" >&2
+              echo "hold a permission its caller withheld." >&2
+              exit 1
+            fi
+          else
+            echo "no reviewed head recorded; cannot publish a coverage status" >&2
+            exit 1
+          fi
+
+          if [ "${GATE_EXIT}" = "0" ]; then
             echo "pr-review coverage: complete (${STATE})"
             exit 0
           fi

@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -491,4 +492,60 @@ func TestEmitCredentialAudienceReceiptWithFallback_Branches(t *testing.T) {
 			t.Fatalf("failures=%d dropped=%d v2=%d, want 1, 0, 0", failures, dropped, len(v2))
 		}
 	})
+}
+
+// The reverse proxy's emit path has two branches the happy-path test does not
+// reach: stamping the canonical policy hash from live config, and mirroring to
+// the v2 emitter. A malformed advisory extension exercises the fallback, which
+// must keep the signed record and log the drop.
+func TestReverseProxy_EmitCredentialAudienceReceipt_HashAndV2Fallback(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	var v1Ptr atomic.Pointer[receipt.Emitter]
+	v1Ptr.Store(rph.emitter)
+
+	signer := proxydecision.NewKeyedSigner(rph.priv)
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  rph.rec,
+		Signer:    signer,
+		Principal: "local",
+		Actor:     "pipelock",
+	})
+	if v2 == nil {
+		t.Fatal("v2 emitter construction returned nil")
+	}
+	var v2Ptr atomic.Pointer[proxydecision.Emitter]
+	v2Ptr.Store(v2)
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	var cfgPtr atomic.Pointer[config.Config]
+	cfgPtr.Store(cfg)
+
+	rp := &ReverseProxyHandler{
+		logger:            audit.NewNop(),
+		metrics:           metrics.New(),
+		cfgPtr:            &cfgPtr,
+		receiptEmitterPtr: &v1Ptr,
+		v2EmitterPtr:      &v2Ptr,
+	}
+
+	rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Layer:     credentialAudienceReceiptExtensionKey,
+		Pattern:   "Anthropic API Key",
+		Transport: "reverse",
+		Method:    http.MethodPost,
+		Target:    "https://api.anthropic.com/v1/messages",
+		RequestID: "reverse-hash-v2-fallback",
+		Extension: json.RawMessage("null"),
+	})
+
+	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
+	if len(got.Ext) != 0 {
+		t.Fatalf("fallback kept the malformed extension: %s", got.Ext)
+	}
+	if got.ActionRecord.Verdict != config.ActionAllow || got.ActionRecord.Pattern != "Anthropic API Key" {
+		t.Fatalf("fallback lost the signed audience record: %+v", got.ActionRecord)
+	}
 }

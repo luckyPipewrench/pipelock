@@ -1095,9 +1095,41 @@ func (c *Config) validateMode() error {
 // rather than merges, so they never passed through the top-level check.
 func ValidateHostMatchList(hosts []string, label string) error {
 	for i, raw := range hosts {
-		if _, err := NormalizeAndCheckHostPattern(raw); err != nil {
+		normalized, err := NormalizeAndCheckHostPattern(raw)
+		if err != nil {
 			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
 		}
+		if err := matcherParityError(raw, normalized); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
+		}
+	}
+	return nil
+}
+
+// matcherParityError refuses a pattern that VALIDATES as one host and MATCHES
+// as another. These lists store the operator's string verbatim and hand it to
+// destination.MatchDomain, which folds case and trims exactly ONE trailing dot
+// and nothing else. NormalizeHostPattern is stricter: it also trims surrounding
+// whitespace and every trailing dot. So a value both accept means the same
+// thing, and a value they read differently was approved on the strength of a
+// string the matcher will never see.
+//
+// "example.com.." is the reachable case and it was a fail-open on the deny
+// list: it validated as "example.com", stayed stored as typed, and the matcher
+// compared "example.com." to "example.com" and did not block. Leading or
+// trailing whitespace does the same. A single trailing dot is fine and stays
+// accepted, because the matcher removes it too.
+//
+// The repair belongs HERE rather than in MatchDomain. Making the matcher trim
+// all trailing dots would silently WIDEN every pattern already stored in that
+// shape: "*.com.." is inert today and would start matching every .com host.
+// Refusing the input keeps the fix from being a behavior change to traffic.
+func matcherParityError(raw, normalized string) error {
+	matcherView := strings.ToLower(strings.TrimSuffix(raw, "."))
+	if matcherView != normalized {
+		return fmt.Errorf(
+			"host pattern must be written as %q: as typed, matching would compare %q and never agree with the validated form",
+			normalized, matcherView)
 	}
 	return nil
 }
@@ -1422,6 +1454,16 @@ func HostPatternSyntaxError(normalized string) error {
 	if normalized == "" {
 		return errors.New("host pattern is empty")
 	}
+	// The exact-IP exception is tested FIRST, before the host:port rejection,
+	// because an IPv6 literal is made of colons: "2001:db8::1" read as a
+	// host:port and was refused while the comment below and the documentation
+	// both promised an exact IP literal was valid. That was invisible until
+	// three more lists were routed through this predicate. An address with a
+	// port or brackets does not parse as an IP and still falls through to the
+	// rejection.
+	if net.ParseIP(normalized) != nil {
+		return nil
+	}
 	if strings.Contains(normalized, "://") || strings.Contains(normalized, "/") || strings.Contains(normalized, ":") {
 		return errors.New("use a hostname pattern, not a URL or host:port")
 	}
@@ -1434,11 +1476,6 @@ func HostPatternSyntaxError(normalized string) error {
 	}
 	if strings.ContainsAny(normalized, "*?[]") {
 		return errors.New("only exact hosts and *.example.com wildcards are supported")
-	}
-	// An exact IP literal is a legitimate route target and is not a DNS name,
-	// so the label grammar does not apply to it.
-	if net.ParseIP(normalized) != nil {
-		return nil
 	}
 	return hostLabelGrammarError(normalized, "host")
 }

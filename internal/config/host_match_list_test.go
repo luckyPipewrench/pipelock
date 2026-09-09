@@ -32,6 +32,14 @@ func TestMalformedHostRefusedOnMatchLists(t *testing.T) {
 		"a URL is not a hostname pattern":          "https://example.com",
 		"a host:port is not a hostname":            "example.com:443",
 		"an interior wildcard is not supported":    "example.*.com",
+		// These three VALIDATE as one host and MATCH as another. MatchDomain
+		// trims exactly one trailing dot and no whitespace, so the stored
+		// string is compared as something the validated form never was. On the
+		// deny list that was the reachable fail-open: "example.com.." loaded
+		// and example.com was not blocked.
+		"repeated trailing dots are not what the matcher trims": "example.com..",
+		"leading whitespace is not trimmed at match time":       " example.com",
+		"trailing whitespace is not trimmed at match time":      "example.com ",
 	}
 
 	lists := map[string]func(string) string{
@@ -75,6 +83,9 @@ func TestWellFormedHostAcceptedOnMatchLists(t *testing.T) {
 		"*.pastebin.com",          // shipped in the default blocklist
 		"*.s3.amazonaws.com",      // private suffix: broad, deliberately allowed
 		"8.8.8.8",                 // exact IP: MatchDomain compares an IP hostname for equality
+		"2001:db8::1",             // exact IPv6: made of colons, so it must not read as host:port
+		"::1",                     // the shortest IPv6 spelling, same trap
+		"*.example.com.",          // one trailing dot on a wildcard, which the matcher also trims
 		"xn--bcher-kva.example",   // ASCII A-label form of an internationalized name
 		"example.com.",            // trailing dot is DNS-equivalent, not malformed
 		"EXAMPLE.com",             // case is folded at match time

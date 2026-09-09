@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -325,4 +326,70 @@ func TestRecordCredentialAudienceAllow_NilReceiversAreInert(t *testing.T) {
 	p.emitCredentialAudienceReceipt(receipt.EmitOpts{})
 	var rp *ReverseProxyHandler
 	rp.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, http.MethodGet, "", "", "")
+}
+
+// The reverse proxy is a separate carrier of the same audience allow and has
+// its own receipt path, so it needs its own coverage: a defect here would be
+// invisible to every forward-proxy test.
+func TestReverseProxy_RecordCredentialAudienceAllow_EmitsReceipt(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	var emitterPtr atomic.Pointer[receipt.Emitter]
+	emitterPtr.Store(rph.emitter)
+
+	rp := &ReverseProxyHandler{
+		logger:            audit.NewNop(),
+		metrics:           metrics.New(),
+		receiptEmitterPtr: &emitterPtr,
+	}
+
+	allow := scanner.CredentialAudienceAllow{
+		PatternName: "Anthropic API Key",
+		Surface:     "header",
+		Destination: "api.anthropic.com",
+	}
+	rp.recordCredentialAudienceAllow(audit.LogContext{}, allow, http.MethodPost,
+		"https://api.anthropic.com/v1/messages", "reverse-audience-allow", "agent-1")
+
+	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
+	if got.ActionRecord.Verdict != config.ActionAllow {
+		t.Fatalf("verdict = %q, want allow", got.ActionRecord.Verdict)
+	}
+	if got.ActionRecord.Transport != "reverse" {
+		t.Fatalf("transport = %q, want reverse", got.ActionRecord.Transport)
+	}
+	if !strings.Contains(string(got.Ext), "api.anthropic.com") {
+		t.Fatalf("extension does not name the destination: %s", got.Ext)
+	}
+}
+
+// The reverse handler's dedup wrapper shares the audience path but not the
+// forward proxy's, so it is exercised separately.
+func TestReverseProxy_RecordCredentialAudienceAllows_Deduplicates(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	var emitterPtr atomic.Pointer[receipt.Emitter]
+	emitterPtr.Store(rph.emitter)
+	rp := &ReverseProxyHandler{
+		logger:            audit.NewNop(),
+		metrics:           metrics.New(),
+		receiptEmitterPtr: &emitterPtr,
+	}
+
+	allow := scanner.CredentialAudienceAllow{
+		PatternName: "Anthropic API Key",
+		Surface:     "header",
+		Destination: "api.anthropic.com",
+	}
+	rp.recordCredentialAudienceAllows(audit.LogContext{},
+		[]scanner.CredentialAudienceAllow{allow, allow, allow},
+		http.MethodPost, "https://api.anthropic.com/v1/messages", "reverse-dedup", "agent-1")
+
+	var audience int
+	for _, r := range rph.findReceipts(t) {
+		if r.ActionRecord.Layer == credentialAudienceReceiptExtensionKey {
+			audience++
+		}
+	}
+	if audience != 1 {
+		t.Fatalf("emitted %d audience receipts, want 1", audience)
+	}
 }

@@ -223,3 +223,63 @@ func TestValidate_CredentialAudienceWideningWarnsAndLoads(t *testing.T) {
 		})
 	}
 }
+
+// The suppress-path subset check decides whether an operator's suppression is
+// contained by the compiled audience, which is what separates a redundant entry
+// (warned and ignored) from a real widening (warned and honored). Both the
+// legacy host-glob form and the URL form must be recognized, and anything that
+// cannot prove its host scope must be treated as NOT a subset, which is the
+// fail-closed direction for this check.
+func TestCredentialAudienceSuppressPathSubset_Direction(t *testing.T) {
+	audience := []string{"*.anthropic.com"}
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"url inside the audience", "https://api.anthropic.com/v1/messages", true},
+		{"url on a subdomain of the audience", "https://eu.api.anthropic.com/v1", true},
+		{"url outside the audience", "https://relay.internal.example/v1", false},
+		// The legacy host glob is star-delimited on BOTH ends; a leading-star
+		// form alone is not recognized as a host scope and therefore is not a
+		// subset, which is the fail-closed direction.
+		{"host glob inside the audience", "*.anthropic.com*", true},
+		{"host glob outside the audience", "*.attacker.example*", false},
+		{"leading star alone proves no host scope", "*.anthropic.com", false},
+		{"lookalike suffix is not contained", "https://notanthropic.com/v1", false},
+		{"embedded credentials are refused", "https://user:pw@api.anthropic.com/v1", false},
+		{"bare path proves no host scope", "config/initializers/*.rb", false},
+		{"non-http scheme proves no host scope", "ftp://api.anthropic.com/v1", false},
+		{"empty is not a subset", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := credentialAudienceSuppressPathSubset(tt.path, audience); got != tt.want {
+				t.Fatalf("credentialAudienceSuppressPathSubset(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// A wildcard audience contains its own apex and dot-bounded subdomains, and
+// nothing else. A suffix lookalike must not be treated as contained.
+func TestCredentialAudienceDomainContains_Direction(t *testing.T) {
+	tests := []struct {
+		allowed, candidate string
+		want               bool
+	}{
+		{"*.anthropic.com", "*.anthropic.com", true},
+		{"*.anthropic.com", "*.eu.anthropic.com", true},
+		{"*.anthropic.com", "api.anthropic.com", true},
+		{"*.anthropic.com", "*.notanthropic.com", false},
+		{"*.anthropic.com", "anthropic.com.attacker.example", false},
+		{"api.anthropic.com", "api.anthropic.com", true},
+		{"api.anthropic.com", "other.anthropic.com", false},
+	}
+	for _, tt := range tests {
+		if got := credentialAudienceDomainContains(tt.allowed, tt.candidate); got != tt.want {
+			t.Fatalf("credentialAudienceDomainContains(%q, %q) = %v, want %v",
+				tt.allowed, tt.candidate, got, tt.want)
+		}
+	}
+}

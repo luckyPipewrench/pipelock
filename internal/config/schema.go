@@ -2130,7 +2130,7 @@ type BrowserShield struct {
 	StripHiddenTraps       bool     `yaml:"strip_hidden_traps"`       // strip hidden DOM elements with instructions
 	StripTrackingPixels    bool     `yaml:"strip_tracking_pixels"`    // strip 1x1 images and beacon calls
 	InjectFingerprintShims bool     `yaml:"inject_fingerprint_shims"` // canvas/WebGL/audio defense shims
-	TrackingDomains        []string `yaml:"tracking_domains"`         // hostnames (validated same as exempt)
+	TrackingDomains        []string `yaml:"tracking_domains"`         // EXACT hostnames; matched literally, so a wildcard is refused at load
 }
 
 // BrowserShield strictness constants.

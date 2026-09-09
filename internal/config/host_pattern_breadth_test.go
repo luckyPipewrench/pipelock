@@ -177,10 +177,24 @@ func TestHostPatternRejectsInteriorWildcards(t *testing.T) {
 	t.Parallel()
 
 	for _, pattern := range []string{
+		// Glob metacharacters: the originally reported class.
 		"*.example*.com",  // the reported case
 		"*.ex[a]mple.com", // character class
 		"*.exa?ple.com",   // single-character glob
 		"*.*.example.com", // a second wildcard label
+		// Everything a character blacklist missed. A second round found all of
+		// these admitted at once, which is why the rule validates DNS label
+		// grammar instead of enumerating forbidden characters. Each makes a
+		// suffix comparison match nothing, so each silently disables a block
+		// rule that carries it.
+		"*.vendor.example#disabled", // fragment character
+		"*.vendor.example%20",       // percent escape
+		"*.vendor_example.com",      // underscore is not a DNS label character
+		"*.vendor..example",         // empty label
+		"*.-vendor.example",         // leading hyphen
+		"*.vendor-.example",         // trailing hyphen
+		"*.vendör.example",          // non-ASCII label
+		"*.8.8.8.8",                 // an IP literal cannot be a DNS suffix
 	} {
 		normalized := NormalizeHostPattern(pattern)
 

@@ -1238,11 +1238,8 @@ func NormalizeHostPattern(raw string) string {
 // root prefix and a cleartext scheme while still installing "*.com", which
 // MatchDomain then matched against every .com host. One predicate, two callers.
 //
-// Known limitation, pre-existing and shared with every caller of this rule: the
-// breadth test counts dots rather than consulting a public-suffix list, so
-// "*.co.uk" is accepted and is over-broad in reality. Fixing that changes
-// behavior for trusted_domains and the other host lists too, so it is not done
-// here.
+// Breadth is measured against the published public suffix list, not by counting
+// dots. The dot count remains only as a floor for a single-label base.
 func HostPatternBreadthError(normalized string) error {
 	// SHAPE FIRST, from the one shape predicate, so the two cannot diverge.
 	// They did diverge once: both returned early after the "*." prefix and so
@@ -1323,19 +1320,69 @@ func HostPatternSyntaxError(normalized string) error {
 		if base == "" {
 			return errors.New("wildcard must name a domain, as in *.example.com")
 		}
-		// The leading "*." is the ONLY wildcard a host pattern may carry. An
-		// interior one used to survive because the prefix check returned early:
-		// "*.example*.com" validated, and then matched nothing, because the
-		// runtime compares a literal suffix ".example*.com" that no legal DNS
-		// hostname contains. On a request_policy BLOCK rule that is a
-		// fail-open, since a rule that matches nothing denies nothing.
-		if strings.ContainsAny(base, "*?[]") {
-			return fmt.Errorf("wildcard may appear only as the leading *., not inside %q", base)
-		}
-		return nil
+		// The base after "*." must be a REAL DNS suffix, because the runtime
+		// matches by comparing a hostname against "." + base. Anything a
+		// hostname cannot contain makes the pattern match nothing, and a
+		// request_policy BLOCK rule that matches nothing denies nothing. A
+		// character blacklist was tried here first and was incomplete in seven
+		// ways at once: "#", "%", "_", an empty label from "..", a leading or
+		// trailing hyphen, and a non-ASCII label all passed. Validating the
+		// grammar instead of enumerating bad characters is what closes the
+		// class rather than the instances.
+		return wildcardBaseGrammarError(base)
 	}
 	if strings.ContainsAny(normalized, "*?[]") {
 		return errors.New("only exact hosts and *.example.com wildcards are supported")
+	}
+	return nil
+}
+
+// wildcardBaseGrammarError reports why the base of a "*.base" pattern is not a
+// legal DNS suffix. It is the same label grammar the exact-host validator
+// normalizeQueryEntropyParamHost already applied, factored out so the two are
+// one decision rather than a strict validator beside a partial one.
+//
+// It deliberately does NOT judge label COUNT or public-suffix breadth; those
+// belong to wildcardBaseBreadthError, which runs after it.
+//
+// Scoped to the wildcard BASE and not to exact hosts on purpose: an exact host
+// may legitimately be an IP literal, and request_policy routes in this
+// repository's own tests block by IP. A "*." pattern cannot, because the
+// runtime compares hostname suffixes.
+func wildcardBaseGrammarError(base string) error {
+	if strings.ContainsAny(base, "*?[]") {
+		return fmt.Errorf("wildcard may appear only as the leading *., not inside %q", base)
+	}
+	if strings.IndexFunc(base, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || r > unicode.MaxASCII
+	}) >= 0 {
+		return errors.New("wildcard base must contain only ASCII DNS label characters")
+	}
+	if net.ParseIP(base) != nil {
+		return errors.New("wildcard base must be a DNS suffix, not an IP literal")
+	}
+	if len(base) > 253 {
+		return errors.New("wildcard base must be 253 bytes or shorter")
+	}
+	for _, label := range strings.Split(base, ".") {
+		if label == "" {
+			return errors.New("wildcard base contains an empty DNS label")
+		}
+		if len(label) > 63 {
+			return errors.New("wildcard base DNS labels must be 63 bytes or shorter")
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return errors.New("wildcard base labels must not start or end with '-'")
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return errors.New("wildcard base must contain only DNS label characters")
+		}
+	}
+	if _, err := idna.Lookup.ToASCII(base); err != nil {
+		return fmt.Errorf("wildcard base must be valid under IDNA lookup processing: %w", err)
 	}
 	return nil
 }
@@ -2181,8 +2228,9 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 }
 
 // validateRequestPolicyRoute validates and normalizes a request_policy route in
-// place: it requires at least one constraint, checks hosts against the trusted
-// domain validator, uppercases and validates methods, compiles path_patterns,
+// place: it requires at least one constraint, checks host SHAPE only because a
+// route may deny and a broad wildcard there is a policy, uppercases and
+// validates methods, compiles path_patterns,
 // rejects empty prefixes, and normalizes content types. label prefixes every
 // error (e.g. `request_policy rule "x"` or `request_policy batch 0`) so rule
 // and batch routes share one validator without drifting.

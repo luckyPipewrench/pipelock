@@ -384,7 +384,16 @@ const (
 	// field and prove nothing about it; the focused tests in
 	// path_entropy_canonical_test.go do, including the positive control that
 	// a changed route DOES move the hash.
-	goldenHashDefaults = "935ee1fea304e408369aa6a36bb0a463b1e4b11c1b1b7d0f01c86fd2e31ec590"
+	// Re-bumped for DLPPattern.CredentialAudienceHosts. The field is
+	// compiled-in and yaml:"-", so strict decode REJECTS an operator that
+	// tries to set it; the canonical view still emits it because these
+	// structs carry no json tags and nothing suppresses an unset slice.
+	// That is the right outcome rather than an accident: the built-in set
+	// decides which destinations a credential pattern is enforced against,
+	// so two binaries shipping different built-ins genuinely enforce
+	// differently and must not report one policy identity. This hash now
+	// moves with the BINARY, not with operator configuration.
+	goldenHashDefaults = "c0cac9bd7e9b89bde406e0dd4f5ea199b500d6a119b37ccff42e0bb278ac6a26"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -574,7 +583,16 @@ const (
 	// The rich fixture sets cross-request detection, so a changed evidence
 	// capacity must produce a distinct policy identity here as well.
 	// Re-bumped for path_entropy_exclusions alongside goldenHashDefaults.
-	goldenHashRichConfig = "e84832b309743a3d2074d0c4bcbec18a3c82719ae7fb935e4b665648c0d0f487"
+	// Re-bumped for DLPPattern.CredentialAudienceHosts. The field is
+	// compiled-in and yaml:"-", so strict decode REJECTS an operator that
+	// tries to set it; the canonical view still emits it because these
+	// structs carry no json tags and nothing suppresses an unset slice.
+	// That is the right outcome rather than an accident: the built-in set
+	// decides which destinations a credential pattern is enforced against,
+	// so two binaries shipping different built-ins genuinely enforce
+	// differently and must not report one policy identity. This hash now
+	// moves with the BINARY, not with operator configuration.
+	goldenHashRichConfig = "d59b38ac78221157ec30c4261f451146015efeca77b6edee7963ac231167aa2a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

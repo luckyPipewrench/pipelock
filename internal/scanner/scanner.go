@@ -436,14 +436,18 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
 		cp := &compiledPattern{
-			name:                           p.Name,
-			re:                             re,
-			severity:                       p.Severity,
-			exemptDomains:                  p.ExemptDomains,
-			core:                           config.IsCoreDLPPatternName(p.Name),
-			bundle:                         p.Bundle,
-			bundleVersion:                  p.BundleVersion,
-			warn:                           p.Action == config.ActionWarn && !config.IsCredentialAudiencePatternName(p.Name),
+			name:          p.Name,
+			re:            re,
+			severity:      p.Severity,
+			exemptDomains: p.ExemptDomains,
+			core:          config.IsCoreDLPPatternName(p.Name),
+			bundle:        p.Bundle,
+			bundleVersion: p.BundleVersion,
+			// Gate on the pattern's OWN compiled audience, not its name. A
+			// customized pattern that merely reuses a built-in name carries no
+			// audience, and validation accepts a warn action for it, so gating by
+			// name here would accept the config and then ignore it at runtime.
+			warn:                           p.Action == config.ActionWarn && len(p.CredentialAudienceHosts) == 0,
 			credentialURLWhitespaceGrammar: p.CredentialURLWhitespaceGrammar,
 		}
 		// Audience hosts are populated only from the compiled built-in registry;
@@ -2454,7 +2458,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 				// A pattern carrying a core floor name never honors an exemption,
 				// matching the body and response filters, so a custom pattern
 				// cannot exempt a core credential class by reusing its name.
-				if !p.core && !config.IsCredentialAudiencePatternName(p.name) && len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
+				if !p.core && len(p.credentialAudienceHosts) == 0 && len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
 					continue
 				}
 				span := newMatchSpan(start, end, target.viewLabel, p.name, p.bundle, p.bundleVersion)
@@ -2694,7 +2698,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 						continue
 					}
 					mismatch, audienceMismatch := s.credentialAudienceMismatch(p, target, "url")
-					if !p.core && !config.IsCredentialAudiencePatternName(p.name) && len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
+					if !p.core && len(p.credentialAudienceHosts) == 0 && len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
 						continue
 					}
 					span := newMatchSpan(start, end, candidate.viewLabel, p.name, p.bundle, p.bundleVersion)

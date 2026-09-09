@@ -779,3 +779,43 @@ func TestInterceptTunnel_CredentialOutsideAudienceStillBlocks(t *testing.T) {
 		t.Fatal("credential sent outside its declared audience over CONNECT was allowed")
 	}
 }
+
+// Transport parity for the reverse proxy, the last surface DR-75 names. The
+// upstream host is the audience, so the credential is allowed through; the
+// paired control declares a different audience and requires a block.
+func TestReverseProxy_CredentialAudienceAllowAndControl(t *testing.T) {
+	run := func(t *testing.T, audienceHost string) int {
+		t.Helper()
+		cfg := reverseTestConfig()
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.HeaderMode = "all"
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name:                    "Test Audience Key",
+			Regex:                   `tstaud-[A-Za-z0-9]{24}`,
+			Severity:                config.SeverityCritical,
+			CredentialAudienceHosts: []string{audienceHost},
+		})
+		proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL+"/api/data", nil)
+		req.Header.Set("Authorization", "Bearer tstaud-"+strings.Repeat("A", 24))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+
+	t.Run("inside its audience the credential is delivered", func(t *testing.T) {
+		if got := run(t, "127.0.0.1"); got != http.StatusOK {
+			t.Fatalf("credential at its declared audience was blocked: status %d", got)
+		}
+	})
+	t.Run("outside its audience the credential is blocked", func(t *testing.T) {
+		if got := run(t, "audience.vendor.example"); got == http.StatusOK {
+			t.Fatalf("credential outside its declared audience was allowed: status %d", got)
+		}
+	})
+}

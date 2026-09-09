@@ -143,7 +143,7 @@ fetch_proxy:
 | `max_response_mb` | `10` | Max response body size |
 | `user_agent` | `Pipelock Fetch/1.0` | User-Agent header sent upstream |
 | `monitoring.max_url_length` | `2048` | URLs longer than this are blocked |
-| `monitoring.entropy_threshold` | `4.5` | Shannon entropy threshold for path segments |
+| `monitoring.entropy_threshold` | `4.5` | Shannon entropy threshold for path segments. A configured value must be greater than 0; omit the field to take the default. No upper bound is enforced. |
 | `monitoring.max_requests_per_minute` | `60` | Per-domain rate limit |
 | `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
 | `monitoring.blocklist` | 6 domains | Blocked exfiltration targets |
@@ -158,6 +158,8 @@ fetch_proxy:
 - Hex/commit hashes: ~4.0
 - Measured base64url resource identifiers: 4.93-5.43
 - Random/encrypted: ~7.5-8.0
+
+A configured `entropy_threshold` must be greater than 0. Setting it to 0 or a negative value is REFUSED at load rather than silently replaced by the default, because an operator who writes 0 usually means "turn this off" and would otherwise get a fully enabled gate at 4.5 while believing it was disabled. To run without the path-entropy gate, exempt the routes you mean with `path_entropy_exclusions` or `subdomain_entropy_exclusions` instead. Omitting the field takes the default.
 
 The default threshold (4.5) allows typical commit hashes while flagging encrypted blobs. Vendor resource identifiers in URL paths commonly exceed that threshold (the measured base64url range above) and are blocked. Lower it (3.5) for strict mode. For known API routes, prefer a narrow `request_policy` path rule over raising the global threshold.
 
@@ -187,7 +189,7 @@ fetch_proxy:
         expires: 2027-01-01            # optional, YYYY-MM-DD
 ```
 
-An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host or no path prefix is refused rather than treated as a wildcard. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. `reason`, `owner` and `expires` are governance metadata. Editing any of them does not change the policy hash a receipt carries. Nothing revokes an entry when its `expires` date passes; `pipelock doctor` reports the expired, unowned, unexplained and inert entries so a standing exemption gets revisited instead of quietly outliving its reason.
+An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host or no path prefix is refused rather than treated as a wildcard. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. **End `path_prefix` with `/` when you mean one path segment.** The prefix is matched literally, so `/document/d` also exempts `/document/de`, `/document/detail`, and every other path starting with those characters, while `/document/d/` does not. Dropping one character widens the exemption. `reason`, `owner` and `expires` are governance metadata. Editing any of them does not change the policy hash a receipt carries. Nothing revokes an entry when its `expires` date passes; `pipelock doctor` reports the expired, unowned, unexplained and inert entries so a standing exemption gets revisited instead of quietly outliving its reason.
 
 This ships empty. A vendor route enters the shipped defaults only with that vendor's own published route contract behind it.
 

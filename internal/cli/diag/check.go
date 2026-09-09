@@ -61,6 +61,26 @@ Examples:
 				cmd.Println("Using default config (no --config specified)")
 			}
 
+			// Surface the validator's own advisory warnings. Load()
+			// discards them, and this command is the one an operator runs to
+			// find out whether a config is sound, so hiding them here means a
+			// config-checking command reporting OK on a config that startup
+			// and reload both warn about. Reproduced before this: an
+			// api_allowlist naming a messaging domain emitted one warning from
+			// validation and appeared nowhere in this output.
+			//
+			// These do NOT change the exit code. This command is usable in CI,
+			// and the existing warnings fire on legitimate configurations, so
+			// failing on one would get the command taken back out of the
+			// pipeline - which costs more than the warning buys.
+			if cfg != nil {
+				if validationWarnings, _ := cfg.ValidateWithWarnings(); len(validationWarnings) > 0 {
+					for _, w := range validationWarnings {
+						cmd.Printf("\n  [WARNING] %s: %s\n", w.Field, w.Message)
+					}
+				}
+			}
+
 			// Surface semantic advisories (same checks as doctor,
 			// non-fatal so exit 0 is preserved unless already failing).
 			for _, advisory := range checkConfigAdvisories(cfg) {

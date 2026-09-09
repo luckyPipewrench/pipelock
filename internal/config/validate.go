@@ -480,6 +480,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	c.validateAPIAllowlistWarnings(&warnings)
+	c.validateTrustedDomainTenancyWarnings(&warnings)
 	if err := c.validateLogging(); err != nil {
 		return warnings, err
 	}
@@ -692,6 +693,64 @@ func (c *Config) validateAPIAllowlistWarnings(warnings *[]Warning) {
 	*warnings = append(*warnings, Warning{
 		Field:   "api_allowlist",
 		Message: fmt.Sprintf("contains messaging/collaboration domains (%s); these are common exfiltration channels, so keep only deployment-required exact hosts and rely on DLP/content scanning for payload control", strings.Join(messagingDomains, ", ")),
+	})
+}
+
+// validateTrustedDomainTenancyWarnings warns about a wildcard on
+// trusted_domains whose base is a boundary in the public suffix list's PRIVATE
+// section. It WARNS rather than refusing, and which of those it does is the
+// whole decision here.
+//
+// Why it is worth saying anything. trusted_domains exempts a hostname from the
+// SSRF internal-IP check, and only loopback, RFC1918 and similar addresses are
+// exemptible - the cloud-metadata floor is never overridable. Several private
+// boundaries are dynamic-DNS services where a THIRD PARTY sets the address for
+// their own name: duckdns.org, no-ip.org, ddns.net, hopto.org and dynv6.net are
+// all private boundaries. So "*.duckdns.org" exempts every name any stranger
+// can point at an internal address. Reproduced: with that pattern trusted, a
+// host resolving to 127.0.0.1 was ALLOWED, while the same host with an
+// unrelated trust entry was blocked as "resolves to internal IP 127.0.0.1".
+//
+// Why it does NOT refuse, which was the first instinct and was wrong. The same
+// shape is a legitimate and EFFECTIVE entry elsewhere. Azure private endpoints
+// keep the public hostname - Microsoft's private-endpoint DNS documentation
+// says connection URLs do not change - so "myaccount.blob.core.windows.net"
+// resolves to a private VNet address, and blob.core.windows.net is itself a
+// private boundary. trusted_domains is this product's own documented remedy for
+// that case, so refusing the wildcard would break a common deployment on a
+// regulated-industry stack. An over-strict guard on a security product gets
+// switched off, which costs more than the warning buys.
+//
+// The distinction that matters is who controls the ADDRESS behind a matching
+// name, and the public suffix list does not record that. It marks who
+// administers a boundary and nothing else, so no predicate here can separate
+// the dynamic-DNS case from the private-endpoint case. That is precisely why
+// this is an advisory to a human rather than a rule.
+//
+// It fires on ZERO shipped configurations: every trusted_domains value in
+// configs/ and examples/ is a bare internal hostname.
+func (c *Config) validateTrustedDomainTenancyWarnings(warnings *[]Warning) {
+	var broad []string
+	for _, raw := range c.TrustedDomains {
+		normalized := NormalizeHostPattern(raw)
+		if !strings.HasPrefix(normalized, "*.") {
+			continue
+		}
+		base := normalized[2:]
+		// An ICANN boundary never reaches here: ValidateTrustedDomains refuses
+		// it outright, so this warning is about the private section only.
+		if suffix, icann := publicsuffix.PublicSuffix(base); !icann && suffix == base {
+			broad = append(broad, normalized)
+		}
+	}
+	if len(broad) == 0 {
+		return
+	}
+	*warnings = append(*warnings, Warning{
+		Field: "trusted_domains",
+		Message: fmt.Sprintf(
+			"%s covers every name under a shared service boundary, not only yours, and this list exempts a hostname from the internal-IP check; where that service lets other people choose their own subdomain and address, the exemption reaches their names too. Prefer the exact hosts you operate, or a pattern below the shared boundary.",
+			strings.Join(broad, ", ")),
 	})
 }
 

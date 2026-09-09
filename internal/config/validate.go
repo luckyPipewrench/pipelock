@@ -47,10 +47,15 @@ import (
 // for error messages (e.g. "trusted_domains" or "agent \"foo\" trusted_domains").
 func ValidateTrustedDomains(domains []string, label string) error {
 	for i, raw := range domains {
-		// Normalize early: lowercase, trim whitespace and trailing DNS dot.
-		// Trailing dot must be stripped before breadth check so *.com. doesn't
-		// pass as having a subdomain level.
-		d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+		// Normalize early through the shared normalizer, which strips EVERY
+		// trailing dot. The old local TrimSuffix removed one, so "*.com.."
+		// was accepted and rewritten IN PLACE to "*.com.", and MatchDomain
+		// then strips that last dot and matches every .com host. The raw
+		// two-dot form matches nothing, so half-normalizing it here is what
+		// made it dangerous. This list exempts hosts from the SSRF internal-IP
+		// check, which is why it gets the same normalizer as everything else
+		// rather than its own copy of the rule.
+		d := NormalizeHostPattern(raw)
 		if d == "" {
 			return fmt.Errorf("%s[%d] is empty", label, i)
 		}

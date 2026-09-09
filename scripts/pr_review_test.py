@@ -290,6 +290,17 @@ class WorkflowPackagingTest(unittest.TestCase):
                 "write",
                 f"{path.name} must set permissions.issues to write",
             )
+            # Same rule, third scope. The completeness job posts a coverage
+            # commit status, which is the only surface a comment-triggered run
+            # has on the pull request. A called workflow cannot hold a
+            # permission its caller withheld, so granting this in the reusable
+            # file alone makes the POST 403 and the status silently never
+            # appear, which is exactly the invisibility it exists to remove.
+            self.assertEqual(
+                permissions.get("statuses"),
+                "write",
+                f"{path.name} must set permissions.statuses to write",
+            )
 
     def test_composite_action_owns_runner_requirements_and_single_provider_inputs(self) -> None:
         action = load_yaml(ACTION_YAML)

@@ -14,6 +14,13 @@ permissions:
   # /review in the repository failed until it was restored. Do not narrow it
   # again without running a real /review against a pull request.
   pull-requests: write
+  # A called workflow cannot hold a permission its caller withheld, so this
+  # must be granted HERE as well as in the reusable workflow. The completeness
+  # job posts a pr-review/coverage commit status on the reviewed head, which is
+  # the only surface a comment-triggered run has on the pull request. Granting
+  # it in one file only means the POST 403s and the status silently never
+  # appears, which is the same invisibility the status exists to remove.
+  statuses: write
 
 jobs:
   review:

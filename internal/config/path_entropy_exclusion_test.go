@@ -114,6 +114,16 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 			wantErr: "query, fragment",
 		},
 		{
+			name:    "an encoded query delimiter is refused, not just a literal one",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document%3Fprivate/"},
+			wantErr: "decoded path must not contain query, fragment",
+		},
+		{
+			name:    "an encoded fragment delimiter is refused too",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document%23private/"},
+			wantErr: "decoded path must not contain query, fragment",
+		},
+		{
 			name:    "a dot segment is not the canonical route",
 			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document/./d/"},
 			wantErr: "canonical",

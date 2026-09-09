@@ -80,13 +80,19 @@ func TestPathEntropyExclusion_EncodedSeparatorDoesNotBorrowTheExemption(t *testi
 	}
 }
 
-// A traversal prefix does bypass the entropy gate in isolation, which is what a
-// review round flagged. It is not reachable as a bypass: path traversal is
-// rejected at step 3 of the pipeline and entropy runs at step 10, so the full
-// scan denies before the exemption is ever consulted. This pins that ordering,
-// because a reorder that moved entropy ahead of traversal would turn the
-// isolated gap into a real bypass with nothing else to catch it.
-func TestPathEntropyExclusion_TraversalIsDeniedBeforeEntropyIsConsulted(t *testing.T) {
+// A traversal path bypasses the entropy gate in isolation, and the full pipeline
+// denies it anyway because path traversal is checked at step 3 and entropy at
+// step 10.
+//
+// This asserts BOTH halves separately, and that matters: an earlier version of
+// this test only checked the final denial, which a review round correctly called
+// out as not proving anything about ordering. It does not, because if entropy
+// ran first it would match the exemption and ALLOW, traversal would still deny,
+// and the assertion would pass unchanged. Asserting the gate-level allow and the
+// pipeline-level denial separately pins the real state: the exemption does match
+// this path, and something earlier than entropy is what refuses the request. If
+// either half changes, one of these fails.
+func TestPathEntropyExclusion_TraversalIsDeniedByAnEarlierCheck(t *testing.T) {
 	t.Parallel()
 
 	s := pathExclusionScanner(t, config.PathEntropyExclusion{
@@ -96,6 +102,19 @@ func TestPathEntropyExclusion_TraversalIsDeniedBeforeEntropyIsConsulted(t *testi
 	defer s.Close()
 
 	raw := "https://docs.vendor.example/document/d/../collect/" + highEntropyID
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+
+	// Half one: the exemption DOES match this path, so the entropy gate alone
+	// allows it. This is the isolated gap, stated rather than implied.
+	if res := s.checkEntropy(parsed); !res.Allowed {
+		t.Fatalf("expected the entropy gate alone to allow the traversal path via the exemption, got %q", res.Reason)
+	}
+
+	// Half two: the request is still denied, by the traversal check, which runs
+	// before entropy. The exemption never gets the last word.
 	res := s.Scan(context.Background(), raw)
 	if res.Allowed {
 		t.Fatalf("a traversal path rode the exemption through the full pipeline: %q", raw)
@@ -142,5 +161,51 @@ func TestPathEntropyExclusion_ConstructionCompilesTheCurrentList(t *testing.T) {
 	}
 	if !blockedAfterRemove {
 		t.Error("a scanner built without the exclusion allowed the route; a removed route did not take effect")
+	}
+}
+
+// buildPathEntropyExclusions drops an over-broad entry at the point of use, not
+// only in validation, because a Config can reach the scanner without having
+// been validated. That defense was incomplete: it caught an empty host and an
+// empty prefix and let a bare / prefix and a cleartext scheme through, which
+// are the same over-broad exemption in different spellings. These construct the
+// scanner directly, bypassing Validate exactly as the gap required.
+func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
+	t.Parallel()
+
+	raw := "https://docs.vendor.example/document/d/" + highEntropyID
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+
+	// Control: a well-formed entry DOES exempt, so a block below means the
+	// entry was dropped rather than the fixture being wrong.
+	ok := pathExclusionScanner(t, config.PathEntropyExclusion{
+		Host: "docs.vendor.example", PathPrefix: "/document/d/",
+	})
+	if res := ok.checkEntropy(parsed); !res.Allowed {
+		ok.Close()
+		t.Fatalf("control failed: a valid entry did not exempt the route (%s)", res.Reason)
+	}
+	ok.Close()
+
+	for name, entry := range map[string]config.PathEntropyExclusion{
+		"a bare root prefix exempts the whole host": {
+			Host: "docs.vendor.example", PathPrefix: "/",
+		},
+		"a cleartext scheme must never be installed": {
+			Scheme: "http", Host: "docs.vendor.example", PathPrefix: "/document/d/",
+		},
+		"an unknown scheme is not silently treated as https": {
+			Scheme: "ftp", Host: "docs.vendor.example", PathPrefix: "/document/d/",
+		},
+	} {
+		s := pathExclusionScanner(t, entry)
+		res := s.checkEntropy(parsed)
+		s.Close()
+		if res.Allowed {
+			t.Errorf("%s: entry %+v was installed and exempted the route; it must be dropped", name, entry)
+		}
 	}
 }

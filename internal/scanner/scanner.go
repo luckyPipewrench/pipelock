@@ -3673,17 +3673,33 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		// host, which is a host-wide exemption wearing a scoped name. Drop it
 		// here as well as rejecting it in validation, so a config that somehow
 		// reaches the scanner cannot silently disable the gate.
-		if strings.TrimSpace(entry.Host) == "" || strings.TrimSpace(entry.PathPrefix) == "" {
+		host := strings.TrimSpace(entry.Host)
+		prefix := strings.TrimSpace(entry.PathPrefix)
+		if host == "" || prefix == "" {
 			continue
 		}
-		scheme := entry.Scheme
+		// A bare / prefix exempts every path on the host, which is the same
+		// over-broad exemption in a different spelling, so it is dropped for the
+		// same reason. Validation rejects it, but this defense exists precisely
+		// for a Config that reached the scanner without it, and it was
+		// previously incomplete: it caught the empty spellings and not this one.
+		if prefix == "/" {
+			continue
+		}
+		scheme := strings.ToLower(strings.TrimSpace(entry.Scheme))
 		if scheme == "" {
 			scheme = config.QueryEntropyParamDefaultScheme
 		}
+		// An exemption never covers cleartext. Validation refuses a non-https
+		// scheme; dropping it here too means an unvalidated Config cannot
+		// install one.
+		if scheme != config.QueryEntropyParamDefaultScheme {
+			continue
+		}
 		out = append(out, pathEntropyExclusion{
-			scheme:     strings.ToLower(scheme),
-			host:       strings.TrimSuffix(strings.ToLower(entry.Host), "."),
-			pathPrefix: entry.PathPrefix,
+			scheme:     scheme,
+			host:       strings.TrimSuffix(strings.ToLower(host), "."),
+			pathPrefix: prefix,
 		})
 	}
 	if len(out) == 0 {

@@ -1433,8 +1433,14 @@ func normalizeQueryEntropyParamPath(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("path escapes must be valid: %w", err)
 	}
-	if strings.ContainsAny(decoded, "*\\;") || strings.IndexFunc(decoded, unicode.IsControl) >= 0 {
-		return "", errors.New("decoded path must not contain wildcard, backslash, path-parameter, or control characters")
+	// The raw check above rejects a literal ? or #; this rejects their encoded
+	// forms, which reach here decoded. Omitting them let `/document%3Fprivate`
+	// through: it passed as a canonical escaped path, so a configured exemption
+	// could hinge on a character that a path parser may treat as the start of a
+	// query or fragment. Where two parsers disagree about where the path ends,
+	// an exemption means two different things, so refuse the spelling instead.
+	if strings.ContainsAny(decoded, "?#*\\;") || strings.IndexFunc(decoded, unicode.IsControl) >= 0 {
+		return "", errors.New("decoded path must not contain query, fragment, wildcard, backslash, path-parameter, or control characters")
 	}
 	if decoded == "/" || path.Clean(decoded) != decoded {
 		return "", errors.New("path must be canonical and must not contain traversal")

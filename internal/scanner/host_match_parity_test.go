@@ -120,3 +120,32 @@ func TestTrustedDomainIPLiteralIsInertNotABypass(t *testing.T) {
 		t.Error("control failed: a hostname entry in trusted_domains must match")
 	}
 }
+
+// The parity gate in config hardcodes what MatchDomain does to a pattern: fold
+// case, trim exactly ONE trailing dot, trim no whitespace. That is a copy of
+// another package's behavior, so a change to the matcher can silently make the
+// validation predicate wrong in either direction - refusing a pattern that
+// would now match, or admitting one that would not.
+//
+// This pins the three assumptions directly against the matcher, so the drift
+// fails HERE with a readable reason rather than turning back into a deny rule
+// that never denies.
+func TestMatchDomainNormalizationAssumptions(t *testing.T) {
+	t.Parallel()
+
+	if !destination.MatchDomain("blocked.example", "blocked.example.") {
+		t.Error("assumption broken: the matcher no longer trims a single trailing dot, so validation is now stricter than matching")
+	}
+	if destination.MatchDomain("blocked.example", "blocked.example..") {
+		t.Error("assumption broken: the matcher now trims repeated trailing dots; the config parity gate refuses such patterns and would be needlessly strict")
+	}
+	if destination.MatchDomain("blocked.example", " blocked.example") {
+		t.Error("assumption broken: the matcher now trims leading whitespace; the config parity gate refuses such patterns and would be needlessly strict")
+	}
+	if destination.MatchDomain("blocked.example", "blocked.example ") {
+		t.Error("assumption broken: the matcher now trims trailing whitespace; the config parity gate refuses such patterns and would be needlessly strict")
+	}
+	if !destination.MatchDomain("blocked.example", "BLOCKED.example") {
+		t.Error("assumption broken: the matcher no longer folds case, so validation would admit patterns that cannot match")
+	}
+}

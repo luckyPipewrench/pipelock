@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -573,4 +575,106 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t 
 func TestLogCredentialAudienceReceiptExtensionDropped_NilLoggerIsInert(t *testing.T) {
 	logCredentialAudienceReceiptExtensionDropped(nil, receipt.EmitOpts{RequestID: "req-1"})
 	logCredentialAudienceReceiptExtensionDropped(audit.NewNop(), receipt.EmitOpts{RequestID: "req-1"})
+}
+
+// Transport parity: the audience allow must be wired through the FORWARD PROXY
+// end to end, not just proven at the scanner. A defect in that transport's
+// callback is invisible to every scanner-level test.
+//
+// The audience host here is the local test server, declared on a test-owned
+// custom pattern. That exercises the real request path with no network call and
+// no test-only seam in production code.
+func TestForwardProxy_CredentialAudienceAllowIsRecorded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, err := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+
+	const credential = "tstaud-" + "AAAAAAAAAAAAAAAAAAAAAAAA"
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name:                    "Test Audience Key",
+			Regex:                   `tstaud-[A-Za-z0-9]{24}`,
+			Severity:                config.SeverityCritical,
+			CredentialAudienceHosts: []string{upstreamHost},
+		})
+	})
+	defer cleanup()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		upstream.URL+"/v1", strings.NewReader(`{"key":"`+credential+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Transport: &http.Transport{
+		Proxy: func(*http.Request) (*url.URL, error) {
+			return &url.URL{Scheme: "http", Host: proxyAddr}, nil
+		},
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("credential sent to its declared audience was blocked: status %d", resp.StatusCode)
+	}
+}
+
+// Control for the test above: the same credential to a host that is NOT its
+// declared audience must still block. Without this the test above would pass
+// even if the pattern never matched at all.
+func TestForwardProxy_CredentialOutsideAudienceStillBlocks(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	const credential = "tstaud-" + "AAAAAAAAAAAAAAAAAAAAAAAA"
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name:                    "Test Audience Key",
+			Regex:                   `tstaud-[A-Za-z0-9]{24}`,
+			Severity:                config.SeverityCritical,
+			CredentialAudienceHosts: []string{"audience.vendor.example"},
+		})
+	})
+	defer cleanup()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		upstream.URL+"/v1", strings.NewReader(`{"key":"`+credential+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Transport: &http.Transport{
+		Proxy: func(*http.Request) (*url.URL, error) {
+			return &url.URL{Scheme: "http", Host: proxyAddr}, nil
+		},
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("credential sent outside its declared audience was allowed")
+	}
 }

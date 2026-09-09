@@ -194,7 +194,6 @@ func TestHostPatternRejectsInteriorWildcards(t *testing.T) {
 		"*.-vendor.example",         // leading hyphen
 		"*.vendor-.example",         // trailing hyphen
 		"*.vendör.example",          // non-ASCII label
-		"*.8.8.8.8",                 // an IP literal cannot be a DNS suffix
 	} {
 		normalized := NormalizeHostPattern(pattern)
 
@@ -313,6 +312,73 @@ func TestBrowserShieldTrackingDomainsRejectMalformedEntries(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("tracking_domains=[%q] rejected for the wrong reason: %v (want %q)", entry, err, want)
+		}
+	}
+}
+
+// The raw value is checked for non-ASCII BEFORE case folding, and the ordering
+// is the whole point. Some non-ASCII runes fold INTO ASCII: U+212A KELVIN SIGN
+// lowercases to "k". So a pattern written with it folds to an ordinary ASCII
+// hostname and would pass an ASCII check applied after folding, silently
+// aiming the operator's rule at a different host than the one they typed.
+func TestHostPatternRejectsRawNonASCIIBeforeFolding(t *testing.T) {
+	t.Parallel()
+
+	kelvin := "*.Kexample.com" // U+212A KELVIN SIGN, folds to ASCII 'k'
+
+	// The trap: folding first makes this look like a plain ASCII pattern.
+	if folded := NormalizeHostPattern(kelvin); folded != "*.kexample.com" {
+		t.Fatalf("premise changed: NormalizeHostPattern folded to %q, expected the ASCII form that makes the ordering matter", folded)
+	}
+
+	if _, err := NormalizeAndCheckHostPattern(kelvin); err == nil {
+		t.Error("NormalizeAndCheckHostPattern accepted a KELVIN SIGN pattern; it folds to a DIFFERENT host than the operator wrote")
+	}
+	for _, raw := range []string{"*.vendör.example", "vendör.example", "*.Kexample.com"} {
+		if _, err := NormalizeAndCheckHostPattern(raw); err == nil {
+			t.Errorf("NormalizeAndCheckHostPattern(%q) = nil, want a non-ASCII rejection", raw)
+		}
+	}
+
+	// An ASCII A-label is the supported way to write an internationalized name
+	// and must still pass, or the rule would refuse legitimate config.
+	for _, raw := range []string{"*.xn--vendr-nsa.example", "xn--vendr-nsa.example"} {
+		if _, err := NormalizeAndCheckHostPattern(raw); err != nil {
+			t.Errorf("NormalizeAndCheckHostPattern(%q) = %v, want nil; an A-label is how an IDN is written here", raw, err)
+		}
+	}
+}
+
+// A malformed EXACT host fails open the same way a malformed wildcard base
+// does: the matcher compares hostnames for equality, so no request can equal
+// "vendor.example#disabled", and a block rule carrying it denies nothing.
+// Scoping the grammar to wildcard bases only was the defect.
+func TestExactRouteHostsGetTheSameGrammar(t *testing.T) {
+	t.Parallel()
+
+	for _, host := range []string{
+		"vendor.example#disabled",
+		"vendor.example%20",
+		"vendor_example.com",
+		"vendor..example",
+		"-vendor.example",
+		"vendor-.example",
+	} {
+		route := &RequestPolicyRoute{Hosts: []string{host}}
+		if err := validateRequestPolicyRoute(route, `request_policy rule "deny"`); err == nil {
+			t.Errorf("validateRequestPolicyRoute(hosts=[%q]) = nil; no request can equal this, so a block rule carrying it denies nothing", host)
+		}
+	}
+
+	// Controls. An exact IP literal is legitimate and this repository's own
+	// route tests block by address, so the grammar must not reach it. And an
+	// IP-literal wildcard base is accepted because the matcher compares
+	// `host == base` as well as a suffix, so refusing it disagreed with the
+	// runtime.
+	for _, host := range []string{"8.8.8.8", "vendor.example", "*.vendor.example", "*.8.8.8.8"} {
+		route := &RequestPolicyRoute{Hosts: []string{host}}
+		if err := validateRequestPolicyRoute(route, "control"); err != nil {
+			t.Errorf("validateRequestPolicyRoute(hosts=[%q]) = %v, want nil", host, err)
 		}
 	}
 }

@@ -55,15 +55,23 @@ func ValidateTrustedDomains(domains []string, label string) error {
 		// made it dangerous. This list exempts hosts from the SSRF internal-IP
 		// check, which is why it gets the same normalizer as everything else
 		// rather than its own copy of the rule.
+		// ORDER MATTERS, and getting it wrong regressed a message once. The
+		// bare wildcard is checked FIRST because its own message names what
+		// this list controls, and "disables all SSRF protection" tells the
+		// operator something the generic shape error cannot. Routing through
+		// the shared entry point before this check replaced that message with
+		// the generic one, which an existing test caught.
 		d := NormalizeHostPattern(raw)
 		if d == "" {
 			return fmt.Errorf("%s[%d] is empty", label, i)
 		}
-		// The bare wildcard keeps its own message, because "disables all SSRF
-		// protection" tells the operator something the generic breadth error
-		// cannot: what this particular list controls.
 		if d == "*" {
 			return fmt.Errorf("%s[%d]: bare wildcard disables all SSRF protection", label, i)
+		}
+		// Then the shared entry point, which rejects raw non-ASCII before case
+		// folding and validates shape.
+		if _, err := NormalizeAndCheckHostPattern(raw); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
 		}
 		// Everything else goes through the ONE shared breadth predicate. This
 		// list previously carried a DUPLICATE of the rule rather than calling
@@ -1299,15 +1307,41 @@ func HostPatternBreadthError(normalized string) error {
 // this is reached. An explicit empty check here would be unreachable, and an
 // unreachable branch cannot be tested, so the invariant is written down instead.
 // Should it ever be reached, the single-label test below refuses it anyway.
+// NormalizeAndCheckHostPattern normalizes a RAW host pattern and validates its
+// shape, returning the normalized value. It is the entry point every caller
+// should use, and it exists because doing these two steps separately has
+// produced two defects in this area already.
+//
+// ORDER IS LOAD-BEARING. The raw value is checked for non-ASCII BEFORE case
+// folding, because some non-ASCII runes fold INTO ASCII: U+212A KELVIN SIGN
+// lowercases to "k", so "*.Kexample.com" written with that rune would fold to
+// "*.kexample.com" and pass an ASCII check applied afterwards. That is not
+// rejecting non-ASCII, it is silently retargeting the operator's rule at a
+// different host. An ASCII A-label such as "xn--..." is unaffected and stays
+// supported.
+func NormalizeAndCheckHostPattern(raw string) (string, error) {
+	if strings.IndexFunc(raw, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+		return "", errors.New("host pattern must be ASCII; write an internationalized name in its xn-- A-label form")
+	}
+	normalized := NormalizeHostPattern(raw)
+	if err := HostPatternSyntaxError(normalized); err != nil {
+		return "", err
+	}
+	return normalized, nil
+}
+
 // HostPatternSyntaxError reports whether a normalized host pattern is
 // well-formed, WITHOUT judging how much of the internet it covers. Use it for
 // DENY and MATCH surfaces, where breadth is the operator's intent rather than a
 // mistake: a request_policy route that blocks "*.co.uk" is a policy, not a
 // misconfiguration, and refusing it would remove the ability to express one.
 //
-// It keeps every shape rule from the breadth check and drops only the
-// single-label and public-suffix tests, so a URL, a host:port, a mid-pattern
-// wildcard and an empty pattern are still refused on both kinds of surface.
+// The DNS label grammar applies to an exact host as well as to a wildcard base.
+// Scoping it to wildcards only was a defect: "vendor.example#disabled" loaded
+// as an exact route host, and the matcher compares hostnames for equality, so
+// no request could equal it and a block rule carrying it denied nothing. An IP
+// literal is the one exception, because an exact IP host is legitimate and this
+// repository's own route tests block by address.
 func HostPatternSyntaxError(normalized string) error {
 	if normalized == "" {
 		return errors.New("host pattern is empty")
@@ -1320,69 +1354,58 @@ func HostPatternSyntaxError(normalized string) error {
 		if base == "" {
 			return errors.New("wildcard must name a domain, as in *.example.com")
 		}
-		// The base after "*." must be a REAL DNS suffix, because the runtime
-		// matches by comparing a hostname against "." + base. Anything a
-		// hostname cannot contain makes the pattern match nothing, and a
-		// request_policy BLOCK rule that matches nothing denies nothing. A
-		// character blacklist was tried here first and was incomplete in seven
-		// ways at once: "#", "%", "_", an empty label from "..", a leading or
-		// trailing hyphen, and a non-ASCII label all passed. Validating the
-		// grammar instead of enumerating bad characters is what closes the
-		// class rather than the instances.
-		return wildcardBaseGrammarError(base)
+		return hostLabelGrammarError(base, "wildcard base")
 	}
 	if strings.ContainsAny(normalized, "*?[]") {
 		return errors.New("only exact hosts and *.example.com wildcards are supported")
 	}
-	return nil
+	// An exact IP literal is a legitimate route target and is not a DNS name,
+	// so the label grammar does not apply to it.
+	if net.ParseIP(normalized) != nil {
+		return nil
+	}
+	return hostLabelGrammarError(normalized, "host")
 }
 
-// wildcardBaseGrammarError reports why the base of a "*.base" pattern is not a
-// legal DNS suffix. It is the same label grammar the exact-host validator
-// normalizeQueryEntropyParamHost already applied, factored out so the two are
-// one decision rather than a strict validator beside a partial one.
-//
-// It deliberately does NOT judge label COUNT or public-suffix breadth; those
-// belong to wildcardBaseBreadthError, which runs after it.
-//
-// Scoped to the wildcard BASE and not to exact hosts on purpose: an exact host
-// may legitimately be an IP literal, and request_policy routes in this
-// repository's own tests block by IP. A "*." pattern cannot, because the
-// runtime compares hostname suffixes.
-func wildcardBaseGrammarError(base string) error {
+func hostLabelGrammarError(base, what string) error {
 	if strings.ContainsAny(base, "*?[]") {
 		return fmt.Errorf("wildcard may appear only as the leading *., not inside %q", base)
 	}
 	if strings.IndexFunc(base, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsControl(r) || r > unicode.MaxASCII
 	}) >= 0 {
-		return errors.New("wildcard base must contain only ASCII DNS label characters")
+		return fmt.Errorf("%s must contain only ASCII DNS label characters", what)
 	}
-	if net.ParseIP(base) != nil {
-		return errors.New("wildcard base must be a DNS suffix, not an IP literal")
-	}
+	// No IP-literal rejection here, deliberately. It was tried and was
+	// OVER-STRICT: the reqpolicy matcher compares `host == base` as well as a
+	// suffix, so "*.8.8.8.8" does match the address itself, and refusing it
+	// made validation disagree with the runtime contract. Aligning the
+	// validator to the matcher is the smaller change; giving the matcher
+	// explicit IP semantics would be a runtime behaviour change and belongs in
+	// its own decision. An IP's labels are digits, so the grammar below accepts
+	// it without a special case.
 	if len(base) > 253 {
-		return errors.New("wildcard base must be 253 bytes or shorter")
+		return fmt.Errorf("%s must be 253 bytes or shorter", what)
 	}
 	for _, label := range strings.Split(base, ".") {
 		if label == "" {
-			return errors.New("wildcard base contains an empty DNS label")
+			return fmt.Errorf("%s contains an empty DNS label", what)
 		}
 		if len(label) > 63 {
-			return errors.New("wildcard base DNS labels must be 63 bytes or shorter")
+			return fmt.Errorf("%s DNS labels must be 63 bytes or shorter", what)
 		}
 		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
-			return errors.New("wildcard base labels must not start or end with '-'")
+			return fmt.Errorf("%s labels must not start or end with '-'", what)
 		}
 		for _, r := range label {
 			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
 				continue
 			}
-			return errors.New("wildcard base must contain only DNS label characters")
+			return fmt.Errorf("%s must contain only DNS label characters", what)
 		}
 	}
 	if _, err := idna.Lookup.ToASCII(base); err != nil {
-		return fmt.Errorf("wildcard base must be valid under IDNA lookup processing: %w", err)
+		return fmt.Errorf("%s must be valid under IDNA lookup processing: %w", what, err)
 	}
 	return nil
 }
@@ -2244,8 +2267,8 @@ func validateRequestPolicyRoute(route *RequestPolicyRoute, label string) error {
 	// its hosts get shape validation only. Running the breadth rule here
 	// refused a legitimate broad block, which is why the two validators exist.
 	for i := range route.Hosts {
-		normalized := NormalizeHostPattern(route.Hosts[i])
-		if err := HostPatternSyntaxError(normalized); err != nil {
+		normalized, err := NormalizeAndCheckHostPattern(route.Hosts[i])
+		if err != nil {
 			return fmt.Errorf("%s hosts[%d] %q: %w", label, i, route.Hosts[i], err)
 		}
 		route.Hosts[i] = normalized
@@ -4505,14 +4528,14 @@ func (c *Config) validateBrowserShield() error {
 	// documented contract of "tracking hostnames".
 	for i, raw := range c.BrowserShield.TrackingDomains {
 		field := fmt.Sprintf("browser_shield.tracking_domains[%d]", i)
-		d := NormalizeHostPattern(raw)
-		if d == "" {
+		if strings.TrimSpace(raw) == "" {
 			return fmt.Errorf("%s is empty", field)
 		}
-		if strings.HasPrefix(d, "*.") || strings.ContainsAny(d, "*?[]") {
+		if strings.HasPrefix(NormalizeHostPattern(raw), "*.") || strings.ContainsAny(raw, "*?[]") {
 			return fmt.Errorf("%s %q: wildcards are not supported here; the shield matches these entries literally, so list the exact hostnames", field, raw)
 		}
-		if err := HostPatternSyntaxError(d); err != nil {
+		d, err := NormalizeAndCheckHostPattern(raw)
+		if err != nil {
 			return fmt.Errorf("%s %q: %w", field, raw, err)
 		}
 		c.BrowserShield.TrackingDomains[i] = d

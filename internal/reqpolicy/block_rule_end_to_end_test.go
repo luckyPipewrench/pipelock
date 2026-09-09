@@ -19,9 +19,15 @@ import (
 // interior globs, then "#", "%", "_", empty labels, hyphen placement and
 // non-ASCII labels.
 //
-// This drives the whole path an operator uses, YAML through Load and Validate
-// into NewMatcher and Evaluate, so the guarantee is "the block enforces" and
-// not merely "the validator returned an error".
+// This drives YAML through Load and Validate into NewMatcher and Evaluate, so
+// the guarantee is "a loaded rule produces a block DECISION" rather than
+// merely "the validator returned an error".
+//
+// It stops at the decision and does NOT construct a proxy, so it does not by
+// itself prove the deny response reaches the client. That last hop is covered
+// by the existing proxy request-policy tests; the two together cover load to
+// enforcement, and neither covers it alone. Said explicitly because the
+// earlier name for this test claimed the whole path.
 func loadPolicy(t *testing.T, hosts string) (*config.Config, error) {
 	t.Helper()
 	yaml := `
@@ -44,7 +50,7 @@ request_policy:
 	return cfg, cfg.Validate()
 }
 
-func TestBlockRuleEnforcesAfterLoad(t *testing.T) {
+func TestBlockRuleProducesBlockDecisionAfterLoad(t *testing.T) {
 	t.Parallel()
 
 	// A broad block must LOAD and ENFORCE. The breadth rule deliberately does

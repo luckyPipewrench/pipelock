@@ -1253,6 +1253,19 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 		if strings.Contains(prefix, "://") {
 			return fmt.Errorf("%s.path_prefix %q must be a path, not a URL", field, entry.PathPrefix)
 		}
+		// Reuse the sibling exemption's path normalizer rather than repeating a
+		// weaker check beside it. It refuses an encoded slash or backslash, a
+		// query or fragment delimiter, a wildcard, a control character, a dot
+		// segment, and any non-canonical escape spelling. Those all matter here
+		// because the scanner compares a prefix against the request's ESCAPED
+		// path: a prefix carrying %2f could never match a canonical request, so
+		// accepting one would hand the operator a silently inert exemption.
+		// The trailing slash is trimmed first because it is load-bearing for
+		// prefix matching (it stops /document/de matching /document/d) while
+		// path.Clean treats it as non-canonical and would reject it.
+		if _, err := normalizeQueryEntropyParamPath(strings.TrimSuffix(prefix, "/")); err != nil {
+			return fmt.Errorf("%s.path_prefix %q is not a canonical path: %w", field, entry.PathPrefix, err)
+		}
 
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {

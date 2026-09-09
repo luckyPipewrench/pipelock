@@ -89,6 +89,46 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 			wantErr: "not a URL or host:port",
 		},
 		{
+			name:    "an encoded slash cannot match an escaped request path",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document%2Fd/"},
+			wantErr: "encoded slash or backslash",
+		},
+		{
+			name:    "an encoded backslash is refused for the same reason",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document%5Cd/"},
+			wantErr: "encoded slash or backslash",
+		},
+		{
+			name:    "a query delimiter is not part of a path",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document/d?x=1"},
+			wantErr: "query, fragment",
+		},
+		{
+			name:    "a fragment delimiter is not part of a path",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document/d#frag"},
+			wantErr: "query, fragment",
+		},
+		{
+			name:    "a wildcard would widen the route silently",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document/*/"},
+			wantErr: "query, fragment",
+		},
+		{
+			name:    "a dot segment is not the canonical route",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document/./d/"},
+			wantErr: "canonical",
+		},
+		{
+			name:    "a traversal segment is refused",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document/d/../"},
+			wantErr: "canonical",
+		},
+		{
+			name:    "a backslash cannot stand in for a separator",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document\\d/"},
+			wantErr: "query, fragment",
+		},
+		{
 			name:    "a malformed expiry is refused rather than ignored",
 			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/document/d/", Expires: "soon"},
 			wantErr: "must be YYYY-MM-DD",

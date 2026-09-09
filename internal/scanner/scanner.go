@@ -3695,13 +3695,23 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 // isPathEntropyExcluded reports whether this exact scheme, host and path prefix
 // is exempt from the PATH entropy gate. It deliberately answers nothing about
 // subdomain entropy, query entropy, DLP or SSRF, which continue to run.
+//
+// The comparison uses EscapedPath rather than Path, and that choice is the
+// difference between a narrow exemption and a bypass. url.Parse DECODES
+// percent-escapes into Path, so `/document%2Fd/<blob>` arrives as the decoded
+// `/document/d/<blob>` and matches an exemption written for `/document/d/`,
+// even though the origin server sees a single `document/d` segment and a
+// route the operator never exempted. Matching the escaped spelling keeps the
+// exemption pinned to the literal route in the config. Validation refuses an
+// encoded separator in a prefix, so a configured prefix and an escaped path
+// are compared in the same alphabet.
 func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
 	if len(s.pathEntropyExclusions) == 0 || parsed == nil {
 		return false
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	host := parsed.Hostname()
-	path := parsed.Path
+	path := parsed.EscapedPath()
 	for _, ex := range s.pathEntropyExclusions {
 		if ex.scheme != scheme {
 			continue

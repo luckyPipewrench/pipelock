@@ -1152,6 +1152,19 @@ func (c *Config) validateMode() error {
 //
 // Shared with the per-agent allowlists, which the enterprise merge REPLACES
 // rather than merges, so they never passed through the top-level check.
+func ValidateHostMatchList(hosts []string, label string) error {
+	for i, raw := range hosts {
+		normalized, err := NormalizeAndCheckHostPattern(raw)
+		if err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
+		}
+		if err := matcherParityError(raw, normalized); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
+		}
+	}
+	return nil
+}
+
 // ValidateHostGrantList is ValidateHostMatchList plus the wildcard BREADTH
 // rule, for a list that GRANTS reachability rather than matching or denying it.
 //
@@ -1186,19 +1199,6 @@ func ValidateHostGrantList(hosts []string, label string) error {
 			continue
 		}
 		if err := wildcardBaseBreadthError(normalized[2:]); err != nil {
-			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
-		}
-	}
-	return nil
-}
-
-func ValidateHostMatchList(hosts []string, label string) error {
-	for i, raw := range hosts {
-		normalized, err := NormalizeAndCheckHostPattern(raw)
-		if err != nil {
-			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
-		}
-		if err := matcherParityError(raw, normalized); err != nil {
 			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
 		}
 	}

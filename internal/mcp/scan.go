@@ -256,8 +256,24 @@ func responseScanTrustClass(opts ResponseScanOptions) string {
 // equivalent dispatch inline (it computes isToolsList via tools.ScanTools, which
 // also drives provenance/baseline side effects this read-only path omits).
 func ScanResponseDispatch(line []byte, sc *scanner.Scanner, toolScanning bool, opts ResponseScanOptions) jsonrpc.ScanVerdict {
-	if toolScanning && isToolsListResponse(line) {
+	if !toolScanning {
+		return ScanResponseOpts(line, sc, opts)
+	}
+	switch shape, _ := toolsListShape(line); shape {
+	case toolsListScannable:
 		return scanToolsListNonToolFields(line, sc, opts)
+	case toolsListUninspectable:
+		// This path excludes tool text from injection scanning because the tool
+		// scanner is expected to read it. When the array cannot be read, saying
+		// nothing would report a diagnostic clean over definitions no scanner
+		// looked at, which is the same gap the stream path fails closed on.
+		verdict := scanToolsListNonToolFields(line, sc, opts)
+		if verdict.Error != "" {
+			return verdict
+		}
+		verdict.Clean = false
+		verdict.Unscanned = appendUniqueScanScopes(verdict.Unscanned, []string{jsonrpc.ScanScopeToolScanning})
+		return verdict
 	}
 	return ScanResponseOpts(line, sc, opts)
 }

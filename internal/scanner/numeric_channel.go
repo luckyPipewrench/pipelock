@@ -45,31 +45,42 @@ func (s *Scanner) ScanNumericChannelForKnownValues(numeric string) []TextDLPMatc
 	texts := []spanTextView{{text: numeric, viewLabel: ViewNumericChannel}}
 	var matches []TextDLPMatch
 
-	for _, known := range []struct {
-		secrets     []string
-		patternName string
-		encoded     string
-	}{
-		{s.envSecrets, "Environment Variable Leak", "env"},
-		{s.fileSecrets, "Known Secret Leak", encodingDecimal},
-	} {
-		for _, secret := range known.secrets {
-			for _, candidate := range s.knownSecretDecimalCodes[secret] {
-				if start, end, viewLabel, ok := indexWholeNumericSequence(candidate, texts); ok {
+	// Decode the run ONCE and look for the known values in what it spells,
+	// rather than encoding each secret into one exact spelling and searching
+	// for that. The encoding approach could only see the spelling it happened
+	// to build, so a comma-and-space separated run and the integral float and
+	// exponent forms JSON permits both slipped past it while the canary path,
+	// which already decoded, caught them. Secrets keep their exact case: a
+	// different case is a different secret.
+	decoded := decodeDecimalCharacterCodes(numeric)
+	decodedView := []spanTextView{{text: decoded, viewLabel: spanViewLabel("decimal_decoded", ViewNumericChannel)}}
+	if decoded != "" {
+		for _, known := range []struct {
+			secrets     []string
+			patternName string
+			encoded     string
+		}{
+			{s.envSecrets, "Environment Variable Leak", "env"},
+			{s.fileSecrets, "Known Secret Leak", encodingDecimal},
+		} {
+			for _, secret := range known.secrets {
+				if secret == "" {
+					continue
+				}
+				if start, end, viewLabel, ok := indexAnyView(secret, decodedView); ok {
 					matches = append(matches, TextDLPMatch{
 						PatternName: known.patternName,
 						Severity:    "critical",
 						Encoded:     known.encoded,
 						span:        newMatchSpan(start, end, viewLabel, known.patternName, "", ""),
 					})
-					break
 				}
 			}
 		}
 	}
 
 	if len(s.canaryTokens) > 0 {
-		decodedLower := strings.ToLower(decodeDecimalCharacterCodes(numeric))
+		decodedLower := strings.ToLower(decoded)
 		for _, token := range s.canaryTokens {
 			needle := token.normalizedLower
 			if needle == "" {
@@ -148,7 +159,7 @@ func decodeDecimalCharacterCodes(numeric string) string {
 		run.Reset()
 		runLen = 0
 	}
-	fields := strings.FieldsFunc(numeric, func(r rune) bool { return r == ',' || r == ' ' })
+	fields := strings.FieldsFunc(numeric, isDecimalCodeSeparator)
 	for _, field := range fields {
 		code, ok := parseDecimalCharacterCode(field)
 		if !ok {
@@ -160,6 +171,26 @@ func decodeDecimalCharacterCodes(numeric string) string {
 	}
 	flush()
 	return out.String()
+}
+
+// isDecimalCodeSeparator reports whether r separates two numbers rather than
+// continuing one. The rule is inverted deliberately: anything that is not part
+// of a number token IS a separator. Enumerating delimiters instead kept losing
+// characters off the ends of a run, because whatever punctuation was not on the
+// list fused to the first or last number and made it unparseable, so `[65,75]`
+// and `payload=65,75` each silently dropped a character.
+//
+// A digit, decimal point, sign and exponent letter are excluded on purpose:
+// they continue a number, so `1.65` breaks the run rather than decoding as 65.
+func isDecimalCodeSeparator(r rune) bool {
+	switch {
+	case r >= '0' && r <= '9':
+		return false
+	case r == '.' || r == '-' || r == '+' || r == 'e' || r == 'E':
+		return false
+	default:
+		return true
+	}
 }
 
 // parseDecimalCharacterCode accepts only an exact non-negative JSON number
@@ -183,23 +214,4 @@ func validDecimalCharacterCode(code int64) (rune, bool) {
 		return 0, false
 	}
 	return rune(code), true
-}
-
-// buildKnownSecretDecimalCodes compiles the comma and space spellings of every
-// configured secret once. The scan path reads this map instead of encoding each
-// secret again for every response line.
-func buildKnownSecretDecimalCodes(lists ...[]string) map[string][]string {
-	out := make(map[string][]string)
-	for _, list := range lists {
-		for _, secret := range list {
-			if secret == "" {
-				continue
-			}
-			if _, seen := out[secret]; seen {
-				continue
-			}
-			out[secret] = []string{decimalCharacterCodes(secret, ","), decimalCharacterCodes(secret, " ")}
-		}
-	}
-	return out
 }

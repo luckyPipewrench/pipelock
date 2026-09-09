@@ -47,6 +47,11 @@ func TestScanNumericChannelForKnownValues(t *testing.T) {
 		{name: "float inside the codes breaks the run", numeric: strings.Replace(decimalCharacterCodes(canary, ","), ",", ",1.5,", 1)},
 		{name: "environment secret as character codes", numeric: decimalCharacterCodes(secret, ","), wantPattern: "Environment Variable Leak", wantEncoded: "env"},
 		{name: "environment secret as space separated codes", numeric: decimalCharacterCodes(secret, " "), wantPattern: "Environment Variable Leak", wantEncoded: "env"},
+		// Spellings that slipped past encode-and-search: the separator form a
+		// JSON array actually uses, and the number forms JSON permits.
+		{name: "comma and space separators", numeric: strings.ReplaceAll(decimalCharacterCodes(secret, ","), ",", ", "), wantPattern: "Environment Variable Leak", wantEncoded: "env"},
+		{name: "integral float codes", numeric: strings.ReplaceAll(decimalCharacterCodes(secret, ","), ",", ".0,") + ".0", wantPattern: "Environment Variable Leak", wantEncoded: "env"},
+		{name: "exponent codes", numeric: strings.ReplaceAll(decimalCharacterCodes(secret, ","), ",", "e0,") + "e0", wantPattern: "Environment Variable Leak", wantEncoded: "env"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			matches := s.ScanNumericChannelForKnownValues(tt.numeric)
@@ -164,6 +169,19 @@ func TestScanNumericChannel_FileSecretAsCharacterCodes(t *testing.T) {
 	matches := s.ScanNumericChannelForKnownValues(decimalCharacterCodes(secret, ","))
 	if len(matches) != 1 {
 		t.Fatalf("a file secret spelled as character codes must be found once, got %+v", matches)
+	}
+	// The same spellings the environment path covers, on the file path.
+	for _, spelling := range []string{
+		strings.ReplaceAll(decimalCharacterCodes(secret, ","), ",", ", "),
+		strings.ReplaceAll(decimalCharacterCodes(secret, ","), ",", ".0,") + ".0",
+	} {
+		if got := s.ScanNumericChannelForKnownValues(spelling); len(got) != 1 {
+			t.Fatalf("a file secret in an equivalent spelling must be found, got %+v", got)
+		}
+	}
+	// A different case is a different secret, unlike a canary.
+	if got := s.ScanNumericChannelForKnownValues(decimalCharacterCodes(strings.ToUpper(secret), ",")); len(got) != 0 {
+		t.Fatalf("a case-variant value is not the configured secret, got %+v", got)
 	}
 	if matches[0].PatternName != "Known Secret Leak" || matches[0].Encoded != encodingDecimal {
 		t.Fatalf("match = (%q, %q), want (\"Known Secret Leak\", %q)", matches[0].PatternName, matches[0].Encoded, encodingDecimal)

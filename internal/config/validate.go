@@ -1057,6 +1057,32 @@ func (c *Config) validateMode() error {
 	if c.Mode == ModeStrict && len(c.APIAllowlist) == 0 {
 		return fmt.Errorf("strict mode requires at least one domain in api_allowlist")
 	}
+	// The RAW gate applies to the allowlist even though the BREADTH rule
+	// deliberately does not. Breadth is directional and this list's wildcard
+	// semantics are left alone on purpose. Retargeting is not directional: in
+	// strict mode the scanner copies these patterns into the enforced allowlist
+	// and MatchDomain folds case, so "*.<KELVIN>example.com" loads and then
+	// PERMITS sub.kexample.com. That is an egress grant for a host the operator
+	// never wrote, which is the fail-open direction on the list that decides
+	// what may leave at all.
+	if err := validateAPIAllowlistHosts(c.APIAllowlist, "api_allowlist"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateAPIAllowlistHosts applies the raw-input gate to an allowlist without
+// judging breadth. Exported behaviour is unchanged for every ASCII pattern, so
+// existing wildcard semantics are preserved; only a value that would silently
+// fold into a different host is refused. Shared with the per-agent allowlists,
+// which the enterprise merge REPLACES rather than merges, so they never passed
+// through the top-level check.
+func validateAPIAllowlistHosts(hosts []string, label string) error {
+	for i, raw := range hosts {
+		if err := RawHostASCIIError(raw); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
+		}
+	}
 	return nil
 }
 
@@ -1167,10 +1193,19 @@ func (c *Config) validateFetchProxy() error {
 		return err
 	}
 
-	// Validate blocklist patterns are well-formed
-	for _, b := range c.FetchProxy.Monitoring.Blocklist {
+	// Validate blocklist patterns are well-formed. The RAW gate applies here
+	// even though the BREADTH rule deliberately does not: breadth is
+	// directional, because a broad wildcard on a deny list is a policy, but
+	// retargeting is wrong in EVERY direction. "*.<KELVIN>example.com" folds to
+	// "*.kexample.com" at match time and would block a host the operator never
+	// wrote. That direction fails closed rather than open, and it is still not
+	// the operator's policy.
+	for i, b := range c.FetchProxy.Monitoring.Blocklist {
 		if b == "" {
 			return fmt.Errorf("empty blocklist entry")
+		}
+		if err := RawHostASCIIError(b); err != nil {
+			return fmt.Errorf("fetch_proxy.monitoring.blocklist[%d] %q: %w", i, b, err)
 		}
 	}
 

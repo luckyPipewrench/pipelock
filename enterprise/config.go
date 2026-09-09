@@ -212,6 +212,18 @@ func ValidateAgents(cfg *config.Config) error {
 			return err
 		}
 
+		// A per-agent api_allowlist REPLACES the base list rather than merging
+		// into it, so it never passed through the top-level check. In strict
+		// mode this list decides what may leave at all, and a value that folds
+		// into a different host at match time is an egress grant the operator
+		// never wrote. Breadth is deliberately not judged here; only
+		// retargeting is refused.
+		for i, raw := range profile.APIAllowlist {
+			if err := config.RawHostASCIIError(raw); err != nil {
+				return fmt.Errorf("agent %q api_allowlist[%d] %q: %w", name, i, raw, err)
+			}
+		}
+
 		// Validate sandbox filesystem paths (reject empty entries).
 		if profile.Sandbox != nil && profile.Sandbox.FS != nil {
 			for _, p := range profile.Sandbox.FS.AllowRead {

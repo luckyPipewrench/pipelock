@@ -17,7 +17,7 @@ import (
 // These drive real YAML through LoadBytes for every affected field family,
 // because a unit test on the predicate agrees with the predicate by
 // construction and would not have caught the surfaces that were missed.
-func TestKelvinSignRefusedOnEveryHostList(t *testing.T) {
+func TestKelvinSignRefusedOnValidatedHostLists(t *testing.T) {
 	t.Parallel()
 
 	const kelvin = "*.\u212Aexample.com" // U+212A KELVIN SIGN, written as an escape on purpose
@@ -73,6 +73,20 @@ fetch_proxy:
         host: "` + kelvinExact + `"
         path: /v1/search
         param: q
+`,
+		// The ALLOW and DENY lists get the raw gate too, even though breadth
+		// deliberately does not apply to them. Breadth is directional; a
+		// retargeted host is wrong in every direction. In strict mode the
+		// allowlist decides what may leave at all, so a folded pattern there is
+		// an egress grant the operator never wrote.
+		"api_allowlist in strict mode": `
+mode: strict
+api_allowlist: ["` + kelvin + `"]
+`,
+		"domain blocklist": `
+fetch_proxy:
+  monitoring:
+    blocklist: ["` + kelvin + `"]
 `,
 	}
 

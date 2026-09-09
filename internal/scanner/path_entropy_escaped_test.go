@@ -256,6 +256,18 @@ func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 			reason: "only exact hosts and leading *. wildcards are supported",
 		},
 		{
+			// U+212A KELVIN SIGN lowercases to ASCII "k", so a host checked for
+			// ASCII only AFTER case folding reads as clean and installs an
+			// exemption for kexample.com. Written as a Go escape on purpose:
+			// an earlier version of this input lost the rune to a shell
+			// heredoc and became a plain ASCII "K", which is legitimately
+			// accepted and asserted nothing.
+			name:   "a rune that folds into ASCII must not install a retargeted exemption",
+			entry:  config.PathEntropyExclusion{Host: "\u212Aexample.com", PathPrefix: "/document/d/"},
+			probe:  "https://kexample.com/document/d/" + highEntropyID,
+			reason: "the raw host is gated before folding, so the folded ASCII host is never exempted",
+		},
+		{
 			name:   "a host:port is not a hostname",
 			entry:  config.PathEntropyExclusion{Host: "docs.vendor.example:443", PathPrefix: "/document/d/"},
 			probe:  exempted,

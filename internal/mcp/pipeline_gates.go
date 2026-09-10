@@ -533,14 +533,14 @@ func EvaluateMCPInputGates(
 				eval.ContentVerdict.Error = floorVerdict.Error
 			}
 			for _, match := range floorVerdict.Matches {
-				if scanner.IsCoreCriticalMatch(match) {
+				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
 					eval.ContentVerdict.Clean = false
 					eval.ContentVerdict.Action = config.ActionBlock
 					eval.ContentVerdict.Matches = append(eval.ContentVerdict.Matches, match)
 				}
 			}
 			for _, finding := range floorVerdict.URLFindings {
-				if scanner.IsCoreCriticalResult(finding) {
+				if scanner.IsCoreCriticalResult(finding) || scanner.IsHostnameExfilResult(finding) {
 					eval.ContentVerdict.Clean = false
 					eval.ContentVerdict.Action = config.ActionBlock
 					eval.ContentVerdict.URLFindings = append(eval.ContentVerdict.URLFindings, finding)

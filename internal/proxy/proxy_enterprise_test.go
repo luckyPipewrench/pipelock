@@ -120,10 +120,8 @@ func TestFetchEndpoint_AgentOnBlocked(t *testing.T) {
 // These tests require the enterprise edition (per-agent configs, budgets,
 // listeners) and are gated behind the "enterprise" build tag.
 
-// TestFetchEndpoint_PerAgentScanner verifies that requests with different
-// X-Pipelock-Agent headers use per-agent config and scanner. The permissive
-// agent's config allowlists the test backend, while the restrictive agent's
-// strict-mode config does not, causing its requests to be blocked.
+// TestFetchEndpoint_PerAgentScanner verifies that caller-supplied names remain
+// attribution only and cannot select either named profile's scanner.
 func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
 	// Create a backend that returns plain text.
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -183,10 +181,10 @@ func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
 			wantBlock:  false,
 		},
 		{
-			name:       "restrictive agent blocks backend",
+			name:       "restrictive agent cannot select named policy",
 			agentHdr:   testAgentRestrictive,
-			wantStatus: http.StatusForbidden,
-			wantBlock:  true,
+			wantStatus: http.StatusOK,
+			wantBlock:  false,
 		},
 		{
 			name:       "anonymous uses base config (balanced, allows)",
@@ -387,13 +385,15 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 			APIAllowlist: []string{"other.example.com"},
 		},
 	}
+	cfg2.DefaultAgentIdentity = "strict-bot"
+	cfg2.BindDefaultAgentIdentity = true
 	// Also allowlist the backend in base so anonymous still works.
 	cfg2.APIAllowlist = []string{backendHost}
 
 	sc2 := scanner.MustNew(cfg2)
 	p.Reload(cfg2, sc2)
 
-	// After reload: "strict-bot" should be blocked (strict + no backend in allowlist).
+	// After reload: the operator-bound default selects strict-bot and blocks.
 	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	req2.Header.Set(AgentHeader, "strict-bot")
 	w2 := httptest.NewRecorder()
@@ -436,12 +436,8 @@ func TestProxy_KnownProfiles(t *testing.T) {
 	}
 }
 
-// TestAgentIdentityEndToEnd exercises per-agent scanner behavior through the
-// fetch proxy. Two agent profiles are configured: "strict-agent" (mode=strict,
-// enforce=true) and "audit-agent" (mode=audit, enforce=false). A request to a
-// blocklisted domain is sent with each agent header. The strict agent should
-// block (403), the audit agent should allow (200), and an unknown agent should
-// fall back to _default behavior (balanced, enforce=true = block).
+// TestAgentIdentityEndToEnd verifies that caller-supplied names remain visible
+// in fetch responses while every such request uses fallback enforcement.
 func TestAgentIdentityEndToEnd(t *testing.T) {
 	const (
 		testStrictAgent  = "strict-agent"
@@ -518,11 +514,11 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 			wantAgent:  testStrictAgent,
 		},
 		{
-			name:       "audit agent allows blocklisted domain",
+			name:       "audit agent cannot select permissive policy",
 			agent:      testAuditAgent,
 			url:        blockedURL,
-			wantStatus: http.StatusOK,
-			wantBlock:  false,
+			wantStatus: http.StatusForbidden,
+			wantBlock:  true,
 			wantAgent:  testAuditAgent,
 		},
 		{
@@ -603,6 +599,8 @@ func TestBudgetEnforcementFetch(t *testing.T) {
 			},
 		},
 	}
+	cfg.DefaultAgentIdentity = testBudgetAgent
+	cfg.BindDefaultAgentIdentity = true
 
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
@@ -747,6 +745,8 @@ func TestByteBudgetBlocksFetchResponse(t *testing.T) {
 			},
 		},
 	}
+	cfg.DefaultAgentIdentity = testByteBudgetAgent
+	cfg.BindDefaultAgentIdentity = true
 
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)

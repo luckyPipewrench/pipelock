@@ -2187,7 +2187,7 @@ agents:
 
 ### Agent Resolution
 
-Pipelock resolves the agent name for each request using this priority order:
+Pipelock resolves the agent name for attribution using this priority order:
 
 1. **Listener binding**: matched by the port the request arrived on (injected as a context override; network-bound, so a request cannot change it)
 2. **Source CIDRs**: matched by client IP against `source_cidrs` ranges defined on each agent profile. The client IP is the connection's own peer address; forwarded-address headers such as `X-Forwarded-For` are ignored, so a deployment behind another proxy sees that proxy's address here
@@ -2195,11 +2195,11 @@ Pipelock resolves the agent name for each request using this priority order:
 4. **Query parameter** (`?agent=name`): appended to fetch/WebSocket URLs
 5. **Fallback**: `_default` profile if defined, otherwise base config
 
-Listener-based resolution and a `source_cidrs` match are the two methods the agent cannot change from inside a request; both are graded `bound`. Listener resolution injects a context override that takes priority over header and query param. Header and query param methods are convenient but trust the caller. Use listeners when callers share one source address and isolation matters.
+Listener-based resolution and a `source_cidrs` match are the two methods the agent cannot change from inside a request; both are graded `bound`. Listener resolution injects a context override that takes priority over header and query param. Header and query values remain attribution hints: the claimed name is retained with grade `matched` or `self-declared`, while the request uses the `_default` profile or base policy. A bound `default_agent_identity` also selects its named profile. Use listeners when callers share one source address and need different policies.
 
 On the reverse-proxy listener, a `source_cidrs` match sets the agent identity used for attribution and the outbound mediation envelope. It does not select per-agent scanner, budget, or policy overrides: reverse-proxy enforcement uses that listener's configured generic policy or `profile: submit` policy.
 
-For MCP proxy mode, the `--agent` flag resolves the profile directly at startup (not through the HTTP resolution chain).
+For MCP proxy mode, the operator-supplied `--agent` flag resolves the profile directly at startup and does not use the HTTP request-resolution chain.
 
 ### Override Fields
 

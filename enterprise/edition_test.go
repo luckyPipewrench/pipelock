@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -56,15 +57,16 @@ func TestNewEdition_WithAgents(t *testing.T) {
 	}
 	defer ed.Close()
 
-	// Request with matching header.
+	// A matching caller-supplied header remains attribution but cannot select
+	// the named profile's policy.
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	r.Header.Set(edition.AgentHeader, "claude-code")
 	ra, id := ed.ResolveAgent(context.Background(), r)
-	if id.Profile != "claude-code" {
-		t.Errorf("profile = %q, want claude-code", id.Profile)
+	if id.Name != "claude-code" || id.Auth != envelope.ActorAuthMatched {
+		t.Errorf("identity = %+v, want matched claimed name", id)
 	}
-	if ra.Config.Mode != config.ModeStrict {
-		t.Errorf("mode = %q, want strict", ra.Config.Mode)
+	if id.Profile != edition.ProfileDefault || ra.Config.Mode != config.ModeBalanced {
+		t.Errorf("profile = %q mode = %q, want balanced fallback", id.Profile, ra.Config.Mode)
 	}
 }
 

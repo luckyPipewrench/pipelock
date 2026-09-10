@@ -192,22 +192,25 @@ func TestReverseProxySourceCIDRPreservesListenerPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ed.Close()
-	// Prove both profile-only rules are active before testing the reverse
-	// listener. A missing profile must not make this policy assertion pass.
-	for _, tt := range []struct{ remote, actor, marker string }{
-		{"127.0.0.1:1234", "network-agent", "network-only-marker"},
-		{"203.0.113.1:1234", "header-agent", "header-only-marker"},
-	} {
+	// Prove the bound network profile's rule is active before testing the
+	// reverse listener. A missing profile must not make this assertion pass.
+	{
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/resource", nil)
-		req.RemoteAddr = tt.remote
+		req.RemoteAddr = "127.0.0.1:1234"
 		req.Header.Set(AgentHeader, "header-agent")
 		resolved, identity := ed.ResolveAgent(t.Context(), req)
-		if identity.Name != tt.actor {
-			t.Fatalf("profile actor = %q, want %q", identity.Name, tt.actor)
+		if identity.Name != "network-agent" {
+			t.Fatalf("profile actor = %q, want network-agent", identity.Name)
 		}
-		if len(resolved.Scanner.ScanTextForDLP(t.Context(), tt.marker).Matches) == 0 {
-			t.Fatalf("profile %s did not detect its marker", tt.actor)
+		if len(resolved.Scanner.ScanTextForDLP(t.Context(), "network-only-marker").Matches) == 0 {
+			t.Fatal("network-agent profile did not detect its marker")
 		}
+	}
+	// Prove the header-only profile exists through the operator lookup surface;
+	// request-controlled headers no longer select it.
+	headerProfile, ok := ed.LookupProfile("header-agent")
+	if !ok || len(headerProfile.Scanner.ScanTextForDLP(t.Context(), "header-only-marker").Matches) == 0 {
+		t.Fatal("header-agent profile lookup did not detect its marker")
 	}
 	var upstreamCalls atomic.Int32
 	srv, handler := reverseTestSetupWithHandler(t, cfg, func(w http.ResponseWriter, _ *http.Request) {

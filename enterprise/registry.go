@@ -189,6 +189,15 @@ func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Reques
 		known[name] = true
 	}
 	id := edition.ResolveAgentIdentity(req, known, defaultCfg.DefaultAgentIdentity, defaultCfg.BindDefaultAgentIdentity)
+	// A request-controlled name remains useful attribution, but it cannot pick
+	// the scanner, budget, or policy. Unknown provenance fails toward fallback;
+	// only infrastructure-bound and operator-configured identities select a
+	// named profile.
+	if !id.Auth.TrustedForIdentity() {
+		resolved := r.fallback
+		id.Profile = resolved.Name
+		return resolved, id
+	}
 	return r.Lookup(id.Profile), id
 }
 

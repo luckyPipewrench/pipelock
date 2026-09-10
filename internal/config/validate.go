@@ -601,6 +601,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateFileSentry(); err != nil {
 		return warnings, err
 	}
+	c.validateUnboundAgentPolicyWarnings(&warnings)
 	if err := c.validateAgents(); err != nil {
 		return warnings, err
 	}
@@ -667,6 +668,44 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	// above have already accepted, and it can never fail a config.
 	c.validateActionDivergence(&warnings)
 	return warnings, nil
+}
+
+func (c *Config) validateUnboundAgentPolicyWarnings(warnings *[]Warning) {
+	names := make([]string, 0, len(c.Agents))
+	for name := range c.Agents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		profile := c.Agents[name]
+		if name == "_default" || len(profile.Listeners) > 0 || len(profile.SourceCIDRs) > 0 {
+			continue
+		}
+		if c.BindDefaultAgentIdentity && name == c.DefaultAgentIdentity {
+			continue
+		}
+		if !agentProfileHasPolicyOverrides(profile) {
+			continue
+		}
+		*warnings = append(*warnings, Warning{
+			Field:   "agents." + name,
+			Message: "defines policy overrides without listeners or source_cidrs; X-Pipelock-Agent and ?agent= are attribution only and will use the _default or base policy, so bind this profile with a listener, source_cidrs, bind_default_agent_identity, or the operator-selected MCP --agent flag",
+		})
+	}
+}
+
+func agentProfileHasPolicyOverrides(profile AgentProfile) bool {
+	budget := profile.Budget
+	return profile.Mode != "" || profile.Enforce != nil || len(profile.APIAllowlist) > 0 ||
+		profile.DLP != nil || profile.RateLimit != nil || profile.SessionProfiling != nil ||
+		profile.MCPToolPolicy != nil || budget.MaxRequestsPerSession != 0 ||
+		budget.MaxBytesPerSession != 0 || budget.MaxUniqueDomainsPerSession != 0 ||
+		budget.WindowMinutes != 0 || budget.MaxToolCallsPerSession != 0 ||
+		budget.MaxConcurrentToolCalls != 0 || budget.MaxWallClockMinutes != 0 ||
+		budget.MaxRetriesPerTool != 0 || budget.LoopDetectionWindow != 0 ||
+		len(budget.CostMultipliers) > 0 || budget.DoWAction != "" || budget.DoWMinSubjectTrust != "" ||
+		len(profile.AllowedAddresses) > 0 || profile.Sandbox != nil || len(profile.TrustedDomains) > 0
 }
 
 func (c *Config) validateEvidenceProvenanceWarnings(warnings *[]Warning) {

@@ -1094,8 +1094,34 @@ func TestRunWSProxy_InputScanWarnModeCoreCredentialBlocks(t *testing.T) {
 	if got := upstreamFrames.Load(); got != 0 {
 		t.Fatalf("core credential reached WebSocket upstream in warn mode: frames=%d", got)
 	}
-	if !strings.Contains(stdout.String(), `"error"`) || !strings.Contains(stdout.String(), string(blockreason.DLPMatch)) {
-		t.Fatalf("WebSocket core-floor block response = %q, want structured DLP error", stdout.String())
+	if got := decodeRPCError(t, stdout.String())[mcpBlockReasonKey]; got != string(blockreason.DLPMatch) {
+		t.Fatalf("WebSocket core-floor block reason = %v, want %s", got, blockreason.DLPMatch)
+	}
+}
+
+func TestRunWSProxy_InputScanDisabledCoreCredentialBlocks(t *testing.T) {
+	srv, upstreamFrames := wsDrainServer(t)
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"` + coreCredentialToken() + `"}}}` + "\n")
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc}); err != nil {
+		t.Fatalf("RunWSProxy: %v", err)
+	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Fatalf("core credential reached WebSocket upstream with input scanning disabled: frames=%d", got)
+	}
+	if got := decodeRPCError(t, stdout.String())[mcpBlockReasonKey]; got != string(blockreason.DLPMatch) {
+		t.Fatalf("WebSocket disabled-scan core-floor block reason = %v, want %s", got, blockreason.DLPMatch)
 	}
 }
 

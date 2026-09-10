@@ -468,6 +468,9 @@ func TestA2ACoreFloor_SplitCoreCredentialBlocksAfterNonCoreFinding(t *testing.T)
 	if result.Action != config.ActionBlock {
 		t.Fatalf("split core credential after a non-core finding: action = %q, want %q (findings %+v)", result.Action, config.ActionBlock, result.DLPFindings)
 	}
+	if !scanner.ContainsCoreCriticalMatch(result.DLPFindings) {
+		t.Fatalf("split core credential did not produce the core pattern: %+v", result.DLPFindings)
+	}
 	seen := make(map[string]struct{}, len(result.DLPFindings))
 	for _, finding := range result.DLPFindings {
 		key := finding.PatternName + "\x00" + finding.Encoded

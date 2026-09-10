@@ -1070,6 +1070,37 @@ func TestRunHTTPProxy_InputScanWarnMode(t *testing.T) {
 	}
 }
 
+func TestRunHTTPProxy_InputScanDisabledCoreCredentialBlocks(t *testing.T) {
+	var serverCalled int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&serverCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo ` + coreCredentialToken() + `"}}}` + "\n")
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc}); err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+	if got := atomic.LoadInt32(&serverCalled); got != 0 {
+		t.Fatalf("core credential reached HTTP upstream with input scanning disabled: calls=%d", got)
+	}
+	if got := decodeRPCError(t, stdout.String())[mcpBlockReasonKey]; got != string(blockreason.DLPMatch) {
+		t.Fatalf("HTTP disabled-scan core-floor block reason = %v, want %s", got, blockreason.DLPMatch)
+	}
+}
+
 func TestExtractRPCID(t *testing.T) {
 	tests := []struct {
 		name string

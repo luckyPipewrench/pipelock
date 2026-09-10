@@ -683,6 +683,68 @@ func TestReverseDLPBlockAdaptiveSignalHonorsExemptDomain(t *testing.T) {
 	}
 }
 
+func TestReverseDLPWarnRecordsAdaptiveNearMiss(t *testing.T) {
+	cases := []struct {
+		name   string
+		header bool
+		exempt bool
+	}{
+		{name: "url_warn"},
+		{name: "url_warn_exempt", exempt: true},
+		{name: "header_warn", header: true},
+		{name: "header_warn_exempt", header: true, exempt: true},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reverseParityBaseConfig(t)
+			cfg.CrossRequestDetection.Enabled = false
+			cfg.Taint.Enabled = false
+			cfg.SessionProfiling.Enabled = true
+			cfg.SessionProfiling.DomainBurst = 100
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = adaptiveTestThreshold
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.Action = config.ActionWarn
+			cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+				Name: "reverse_warn_probe", Regex: `reversewarn-[A-Za-z0-9]{12}`, Severity: config.SeverityMedium,
+			})
+			if tc.header {
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = "all"
+			}
+
+			rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
+			if tc.exempt {
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{upstreamURL.Hostname()}
+			}
+			clientHost := fmt.Sprintf("10.0.1.%d", 40+i)
+			apiKey := "reversewarn-abcdefghijkl"
+			var rr *httptest.ResponseRecorder
+			if tc.header {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/y", http.NoBody)
+				req.RemoteAddr = clientHost + ":9200"
+				req.Header.Set("X-Secret", apiKey)
+				rr = httptest.NewRecorder()
+				rp.ServeHTTP(rr, req)
+			} else {
+				rr = reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/x?token="+apiKey, clientHost+":9200", nil)
+			}
+			if rr.Code != http.StatusOK {
+				t.Fatalf("warn-mode DLP request = %d, want 200", rr.Code)
+			}
+
+			sess := p.SessionMgrPtr().Load().GetOrCreate(sessionKeyFor("", clientHost))
+			score := sess.ScopedThreatScore(adaptiveScopeForHost(upstreamURL.Hostname()))
+			if tc.exempt && score != 0 {
+				t.Fatalf("adaptive-exempt warn finding score = %.4f, want 0", score)
+			}
+			if !tc.exempt && score <= 0 {
+				t.Fatalf("warn finding recorded no adaptive near-miss: score = %.4f, want >0", score)
+			}
+		})
+	}
+}
+
 // --- Cross-transport: reverse uses the SAME CEE session key as forward --------
 
 // TestReverseSharesCEESessionKeyWithForward proves the reverse path accumulates

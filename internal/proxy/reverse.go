@@ -669,6 +669,30 @@ func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, 
 	})
 }
 
+// recordRequestNearMissSignal feeds the same destination-scoped adaptive
+// near-miss used by forward request-header DLP when a reverse URL or header DLP
+// finding is observed without an enforce-mode block. The ordinary session
+// activity recorded later tracks the request but deliberately defers clean
+// decay, so it cannot stand in for this finding signal.
+func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requestID string, cfg *config.Config) {
+	if rp.owner == nil || !cfg.AdaptiveEnforcement.Enabled || isAdaptiveExempt(rp.upstream.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
+		return
+	}
+	sm := rp.owner.sessionMgrPtr.Load()
+	if sm == nil {
+		return
+	}
+	key := sessionKeyFor(agent, clientIP)
+	recordAdaptiveSignalForScope(sm.GetOrCreate(key), adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalNearMiss, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+		Logger:    rp.logger,
+		Metrics:   rp.metrics,
+		Session:   key,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+	})
+}
+
 // ServeHTTP handles incoming requests: scan the request body for DLP,
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -963,6 +987,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					reason)
 				return
 			}
+			rp.recordRequestNearMissSignal(agent, clientIP, requestID, cfg)
 		}
 	}
 
@@ -1027,6 +1052,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					reason)
 				return
 			}
+			rp.recordRequestNearMissSignal(agent, clientIP, requestID, cfg)
 		}
 	}
 

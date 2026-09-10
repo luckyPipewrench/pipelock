@@ -144,7 +144,7 @@ was active when the decision was made.
 | `config-default` | Identity resolved from `default_agent_identity` without trusting caller input. | Proxy uses the configured default identity |
 | `self-declared` | Unknown agent or fallback path. Attacker-controllable. | No matching profile or no identity header |
 
-Use `bound` in production by either assigning each agent its own listen port, or by running a generated companion-proxy deployment (`pipelock init sidecar`) which sets `bind_default_agent_identity: true` automatically. The `matched` and `self-declared` levels are informational and should not be trusted for authorization decisions without additional verification.
+Use a trusted identity grade in production: `bound` by assigning each agent its own listen port or a `source_cidrs` match, or `config-default` by running a generated companion-proxy deployment (`pipelock init sidecar`), which sets `bind_default_agent_identity: true` automatically. The `matched` and `self-declared` levels are informational and should not be trusted for authorization decisions without additional verification.
 
 ## Signing
 

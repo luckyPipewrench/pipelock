@@ -651,6 +651,7 @@ func TestAgentRegistryResolveFromRequest_BoundDefaultSelectsPolicy(t *testing.T)
 	cfg.BindDefaultAgentIdentity = true
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {Mode: config.ModeStrict},
+		testProfileCursor:     {Mode: config.ModeAudit},
 	}
 
 	reg, err := NewAgentRegistry(cfg)
@@ -660,13 +661,24 @@ func TestAgentRegistryResolveFromRequest_BoundDefaultSelectsPolicy(t *testing.T)
 	defer reg.Close()
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
-	r.Header.Set(edition.AgentHeader, testProfileCursor)
+	r.Header.Set(edition.AgentHeader, "unknown-agent")
 	ra, id := reg.ResolveFromRequest(r.Context(), r, cfg, nil)
 	if id.Auth != envelope.ActorAuthConfigDefault || id.Profile != testProfileClaudeCode {
 		t.Fatalf("identity = %+v, want config-default profile %q", id, testProfileClaudeCode)
 	}
 	if ra.Name != testProfileClaudeCode || ra.Config.Mode != config.ModeStrict {
 		t.Fatalf("resolved = %q mode = %q, want bound default strict profile", ra.Name, ra.Config.Mode)
+	}
+
+	// A known request-supplied profile cannot suppress the operator-bound
+	// default identity or its policy.
+	r.Header.Set(edition.AgentHeader, testProfileCursor)
+	ra, id = reg.ResolveFromRequest(r.Context(), r, cfg, nil)
+	if id.Name != testProfileClaudeCode || id.Auth != envelope.ActorAuthConfigDefault || id.Profile != testProfileClaudeCode {
+		t.Fatalf("known claimed identity = %+v, want bound-default identity and profile %q", id, testProfileClaudeCode)
+	}
+	if ra.Name != testProfileClaudeCode || ra.Config.Mode != config.ModeStrict {
+		t.Fatalf("known claim resolved = %q mode = %q, want bound default strict policy", ra.Name, ra.Config.Mode)
 	}
 }
 

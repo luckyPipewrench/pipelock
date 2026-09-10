@@ -208,13 +208,11 @@ The `pr-review-tests` job in `ci.yaml` runs the same command. A suite that runs
 only inside a review cannot gate a change to the reviewer, because a review runs
 the default-branch copy.
 
-**Two signals, and they mean different things.** The `review` job reports
-whether the runner published a verdict, so `partial` and `inconclusive` are
-successful runner outcomes. The `completeness` job reports whether the reviewer
-settled the whole pull request. It fails when the reviewer missed work or a
-candidate still needs human verification. Read the comment for the exact cause.
-Combining these signals would make a working review look crashed or give an
-unsettled review a green check.
+**The signed comment is the review signal.** The `review` job reports whether
+the runner published a verdict, so `partial` and `inconclusive` are successful
+runner outcomes. Automation reads the signed marker in the comment to decide
+whether the reviewer settled the whole pull request; review verdicts do not
+publish commit statuses or CI checks.
 
 **Deletions are a security change.** Removing a guard reads as a deletion hunk.
 Deep mode reads deletion hunks in full and splits an oversized one into bounded

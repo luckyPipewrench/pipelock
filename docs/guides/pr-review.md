@@ -267,14 +267,12 @@ code under the pin. Replace `YOUR_GITHUB_LOGIN` with the login allowed to
 trigger a review, or drop those clauses and rely on `author_association ==
 'OWNER'` alone.
 
-Grant `issues: write`, `pull-requests: write`, and `statuses: write`. A called
-workflow cannot hold a permission its caller withheld, so dropping any one of
-them silently strips it from the reviewer rather than failing at load, and the
-review then ends on a permission error when it tries to use it. The first two
-carry the review comment. `statuses: write` carries the `pr-review/coverage`
-commit status, which is the only surface a comment-triggered run has on the pull
-request itself: without it a review that did not finish fails its own run while
-the pull request still shows every check passing.
+Grant `issues: write` and `pull-requests: write`. A called workflow cannot hold
+a permission its caller withheld, so dropping either one silently strips it
+from the reviewer rather than failing at load, and the review then ends on a
+permission error when it tries to update its pull-request comment. Review
+verdicts are informational and do not publish commit statuses or CI checks;
+automation must read the signed review marker in the comment.
 
 Personal-account repositories must map each named secret explicitly, because
 `secrets: inherit` is not available to them.
@@ -294,7 +292,6 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
-  statuses: write
 
 jobs:
   review:

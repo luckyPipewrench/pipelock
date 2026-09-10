@@ -162,9 +162,6 @@ STATUS_MARKER_REQUIRED_FIELDS = frozenset({"state", "identity", "mode", "finding
 # not qualify as a baseline, which is the safe direction.
 STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"binding", "model", "reviewed_head", "scope", "coverage_base"}
 FINDING_FINGERPRINTS_RE = re.compile(r"(?:[0-9a-f]{12}(?:,[0-9a-f]{12})*)?")
-COVERAGE_CONTEXT = "pr-review/coverage"
-COVERAGE_POST_ATTEMPTS = 3
-
 PUBLISHED_REVIEW_STATES = frozenset(
     {"already-running", "clean", "failed", "findings", "inconclusive", "partial", "superseded"}
 )
@@ -215,24 +212,6 @@ class PullBinding:
         return ":".join(
             (self.base_sha[:12], self.head_sha[:12], self.reviewer_sha[:12], self.rubric_version)
         )
-
-
-@dataclass(frozen=True)
-class CoveragePlan:
-    """The one status write a terminal review is allowed to make."""
-
-    target_head: str
-    status: str
-    description: str
-    gate_exit: int
-
-
-@dataclass(frozen=True)
-class CoveragePublication:
-    """The terminal writer's outcome, including a deliberate stale rejection."""
-
-    outcome: str
-    plan: CoveragePlan | None = None
 
 
 @dataclass
@@ -1347,183 +1326,6 @@ def update_comment(repo: str, comment_id: int, token: str, body: str, correlatio
     )
     log_phase("comment-update", status=response.status_code, correlation=correlation)
     response.raise_for_status()
-
-
-def coverage_plan(state: str, complete: bool, admitted: PullBinding, current: PullBinding) -> CoveragePlan:
-    """Choose the current-head status without publishing it.
-
-    A terminal review may be accurate for the head it read and still be stale
-    by publication time. GitHub evaluates a pull request against its current
-    head, so a moved head (or base) is an explicit failure on that current
-    commit rather than a historical green on the captured commit.
-    """
-    if not re.fullmatch(r"[0-9a-f]{40}", admitted.head_sha):
-        raise ReviewError("coverage status has no immutable admitted head")
-    if not re.fullmatch(r"[0-9a-f]{40}", current.head_sha):
-        raise ReviewError("coverage status has no immutable current head")
-    if current.head_sha != admitted.head_sha:
-        return CoveragePlan(
-            current.head_sha,
-            "failure",
-            "Review was superseded by a newer head; re-run it",
-            1,
-        )
-    if current.base_sha != admitted.base_sha:
-        return CoveragePlan(
-            current.head_sha,
-            "failure",
-            "Review no longer matches the current base; re-run it",
-            1,
-        )
-    if complete:
-        return CoveragePlan(current.head_sha, "success", f"Review covered the whole diff ({state})", 0)
-    if state in COMPLETE_REVIEW_STATES:
-        return CoveragePlan(current.head_sha, "failure", "Review did not reach the current base; re-run it", 1)
-    return CoveragePlan(current.head_sha, "failure", f"Review did NOT finish (state={state or 'none'})", 1)
-
-
-def post_coverage_status(repo: str, token: str, plan: CoveragePlan, run_url: str, correlation: str) -> bool:
-    """Publish exactly three times, pausing only before a real retry."""
-    for attempt in range(1, COVERAGE_POST_ATTEMPTS + 1):
-        try:
-            response = requests.post(
-                f"https://api.github.com/repos/{repo}/statuses/{plan.target_head}",
-                headers=github_headers(token),
-                json={
-                    "state": plan.status,
-                    "context": COVERAGE_CONTEXT,
-                    "description": plan.description,
-                    "target_url": run_url,
-                },
-                timeout=30,
-            )
-        except requests.RequestException:
-            log_phase("coverage-status", attempt=attempt, status="request-error", correlation=correlation)
-        else:
-            log_phase("coverage-status", attempt=attempt, status=response.status_code, correlation=correlation)
-            if 200 <= response.status_code < 300:
-                return True
-        if attempt < COVERAGE_POST_ATTEMPTS:
-            time.sleep(attempt * 5)
-    return False
-
-
-def _coverage_publication_failure_body(body: str, review_identity: str, reason: str) -> str:
-    """Turn this review's terminal comment into an honest unpublished result."""
-    marker = parse_status_marker(body)
-    if marker is None or marker.get("identity") != review_identity:
-        raise ReviewError("coverage failure comment no longer belongs to this review")
-    verdict = re.search(r"\*\*Verdict:\*\* `[^`]+`", body)
-    if verdict is None:
-        raise ReviewError("coverage failure comment had no terminal verdict")
-    notice = (
-        f"**Coverage status:** {reason} "
-        "The pull request cannot show this review's coverage verdict, so it must not be treated as green."
-    )
-    replacement = "**Verdict:** `failed`\n" + notice
-    body = body[: verdict.start()] + replacement + body[verdict.end() :]
-    updated, changes = re.subn(
-        rf"(<!-- {re.escape(STATUS_MARKER)} [^>]*?\bstate=){re.escape(marker['state'])}(?=\s|-->)",
-        r"\1failed",
-        body,
-        count=1,
-    )
-    if changes != 1:
-        raise ReviewError("coverage failure comment marker could not be made terminal")
-    return updated
-
-
-def mark_coverage_unpublished(
-    repo: str,
-    comment_id: int,
-    token: str,
-    review_identity: str,
-    correlation: str,
-    reason: str = "could not be published after three attempts.",
-) -> None:
-    """Make an unpublished status visible where the reviewer result lives."""
-    try:
-        response = requests.get(
-            f"https://api.github.com/repos/{repo}/issues/comments/{comment_id}",
-            headers=github_headers(token),
-            timeout=30,
-        )
-    except requests.RequestException as exc:
-        log_phase("coverage-comment-read", status="request-error", correlation=correlation)
-        raise ReviewError("coverage failure comment could not be read") from exc
-    log_phase("coverage-comment-read", status=response.status_code, correlation=correlation)
-    if response.status_code != 200:
-        raise ReviewError("coverage failure comment could not be read")
-    try:
-        body = response.json()["body"]
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ReviewError("coverage failure comment had no body") from exc
-    if not isinstance(body, str):
-        raise ReviewError("coverage failure comment had no body")
-    update_comment(
-        repo,
-        comment_id,
-        token,
-        _coverage_publication_failure_body(body, review_identity, reason),
-        correlation,
-    )
-
-
-def publish_review_coverage(
-    repo: str,
-    pr_number: str,
-    token: str,
-    reviewer_sha: str,
-    admitted: PullBinding,
-    comment_id: int,
-    review_identity: str,
-    state: str,
-    complete: bool,
-    run_url: str,
-) -> CoveragePublication:
-    """Publish a current-head verdict, rejecting stale terminal writers."""
-    try:
-        current = get_pull_binding(repo, pr_number, token, reviewer_sha)
-    except (FetchError, requests.RequestException):
-        mark_coverage_unpublished(
-            repo,
-            comment_id,
-            token,
-            review_identity,
-            review_identity,
-            "could not be published because the current pull request could not be read.",
-        )
-        raise
-    newest, scanned = newest_admitted_review(repo, pr_number, token, review_identity)
-    if not scanned or newest is None:
-        mark_coverage_unpublished(
-            repo,
-            comment_id,
-            token,
-            review_identity,
-            review_identity,
-            "could not be published because the newest admitted review could not be confirmed.",
-        )
-        raise ReviewError("could not prove the newest admitted review before publishing coverage")
-    if newest.get("identity") != review_identity:
-        log_phase("coverage-status", status="stale-writer-rejected", correlation=review_identity)
-        return CoveragePublication("stale")
-    try:
-        plan = coverage_plan(state, complete, admitted, current)
-    except ReviewError:
-        mark_coverage_unpublished(
-            repo,
-            comment_id,
-            token,
-            review_identity,
-            review_identity,
-            "could not be published because the admitted review binding was invalid.",
-        )
-        raise
-    if post_coverage_status(repo, token, plan, run_url, review_identity):
-        return CoveragePublication("published", plan)
-    mark_coverage_unpublished(repo, comment_id, token, review_identity, review_identity)
-    raise ReviewError("coverage status could not be published")
 
 
 def _running_marker_is_stale(comment: dict[str, Any]) -> bool:
@@ -3687,51 +3489,13 @@ def main() -> None:
         or not REPO_PATTERN.fullmatch(repo)
         or not pr_number.isdigit()
         or mode not in {"default", "deep"}
-        or operation not in {"claim", "coverage", "review"}
+        or operation not in {"claim", "review"}
     ):
         print("pr-review phase=configuration attempt=1 status=invalid correlation=pending", file=sys.stderr)
         raise SystemExit(2)
     try:
         if operation == "claim":
             claim_review(repo, pr_number, github_token, mode, reviewer_sha)
-            return
-        if operation == "coverage":
-            base_sha = os.environ.get("BASE_SHA", "")
-            head_sha = os.environ.get("HEAD_SHA", "")
-            comment_id = os.environ.get("STATUS_COMMENT_ID", "")
-            review_identity = os.environ.get("REVIEW_IDENTITY", "")
-            state = os.environ.get("COVERAGE_STATE", "")
-            complete_value = os.environ.get("COVERAGE_COMPLETE", "")
-            run_url = os.environ.get("COVERAGE_RUN_URL", "")
-            if (
-                not all((base_sha, head_sha, comment_id, review_identity, run_url))
-                or not comment_id.isdigit()
-                or not re.fullmatch(r"[0-9a-f]{32}", review_identity)
-                or complete_value not in {"", "true", "false"}
-            ):
-                raise ReviewError("coverage operation received incomplete admission data")
-            publication = publish_review_coverage(
-                repo,
-                pr_number,
-                github_token,
-                reviewer_sha,
-                binding_from_values(base_sha, head_sha, reviewer_sha),
-                int(comment_id),
-                review_identity,
-                state or "failed",
-                complete_value == "true",
-                run_url,
-            )
-            if publication.outcome == "stale":
-                print("pr-review phase=coverage attempt=1 status=stale-writer-rejected correlation=published")
-                return
-            if publication.plan is None:
-                raise ReviewError("coverage publication had no plan")
-            print(
-                f"pr-review phase=coverage attempt=1 status={publication.plan.status} correlation=published"
-            )
-            if publication.plan.gate_exit:
-                raise SystemExit(1)
             return
         base_sha = os.environ.get("BASE_SHA", "")
         head_sha = os.environ.get("HEAD_SHA", "")

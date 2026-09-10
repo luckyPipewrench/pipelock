@@ -32,14 +32,6 @@ permissions:
   # /review in the repository failed until it was restored. Do not narrow it
   # again without running a real /review against a pull request.
   pull-requests: write
-  # A comment-triggered run contributes NO check to the pull request, because
-  # its workflow run is attached to the default branch rather than the PR. The
-  # completeness job below therefore publishes its verdict as a COMMIT STATUS on
-  # the reviewed head, which does appear in the PR's merge box. Without this a
-  # review that timed out fails its own run while the pull request still reads
-  # all green, and the only surface saying otherwise is prose inside a comment
-  # whose headline is "Findings: 0". Observed on #1523, 2026-09-09.
-  statuses: write
 
 jobs:
   admit:
@@ -268,55 +260,3 @@ jobs:
             "${profile}" "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" "${REVIEW_MODE}" "${HEAD_SHA}" "${BASE_SHA}" > /tmp/pr-review-finalize.md
           gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null
           echo "pr-review phase=finalize status=closed"
-
-  completeness:
-    # The finalizer owns the terminal comment when a review job never reaches
-    # its own final write. Coverage follows it so a publication failure can
-    # always replace a terminal result with an honest visible failure.
-    needs: [admit, review, finalize]
-    if: always() && needs.admit.outputs.claimed == 'true'
-    # Share admission's key so its newest-identity read and status write cannot
-    # race a new claim. The Python publisher still rejects stale identities;
-    # the lock narrows the interval and the identity check protects ordering.
-    concurrency:
-      group: pr-review-${{ github.repository }}-${{ inputs.pr_number }}
-      cancel-in-progress: false
-      # Without this GitHub keeps only ONE pending job per group and a newly
-      # queued run cancels the pending one, so a second /review can cancel a
-      # queued completeness job before it publishes the coverage status or
-      # finalizes the review comment. That is the same silent-verdict failure
-      # the status exists to remove. `queue: max` is compatible here only
-      # because cancel-in-progress is false; the two cannot be combined.
-      queue: max
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      # The action contains the state-table-tested publisher. It first reads
-      # the current pull binding and newest admission, so an old terminal job
-      # either writes a re-run-needed failure on the current head or rejects
-      # itself without clobbering a newer review's context.
-      - name: Check out immutable Pipelock review source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: luckyPipewrench/pipelock
-          ref: ${{ inputs.reviewer_sha }}
-          path: trusted-pr-review
-          persist-credentials: false
-
-      - name: Publish review coverage, then require it
-        if: always()
-        uses: ./trusted-pr-review/.github/actions/pr-review
-        with:
-          github-token: ${{ secrets.review_token }}
-          repo: ${{ github.repository }}
-          pr-number: ${{ inputs.pr_number }}
-          review-mode: ${{ inputs.review_mode }}
-          reviewer-sha: ${{ inputs.reviewer_sha }}
-          operation: coverage
-          base-sha: ${{ needs.admit.outputs.base_sha }}
-          head-sha: ${{ needs.admit.outputs.head_sha }}
-          status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
-          review-identity: ${{ needs.admit.outputs.correlation }}
-          coverage-state: ${{ needs.review.outputs.state }}
-          coverage-complete: ${{ needs.review.outputs.complete }}
-          coverage-run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

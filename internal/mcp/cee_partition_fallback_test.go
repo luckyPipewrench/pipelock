@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -127,4 +128,25 @@ func TestCeeRecordMCPRecordsPartitionFallback(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A single non-empty argument among exactly the maximum number of leaf streams
+// qualifies for the tool-level singleton stream, and adding it would exceed the
+// stream bound, so the frame degrades to the raw stream with the limit reason.
+func TestMCPCEEFragmentPayloadsSingletonStreamLimit(t *testing.T) {
+	secret := "AKI" + "AIOSFODNN7EXAMPLE"
+	var b strings.Builder
+	b.WriteString(`{"v":"` + secret + `"`)
+	for i := 1; i < mcpCEEArgumentMaxStreams; i++ {
+		b.WriteString(`,"e` + strconv.Itoa(i) + `":""`)
+	}
+	b.WriteString(`}`)
+	frame := MCPFrame{Method: methodToolsCall, ToolCallName: "integrity_checker", Args: json.RawMessage(b.String()), Raw: []byte(`raw`)}
+	payloads, reason := mcpCEEFragmentPayloads(frame)
+	if reason != mcpCEEPartitionReasonLimit {
+		t.Fatalf("reason = %q, want %q", reason, mcpCEEPartitionReasonLimit)
+	}
+	if got := string(payloads[""]); got != "raw" {
+		t.Fatalf("payloads = %#v, want the raw frame only", payloads)
+	}
 }

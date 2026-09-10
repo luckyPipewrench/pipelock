@@ -648,3 +648,50 @@ func nestedJSON(depth int) json.RawMessage {
 	}
 	return json.RawMessage(b.String())
 }
+
+// Over-depth content is walked with an explicit stack, so every scalar shape
+// and both container shapes below MaxDepth must be bucketed without recursion,
+// and a body cut off inside the over-depth region must report incomplete while
+// keeping the leaves that completed before the cut.
+func TestJSONLeafBucketPayloadsOverDepthShapes(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 1, MaxPathBytes: 512}
+	secret := "AKI" + "AIOSFODNN7EXAMPLE"
+
+	t.Run("mixed scalars and containers", func(t *testing.T) {
+		body := `{"w":{"s":"` + secret + `","n":1234567890,"b":true,"z":null,"arr":[["deep"],{"k":"v"}]}}`
+		buckets, valid := JSONLeafBucketPayloads(json.RawMessage(body), limits, 4096, testJSONLeafBucketKey)
+		if !valid {
+			t.Fatalf("well-formed body reported incomplete: %#v", buckets)
+		}
+		for _, want := range []string{secret, "1234567890", "true", "deep", "v"} {
+			if !jsonLeafBucketsContain(buckets, want) {
+				t.Fatalf("over-depth leaf %q was dropped: %#v", want, buckets)
+			}
+		}
+		for _, key := range []string{"w", "s", "n", "b", "z", "arr", "k"} {
+			if jsonLeafBucketsContain(buckets, key) {
+				t.Fatalf("over-depth object key %q leaked into a value bucket: %#v", key, buckets)
+			}
+		}
+	})
+
+	cut := []struct {
+		name string
+		body string
+	}{
+		{"inside a value", `{"w":{"s":"` + secret + `","t":"trunc`},
+		{"after a key", `{"w":{"s":"` + secret + `","t":`},
+		{"inside a nested array", `{"w":[["` + secret + `"],["cut`},
+	}
+	for _, tc := range cut {
+		t.Run("truncated "+tc.name, func(t *testing.T) {
+			buckets, valid := JSONLeafBucketPayloads(json.RawMessage(tc.body), limits, 4096, testJSONLeafBucketKey)
+			if valid {
+				t.Fatalf("truncated body reported complete: %#v", buckets)
+			}
+			if !jsonLeafBucketsContain(buckets, secret) {
+				t.Fatalf("leaf that completed before the cut was dropped: %#v", buckets)
+			}
+		})
+	}
+}

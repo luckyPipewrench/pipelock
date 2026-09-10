@@ -576,50 +576,93 @@ func TestForwardScannedInput_NonCoreArgumentRedactedAndForwarded(t *testing.T) {
 	}
 }
 
-// TestForwardScannedInput_CoreCredentialBlocksWithInputCfgNil pins the stdio
-// behavior that the content scan always runs regardless of mcp_input_scanning
-// enablement: EvaluateMCPInputGatesStdio never consults InputCfg, so a core
-// credential in a tools/call argument hard-blocks even when opts.InputCfg is nil.
-// (The HTTP and WebSocket listeners skip input scanning entirely when the section
-// is disabled; stdio does not, so its immutable floor stays live.) No redaction
-// is configured here, so the block comes straight from the post-redaction rescan
-// on the unmodified line.
-func TestForwardScannedInput_CoreCredentialBlocksWithInputCfgNil(t *testing.T) {
+// TestForwardScannedInput_DisabledScanningRetainsCoreFloor pins stdio parity
+// with HTTP and WebSocket: disabling configurable input scanning suppresses
+// non-core findings but retains the immutable core credential floor.
+func TestForwardScannedInput_DisabledScanningRetainsCoreFloor(t *testing.T) {
 	sc := testInputScanner(t)
-	token := coreCredentialToken() // core GitHub token, built at runtime
-	msg := makeRequest(1, methodToolsCall, map[string]any{
-		"name": "echo",
-		"arguments": map[string]string{
-			"prompt": "use " + token + " to deploy",
-		},
+	for _, tc := range []struct {
+		name      string
+		secret    string
+		wantBlock bool
+	}{
+		{name: "core credential", secret: coreCredentialToken(), wantBlock: true},
+		{name: "non-core credential", secret: nonCoreSecretValue(), wantBlock: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := makeRequest(1, methodToolsCall, map[string]any{
+				"name":      "echo",
+				"arguments": map[string]string{"prompt": "use " + tc.secret + " to deploy"},
+			})
+			var serverBuf, logBuf bytes.Buffer
+			blockedCh := make(chan BlockedRequest, 1)
+
+			ForwardScannedInput(
+				transport.NewStdioReader(strings.NewReader(msg)),
+				transport.NewStdioWriter(&serverBuf),
+				&logBuf,
+				config.ActionWarn,
+				config.ActionBlock,
+				blockedCh,
+				nil,
+				nil,
+				MCPProxyOpts{Scanner: sc, stdioInputScanDisabled: true},
+			)
+
+			blocked, blockedOK := <-blockedCh
+			if blockedOK != tc.wantBlock {
+				t.Fatalf("disabled stdio scanning: blocked=%v, want %v; block=%+v log=%q", blockedOK, tc.wantBlock, blocked, logBuf.String())
+			}
+			if tc.wantBlock {
+				if !strings.Contains(string(blocked.ErrorData), string(blockreason.DLPMatch)) {
+					t.Fatalf("expected DLP block reason data, got: %s", string(blocked.ErrorData))
+				}
+				if forwarded := strings.TrimSpace(serverBuf.String()); forwarded != "" {
+					t.Fatalf("core credential must not be forwarded, got: %s", forwarded)
+				}
+				return
+			}
+			if forwarded := strings.TrimSpace(serverBuf.String()); forwarded == "" || !strings.Contains(forwarded, tc.secret) {
+				t.Fatalf("non-core credential should pass through unchanged when scanning is disabled: %q", forwarded)
+			}
+			if strings.Contains(logBuf.String(), "warning") {
+				t.Fatalf("disabled stdio scanning emitted a configurable warning: %q", logBuf.String())
+			}
+		})
+	}
+
+	t.Run("malformed input still fails closed", func(t *testing.T) {
+		rawVerdict := scanRequestForAgent(context.Background(), []byte("not json"), sc, config.ActionWarn, config.ActionBlock, "")
+		if rawVerdict.Error == "" {
+			t.Fatalf("scanner did not classify malformed input as a parse error: %+v", rawVerdict)
+		}
+		direct := evaluateMCPInputGatesStdio(context.Background(), ParseMCPFrame([]byte("not json")), []byte("not json"), []byte("not json"), nil, MCPProxyOpts{Scanner: sc}, config.ActionWarn, config.ActionBlock, false)
+		if direct.BlockingGate != blockingGateParseError {
+			t.Fatalf("disabled stdio gate did not classify malformed input as a parse error: %+v", direct)
+		}
+		var serverBuf, logBuf bytes.Buffer
+		blockedCh := make(chan BlockedRequest, 1)
+		ForwardScannedInput(
+			transport.NewStdioReader(strings.NewReader("not json\n")),
+			transport.NewStdioWriter(&serverBuf),
+			&logBuf,
+			config.ActionWarn,
+			config.ActionBlock,
+			blockedCh,
+			nil,
+			nil,
+			MCPProxyOpts{Scanner: sc, stdioInputScanDisabled: true},
+		)
+		if blocked, ok := <-blockedCh; !ok || !strings.Contains(blocked.LogMessage, "parse error") {
+			t.Fatalf("malformed disabled-scan input was not blocked as a parse error: %+v", blocked)
+		}
+		if !strings.Contains(logBuf.String(), "invalid JSON") {
+			t.Fatalf("malformed disabled-scan input did not log its parse error: %q", logBuf.String())
+		}
+		if serverBuf.Len() != 0 {
+			t.Fatalf("malformed disabled-scan input was forwarded: %q", serverBuf.String())
+		}
 	})
-
-	var serverBuf, logBuf bytes.Buffer
-	blockedCh := make(chan BlockedRequest, 1)
-	opts := testOpts(sc) // InputCfg is nil; no redaction matcher
-
-	ForwardScannedInput(
-		transport.NewStdioReader(strings.NewReader(msg)),
-		transport.NewStdioWriter(&serverBuf),
-		&logBuf,
-		config.ActionWarn,
-		config.ActionBlock,
-		blockedCh,
-		nil,
-		nil,
-		opts,
-	)
-
-	blocked, ok := <-blockedCh
-	if !ok {
-		t.Fatal("expected stdio to hard-block a core credential even with InputCfg nil")
-	}
-	if !strings.Contains(string(blocked.ErrorData), string(blockreason.DLPMatch)) {
-		t.Fatalf("expected DLP block reason data, got: %s", string(blocked.ErrorData))
-	}
-	if forwarded := strings.TrimSpace(serverBuf.String()); forwarded != "" {
-		t.Fatalf("core credential must not be forwarded, got: %s", forwarded)
-	}
 }
 
 func TestForwardScannedInput_PreRedactionDLPBlocksToolCall(t *testing.T) {

@@ -497,7 +497,8 @@ func ForwardScannedInput(
 		// preserving per-gate block semantics and stdio's gate ordering
 		// (policy before DoW, two-phase binding around DoW, frozen tool
 		// between DoW and chain, taint last).
-		eval := EvaluateMCPInputGatesStdio(stdioInputCtx, frame, line, trimmedLine, bindingCfg, opts, action, onParseError)
+		scanEnabled := !opts.stdioInputScanDisabled
+		eval := evaluateMCPInputGatesStdio(stdioInputCtx, frame, line, trimmedLine, bindingCfg, opts, action, onParseError, scanEnabled)
 		// Cross-agent contamination escalation. Fired regardless of the gate
 		// outcome: the contaminated session already emitted across the agent
 		// boundary, so the adaptive signal must accumulate even when the call

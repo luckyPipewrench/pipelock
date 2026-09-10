@@ -145,6 +145,11 @@ type MCPProxyOpts struct {
 	ChainMatcher   *chains.Matcher
 	ChainMatcherFn func() *chains.Matcher
 
+	// stdioInputScanDisabled is set only by stdio proxy entry points after
+	// they resolve the live input configuration. Low-level callers retain the
+	// historical explicit action-driven scan behavior.
+	stdioInputScanDisabled bool
+
 	// Session and adaptive enforcement
 	Store         session.Store
 	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate

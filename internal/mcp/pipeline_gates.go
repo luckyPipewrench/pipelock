@@ -527,7 +527,7 @@ func EvaluateMCPInputGates(
 		// credential floor. Scan the already-redacted message, retain only core
 		// DLP evidence, and leave every configurable finding disabled.
 		if sc != nil {
-			floorVerdict := scanRequestForAgent(ctx, msg, sc, config.ActionWarn, config.ActionForward, opts.addressProtectionAgent())
+			floorVerdict := scanRequestForAgent(ctx, msg, sc, config.ActionWarn, onParseError, opts.addressProtectionAgent())
 			if floorVerdict.Error != "" {
 				eval.ContentVerdict.Clean = false
 				eval.ContentVerdict.Error = floorVerdict.Error
@@ -770,6 +770,19 @@ func EvaluateMCPInputGatesStdio(
 	opts MCPProxyOpts,
 	scanAction, onParseError string,
 ) MCPInputEvaluation {
+	return evaluateMCPInputGatesStdio(ctx, frame, msg, trimmedLine, bindingCfg, opts, scanAction, onParseError, true)
+}
+
+func evaluateMCPInputGatesStdio(
+	ctx context.Context,
+	frame MCPFrame,
+	msg []byte,
+	trimmedLine []byte,
+	bindingCfg *SessionBindingConfig,
+	opts MCPProxyOpts,
+	scanAction, onParseError string,
+	scanEnabled bool,
+) MCPInputEvaluation {
 	eval := MCPInputEvaluation{}
 
 	sc := opts.scanner()
@@ -777,10 +790,35 @@ func EvaluateMCPInputGatesStdio(
 	chainMatcher := opts.chainMatcher()
 	a2aCfg := opts.a2aCfg()
 
-	// content scan. Always runs on stdio (inputCfg is not
-	// consulted at this layer -- the caller gates enablement via
-	// the scanAction / onParseError it passes in).
-	eval.ContentVerdict = scanRequestForAgent(ctx, msg, sc, scanAction, onParseError, opts.addressProtectionAgent())
+	// Content scan. Disabled stdio uses the same core-only floor as HTTP and
+	// WebSocket so operator-visible enablement semantics do not vary by
+	// transport.
+	if scanEnabled {
+		eval.ContentVerdict = scanRequestForAgent(ctx, msg, sc, scanAction, onParseError, opts.addressProtectionAgent())
+	} else {
+		eval.ContentVerdict = InputVerdict{Clean: true, ID: frame.ID, Method: frame.Method}
+		if sc != nil {
+			floorVerdict := scanRequestForAgent(ctx, msg, sc, config.ActionWarn, onParseError, opts.addressProtectionAgent())
+			if floorVerdict.Error != "" {
+				eval.ContentVerdict.Clean = false
+				eval.ContentVerdict.Error = floorVerdict.Error
+			}
+			for _, match := range floorVerdict.Matches {
+				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
+					eval.ContentVerdict.Clean = false
+					eval.ContentVerdict.Action = config.ActionBlock
+					eval.ContentVerdict.Matches = append(eval.ContentVerdict.Matches, match)
+				}
+			}
+			for _, finding := range floorVerdict.URLFindings {
+				if scanner.IsCoreCriticalResult(finding) || scanner.IsHostnameExfilResult(finding) {
+					eval.ContentVerdict.Clean = false
+					eval.ContentVerdict.Action = config.ActionBlock
+					eval.ContentVerdict.URLFindings = append(eval.ContentVerdict.URLFindings, finding)
+				}
+			}
+		}
+	}
 	if frameParseErrFailsClosed(frame.ParseErr) {
 		eval.ContentVerdict.ID = frame.ID
 		eval.ContentVerdict.Method = frame.Method

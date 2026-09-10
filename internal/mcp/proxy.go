@@ -1774,7 +1774,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, config.ActionWarn, config.ActionBlock, blockedCh, bindingCfg, tracker, inputOpts)
+			disabledInputOpts := inputOpts
+			disabledInputOpts.stdioInputScanDisabled = true
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, config.ActionWarn, config.ActionBlock, blockedCh, bindingCfg, tracker, disabledInputOpts)
 		} else {
 			// No content scanning, but still route through ForwardScannedInput
 			// so request IDs are tracked for confused deputy protection.
@@ -1786,6 +1788,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			noScanOpts.PolicyCfgFn = nil
 			noScanOpts.ChainMatcher = nil
 			noScanOpts.ChainMatcherFn = nil
+			noScanOpts.stdioInputScanDisabled = true
 			ForwardScannedInput(clientReader, serverWriter, safeLogW, config.ActionWarn, config.ActionBlock, blockedCh, nil, tracker, noScanOpts)
 		}
 	}()

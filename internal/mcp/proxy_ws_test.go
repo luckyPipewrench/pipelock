@@ -121,6 +121,7 @@ func wsDrainServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 func wsDrainServerObserved(t *testing.T) (*httptest.Server, *atomic.Int64, <-chan struct{}) {
 	t.Helper()
 	var frames atomic.Int64
+	var closeOnce sync.Once
 	closed := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
@@ -128,8 +129,10 @@ func wsDrainServerObserved(t *testing.T) (*httptest.Server, *atomic.Int64, <-cha
 			t.Errorf("ws upgrade: %v", err)
 			return
 		}
-		defer func() { _ = conn.Close() }()
-		defer close(closed)
+		defer func() {
+			_ = conn.Close()
+			closeOnce.Do(func() { close(closed) })
+		}()
 		for {
 			msgs, err := gobwasutil.ReadClientMessage(conn, nil)
 			if err != nil {

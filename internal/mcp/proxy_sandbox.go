@@ -219,12 +219,13 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 
 	tracker := NewRequestTracker()
 
-	// Guard against nil inputCfg (when input scanning is disabled).
+	// Resolve the live input config once so the action and core-only gate agree.
+	inputCfg := opts.inputCfg()
 	inputAction := config.ActionForward
 	inputOnParseError := config.ActionBlock
-	if opts.InputCfg != nil {
-		inputAction = opts.InputCfg.Action
-		inputOnParseError = opts.InputCfg.OnParseError
+	if inputCfg != nil {
+		inputAction = inputCfg.Action
+		inputOnParseError = inputCfg.OnParseError
 	}
 
 	// Build per-invocation opts with session-specific recorder.
@@ -232,6 +233,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	inputOpts.Rec = rec
 	inputOpts.WarnContext = sessionCtx
 	inputOpts.sessionExit = sessionExit
+	inputOpts.stdioInputScanDisabled = inputCfg == nil || !inputCfg.Enabled
 
 	var wg sync.WaitGroup
 	wg.Add(1)

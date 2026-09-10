@@ -138,7 +138,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !urlResult.Allowed {
 				result.Clean = false
 				result.URLFindings = append(result.URLFindings, urlResult)
-				if scanner.IsHostnameExfilResult(urlResult) {
+				if a2aURLResultForcesBlock(urlResult) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
@@ -284,6 +284,18 @@ func a2aDLPForcesBlock(matches []scanner.TextDLPMatch) bool {
 	return scanner.ContainsHostnameExfilMatch(matches) || scanner.ContainsCoreCriticalMatch(matches)
 }
 
+// a2aURLResultForcesBlock reports whether a blocked URL-leaf scan result must
+// hard-block the A2A body or header regardless of the configured
+// a2a_scanning.action. It is the URL analog of a2aDLPForcesBlock: a structural
+// hostname-exfil URL and the immutable core credential floor both elevate to
+// block, so a core credential carried inside a URL field (query, path) blocks
+// even under warn, matching the text-DLP leaves. Fail direction: a blocked URL
+// the predicate cannot classify as core or hostname-exfil keeps following the
+// configured action; a positive match only ever raises the action to block.
+func a2aURLResultForcesBlock(r scanner.Result) bool {
+	return scanner.IsHostnameExfilResult(r) || scanner.IsCoreCriticalResult(r)
+}
+
 func a2aDefaultAction(cfg *config.A2AScanning) string {
 	if cfg == nil || cfg.Action == "" {
 		return config.ActionWarn
@@ -305,6 +317,7 @@ func ScanA2AHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanne
 	}
 
 	result := A2AScanResult{Clean: true}
+	forceBlock := false
 	for _, uri := range strings.Split(ext, ",") {
 		uri = strings.TrimSpace(uri)
 		if uri == "" {
@@ -314,11 +327,20 @@ func ScanA2AHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanne
 		if !urlResult.Allowed {
 			result.Clean = false
 			result.URLFindings = append(result.URLFindings, urlResult)
+			// Immutable floor: a core credential or structural hostname-exfil
+			// carried in a header URI must hard-block regardless of the
+			// configured a2a_scanning.action, matching the body URL leaves.
+			if a2aURLResultForcesBlock(urlResult) {
+				forceBlock = true
+			}
 		}
 	}
 
 	if !result.Clean {
 		result.Action = cfg.Action
+		if forceBlock {
+			result.Action = config.ActionBlock
+		}
 		result.Reason = "a2a: A2A-Extensions header contains blocked URI"
 	}
 

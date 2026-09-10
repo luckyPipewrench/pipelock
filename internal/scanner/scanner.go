@@ -207,6 +207,30 @@ func IsHostnameExfilResult(r Result) bool {
 			strings.HasPrefix(r.Reason, subdomainEncodedChunksReasonPrefix))
 }
 
+// IsCoreCriticalResult reports whether a URL scan Result came from the immutable
+// core DLP credential floor and therefore must hard-block regardless of the
+// configured action. It is the URL analog of ContainsCoreCriticalMatch on the
+// text-DLP path: the immutable-floor membership decision stays in one place
+// (config.IsCoreDLPPatternName), so a URL leaf carrying a core credential blocks
+// even when the surrounding transport is configured to warn. An allowed result
+// (including a provider credential permitted at its declared audience) is never
+// forced to block; the fail direction is that a result the predicate cannot
+// classify as core keeps following the configured action.
+func IsCoreCriticalResult(r Result) bool {
+	if r.Allowed {
+		return false
+	}
+	if r.Scanner == ScannerCoreDLP {
+		return true
+	}
+	for _, s := range r.spans {
+		if config.IsCoreDLPPatternName(s.RuleID) {
+			return true
+		}
+	}
+	return false
+}
+
 // dlpWarnCtxKey and DLPWarnContext are defined in warnctx.go.
 
 // Scanner checks URLs for suspicious content before fetching.

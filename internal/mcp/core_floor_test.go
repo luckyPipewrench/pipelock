@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -87,5 +88,90 @@ func TestA2ACoreFloor_WarnActionStillBlocksCoreCredential(t *testing.T) {
 	}
 	if result.Action != config.ActionBlock {
 		t.Fatalf("core credential under a2a warn action: result action = %q, want %q", result.Action, config.ActionBlock)
+	}
+}
+
+// TestA2ACoreFloor_URLLeafWarnActionStillBlocksCoreCredential proves a core
+// credential carried inside an A2A URL leaf (query value) hard-blocks even
+// when a2a_scanning.action is warn. Before the fix the FieldURL branch routed
+// the core-DLP URL result through the configured action (warn) because it only
+// forced block on structural hostname-exfil, so a core credential in a URL was
+// forwarded while the same credential in a text leaf blocked.
+func TestA2ACoreFloor_URLLeafWarnActionStillBlocksCoreCredential(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := config.Defaults().A2AScanning
+	cfg.Enabled = true
+	cfg.Action = config.ActionWarn
+	token := coreCredentialToken()
+	body := []byte(`{"url":"https://agent.vendor.example/cb?token=` + token + `"}`)
+
+	result := ScanA2ARequestBody(context.Background(), body, sc, &cfg)
+	if result.Clean {
+		t.Fatalf("expected core credential in URL to be detected, got clean %+v", result)
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("core credential in A2A URL under warn: action = %q, want %q", result.Action, config.ActionBlock)
+	}
+}
+
+// TestA2ACoreFloor_URLLeafNonCoreFollowsWarn proves the URL floor is scoped: a
+// non-core (Stripe) credential in a URL leaf keeps following the configured
+// warn action rather than hard-blocking, mirroring the non-core text path.
+func TestA2ACoreFloor_URLLeafNonCoreFollowsWarn(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := config.Defaults().A2AScanning
+	cfg.Enabled = true
+	cfg.Action = config.ActionWarn
+	nonCore := nonCoreSecretValue()
+	body := []byte(`{"url":"https://agent.vendor.example/cb?token=` + nonCore + `"}`)
+
+	result := ScanA2ARequestBody(context.Background(), body, sc, &cfg)
+	if result.Clean {
+		t.Fatal("expected non-core credential in URL to be detected")
+	}
+	if result.Action == config.ActionBlock {
+		t.Fatalf("non-core credential in A2A URL under warn should not hard-block, got %q", result.Action)
+	}
+}
+
+// TestA2ACoreFloor_HeaderURIWarnActionStillBlocksCoreCredential proves the
+// sibling A2A-Extensions header path applies the same immutable floor: a core
+// credential in a header URI hard-blocks regardless of a2a_scanning.action.
+func TestA2ACoreFloor_HeaderURIWarnActionStillBlocksCoreCredential(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := config.Defaults().A2AScanning
+	cfg.Enabled = true
+	cfg.Action = config.ActionWarn
+	token := coreCredentialToken()
+	h := http.Header{}
+	h.Set("A2A-Extensions", "https://agent.vendor.example/ext?token="+token)
+
+	result := ScanA2AHeaders(context.Background(), h, sc, &cfg)
+	if result.Clean {
+		t.Fatal("expected core credential in header URI to be detected")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("core credential in A2A header under warn: action = %q, want %q", result.Action, config.ActionBlock)
+	}
+}
+
+// TestA2ACoreFloor_HeaderURINonCoreFollowsWarn proves the header floor is
+// scoped: a non-core credential in a header URI follows the configured warn
+// action.
+func TestA2ACoreFloor_HeaderURINonCoreFollowsWarn(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := config.Defaults().A2AScanning
+	cfg.Enabled = true
+	cfg.Action = config.ActionWarn
+	nonCore := nonCoreSecretValue()
+	h := http.Header{}
+	h.Set("A2A-Extensions", "https://agent.vendor.example/ext?token="+nonCore)
+
+	result := ScanA2AHeaders(context.Background(), h, sc, &cfg)
+	if result.Clean {
+		t.Fatal("expected non-core credential in header URI to be detected")
+	}
+	if result.Action == config.ActionBlock {
+		t.Fatalf("non-core credential in A2A header under warn should not hard-block, got %q", result.Action)
 	}
 }

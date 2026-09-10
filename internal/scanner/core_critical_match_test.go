@@ -77,3 +77,57 @@ func TestContainsCoreCriticalMatch(t *testing.T) {
 		})
 	}
 }
+
+func TestIsCoreCriticalResult(t *testing.T) {
+	tests := []struct {
+		name string
+		r    Result
+		want bool
+	}{
+		{
+			name: "allowed result is never core-critical",
+			r:    Result{Allowed: true, Scanner: ScannerCoreDLP},
+			want: false,
+		},
+		{
+			name: "core DLP scanner result",
+			r:    Result{Allowed: false, Scanner: ScannerCoreDLP},
+			want: true,
+		},
+		{
+			name: "non-core DLP scanner, no spans",
+			r:    Result{Allowed: false, Scanner: ScannerDLP},
+			want: false,
+		},
+		{
+			name: "non-core scanner but span carries a core pattern name",
+			r: Result{
+				Allowed: false,
+				Scanner: ScannerDLP,
+				spans:   []MatchSpan{newMatchSpan(0, 4, "dlp_normalized:url_query", "GitHub Token", "", "")},
+			},
+			want: true,
+		},
+		{
+			name: "non-core scanner with a non-core span",
+			r: Result{
+				Allowed: false,
+				Scanner: ScannerDLP,
+				spans:   []MatchSpan{newMatchSpan(0, 4, "dlp_normalized:url_query", "Stripe Key", "", "")},
+			},
+			want: false,
+		},
+		{
+			name: "blocked but non-DLP scanner (SSRF) is not core-critical",
+			r:    Result{Allowed: false, Scanner: ScannerSSRF},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsCoreCriticalResult(tt.r); got != tt.want {
+				t.Fatalf("IsCoreCriticalResult(%+v) = %v, want %v", tt.r, got, tt.want)
+			}
+		})
+	}
+}

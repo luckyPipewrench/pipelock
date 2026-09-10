@@ -690,7 +690,7 @@ func (c *Config) validateUnboundAgentPolicyWarnings(warnings *[]Warning) {
 		}
 		*warnings = append(*warnings, Warning{
 			Field:   "agents." + name,
-			Message: "defines policy overrides without listeners or source_cidrs; X-Pipelock-Agent and ?agent= are attribution only and will use the _default or base policy, so bind this profile with a listener or source_cidrs, set default_agent_identity to this profile and enable bind_default_agent_identity, or select it with the operator-controlled MCP --agent flag",
+			Message: "defines policy overrides without listeners or source_cidrs; X-Pipelock-Agent and ?agent= are attribution only and will use the fallback policy (_default or base, or the operator-bound default profile when configured), so bind this profile with a listener or source_cidrs, set default_agent_identity to this profile and enable bind_default_agent_identity, or select it with the operator-controlled MCP --agent flag",
 		})
 	}
 }

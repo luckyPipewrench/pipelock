@@ -32,21 +32,29 @@ var defaultDLPPatternSet = []DLPPattern{
 	// separators match the credential body without this boundary because their
 	// adjacency is manufactured rather than present in the source text.
 	// Do not add a length floor: these provider formats are opaque.
-	{Name: "Anthropic API Key", Regex: ProviderKeyLeftBoundaryRegex + AnthropicKeyBodyRegex, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Anthropic API Key")},
-	{Name: "OpenAI API Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIKeyBodyRegex, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI API Key")},
-	{Name: "OpenAI Service Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIServiceKeyBodyRegex, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
+	// Source: https://platform.claude.com/docs/en/api/overview
+	{Name: "Anthropic API Key", Regex: ProviderKeyLeftBoundaryRegex + AnthropicKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.anthropic.com"}},
+	// Source: https://developers.openai.com/api/reference/overview
+	{Name: "OpenAI API Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.openai.com"}},
+	// Source: https://developers.openai.com/api/reference/overview
+	{Name: "OpenAI Service Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIServiceKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.openai.com"}},
 	// Fireworks API keys use an "fw_" prefix with a 22-character
 	// alphanumeric suffix. Keep the trailing word boundary so longer
 	// opaque base64-ish IDs do not match a 22-character prefix.
-	// Source: https://docs.fireworks.ai/api-reference/authentication
-	{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Fireworks API Key")},
+	// Source: unverified, current binding carried from defaults.
+	// Publisher documentation: https://docs.fireworks.ai/api-reference/authentication
+	{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.fireworks.ai"}},
 	// OpenRouter keys are "sk-or-v1-" + a hex token. Keep the suffix
 	// hex-only: allowing hyphens, underscores, or arbitrary letters lets
 	// the pattern match ordinary prose/slugs after the prefix.
-	{Name: "LLM Router API Key", Regex: `sk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("LLM Router API Key")},
-	{Name: "Answer Engine API Key", Regex: `pplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Answer Engine API Key")},
-	{Name: "Web Research API Key", Regex: `tvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Web Research API Key")},
-	{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, ExemptDomains: providerKeyExemptDomains("Google API Key")},
+	// Source: https://openrouter.ai/docs/api_reference/overview
+	{Name: "LLM Router API Key", Regex: `sk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.openrouter.ai"}},
+	// Source: https://docs.perplexity.ai/docs/getting-started/quickstart
+	{Name: "Answer Engine API Key", Regex: `pplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.perplexity.ai"}},
+	// Source: https://docs.tavily.com/documentation/quickstart
+	{Name: "Web Research API Key", Regex: `tvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.tavily.com"}},
+	// Source: https://cloud.google.com/docs/authentication/api-keys
+	{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, CredentialAudienceHosts: []string{"*.googleapis.com"}},
 	{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: SeverityCritical},
 	// Stripe keys use underscores (sk_test_) or hyphens (sk-test-) depending on version.
 	{Name: "Stripe Key", Regex: `[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}`, Severity: SeverityCritical},
@@ -133,7 +141,8 @@ var defaultDLPPatternSet = []DLPPattern{
 	// lowercase m/n in ordinary words and, after whitespace normalization,
 	// natural-language prose collapses into the 3-part dotted shape (a real
 	// false positive). (?-i:...) pins the structural anchor to uppercase.
-	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical},
+	// Source: https://docs.discord.com/developers/reference
+	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"discord.com", "gateway.discord.gg"}},
 
 	// Communication service keys
 	// Twilio API Key SIDs are an "SK" prefix + exactly 32 hex chars
@@ -169,23 +178,30 @@ var defaultDLPPatternSet = []DLPPattern{
 	// bounded alphanumeric suffix. Keep the boundary so longer
 	// opaque IDs do not match a valid token prefix.
 	// Source: https://huggingface.co/docs/hub/security-tokens
-	{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Hugging Face Token")},
+	{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.huggingface.co"}},
 	// Databricks personal access tokens use a 32-character hex suffix.
 	// Keep this narrow: the previous lowercase-alphanumeric suffix
 	// produced false positives on base64 image payloads.
-	{Name: "Databricks Token", Regex: `dapi[0-9a-f]{32,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Databricks Token")},
+	// Source: https://docs.databricks.com/aws/en/dev-tools/auth/pat
+	{Name: "Databricks Token", Regex: `dapi[0-9a-f]{32,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.databricks.com"}},
 	// Replicate API tokens use an "r8_" prefix with a 40-character
 	// hex suffix. The previous broad alphanumeric suffix was the same
 	// short-prefix FP shape as Fireworks and Databricks.
-	// Source: https://replicate.com/docs/topics/authentication
-	{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Replicate API Token")},
-	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Together AI Key")},
+	// Source: unverified, current binding carried from defaults.
+	// Publisher documentation: https://replicate.com/docs/topics/authentication
+	{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.replicate.com"}},
+	// Source: unverified, current binding carried from defaults.
+	// Publisher documentation: https://docs.together.ai/docs/authentication
+	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.together.ai"}},
 	// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
-	{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Pinecone API Key")},
+	// Source: https://docs.pinecone.io/guides/get-started/authentication
+	{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.pinecone.io"}},
 	// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
-	{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Groq API Key")},
+	// Source: https://console.groq.com/docs/api-keys
+	{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.groq.com"}},
 	// xAI (Grok) API keys: "xai-" prefix, 80+ chars including hyphens.
-	{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("xAI API Key")},
+	// Source: https://docs.x.ai/docs/api-reference
+	{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.x.ai"}},
 
 	// Infrastructure and platform tokens
 	// DigitalOcean personal access tokens: 64 hex chars after prefix.
@@ -400,6 +416,26 @@ func IsCoreDLPPatternName(name string) bool {
 		}
 	}
 	return false
+}
+
+// IsCredentialAudiencePatternName reports whether name belongs to a built-in
+// credential class whose destination is constrained by compiled audience hosts.
+// The name list is derived from the compiled defaults, never from operator YAML.
+func IsCredentialAudiencePatternName(name string) bool {
+	return len(credentialAudienceHostsForPattern(name)) > 0
+}
+
+// credentialAudienceHostsForPattern returns the compiled audience for name.
+// Callers must treat the returned slice as read-only. Unlike
+// DefaultDLPPatterns, this helper does not clone the full default registry, so
+// per-match audience checks do not allocate a new pattern set.
+func credentialAudienceHostsForPattern(name string) []string {
+	for _, pattern := range defaultDLPPatternSet {
+		if len(pattern.CredentialAudienceHosts) > 0 && strings.EqualFold(name, pattern.Name) {
+			return pattern.CredentialAudienceHosts
+		}
+	}
+	return nil
 }
 
 // PresetDLPPatterns returns the generated DLP pattern set for a shipped preset

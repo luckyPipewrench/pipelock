@@ -37,7 +37,7 @@ func TestLoadBytesRejectsCoreFloorSuppressions(t *testing.T) {
 }
 
 func TestLoadBytesAllowsNonCoreSuppression(t *testing.T) {
-	const yaml = "version: 1\nsuppress:\n  - rule: \"Anthropic API Key\"\n    path: \"*.anthropic.com*\"\n"
+	const yaml = "version: 1\nsuppress:\n  - rule: \"JWT Token\"\n    path: \"*.vendor.example*\"\n"
 	if _, err := LoadBytes([]byte(yaml)); err != nil {
 		t.Fatalf("LoadBytes rejected non-core suppression: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestValidateSuppressionsRejectsInMemoryCoreEntry(t *testing.T) {
 		t.Fatal("ValidateSuppressions accepted in-memory core floor suppression")
 	}
 
-	cfg.Suppress = []SuppressEntry{{Rule: "Anthropic API Key", Path: "*"}}
+	cfg.Suppress = []SuppressEntry{{Rule: "JWT Token", Path: "*"}}
 	if err := cfg.ValidateSuppressions(); err != nil {
 		t.Fatalf("ValidateSuppressions rejected non-core suppression: %v", err)
 	}

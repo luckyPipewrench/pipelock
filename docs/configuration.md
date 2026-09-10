@@ -383,7 +383,7 @@ request_body_scanning:
   enabled: true
   action: warn              # warn or block (no strip for bodies)
   pattern_actions:          # optional per-DLP-pattern body/header action override
-    Google API Key: warn
+    Twilio API Key: warn    # core DLP patterns cannot be downgraded here; a provider key with compiled audience hosts can be, with a warning
   disable_patterns: []      # optional exact DLP pattern names to skip on this surface
   max_body_bytes: 5242880   # 5MB; fail-closed above this
   scan_headers: true        # scan request headers for DLP
@@ -798,19 +798,21 @@ Use `exempt_domains` to skip a specific DLP pattern for specific destination dom
 
 This is useful for APIs that embed credentials in URL paths by design (e.g., Telegram bot API uses `/bot<token>/sendMessage`). The token should be allowed when talking to Telegram but blocked if it appears in requests to other domains.
 
-To exempt a built-in pattern, override it by name and add `exempt_domains`:
+Built-in provider-key patterns cannot use `exempt_domains` to create or extend an audience. A legacy entry that only repeats a compiled audience host still loads, produces a warning, and is ignored. Remove the stale entry when you update the config. Use `exempt_domains` only with a custom pattern:
 
 ```yaml
 dlp:
   patterns:
-    - name: "Anthropic API Key"    # same name as built-in — overrides it
-      regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
+    - name: "Internal Provider API Key"
+      regex: '\bintprov_[A-Za-z0-9_-]{32,}\b'
       severity: critical
       exempt_domains:
-        - "*.anthropic.com"
+        - "api.provider.example"
 ```
 
-For built-in provider-key patterns, the default config already exempts the provider's own API host for URL DLP and adds matching `suppress` entries for request-body and request-header DLP. The same key is still blocked when sent to any other destination. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+Built-in provider-key patterns and the Discord bot-token pattern carry a compiled, immutable credential-audience host set. When one of those credentials is sent to its declared API authority, URL, request-body, request-header, and outbound WebSocket-frame DLP allow that one match and record `dlp_credential_audience_allow`; the counter is `pipelock_dlp_credential_audience_allows_total{pattern,surface}`. The same credential stays blocked for every other destination, including lookalike hosts. The set itself is not YAML configuration: it cannot be extended or cleared. The ordinary operator controls still apply to these patterns, so `suppress`, `disable_patterns`, and a `warn` action all continue to work and each one warns at config load, naming the entry and the audience it widens. That is a deliberate choice: refusing the config instead would stop a previously valid deployment from starting on upgrade. MCP input remains blocked because it has no verified upstream authority. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+
+Top-level `suppress`, `request_body_scanning.disable_patterns`, and a `warn` entry in `request_body_scanning.pattern_actions` remain operator controls and DO apply to built-in provider-key patterns. They do not edit the compiled audience set; they decide whether a match that falls outside it is enforced. Widening this way is a real security decision, so each one warns at load naming the entry and every match is audited. `exempt_domains` behaves differently on these patterns and is stricter: an entry naming any host outside the compiled audience is REJECTED at load, and an entry that only repeats compiled audience hosts loads with a warning and is ignored. For a custom provider-key pattern that you own, use a narrowly scoped pattern and the controls appropriate to the carrier: `exempt_domains` for URL DLP and `suppress` for request-body or request-header DLP.
 
 Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted this way. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through, so a core credential class is blocked on every destination regardless of overrides.
 

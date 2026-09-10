@@ -18,11 +18,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// fakeGoogleKeyURL builds a URL carrying a fake Google API key shape. The
-// literal prefix is split so gosec G101 does not flag it as a hardcoded
-// credential; the value is not a real secret.
-func fakeGoogleKeyURL() string {
-	return "https://evil.example/?k=" + "AIza" + "SyA1234567890abcdefghijklmnopqrstuv"
+// fakeStripeKeyURL builds a URL carrying a fake Stripe key shape. The literal
+// prefix is split so gosec G101 does not flag it as a hardcoded credential;
+// the value is not a real secret. Stripe is used rather than a provider key
+// with compiled credential audience hosts, because those carry their own
+// immutable-audience remediation and these tests exercise the ordinary
+// URL-DLP exemption guidance.
+func fakeStripeKeyURL() string {
+	return "https://evil.example/?k=" + "sk_" + "test_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"
 }
 
 // runExplainCmd runs the explain command with the given args and returns its
@@ -93,6 +96,42 @@ func TestExplainCmd_CleanURLAllowed(t *testing.T) {
 	}
 }
 
+func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
+	key := "sk-" + "proj-" + strings.Repeat("a", 24)
+	allowed, err := decodeExplainJSON(t, "https://api.openai.com/v1/responses?key="+key)
+	if err != nil || !allowed.Allowed {
+		t.Fatalf("audience explain = %+v, err=%v", allowed, err)
+	}
+	notes := strings.Join(allowed.Notes, "\n")
+	if !strings.Contains(notes, "allowed: credential audience match") || allowed.PatternName != "OpenAI API Key" {
+		t.Fatalf("audience explain lacks explicit allow: %+v", allowed)
+	}
+	// Assert the destination the decision was actually made against. Without
+	// this the test passes even if explain reports the wrong host, which is the
+	// one field an operator uses to check the allow was for the right place.
+	if !strings.Contains(notes, "canonical destination api.openai.com") {
+		t.Fatalf("allow note omits the canonical destination: %+v", allowed.Notes)
+	}
+
+	blocked, err := decodeExplainJSON(t, "https://api.vendor.example/v1/responses?key="+key)
+	if err == nil || blocked.Allowed {
+		t.Fatalf("non-audience explain = %+v, err=%v", blocked, err)
+	}
+	var exitErr *cliutil.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != cliutil.ExitSecurity {
+		t.Fatalf("non-audience explain should carry ExitSecurity, got %v", err)
+	}
+	if !strings.Contains(blocked.Reason, "canonical destination api.vendor.example") {
+		t.Fatalf("block reason omits the canonical destination: %q", blocked.Reason)
+	}
+	if !strings.Contains(blocked.Reason, "blocked: credential audience mismatch") || !strings.Contains(blocked.Reason, "*.openai.com") || blocked.Remediation == nil || !blocked.Remediation.Immutable {
+		t.Fatalf("non-audience explain lacks immutable mismatch guidance: %+v", blocked)
+	}
+	if strings.Contains(blocked.Remediation.Knob, "exempt_domains") {
+		t.Fatalf("audience mismatch guidance suggested an exemption: %+v", blocked.Remediation)
+	}
+}
+
 func TestExplainCmd_ResponseScanExemptDomainsAdvisoryNarrowestFirst(t *testing.T) {
 	cfg := writeConfig(t, `
 mode: balanced
@@ -151,7 +190,7 @@ func TestExplainCmd_Verdicts(t *testing.T) {
 	}{
 		{
 			name:            "url_dlp_names_exempt_domains_not_suppress",
-			url:             fakeGoogleKeyURL(),
+			url:             fakeStripeKeyURL(),
 			wantScanner:     scanner.ScannerDLP,
 			wantTargetView:  explainViewURLQuery,
 			remediationHas:  "dlp.patterns[].exempt_domains",
@@ -239,7 +278,7 @@ func TestExplainCmd_Verdicts(t *testing.T) {
 // Pointing at suppress: as the fix is the exact bug this command exists to
 // prevent.
 func TestExplainCmd_URLDLPDoesNotPointAtSuppress(t *testing.T) {
-	report, err := decodeExplainJSON(t, fakeGoogleKeyURL())
+	report, err := decodeExplainJSON(t, fakeStripeKeyURL())
 	if err == nil {
 		t.Fatal("expected a block error")
 	}
@@ -684,12 +723,12 @@ func TestExplainRemediationFor_SSRFNamesActualTrustedDomainsField(t *testing.T) 
 }
 
 func TestExplainCmd_DLPPatternNameExtracted(t *testing.T) {
-	report, err := decodeExplainJSON(t, fakeGoogleKeyURL())
+	report, err := decodeExplainJSON(t, fakeStripeKeyURL())
 	if err == nil {
 		t.Fatal("expected a block")
 	}
-	if report.PatternName != "Google API Key" {
-		t.Errorf("pattern_name = %q, want \"Google API Key\"", report.PatternName)
+	if report.PatternName != "Stripe Key" {
+		t.Errorf("pattern_name = %q, want \"Stripe Key\"", report.PatternName)
 	}
 }
 
@@ -720,13 +759,13 @@ func TestExplainPatternName(t *testing.T) {
 // TestExplainCmd_HumanOutputRendersBroaderAndPattern exercises the human
 // renderer's broader-option and pattern-name branches via a URL-DLP block.
 func TestExplainCmd_HumanOutputRendersBroaderAndPattern(t *testing.T) {
-	out, err := runExplainCmd(t, fakeGoogleKeyURL())
+	out, err := runExplainCmd(t, fakeStripeKeyURL())
 	if err == nil {
 		t.Fatal("expected a block")
 	}
 	for _, want := range []string{
 		"Scanner: dlp",
-		"Pattern: Google API Key",
+		"Pattern: Stripe Key",
 		"Target:  url_query",
 		"broader:",
 	} {

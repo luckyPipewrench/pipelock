@@ -279,7 +279,7 @@ func (c *Config) validateForRules() error {
 	if err := c.validateMode(); err != nil {
 		return err
 	}
-	if err := c.validateDLPPatternConfig(); err != nil {
+	if err := c.validateDLPPatternConfig(nil); err != nil {
 		return err
 	}
 	var warnings []Warning

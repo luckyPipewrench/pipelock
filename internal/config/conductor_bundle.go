@@ -219,7 +219,7 @@ func normalizeConductorBundleRawConfig(cfg *Config) error {
 	if cfg == nil {
 		return nil
 	}
-	if err := cfg.validateDLPPatternConfig(); err != nil {
+	if err := cfg.validateDLPPatternConfig(nil); err != nil {
 		return fmt.Errorf("parse conductor policy bundle raw config: %w", err)
 	}
 	if err := validateConductorBundleRawResponsePatterns(cfg.ResponseScanning.Patterns); err != nil {

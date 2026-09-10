@@ -100,14 +100,14 @@ There is no top-level `dlp.action`. If you want DLP to stop blocking while you t
 
 ### Per-pattern domain exemptions
 
-Each DLP pattern supports an `exempt_domains` field. To exempt a domain for a specific pattern, add it as a custom pattern entry with the exemption. When `include_defaults` is true, custom patterns with the same name override the built-in:
+Each DLP pattern supports an `exempt_domains` field. To exempt a domain for a specific pattern, add it as a custom pattern entry with the exemption. When `include_defaults` is true, custom patterns with the same name override the built-in. The built-in provider key patterns that carry compiled audience hosts are the exception: an `exempt_domains` entry on one of those is refused unless it names only hosts already inside the compiled audience, in which case it loads with a warning and is ignored:
 
 ```yaml
 dlp:
   include_defaults: true
   patterns:
-    - name: "Google API Key"
-      regex: 'AIza[0-9A-Za-z\-_]{35}\b'
+    - name: "Internal Service Token"
+      regex: 'ist_[0-9A-Za-z]{32}\b'
       severity: "high"
       exempt_domains:
         - "internal-testing.example.com"
@@ -119,7 +119,7 @@ This keeps the configurable pattern active everywhere else while skipping it for
 
 For non-core body and header findings, use `suppress` entries at the top level of your config. URL DLP does not consult this list. See the [Suppressing Specific Findings](#suppressing-specific-findings) section above.
 
-For custom provider API keys, use both controls together: add `exempt_domains` on the DLP pattern for URL scans to the provider's own host, and add a matching `suppress` entry for body/header findings on that provider URL. The built-in provider-key rules already do this for their documented hosts.
+For a custom provider API key that you own, use both controls together: add `exempt_domains` on the DLP pattern for URL scans to the provider's own host, and add a matching `suppress` entry for body/header findings on that provider URL. Built-in provider-key patterns and the Discord bot-token pattern instead have an immutable compiled audience host set: a match is allowed only at that set, logged as `dlp_credential_audience_allow`, and blocked everywhere else. YAML cannot extend or clear that audience, and MCP input stays blocked because it has no verified upstream authority.
 
 ## Tuning Entropy Thresholds
 
@@ -240,7 +240,7 @@ cross_request_detection:
 |----------|---------|---------|-----|
 | API returns docs that trigger a non-core response rule | response | Jailbreak Attempt | Add a `suppress` entry for `Jailbreak Attempt` scoped to that host's URLs. Core response floor matches require a pattern precision fix. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
 | URL contains UUID path segments | entropy | (path entropy) | Raise `entropy_threshold` or add to `subdomain_entropy_exclusions` |
-| Base64-encoded JWT in Authorization header | dlp | JWT Token | Add a `suppress` entry for `JWT Token` scoped to the auth provider's URLs. Header and body DLP read `suppress`; per-pattern `exempt_domains` only affects URL scans |
+| Base64-encoded JWT in Authorization header | dlp | JWT Token | If the JWT is intentionally sent to a controlled endpoint, add a narrowly path-scoped `suppress` entry for `JWT Token`. Header and body DLP read `suppress`; per-pattern `exempt_domains` only affects URL scans |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
 | Service with long hex/base32 subdomain labels | subdomain_entropy | (structural hostname-exfil signal) | Add the host to `subdomain_entropy_exclusions` (raising the threshold does not allow encoded labels) |
 | Internal API keys matching AWS format, in a URL or query | core_dlp | AWS Access ID | The compiled core URL floor does not consult `suppress` or operator `exempt_domains`. Fix the pattern precision; structurally valid S3 presigned URLs already use the narrow built-in carve-out described below |

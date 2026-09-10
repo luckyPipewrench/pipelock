@@ -50,6 +50,12 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 		Help:      "Total deliberately non-enforced DLP matches by pattern, surface, and reason.",
 	}, []string{"pattern", "surface", "reason"})
 
+	m.dlpCredentialAudienceAllows = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "dlp_credential_audience_allows_total",
+		Help:      "Total compiled credential DLP matches allowed at their declared audience by pattern and surface.",
+	}, []string{"pattern", "surface"})
+
 	m.AddressFindings = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "address_findings_total",
@@ -63,7 +69,7 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 	}, []string{"pattern", "severity", "agent"})
 
 	reg.MustRegister(
-		m.bodyDLPHits, m.bodyEntropyHits, m.bodyInjectionHits, m.bodyRedactions, m.headerDLPHits, m.dlpWarnMatches, m.dlpDroppedMatches,
+		m.bodyDLPHits, m.bodyEntropyHits, m.bodyInjectionHits, m.bodyRedactions, m.headerDLPHits, m.dlpWarnMatches, m.dlpDroppedMatches, m.dlpCredentialAudienceAllows,
 		m.AddressFindings, m.FileSentryFindings,
 	)
 }
@@ -111,6 +117,16 @@ func (m *Metrics) RecordDLPDroppedMatch(pattern, surface, reason string) {
 		return
 	}
 	m.dlpDroppedMatches.WithLabelValues(pattern, surface, reason).Inc()
+}
+
+// RecordDLPCredentialAudienceAllow records a deliberate compiled credential
+// allow. Its labels are bounded to built-in pattern names and fixed surfaces;
+// the destination is intentionally not a metric label.
+func (m *Metrics) RecordDLPCredentialAudienceAllow(pattern, surface string) {
+	if m == nil {
+		return
+	}
+	m.dlpCredentialAudienceAllows.WithLabelValues(pattern, surface).Inc()
 }
 
 // RecordAddressFinding increments the address findings counter.

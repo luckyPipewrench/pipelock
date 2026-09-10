@@ -3,57 +3,10 @@
 
 package config
 
-import "testing"
-
-// Standing security tripwire: default provider-key suppressions are scoped to
-// the destination HOST, never matched as a substring of the full request URL.
-// A full-URL substring match would let an attacker satisfy "*.provider.com*" by
-// putting the provider domain in a path or query of an unrelated host, which
-// suppresses the body/header DLP finding on an exfil request (allowlist must not
-// bypass content scanning). If matchesPath ever regresses to full-URL substring
-// matching for host-style globs, this test fails and the change does not ship.
-func TestDefaultSuppress_HostScoped_NoURLSubstringBypass(t *testing.T) {
-	sup := Defaults().Suppress
-	if len(sup) == 0 {
-		t.Fatal("expected default provider-key suppressions")
-	}
-
-	// Legit: a provider key sent TO its own provider host stays suppressed.
-	legit := []struct{ name, rule, url string }{
-		{"anthropic", "Anthropic API Key", "https://api.anthropic.com/v1/messages"},
-		{"openai", "OpenAI API Key", "https://api.openai.com/v1/responses"},
-		{"openrouter apex", "LLM Router API Key", "https://openrouter.ai/api/v1/chat/completions"},
-	}
-	for _, c := range legit {
-		t.Run("legit/"+c.name, func(t *testing.T) {
-			if !IsSuppressed(c.rule, c.url, sup) {
-				t.Errorf("legit provider host should suppress %q on %s", c.rule, c.url)
-			}
-		})
-	}
-
-	// Attack: the provider domain appears in the path/query of an UNRELATED host.
-	// These must NOT suppress — the destination host is the attacker's.
-	attacks := []struct{ name, url string }{
-		{"query", "https://attacker.test/steal?x=.anthropic.com"},
-		{"path", "https://attacker.test/.anthropic.com/exfil"},
-		{"url in query", "https://evil.example/?ref=https://api.anthropic.com"},
-		{"fragment", "http://198.51.100.7:9000/collect#.anthropic.com"},
-		{"userinfo", "https://api.anthropic.com@attacker.test/steal"},
-	}
-	for _, a := range attacks {
-		t.Run("attack/"+a.name, func(t *testing.T) {
-			if IsSuppressed("Anthropic API Key", a.url, sup) {
-				t.Errorf("BYPASS: anthropic-key DLP suppressed on attacker URL %s", a.url)
-			}
-		})
-	}
-
-	// Cross-provider: anthropic key to openai host must still block.
-	if IsSuppressed("Anthropic API Key", "https://api.openai.com/v1/x", sup) {
-		t.Error("cross-provider leak: anthropic key suppressed on openai host")
-	}
-}
+import (
+	"slices"
+	"testing"
+)
 
 // matchesPath: host-style globs (no scheme, no path separator) anchor to the
 // URL host; path/scheme-qualified patterns keep full-URL matching.
@@ -99,53 +52,59 @@ func TestMatchesPath_HostGlobAnchorsToHost(t *testing.T) {
 	}
 }
 
-func TestMergeDefaultSuppressions_DedupesRuleAndPathCaseInsensitive(t *testing.T) {
-	defaults := []SuppressEntry{
-		{Rule: "Anthropic API Key", Path: "*.anthropic.com*", Reason: "provider-bound credential"},
-	}
-	user := []SuppressEntry{
-		{Rule: "anthropic api key", Path: "*.ANTHROPIC.COM*", Reason: "duplicate casing"},
-		{Rule: "Anthropic API Key", Path: "*.example.com*", Reason: "user fp"},
-	}
-
-	got := mergeDefaultSuppressions(user, defaults)
-	if len(got) != 2 {
-		t.Fatalf("mergeDefaultSuppressions length = %d, want 2: %#v", len(got), got)
-	}
-	if got[0].Reason != "provider-bound credential" {
-		t.Fatalf("default suppression should be retained first, got %#v", got[0])
-	}
-	if got[1].Path != "*.example.com*" {
-		t.Fatalf("distinct user suppression missing, got %#v", got[1])
-	}
-}
-
-func TestDefaultProviderKeyDomains_DriveSuppressionsAndExemptDomains(t *testing.T) {
+func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testing.T) {
 	cfg := Defaults()
 	patternByName := make(map[string]DLPPattern, len(cfg.DLP.Patterns))
 	for _, p := range cfg.DLP.Patterns {
 		patternByName[p.Name] = p
 	}
 
-	for _, d := range defaultProviderKeyDomains {
-		t.Run(d.rule, func(t *testing.T) {
-			if IsCoreDLPPatternName(d.rule) || IsCoreResponsePatternName(d.rule) {
-				t.Fatalf("default provider suppression %q targets a core floor pattern", d.rule)
-			}
-			if !IsSuppressed(d.rule, "https://api."+d.domain[2:]+"/v1", cfg.Suppress) {
-				t.Fatalf("default suppressions do not cover %q on %q", d.rule, d.domain)
-			}
-			p, ok := patternByName[d.rule]
+	// A pattern may legitimately carry more than one audience host when the
+	// vendor serves the credential on several domains, so this asserts the
+	// exact SET rather than a single value.
+	expected := map[string][]string{ // #nosec G101 -- compiled audience host assertions, not credential material
+		"Anthropic API Key":     {"*.anthropic.com"},
+		"OpenAI API Key":        {"*.openai.com"},
+		"OpenAI Service Key":    {"*.openai.com"},
+		"Fireworks API Key":     {"*.fireworks.ai"},
+		"LLM Router API Key":    {"*.openrouter.ai"},
+		"Answer Engine API Key": {"*.perplexity.ai"},
+		"Web Research API Key":  {"*.tavily.com"},
+		"Google API Key":        {"*.googleapis.com"},
+		"Hugging Face Token":    {"*.huggingface.co"},
+		"Databricks Token":      {"*.databricks.com"},
+		"Replicate API Token":   {"*.replicate.com"},
+		"Together AI Key":       {"*.together.ai"},
+		"Pinecone API Key":      {"*.pinecone.io"},
+		"Groq API Key":          {"*.groq.com"},
+		"xAI API Key":           {"*.x.ai"},
+		"Discord Bot Token":     {"discord.com", "gateway.discord.gg"},
+	}
+	for name, hosts := range expected {
+		t.Run(name, func(t *testing.T) {
+			p, ok := patternByName[name]
 			if !ok {
-				t.Fatalf("default DLP pattern missing for provider-bound rule %q", d.rule)
+				t.Fatalf("default DLP pattern missing for audience-bound rule %q", name)
 			}
-			if len(p.ExemptDomains) != 1 || p.ExemptDomains[0] != d.domain {
-				t.Fatalf("%q exempt_domains = %#v, want [%q]", d.rule, p.ExemptDomains, d.domain)
+			if len(p.ExemptDomains) != 0 {
+				t.Fatalf("%q inherited URL-only exempt_domains = %#v", name, p.ExemptDomains)
+			}
+			// Compare as SETS. Order is not policy: the canonical hash sorts
+			// audience hosts, so two orderings are the same policy and an
+			// order-sensitive assertion would fail on a harmless reordering.
+			got := append([]string(nil), p.CredentialAudienceHosts...)
+			want := append([]string(nil), hosts...)
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("%q credential audience hosts = %#v, want %#v (as sets)", name, p.CredentialAudienceHosts, hosts)
 			}
 		})
 	}
 
-	if got := providerKeyExemptDomains("Nonexistent Provider Key"); got != nil {
-		t.Fatalf("unknown provider ExemptDomains = %#v, want nil", got)
+	for _, suppression := range cfg.Suppress {
+		if suppression.Reason == "provider-bound credential" {
+			t.Fatalf("legacy derived suppression remained: %#v", suppression)
+		}
 	}
 }

@@ -485,7 +485,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	c.validateLicenseIntermediate(&warnings)
-	if err := c.validateDLP(); err != nil {
+	if err := c.validateDLP(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.validateFetchProxy(); err != nil {
@@ -530,7 +530,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateA2AScanning(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateRequestBodyScanning(); err != nil {
+	if err := c.validateRequestBodyScanning(&warnings); err != nil {
 		return warnings, err
 	}
 	if len(c.RequestBodyScanning.SigV4CredentialRoutes) > 0 {
@@ -565,7 +565,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPWSListener(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateSuppress(); err != nil {
+	if err := c.validateSuppress(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.validateKillSwitch(); err != nil {
@@ -1254,8 +1254,8 @@ func (c *Config) validateLogging() error {
 	return nil
 }
 
-func (c *Config) validateDLP() error {
-	if err := c.validateDLPPatternConfig(); err != nil {
+func (c *Config) validateDLP(warnings *[]Warning) error {
+	if err := c.validateDLPPatternConfig(warnings); err != nil {
 		return err
 	}
 
@@ -1277,7 +1277,7 @@ func (c *Config) validateDLP() error {
 	return nil
 }
 
-func (c *Config) validateDLPPatternConfig() error {
+func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
 	// is not implemented - DLP matches follow the transport-level action
 	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
@@ -1288,7 +1288,7 @@ func (c *Config) validateDLPPatternConfig() error {
 	}
 
 	// Validate DLP patterns compile as valid regexes
-	for _, p := range c.DLP.Patterns {
+	for i, p := range c.DLP.Patterns {
 		if p.Name == "" {
 			return fmt.Errorf("DLP pattern missing name")
 		}
@@ -1302,7 +1302,12 @@ func (c *Config) validateDLPPatternConfig() error {
 			if p.Action != ActionWarn {
 				return fmt.Errorf("DLP pattern %q has unsupported action %q; only %q is allowed as a per-pattern action", p.Name, p.Action, ActionWarn)
 			}
-			if p.Compiled {
+			// Gate on the pattern's OWN compiled audience, not on the name. A
+			// user pattern that reuses a built-in name with a custom regex is
+			// not the built-in: normalize clears its audience, so it never
+			// earns an audience allow and has no reason to be refused a warn
+			// action. Rejecting by name alone refuses a legitimate config.
+			if p.Compiled || len(p.CredentialAudienceHosts) > 0 {
 				return fmt.Errorf("DLP pattern %q is a built-in default and cannot be set to warn mode; built-in patterns always enforce", p.Name)
 			}
 		}
@@ -1322,6 +1327,23 @@ func (c *Config) validateDLPPatternConfig() error {
 		// that silently does nothing for that credential class.
 		if len(p.ExemptDomains) > 0 && IsCoreDLPPatternName(p.Name) {
 			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential classes are blocked on every destination", p.Name)
+		}
+		// Gate on the pattern's OWN compiled audience, matching the warn-action
+		// branch above. A customized pattern that merely reuses a built-in name
+		// carries no audience after normalize clears it, and the scanner also
+		// checks the compiled audience, so classifying its exempt_domains
+		// against the built-in list would make validation disagree with runtime.
+		if len(p.ExemptDomains) > 0 && len(p.CredentialAudienceHosts) > 0 {
+			if credentialAudienceDomainSubset(p.ExemptDomains, p.CredentialAudienceHosts) {
+				if warnings != nil {
+					*warnings = append(*warnings, Warning{
+						Field:   fmt.Sprintf("dlp.patterns[%d].exempt_domains", i),
+						Message: fmt.Sprintf("dlp.patterns[%d].exempt_domains is a redundant subset of the compiled credential audience for %q and is ignored; remove it", i, p.Name),
+					})
+				}
+				continue
+			}
+			return fmt.Errorf("dlp.patterns[%d].exempt_domains for %q would widen its compiled credential audience; delete dlp.patterns[%d].exempt_domains", i, p.Name, i)
 		}
 	}
 
@@ -3069,7 +3091,7 @@ func validOptionalCardOriginPort(hostport, port string) bool {
 	return port != ""
 }
 
-func (c *Config) validateRequestBodyScanning() error {
+func (c *Config) validateRequestBodyScanning(warnings *[]Warning) error {
 	if err := validateRequestBodySigV4CredentialRoutes(&c.RequestBodyScanning); err != nil {
 		return err
 	}
@@ -3090,6 +3112,20 @@ func (c *Config) validateRequestBodyScanning() error {
 		if IsCoreDLPPatternName(pattern) {
 			return fmt.Errorf("request_body_scanning.disable_patterns[%d] %q targets immutable core DLP and cannot be disabled", i, pattern)
 		}
+		if IsCredentialAudiencePatternName(pattern) {
+			// An operator may knowingly allow a provider credential to a
+			// destination its vendor does not own, most often an internal
+			// relay. Warn rather than refuse: rejecting here stops a
+			// PREVIOUSLY VALID config from loading on upgrade and takes the
+			// proxy down. The core DLP floor above stays a hard error; it is
+			// immutable and predates credential audiences.
+			if warnings != nil {
+				*warnings = append(*warnings, Warning{
+					Field:   fmt.Sprintf("request_body_scanning.disable_patterns[%d]", i),
+					Message: fmt.Sprintf("%q has compiled credential audience hosts %v; disabling it stops enforcing that credential's destination entirely", pattern, credentialAudienceHostsForPattern(pattern)),
+				})
+			}
+		}
 		disabledPatterns[pattern] = struct{}{}
 	}
 	for pattern, action := range c.RequestBodyScanning.PatternActions {
@@ -3107,6 +3143,20 @@ func (c *Config) validateRequestBodyScanning() error {
 		}
 		if action == ActionWarn && IsCoreDLPPatternName(pattern) {
 			return fmt.Errorf("request_body_scanning.pattern_actions[%q] cannot downgrade immutable core DLP to warn", pattern)
+		}
+		if action == ActionWarn && IsCredentialAudiencePatternName(pattern) {
+			// An operator may knowingly allow a provider credential to a
+			// destination its vendor does not own, most often an internal
+			// relay. Warn rather than refuse: rejecting here stops a
+			// PREVIOUSLY VALID config from loading on upgrade and takes the
+			// proxy down. The core DLP floor above stays a hard error; it is
+			// immutable and predates credential audiences.
+			if warnings != nil {
+				*warnings = append(*warnings, Warning{
+					Field:   fmt.Sprintf("request_body_scanning.pattern_actions[%q]", pattern),
+					Message: fmt.Sprintf("%q has compiled credential audience hosts %v; warn delivers the request instead of blocking a credential bound elsewhere", pattern, credentialAudienceHostsForPattern(pattern)),
+				})
+			}
 		}
 		if _, disabled := disabledPatterns[pattern]; disabled {
 			return fmt.Errorf("request_body_scanning.pattern_actions[%q] is inert because the pattern is also listed in request_body_scanning.disable_patterns", pattern)
@@ -3478,7 +3528,7 @@ func (c *Config) validateMCPWSListener() error {
 	return nil
 }
 
-func (c *Config) validateSuppress() error {
+func (c *Config) validateSuppress(warnings *[]Warning) error {
 	// Validate suppress entries have required fields
 	for i, s := range c.Suppress {
 		if s.Rule == "" {
@@ -3500,6 +3550,40 @@ func (c *Config) validateSuppress() error {
 				return fmt.Errorf("suppress entry %d (%s) has invalid path pattern %q: %w", i, s.Rule, s.Path, err)
 			}
 		}
+		if IsCredentialAudiencePatternName(s.Rule) {
+			if credentialAudienceSuppressPathSubset(s.Path, credentialAudienceHostsForPattern(s.Rule)) {
+				if warnings != nil {
+					*warnings = append(*warnings, Warning{
+						Field:   fmt.Sprintf("suppress[%d].path", i),
+						Message: fmt.Sprintf("suppress[%d].path is a redundant subset of the compiled credential audience for %q and is ignored; remove suppress[%d]", i, s.Rule, i),
+					})
+				}
+				continue
+			}
+			// A suppress entry that reaches beyond the compiled audience is
+			// the operator deliberately allowing a provider credential to a
+			// destination the vendor does not own. That is a real decision an
+			// operator is entitled to make, most often for an internal relay
+			// that forwards the credential on their behalf, so it warns loudly
+			// rather than refusing the config.
+			//
+			// Failure direction, chosen knowingly: this permits a widened
+			// audience instead of denying it. Refusing here would stop a
+			// PREVIOUSLY VALID config from loading on upgrade, taking the whole
+			// proxy down on a security product where every request depends on
+			// it, and the remedy the operator is given would be to delete a
+			// suppression they may genuinely need. An over-strict control that
+			// gets routed around by disabling something broader is the outcome
+			// this avoids. The widening stays visible: the entry is named here
+			// and each match is audited.
+			if warnings != nil {
+				*warnings = append(*warnings, Warning{
+					Field:   fmt.Sprintf("suppress[%d].path", i),
+					Message: fmt.Sprintf("suppress[%d] widens the compiled credential audience for %q beyond %v; the credential is allowed to leave for a destination its vendor does not own, and every match is audited", i, s.Rule, credentialAudienceHostsForPattern(s.Rule)),
+				})
+			}
+			continue
+		}
 	}
 	return nil
 }
@@ -3508,7 +3592,64 @@ func (c *Config) validateSuppress() error {
 // full config. Runtime boundaries use it when callers provide an in-memory
 // config that did not pass through Load.
 func (c *Config) ValidateSuppressions() error {
-	return c.validateSuppress()
+	return c.validateSuppress(nil)
+}
+
+// credentialAudienceDomainSubset reports whether every candidate domain is
+// contained by at least one compiled audience domain. Inputs have already
+// passed ValidateTrustedDomains, so only exact hosts and leading-wildcard
+// domain patterns reach this comparison.
+func credentialAudienceDomainSubset(candidates, audience []string) bool {
+	for _, candidate := range candidates {
+		contained := false
+		for _, allowed := range audience {
+			if credentialAudienceDomainContains(allowed, candidate) {
+				contained = true
+				break
+			}
+		}
+		if !contained {
+			return false
+		}
+	}
+	return true
+}
+
+// credentialAudienceDomainContains reports whether the candidate host pattern
+// can name only hosts named by allowed. A wildcard candidate includes its base
+// domain, so it is contained only when its base is the allowed base or a
+// dot-bounded subdomain of it.
+func credentialAudienceDomainContains(allowed, candidate string) bool {
+	if !strings.HasPrefix(allowed, "*.") {
+		return allowed == candidate
+	}
+	allowedBase := strings.TrimPrefix(allowed, "*.")
+	if !strings.HasPrefix(candidate, "*.") {
+		return destination.MatchDomain(candidate, allowed)
+	}
+	candidateBase := strings.TrimPrefix(candidate, "*.")
+	return candidateBase == allowedBase || strings.HasSuffix(candidateBase, "."+allowedBase)
+}
+
+// credentialAudienceSuppressPathSubset recognizes the two suppress forms that
+// can prove their hostname scope: the legacy host glob and an HTTP(S) URL
+// pattern. Other suppress syntax can match a URL path, basename, or query, so
+// it cannot prove that the suppression is limited to the compiled audience.
+func credentialAudienceSuppressPathSubset(raw string, audience []string) bool {
+	p := strings.ToLower(strings.TrimSpace(toSlash(raw)))
+	if isHostDomainGlob(p) {
+		domain := strings.TrimPrefix(strings.Trim(p, "*"), ".")
+		return credentialAudienceDomainSubset([]string{"*." + domain}, audience)
+	}
+	u, err := url.Parse(p)
+	if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.User != nil || u.Hostname() == "" {
+		return false
+	}
+	hosts := []string{u.Hostname()}
+	if err := ValidateTrustedDomains(hosts, "suppress path host"); err != nil {
+		return false
+	}
+	return credentialAudienceDomainSubset(hosts, audience)
 }
 
 func (c *Config) validateKillSwitch() error {

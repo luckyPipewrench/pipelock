@@ -692,6 +692,13 @@ func newInterceptHandler(
 		})
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
+		if ic.Proxy != nil {
+			ic.Proxy.recordCredentialAudienceAllows(actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+		} else {
+			for _, allow := range uniqueCredentialAudienceAllows(urlResult.CredentialAudienceAllows) {
+				recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
+			}
+		}
 		r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), ic.Scanner, r.URL.Hostname(), effectiveURLPort(r.URL), urlResult))
 
 		// Capture observer: record intercept URL verdict for policy replay.
@@ -1003,11 +1010,19 @@ func newInterceptHandler(
 				Action:           ic.Config.RequestBodyScanning.Action,
 				DisablePatterns:  ic.Config.RequestBodyScanning.DisablePatterns,
 				PatternActions:   ic.Config.RequestBodyScanning.PatternActions,
+				AudienceSurface:  "body",
 				OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 					if ic.Logger != nil {
 						ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "body", reason)
 					}
 					ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+				},
+				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
+					if ic.Proxy != nil {
+						ic.Proxy.recordCredentialAudienceAllow(actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+						return
+					}
+					recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
 				},
 			}
 			applyContentEntropyConfig(&bodyReq, ic.Config)
@@ -1268,11 +1283,17 @@ func newInterceptHandler(
 
 		// Request header DLP scanning.
 		if ic.Config.RequestBodyScanning.Enabled && ic.Config.RequestBodyScanning.ScanHeaders {
-			headerResult := scanRequestHeadersForTargetWithDropped(r.Context(), r.Header, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
+			headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), r.Header, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
 				if ic.Logger != nil {
 					ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", reason)
 				}
 				ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
+			}, func(allow scanner.CredentialAudienceAllow) {
+				if ic.Proxy != nil {
+					ic.Proxy.recordCredentialAudienceAllow(actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+					return
+				}
+				recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
 			})
 
 			// Capture observer: record intercept header DLP verdict for policy replay.

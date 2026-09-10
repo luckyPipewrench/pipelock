@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +187,51 @@ func TestEmitter_Emit_HappyPath(t *testing.T) {
 	}
 	if receipt.ActionRecord.Principal != testPrincipal {
 		t.Errorf("principal = %q, want %q", receipt.ActionRecord.Principal, testPrincipal)
+	}
+}
+
+func TestEmitter_Emit_CredentialAudienceExtensionIsUnsigned(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv})
+	if e == nil {
+		t.Fatal("NewEmitter() returned nil")
+	}
+
+	extension := json.RawMessage(`{"dlp_credential_audience_allow":{"pattern":"OpenAI API Key","surface":"header","destination":"api.vendor.example"}}`)
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Target:    testTarget,
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodPost,
+		Extension: extension,
+	}); err != nil {
+		t.Fatalf("Emit() error: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close(): %v", err)
+	}
+
+	r := readReceiptFromDir(t, dir, pub)
+	var gotExtension, wantExtension any
+	if err := json.Unmarshal(r.Ext, &gotExtension); err != nil {
+		t.Fatalf("decode receipt extension: %v", err)
+	}
+	if err := json.Unmarshal(extension, &wantExtension); err != nil {
+		t.Fatalf("decode expected extension: %v", err)
+	}
+	if !reflect.DeepEqual(gotExtension, wantExtension) {
+		t.Fatalf("receipt extension = %#v, want %#v", gotExtension, wantExtension)
+	}
+	// Ext deliberately sits outside the stable signed v1 schema. Changing it
+	// cannot alter the signed allow decision, which is why it is advisory only.
+	r.Ext = json.RawMessage(`{"dlp_credential_audience_allow":{"pattern":"changed"}}`)
+	if err := VerifyWithKey(r, hex.EncodeToString(pub)); err != nil {
+		t.Fatalf("extension must remain outside the signed schema: %v", err)
 	}
 }
 
@@ -1400,3 +1446,57 @@ func readAllReceiptsFromDir(t *testing.T, dir string, pub ed25519.PublicKey) []R
 
 // Ensure crypto/rand is used (lint satisfaction for the import).
 var _ = rand.Reader
+
+// The merge is what stands between an advisory extension and the signed
+// receipt. Each rejection path matters: a malformed, non-object, or colliding
+// extension must fail with ErrExtensionMerge so the caller can fall back and
+// keep the signed record, rather than silently producing a receipt whose
+// extension says something the emitter never intended.
+func TestMergeReceiptExtensions_RejectionPaths(t *testing.T) {
+	tests := []struct {
+		name               string
+		existing, incoming json.RawMessage
+		wantErr            string
+	}{
+		// RejectDuplicateKeys scans first, so malformed JSON surfaces there.
+		{"malformed incoming", nil, json.RawMessage(`{"a":`), "invalid incoming extension"},
+		{"non-object incoming", nil, json.RawMessage(`"a string"`), "incoming extension"},
+		{"non-object existing", json.RawMessage(`[1,2]`), json.RawMessage(`{"b":1}`), "existing extension"},
+		{"duplicate keys within one extension", nil, json.RawMessage(`{"a":1,"a":2}`), "invalid incoming extension"},
+		{"colliding key across extensions", json.RawMessage(`{"a":1}`), json.RawMessage(`{"a":2}`), `duplicate extension key "a"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := mergeReceiptExtensions(tt.existing, tt.incoming)
+			if err == nil {
+				t.Fatalf("merge accepted a bad extension and produced %s", got)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	// CONTROL: two well-formed, non-colliding extensions merge cleanly, so the
+	// rejections above cannot be the merge simply refusing everything.
+	merged, err := mergeReceiptExtensions(json.RawMessage(`{"a":1}`), json.RawMessage(`{"b":2}`))
+	if err != nil {
+		t.Fatalf("control failed: a valid merge was rejected: %v", err)
+	}
+	// Assert the VALUES, not just the key names. Checking names alone passes
+	// even if the merge silently swapped or dropped what each key points at,
+	// which is the failure that would matter in a receipt.
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatalf("control failed: merged extension is not an object: %v", err)
+	}
+	want := map[string]string{"a": "1", "b": "2"}
+	if len(got) != len(want) {
+		t.Fatalf("control failed: merged extension has %d keys, want %d: %s", len(got), len(want), merged)
+	}
+	for k, v := range want {
+		if string(got[k]) != v {
+			t.Fatalf("control failed: merged[%q] = %s, want %s", k, got[k], v)
+		}
+	}
+}

@@ -795,6 +795,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// sees from the client.
 	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
 		urlResult := sc.Scan(r.Context(), targetURL)
+		rp.recordCredentialAudienceAllows(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent)
 		if !urlResult.Allowed {
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scannerLabelSubmitProfile)
@@ -821,6 +822,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	requestScannerVerdict := config.ActionAllow
 	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
+		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
+		pathDLP.Matches = filteredMatches
+		rp.recordCredentialAudienceAllows(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent)
+		if len(pathDLP.Matches) == 0 {
+			pathDLP.Clean = true
+		}
 
 		// Capture observer: record reverse proxy URL DLP verdict for policy replay.
 		{
@@ -883,11 +890,13 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		dlpTarget := *rp.upstream
 		dlpTarget.Path = joinReversePaths(rp.upstream.Path, r.URL.Path)
 		dlpTarget.RawPath = ""
-		headerResult := scanRequestHeadersForTargetWithDropped(r.Context(), r.Header, cfg, sc, dlpTarget.String(), func(match scanner.TextDLPMatch, reason string) {
+		headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), r.Header, cfg, sc, dlpTarget.String(), func(match scanner.TextDLPMatch, reason string) {
 			if rp.logger != nil {
 				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), match.PatternName, match.Severity, "header", reason)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
+		}, func(allow scanner.CredentialAudienceAllow) {
+			rp.recordCredentialAudienceAllow(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent)
 		})
 		if headerResult != nil {
 			hasFinding = true
@@ -1367,11 +1376,15 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		Action:           cfg.RequestBodyScanning.Action,
 		DisablePatterns:  cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:   cfg.RequestBodyScanning.PatternActions,
+		AudienceSurface:  "body",
 		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 			if rp.logger != nil {
 				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), match.PatternName, match.Severity, "body", reason)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+		},
+		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
+			rp.recordCredentialAudienceAllow(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent)
 		},
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)

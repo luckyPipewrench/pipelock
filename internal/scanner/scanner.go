@@ -140,7 +140,15 @@ type Result struct {
 	DNSErrorKind    DNSErrorKind `json:"-"`                 // internal: DNS resolver failure subtype (set only when Class == ClassInfrastructureError on the DNS path)
 	SSRFResolvedIPs []string     `json:"-"`                 // internal: DNS answers observed by the SSRF scan on an allowed URL, for dial-time rebind detection
 	WarnMatches     []WarnMatch  `json:"warn_matches,omitempty"`
-	spans           []MatchSpan
+	// CredentialAudienceAllows records compiled provider-key matches allowed at
+	// their declared audience. It contains no credential material and is used by
+	// proxy audit, metrics, and receipt consumers.
+	CredentialAudienceAllows []CredentialAudienceAllow `json:"credential_audience_allows,omitempty"`
+	// CredentialAudienceMismatches records the immutable audience set that
+	// caused a provider-bound DLP match to remain blocked. It is explanatory
+	// metadata only; parse failures intentionally leave this empty and block.
+	CredentialAudienceMismatches []CredentialAudienceMismatch `json:"credential_audience_mismatches,omitempty"`
+	spans                        []MatchSpan
 }
 
 // Spans returns retained scanner match coordinates for this result.
@@ -339,6 +347,7 @@ type compiledPattern struct {
 	validate                       func(string) bool // post-match checksum (nil = regex-only)
 	exemptDomains                  []string          // domains where this pattern is skipped (wildcard supported)
 	core                           bool              // name belongs to the immutable floor: exemptDomains is never honored
+	credentialAudienceHosts        []string          // compiled built-ins only; empty means no audience exception
 	bundle                         string            // empty for built-in/config patterns
 	bundleVersion                  string
 	warn                           bool // true when pattern action is "warn" - matches are informational only
@@ -427,15 +436,25 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
 		cp := &compiledPattern{
-			name:                           p.Name,
-			re:                             re,
-			severity:                       p.Severity,
-			exemptDomains:                  p.ExemptDomains,
-			core:                           config.IsCoreDLPPatternName(p.Name),
-			bundle:                         p.Bundle,
-			bundleVersion:                  p.BundleVersion,
-			warn:                           p.Action == config.ActionWarn,
+			name:          p.Name,
+			re:            re,
+			severity:      p.Severity,
+			exemptDomains: p.ExemptDomains,
+			core:          config.IsCoreDLPPatternName(p.Name),
+			bundle:        p.Bundle,
+			bundleVersion: p.BundleVersion,
+			// Gate on the pattern's OWN compiled audience, not its name. A
+			// customized pattern that merely reuses a built-in name carries no
+			// audience, and validation accepts a warn action for it, so gating by
+			// name here would accept the config and then ignore it at runtime.
+			warn:                           p.Action == config.ActionWarn && len(p.CredentialAudienceHosts) == 0,
 			credentialURLWhitespaceGrammar: p.CredentialURLWhitespaceGrammar,
+		}
+		// Audience hosts are populated only from the compiled built-in registry;
+		// YAML excludes the field. A custom pattern reusing a built-in name has
+		// no hosts to copy, and core floors never receive one.
+		if !cp.core {
+			cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
 		}
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
@@ -1059,11 +1078,13 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		s.emitDLPWarns(ctx, dlpWarns)
 		return dlpResult
 	}
+	credentialAudienceAllows := dlpResult.CredentialAudienceAllows
 	// Attach DLP warn matches to whatever result is returned from here on.
 	// The defer fires on every return path, including blocks by later scanners.
 	// When SigV4 detection validated the URL, also mark the allow result as
 	// adaptive-neutral and attach a long-expiry warn for audit visibility.
 	defer func() {
+		result.CredentialAudienceAllows = append([]CredentialAudienceAllow(nil), credentialAudienceAllows...)
 		if sigV4.Valid && result.Allowed && result.Class == ClassThreat {
 			result.Class = ClassStructuralExemption
 		}
@@ -2321,13 +2342,16 @@ func decodeEncodingsOnce(s string, includeURL bool) []decodedResult {
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
-func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
+func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMatch) {
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
 	// "Canary Token"). Canary is the safety net for synthetic tokens that
 	// DLP patterns don't cover. Both are evaluated - DLP wins if it matches.
 
-	var warnMatches []WarnMatch
+	var credentialAudienceAllows []CredentialAudienceAllow
+	defer func() {
+		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
+	}()
 
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.
@@ -2425,11 +2449,16 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if start, end, ok := p.matchSpanInView(cleaned, proseSource); ok {
+				if allow, allowed := s.credentialAudienceAllows(p, parsed.String(), "url"); allowed {
+					credentialAudienceAllows = append(credentialAudienceAllows, allow)
+					continue
+				}
+				mismatch, audienceMismatch := s.credentialAudienceMismatch(p, parsed.String(), "url")
 				// Skip pattern if the destination domain is explicitly exempted.
 				// A pattern carrying a core floor name never honors an exemption,
 				// matching the body and response filters, so a custom pattern
 				// cannot exempt a core credential class by reusing its name.
-				if !p.core && len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
+				if !p.core && len(p.credentialAudienceHosts) == 0 && len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
 					continue
 				}
 				span := newMatchSpan(start, end, target.viewLabel, p.name, p.bundle, p.bundleVersion)
@@ -2441,13 +2470,17 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 					})
 					continue
 				}
-				return Result{
+				blocked := Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
 					Scanner: ScannerDLP,
 					Score:   1.0,
 					spans:   []MatchSpan{span},
-				}, warnMatches
+				}
+				if audienceMismatch {
+					blocked.CredentialAudienceMismatches = []CredentialAudienceMismatch{mismatch}
+				}
+				return blocked, warnMatches
 			}
 		}
 	}
@@ -2456,8 +2489,9 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// to catch secrets split across params with junk values interleaved.
 	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." -
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
-	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname())
+	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname(), parsed.String())
 	warnMatches = append(warnMatches, subWarns...)
+	credentialAudienceAllows = append(credentialAudienceAllows, subResult.CredentialAudienceAllows...)
 	if !subResult.Allowed {
 		return subResult, warnMatches
 	}
@@ -2577,7 +2611,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 // for the specific case this still cannot close).
 //
 //pipelock:provenance-transform query_subsequence
-func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) (Result, []WarnMatch) {
+func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string) (result Result, warnMatches []WarnMatch) {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}, nil
 	}
@@ -2587,10 +2621,14 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) (Result, []Warn
 	if n < 3 {
 		return Result{Allowed: true}, nil
 	}
-	var warnMatches []WarnMatch
+	var credentialAudienceAllows []CredentialAudienceAllow
+	defer func() {
+		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
+	}()
 	for size := 2; size <= 4 && size <= n; size++ {
-		result, warns := s.checkDLPCombinations(values, n, size, hostname)
+		result, warns := s.checkDLPCombinations(values, n, size, hostname, target)
 		warnMatches = append(warnMatches, warns...)
+		credentialAudienceAllows = append(credentialAudienceAllows, result.CredentialAudienceAllows...)
 		if !result.Allowed {
 			return result, warnMatches
 		}
@@ -2619,8 +2657,11 @@ func querySubsequenceValues(rawQuery string) []string {
 
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
-func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname string) (Result, []WarnMatch) {
-	var warnMatches []WarnMatch
+func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, target string) (result Result, warnMatches []WarnMatch) {
+	var credentialAudienceAllows []CredentialAudienceAllow
+	defer func() {
+		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
+	}()
 	indices := make([]int, size)
 	for i := range indices {
 		indices[i] = i
@@ -2652,7 +2693,12 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 				p := s.dlpPatterns[idx]
 				if start, end, ok := p.matchSpanInView(cleaned, candidate.proseSource); ok {
-					if !p.core && len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
+					if allow, allowed := s.credentialAudienceAllows(p, target, "url"); allowed {
+						credentialAudienceAllows = append(credentialAudienceAllows, allow)
+						continue
+					}
+					mismatch, audienceMismatch := s.credentialAudienceMismatch(p, target, "url")
+					if !p.core && len(p.credentialAudienceHosts) == 0 && len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
 						continue
 					}
 					span := newMatchSpan(start, end, candidate.viewLabel, p.name, p.bundle, p.bundleVersion)
@@ -2664,13 +2710,17 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 						})
 						continue
 					}
-					return Result{
+					blocked := Result{
 						Allowed: false,
 						Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
 						Scanner: ScannerDLP,
 						Score:   1.0,
 						spans:   []MatchSpan{span},
-					}, warnMatches
+					}
+					if audienceMismatch {
+						blocked.CredentialAudienceMismatches = []CredentialAudienceMismatch{mismatch}
+					}
+					return blocked, warnMatches
 				}
 			}
 		}

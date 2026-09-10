@@ -60,7 +60,10 @@ func (n Network) Valid() bool {
 // Host is either a canonical lowercase DNS name with no trailing dot, or the
 // string form of a canonical IP literal. Port is the concrete numeric port; it
 // is never a scheme default that the caller left implicit, because the whole
-// point of carrying it is that host:443 must not vouch for host:6443.
+// point of carrying it is that host:443 must not vouch for host:6443. A caller
+// may derive a separate host-ownership decision from Destination, such as a
+// credential audience match, but that is not an exact-destination grant and
+// must say explicitly that it ignores Port.
 type Destination struct {
 	Network Network
 	Host    string

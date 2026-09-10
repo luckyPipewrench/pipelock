@@ -88,6 +88,12 @@ const (
 	FailReasonUnavailable = "unavailable"
 )
 
+// ErrExtensionMerge identifies a malformed or conflicting advisory extension.
+// The signed action record is still valid without an extension, so callers
+// that attach optional evidence can retry without it rather than drop the
+// receipt altogether.
+var ErrExtensionMerge = errors.New("receipt extension merge failed")
+
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
@@ -326,6 +332,10 @@ type EmitOpts struct {
 	ContractHash          string
 	ContractSelectorID    string
 	ContractGeneration    uint64
+	// Extension is an advisory JSON-object fragment placed in Receipt.Ext. It
+	// remains deliberately outside the signed v1 schema and must never affect a
+	// verdict; callers use it for facts the stable signed format cannot carry.
+	Extension json.RawMessage
 	// PolicyHash is the canonical SHA-256 policy hash for the resolved runtime
 	// config snapshot that produced this decision. Both raw 64-character hex and
 	// "sha256:"-labeled forms are accepted; action receipts normalize it to raw
@@ -654,6 +664,13 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.recordFailure(FailReasonSign)
 		return fmt.Errorf("signing receipt: %w", err)
 	}
+	if len(bytes.TrimSpace(opts.Extension)) != 0 {
+		rcpt.Ext, err = mergeReceiptExtensions(rcpt.Ext, opts.Extension)
+		if err != nil {
+			e.recordFailure(FailReasonMarshal)
+			return fmt.Errorf("%w: %w", ErrExtensionMerge, err)
+		}
+	}
 	if isSessionOpenControl(sessionControl) && e.postureAvailability != "" {
 		rcpt.Ext, err = mergePostureAvailabilityExtension(rcpt.Ext, e.postureAvailability)
 		if err != nil {
@@ -776,6 +793,36 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	}
 
 	return nil
+}
+
+func mergeReceiptExtensions(existing, incoming json.RawMessage) (json.RawMessage, error) {
+	fields := make(map[string]json.RawMessage)
+	for label, value := range map[string]json.RawMessage{"existing": existing, "incoming": incoming} {
+		if len(bytes.TrimSpace(value)) == 0 {
+			continue
+		}
+		if err := jsonscan.RejectDuplicateKeys(value); err != nil {
+			return nil, fmt.Errorf("invalid %s extension: %w", label, err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(value, &decoded); err != nil {
+			return nil, fmt.Errorf("decode %s extension: %w", label, err)
+		}
+		if decoded == nil {
+			return nil, fmt.Errorf("%s extension must be a JSON object", label)
+		}
+		for key, field := range decoded {
+			if _, exists := fields[key]; exists {
+				return nil, fmt.Errorf("duplicate extension key %q", key)
+			}
+			fields[key] = field
+		}
+	}
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode merged extensions: %w", err)
+	}
+	return merged, nil
 }
 
 func mergePostureAvailabilityExtension(ext json.RawMessage, value string) (json.RawMessage, error) {

@@ -350,6 +350,10 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 		name  string
 		frame MCPFrame
 		want  map[string]string
+		// neverPartitionable marks a frame that was not a partitionable
+		// tools/call at all, which degrades to the raw frame without a
+		// fallback reason (nothing was attempted, so nothing is reported).
+		neverPartitionable bool
 	}{
 		{
 			name:  "tool arguments keep sibling values in separate streams",
@@ -362,9 +366,10 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 			},
 		},
 		{
-			name:  "non-tool call falls back to raw frame",
-			frame: ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)),
-			want:  map[string]string{"": `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
+			name:               "non-tool call falls back to raw frame",
+			frame:              ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)),
+			want:               map[string]string{"": `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
+			neverPartitionable: true,
 		},
 		{
 			name: "malformed arguments fall back to raw frame",
@@ -392,7 +397,8 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 				Raw:    []byte("raw-frame"),
 				Method: methodToolsCall,
 			},
-			want: map[string]string{"": "raw-frame"},
+			want:               map[string]string{"": "raw-frame"},
+			neverPartitionable: true,
 		},
 		{
 			name: "null argument falls back to raw frame",
@@ -431,7 +437,12 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := mcpCEEFragmentPayloads(tt.frame)
+			got, reason := mcpCEEFragmentPayloads(tt.frame)
+			_, wantRawFallback := tt.want[""]
+			wantRawFallback = wantRawFallback && !tt.neverPartitionable
+			if (reason != "") != wantRawFallback {
+				t.Fatalf("mcpCEEFragmentPayloads() reason = %q, want raw fallback %t", reason, wantRawFallback)
+			}
 			if len(got) != len(tt.want) {
 				t.Fatalf("mcpCEEFragmentPayloads() = %#v, want %#v", got, tt.want)
 			}
@@ -446,7 +457,10 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 
 func TestMCPCEEFragmentPayloads_AddsToolStreamForUnambiguousValue(t *testing.T) {
 	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"rotating_name":"AKIA","empty":""}}}`))
-	payloads, _ := mcpCEEFragmentPayloads(frame)
+	payloads, reason := mcpCEEFragmentPayloads(frame)
+	if reason != "" {
+		t.Fatalf("unexpected raw-frame fallback: %q", reason)
+	}
 
 	if got := string(payloads["@tool/integrity_checker/args$/rotating_name"]); got != "AKIA" {
 		t.Fatalf("path payload = %q, want %q", got, "AKIA")
@@ -458,7 +472,10 @@ func TestMCPCEEFragmentPayloads_AddsToolStreamForUnambiguousValue(t *testing.T) 
 
 func TestMCPCEEFragmentPayloads_DoesNotJoinSiblingValues(t *testing.T) {
 	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"alpha":"one","beta":"two"}}}`))
-	payloads, _ := mcpCEEFragmentPayloads(frame)
+	payloads, reason := mcpCEEFragmentPayloads(frame)
+	if reason != "" {
+		t.Fatalf("unexpected raw-frame fallback: %q", reason)
+	}
 
 	if _, ok := payloads["@tool/integrity_checker/singleton"]; ok {
 		t.Fatalf("multi-value tool call unexpectedly joined sibling values: %#v", payloads)
@@ -527,7 +544,7 @@ func TestMCPCEEFragmentPayloads_FallsBackToRawAtDepthLimit(t *testing.T) {
 		Args:         []byte(strings.Repeat("[", depth) + `"value"` + strings.Repeat("]", depth)),
 	}
 
-	assertMCPCEERawFallback(t, frame)
+	assertMCPCEERawFallback(t, frame, true)
 }
 
 func TestMCPCEEFragmentPayloads_FallsBackToRawAtPathLimit(t *testing.T) {
@@ -538,7 +555,7 @@ func TestMCPCEEFragmentPayloads_FallsBackToRawAtPathLimit(t *testing.T) {
 		Args:         []byte(`{"` + strings.Repeat("x", mcpCEEArgumentMaxPathBytes) + `":"value"}`),
 	}
 
-	assertMCPCEERawFallback(t, frame)
+	assertMCPCEERawFallback(t, frame, true)
 }
 
 func TestMCPCEEFragmentPayloads_FallsBackToRawAtStreamLimit(t *testing.T) {
@@ -549,7 +566,7 @@ func TestMCPCEEFragmentPayloads_FallsBackToRawAtStreamLimit(t *testing.T) {
 		Args:         mcpCEEArgumentsWithLeaves(mcpCEEArgumentMaxStreams + 1),
 	}
 
-	assertMCPCEERawFallback(t, frame)
+	assertMCPCEERawFallback(t, frame, true)
 }
 
 func TestMCPCEEFragmentPayloads_FallsBackToRawWhenSingletonWouldExceedStreamLimit(t *testing.T) {
@@ -560,7 +577,7 @@ func TestMCPCEEFragmentPayloads_FallsBackToRawWhenSingletonWouldExceedStreamLimi
 		Args:         mcpCEEArgumentsWithSingleNonEmptyLeaf(mcpCEEArgumentMaxStreams),
 	}
 
-	assertMCPCEERawFallback(t, frame)
+	assertMCPCEERawFallback(t, frame, true)
 }
 
 func TestMCPCEEFragmentPayloads_FallsBackToRawAtStreamKeyLimit(t *testing.T) {
@@ -571,7 +588,7 @@ func TestMCPCEEFragmentPayloads_FallsBackToRawAtStreamKeyLimit(t *testing.T) {
 		Args:         []byte(`{"alpha":"value"}`),
 	}
 
-	assertMCPCEERawFallback(t, frame)
+	assertMCPCEERawFallback(t, frame, true)
 }
 
 func TestMCPCEEFragmentPayloads_FallsBackToRawWithoutToolName(t *testing.T) {
@@ -581,12 +598,19 @@ func TestMCPCEEFragmentPayloads_FallsBackToRawWithoutToolName(t *testing.T) {
 		Args:   []byte(`{"alpha":"value"}`),
 	}
 
-	assertMCPCEERawFallback(t, frame)
+	assertMCPCEERawFallback(t, frame, false)
 }
 
-func assertMCPCEERawFallback(t *testing.T, frame MCPFrame) {
+// assertMCPCEERawFallback checks that the frame degrades to raw-frame scanning.
+// wantReason is true when the degradation is a partition FALLBACK that must be
+// reported to the operator counter, and false when the frame was never
+// partitionable (no tool name), which carries no reason by design.
+func assertMCPCEERawFallback(t *testing.T, frame MCPFrame, wantReason bool) {
 	t.Helper()
-	payloads, _ := mcpCEEFragmentPayloads(frame)
+	payloads, reason := mcpCEEFragmentPayloads(frame)
+	if (reason != "") != wantReason {
+		t.Fatalf("raw-frame fallback reason = %q, want reason reported %t", reason, wantReason)
+	}
 	if len(payloads) != 1 || string(payloads[""]) != string(frame.Raw) {
 		t.Fatalf("mcpCEEFragmentPayloads() = %#v, want complete raw frame %q", payloads, frame.Raw)
 	}

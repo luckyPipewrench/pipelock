@@ -79,16 +79,31 @@ func mcpWarnResource(method string, line []byte) string {
 }
 
 func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, injMatches []scanner.ResponseMatch) string {
-	if scanner.ContainsHostnameExfilMatch(dlpMatches) {
-		return config.ActionBlock
-	}
 	// Immutable core credential floor: a core-critical credential (a class the
 	// operator cannot suppress) hard-blocks regardless of the configured MCP
 	// input action, matching the request-body floor. Fail direction: if the
 	// floor predicate cannot classify a match it treats it as non-core and the
 	// configured action still applies below, but a positive core match here can
-	// only ever raise the action to block, never lower it.
+	// only ever raise the action to block, never lower it. On the redaction
+	// path the floor decision is deferred to the post-redaction rescan (see
+	// preRedactionBlock), so this call sees the redacted bytes and blocks only a
+	// core credential redaction failed to scrub.
 	if scanner.ContainsCoreCriticalMatch(dlpMatches) {
+		return config.ActionBlock
+	}
+	return mcpContentActionIgnoringCoreFloor(action, dlpMatches, injMatches)
+}
+
+// mcpContentActionIgnoringCoreFloor resolves the MCP input content action for a
+// dirty verdict WITHOUT applying the immutable core credential floor. It still
+// force-blocks the two other non-suppressible content reasons -- a
+// hostname-exfil DLP match and an uninspectable split-secret verdict -- and
+// otherwise follows the configured action for any DLP/injection finding. The
+// pre-redaction gate uses this to ask "would this verdict block for a reason
+// redaction cannot fix", treating a core credential as an ordinary finding that
+// redaction may scrub.
+func mcpContentActionIgnoringCoreFloor(action string, dlpMatches []scanner.TextDLPMatch, injMatches []scanner.ResponseMatch) string {
+	if scanner.ContainsHostnameExfilMatch(dlpMatches) {
 		return config.ActionBlock
 	}
 	for _, match := range dlpMatches {
@@ -100,6 +115,66 @@ func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, inj
 		return action
 	}
 	return ""
+}
+
+// resolveInputVerdictAction merges the DLP/injection action, the strictest
+// address-finding action, and resource-URL findings into a single effective
+// verdict action, applying the precedence both dirty-verdict paths in
+// scanRequestForAgent use: URL findings always force block, and an address
+// block overrides a non-block content action.
+func resolveInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, injMatches []scanner.ResponseMatch, addrFindings []addressprotect.Finding, urlFindings []scanner.Result) string {
+	return mergeInputVerdictAction(mcpInputVerdictAction(action, dlpMatches, injMatches), addrFindings, urlFindings)
+}
+
+// mergeInputVerdictAction folds the address-finding and resource-URL escalations
+// into an already-resolved content action. URL findings always force block; an
+// address block overrides a non-block content action.
+func mergeInputVerdictAction(contentAction string, addrFindings []addressprotect.Finding, urlFindings []scanner.Result) string {
+	verdictAction := contentAction
+	if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
+		if verdictAction == "" || addrAction == config.ActionBlock {
+			verdictAction = addrAction
+		}
+	}
+	if len(urlFindings) > 0 {
+		verdictAction = config.ActionBlock
+	}
+	return verdictAction
+}
+
+// preRedactionBlock reports whether the pre-redaction content scan must block a
+// request outright, before argument redaction runs. It mirrors the request-body
+// floor (internal/proxy shouldHardBlockBodyCriticalDLP): the immutable core
+// credential floor is the one block reason redaction can remove, so when the
+// core floor is the ONLY thing forcing the block, the decision is deferred to
+// the post-redaction rescan, which re-applies the floor to the redacted bytes.
+//
+// The reduction treats a core-critical match as an ORDINARY finding that
+// follows the configured action rather than force-blocking. So under a warn
+// configured action a core-only verdict collapses to warn and defers to
+// redaction; under a block configured action it stays block (the operator asked
+// to block findings, and redaction rescue does not override that) exactly as a
+// non-core critical would. Every other effective-block reason -- a parse or scan
+// error, a resource URL finding, a hostname-exfil DLP match, an uninspectable
+// split-secret verdict, or an address block -- is not something argument
+// redaction rewrites, so it keeps the pre-redaction block.
+//
+// Fail direction: a warn-mode request whose block is core-floor-only forwards
+// ONLY if redaction then scrubs the credential and the post-redaction rescan is
+// clean; if redaction is absent, incomplete, or the rescan still finds a core
+// match, the post-redaction path blocks. Any non-core block reason, and any
+// block-mode finding, still short-circuits here.
+func preRedactionBlock(verdict InputVerdict, configuredAction string) bool {
+	if inputVerdictEffectiveAction(verdict, configuredAction) != config.ActionBlock {
+		return false
+	}
+	reduced := verdict
+	reduced.Action = mergeInputVerdictAction(
+		mcpContentActionIgnoringCoreFloor(configuredAction, verdict.Matches, verdict.Inject),
+		verdict.AddressFindings,
+		verdict.URLFindings,
+	)
+	return inputVerdictEffectiveAction(reduced, configuredAction) == config.ActionBlock
 }
 
 func inputVerdictEffectiveAction(verdict InputVerdict, configuredAction string) string {
@@ -317,15 +392,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 
 		// Resolve strictest action: DLP/injection use MCP input action,
 		// address findings carry their own per-verdict action.
-		verdictAction := mcpInputVerdictAction(action, dlpMatches, injMatches)
-		if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
-			if verdictAction == "" || addrAction == config.ActionBlock {
-				verdictAction = addrAction
-			}
-		}
-		if len(urlFindings) > 0 {
-			verdictAction = config.ActionBlock
-		}
+		verdictAction := resolveInputVerdictAction(action, dlpMatches, injMatches, addrFindings, urlFindings)
 
 		return InputVerdict{
 			ID:              rpc.ID,
@@ -425,15 +492,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// Resolve the strictest action: DLP/injection use the MCP input action,
 	// address findings carry their own per-verdict action (block or warn).
 	// The strictest across all finding types wins.
-	verdictAction := mcpInputVerdictAction(action, dlpMatches, injMatches)
-	if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
-		if verdictAction == "" || addrAction == config.ActionBlock {
-			verdictAction = addrAction
-		}
-	}
-	if len(urlFindings) > 0 {
-		verdictAction = config.ActionBlock
-	}
+	verdictAction := resolveInputVerdictAction(action, dlpMatches, injMatches, addrFindings, urlFindings)
 
 	return InputVerdict{
 		ID:              rpc.ID,

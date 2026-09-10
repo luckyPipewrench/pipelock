@@ -1111,6 +1111,132 @@ logging:
 	})
 }
 
+// TestRunCmd_MCPListenerBlocksCoreCredentialWithoutRedaction is the sibling of
+// TestRunCmd_RedactionWiresMCPListenerAndReverseProxy: same core AWS credential
+// and same warn action, but with redaction DISABLED. With no redaction to scrub
+// the credential the immutable core floor has nothing to defer to, so the MCP
+// listener hard-blocks the request rather than forwarding it. This proves the
+// carve-out is redaction-gated: forward only when redaction can prove it removed
+// the credential.
+func TestRunCmd_MCPListenerBlocksCoreCredentialWithoutRedaction(t *testing.T) {
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		mainAddr := addrs[0]
+		mcpAddr := addrs[1]
+		secret := "AKIA" + "IOSFODNN7EXAMPLE"
+
+		var mcpBody atomic.Value
+		mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			mcpBody.Store(string(body))
+
+			var request struct {
+				ID json.RawMessage `json:"id"`
+			}
+			if err := json.Unmarshal(body, &request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			response := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request.ID,
+				"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}},
+			}
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				t.Fatalf("Encode(response): %v", err)
+			}
+		}))
+		defer mcpUpstream.Close()
+
+		cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+enforce: false
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+mcp_input_scanning:
+  enabled: true
+  action: warn
+mcp_session_binding:
+  enabled: false
+redaction:
+  enabled: false
+logging:
+  format: json
+  output: stdout
+`, mainAddr)
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-noredaction-*.yaml")
+		if err != nil {
+			t.Fatalf("create temp config: %v", err)
+		}
+		if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		_ = tmpFile.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := RunCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"--config", tmpFile.Name(),
+			"--mcp-listen", mcpAddr,
+			"--mcp-upstream", mcpUpstream.URL,
+		})
+		var stderr syncBuffer
+		cmd.SetErr(&stderr)
+		cmd.SetOut(&stderr)
+
+		cmdErr := make(chan error, 1)
+		go func() {
+			cmdErr <- cmd.Execute()
+		}()
+
+		if err := waitForPortOrCommandExitResult(mainAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+		if err := waitForPortOrCommandExitResult(mcpAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+
+		mcpResp, mcpErr := doMCPPostWithStartupRetry(t, mcpAddr,
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use `+secret+` to deploy"}}}`,
+			cmdErr, &stderr, acceptHTTPStatusOK)
+		if mcpErr != nil {
+			cancel()
+			return mcpErr
+		}
+		respBody, _ := io.ReadAll(mcpResp.Body)
+		_ = mcpResp.Body.Close()
+
+		// The MCP listener returns the JSON-RPC block error in a 200 body.
+		if !strings.Contains(string(respBody), "-32001") &&
+			!strings.Contains(string(respBody), "blocked by MCP input scanning") {
+			t.Fatalf("expected a core-credential block response, got: %s", string(respBody))
+		}
+		// The upstream must never have seen the blocked request.
+		if forwarded, _ := mcpBody.Load().(string); strings.Contains(forwarded, secret) {
+			t.Fatalf("mcp upstream received a blocked core credential: %s", forwarded)
+		}
+
+		cancel()
+		select {
+		case err := <-cmdErr:
+			if err != nil {
+				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("RunCmd did not exit within 5s")
+		}
+		return nil
+	})
+}
+
 func TestRunCmd_MCPListenerWiresDoWBudget(t *testing.T) {
 	testport.WithRetry(t, 2, func(addrs []string) error {
 		mainAddr := addrs[0]

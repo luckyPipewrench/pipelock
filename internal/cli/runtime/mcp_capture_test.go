@@ -50,7 +50,7 @@ mcp_tool_policy:
   rules:
     - name: "Capture Probe"
       tool_pattern: '(?i)^play_game$'
-      arg_pattern: '(?i)akia'
+      arg_pattern: '(?i)sk_test'
       action: warn
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
@@ -152,9 +152,11 @@ func TestMcpProxyCmd_KeyFreeCapture_WritesEvidence(t *testing.T) {
 	captureDir := filepath.Join(t.TempDir(), "evidence")
 	configPath := writeMCPCaptureProbeConfig(t)
 
-	// Fake AWS access key id, assembled at runtime so gosec G101 does not flag
-	// a hard-coded credential. Triggers the input-DLP scanner on tool args.
-	awsKey := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	// Fake non-core provider key, assembled at runtime so gosec G101 does not
+	// flag a hard-coded credential. Triggers the input-DLP scanner on tool args
+	// under the configured action; a core credential would hard-block before
+	// any response existed to capture.
+	awsKey := "sk_test_" + "4eC39HqLyjWDarjtT1zdp7dc"
 	stdin := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"runtime-test","version":"0"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
@@ -236,11 +238,15 @@ func TestMcpProxyCmd_KeyFreeCapture_HTTPUpstream(t *testing.T) {
 	captureDir := filepath.Join(t.TempDir(), "evidence")
 	configPath := writeMCPCaptureProbeConfig(t)
 
-	awsKey := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	// Fake non-core provider key, assembled at runtime so gosec G101 does not
+	// flag a hard-coded credential. It triggers the input-DLP scanner and the
+	// tool-policy sk_test arg pattern under the configured warn action; a core
+	// credential would hard-block before any response existed to capture.
+	providerKey := "sk_test_" + "4eC39HqLyjWDarjtT1zdp7dc"
 	stdin := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"runtime-test","version":"0"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"play_game","arguments":{"player":%q}}}`, awsKey),
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"play_game","arguments":{"player":%q}}}`, providerKey),
 	}, "\n") + "\n"
 
 	stderr, err := runMCPProxyStdin(t, stdin, []string{

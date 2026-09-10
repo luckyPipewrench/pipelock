@@ -402,7 +402,7 @@ func ForwardScannedInput(
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
 		if redactionCfg.Matcher != nil {
 			originalVerdict := scanRequestForAgent(stdioInputCtx, line, sc, action, onParseError, opts.addressProtectionAgent())
-			if !originalVerdict.Clean && originalVerdict.Error == "" && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
+			if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				recordAdaptiveSignal(session.SignalBlock)
 				if pendingActionID != "" && receiptEmitter != nil {

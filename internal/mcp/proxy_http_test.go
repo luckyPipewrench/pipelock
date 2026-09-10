@@ -1883,8 +1883,9 @@ func TestScanHTTPInputDecision_ReceiptVerdictForAskFallbackIsBlock(t *testing.T)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
-	fakeKey := strings.Repeat("a", 40)
-	msg := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s%s"}}}`, testGHPPrefix, fakeKey))
+	// Non-core secret so the ask-fallback path (not the core floor) is exercised.
+	secret := nonCoreSecretValue()
+	msg := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s"}}}`, secret))
 
 	receiptEmitter, receiptRecorder, receiptDir := newTestReceiptEmitter(t)
 	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
@@ -1899,6 +1900,9 @@ func TestScanHTTPInputDecision_ReceiptVerdictForAskFallbackIsBlock(t *testing.T)
 	})
 	if decision.Blocked == nil {
 		t.Fatal("expected ask fallback to block")
+	}
+	if decision.Blocked.LogMessage != "blocked (ask fallback)" {
+		t.Fatalf("LogMessage = %q, want %q (ask-fallback branch, not the core floor)", decision.Blocked.LogMessage, "blocked (ask fallback)")
 	}
 	if err := receiptRecorder.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
@@ -1925,9 +1929,9 @@ func TestRunHTTPProxy_InputScanAskMode(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
-	fakeKey := strings.Repeat("a", 40)
-	prefix := testGHPPrefix
-	input := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s%s"}}}`, prefix, fakeKey)
+	// Non-core secret so the ask-fallback path (not the core floor) is exercised.
+	secret := nonCoreSecretValue()
+	input := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s"}}}`, secret)
 
 	inputCfg := &InputScanConfig{
 		Enabled:      true,
@@ -1952,6 +1956,9 @@ func TestRunHTTPProxy_InputScanAskMode(t *testing.T) {
 	}
 	if json.Unmarshal([]byte(output), &rpc) != nil || rpc.Error.Code != -32001 {
 		t.Errorf("expected error code -32001 (blocked), got output: %s", output)
+	}
+	if !strings.Contains(stderr.String(), "ask not supported for input scanning") {
+		t.Errorf("expected ask-fallback log (not core-floor block), got: %s", stderr.String())
 	}
 	if atomic.LoadInt32(&serverCalled) != 0 {
 		t.Error("server should NOT be called when input is blocked (ask fallback)")
@@ -6206,8 +6213,9 @@ func TestScanHTTPInput_ContentAndPolicyMerge(t *testing.T) {
 		OnParseError: config.ActionBlock,
 	}
 
-	// Secret in tool args triggers DLP (content action = warn).
-	secretVal := testGHPPrefix + "aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"
+	// Non-core secret in tool args triggers DLP (content action = warn), so the
+	// merge to block comes from the policy rule below rather than the core floor.
+	secretVal := nonCoreSecretValue()
 	msg := []byte(makeRequest(1, methodToolsCall, map[string]interface{}{
 		"name":      "dangerous_tool",
 		"arguments": map[string]string{"token": secretVal},

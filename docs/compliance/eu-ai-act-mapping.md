@@ -175,7 +175,7 @@ How Pipelock maps to NIST AI Risk Management Framework functions, with EU AI Act
 |-----------------|-------------|-----------------|-----------|
 | GOVERN 1.2 | Trustworthy AI characteristics integrated into organizational policies | Capability separation architecture; fail-closed design philosophy | Art. 9 |
 | GOVERN 1.4 | Ongoing monitoring plans documented | Prometheus metrics, audit logging, Grafana dashboard | Art. 12 |
-| GOVERN 2.1 | Roles and responsibilities for AI risk management | Per-agent profiles with listener binding (spoof-proof) or header-based identification; HITL assigns human approval responsibility | Art. 14 |
+| GOVERN 2.1 | Roles and responsibilities for AI risk management | Per-agent profiles with listener binding (network-bound) or header-based identification; HITL assigns human approval responsibility | Art. 14 |
 | GOVERN 4.2 | Organizational teams document AI risks and impacts | Structured audit logs, config files, OWASP mapping docs | Art. 11, 13 |
 | GOVERN 6.1 | Third-party AI risks addressed in policy | MCP bidirectional scanning treats all MCP servers as untrusted; domain blocklists control external access | Art. 9, 15 |
 | GOVERN 6.2 | Contingency processes for third-party risk | Fail-closed: scanning failure blocks traffic; HITL timeout blocks; MCP parse errors block | Art. 15 |

@@ -471,13 +471,20 @@ func TestA2ACoreFloor_SplitCoreCredentialBlocksAfterNonCoreFinding(t *testing.T)
 	if !scanner.ContainsCoreCriticalMatch(result.DLPFindings) {
 		t.Fatalf("split core credential did not produce the core pattern: %+v", result.DLPFindings)
 	}
+	foundNonCore := false
 	seen := make(map[string]struct{}, len(result.DLPFindings))
 	for _, finding := range result.DLPFindings {
+		if finding.PatternName == "Stripe Key" {
+			foundNonCore = true
+		}
 		key := finding.PatternName + "\x00" + finding.Encoded
 		if _, ok := seen[key]; ok {
 			t.Fatalf("duplicate A2A DLP finding across leaf and raw passes: %+v", finding)
 		}
 		seen[key] = struct{}{}
+	}
+	if !foundNonCore {
+		t.Fatalf("leading non-core credential did not produce its finding: %+v", result.DLPFindings)
 	}
 }
 

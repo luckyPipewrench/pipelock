@@ -114,7 +114,14 @@ func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}
 
 func wsDrainServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
+	srv, frames, _ := wsDrainServerObserved(t)
+	return srv, frames
+}
+
+func wsDrainServerObserved(t *testing.T) (*httptest.Server, *atomic.Int64, <-chan struct{}) {
+	t.Helper()
 	var frames atomic.Int64
+	closed := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
@@ -122,6 +129,7 @@ func wsDrainServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 			return
 		}
 		defer func() { _ = conn.Close() }()
+		defer close(closed)
 		for {
 			msgs, err := gobwasutil.ReadClientMessage(conn, nil)
 			if err != nil {
@@ -134,7 +142,19 @@ func wsDrainServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 			}
 		}
 	}))
-	return srv, &frames
+	return srv, &frames, closed
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	testwait.For(t, time.Second, func() bool {
+		select {
+		case <-signal:
+			return true
+		default:
+			return false
+		}
+	}, "%s", description)
 }
 
 func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
@@ -1073,7 +1093,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 }
 
 func TestRunWSProxy_InputScanWarnModeCoreCredentialBlocks(t *testing.T) {
-	srv, upstreamFrames := wsDrainServer(t)
+	srv, upstreamFrames, upstreamClosed := wsDrainServerObserved(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -1091,6 +1111,7 @@ func TestRunWSProxy_InputScanWarnModeCoreCredentialBlocks(t *testing.T) {
 	if err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg}); err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
+	waitForSignal(t, upstreamClosed, "WebSocket upstream connection closed")
 	if got := upstreamFrames.Load(); got != 0 {
 		t.Fatalf("core credential reached WebSocket upstream in warn mode: frames=%d", got)
 	}
@@ -1100,7 +1121,7 @@ func TestRunWSProxy_InputScanWarnModeCoreCredentialBlocks(t *testing.T) {
 }
 
 func TestRunWSProxy_InputScanDisabledCoreCredentialBlocks(t *testing.T) {
-	srv, upstreamFrames := wsDrainServer(t)
+	srv, upstreamFrames, upstreamClosed := wsDrainServerObserved(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -1117,6 +1138,7 @@ func TestRunWSProxy_InputScanDisabledCoreCredentialBlocks(t *testing.T) {
 	if err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc}); err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
+	waitForSignal(t, upstreamClosed, "WebSocket upstream connection closed")
 	if got := upstreamFrames.Load(); got != 0 {
 		t.Fatalf("core credential reached WebSocket upstream with input scanning disabled: frames=%d", got)
 	}

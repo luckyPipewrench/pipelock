@@ -611,6 +611,9 @@ func assertMCPCEERawFallback(t *testing.T, frame MCPFrame, wantReason bool) {
 	if (reason != "") != wantReason {
 		t.Fatalf("raw-frame fallback reason = %q, want reason reported %t", reason, wantReason)
 	}
+	if reason != "" && reason != mcpCEEPartitionReasonMalformed && reason != mcpCEEPartitionReasonLimit {
+		t.Fatalf("raw-frame fallback reason = %q, want one of the documented labels %q or %q", reason, mcpCEEPartitionReasonMalformed, mcpCEEPartitionReasonLimit)
+	}
 	if len(payloads) != 1 || string(payloads[""]) != string(frame.Raw) {
 		t.Fatalf("mcpCEEFragmentPayloads() = %#v, want complete raw frame %q", payloads, frame.Raw)
 	}

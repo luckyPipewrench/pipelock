@@ -139,7 +139,7 @@ was active when the decision was made.
 
 | Level | Meaning | How it is set |
 |-------|---------|---------------|
-| `bound` | Identity set by infrastructure. Spoof-proof. | Two modes: (1) a dedicated listen address per agent, or (2) a `source_cidrs` match against the connection's own source address (`RemoteAddr`, never a forwarded header). Both are applied by the proxy to how the connection arrived, so caller-supplied `X-Pipelock-Agent` / `?agent=` values cannot change them |
+| `bound` | Identity set by infrastructure. Network-bound: a caller-supplied header or query value cannot change it, but binding does not authenticate the originating host or process, so access to the listener and the integrity of the source address stay the operator's controls. | Two modes: (1) a dedicated listen address per agent, or (2) a `source_cidrs` match against the connection's own source address (`RemoteAddr`, never a forwarded header). Both are applied by the proxy to how the connection arrived, so caller-supplied `X-Pipelock-Agent` / `?agent=` values cannot change them |
 | `matched` | Agent name matches a configured profile but was self-declared via header or query param. | `X-Pipelock-Agent` header or `?agent=` query param |
 | `config-default` | Identity resolved from `default_agent_identity` without trusting caller input. | Proxy uses the configured default identity |
 | `self-declared` | Unknown agent or fallback path. Attacker-controllable. | No matching profile or no identity header |

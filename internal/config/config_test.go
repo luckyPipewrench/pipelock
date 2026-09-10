@@ -16644,7 +16644,7 @@ func TestRemovedVolumeSpikeRatioField(t *testing.T) {
 				"session_profiling:\n" +
 				"  enabled: true\n" +
 				"  volume_spike_ratio: 3.0\n",
-			wantErr: "session_profiling.volume_spike_ratio was removed because it was not enforced",
+			wantErr: "session_profiling.volume_spike_ratio was removed because it was not enforced; remove it from the config",
 		},
 		{
 			name: "yaml null value is still rejected",
@@ -16652,7 +16652,7 @@ func TestRemovedVolumeSpikeRatioField(t *testing.T) {
 				"session_profiling:\n" +
 				"  enabled: true\n" +
 				"  volume_spike_ratio:\n",
-			wantErr: "session_profiling.volume_spike_ratio was removed because it was not enforced",
+			wantErr: "session_profiling.volume_spike_ratio was removed because it was not enforced; remove it from the config",
 		},
 		{
 			name: "present in an agent profile is rejected with migration hint",
@@ -16661,7 +16661,7 @@ func TestRemovedVolumeSpikeRatioField(t *testing.T) {
 				"  worker:\n" +
 				"    session_profiling:\n" +
 				"      volume_spike_ratio: 5.0\n",
-			wantErr: "agents.<name>.session_profiling.volume_spike_ratio was removed because it was not enforced",
+			wantErr: "agents.<name>.session_profiling.volume_spike_ratio was removed because it was not enforced; remove it from the config",
 		},
 	}
 	for _, tt := range tests {

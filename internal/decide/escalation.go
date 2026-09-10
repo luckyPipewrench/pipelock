@@ -71,6 +71,13 @@ type EscalationParams struct {
 	Session       string           // session identifier for audit logs (e.g. "agent|clientIP")
 	ClientIP      string
 	RequestID     string
+	// DenialScanner, DenialReason, and PolicyHash identify a classified
+	// denial. When any of the scanner/reason fields is set, the first
+	// matching fingerprint scores and later retries of the same
+	// destination+finding do not.
+	DenialScanner string
+	DenialReason  string
+	PolicyHash    string
 }
 
 // RecordEscalation records an adaptive signal and handles the escalation

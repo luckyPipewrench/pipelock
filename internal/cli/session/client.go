@@ -132,6 +132,18 @@ func (c *Client) Release(ctx context.Context, key, tier string) (airlockResponse
 	return resp, nil
 }
 
+// Reset posts /api/v1/sessions/{key}/reset to clear adaptive score, scoped
+// airlock, and block_all without cutting in-flight connections the way
+// terminate does.
+func (c *Client) Reset(ctx context.Context, key string) (proxy.SessionResetResult, error) {
+	target := c.base + "/api/v1/sessions/" + url.PathEscape(key) + "/reset"
+	var resp proxy.SessionResetResult
+	if err := c.do(ctx, http.MethodPost, target, nil, &resp); err != nil {
+		return proxy.SessionResetResult{}, err
+	}
+	return resp, nil
+}
+
 // Terminate posts /api/v1/sessions/{key}/terminate.
 func (c *Client) Terminate(ctx context.Context, key string) (proxy.SessionTerminateResult, error) {
 	target := c.base + "/api/v1/sessions/" + url.PathEscape(key) + "/terminate"

@@ -161,17 +161,28 @@ func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudience
 // recordSignal records an adaptive enforcement signal on the relay's session
 // recorder. No-op when the recorder is nil or adaptive enforcement is disabled.
 func (r *wsRelay) recordSignal(sig session.SignalType, log *audit.Logger) {
+	r.recordFinding(sig, log, "", "")
+}
+
+func (r *wsRelay) recordFinding(sig session.SignalType, log *audit.Logger, scannerName, reason string) {
 	if r.rec == nil || !r.cfg.AdaptiveEnforcement.Enabled {
 		return
 	}
 	sessionKey := sessionKeyFor(r.agent, r.clientIP)
+	policyHash := ""
+	if r.cfg != nil {
+		policyHash = r.cfg.CanonicalPolicyHash()
+	}
 	recordAdaptiveSignalForScope(r.rec, adaptiveScopeForHost(r.hostname), sig, &r.cfg.AdaptiveEnforcement, decide.EscalationParams{
-		Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
-		Logger:    log,
-		Metrics:   r.proxy.metrics,
-		Session:   sessionKey,
-		ClientIP:  r.clientIP,
-		RequestID: r.requestID,
+		Threshold:     r.cfg.AdaptiveEnforcement.EscalationThreshold,
+		Logger:        log,
+		Metrics:       r.proxy.metrics,
+		Session:       sessionKey,
+		ClientIP:      r.clientIP,
+		RequestID:     r.requestID,
+		DenialScanner: scannerName,
+		DenialReason:  reason,
+		PolicyHash:    policyHash,
 	})
 }
 
@@ -1596,7 +1607,7 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 	}
 	if r.redaction != nil && r.redaction.required && len(crossDLP) > 0 {
 		reason := "redaction blocked request: websocket cross-message secret cannot be redacted"
-		r.recordSignal(session.SignalBlock, log)
+		r.recordFinding(session.SignalBlock, log, scannerLabelRedaction, reason)
 		log.LogWSBlocked(audit.WSBlockedEvent{
 			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabelRedaction,
 			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
@@ -1680,8 +1691,8 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		wsBundleRules := dlpBundleRules(dlpMatches)
 		hardBlock := shouldHardBlockCriticalDLP(dlpMatches, r.cfg.EnforceEnabled())
 		if hardBlock || r.cfg.EnforceEnabled() {
-			r.recordSignal(session.SignalBlock, log)
 			reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
+			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
 				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
@@ -1708,10 +1719,10 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		baseAction := config.ActionWarn
 		effectiveAction := decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 		if effectiveAction == config.ActionBlock {
-			r.recordSignal(session.SignalBlock, log)
+			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
+			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
 			sessionKey := sessionKeyFor(r.agent, r.clientIP)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: baseAction, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: r.clientIP, RequestID: r.requestID})
-			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
 				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
@@ -1735,7 +1746,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			return true
 		}
 
-		r.recordSignal(session.SignalNearMiss, log)
+		r.recordFinding(session.SignalNearMiss, log, scanner.ScannerDLP, fmt.Sprintf("DLP match: %s", strings.Join(names, ", ")))
 		log.LogWSScan(audit.WSScanEvent{
 			Target:    r.targetURL,
 			Direction: audit.DirectionClientToServer,
@@ -1770,7 +1781,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalAddrAction, ToAction: addrAction, Scanner: scannerLabelAddressProtection, ClientIP: r.clientIP, RequestID: r.requestID})
 		}
 		if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
-			r.recordSignal(session.SignalBlock, log)
+			r.recordFinding(session.SignalBlock, log, scannerLabelAddressProtection, fmt.Sprintf("address poisoning: %s", strings.Join(names, ", ")))
 			var blockExplanation string
 			for _, f := range addrFindings {
 				if f.Action == config.ActionBlock {
@@ -1801,7 +1812,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			return true
 		}
 		if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction {
-			r.recordSignal(session.SignalBlock, log)
+			r.recordFinding(session.SignalBlock, log, scannerLabelAddressProtection, fmt.Sprintf("address poisoning: %s (escalated)", names[0]))
 			reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabelAddressProtection,
@@ -1825,7 +1836,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			return true
 		}
 
-		r.recordSignal(session.SignalNearMiss, log)
+		r.recordFinding(session.SignalNearMiss, log, scannerLabelAddressProtection, fmt.Sprintf("address poisoning: %s", strings.Join(names, ", ")))
 		log.LogWSScan(audit.WSScanEvent{
 			Target:    r.targetURL,
 			Direction: audit.DirectionClientToServer,
@@ -2007,7 +2018,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 
 	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.hostname, r.cfg)
 	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
-		r.recordSignal(session.SignalBlock, log)
+		r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
 		log.LogWSBlocked(audit.WSBlockedEvent{
 			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabel,
 			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
@@ -2060,7 +2071,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	switch action {
 	case config.ActionBlock:
 		if !hardBlock && !r.cfg.EnforceEnabled() && action == originalAction && len(result.AddressFindings) > 0 {
-			r.recordSignal(session.SignalNearMiss, log)
+			r.recordFinding(session.SignalNearMiss, log, scannerLabelAddressProtection, reason)
 			names := make([]string, len(result.AddressFindings))
 			for i, f := range result.AddressFindings {
 				names[i] = f.Explanation
@@ -2078,7 +2089,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			})
 			return false
 		}
-		r.recordSignal(session.SignalBlock, log)
+		r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
 		blockReason := reason
 		if !r.cfg.EnforceEnabled() && action != originalAction {
 			blockReason += " (escalated)"
@@ -2108,7 +2119,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
-		r.recordSignal(session.SignalNearMiss, log)
+		r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
 		if len(result.DLPMatches) > 0 {
 			log.LogWSScan(audit.WSScanEvent{
 				Target:    r.targetURL,
@@ -2560,7 +2571,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		return nil, true
 	case config.ActionStrip:
 		if !wsRespExempt {
-			r.recordSignal(session.SignalStrip, log)
+			r.recordFinding(session.SignalStrip, log, responseScanLayer, fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", ")))
 		}
 		if !allowTransform || scanResult.TransformedContent == "" {
 			reason := fmt.Sprintf("injection detected (strip failed): %s", strings.Join(patternNames, ", "))

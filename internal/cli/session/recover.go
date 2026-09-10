@@ -22,6 +22,7 @@ import (
 type recoveryChoice string
 
 const (
+	choiceReset       recoveryChoice = "reset"
 	choiceReleaseNone recoveryChoice = "release-none"
 	choiceReleaseSoft recoveryChoice = "release-soft"
 	choiceTerminate   recoveryChoice = "terminate"
@@ -34,6 +35,7 @@ const (
 type recoverDispatcher interface {
 	Inspect(ctx context.Context, client *Client, key string, out io.Writer) error
 	Explain(ctx context.Context, client *Client, key string, out io.Writer) error
+	Reset(ctx context.Context, client *Client, key string, out io.Writer) error
 	Release(ctx context.Context, client *Client, key, tier string, out io.Writer) error
 	Terminate(ctx context.Context, client *Client, key string, out io.Writer) error
 }
@@ -59,12 +61,25 @@ func (httpDispatcher) Explain(ctx context.Context, client *Client, key string, o
 	return renderExplanation(out, exp)
 }
 
+func (httpDispatcher) Reset(ctx context.Context, client *Client, key string, out io.Writer) error {
+	resp, err := client.Reset(ctx, key)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "reset %s: previous_level=%s previous_score=%.2f\n",
+		resp.Key, resp.PreviousLevel, resp.PreviousScore)
+	return nil
+}
+
 func (httpDispatcher) Release(ctx context.Context, client *Client, key, tier string, out io.Writer) error {
 	resp, err := client.Release(ctx, key, tier)
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(out, "released %s: %s -> %s\n", resp.Key, resp.PreviousTier, resp.NewTier)
+	_, _ = fmt.Fprintf(out, "released %s: %s -> %s (changed=%t)\n", resp.Key, resp.PreviousTier, resp.NewTier, resp.Changed)
+	if !resp.Changed {
+		_, _ = fmt.Fprintln(out, "airlock did not change; this does not clear destination adaptive scores. use reset.")
+	}
 	return nil
 }
 
@@ -87,22 +102,27 @@ func recoverCmd(flags *rootFlags) *cobra.Command {
 		Use:   "recover <key>",
 		Short: "Interactive recovery workflow: inspect, explain, choose action",
 		Long: `Interactive recovery helper. Walks the operator through inspect and
-explain for the given session, then prompts for an action: release
-the session to none, release to soft, terminate, or leave it alone.
+explain for the given session, then prompts for an action.
+
+Reset clears adaptive score and destination-scoped airlock. Release
+only moves session-wide airlock. If inspect shows airlock none and a
+destination at hard, reset is the matching action; release to none
+is a no-op on that session.
 
 Use --choice to script the workflow non-interactively. Accepted
-values: release-none, release-soft, terminate, leave. Use --no-prompt
-to print inspect/explain output and exit without taking action.
+values: reset, release-none, release-soft, terminate, leave. Use
+--no-prompt to print inspect/explain output and exit without taking
+action.
 
 Examples:
   pipelock session recover "agent|10.0.0.1"
-  pipelock session recover "agent|10.0.0.1" --choice release-none
+  pipelock session recover "agent|10.0.0.1" --choice reset
   pipelock session recover "agent|10.0.0.1" --no-prompt`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	cmd.Flags().StringVar(&choiceFlag, "choice", "", "non-interactive choice (release-none|release-soft|terminate|leave)")
+	cmd.Flags().StringVar(&choiceFlag, "choice", "", "non-interactive choice (reset|release-none|release-soft|terminate|leave)")
 	cmd.Flags().BoolVar(&noPrompt, "no-prompt", false, "print inspect/explain output and exit without taking action")
 
 	cmd.RunE = func(c *cobra.Command, args []string) error {
@@ -152,10 +172,10 @@ Examples:
 // by the caller via recoveryChoice(raw) after this validation succeeds.
 func validateRecoverChoice(raw string) error {
 	switch recoveryChoice(raw) {
-	case choiceReleaseNone, choiceReleaseSoft, choiceTerminate, choiceLeave:
+	case choiceReset, choiceReleaseNone, choiceReleaseSoft, choiceTerminate, choiceLeave:
 		return nil
 	}
-	return errors.New("invalid --choice: must be release-none, release-soft, terminate, or leave")
+	return errors.New("invalid --choice: must be reset, release-none, release-soft, terminate, or leave")
 }
 
 // promptRecoveryChoice reads a numbered selection from in and returns
@@ -164,10 +184,11 @@ func validateRecoverChoice(raw string) error {
 func promptRecoveryChoice(in io.Reader, out io.Writer) (recoveryChoice, error) {
 	_, _ = fmt.Fprintln(out, "")
 	_, _ = fmt.Fprintln(out, "Choose recovery action:")
-	_, _ = fmt.Fprintln(out, "  1) release to none")
-	_, _ = fmt.Fprintln(out, "  2) release to soft")
-	_, _ = fmt.Fprintln(out, "  3) terminate (destructive)")
-	_, _ = fmt.Fprintln(out, "  4) leave as-is")
+	_, _ = fmt.Fprintln(out, "  1) reset adaptive state (clears score and destination airlock)")
+	_, _ = fmt.Fprintln(out, "  2) release airlock to none (session-wide airlock only)")
+	_, _ = fmt.Fprintln(out, "  3) release airlock to soft")
+	_, _ = fmt.Fprintln(out, "  4) terminate (destructive)")
+	_, _ = fmt.Fprintln(out, "  5) leave as-is")
 	_, _ = fmt.Fprint(out, "> ")
 
 	reader := bufio.NewReader(in)
@@ -178,16 +199,18 @@ func promptRecoveryChoice(in io.Reader, out io.Writer) (recoveryChoice, error) {
 	line = strings.TrimSpace(line)
 
 	switch line {
-	case "1", "release-none":
+	case "1", "reset":
+		return choiceReset, nil
+	case "2", "release-none":
 		return choiceReleaseNone, nil
-	case "2", "release-soft":
+	case "3", "release-soft":
 		return choiceReleaseSoft, nil
-	case "3", "terminate":
+	case "4", "terminate":
 		return choiceTerminate, nil
-	case "4", "leave":
+	case "5", "leave":
 		return choiceLeave, nil
 	}
-	return "", fmt.Errorf("unrecognized choice %q — must be 1-4 or one of release-none, release-soft, terminate, leave", line)
+	return "", fmt.Errorf("unrecognized choice %q — must be 1-5 or one of reset, release-none, release-soft, terminate, leave", line)
 }
 
 // dispatchRecoveryChoice runs the operation matching the chosen action.
@@ -201,6 +224,8 @@ func dispatchRecoveryChoice(
 	out io.Writer,
 ) error {
 	switch choice {
+	case choiceReset:
+		return dispatcher.Reset(ctx, client, key, out)
 	case choiceReleaseNone:
 		return dispatcher.Release(ctx, client, key, "none", out)
 	case choiceReleaseSoft:

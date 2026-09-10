@@ -111,6 +111,9 @@ func makeDetail() proxy.SessionDetail {
 		EscalationLevelInt: 3,
 		AutoRecoverAt:      now.Add(5 * time.Minute),
 		RecoverHint:        "wait for auto-recovery",
+		AdaptiveScopes: []proxy.AdaptiveScopeSnapshot{
+			{Scope: "destination:evil.example.com", AirlockTier: "hard", EscalationLevel: "critical", ThreatScore: 12, BlockAll: true},
+		},
 		RecentEvents: []proxy.SessionEvent{
 			{At: now, Kind: "block", Target: "evil.example.com", Detail: "dlp secret", Severity: "critical", Score: 0.9},
 		},
@@ -157,6 +160,7 @@ func makeSnapshotList() []proxy.SessionSnapshot {
 type stubRecoverDispatcher struct {
 	inspectCalls   int
 	explainCalls   int
+	resetCalls     int
 	releaseCalls   int
 	terminateCalls int
 	lastReleaseTo  string
@@ -172,6 +176,12 @@ func (s *stubRecoverDispatcher) Inspect(_ context.Context, _ *Client, key string
 
 func (s *stubRecoverDispatcher) Explain(_ context.Context, _ *Client, key string, _ io.Writer) error {
 	s.explainCalls++
+	s.lastKey = key
+	return s.returnErr
+}
+
+func (s *stubRecoverDispatcher) Reset(_ context.Context, _ *Client, key string, _ io.Writer) error {
+	s.resetCalls++
 	s.lastKey = key
 	return s.returnErr
 }

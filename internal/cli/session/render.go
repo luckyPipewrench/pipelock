@@ -75,6 +75,16 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 	if d.RecoverHint != "" {
 		fmt.Fprintf(buf, "  recover_hint:     %s\n", d.RecoverHint)
 	}
+	fmt.Fprintln(buf, "  adaptive_scopes:")
+	if len(d.AdaptiveScopes) == 0 {
+		fmt.Fprintln(buf, "    (none)")
+	} else {
+		for _, sc := range d.AdaptiveScopes {
+			fmt.Fprintf(buf, "    %s airlock=%s level=%s score=%.2f block_all=%t\n",
+				sc.Scope, defaultIfEmpty(sc.AirlockTier, "none"),
+				defaultDash(sc.EscalationLevel), sc.ThreatScore, sc.BlockAll)
+		}
+	}
 	fmt.Fprintf(buf, "  taint_level:      %s\n", defaultDash(d.TaintLevel))
 	fmt.Fprintf(buf, "  contaminated:     %t\n", d.Contaminated)
 	if d.CurrentTaskID != "" {

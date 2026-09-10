@@ -434,6 +434,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Metrics:       m,
 					ConsoleWriter: logW,
 					Session:       firstNonEmpty(opts.ServerName, "default"),
+					DenialScanner: "media_policy",
+					DenialReason:  mediaResult.BlockReason,
+					PolicyHash:    opts.receiptPolicyHash(),
 				})
 			}
 			resp := blockMediaPolicyResponse(rpcID, mediaResult.BlockReason)
@@ -650,6 +653,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 							Metrics:       m,
 							ConsoleWriter: logW,
 							Session:       firstNonEmpty(opts.ServerName, "default"),
+							DenialScanner: "tool_scanning",
+							DenialReason:  blockReason,
+							PolicyHash:    opts.receiptPolicyHash(),
 						})
 					}
 					resp := blockResponseReason(toolResult.RPCID, blockReason)
@@ -674,6 +680,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						Metrics:       m,
 						ConsoleWriter: logW,
 						Session:       firstNonEmpty(opts.ServerName, "default"),
+						DenialScanner: "tool_scanning",
+						DenialReason:  "tool poisoning detected in tools/list",
+						PolicyHash:    opts.receiptPolicyHash(),
 					})
 				}
 			}
@@ -949,6 +958,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				Metrics:       m,
 				ConsoleWriter: logW,
 				Session:       firstNonEmpty(opts.ServerName, "default"),
+				DenialScanner: "mcp_response_scan",
+				DenialReason:  firstNonEmpty(pattern, "mcp_response_scan"),
+				PolicyHash:    opts.receiptPolicyHash(),
 			}
 			switch effectiveAction {
 			case config.ActionBlock:

@@ -73,9 +73,22 @@ func TestReverseURLDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	}
 	sess := sm.GetOrCreate(sessionKeyFor("", clientHost))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
-	if score := sess.ScopedThreatScore(scope); score != blocks*session.SignalPoints[session.SignalBlock] {
-		t.Fatalf("blocked URL DLP requests recorded scoped threat score=%.4f, want %.4f for %d block signals", score, blocks*session.SignalPoints[session.SignalBlock], blocks)
+	// Identical retries of an already-enforced denial score ONCE. Repeating a
+	// blocked request is not new information about the client, and letting a
+	// retry loop pump escalation would drive a legitimate client into lockout.
+	want := session.SignalPoints[session.SignalBlock]
+	if score := sess.ScopedThreatScore(scope); score != want {
+		t.Fatalf("identical blocked URL DLP retries recorded scoped threat score=%.4f, want %.4f for one deduplicated denial across %d blocks", score, want, blocks)
 	}
+
+	// Scope here is the UPSTREAM host, which this harness holds constant, so a
+	// second destination cannot be expressed in these tests. Two limits of the
+	// dedup therefore go unasserted here and are covered in internal/session:
+	// a different destination scores again, and an unknown recorder still
+	// scores. A third limit is NOT covered anywhere and is a reported gap: the
+	// header path passes the fixed literal "request header contains secret" as
+	// the dedup reason, so distinct credentials leaked to one destination share
+	// a key and score once between them.
 }
 
 func TestReverseURLDLPAuditModeRecordsOneNearMiss(t *testing.T) {
@@ -162,9 +175,21 @@ func TestReverseHeaderDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	}
 	sess := sm.GetOrCreate(sessionKeyFor("", clientHost))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
-	if score := sess.ScopedThreatScore(scope); score != blocks*session.SignalPoints[session.SignalBlock] {
-		t.Fatalf("blocked header DLP requests recorded scoped threat score=%.4f, want %.4f for %d block signals", score, blocks*session.SignalPoints[session.SignalBlock], blocks)
+	// Identical retries of an already-enforced denial score ONCE; see the URL
+	// case above for why a retry loop must not pump escalation.
+	want := session.SignalPoints[session.SignalBlock]
+	if score := sess.ScopedThreatScore(scope); score != want {
+		t.Fatalf("identical blocked header DLP retries recorded scoped threat score=%.4f, want %.4f for one deduplicated denial across %d blocks", score, want, blocks)
 	}
+
+	// Scope here is the UPSTREAM host, which this harness holds constant, so a
+	// second destination cannot be expressed in these tests. Two limits of the
+	// dedup therefore go unasserted here and are covered in internal/session:
+	// a different destination scores again, and an unknown recorder still
+	// scores. A third limit is NOT covered anywhere and is a reported gap: the
+	// header path passes the fixed literal "request header contains secret" as
+	// the dedup reason, so distinct credentials leaked to one destination share
+	// a key and score once between them.
 }
 
 // TestReverseDLPBlockAdaptiveSignalHonorsExemptDomain proves the reverse DLP

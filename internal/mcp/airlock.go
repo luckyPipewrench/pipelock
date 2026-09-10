@@ -20,6 +20,11 @@ const (
 // edge-bound prevents a timer-deescalated session from being re-armed merely
 // because its adaptive level has not yet recovered.
 func recordMCPAdaptiveSignal(opts MCPProxyOpts, rec session.Recorder, sig session.SignalType, p decide.EscalationParams) bool {
+	if session.ClassifiedDenialSignal(sig) &&
+		(p.DenialScanner != "" || p.DenialReason != "") &&
+		!session.NoteClassifiedDenial(rec, "", p.DenialScanner, p.DenialReason, p.PolicyHash) {
+		return false
+	}
 	if !decide.RecordSignal(rec, sig, p) {
 		return false
 	}

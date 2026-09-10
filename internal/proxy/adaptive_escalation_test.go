@@ -2119,11 +2119,12 @@ func TestAdaptive_RateLimitBlock_AuditMode_AlreadyEscalated(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Pre-escalate with DLP blocks.
+	// Pre-escalate with distinct DLP findings. Identical retries of one
+	// classified denial no longer add score.
 	for i := 0; i < 3; i++ {
 		p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com",
 			fmt.Sprintf("dlp-%d", i),
-			scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP},
+			scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP, Reason: fmt.Sprintf("dlp finding %d", i)},
 			cfg, logger, false)
 	}
 

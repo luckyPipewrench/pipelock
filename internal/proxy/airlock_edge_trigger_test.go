@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -45,8 +46,8 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 	// bridge (recordSessionActivity), not by reaching into raw signals.
 	// With threshold 5.0 doubling each step and SignalBlock worth 3 points,
 	// reaching level 3 (critical) takes 7 blocked-result calls.
-	blocked := scanner.Result{Allowed: false}
 	for i := 0; i < 12; i++ {
+		blocked := scanner.Result{Allowed: false, Reason: fmt.Sprintf("blocked finding %d", i)}
 		p.recordSessionActivity(testClientIP, agentAnonymous, "evil.example", "req-escalate", blocked, cfg, logger, false)
 		sm := p.sessionMgrPtr.Load()
 		if sm == nil {
@@ -101,7 +102,8 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 	// able to re-arm drain. Edge-triggering narrows the trigger, it does
 	// not disable it.
 	for i := 0; i < 20; i++ {
-		p.recordSessionActivity(testClientIP, agentAnonymous, "evil.example", "req-post-recovery-bad", blocked, cfg, logger, false)
+		fresh := scanner.Result{Allowed: false, Reason: fmt.Sprintf("post-recovery blocked finding %d", i)}
+		p.recordSessionActivity(testClientIP, agentAnonymous, "evil.example", "req-post-recovery-bad", fresh, cfg, logger, false)
 		if sess.AirlockForScope(scope).Tier() == config.AirlockTierDrain {
 			return
 		}

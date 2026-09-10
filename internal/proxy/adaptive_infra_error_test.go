@@ -131,12 +131,11 @@ func TestRecordSessionActivity_RealSSRF_StillSignalBlock(t *testing.T) {
 
 	before := rec.ThreatScore()
 
-	// Two real SSRF blocks would have pushed into airlock hard tier pre-fix.
-	// Post-fix they must STILL do that (this is the invariant - the fix must
-	// not weaken detection of genuinely adversarial behavior).
+	// Distinct destinations still score. Identical retries of one already-
+	// classified SSRF finding do not; that is covered in classified_denial_test.
 	p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "evil.internal",
 		"req-ssrf-1", threatResult(), cfg, logger, true)
-	p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "evil.internal",
+	p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "other.internal",
 		"req-ssrf-2", threatResult(), cfg, logger, true)
 
 	pointsPerBlock := session.SignalPoints[session.SignalBlock] // +3.0 by default
@@ -175,10 +174,10 @@ func TestRecordSessionActivity_MixedInfraAndThreat(t *testing.T) {
 		p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "dns-broken.test",
 			"req-infra", infraErrorResult(), cfg, logger, true)
 	}
-	// 2 real SSRF blocks → +6.0 total, crossing the 5.0 threshold.
+	// 2 real SSRF blocks to distinct hosts → +6.0 total, crossing the 5.0 threshold.
 	p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "evil.internal",
 		"req-ssrf-1", threatResult(), cfg, logger, true)
-	p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "evil.internal",
+	p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "other.internal",
 		"req-ssrf-2", threatResult(), cfg, logger, true)
 	// 5 more infrastructure errors → still neutral, no signal bleed.
 	for i := 0; i < 5; i++ {

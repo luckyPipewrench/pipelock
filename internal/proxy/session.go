@@ -146,6 +146,11 @@ type SessionState struct {
 	atBlockAll                 bool // true when current level has block_all=true
 	globalSignalsAuthoritative bool
 	scopes                     map[string]*adaptiveScopeState
+	// classifiedDenials remembers the first scored denial per destination
+	// and finding fingerprint so retries of the same already-enforced
+	// block do not keep adding SignalBlock. Bounded; unknown fingerprints
+	// past the cap still score (fail closed).
+	classifiedDenials map[string]struct{}
 
 	// Behavioral baseline accumulation - collected per-session for
 	// baseline learning and deviation checking.
@@ -236,6 +241,12 @@ func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string
 // Mirrors the 10,000-tool MCP baseline cap in spirit.
 const maxAdaptiveScopes = 1024
 
+// maxClassifiedDenials bounds remembered denial fingerprints per session.
+// Same cardinality as destination scopes: a client that fans out unique
+// findings still scores each new one, and a retry storm against one
+// finding stays a single score.
+const maxClassifiedDenials = 1024
+
 func (s *SessionState) getOrCreateScopeLocked(scope string) *adaptiveScopeState {
 	scope = normalizeAdaptiveScope(scope)
 	if scope == "" {
@@ -288,6 +299,40 @@ func (s *SessionState) AirlockForScope(scope string) *AirlockState {
 		return &s.airlock
 	}
 	return &st.airlock
+}
+
+// NoteClassifiedDenial records a denied finding fingerprint. It returns
+// true when this is the first time this session has scored that
+// fingerprint, so the caller should add an adaptive signal. Duplicate
+// retries return false: the request stays denied, but it must not keep
+// pumping threat score.
+func (s *SessionState) NoteClassifiedDenial(scope, scannerName, reason, policyHash string) bool {
+	key := classifiedDenialKey(scope, scannerName, reason, policyHash)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, seen := s.classifiedDenials[key]; seen {
+		return false
+	}
+	if s.classifiedDenials == nil {
+		s.classifiedDenials = make(map[string]struct{})
+	}
+	if len(s.classifiedDenials) >= maxClassifiedDenials {
+		// Unknown fingerprint at cap: still score. Forgetting a storm's
+		// fingerprint would fail open on retries; scoring a new unique
+		// finding is the fail-closed direction.
+		return true
+	}
+	s.classifiedDenials[key] = struct{}{}
+	return true
+}
+
+func classifiedDenialKey(scope, scannerName, reason, policyHash string) string {
+	return strings.Join([]string{
+		normalizeAdaptiveScope(scope),
+		scannerName,
+		reason,
+		policyHash,
+	}, "\x1f")
 }
 
 type domainEntry struct {
@@ -892,6 +937,7 @@ func (s *SessionState) resetWhileLocked() (prevScore float64, prevLevel int) {
 		scoped.airlock.mu.Unlock()
 	}
 	s.scopes = nil
+	s.classifiedDenials = nil
 	s.domainWindows = nil
 	s.lastBurstAt = time.Time{}
 	s.lastActivity = time.Now()
@@ -1144,6 +1190,16 @@ type AdaptiveFlushResult struct {
 	IdentitySessions     int  `json:"identity_sessions"`
 	SkippedInvocations   int  `json:"skipped_invocations"`
 	IPDomainStateCleared bool `json:"ip_domain_state_cleared"`
+}
+
+// SessionResetResult is the operator-facing body for POST /api/v1/sessions/{key}/reset.
+type SessionResetResult struct {
+	Key             string  `json:"key"`
+	Reset           bool    `json:"reset"`
+	PreviousLevel   string  `json:"previous_level"`
+	PreviousScore   float64 `json:"previous_score"`
+	IPStateCleared  bool    `json:"ip_state_cleared"`
+	CEEStateCleared bool    `json:"cee_state_cleared"`
 }
 
 type scopedLevelTransition struct {

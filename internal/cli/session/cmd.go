@@ -64,6 +64,7 @@ Examples:
   pipelock session inspect "agent|10.0.0.1"
   pipelock session risk "agent|10.0.0.1"
   pipelock session explain "agent|10.0.0.1"
+  pipelock session reset "agent|10.0.0.1"
   pipelock session release "agent|10.0.0.1" --to none
   pipelock session terminate "agent|10.0.0.1"
   pipelock session recover "agent|10.0.0.1"`,
@@ -74,6 +75,7 @@ Examples:
 		inspectCmd(flags),
 		riskCmd(flags),
 		explainCmd(flags),
+		resetCmd(flags),
 		releaseCmd(flags),
 		terminateCmd(flags),
 		recoverCmd(flags),

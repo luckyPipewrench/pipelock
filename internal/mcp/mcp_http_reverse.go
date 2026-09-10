@@ -748,7 +748,7 @@ func RunHTTPListenerProxy(
 		// across the POST, GET, and DELETE header-block paths, so adding a
 		// parameter or changing the threshold source cannot be missed on one
 		// path. It is a no-op when adaptive enforcement is disabled.
-		recordListenerAdaptiveSignal := func(reqRec session.Recorder, sig session.SignalType, auditSessionKey string) {
+		recordListenerFinding := func(reqRec session.Recorder, sig session.SignalType, auditSessionKey, scannerName, reason string) {
 			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 				return
 			}
@@ -758,13 +758,10 @@ func RunHTTPListenerProxy(
 				Metrics:       opts.Metrics,
 				ConsoleWriter: safeLogW,
 				Session:       auditSessionKey,
+				DenialScanner: scannerName,
+				DenialReason:  reason,
+				PolicyHash:    requestBaseOpts.receiptPolicyHash(),
 			})
-		}
-		recordGETDeleteHeaderAdaptiveSignal := func(sig session.SignalType) {
-			if adaptiveCfg == nil || !adaptiveCfg.Enabled {
-				return
-			}
-			recordListenerAdaptiveSignal(clientState.recorder, sig, listenerStateAuditKey())
 		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL)
@@ -782,7 +779,7 @@ func RunHTTPListenerProxy(
 				target:          "mcp:listener-header:" + http.CanonicalHeaderKey(headerResult.header),
 				receiptSeverity: config.SeverityHigh,
 			})
-			recordGETDeleteHeaderAdaptiveSignal(session.SignalBlock)
+			recordListenerFinding(clientState.recorder, session.SignalBlock, listenerStateAuditKey(), mcpReceiptLayerInput, pattern)
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -819,9 +816,9 @@ func RunHTTPListenerProxy(
 				// (e.g., DNS timeout resolving an Extensions URL) are
 				// not evidence of agent misbehavior.
 			case headerResult.IsConfigMismatch():
-				recordGETDeleteHeaderAdaptiveSignal(session.SignalNearMiss)
+				recordListenerFinding(clientState.recorder, session.SignalNearMiss, listenerStateAuditKey(), "a2a", headerResult.Reason)
 			default:
-				recordGETDeleteHeaderAdaptiveSignal(session.SignalBlock)
+				recordListenerFinding(clientState.recorder, session.SignalBlock, listenerStateAuditKey(), "a2a", headerResult.Reason)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
@@ -1363,7 +1360,7 @@ func RunHTTPListenerProxy(
 				target:          "mcp:listener-header:" + http.CanonicalHeaderKey(headerResult.header),
 				receiptSeverity: config.SeverityHigh,
 			})
-			recordListenerAdaptiveSignal(reqRec, session.SignalBlock, auditSessionKey)
+			recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerInput, pattern)
 			w.Header().Set("Content-Type", "application/json")
 			rpcID := frame.ID
 			resp, _ := json.Marshal(rpcError{
@@ -1388,9 +1385,9 @@ func RunHTTPListenerProxy(
 					// (e.g., DNS timeout resolving an Extensions URL) are
 					// not evidence of agent misbehavior.
 				case headerResult.IsConfigMismatch():
-					recordListenerAdaptiveSignal(reqRec, session.SignalNearMiss, auditSessionKey)
+					recordListenerFinding(reqRec, session.SignalNearMiss, auditSessionKey, "a2a", headerResult.Reason)
 				default:
-					recordListenerAdaptiveSignal(reqRec, session.SignalBlock, auditSessionKey)
+					recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, "a2a", headerResult.Reason)
 				}
 				// Emit a block receipt so an A2A header block leaves the same
 				// policy-hash-bearing evidence as every other applicable

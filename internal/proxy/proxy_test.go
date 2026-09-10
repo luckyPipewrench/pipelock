@@ -3665,10 +3665,11 @@ func TestProxy_RecordSession_ConfigMismatchEscalatesEventually(t *testing.T) {
 	const clientIP = "10.0.0.101"
 
 	// NearMiss = +1 each. Need 3+ to exceed threshold of 3.0.
-	for range 4 {
+	// Distinct reasons: identical config-mismatch retries no longer pump score.
+	for i := range 4 {
 		result := scanner.Result{
 			Allowed: false,
-			Reason:  "SSRF blocked: litellm resolves to internal IP 192.168.1.3",
+			Reason:  fmt.Sprintf("SSRF blocked: litellm resolves to internal IP 192.168.1.%d", i+1),
 			Scanner: scanner.ScannerSSRF,
 			Score:   1.0,
 			Class:   scanner.ClassConfigMismatch,

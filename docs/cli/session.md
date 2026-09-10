@@ -18,10 +18,11 @@ you have not set that token, the CLI will refuse to connect. See
 | `pipelock session list [--tier hard] [--json]` | Enumerate sessions, optionally filtered by airlock tier |
 | `pipelock session inspect <key> [--json]` | Full detail snapshot: tier, entry time, in-flight, recent events |
 | `pipelock session risk [<key>] [--json]` | Compact adaptive risk view: score, level, block-all state, and auto-recover ETA |
-| `pipelock session explain <key> [--json]` | Why the session is where it is: trigger, evidence, next auto-recovery time |
-| `pipelock session release <key> [--to none\|soft]` | Move an airlocked session down to a lower tier |
+| `pipelock session explain <key> [--json]` | Why the session is where it is: trigger, evidence, destination scopes, next auto-recovery time |
+| `pipelock session reset <key>` | Clear adaptive score, destination-scoped airlock, and block_all without cutting connections |
+| `pipelock session release <key> [--to none\|soft]` | Move session-wide airlock to a lower tier. Does not clear destination adaptive scores. |
 | `pipelock session terminate <key>` | Destructive: reset enforcement state, cut in-flight connections, clear CEE state |
-| `pipelock session recover <key> [--choice ...]` | Interactive workflow: inspect → explain → pick an action |
+| `pipelock session recover <key> [--choice ...]` | Interactive workflow: inspect → explain → pick an action. Prefer reset when a destination scope is the blocker. |
 | `pipelock session deferred list [--json]` | Enumerate held (deferred) MCP actions awaiting an operator decision |
 | `pipelock session deferred approve <defer-id>` | Approve a held action (opens it only if its rule permits) |
 | `pipelock session deferred deny <defer-id>` | Deny a held action, resolving it closed (blocked) |
@@ -60,7 +61,10 @@ pipelock session inspect "agent|10.0.0.1"
 # 4. Check adaptive risk and the auto-recover ETA.
 pipelock session risk "agent|10.0.0.1"
 
-# 5. Release the session back to normal.
+# 5. If inspect shows airlock none and a destination is still blocked, reset.
+pipelock session reset "agent|10.0.0.1"
+
+# 6. Release session-wide airlock only when the global tier is the blocker.
 pipelock session release "agent|10.0.0.1" --to none
 
 # Or, if the session cannot be trusted, terminate it.
@@ -70,8 +74,9 @@ pipelock session terminate "agent|10.0.0.1"
 The interactive `pipelock session recover <key>` command runs the
 inspect → explain → action portion of this workflow for the supplied
 key (it does not perform the discovery/list step above). Use
-`--choice release-none|release-soft|terminate|leave` to script the
-workflow non-interactively.
+`--choice reset|release-none|release-soft|terminate|leave` to script the
+workflow non-interactively. Option 1 is reset, because release-to-none is a
+no-op when session-wide airlock is already none.
 
 ## Resolving the admin API endpoint
 
@@ -145,7 +150,9 @@ Walks the operator through the state of the session:
 - **next_deescalation_tier** / **next_deescalation_at** — when the
   configured timer will automatically drop the tier
 
-Sessions at the `none` tier return a `200` response with the reason
+Sessions at the `none` tier return a `200` response. A destination-scoped
+airlock still reports the hot adaptive-scope reason and destination
+evidence. A session with no scoped quarantine returns
 "session not quarantined" plus the most recent event (if any). That
 makes it safe to call explain on any session as part of scripted
 healthchecks.
@@ -181,13 +188,14 @@ safely mutable through the admin API.
 ## session recover
 
 ```sh
-pipelock session recover <key> [--choice release-none|release-soft|terminate|leave]
+pipelock session recover <key> [--choice reset|release-none|release-soft|terminate|leave]
 ```
 
 Interactive recovery helper. Runs `inspect`, then `explain`, then
 prompts for an action. Use `--choice` to skip the prompt in scripts.
-The four actions map to:
+The actions map to:
 
+- `reset` — `session reset` (clears destination-scoped score and airlock)
 - `release-none` — `session release --to none`
 - `release-soft` — `session release --to soft`
 - `terminate` — `session terminate`

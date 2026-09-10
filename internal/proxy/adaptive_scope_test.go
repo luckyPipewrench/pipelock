@@ -56,12 +56,14 @@ func scopedSession(t *testing.T, p *Proxy) *SessionState {
 }
 
 func recordPollThreat(p *Proxy, logger *audit.Logger, cfg *config.Config, reqID string) {
+	result := threatResult()
+	result.Reason = result.Reason + " " + reqID
 	p.recordSessionActivity(
 		adaptiveSessionKeyLoopback,
 		agentAnonymous,
 		adaptiveScopePollHost,
 		reqID,
-		threatResult(),
+		result,
 		cfg,
 		logger,
 		true,

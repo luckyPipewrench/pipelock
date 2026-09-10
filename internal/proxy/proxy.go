@@ -616,7 +616,7 @@ const shieldRewriteHeader = "X-Pipelock-Shield-Rewrite"
 
 const (
 	adaptiveEnforcementLayer = "adaptive_enforcement"
-	adaptiveRecoverHint      = "wait for auto-recovery or inspect/reset the identity session with the session operator commands"
+	adaptiveRecoverHint      = "wait for auto-recovery or run pipelock session reset <key>"
 	adaptiveBlockedReason    = "blocked by adaptive enforcement"
 	adaptiveRecoveryTimer    = "time_based_recovery"
 	adaptiveRecoveryClean    = "clean_request_recovery"
@@ -3081,12 +3081,18 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			// allowlisted domain) are not real attacks, but repeated
 			// probing should still accumulate a weak signal so the
 			// session isn't completely invisible to adaptive scoring.
-			if recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, ep) {
+			// Retries of the same mismatch still must not pump the score.
+			deniedEP := classifiedDenialParams(ep, result.Scanner, result.Reason, cfg.CanonicalPolicyHash())
+			if recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, deniedEP) {
 				escalated = true
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
-			if recordScopedAdaptiveSignal(sess, scope, adaptiveBlockSignal(result, &adaptiveCfg), ep) {
+			// The request stays denied either way. Only the first classified
+			// occurrence of this destination+finding contributes threat score;
+			// retries of the same already-enforced denial must not pump it.
+			deniedEP := classifiedDenialParams(ep, result.Scanner, result.Reason, cfg.CanonicalPolicyHash())
+			if recordScopedAdaptiveSignal(sess, scope, adaptiveBlockSignal(result, &adaptiveCfg), deniedEP) {
 				escalated = true
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
@@ -3215,11 +3221,28 @@ func baselineAgentKeyForSessionKey(key string) string {
 	return key
 }
 
+func classifiedDenialParams(ep decide.EscalationParams, scannerName, reason, policyHash string) decide.EscalationParams {
+	ep.DenialScanner = scannerName
+	ep.DenialReason = reason
+	ep.PolicyHash = policyHash
+	return ep
+}
+
+func shouldScoreClassifiedDenial(rec session.Recorder, scope string, ep decide.EscalationParams) bool {
+	if ep.DenialScanner == "" && ep.DenialReason == "" {
+		return true
+	}
+	return session.NoteClassifiedDenial(rec, scope, ep.DenialScanner, ep.DenialReason, ep.PolicyHash)
+}
+
 func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.SignalType, ep decide.EscalationParams) bool {
 	if sess == nil {
 		return false
 	}
 	scope = normalizeAdaptiveScope(scope)
+	if session.ClassifiedDenialSignal(sig) && !shouldScoreClassifiedDenial(sess, scope, ep) {
+		return false
+	}
 	if scope == "" {
 		return decide.RecordSignal(sess, sig, ep)
 	}
@@ -3252,6 +3275,9 @@ func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig sessio
 			level := sess.EffectiveEscalationLevel(scope)
 			sess.SetScopedBlockAll(scope, decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock)
 		}
+		return
+	}
+	if session.ClassifiedDenialSignal(sig) && !shouldScoreClassifiedDenial(rec, normalizeAdaptiveScope(scope), ep) {
 		return
 	}
 	decide.RecordSignal(rec, sig, ep)
@@ -4951,12 +4977,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				headerSignal = session.SignalBlock
 			}
 			recordAdaptiveSignalForScope(fetchRec, adaptiveScopeForHost(parsed.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, decide.EscalationParams{
-				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
-				Logger:    log,
-				Metrics:   p.metrics,
-				Session:   CeeSessionKey(agent, clientIP),
-				ClientIP:  clientIP,
-				RequestID: requestID,
+				Threshold:     cfg.AdaptiveEnforcement.EscalationThreshold,
+				Logger:        log,
+				Metrics:       p.metrics,
+				Session:       CeeSessionKey(agent, clientIP),
+				ClientIP:      clientIP,
+				RequestID:     requestID,
+				DenialScanner: scanner.ScannerDLP,
+				DenialReason:  "request header contains secret",
+				PolicyHash:    cfg.CanonicalPolicyHash(),
 			})
 		}
 	}

@@ -330,7 +330,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				RequestID:  requestID,
 				UserAgent:  r.UserAgent(),
 				ActorAuth:  id.Auth,
-				Result:     scanner.Result{Allowed: false, Score: 0.9},
+				Result:     scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP, Reason: "CONNECT blocked: header DLP match", Score: 0.9},
 				Config:     cfg,
 				Logger:     p.logger,
 				DeferClean: false,

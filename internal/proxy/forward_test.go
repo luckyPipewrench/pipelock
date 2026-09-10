@@ -5783,6 +5783,7 @@ func TestForwardHTTPResponseInjection_NonMatchingSuppressStillBlocks(t *testing.
 // HTTP transport.
 func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	testSecret := "FWDSECRET" + "VALUE789"
+	testSecret2 := "FWDSECRET" + "VALUE790"
 
 	// Local backend so the proxy can actually forward the request. Using a
 	// remote host (example.com) is fragile: compressed responses trigger the
@@ -5805,10 +5806,10 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 		cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
 		cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = ptrStr(config.ActionBlock)
-		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
-			Name:  "test_fwd_secret",
-			Regex: testSecret,
-		})
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns,
+			config.DLPPattern{Name: "test_fwd_secret", Regex: testSecret},
+			config.DLPPattern{Name: "test_fwd_secret_2", Regex: testSecret2},
+		)
 	})
 	defer cleanup()
 
@@ -5825,6 +5826,7 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	// DLP pattern fires on the query string. In audit mode with no escalation,
 	// the proxy must warn and allow - not block.
 	reqURL := backend.URL + "/?" + testSecret + "=1"
+	reqURL2 := backend.URL + "/?" + testSecret2 + "=1"
 	req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
 	if reqErr != nil {
 		t.Fatalf("new request: %v", reqErr)
@@ -5839,10 +5841,9 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 		t.Fatalf("expected audit-mode allow (no escalation), got 403")
 	}
 
-	// Phase 2: send a second DLP request to accumulate enough signal points
-	// (2 x SignalBlock = 6.0 > threshold 5.0) to escalate the session.
-	// The first request already recorded one SignalBlock (3.0 points).
-	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	// Phase 2: a second, distinct DLP finding (2 x SignalBlock = 6.0 > 5.0).
+	// Identical retries of one classified denial no longer add score.
+	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL2, nil)
 	resp2, err := client.Do(req2)
 	if err != nil {
 		t.Fatalf("second request transport error: %v", err)

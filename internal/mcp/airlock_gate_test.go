@@ -117,6 +117,76 @@ func (r *airlockTestRecorder) EscalateAirlock(tier, _ string) (bool, string, str
 	return from != tier, from, tier
 }
 
+type notingScoreRecorder struct {
+	score float64
+	seen  map[string]struct{}
+}
+
+func (r *notingScoreRecorder) NoteClassifiedDenial(scope, scannerName, reason, policyHash string) bool {
+	key := scope + "\x1f" + scannerName + "\x1f" + reason + "\x1f" + policyHash
+	if _, ok := r.seen[key]; ok {
+		return false
+	}
+	if r.seen == nil {
+		r.seen = make(map[string]struct{})
+	}
+	r.seen[key] = struct{}{}
+	return true
+}
+
+func (r *notingScoreRecorder) RecordSignal(sig session.SignalType, _ float64) (bool, string, string) {
+	r.score += session.SignalPoints[sig]
+	return false, "", ""
+}
+func (r *notingScoreRecorder) RecordClean(float64)  {}
+func (r *notingScoreRecorder) EscalationLevel() int { return 0 }
+func (r *notingScoreRecorder) ThreatScore() float64 { return r.score }
+
+func TestRecordMCPAdaptiveSignal_DuplicateClassifiedDenialDoesNotPumpScore(t *testing.T) {
+	t.Parallel()
+	rec := &notingScoreRecorder{}
+	params := decide.EscalationParams{
+		Threshold:     5,
+		DenialScanner: "ssrf",
+		DenialReason:  "SSRF blocked: resolves to non-overridable internal IP 0.0.0.0",
+		PolicyHash:    "hash-a",
+	}
+	recordMCPAdaptiveSignal(MCPProxyOpts{}, rec, session.SignalBlock, params)
+	if rec.ThreatScore() != session.SignalPoints[session.SignalBlock] {
+		t.Fatalf("first MCP denial score=%.2f, want %.2f", rec.ThreatScore(), session.SignalPoints[session.SignalBlock])
+	}
+	if recordMCPAdaptiveSignal(MCPProxyOpts{}, rec, session.SignalBlock, params) {
+		t.Fatal("duplicate MCP classified denial reported an escalation")
+	}
+	if rec.ThreatScore() != session.SignalPoints[session.SignalBlock] {
+		t.Fatalf("duplicate MCP denials pumped score to %.2f", rec.ThreatScore())
+	}
+	params.DenialReason = "different finding"
+	recordMCPAdaptiveSignal(MCPProxyOpts{}, rec, session.SignalBlock, params)
+	want := 2 * session.SignalPoints[session.SignalBlock]
+	if rec.ThreatScore() != want {
+		t.Fatalf("distinct MCP findings score=%.2f, want %.2f", rec.ThreatScore(), want)
+	}
+}
+
+func TestRecordMCPAdaptiveSignal_NearMissStillAccumulates(t *testing.T) {
+	t.Parallel()
+	rec := &notingScoreRecorder{}
+	params := decide.EscalationParams{
+		Threshold:     5,
+		DenialScanner: "tool_scanning",
+		DenialReason:  "tool poisoning detected in tools/list",
+		PolicyHash:    "hash-a",
+	}
+	recordMCPAdaptiveSignal(MCPProxyOpts{}, rec, session.SignalNearMiss, params)
+	recordMCPAdaptiveSignal(MCPProxyOpts{}, rec, session.SignalNearMiss, params)
+	recordMCPAdaptiveSignal(MCPProxyOpts{}, rec, session.SignalStrip, params)
+	want := 2*session.SignalPoints[session.SignalNearMiss] + session.SignalPoints[session.SignalStrip]
+	if rec.ThreatScore() != want {
+		t.Fatalf("warn/strip classified findings score=%.2f, want %.2f", rec.ThreatScore(), want)
+	}
+}
+
 func TestRecordMCPAdaptiveSignal_TriggersAirlockOnEscalationEdgeOnly(t *testing.T) {
 	t.Parallel()
 

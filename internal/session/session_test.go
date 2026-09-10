@@ -26,6 +26,32 @@ var allSignals = []session.SignalType{
 	session.SignalIPDomainAnomaly,
 	session.SignalDomainAnomalyCooperative,
 	session.SignalIPDomainAnomalyCooperative,
+	session.SignalCrossAgentContamination,
+}
+
+func TestClassifiedDenialSignal(t *testing.T) {
+	t.Parallel()
+	want := map[session.SignalType]bool{
+		session.SignalBlock:                      true,
+		session.SignalBlockLowSeverity:           true,
+		session.SignalBlockMediumSeverity:        true,
+		session.SignalNearMiss:                   false,
+		session.SignalDomainAnomaly:              false,
+		session.SignalEntropyBudget:              false,
+		session.SignalFragmentDLP:                false,
+		session.SignalStrip:                      false,
+		session.SignalShieldRewrite:              false,
+		session.SignalIPDomainAnomaly:            false,
+		session.SignalDomainAnomalyCooperative:   false,
+		session.SignalIPDomainAnomalyCooperative: false,
+		session.SignalCrossAgentContamination:    false,
+	}
+	for _, sig := range allSignals {
+		got := session.ClassifiedDenialSignal(sig)
+		if got != want[sig] {
+			t.Errorf("ClassifiedDenialSignal(%v) = %v, want %v", sig, got, want[sig])
+		}
+	}
 }
 
 func TestSignalPoints_AllSignalsPresent(t *testing.T) {
@@ -145,5 +171,56 @@ func TestNextInvocationKey_Monotonic(t *testing.T) {
 			t.Errorf("suffix of key %q contains non-digit character %q", key, string(ch))
 			break
 		}
+	}
+}
+
+type notingRecorder struct {
+	seen map[string]struct{}
+}
+
+func (r *notingRecorder) NoteClassifiedDenial(scope, scannerName, reason, policyHash string) bool {
+	key := scope + "\x1f" + scannerName + "\x1f" + reason + "\x1f" + policyHash
+	if _, ok := r.seen[key]; ok {
+		return false
+	}
+	if r.seen == nil {
+		r.seen = make(map[string]struct{})
+	}
+	r.seen[key] = struct{}{}
+	return true
+}
+
+func (r *notingRecorder) RecordSignal(session.SignalType, float64) (bool, string, string) {
+	return false, "", ""
+}
+func (r *notingRecorder) RecordClean(float64)  {}
+func (r *notingRecorder) EscalationLevel() int { return 0 }
+func (r *notingRecorder) ThreatScore() float64 { return 0 }
+
+func TestNoteClassifiedDenial_UnknownRecorderStillScores(t *testing.T) {
+	t.Parallel()
+	if !session.NoteClassifiedDenial(nil, "destination:api.example", "ssrf", "blocked", "hash") {
+		t.Fatal("nil recorder must fail closed and still score")
+	}
+	plain := &notingRecorder{}
+	// notingRecorder implements the interface; a recorder without it is the
+	// other branch. Use a type that only satisfies Recorder.
+	only := struct{ session.Recorder }{plain}
+	if !session.NoteClassifiedDenial(only, "destination:api.example", "ssrf", "blocked", "hash") {
+		t.Fatal("recorder without ClassifiedDenialNoter must still score")
+	}
+}
+
+func TestNoteClassifiedDenial_NoterDedupes(t *testing.T) {
+	t.Parallel()
+	rec := &notingRecorder{}
+	if !session.NoteClassifiedDenial(rec, "destination:api.example", "ssrf", "blocked", "hash") {
+		t.Fatal("first denial must score")
+	}
+	if session.NoteClassifiedDenial(rec, "destination:api.example", "ssrf", "blocked", "hash") {
+		t.Fatal("duplicate denial must not score")
+	}
+	if !session.NoteClassifiedDenial(rec, "destination:other.example", "ssrf", "blocked", "hash") {
+		t.Fatal("different destination must score")
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
 // stubRecoverServer returns a canned inspect/explain response on any
@@ -19,6 +21,10 @@ func stubRecoverServer(t *testing.T) *rootFlags {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/explain"):
 			writeJSONResponse(w, http.StatusOK, makeExplanation())
+		case strings.HasSuffix(r.URL.Path, "/reset"):
+			writeJSONResponse(w, http.StatusOK, proxy.SessionResetResult{
+				Key: testKeyIdent, Reset: true, PreviousLevel: "critical", PreviousScore: 12,
+			})
 		case strings.HasSuffix(r.URL.Path, "/airlock"):
 			writeJSONResponse(w, http.StatusOK, airlockResponse{
 				Key: testKeyIdent, NewTier: tierNone, Changed: true,
@@ -43,6 +49,26 @@ func withStubDispatcher(t *testing.T) *stubRecoverDispatcher {
 	t.Cleanup(func() { recoverDispatcherFn = orig })
 	recoverDispatcherFn = func() recoverDispatcher { return stub }
 	return stub
+}
+
+func TestRecoverCmd_ChoiceReset(t *testing.T) {
+	flags := stubRecoverServer(t)
+	overrideClientFactory(t, flags)
+	stub := withStubDispatcher(t)
+
+	out, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.resetCalls != 1 {
+		t.Errorf("reset calls: got %d, want 1", stub.resetCalls)
+	}
+	if stub.releaseCalls != 0 {
+		t.Errorf("reset must not release: release=%d", stub.releaseCalls)
+	}
+	if !strings.Contains(out, "inspect") || !strings.Contains(out, "explain") {
+		t.Errorf("output missing section headers: %s", out)
+	}
 }
 
 func TestRecoverCmd_ChoiceReleaseNone(t *testing.T) {
@@ -101,9 +127,9 @@ func TestRecoverCmd_ChoiceLeave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stub.releaseCalls != 0 || stub.terminateCalls != 0 {
-		t.Errorf("leave should not dispatch: release=%d terminate=%d",
-			stub.releaseCalls, stub.terminateCalls)
+	if stub.resetCalls != 0 || stub.releaseCalls != 0 || stub.terminateCalls != 0 {
+		t.Errorf("leave should not dispatch: reset=%d release=%d terminate=%d",
+			stub.resetCalls, stub.releaseCalls, stub.terminateCalls)
 	}
 	if !strings.Contains(out, "unchanged") {
 		t.Errorf("leave should print unchanged: %s", out)
@@ -136,8 +162,11 @@ func TestRecoverCmd_InteractiveStdin(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v; out=%s", err, buf.String())
 	}
-	if stub.lastReleaseTo != tierNone {
-		t.Errorf("interactive '1' should map to release-none: got %q", stub.lastReleaseTo)
+	if stub.resetCalls != 1 {
+		t.Errorf("interactive '1' should map to reset: reset=%d", stub.resetCalls)
+	}
+	if stub.releaseCalls != 0 {
+		t.Errorf("interactive '1' must not release: release=%d to=%q", stub.releaseCalls, stub.lastReleaseTo)
 	}
 }
 
@@ -324,10 +353,11 @@ func TestPromptRecoveryChoice_AllNumbers(t *testing.T) {
 		in   string
 		want recoveryChoice
 	}{
-		{"1\n", choiceReleaseNone},
-		{"2\n", choiceReleaseSoft},
-		{"3\n", choiceTerminate},
-		{"4\n", choiceLeave},
+		{"1\n", choiceReset},
+		{"2\n", choiceReleaseNone},
+		{"3\n", choiceReleaseSoft},
+		{"4\n", choiceTerminate},
+		{"5\n", choiceLeave},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -344,6 +374,7 @@ func TestPromptRecoveryChoice_AllNumbers(t *testing.T) {
 
 func TestPromptRecoveryChoice_NamedAliases(t *testing.T) {
 	cases := map[string]recoveryChoice{
+		"reset\n":        choiceReset,
 		"release-none\n": choiceReleaseNone,
 		"release-soft\n": choiceReleaseSoft,
 		"terminate\n":    choiceTerminate,

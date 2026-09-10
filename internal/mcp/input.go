@@ -293,7 +293,7 @@ func ForwardScannedInput(
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
-	recordAdaptiveSignal := func(sig session.SignalType) {
+	recordAdaptiveFinding := func(sig session.SignalType, scannerName, reason string) {
 		if adaptiveCfg != nil && adaptiveCfg.Enabled {
 			recordMCPAdaptiveSignal(opts, rec, sig, decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
@@ -301,8 +301,14 @@ func ForwardScannedInput(
 				Metrics:       m,
 				ConsoleWriter: logW,
 				Session:       "default",
+				DenialScanner: scannerName,
+				DenialReason:  reason,
+				PolicyHash:    policyHash,
 			})
 		}
+	}
+	recordAdaptiveSignal := func(sig session.SignalType) {
+		recordAdaptiveFinding(sig, "", "")
 	}
 
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
@@ -733,9 +739,9 @@ func ForwardScannedInput(
 			switch {
 			case eval.A2AResult.IsAdaptiveNeutral():
 			case eval.A2AResult.IsConfigMismatch():
-				recordAdaptiveSignal(session.SignalNearMiss)
+				recordAdaptiveFinding(session.SignalNearMiss, "a2a", eval.A2AResult.Reason)
 			default:
-				recordAdaptiveSignal(session.SignalBlock)
+				recordAdaptiveFinding(session.SignalBlock, "a2a", eval.A2AResult.Reason)
 			}
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
@@ -778,7 +784,7 @@ func ForwardScannedInput(
 				auditLogger.LogBlocked(mustMCPDoWAuditContext(auditLogger, enforcementTarget, opts), scanner.ScannerDenialOfWallet, eval.DoWReason)
 			}
 			recordDoWMetric(m, config.ActionBlock, opts)
-			recordAdaptiveSignal(session.SignalBlock)
+			recordAdaptiveFinding(session.SignalBlock, scanner.ScannerDenialOfWallet, eval.DoWReason)
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
@@ -808,7 +814,7 @@ func ForwardScannedInput(
 			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateChain:
-			recordAdaptiveSignal(session.SignalBlock)
+			recordAdaptiveFinding(session.SignalBlock, "chain", eval.ChainPatternName)
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
@@ -850,7 +856,7 @@ func ForwardScannedInput(
 		if !eval.A2AResult.Clean && eval.A2AEffectiveAction != "" && eval.A2AEffectiveAction != config.ActionBlock {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: a2a input warning (%s)\n", lineNum, eval.A2AResult.Reason)
 			if !eval.A2AResult.IsAdaptiveNeutral() {
-				recordAdaptiveSignal(session.SignalNearMiss)
+				recordAdaptiveFinding(session.SignalNearMiss, "a2a", eval.A2AResult.Reason)
 			}
 		}
 		if !eval.DoWAllowed && eval.DoWAction != "" {
@@ -858,7 +864,7 @@ func ForwardScannedInput(
 				auditLogger.LogAnomaly(mustMCPDoWAuditContext(auditLogger, enforcementTarget, opts), scanner.ScannerDenialOfWallet, eval.DoWReason, 0)
 			}
 			recordDoWMetric(m, config.ActionWarn, opts)
-			recordAdaptiveSignal(session.SignalNearMiss)
+			recordAdaptiveFinding(session.SignalNearMiss, scanner.ScannerDenialOfWallet, eval.DoWReason)
 		}
 		if eval.TaintApproved {
 			logTaintDecision()
@@ -1583,11 +1589,11 @@ func ForwardScannedInput(
 		// Successful redirects are clean (not a block). Failed redirects escalate.
 		switch {
 		case effectiveAction == config.ActionBlock:
-			recordAdaptiveSignal(session.SignalBlock)
+			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		case effectiveAction == config.ActionRedirect && !redirectSucceeded:
-			recordAdaptiveSignal(session.SignalBlock)
+			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		case len(reasons) > 0:
-			recordAdaptiveSignal(session.SignalNearMiss)
+			recordAdaptiveFinding(session.SignalNearMiss, "mcp_input", joinStrings(reasons))
 		default:
 			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 				sessionKey: "default",

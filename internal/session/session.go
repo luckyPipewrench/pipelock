@@ -33,6 +33,18 @@ const (
 	SignalCrossAgentContamination                      // +2 - contaminated session propagated taint across an agent boundary (A2A/MCP)
 )
 
+// ClassifiedDenialSignal is true for enforced-block signals. Identical
+// retries of those findings do not pump threat score. Warn, strip, and
+// other non-block signals still score on every observation.
+func ClassifiedDenialSignal(sig SignalType) bool {
+	switch sig {
+	case SignalBlock, SignalBlockLowSeverity, SignalBlockMediumSeverity:
+		return true
+	default:
+		return false
+	}
+}
+
 // SignalPoints maps signal types to their score contribution.
 var SignalPoints = map[SignalType]float64{
 	SignalBlock:                      3.0,
@@ -109,6 +121,28 @@ func EscalateAirlock(rec Recorder, tier, trigger string) (changed bool, from, to
 		return false, "", ""
 	}
 	return provider.EscalateAirlock(tier, trigger)
+}
+
+// ClassifiedDenialNoter is implemented by recorders that remember the first
+// scored denial per destination and finding so retries of the same
+// already-enforced block do not keep pumping threat score.
+type ClassifiedDenialNoter interface {
+	NoteClassifiedDenial(scope, scannerName, reason, policyHash string) bool
+}
+
+// NoteClassifiedDenial records a classified denial fingerprint when the
+// recorder supports it. Recorders that do not implement the interface
+// still score (fail closed): unknown recorders must not silently drop
+// threat signals.
+func NoteClassifiedDenial(rec Recorder, scope, scannerName, reason, policyHash string) bool {
+	if rec == nil {
+		return true
+	}
+	noter, ok := rec.(ClassifiedDenialNoter)
+	if !ok {
+		return true
+	}
+	return noter.NoteClassifiedDenial(scope, scannerName, reason, policyHash)
 }
 
 // Recoverer is an optional extension for recorders that can de-escalate

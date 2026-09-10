@@ -768,14 +768,7 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 	h.logSessionAdmin("reset_ok", clientIP, key, prev.EscalationLevel, http.StatusOK)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(struct {
-		Key             string  `json:"key"`
-		Reset           bool    `json:"reset"`
-		PreviousLevel   string  `json:"previous_level"`
-		PreviousScore   float64 `json:"previous_score"`
-		IPStateCleared  bool    `json:"ip_state_cleared"`
-		CEEStateCleared bool    `json:"cee_state_cleared"`
-	}{
+	_ = json.NewEncoder(w).Encode(SessionResetResult{
 		Key:             key,
 		Reset:           true,
 		PreviousLevel:   prev.EscalationLevel,
@@ -1501,6 +1494,13 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 	}
 
 	if tier == config.AirlockTierNone {
+		if hot := hottestAdaptiveScope(snap.AdaptiveScopes); hot != nil {
+			exp.Reason = scopedQuarantineReason(hot)
+			exp.EvidenceTarget = hot.Scope
+			exp.EvidenceKind = "adaptive_scope"
+			exp.EvidenceDetail = scopedQuarantineReason(hot)
+			return exp
+		}
 		exp.Reason = tierNotQuarantinedReason
 		// Still attach the most recent notable event as evidence so the
 		// operator can see what the session has been doing even when the
@@ -1548,6 +1548,62 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 	}
 
 	return exp
+}
+
+func hottestAdaptiveScope(scopes []AdaptiveScopeSnapshot) *AdaptiveScopeSnapshot {
+	var hot *AdaptiveScopeSnapshot
+	hotRank := -1
+	for i := range scopes {
+		sc := &scopes[i]
+		rank := scopedEnforcementRank(sc)
+		if rank > hotRank {
+			hotRank = rank
+			hot = sc
+		}
+	}
+	if hotRank <= 0 {
+		return nil
+	}
+	return hot
+}
+
+func scopedEnforcementRank(sc *AdaptiveScopeSnapshot) int {
+	if sc == nil {
+		return 0
+	}
+	rank := 0
+	switch sc.AirlockTier {
+	case config.AirlockTierDrain:
+		rank = 40
+	case config.AirlockTierHard:
+		rank = 30
+	case config.AirlockTierSoft:
+		rank = 20
+	}
+	if sc.BlockAll && rank < 25 {
+		rank = 25
+	}
+	if sc.EscalationLevelInt > rank {
+		rank = sc.EscalationLevelInt
+	}
+	return rank
+}
+
+func scopedQuarantineReason(sc *AdaptiveScopeSnapshot) string {
+	if sc == nil {
+		return tierNotQuarantinedReason
+	}
+	tier := sc.AirlockTier
+	if tier == "" {
+		tier = config.AirlockTierNone
+	}
+	if tier != config.AirlockTierNone {
+		return "destination scope " + sc.Scope + " is quarantined at airlock tier " + tier
+	}
+	if sc.BlockAll || sc.EscalationLevelInt > 0 {
+		return "destination scope " + sc.Scope + " is at adaptive level " + sc.EscalationLevel
+	}
+	return tierNotQuarantinedReason
 }
 
 // attachMostRecentEvidence copies the most recent non-transition event

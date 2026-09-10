@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -175,6 +176,32 @@ func TestClient_Release_SendsBody(t *testing.T) {
 	}
 	if !resp.Changed {
 		t.Error("Changed: false")
+	}
+}
+
+func TestClient_Reset_HappyPath(t *testing.T) {
+	key := "agent/z|10.0.0.42"
+	wantPath := "/api/v1/sessions/" + url.PathEscape(key) + "/reset"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method: got %s", r.Method)
+		}
+		if r.URL.EscapedPath() != wantPath {
+			t.Errorf("path: got %s, want %s", r.URL.EscapedPath(), wantPath)
+		}
+		writeJSONResponse(w, http.StatusOK, proxy.SessionResetResult{
+			Key: key, Reset: true, PreviousLevel: "critical", PreviousScore: 9,
+		})
+	}))
+	defer srv.Close()
+
+	c := newClient(endpoint{URL: srv.URL, Token: testToken})
+	resp, err := c.Reset(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Reset || resp.PreviousScore != 9 {
+		t.Errorf("unexpected reset result: %+v", resp)
 	}
 }
 

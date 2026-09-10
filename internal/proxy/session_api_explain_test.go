@@ -421,3 +421,22 @@ func TestBuildExplanation_NoneTierOmitsTriggerMetadata(t *testing.T) {
 		t.Errorf("TriggerSource: got %q, want empty for tier=none", exp.TriggerSource)
 	}
 }
+
+func TestBuildExplanation_NoneTierNamesHotDestinationScope(t *testing.T) {
+	snap := sessionAdminSnapshot{
+		SessionSnapshot: SessionSnapshot{
+			Key:         "agent|10.0.0.1",
+			AirlockTier: config.AirlockTierNone,
+		},
+		AdaptiveScopes: []AdaptiveScopeSnapshot{
+			{Scope: "destination:api.example.com", AirlockTier: config.AirlockTierHard, EscalationLevel: "critical", EscalationLevelInt: 3, BlockAll: true, ThreatScore: 12},
+		},
+	}
+	exp := buildExplanation(snap, nil)
+	if exp.Reason == tierNotQuarantinedReason {
+		t.Fatalf("Reason: %q, want destination quarantine, not %q", exp.Reason, tierNotQuarantinedReason)
+	}
+	if exp.EvidenceTarget != "destination:api.example.com" {
+		t.Errorf("EvidenceTarget: got %q", exp.EvidenceTarget)
+	}
+}

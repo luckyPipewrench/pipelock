@@ -57,7 +57,7 @@ func TestRenderDetail_ContainsAllFields(t *testing.T) {
 	out := buf.String()
 	want := []string{
 		testKeyIdent, "hard", "airlock_entered", "recent_events",
-		"dlp secret", "in_flight:", "3",
+		"dlp secret", "in_flight:", "3", "adaptive_scopes", "destination:evil.example.com",
 	}
 	for _, w := range want {
 		if !strings.Contains(out, w) {
